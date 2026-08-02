@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -286,7 +287,12 @@ impl ServiceErrorConsumerFixture {
         let context = execution_context_with_trace(interpreter, target, ERROR_TRACE_ID);
         let mut heap = RequestHeap::default();
         let result = interpreter
-            .execute_runtime_assembly_addr(context, &mut heap, &self.caller_addr, Vec::new())
+            .execute_runtime_assembly_addr(
+                context,
+                &mut HeapAccess::Exclusive(&mut heap),
+                &self.caller_addr,
+                Vec::new(),
+            )
             .await;
         (result, heap, generation)
     }
@@ -349,7 +355,12 @@ async fn restricted_service_diagnostic_ordinary_exports_before_provider_heap_dro
     let context = fixture.execution_context(&interpreter, target);
     let mut heap = RequestHeap::default();
     let result = interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, fixture.caller_addr(), Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            fixture.caller_addr(),
+            Vec::new(),
+        )
         .await;
     let error = result.expect_err("provider throw must cross the ordinary boundary");
     let exception = user_exception(&error);
@@ -421,74 +432,97 @@ async fn restricted_service_diagnostic_ordinary_exports_before_provider_heap_dro
     );
 }
 
-#[tokio::test]
-async fn ordinary_exact_public_and_internal_catches_hit_while_unlinked_catch_misses() {
-    let linked = ServiceErrorConsumerFixture::new(
-        ProviderFailureKind::PublicRecord,
-        ConsumerTopology::OneHop,
-        true,
-        true,
-    );
-    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let (result, heap, _) = linked.execute_internal(&interpreter).await;
-    let caught = result.expect("exact linked public catch must succeed");
-    let caught_carrier = caught_exception_carrier(&caught, &heap);
-    let linked_caught_request = caught_request(&caught, &heap).clone();
-    let rethrown = crate::exceptions::request_exception_for_rethrow(&caught_carrier, &heap)
-        .expect("same-service rethrow must reuse the imported exception");
-    assert_eq!(
-        rethrown, linked_caught_request,
-        "local rethrow must preserve source, stack, correlation, and raw bytes"
-    );
-    let linked_bytes = linked_caught_request
-        .fixed_service_error()
-        .expect("caught imported exception must retain raw fixed bytes")
-        .encoded_bytes()
-        .to_vec();
-    assert!(linked_caught_request.local_value().is_some());
+#[test]
+fn ordinary_exact_public_and_internal_catches_hit_while_unlinked_catch_misses() {
+    // The evaluator call chain is stack-hungry in debug builds (each program
+    // call level approaches ~1 MiB; see the runtime stack-overflow takeover
+    // notes). Run this combined catch/caller/InternalError probe on a
+    // dedicated stack-sized thread, matching the other deep evaluator tests.
+    std::thread::Builder::new()
+        .name("service-error-consumer-catches".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("service error consumer test runtime")
+                .block_on(async {
+                    let linked = ServiceErrorConsumerFixture::new(
+                        ProviderFailureKind::PublicRecord,
+                        ConsumerTopology::OneHop,
+                        true,
+                        true,
+                    );
+                    let interpreter =
+                        Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+                    let (result, heap, _) = linked.execute_internal(&interpreter).await;
+                    let caught = result.expect("exact linked public catch must succeed");
+                    let caught_carrier = caught_exception_carrier(&caught, &heap);
+                    let linked_caught_request = caught_request(&caught, &heap).clone();
+                    let rethrown =
+                        crate::exceptions::request_exception_for_rethrow(&caught_carrier, &heap)
+                            .expect("same-service rethrow must reuse the imported exception");
+                    assert_eq!(
+                        rethrown, linked_caught_request,
+                        "local rethrow must preserve source, stack, correlation, and raw bytes"
+                    );
+                    let linked_bytes = linked_caught_request
+                        .fixed_service_error()
+                        .expect("caught imported exception must retain raw fixed bytes")
+                        .encoded_bytes()
+                        .to_vec();
+                    assert!(linked_caught_request.local_value().is_some());
 
-    let unlinked = ServiceErrorConsumerFixture::new(
-        ProviderFailureKind::PublicRecord,
-        ConsumerTopology::OneHop,
-        false,
-        true,
-    );
-    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let (result, _, _) = unlinked.execute_internal(&interpreter).await;
-    let error = result.expect_err("unlinked caller catch must miss");
-    let exception = user_exception(&error);
-    assert!(
-        exception.request().local_value().is_none(),
-        "unlinked public identity must remain opaque"
-    );
-    assert_eq!(
-        exception
-            .request()
-            .fixed_service_error()
-            .expect("opaque import retains fixed bytes")
-            .encoded_bytes(),
-        linked_bytes,
-        "linked materialization must not rewrite provider bytes"
-    );
+                    let unlinked = ServiceErrorConsumerFixture::new(
+                        ProviderFailureKind::PublicRecord,
+                        ConsumerTopology::OneHop,
+                        false,
+                        true,
+                    );
+                    let interpreter =
+                        Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+                    let (result, _, _) = unlinked.execute_internal(&interpreter).await;
+                    let error = result.expect_err("unlinked caller catch must miss");
+                    let exception = user_exception(&error);
+                    assert!(
+                        exception.request().local_value().is_none(),
+                        "unlinked public identity must remain opaque"
+                    );
+                    assert_eq!(
+                        exception
+                            .request()
+                            .fixed_service_error()
+                            .expect("opaque import retains fixed bytes")
+                            .encoded_bytes(),
+                        linked_bytes,
+                        "linked materialization must not rewrite provider bytes"
+                    );
 
-    let internal = ServiceErrorConsumerFixture::new(
-        ProviderFailureKind::Private,
-        ConsumerTopology::OneHop,
-        true,
-        true,
-    );
-    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
-    let (result, heap, _) = internal.execute_internal(&interpreter).await;
-    let caught = result.expect("exact linked std.service.InternalError catch must succeed");
-    let request = caught_request(&caught, &heap);
-    assert!(matches!(
-        request
-            .fixed_service_error()
-            .expect("caught InternalError keeps the fixed cause")
-            .envelope(),
-        ServiceErrorEnvelope::InternalError { .. }
-    ));
-    assert_internal_local_value(request, &heap);
+                    let internal = ServiceErrorConsumerFixture::new(
+                        ProviderFailureKind::Private,
+                        ConsumerTopology::OneHop,
+                        true,
+                        true,
+                    );
+                    let interpreter =
+                        Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+                    let (result, heap, _) = internal.execute_internal(&interpreter).await;
+                    let caught =
+                        result.expect("exact linked std.service.InternalError catch must succeed");
+                    let request = caught_request(&caught, &heap);
+                    assert!(matches!(
+                        request
+                            .fixed_service_error()
+                            .expect("caught InternalError keeps the fixed cause")
+                            .envelope(),
+                        ServiceErrorEnvelope::InternalError { .. }
+                    ));
+                    assert_internal_local_value(request, &heap);
+                });
+        })
+        .expect("service error consumer test thread")
+        .join()
+        .expect("service error consumer test thread should not panic");
 }
 
 #[tokio::test]
@@ -651,7 +685,7 @@ fn restricted_service_diagnostic_ordinary_three_hop_preserves_bytes_and_local_st
                         let result = interpreter
                             .execute_runtime_assembly_addr(
                                 context,
-                                &mut heap,
+                                &mut HeapAccess::Exclusive(&mut heap),
                                 fixture.caller_addr(),
                                 Vec::new(),
                             )

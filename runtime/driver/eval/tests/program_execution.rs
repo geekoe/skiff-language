@@ -1041,7 +1041,7 @@ async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exce
     let caught = interpreter
         .eval_program_expr_ref(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &mut env,
             &ExecutableAddr::service(0, 0),
             file.as_ref(),
@@ -1696,7 +1696,7 @@ async fn runtime_program_stream_variable_for_in_decodes_item_with_item_type() {
     let value = interpreter
         .call_program_executable(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &Env::new(),
             &run_addr,
             &run_addr,

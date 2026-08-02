@@ -18,6 +18,7 @@ use skiff_runtime_model::{
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
+use super::heap_access::HeapAccess;
 use super::{
     assembly_execution::{
         service_error_channel::{
@@ -74,18 +75,17 @@ use skiff_runtime_native_contract::{native_target_binding_key, native_target_nam
 
 mod actual_pending;
 mod checkpoint;
-mod concurrent;
 mod timeout;
 
 #[cfg(test)]
 pub(crate) use actual_pending::tests::legacy_native_call_expected_to_suspend as native_call_suspends;
 
-pub struct EvalContext<'a> {
+pub struct EvalContext<'a, 'h> {
     pub interpreter: &'a Interpreter,
     projection: RuntimeExecutionProjection<'a>,
     pub context: ProgramExecutionContext<'a>,
     pub execution: ExecutionControl<'a>,
-    pub heap: &'a mut RequestHeap,
+    pub heap: &'a mut HeapAccess<'h>,
     pub env: &'a mut Env,
     pub addr: &'a ExecutableAddr,
     pub file: &'a LinkedFileUnit,
@@ -147,11 +147,11 @@ pub(crate) fn promote_call_site_error<T>(
     Err(RuntimeError::UserException(UserException::new(exception)))
 }
 
-impl<'a> EvalContext<'a> {
+impl<'a, 'h> EvalContext<'a, 'h> {
     pub fn new(
         interpreter: &'a Interpreter,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut RequestHeap,
+        heap: &'a mut HeapAccess<'h>,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -174,7 +174,7 @@ impl<'a> EvalContext<'a> {
         interpreter: &'a Interpreter,
         projection: RuntimeExecutionProjection<'a>,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut RequestHeap,
+        heap: &'a mut HeapAccess<'h>,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -199,7 +199,7 @@ impl<'a> EvalContext<'a> {
     pub(crate) fn new_with_tail_call_context(
         interpreter: &'a Interpreter,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut RequestHeap,
+        heap: &'a mut HeapAccess<'h>,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -316,7 +316,7 @@ impl<'a> EvalContext<'a> {
             ServiceErrorImportContext {
                 execution_image: &execution_image,
                 type_view: projection.type_view(),
-                caller_heap: self.heap,
+                caller_heap: self.heap.heap_mut(),
                 caller_package_build_id: instruction.caller_package_build_id(),
                 caller_executable_addr: self.addr,
                 call_site: &call.site,
@@ -352,7 +352,7 @@ impl<'a> EvalContext<'a> {
         let block = promote_call_site_error(
             &self.projection,
             &self.context,
-            self.heap,
+            self.heap.heap_mut(),
             tail_caller,
             entry,
             tail_site,
@@ -427,10 +427,9 @@ impl<'a> EvalContext<'a> {
                 .exec_timeout_statement(*duration_ms, body, site)
                 .await
                 .map(EvaluatorControl::from),
-            LinkedStmtIr::Concurrent { plan } => self
-                .exec_concurrent_statement(plan)
-                .await
-                .map(EvaluatorControl::from),
+            LinkedStmtIr::Concurrent { .. } => Err(RuntimeError::InvalidArtifact(
+                "concurrent is not supported in v1".to_string(),
+            )),
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -468,13 +467,13 @@ impl<'a> EvalContext<'a> {
             }
             LinkedStmtIr::Assert { condition, message } => {
                 let condition = self.eval_program_expr_ref(*condition).await?;
-                if runtime_truthy(&condition, self.heap)? {
+                if runtime_truthy(&condition, self.heap.heap_mut())? {
                     return Ok(Flow::Continue.into());
                 }
                 let message = match message {
                     Some(message_ref) => {
                         let message = self.eval_program_expr_ref(*message_ref).await?;
-                        runtime_stringify_key(&message, self.heap)?
+                        runtime_stringify_key(&message, self.heap.heap_mut())?
                     }
                     _ => "assertion failed".to_string(),
                 };
@@ -497,7 +496,7 @@ impl<'a> EvalContext<'a> {
                 else_block,
             } => {
                 let condition = self.eval_program_expr_ref(*condition).await?;
-                let block = if runtime_truthy(&condition, self.heap)? {
+                let block = if runtime_truthy(&condition, self.heap.heap_mut())? {
                     then_block
                 } else if let Some(block) = else_block {
                     block
@@ -510,7 +509,7 @@ impl<'a> EvalContext<'a> {
                 let value = self.eval_program_expr_ref(*value).await?;
                 for arm in arms {
                     self.checkpoint_generated_chunk(0)?;
-                    if !program_pattern_matches(&arm.pattern, &value, self.heap)? {
+                    if !program_pattern_matches(&arm.pattern, &value, self.heap.heap_mut())? {
                         continue;
                     }
                     self.env.push();
@@ -564,14 +563,14 @@ impl<'a> EvalContext<'a> {
                 let expect = match expect {
                     Some(expected) => {
                         let value = self.eval_program_expr_ref(expected.value).await?;
-                        Some(runtime_to_wire(&value, self.heap)?)
+                        Some(runtime_to_wire(&value, self.heap.heap_mut())?)
                     }
                     None => None,
                 };
                 let step_expect = match step_expect {
                     Some(expected) => {
                         let value = self.eval_program_expr_ref(expected.value).await?;
-                        Some(runtime_to_wire(&value, self.heap)?)
+                        Some(runtime_to_wire(&value, self.heap.heap_mut())?)
                     }
                     None => None,
                 };
@@ -585,7 +584,7 @@ impl<'a> EvalContext<'a> {
                             &value,
                             Some(&value_plan),
                             "test effect response",
-                            self.heap,
+                            self.heap.heap_mut(),
                         )?;
                         RegisteredTestEffectOutcome::Respond { value, value_plan }
                     }
@@ -605,11 +604,11 @@ impl<'a> EvalContext<'a> {
                             payload,
                             &payload_plan,
                             "test effect typed throw",
-                            self.heap,
+                            self.heap.heap_mut(),
                         )?;
                         RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
                             failure: RegisteredTestEffectFailure::LocalPayload(payload),
-                            setup_heap: self.heap.clone(),
+                            setup_heap: self.heap.heap_mut().clone(),
                             setup_package_build_id: setup_package_build_id.clone(),
                         })
                     }
@@ -624,7 +623,7 @@ impl<'a> EvalContext<'a> {
                                 &value,
                                 Some(&item_plan),
                                 "test effect stream item",
-                                self.heap,
+                                self.heap.heap_mut(),
                             )?);
                         }
                         RegisteredTestEffectOutcome::Stream {
@@ -656,7 +655,7 @@ impl<'a> EvalContext<'a> {
                 .eval_program_rethrow_slot(
                     self.env,
                     program_u32_to_usize(*exception_slot, "rethrow.exceptionSlot")?,
-                    self.heap,
+                    self.heap.heap_mut(),
                 )
                 .map(EvaluatorControl::from),
         }
@@ -723,7 +722,7 @@ impl<'a> EvalContext<'a> {
                 .resolve_stream_producer_call(
                     self.projection.clone(),
                     self.addr,
-                    self.heap,
+                    self.heap.heap_mut(),
                     self.env,
                     self.executable,
                     expression,
@@ -738,7 +737,7 @@ impl<'a> EvalContext<'a> {
             .resolve_stream_producer_from_call(
                 self.projection.clone(),
                 self.addr,
-                self.heap,
+                self.heap.heap_mut(),
                 self.env,
                 self.executable,
                 call,
@@ -767,14 +766,16 @@ impl<'a> EvalContext<'a> {
                 self.eval_timeout_expression(*duration_ms, *value, site)
                     .await
             }
-            LinkedExprIr::ConcurrentValue { plan } => self.eval_concurrent_value(plan).await,
+            LinkedExprIr::ConcurrentValue { .. } => Err(RuntimeError::InvalidArtifact(
+                "concurrent value is not supported in v1".to_string(),
+            )),
             LinkedExprIr::Literal { value } => program_literal(value).map(Into::into),
             LinkedExprIr::LoadSlot { slot } => self
                 .env
                 .get_slot(program_u32_to_usize(*slot, "loadSlot.slot")?),
             LinkedExprIr::Field { object, field } => {
                 let object = self.eval_program_expr_ref(*object).await?;
-                runtime_member_access_carrier(&object, field, self.heap)
+                runtime_member_access_carrier(&object, field, self.heap.heap_mut())
             }
             LinkedExprIr::ActorSelfField { field, .. } => self
                 .context
@@ -797,7 +798,12 @@ impl<'a> EvalContext<'a> {
                     type_ref,
                     &self.env.type_substitutions,
                 )?;
-                runtime_representation_wrap_for_plan(value, &plan, "representation wrap", self.heap)
+                runtime_representation_wrap_for_plan(
+                    value,
+                    &plan,
+                    "representation wrap",
+                    self.heap.heap_mut(),
+                )
             }
             LinkedExprIr::InterfaceBox {
                 value,
@@ -814,14 +820,16 @@ impl<'a> EvalContext<'a> {
                     self.checkpoint_generated_chunk(0)?;
                     items.push(self.eval_program_expr_ref(*item_ref).await?);
                 }
-                runtime_array_from_carriers(items, self.heap)
+                runtime_array_from_carriers(items, self.heap.heap_mut())
             }
             LinkedExprIr::Unary { op, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 match op {
-                    UnaryOpIr::Not => {
-                        Ok(RuntimeValue::Bool(!runtime_truthy(&value, self.heap)?).into())
-                    }
+                    UnaryOpIr::Not => Ok(RuntimeValue::Bool(!runtime_truthy(
+                        &value,
+                        self.heap.heap_mut(),
+                    )?)
+                    .into()),
                     UnaryOpIr::Negate => Ok(runtime_number_value(-runtime_numeric(&value)?).into()),
                 }
             }
@@ -830,27 +838,38 @@ impl<'a> EvalContext<'a> {
                 if op == "&&" || op == "||" {
                     let left = self.eval_program_expr_ref(*left).await?;
                     return match op {
-                        "&&" if !runtime_truthy(&left, self.heap)? => {
+                        "&&" if !runtime_truthy(&left, self.heap.heap_mut())? => {
                             Ok(RuntimeValue::Bool(false).into())
                         }
                         "&&" => {
                             let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?).into())
+                            Ok(
+                                RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?)
+                                    .into(),
+                            )
                         }
-                        "||" if runtime_truthy(&left, self.heap)? => {
+                        "||" if runtime_truthy(&left, self.heap.heap_mut())? => {
                             Ok(RuntimeValue::Bool(true).into())
                         }
                         "||" => {
                             let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap)?).into())
+                            Ok(
+                                RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?)
+                                    .into(),
+                            )
                         }
                         _ => unreachable!("checked logical operator"),
                     };
                 }
                 let left = self.eval_program_expr_ref(*left).await?;
                 let right = self.eval_program_expr_ref(*right).await?;
-                runtime_eval_binary(op, left.into_value(), right.into_value(), self.heap)
-                    .map(Into::into)
+                runtime_eval_binary(
+                    op,
+                    left.into_value(),
+                    right.into_value(),
+                    self.heap.heap_mut(),
+                )
+                .map(Into::into)
             }
             LinkedExprIr::Call { call } => self.eval_program_call(call).await,
             LinkedExprIr::ValueBlock { block, result } => {
@@ -977,7 +996,7 @@ impl<'a> EvalContext<'a> {
                 let flow = self.interpreter.eval_program_rethrow_slot(
                     self.env,
                     program_u32_to_usize(*exception_slot, "rethrow.exceptionSlot")?,
-                    self.heap,
+                    self.heap.heap_mut(),
                 )?;
                 FlowCompletionPolicy::non_returning_expression_value(flow, "rethrow")
             }
@@ -1002,7 +1021,7 @@ impl<'a> EvalContext<'a> {
             if let Some(producer) = self.interpreter.resolve_stream_producer_call(
                 self.projection.clone(),
                 self.addr,
-                self.heap,
+                self.heap.heap_mut(),
                 self.env,
                 self.executable,
                 iterable_expr,
@@ -1028,7 +1047,7 @@ impl<'a> EvalContext<'a> {
 
         let items = self.eval_program_expr_ref(iterable_ref).await?;
         if let Some(value_slot) = value_slot {
-            if let Some(entries) = runtime_map_entry_snapshot(&items, self.heap)? {
+            if let Some(entries) = runtime_map_entry_snapshot(&items, self.heap.heap_mut())? {
                 return self
                     .exec_program_map_entry_for_in(item_slot, value_slot, body, entries)
                     .await;
@@ -1038,11 +1057,11 @@ impl<'a> EvalContext<'a> {
             ));
         }
 
-        if let Some(items) = runtime_array_item_carriers(&items, self.heap)? {
+        if let Some(items) = runtime_array_item_carriers(&items, self.heap.heap_mut())? {
             return self.exec_program_array_for_in(item_slot, body, items).await;
         }
 
-        let stream_value = runtime_to_wire(&items, self.heap)?;
+        let stream_value = runtime_to_wire(&items, self.heap.heap_mut())?;
         if is_stream_value(&stream_value) {
             let stream_item_type = item_type
                 .map(|item_type| {
@@ -1057,31 +1076,45 @@ impl<'a> EvalContext<'a> {
             let interpreter = self.interpreter;
             let drive_context = self.context.clone();
             let addr = self.addr;
+            let env = &mut *self.env;
+            let file = self.file;
+            let executable = self.executable;
+            let heap = &mut *self.heap;
+            let consumer_drive_context = drive_context.clone();
+            let consumer_stream_value = stream_value.clone();
             // If this stream value is backed by a deferred producer (a producer
             // call bound to a value rather than consumed inline), co-drive that
             // producer here so its `emit`s run with their own stream sink.
             return interpreter
-                .drive_deferred_stream_producer(drive_context, addr, &stream_value, |supervision| {
-                    interpreter.exec_program_stream_for_in(
-                        self.context.clone(),
-                        self.heap,
-                        self.env,
-                        self.addr,
-                        self.file,
-                        self.executable,
-                        item_slot,
-                        body,
-                        stream_value.clone(),
-                        stream_item_type,
-                        &cancel_signals,
-                        supervision,
-                    )
-                })
+                .drive_deferred_stream_producer(
+                    drive_context,
+                    addr,
+                    &stream_value,
+                    |supervision| async move {
+                        let result = interpreter
+                            .exec_program_stream_for_in(
+                                consumer_drive_context,
+                                heap,
+                                env,
+                                addr,
+                                file,
+                                executable,
+                                item_slot,
+                                body,
+                                consumer_stream_value,
+                                stream_item_type,
+                                &cancel_signals,
+                                supervision,
+                            )
+                            .await;
+                        (result, heap)
+                    },
+                )
                 .await
                 .map(EvaluatorControl::from);
         }
 
-        if let Some(keys) = runtime_map_key_snapshot(&items, self.heap)? {
+        if let Some(keys) = runtime_map_key_snapshot(&items, self.heap.heap_mut())? {
             return self.exec_program_array_for_in(item_slot, body, keys).await;
         }
 
@@ -1124,7 +1157,7 @@ impl<'a> EvalContext<'a> {
         loop {
             self.checkpoint_loop_condition(1)?;
             let condition_value = self.eval_program_expr_ref(condition).await?;
-            if !runtime_truthy(&condition_value, self.heap)? {
+            if !runtime_truthy(&condition_value, self.heap.heap_mut())? {
                 return Ok(Flow::Continue.into());
             }
             let control = self.exec_program_block_control(body).await?;
@@ -1244,8 +1277,8 @@ impl<'a> EvalContext<'a> {
                 self.addr,
                 &self.env.type_substitutions,
             )?;
-        let value = runtime_object_from_carriers(object_fields, self.heap)?;
-        runtime_carrier_for_plan(value, &plan, "construct", self.heap)
+        let value = runtime_object_from_carriers(object_fields, self.heap.heap_mut())?;
+        runtime_carrier_for_plan(value, &plan, "construct", self.heap.heap_mut())
     }
 
     fn validate_construct_type_ref(&self, type_ref: &LinkedTypeRef) -> Result<()> {
@@ -1410,7 +1443,7 @@ impl<'a> EvalContext<'a> {
             let value = self.eval_program_expr_ref(*value_ref).await?;
             entries.insert(RuntimeValueKey::string(key.to_string()), value);
         }
-        runtime_map_from_carriers(entries, self.heap)
+        runtime_map_from_carriers(entries, self.heap.heap_mut())
     }
 
     async fn eval_program_call(&mut self, call: &CallIr) -> Result<RuntimeValueCarrier> {
@@ -1446,7 +1479,7 @@ impl<'a> EvalContext<'a> {
         if let Some(producer) = self.interpreter.resolve_stream_producer_from_call(
             self.projection.clone(),
             self.addr,
-            self.heap,
+            self.heap.heap_mut(),
             self.env,
             self.executable,
             call,
@@ -1487,8 +1520,12 @@ impl<'a> EvalContext<'a> {
                     .await
             }
             LinkedCallTarget::PackageDirect { call: target } => {
-                let bypass_test_effect =
-                    is_std_http_self_ingress_call(target, &values, self.heap, &self.context)?;
+                let bypass_test_effect = is_std_http_self_ingress_call(
+                    target,
+                    &values,
+                    self.heap.heap_mut(),
+                    &self.context,
+                )?;
                 if self.interpreter.test_effects_enabled && !bypass_test_effect {
                     let effect_target = TestEffectTarget::package_callable(
                         target.dependency_package_build_id().clone(),
@@ -1499,7 +1536,7 @@ impl<'a> EvalContext<'a> {
                         &effect_target,
                         &values,
                         Some(&stream_runtime),
-                        self.heap,
+                        self.heap.heap_mut(),
                         &self.context,
                         &call.site,
                     ) {
@@ -1560,7 +1597,7 @@ impl<'a> EvalContext<'a> {
                                 .into_iter()
                                 .map(RuntimeValueCarrier::into_value)
                                 .collect(),
-                            self.heap,
+                            self.heap.heap_mut(),
                         )
                         .map_err(RuntimeError::from)?;
                     match return_plan {
@@ -1568,7 +1605,7 @@ impl<'a> EvalContext<'a> {
                             value,
                             &plan,
                             "config builtin return",
-                            self.heap,
+                            self.heap.heap_mut(),
                         ),
                         None => Ok(value.into()),
                     }
@@ -1582,7 +1619,8 @@ impl<'a> EvalContext<'a> {
                     ))
                 })?;
                 let args = values.into_iter().skip(1).collect::<Vec<_>>();
-                ReceiverMethodDispatch::new(self.heap).dispatch_op_carriers(op, receiver, args)
+                ReceiverMethodDispatch::new(self.heap.heap_mut())
+                    .dispatch_op_carriers(op, receiver, args)
             }
             LinkedCallTarget::InterfaceMethod {
                 interface,
@@ -1646,7 +1684,7 @@ impl<'a> EvalContext<'a> {
         promote_call_site_error(
             &self.projection,
             &self.context,
-            self.heap,
+            self.heap.heap_mut(),
             self.addr,
             result,
             site,
@@ -1665,7 +1703,7 @@ impl<'a> EvalContext<'a> {
             let producer = self.interpreter.resolve_stream_producer_call(
                 self.projection.clone(),
                 self.addr,
-                self.heap,
+                self.heap.heap_mut(),
                 self.env,
                 self.executable,
                 expr,
@@ -1699,15 +1737,15 @@ impl<'a> EvalContext<'a> {
                         producer,
                     )
                     .await?;
-                let stream_value = match runtime_from_wire(next_prepared.stream_value(), self.heap)
-                {
-                    Ok(value) => value,
-                    Err(error) => {
-                        self.interpreter
-                            .cancel_prepared_native_stream_producer_arg(&next_prepared);
-                        return Err(error);
-                    }
-                };
+                let stream_value =
+                    match runtime_from_wire(next_prepared.stream_value(), self.heap.heap_mut()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.interpreter
+                                .cancel_prepared_native_stream_producer_arg(&next_prepared);
+                            return Err(error);
+                        }
+                    };
                 values.push(stream_value.into());
                 prepared = Some(next_prepared);
             } else {
@@ -1730,15 +1768,24 @@ impl<'a> EvalContext<'a> {
             prepared.stream_value().clone(),
             prepared.consumption_child(),
         );
-        let consumer = self.interpreter.call_program_executable_carriers(
-            self.context.clone().with_local_call_site(call.site.clone()),
-            self.heap,
-            &consumer_env,
-            self.addr,
-            callee_addr,
-            &call.type_args,
-            values,
-        );
+        let interpreter = self.interpreter;
+        let call_context = self.context.clone().with_local_call_site(call.site.clone());
+        let addr = self.addr;
+        let heap = &mut *self.heap;
+        let consumer = async move {
+            let result = interpreter
+                .call_program_executable_carriers(
+                    call_context,
+                    heap,
+                    &consumer_env,
+                    addr,
+                    callee_addr,
+                    &call.type_args,
+                    values,
+                )
+                .await;
+            (result, heap)
+        };
         let result = match self
             .interpreter
             .exec_prepared_native_stream_producer_arg(
@@ -1752,7 +1799,8 @@ impl<'a> EvalContext<'a> {
             Ok(result) => result,
             Err(error) => {
                 return Err(materialize_request_heap_owned_runtime_error(
-                    error, self.heap,
+                    error,
+                    self.heap.heap_mut(),
                 )?)
             }
         };
@@ -1776,7 +1824,7 @@ impl<'a> EvalContext<'a> {
         let Some(producer) = self.interpreter.resolve_stream_producer_call(
             self.projection.clone(),
             self.addr,
-            self.heap,
+            self.heap.heap_mut(),
             self.env,
             self.executable,
             expr,
@@ -1821,7 +1869,7 @@ impl<'a> EvalContext<'a> {
             prepared.stream_value(),
             Some(&stream_arg_plan),
             "std.file.createFromStream source",
-            self.heap,
+            self.heap.heap_mut(),
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -1851,7 +1899,12 @@ impl<'a> EvalContext<'a> {
                 prepared.consumption_child(),
             );
         let prepared_native = native_dispatch
-            .prepare_resolved_native_call(native_capability_context, invocation, values, self.heap)
+            .prepare_resolved_native_call(
+                native_capability_context,
+                invocation,
+                values,
+                self.heap.heap_mut(),
+            )
             .map_err(RuntimeError::from)?;
         let interpreter = self.interpreter;
         let context = self.context.clone();
@@ -1860,16 +1913,22 @@ impl<'a> EvalContext<'a> {
         let execution = self.execution.clone();
         let heap = &mut *self.heap;
         let consumer = async move {
-            match prepared_native {
+            let result = match prepared_native {
                 promoted_runtime::dispatch::PreparedNativeCall::Ready(value) => Ok(value),
                 promoted_runtime::dispatch::PreparedNativeCall::ExternalWait(operation) => {
                     let (wait, finalize) = operation.into_parts();
-                    let outcome =
-                        actual_pending::await_operation(&context, frame, heap, &execution, wait)
-                            .await??;
-                    finalize.finalize(outcome, heap).map_err(RuntimeError::from)
+                    match actual_pending::await_operation(&context, frame, heap, &execution, wait)
+                        .await
+                    {
+                        Ok(Ok(outcome)) => finalize
+                            .finalize(outcome, heap.heap_mut())
+                            .map_err(RuntimeError::from),
+                        Ok(Err(error)) => Err(error.into()),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
+            };
+            (result, heap)
         };
         let result = interpreter
             .exec_prepared_native_stream_producer_arg(
@@ -1879,7 +1938,13 @@ impl<'a> EvalContext<'a> {
                 consumer,
             )
             .await?;
-        runtime_carrier_for_plan(result, &return_plan, "native stream return", self.heap).map(Some)
+        runtime_carrier_for_plan(
+            result,
+            &return_plan,
+            "native stream return",
+            self.heap.heap_mut(),
+        )
+        .map(Some)
     }
 
     async fn eval_program_throw(
@@ -1927,14 +1992,14 @@ impl<'a> EvalContext<'a> {
         )?;
 
         match self.eval_program_expr_ref(try_expression).await {
-            Ok(value) => catch_ok(value, self.heap),
+            Ok(value) => catch_ok(value, self.heap.heap_mut()),
             Err(error) => {
                 if let Some(exception) = user_exception_for_catch(&error) {
                     if exception
                         .actual_payload_type()
                         .is_some_and(|identity| catch_identity_matches(identity, &leaves))
                     {
-                        return catch_err(exception.request().clone(), self.heap);
+                        return catch_err(exception.request().clone(), self.heap.heap_mut());
                     }
                 }
                 Err(error)
@@ -1961,6 +2026,7 @@ impl<'a> EvalContext<'a> {
                     )
                 })?;
                 self.heap
+                    .heap_mut()
                     .set_object_field_carrier(handle, field.to_string(), value)?;
                 Ok(())
             }
@@ -1983,13 +2049,13 @@ impl<'a> EvalContext<'a> {
                     type_view,
                     self.addr,
                     value.value(),
-                    self.heap,
+                    self.heap.heap_mut(),
                 )
             }
             AssignTargetIr::Index { object, index } => {
                 let object = self.eval_program_expr_ref(*object).await?;
                 let index = self.eval_program_expr_ref(*index).await?;
-                assign_program_index_target_carrier(self.heap, &object, &index, value)
+                assign_program_index_target_carrier(self.heap.heap_mut(), &object, &index, value)
             }
         }
     }

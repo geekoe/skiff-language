@@ -1,10 +1,10 @@
+use crate::semantic::impl_method_declaration_name;
 use crate::{
     parsed_sources::ParsedCompilerSource, ExpressionOwnerKey, ExpressionSourceMap,
-    ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceCompileError,
+    ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceCompileError, SourceSymbolKey,
 };
 
 mod collectors;
-mod concurrent;
 mod effects;
 mod model;
 mod mutation;
@@ -47,9 +47,12 @@ pub(crate) fn analyze_source_execution_semantics(
                 continue;
             }
             let owner = ExpressionOwnerKey::Function(function.name.clone());
+            let source_key = SourceSymbolKey::new(module_path, &function.name);
             let mut analyzer = OwnerAnalyzer::new(
                 module_path,
                 owner,
+                source_key,
+                false,
                 function,
                 expression_sources,
                 &expression_keys,
@@ -71,9 +74,20 @@ pub(crate) fn analyze_source_execution_semantics(
                     type_name: implementation.target.clone(),
                     method: method.name.clone(),
                 };
+                let actor_context = parsed
+                    .ast()
+                    .actors
+                    .iter()
+                    .any(|actor| actor.name == implementation.target);
+                let source_key = SourceSymbolKey::new(
+                    module_path,
+                    impl_method_declaration_name(&implementation.target, &method.name),
+                );
                 let mut analyzer = OwnerAnalyzer::new(
                     module_path,
                     owner,
+                    source_key,
+                    actor_context,
                     method,
                     expression_sources,
                     &expression_keys,

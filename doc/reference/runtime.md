@@ -257,6 +257,8 @@ string representation map key 在 request heap 中按 erased string payload 保�
 
 ## 6. Concurrent lane model
 
+`concurrent` / `serial` 在 v1 暂不支持：编译器在语义阶段拒绝 `concurrent` 语句、`concurrent value` 表达式与 `serial`（编译期报错，如 `concurrent is not supported in v1`）。本节其余内容保留为未来恢复该特性时的语义目标。
+
 `concurrent` 是结构化并发语义。无依赖且通过 effect / mutation 检查的 sibling lane 必须能在 async host / service await 边界真实重叠执行；实现可以重排无依赖 lane，但不能把 `concurrent` 降级为纯串行执行。用户可见 join、错误选择和 mutation 规则必须确定。
 
 `concurrent { ... }` 只把被修饰 block 的第一层直属项划分为 lane：直属 statement 是一个 lane，直属 `serial { ... }` 整体是一个 lane，`concurrent value { ... }` 的 tail expression 是保留 `tail` kind 的普通 synthetic lane。当前 `concurrent` surface 是受限 lane list，不是普通 block；`if`、`match`、loop、`with`、`timeout`、普通 `value` block、`return`、`break`、`continue`、直接 `throw` / `rethrow`、`catch`、`emit`、`spawn`、嵌套 `serial`、嵌套 `concurrent` 和 callback / anonymous function body 在该 surface 内非法，包括在直属 `serial { ... }` 内非法。被调用函数内部仍可包含普通控制流；lane 只观察其normal return、throw、timeout或内部停止结果。

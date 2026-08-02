@@ -20,6 +20,7 @@ use crate::{
     actor_instance::resolve_actor_declaration,
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
+    heap_access::HeapAccess,
     invocation::EvalProgramProjection,
     program_execution::ProgramExecutionContext,
     recoverable_behavior::EvalRecoverableBehaviorHooks,
@@ -119,8 +120,9 @@ pub async fn execute_runtime_assembly_spawn_target(
                 })
         })
         .collect::<Result<Vec<_>>>()?;
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let value = interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &resolved.addr, args)
+        .execute_runtime_assembly_addr(context, &mut access, &resolved.addr, args)
         .await?;
     if value != RuntimeValue::Null {
         return Err(RuntimeError::InvalidArtifact(format!(
@@ -132,7 +134,7 @@ pub async fn execute_runtime_assembly_spawn_target(
 }
 
 pub async fn submit_spawn_statement(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call_ref: ExprRefIr,
 ) -> Result<()> {
     let expression = program_expression_ref(context.executable, call_ref)?;
@@ -143,37 +145,36 @@ pub async fn submit_spawn_statement(
     };
 
     let projection = context.execution_projection().clone();
-    let request_context = context.context.request_context();
+    let request_context = context.context.request_context().clone();
     let execution_control = context.execution.owned();
     let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
-    request_context
-        .submit_spawn(
-            SpawnSubmitControlRequest {
-                rpc_id: String::new(),
-                runtime_id: String::new(),
-                target_kind: invocation.target_kind,
-                service_id: request_context.service_id().to_string(),
-                service_version: request_context.service_version().to_string(),
-                service_protocol_identity: request_context
-                    .spawn_service_protocol_identity()
-                    .to_string(),
-                target: invocation.target,
-                spawn_id: None,
-                build_id: spawn_submit_build_id(request_context.request_build_id()),
-                activation_identity: current_activation_identity(
-                    request_context.activation_identity(),
-                )?,
-                caller_request_id: Some(request_context.request_id().to_string()),
-                trace_id: request_context.trace_id().map(str::to_string),
-                caller_target: Some(request_context.request_target().to_string()),
-                max_queue_wait_ms: None,
-                actor_method: invocation.actor_method,
-            },
-            invocation.args_payload,
-            execution_control,
-        )
-        .await?;
+    let submit = request_context.submit_spawn(
+        SpawnSubmitControlRequest {
+            rpc_id: String::new(),
+            runtime_id: String::new(),
+            target_kind: invocation.target_kind,
+            service_id: request_context.service_id().to_string(),
+            service_version: request_context.service_version().to_string(),
+            service_protocol_identity: request_context
+                .spawn_service_protocol_identity()
+                .to_string(),
+            target: invocation.target,
+            spawn_id: None,
+            build_id: spawn_submit_build_id(request_context.request_build_id()),
+            activation_identity: current_activation_identity(
+                request_context.activation_identity(),
+            )?,
+            caller_request_id: Some(request_context.request_id().to_string()),
+            trace_id: request_context.trace_id().map(str::to_string),
+            caller_target: Some(request_context.request_target().to_string()),
+            max_queue_wait_ms: None,
+            actor_method: invocation.actor_method,
+        },
+        invocation.args_payload,
+        execution_control,
+    );
+    context.await_actual_pending(submit).await??;
     Ok(())
 }
 
@@ -224,7 +225,7 @@ struct SpawnEncodedCall {
 }
 
 async fn encode_spawn_request_payload(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
 ) -> Result<SpawnEncodedCall> {
@@ -240,7 +241,7 @@ async fn encode_spawn_request_payload(
 }
 
 async fn encode_spawn_function_payload(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
@@ -281,7 +282,7 @@ async fn encode_spawn_function_payload(
         let value = context.eval_program_expr_ref(*arg_ref).await?;
         fields.insert(param.name.clone(), value);
     }
-    let args_handle = context.heap.alloc_object_carriers(fields)?;
+    let args_handle = context.heap.heap_mut().alloc_object_carriers(fields)?;
     let recoverable_expected = executable_request_recoverable_expected_plan(
         projection.type_view(),
         &resolved.addr,
@@ -298,7 +299,7 @@ async fn encode_spawn_function_payload(
         &RuntimeValue::Heap(args_handle),
         &recoverable_expected,
         &boundary,
-        context.heap,
+        context.heap.heap_mut(),
         &EvalRecoverableBehaviorHooks::new_for_execution(&projection)?,
     )?;
     Ok(SpawnEncodedCall {
@@ -310,7 +311,7 @@ async fn encode_spawn_function_payload(
 }
 
 async fn encode_spawn_actor_method_payload(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
@@ -396,12 +397,12 @@ async fn encode_spawn_actor_method_payload(
     for (parameter, value) in method.parameters.iter().zip(values.iter().skip(1)) {
         gate_fields.insert(parameter.name.clone(), value.clone());
     }
-    let gate_handle = context.heap.alloc_object_carriers(gate_fields)?;
+    let gate_handle = context.heap.heap_mut().alloc_object_carriers(gate_fields)?;
     encode_spawn_args_payload(
         &RuntimeValue::Heap(gate_handle),
         &recoverable_expected,
         &boundary,
-        context.heap,
+        context.heap.heap_mut(),
         &behavior_hooks,
     )?;
 
@@ -418,7 +419,7 @@ async fn encode_spawn_actor_method_payload(
                 BoundaryUse::NativeArg,
                 format!("Actor argument {index}"),
             )
-            .to_wire_json(value.value(), context.heap)
+            .to_wire_json(value.value(), context.heap.heap_mut())
             .map_err(RuntimeError::from)
         })
         .collect::<Result<Vec<Value>>>()?;
@@ -637,6 +638,8 @@ fn metadata_to_json(value: &MetadataValue) -> Value {
 
 #[cfg(test)]
 mod recoverable_spawn_payload_tests {
+    use crate::heap_access::HeapAccess;
+
     use std::{
         collections::{BTreeMap, HashMap},
         sync::Arc,
@@ -1488,10 +1491,11 @@ mod recoverable_spawn_payload_tests {
             Interpreter::with_program(runtime_program, test_runtime::runtime_factory());
         let context = probe_program_context(&interpreter);
         let caller_addr = probe_caller_addr();
+        let mut access = HeapAccess::Exclusive(&mut decode_heap);
         let result = interpreter
             .call_program_executable(
                 context,
-                &mut decode_heap,
+                &mut access,
                 &Env::new(),
                 &caller_addr,
                 &caller_addr,

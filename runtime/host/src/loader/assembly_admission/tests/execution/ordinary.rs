@@ -23,7 +23,7 @@ async fn typed_execution_ordinary() {
     let service_result = interpreter
         .execute_runtime_assembly_addr(
             context.clone(),
-            &mut service_heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut service_heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -39,7 +39,7 @@ async fn typed_execution_ordinary() {
     let package_result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut package_heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut package_heap),
             &fixture.consumer_executable_addr(1),
             Vec::new(),
         )

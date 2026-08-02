@@ -1,8 +1,7 @@
-use skiff_runtime_model::request_heap::RequestHeap;
-
 use crate::{
     capabilities::DbCapabilityStore,
     error::{Result, RuntimeError},
+    heap_access::HeapAccess,
     program_execution::ProgramExecutionContext,
 };
 
@@ -28,7 +27,7 @@ impl TransactionLifecycle {
     pub(super) async fn begin(
         store: DbCapabilityStore,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
     ) -> Result<Self> {
         let begin_store = store.clone();
         await_operation(context, heap, async move {
@@ -44,7 +43,7 @@ impl TransactionLifecycle {
     pub(super) async fn commit(
         mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
     ) -> Result<()> {
         debug_assert_eq!(self.phase, TransactionPhase::Body);
         self.phase = TransactionPhase::CommitSelected;
@@ -68,7 +67,7 @@ impl TransactionLifecycle {
     pub(super) async fn abort(
         mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
     ) -> Result<()> {
         debug_assert_eq!(self.phase, TransactionPhase::Body);
         self.abort_selected(context, heap).await
@@ -77,7 +76,7 @@ impl TransactionLifecycle {
     async fn abort_selected(
         &mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
     ) -> Result<()> {
         debug_assert!(matches!(
             self.phase,

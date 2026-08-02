@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     sync::Arc,
     task::{Poll, Wake, Waker},
@@ -15,7 +16,6 @@ use skiff_runtime_linked_program::{
     LinkedExprIr, LinkedFileUnit, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext,
     ServiceSymbolRef, SourceMapDto, UnitAddr,
 };
-use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::request_heap::RequestHeap;
 
 use super::*;
@@ -135,36 +135,20 @@ impl ActorFrameFixture {
         }
     }
 
-    async fn frame(&self) -> (ActorExecutionFrame, RequestHeap) {
+    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess<'static>) {
         let authority = ActorExecutorAuthority::new();
-        let mut lease = self
+        let mut segment = self
             .store
-            .acquire_execution(&authority, &self.handle)
+            .acquire_segment(&authority, &self.handle)
             .await
             .expect("acquire Actor probe");
-        let heap = lease.take_heap();
-        let addr = ExecutableAddr {
-            unit: UnitAddr::Service,
-            file: FileAddr::FileIrIdentity(ACTOR_FILE.to_string()),
-            executable: 0,
+        let access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
         };
-        let id_plan = RuntimeTypePlan::from_linked(
-            &LinkedTypeRef::Native {
-                name: "string".to_string(),
-                args: Vec::new(),
-            },
-            &PlanContext::from_type_view(self.program.projection().type_view(), &addr),
-        )
-        .expect("activation probe id plan");
         (
-            ActorExecutionFrame::new(
-                self.store.clone(),
-                self.handle.clone(),
-                lease,
-                vec![("id".to_string(), id_plan)],
-                false,
-            ),
-            heap,
+            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
+            access,
         )
     }
 }
@@ -233,7 +217,7 @@ mod server_stream_fixture {
         RequestActivationContext,
     };
     use skiff_runtime_capability_context::DbCapabilityContext;
-    use skiff_runtime_linked_program::{ExecutableAddr, FileAddr, ServiceMeta, UnitAddr};
+    use skiff_runtime_linked_program::{ExecutableAddr, FileAddr, UnitAddr};
     use skiff_runtime_model::request_heap::RequestHeapLimits;
 
     use super::*;
@@ -869,7 +853,7 @@ async fn activation_owner_switch_rebinds_a_b_c_and_callback_return_as_one_reques
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let actor_frame_fixture = ActorFrameFixture::new();
-    let (actor_frame, _actor_heap) = actor_frame_fixture.frame().await;
+    let (actor_frame, _actor_access) = actor_frame_fixture.frame().await;
     let context = server_stream_fixture::execution_context_with_deadline(
         &interpreter,
         fixture.target.clone(),
@@ -1018,9 +1002,9 @@ fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> Poll<F::O
 #[tokio::test]
 async fn f445h_e4r_stream_activation_unary_ready_keeps_actor_segment() {
     let actor = ActorFrameFixture::new();
-    let (frame, mut heap) = actor.frame().await;
+    let (frame, mut access) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
-    let mut competitor = Box::pin(actor.store.acquire_execution(&authority, &actor.handle));
+    let mut competitor = Box::pin(actor.store.acquire_segment(&authority, &actor.handle));
     assert!(poll_once(competitor.as_mut()).is_pending());
 
     let (fixture, interpreter, projection, call) = unary_fixture();
@@ -1034,7 +1018,7 @@ async fn f445h_e4r_stream_activation_unary_ready_keeps_actor_segment() {
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1056,15 +1040,15 @@ async fn f445h_e4r_stream_activation_unary_ready_keeps_actor_segment() {
         "the queued Actor execution must remain blocked across a Ready activation call"
     );
     drop(competitor);
-    frame.finish(heap).expect("finish Ready Actor segment");
+    frame.finish().expect("finish Ready Actor segment");
 }
 
 #[tokio::test]
 async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_synchronous_setup() {
     let actor = ActorFrameFixture::new();
-    let (frame, mut heap) = actor.frame().await;
+    let (frame, mut access) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
-    let mut competitor = Box::pin(actor.store.acquire_execution(&authority, &actor.handle));
+    let mut competitor = Box::pin(actor.store.acquire_segment(&authority, &actor.handle));
     assert!(poll_once(competitor.as_mut()).is_pending());
 
     let fixture = server_stream_fixture::fixture();
@@ -1098,7 +1082,7 @@ async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_syn
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1119,7 +1103,7 @@ async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_syn
     );
     drop(competitor);
     frame
-        .finish(heap)
+        .finish()
         .expect("finish activation stream Actor segment");
 
     let receiver_item = interpreter
@@ -1215,10 +1199,11 @@ async fn inline_service_effect_stream_uses_the_current_context_runtime() {
     );
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1261,9 +1246,9 @@ async fn inline_service_effect_stream_uses_the_current_context_runtime() {
 #[tokio::test]
 async fn f445h_e4r_stream_activation_unary_pending_releases_then_reacquires_before_finalize() {
     let actor = ActorFrameFixture::new();
-    let (frame, mut heap) = actor.frame().await;
+    let (frame, mut access) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
-    let mut competitor = Box::pin(actor.store.acquire_execution(&authority, &actor.handle));
+    let mut competitor = Box::pin(actor.store.acquire_segment(&authority, &actor.handle));
     assert!(poll_once(competitor.as_mut()).is_pending());
 
     let (fixture, interpreter, projection, call) = unary_fixture();
@@ -1281,7 +1266,7 @@ async fn f445h_e4r_stream_activation_unary_pending_releases_then_reacquires_befo
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1307,17 +1292,13 @@ async fn f445h_e4r_stream_activation_unary_pending_releases_then_reacquires_befo
     drop(eval);
 
     let after_authority = ActorExecutorAuthority::new();
-    let mut after = Box::pin(
-        actor
-            .store
-            .acquire_execution(&after_authority, &actor.handle),
-    );
+    let mut after = Box::pin(actor.store.acquire_segment(&after_authority, &actor.handle));
     assert!(
         poll_once(after.as_mut()).is_pending(),
         "provider finalize returns only after the same Actor frame reacquires"
     );
     drop(after);
-    frame.finish(heap).expect("finish resumed Actor segment");
+    frame.finish().expect("finish resumed Actor segment");
 }
 
 #[tokio::test]
@@ -1329,10 +1310,11 @@ async fn f445h_e4r_stream_activation_unary_actual_evaluator_imports_provider_fai
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
     let context = fixture.execution_context(&interpreter, fixture.caller_eval_target());
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),

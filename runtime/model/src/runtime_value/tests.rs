@@ -26,10 +26,12 @@ fn heap_runtime_value_equality_uses_handle_identity() {
     let same = RuntimeValue::Heap(HeapHandle::new(0, 0));
     let different_index = RuntimeValue::Heap(HeapHandle::new(1, 0));
     let different_generation = RuntimeValue::Heap(HeapHandle::new(0, 1));
+    let different_epoch = RuntimeValue::Heap(HeapHandle::new_with_epoch(0, 0, 1));
 
     assert_eq!(first, same);
     assert_ne!(first, different_index);
     assert_ne!(first, different_generation);
+    assert_ne!(first, different_epoch);
 }
 
 #[test]

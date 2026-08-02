@@ -31,6 +31,7 @@ use super::{
     env::{Env, Flow},
     exceptions::annotate_runtime_type_plan,
     flow_completion::FlowCompletionPolicy,
+    heap_access::HeapAccess,
     invocation::{
         BinaryHttpRequestPlan, EvalBoundaryProjection, EvalInvocation, EvalProgramProjection,
     },
@@ -151,6 +152,17 @@ impl<'a> PreparedProgramInvocation<'a> {
             } => Some(request_payload_plan.clone()),
             _ => None,
         }
+    }
+
+    async fn exec_with_heap_access<'ctx>(
+        &mut self,
+        interpreter: &Interpreter,
+        context: impl crate::program_execution::IntoProgramExecutionContext<'ctx> + Send,
+    ) -> Result<Flow> {
+        let mut access = HeapAccess::Exclusive(&mut self.heap);
+        self.executable_invocation
+            .exec(interpreter, context, &mut access, &mut self.env)
+            .await
     }
 
     fn declare_binary_http_request_parameters(
@@ -285,10 +297,11 @@ impl Interpreter {
         }
         if let Some(receiver_const) = receiver_const {
             let caller_env = invocation.env.clone();
+            let mut invocation_heap_access = HeapAccess::Exclusive(&mut invocation.heap);
             let receiver_value = self
                 .eval_program_const_addr(
                     context.execution_context(),
-                    &mut invocation.heap,
+                    &mut invocation_heap_access,
                     &caller_env,
                     receiver_const,
                 )
@@ -299,13 +312,7 @@ impl Interpreter {
         }
 
         match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {
@@ -359,13 +366,7 @@ impl Interpreter {
         invocation.declare_binary_http_request_parameters(self, context, addr)?;
 
         match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {
@@ -472,13 +473,7 @@ impl Interpreter {
             });
             let producer_future = async {
                 match invocation
-                    .executable_invocation
-                    .exec(
-                        self,
-                        context.execution_context(),
-                        &mut invocation.heap,
-                        &mut invocation.env,
-                    )
+                    .exec_with_heap_access(self, context.execution_context())
                     .await
                 {
                     Ok(_) => sink.end().await,
@@ -502,13 +497,7 @@ impl Interpreter {
         }
 
         let stream_value = match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {
@@ -658,13 +647,7 @@ impl Interpreter {
             });
             let producer_future = async {
                 match invocation
-                    .executable_invocation
-                    .exec(
-                        self,
-                        context.execution_context(),
-                        &mut invocation.heap,
-                        &mut invocation.env,
-                    )
+                    .exec_with_heap_access(self, context.execution_context())
                     .await
                 {
                     Ok(_) => sink.end().await,
@@ -688,13 +671,7 @@ impl Interpreter {
         }
 
         let stream_value = match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {
@@ -791,13 +768,7 @@ impl Interpreter {
         mut invocation: PreparedProgramInvocation<'a>,
     ) -> Result<(RuntimeValue, RuntimeTypePlan, RequestHeap)> {
         match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {
@@ -904,13 +875,7 @@ impl Interpreter {
             invocation.env.current_stream_item_type = Some(item_type_plan.clone());
             let producer_future = async {
                 match invocation
-                    .executable_invocation
-                    .exec(
-                        self,
-                        context.execution_context(),
-                        &mut invocation.heap,
-                        &mut invocation.env,
-                    )
+                    .exec_with_heap_access(self, context.execution_context())
                     .await
                 {
                     Ok(_) => sink.end().await,
@@ -934,13 +899,7 @@ impl Interpreter {
         }
 
         let stream_value = match invocation
-            .executable_invocation
-            .exec(
-                self,
-                context.execution_context(),
-                &mut invocation.heap,
-                &mut invocation.env,
-            )
+            .exec_with_heap_access(self, context.execution_context())
             .await
         {
             Ok(Flow::Return(value)) => {

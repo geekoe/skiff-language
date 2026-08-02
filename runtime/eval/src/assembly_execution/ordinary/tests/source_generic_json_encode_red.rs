@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::BTreeMap,
     fs,
@@ -278,7 +279,7 @@ impl LinkedFixture {
         interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &ExecutableAddr::package(0, file_index, executable_index),
                 Vec::new(),
             )

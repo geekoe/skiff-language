@@ -1,3 +1,5 @@
+use crate::heap_access::HeapAccess;
+
 mod representation_combined_probe;
 pub(crate) mod service_error_consumer;
 mod source_generic_json_encode_red;
@@ -57,7 +59,7 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(caller_handle)],
         )
@@ -82,7 +84,12 @@ async fn package_constant_load_resolves_exact_dependency_implementation_address(
     let mut heap = RequestHeap::default();
 
     let result = interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
         .await
         .expect("linked package constant should execute through its exact ConstAddr");
 
@@ -105,7 +112,7 @@ async fn inline_effect_setup_dispatch_reports_request_subset_mismatch() {
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -136,7 +143,7 @@ async fn inline_effect_request_finalization_reports_and_clears_unused_setup() {
     interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -174,7 +181,7 @@ async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero
     let caught = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -276,7 +283,7 @@ async fn inline_effect_stream_is_consumed_in_buffered_event_order() {
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -312,7 +319,7 @@ async fn inline_package_effect_stream_uses_the_current_context_runtime() {
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -341,7 +348,7 @@ async fn inline_effect_response_is_materialized_in_spawned_stream_producer_heap(
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -402,7 +409,12 @@ async fn execute_materialization_expression(expression: ExprIr) -> (RuntimeValue
     let context = execution_context(&interpreter, fixture.eval_target);
     let mut heap = RequestHeap::default();
     let value = interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
         .await
         .expect("materialization expression should execute");
     (value, heap)

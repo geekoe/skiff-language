@@ -57,11 +57,30 @@ impl From<&[u8]> for RuntimeBytes {
 pub struct HeapHandle {
     index: u32,
     generation: u32,
+    epoch: u32,
 }
 
 impl HeapHandle {
     pub const fn new(index: u32, generation: u32) -> Self {
-        Self { index, generation }
+        Self {
+            index,
+            generation,
+            epoch: 0,
+        }
+    }
+
+    /// Constructs a handle stamped with an arena epoch.
+    ///
+    /// Actor instance arenas stamp every allocated handle with the arena epoch;
+    /// `slot`/`slot_mut` reject handles whose epoch differs from the heap epoch,
+    /// so handles from a compacted arena fail closed instead of aliasing nodes
+    /// that were reused by a fresh arena.
+    pub const fn new_with_epoch(index: u32, generation: u32, epoch: u32) -> Self {
+        Self {
+            index,
+            generation,
+            epoch,
+        }
     }
 
     pub const fn index(self) -> u32 {
@@ -70,6 +89,10 @@ impl HeapHandle {
 
     pub const fn generation(self) -> u32 {
         self.generation
+    }
+
+    pub const fn epoch(self) -> u32 {
+        self.epoch
     }
 }
 

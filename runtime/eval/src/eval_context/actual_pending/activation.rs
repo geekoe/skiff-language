@@ -3,7 +3,7 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 
 use super::*;
 
-impl EvalContext<'_> {
+impl EvalContext<'_, '_> {
     pub(in crate::eval_context) async fn eval_activation_relative_service_call(
         &mut self,
         call: &CallIr,
@@ -20,7 +20,7 @@ impl EvalContext<'_> {
                 &effect_target,
                 &values,
                 Some(&stream_runtime),
-                self.heap,
+                self.heap.heap_mut(),
             ) {
                 return match result? {
                     ServiceTestEffectDispatch::Complete(value) => Ok(value),

@@ -17,6 +17,7 @@ import {
 
 const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementation = identity('skiff-actor-implementation-v1:sha256', 'b');
+const implementationV2 = identity('skiff-actor-implementation-v1:sha256', 'g');
 const methodIdentity = identity('skiff-actor-method-v1:sha256', 'c');
 const start = Date.parse('2026-07-25T00:00:00.000Z');
 
@@ -201,6 +202,134 @@ describe('Actor owner lease and idle TTL', () => {
       ownerLeaseId: 'lease-2',
     });
   });
+
+  it('cancels an in-flight idle eviction when the entry starts upgrading', async () => {
+    const fixture = await liveFixture({ idleTtlMs: 100 });
+    fixture.clock.advance(100);
+    const swept = await fixture.controller().sweep();
+    const eviction = swept.evictionRequests[0];
+    if (eviction === undefined) throw new Error('idle eviction must be requested');
+
+    await expect(
+      admit(fixture, 'invocation-upgrade-trigger', implementationV2)
+    ).resolves.toMatchObject({ ok: false, rejection: { reason: 'Upgrading' } });
+    await expect(fixture.manager.entry(fixture.actorKey)).resolves.toMatchObject({
+      lifecycleState: 'upgrading',
+      targetImplementationIdentity: implementationV2,
+      ownerRuntimeId: 'runtime-1',
+      ownerLeaseId: 'lease-1',
+      idleEvictionRequestId: undefined,
+    });
+
+    // The upgrade flip cancelled the pending eviction, so the ACK must not clear the owner.
+    await expect(
+      fixture.controller().acknowledgeEviction({
+        type: 'actor.owner.idle.evict.ack',
+        fence: eviction,
+      })
+    ).resolves.toBe(false);
+
+    const fence = await fixture.manager.registryStore().actorUpgradeFence(
+      makeActorKey(fixture.actorKey)
+    );
+    if (fence === undefined) throw new Error('upgrade fence must exist');
+    await expect(
+      fixture.manager.registryStore().waitForActorUpgradeDrain({ fence })
+    ).resolves.toBe('Drained');
+    await expect(
+      fixture.manager.registryStore().completeActorUpgrade({
+        fence,
+        now: fixture.clock.date(),
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      transition: {
+        oldEpoch: fixture.epoch,
+        newEpoch: fixture.epoch + 1,
+        targetImplementationIdentity: implementationV2,
+      },
+    });
+
+    await expect(fixture.manager.find(fixture.actorKey)).resolves.toMatchObject({
+      epoch: fixture.epoch + 1,
+    });
+    const upgraded = await fixture.manager.acquireOwner({
+      actorKey: fixture.actorKey,
+      expectedEpoch: fixture.epoch + 1,
+      actorImplementationIdentity: implementationV2,
+      ownerRuntimeId: 'runtime-2',
+      ownerLeaseId: 'lease-2',
+      ownerLeaseExpiresAt: new Date(fixture.clock.nowMilliseconds() + 1_000),
+      now: fixture.clock.date(),
+    });
+    expect(upgraded).toMatchObject({ ok: true });
+    await fixture.manager.markOwnerLive({
+      actorKey: fixture.actorKey,
+      expectedEpoch: fixture.epoch + 1,
+      actorImplementationIdentity: implementationV2,
+      ownerRuntimeId: 'runtime-2',
+      ownerLeaseId: 'lease-2',
+      now: fixture.clock.date(),
+    });
+    await expect(
+      admit(fixture, 'invocation-after-upgrade', implementationV2, fixture.epoch + 1)
+    ).resolves.toMatchObject({ ok: true, invocation: { state: 'admitted' } });
+  });
+
+  it('completes an upgrade even after the owner is lost while upgrading', async () => {
+    const fixture = await liveFixture();
+    await expect(
+      admit(fixture, 'invocation-upgrade-trigger', implementationV2)
+    ).resolves.toMatchObject({ ok: false, rejection: { reason: 'Upgrading' } });
+
+    await expect(
+      fixture.manager.registryStore().disconnectOwner({
+        fence: fixture.fence,
+        now: fixture.clock.date(),
+        terminalReason: 'owner disconnected during upgrade',
+      })
+    ).resolves.toMatchObject({ released: true });
+    await expect(fixture.manager.entry(fixture.actorKey)).resolves.toMatchObject({
+      lifecycleState: 'upgrading',
+      ownerRuntimeId: undefined,
+      ownerLeaseId: undefined,
+    });
+
+    const fence = await fixture.manager.registryStore().actorUpgradeFence(
+      makeActorKey(fixture.actorKey)
+    );
+    if (fence === undefined) throw new Error('upgrade fence must survive owner loss');
+    expect(fence).toMatchObject({
+      oldEpoch: fixture.epoch,
+      oldImplementationIdentity: implementation,
+      oldOwnerRuntimeId: 'runtime-1',
+      oldOwnerLeaseId: 'lease-1',
+      targetImplementationIdentity: implementationV2,
+    });
+
+    await expect(
+      fixture.manager.registryStore().waitForActorUpgradeDrain({ fence })
+    ).resolves.toBe('Drained');
+    await expect(
+      fixture.manager.registryStore().completeActorUpgrade({
+        fence,
+        now: fixture.clock.date(),
+      })
+    ).resolves.toMatchObject({ ok: true });
+
+    await expect(fixture.manager.entry(fixture.actorKey)).resolves.toMatchObject({
+      status: 'present',
+      epoch: fixture.epoch + 1,
+      lifecycleState: 'inactive',
+      actorImplementationIdentity: implementationV2,
+      targetImplementationIdentity: undefined,
+      ownerRuntimeId: undefined,
+      ownerLeaseId: undefined,
+    });
+    await expect(fixture.manager.find(fixture.actorKey)).resolves.toMatchObject({
+      epoch: fixture.epoch + 1,
+    });
+  });
 });
 
 async function liveFixture(options: { leaseTtlMs?: number; idleTtlMs?: number } = {}) {
@@ -260,14 +389,16 @@ async function liveFixture(options: { leaseTtlMs?: number; idleTtlMs?: number } 
 
 function admit(
   fixture: Awaited<ReturnType<typeof liveFixture>>,
-  invocationId: string
+  invocationId: string,
+  requestedImplementationIdentity = implementation,
+  expectedEpoch = fixture.epoch
 ) {
   return fixture.manager.registryStore().admitActorMethod({
     invocationId,
     actorKey: makeActorKey(fixture.actorKey),
-    expectedEpoch: fixture.epoch,
+    expectedEpoch,
     actorAbiIdentity: actorAbi,
-    requestedImplementationIdentity: implementation,
+    requestedImplementationIdentity,
     methodIdentity,
     methodKnown: true,
     now: fixture.clock.date(),

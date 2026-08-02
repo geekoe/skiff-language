@@ -41,7 +41,7 @@ async fn typed_execution_callback_native_uses_production_service_materialization
     let owner_error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -83,7 +83,7 @@ async fn typed_execution_callback_native_rejects_wrong_mapping_before_provider_o
     let mapping_error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )

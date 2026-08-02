@@ -347,7 +347,7 @@ async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_ex
         Duration::from_secs(30),
         interpreter.exec_program_executable(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &mut env,
             &ExecutableAddr::service(0, 0),
             file.as_ref(),

@@ -11,9 +11,9 @@ use crate::{
 };
 
 use super::{
-    collectors::{expr_address, first_expression, pattern_bindings, LocalNameCollector},
+    collectors::{expr_address, pattern_bindings, LocalNameCollector},
     effects::CallableEffectProfile,
-    model::{ConcurrentLaneKind, ExecutionSourceSite, SourceExecutionSemantics, TimeoutSourcePlan},
+    model::{ExecutionSourceSite, SourceExecutionSemantics, TimeoutSourcePlan},
     mutation::{binding_root_for_value, BindingRoot, Scope},
 };
 
@@ -21,12 +21,14 @@ use super::{
 pub(super) struct OwnerAnalyzer<'a> {
     module_path: &'a str,
     owner: ExpressionOwnerKey,
+    source_key: SourceSymbolKey,
+    actor_context: bool,
     function: &'a FunctionDecl,
     expression_sources: &'a ExpressionSourceMap,
     pub(super) expression_keys: &'a BTreeMap<usize, ExpressionKey>,
     pub(super) resolved_targets: &'a ResolvedCallTargetFacts,
     pub(super) callable_effects: &'a SourceCallableEffectFacts,
-    pub(super) callable_profiles: &'a BTreeMap<SourceSymbolKey, CallableEffectProfile>,
+    callable_profiles: &'a BTreeMap<SourceSymbolKey, CallableEffectProfile>,
     pub(super) semantics: &'a mut SourceExecutionSemantics,
     diagnostics: &'a mut Vec<String>,
     all_local_names: BTreeSet<String>,
@@ -38,6 +40,8 @@ impl<'a> OwnerAnalyzer<'a> {
     pub(super) fn new(
         module_path: &'a str,
         owner: ExpressionOwnerKey,
+        source_key: SourceSymbolKey,
+        actor_context: bool,
         function: &'a FunctionDecl,
         expression_sources: &'a ExpressionSourceMap,
         expression_keys: &'a BTreeMap<usize, ExpressionKey>,
@@ -53,6 +57,8 @@ impl<'a> OwnerAnalyzer<'a> {
         Self {
             module_path,
             owner,
+            source_key,
+            actor_context,
             function,
             expression_sources,
             expression_keys,
@@ -75,6 +81,15 @@ impl<'a> OwnerAnalyzer<'a> {
             .collect::<Scope>();
         if self.function.implicit_self.is_some() {
             scope.insert("self".to_string(), BindingRoot::Outer);
+        }
+        if self.actor_context {
+            let banned = self
+                .callable_profiles
+                .get(&self.source_key)
+                .is_some_and(|profile| profile.uses_db_transaction);
+            if banned {
+                self.diagnostic("db transaction is not supported inside actor methods in v1");
+            }
         }
         self.validate_block(
             &self.function.body,
@@ -151,13 +166,11 @@ impl<'a> OwnerAnalyzer<'a> {
                 let mut nested = scope.clone();
                 self.validate_block(body, &mut nested, context);
             }
-            Stmt::Concurrent { body } => {
-                self.validate_concurrent(body, None, scope, context, false);
+            Stmt::Concurrent { .. } => {
+                self.diagnostic("concurrent is not supported in v1");
             }
-            Stmt::Serial { body } => {
-                self.diagnostic("serial is only legal as a direct concurrent lane");
-                let mut nested = scope.clone();
-                self.validate_block(body, &mut nested, context);
+            Stmt::Serial { .. } => {
+                self.diagnostic("serial is not supported in v1");
             }
             Stmt::If {
                 condition,
@@ -289,9 +302,9 @@ impl<'a> OwnerAnalyzer<'a> {
                     }
                 }
             }
-            Expr::ValueBlock(value) => self.validate_value_block(value, scope, context, false),
-            Expr::ConcurrentValue(value) => {
-                self.validate_concurrent(&value.body, Some(&value.tail), scope, context, true);
+            Expr::ValueBlock(value) => self.validate_value_block(value, scope, context),
+            Expr::ConcurrentValue(_) => {
+                self.diagnostic("concurrent value is not supported in v1");
             }
             Expr::Timeout { duration, value } => {
                 self.record_timeout(duration, true, self.expr_span(expression));
@@ -319,18 +332,7 @@ impl<'a> OwnerAnalyzer<'a> {
             }
             Expr::DbTransaction(transaction) => {
                 let mut nested = scope.clone();
-                if context.in_lane {
-                    for statement in &transaction.body.statements {
-                        self.validate_lane_stmt(
-                            statement,
-                            &mut nested,
-                            context,
-                            ConcurrentLaneKind::Statement,
-                        );
-                    }
-                } else {
-                    self.validate_block(&transaction.body, &mut nested, context);
-                }
+                self.validate_block(&transaction.body, &mut nested, context);
             }
             Expr::DbLeaseClaim(claim) => {
                 self.validate_expr(&claim.key, scope, context);
@@ -348,12 +350,7 @@ impl<'a> OwnerAnalyzer<'a> {
         value: &ValueBlock,
         scope: &Scope,
         context: ValidationContext,
-        concurrent: bool,
     ) {
-        if concurrent {
-            self.validate_concurrent(&value.body, Some(&value.tail), scope, context, true);
-            return;
-        }
         let mut nested = scope.clone();
         let value_context = ValidationContext {
             value_boundary: true,
@@ -401,36 +398,6 @@ impl<'a> OwnerAnalyzer<'a> {
             .and_then(|key| self.expression_sources.fact(key))
             .map(|fact| fact.span)
             .unwrap_or(self.function.span)
-    }
-
-    pub(super) fn expr_site(&self, expression: &Expr) -> ExecutionSourceSite {
-        ExecutionSourceSite {
-            module_path: self.module_path.to_string(),
-            owner: self.owner.clone(),
-            span: self.expr_span(expression),
-        }
-    }
-
-    pub(super) fn stmt_site(&self, statement: &Stmt) -> ExecutionSourceSite {
-        let span = match statement {
-            Stmt::Timeout { duration, .. } => duration.span,
-            _ => first_expression(statement)
-                .map(|expression| self.expr_span(expression))
-                .unwrap_or(self.function.span),
-        };
-        ExecutionSourceSite {
-            module_path: self.module_path.to_string(),
-            owner: self.owner.clone(),
-            span,
-        }
-    }
-
-    pub(super) fn owner_site(&self) -> ExecutionSourceSite {
-        ExecutionSourceSite {
-            module_path: self.module_path.to_string(),
-            owner: self.owner.clone(),
-            span: self.function.span,
-        }
     }
 
     pub(super) fn diagnostic(&mut self, message: impl Into<String>) {

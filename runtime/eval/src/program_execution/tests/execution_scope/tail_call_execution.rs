@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::sync::Arc;
 
 use skiff_artifact_model::{SourcePosition, SourceSpanRef};
@@ -240,7 +241,7 @@ impl TailEntryCheckpointFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.entry,
                 &self.file,
@@ -300,7 +301,7 @@ impl TailPressureFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.entry,
                 &self.file,
@@ -401,7 +402,7 @@ impl TailCallFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.caller,
                 &self.file,
@@ -423,7 +424,7 @@ impl TailCallFixture {
         self.interpreter
             .exec_program_block(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.caller,
                 &self.file,

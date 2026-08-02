@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::{BTreeMap, HashMap},
     future::Future,
@@ -159,7 +160,7 @@ impl LinkedTimeoutFixture {
             .interpreter
             .exec_program_executable(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.addr,
                 &self.file,

@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::BTreeMap,
     fs,
@@ -116,7 +117,7 @@ impl CanonicalNegativeFixture {
         interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut RequestHeap::default(),
+                &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
                 &self.entry_addr,
                 args,
             )
@@ -224,7 +225,7 @@ async fn assembly_tail_call_negative_service_target_keeps_real_boundary_dispatch
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             fixture.caller_addr(),
             Vec::new(),
         )

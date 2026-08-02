@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::BTreeMap,
     fs,
@@ -201,7 +202,12 @@ fn compiler_wrap_continues_through_file_ir_linking_and_eval() {
     let value = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("combined probe Tokio runtime")
-        .block_on(interpreter.execute_runtime_assembly_addr(context, &mut heap, &addr, Vec::new()))
+        .block_on(interpreter.execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &addr,
+            Vec::new(),
+        ))
         .expect("compiler-produced linked wrap should evaluate");
 
     assert_eq!(

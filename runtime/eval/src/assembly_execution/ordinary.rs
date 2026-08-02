@@ -4,7 +4,7 @@ use skiff_runtime_model::runtime_value::RuntimeValueCarrier;
 use crate::{error::Result, eval_context::EvalContext};
 
 pub(crate) async fn execute_package_direct(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: &LinkedPackageDirectCall,
     args: Vec<RuntimeValueCarrier>,

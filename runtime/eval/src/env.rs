@@ -9,26 +9,8 @@ use skiff_runtime_capability_context::SupervisedStreamConsumptionChild;
 use skiff_runtime_linked_program::LinkedExecutable;
 use skiff_runtime_model::{runtime_value::RuntimeValueCarrier, type_plan::RuntimeTypePlan};
 
-mod concurrent_plan;
-mod concurrent_scheduler;
-mod lane_control;
-mod lane_state;
 mod slot_store;
 
-#[cfg(test)]
-mod concurrent_scheduler_test_support;
-
-#[allow(unused_imports)]
-pub(crate) use concurrent_plan::{
-    project_concurrent_plan, ConcurrentPlan, ConcurrentPlanKind, LaneEvaluation, ProjectedLane,
-};
-#[allow(unused_imports)]
-pub(crate) use concurrent_scheduler::{
-    run_concurrent_scheduler, ConcurrentLaneExecutor, ConcurrentLaneFuture,
-    ConcurrentOuterExecution, ConcurrentSchedulerResult,
-};
-#[allow(unused_imports)]
-pub(crate) use lane_state::{LaneCompletion, LaneExecutionState};
 use slot_store::SlotStoreRollbackCheckpoint;
 use slot_store::{program_parameter_slot, program_slot_layout, RuntimeSlotLayout};
 pub use slot_store::{SlotDebugBinding, SlotStore};

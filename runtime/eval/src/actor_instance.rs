@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
@@ -14,8 +14,10 @@ use skiff_artifact_model::{
 };
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::{
-    json::RuntimeBoundaryCodec, plan::BoundaryUse, request_heap::RequestHeap,
-    runtime_value::RuntimeValue,
+    json::RuntimeBoundaryCodec,
+    plan::BoundaryUse,
+    request_heap::{deep_clone_runtime_values_between_heaps, RequestHeap, RequestHeapLimits},
+    runtime_value::{HeapNode, InterfaceCarrier, RuntimeValue},
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedFileUnit,
@@ -25,6 +27,8 @@ use skiff_runtime_linked_type_plan::{
     PlanContext, ProgramTypeView, RuntimeTypePlan, RuntimeTypePlanLinkedExt,
 };
 use thiserror::Error;
+
+use crate::error::RuntimeError;
 
 pub const ACTOR_BOOTSTRAP_ENCODING_V1: &str = "skiff-canonical-v1";
 
@@ -267,7 +271,6 @@ impl ActorInstanceHandle {
 struct ActorInstance {
     fence: ActorInstanceFence,
     state: Mutex<ActorInstanceState>,
-    scheduler: Arc<tokio::sync::Mutex<()>>,
     next_execution_token: AtomicU64,
     upgrading: AtomicBool,
     admitted: AtomicBool,
@@ -283,10 +286,31 @@ enum AdmissionWaitBeforePollTestAction {
     Discard,
 }
 
+/// The shared arena backing one Actor instance.
+///
+/// The arena is the instance scheduler: exactly one segment holds the guard at
+/// a time, and the guard must never survive a `Pending` poll (see
+/// `ActorExecutionFrame::await_if_pending`). Field roots in `ActorInstanceState`
+/// are handles into this arena.
+pub(crate) type SharedArena = Arc<tokio::sync::Mutex<RequestHeap>>;
+
 #[derive(Debug)]
 struct ActorInstanceState {
     fields: Vec<ActorFieldValue>,
-    heap: RequestHeap,
+    arena: SharedArena,
+    /// Epoch stamped into every handle allocated by `arena`. Compaction
+    /// replaces the arena with a fresh heap at epoch + 1 so stale handles fail
+    /// closed in `RequestHeap::slot`/`slot_mut`.
+    arena_epoch: u32,
+    /// Per-instance arena limits (nodes / bytes / depth).
+    limits: RequestHeapLimits,
+    /// Active segments currently holding (or about to hold) the arena guard.
+    active_segments: usize,
+    /// Continuations parked at a real suspension point.
+    suspended_segments: usize,
+    /// Discard was requested while a segment was in flight; the instance is
+    /// reclaimed once the last segment ends.
+    pending_discard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,32 +352,44 @@ impl ActorExecutorAuthority {
     }
 }
 
-/// One exclusive, rollback-capable execution snapshot.
+/// One actor method segment.
 ///
-/// The Tokio guard serializes only this incarnation. The field heap is cloned
-/// before execution so a failed method cannot leak partial mutations into the
-/// live instance.
-pub(crate) struct ActorInstanceExecutionLease {
-    instance: Arc<ActorInstance>,
-    _scheduler_guard: tokio::sync::OwnedMutexGuard<()>,
+/// Acquisition locks the instance arena, revalidates the instance fence and
+/// arena epoch, and increments the active continuation counter. Suspension
+/// moves the segment to the suspended counter; resume revalidates and moves it
+/// back. Commit and abandon release the segment with no fields/heap clone:
+/// field mutations were already applied directly to the shared arena.
+pub(crate) struct SegmentLease {
+    store: ActorInstanceStore,
+    handle: ActorInstanceHandle,
     token: Arc<ActorExecutionToken>,
-    fields: Arc<Mutex<Vec<ActorFieldValue>>>,
-    heap: Option<RequestHeap>,
+    arena: SharedArena,
+    guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
+    expected_epoch: u32,
+    state: SegmentState,
 }
 
-/// A fully detached Actor state image ready for atomic publication.
-///
-/// The executor constructs this from the persistent field roots in a fresh
-/// heap. Keeping the fields and heap inseparable prevents publishing handles
-/// that belong to a different request heap.
-pub(crate) struct ActorInstanceExecutionSnapshot {
-    fields: Vec<ActorFieldValue>,
-    heap: RequestHeap,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SegmentState {
+    Active,
+    Suspended,
+    Finished,
 }
 
-impl ActorInstanceExecutionSnapshot {
-    pub(crate) fn new(fields: Vec<ActorFieldValue>, heap: RequestHeap) -> Self {
-        Self { fields, heap }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SegmentStateError {
+    AlreadyFinished,
+    NotSuspended,
+    AlreadySuspended,
+}
+
+impl std::fmt::Display for SegmentStateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyFinished => formatter.write_str("Actor segment already finished"),
+            Self::NotSuspended => formatter.write_str("Actor segment is not suspended"),
+            Self::AlreadySuspended => formatter.write_str("Actor segment is already suspended"),
+        }
     }
 }
 
@@ -372,41 +408,62 @@ impl ActorExecutionToken {
     }
 }
 
-impl Drop for ActorInstanceExecutionLease {
+impl Drop for SegmentLease {
     fn drop(&mut self) {
-        self.token.active.store(false, Ordering::Release);
+        if self.state == SegmentState::Finished {
+            return;
+        }
+        let store = self.store.clone();
+        let handle = self.handle.clone();
+        store.abandon_segment(&handle, self);
     }
 }
 
-impl ActorInstanceExecutionLease {
+impl SegmentLease {
     pub(crate) fn instance_identity(&self) -> usize {
-        Arc::as_ptr(&self.instance) as usize
+        Arc::as_ptr(&self.handle.instance) as usize
     }
 
     pub(crate) fn token(&self) -> Arc<ActorExecutionToken> {
         Arc::clone(&self.token)
     }
 
-    pub(crate) fn fields(&self) -> Arc<Mutex<Vec<ActorFieldValue>>> {
-        Arc::clone(&self.fields)
+    pub(crate) fn arena(&self) -> &SharedArena {
+        &self.arena
     }
 
-    pub(crate) fn take_heap(&mut self) -> RequestHeap {
-        self.heap
+    pub(crate) fn expected_epoch(&self) -> u32 {
+        self.expected_epoch
+    }
+
+    pub(crate) fn is_suspended(&self) -> bool {
+        self.state == SegmentState::Suspended
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.state == SegmentState::Finished
+    }
+
+    pub(crate) fn take_guard(&mut self) -> tokio::sync::OwnedMutexGuard<RequestHeap> {
+        self.guard
             .take()
-            .expect("Actor execution heap may only be taken once")
+            .expect("Actor segment arena guard may only be taken once")
     }
 
     pub(crate) fn heap_mut(&mut self) -> &mut RequestHeap {
-        self.heap
+        self.guard
             .as_mut()
-            .expect("Actor execution heap is present until taken")
+            .expect("Actor segment arena guard is present until taken")
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ActorInstanceStore {
     state: Arc<Mutex<ActorInstanceStoreState>>,
+    /// Limits applied to arenas of instances materialized by this store.
+    /// Test-only overrides make the arena-limits and compaction thresholds
+    /// observable without changing the production default.
+    pub(crate) arena_limits: RequestHeapLimits,
 }
 
 #[derive(Debug, Default)]
@@ -1048,6 +1105,13 @@ impl ActorInstanceStore {
             if existing.upgrading.load(Ordering::Acquire) {
                 return Err(ActorInstanceStoreError::InstanceReplaced);
             }
+            let instance_state = existing
+                .state
+                .lock()
+                .expect("actor instance state lock poisoned");
+            if instance_state.pending_discard {
+                return Err(ActorInstanceStoreError::InstanceReplaced);
+            }
             return Ok((
                 ActorInstanceHandle {
                     fence: request.fence,
@@ -1060,13 +1124,8 @@ impl ActorInstanceStore {
         let declaration =
             resolve_actor_declaration(request.program, &request.fence.declaration_owner)?;
         validate_declaration_fence(declaration, &request.fence)?;
-        let materialized = materialize_instance(&request, declaration)?;
+        let materialized = materialize_instance(&request, declaration, &self.arena_limits)?;
         let instance = Arc::new(materialized.instance);
-        instance
-            .state
-            .lock()
-            .expect("actor instance state lock poisoned")
-            .heap = materialized.heap;
 
         state
             .latest_epochs
@@ -1097,9 +1156,10 @@ impl ActorInstanceStore {
 
     /// Closes this exact incarnation to continuation resume and activation reuse.
     ///
-    /// A synchronous segment that already owns an execution lease is allowed to
-    /// finish and commit. Once that segment reaches a real suspension point, its
-    /// next acquire observes this fence and exits instead of resuming.
+    /// Upgrade requires the instance to be quiescent (active and suspended
+    /// continuation counters both zero). Because every new segment revalidates
+    /// the upgrading fence after acquiring the arena, no segment can start
+    /// after this call succeeds.
     pub fn begin_upgrade_exact(&self, handle: &ActorInstanceHandle) -> bool {
         let state = self
             .state
@@ -1111,6 +1171,13 @@ impl ActorInstanceStore {
         if ensure_instance_fence(instance, &handle.fence).is_err()
             || !Arc::ptr_eq(instance, &handle.instance)
         {
+            return false;
+        }
+        let instance_state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        if instance_state.active_segments != 0 || instance_state.suspended_segments != 0 {
             return false;
         }
         instance.upgrading.store(true, Ordering::Release);
@@ -1126,15 +1193,20 @@ impl ActorInstanceStore {
             .state
             .lock()
             .expect("actor instance store lock poisoned");
-        let matches = state
-            .instances
-            .get(&handle.fence.incarnation)
-            .is_some_and(|instance| {
-                ensure_instance_fence(instance, &handle.fence).is_ok()
-                    && Arc::ptr_eq(instance, &handle.instance)
-                    && instance.upgrading.load(Ordering::Acquire)
-            });
-        if !matches {
+        let Some(instance) = state.instances.get(&handle.fence.incarnation).cloned() else {
+            return false;
+        };
+        if ensure_instance_fence(&instance, &handle.fence).is_err()
+            || !Arc::ptr_eq(&instance, &handle.instance)
+            || !instance.upgrading.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let instance_state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        if instance_state.active_segments != 0 || instance_state.suspended_segments != 0 {
             return false;
         }
         let Some(next_epoch) = handle.fence.incarnation.epoch.checked_add(1) else {
@@ -1155,7 +1227,9 @@ impl ActorInstanceStore {
     /// Both the complete Actor fence and the materialized instance identity
     /// must still match. This makes repeated or delayed disconnect cleanup
     /// harmless even when the same incarnation has since been materialized
-    /// again.
+    /// again. Removal requires quiescence: an instance with in-flight segments
+    /// is marked `pending_discard` instead and reclaimed by the segment that
+    /// brings the counters back to zero.
     pub fn discard_exact_batch(&self, handles: &[ActorInstanceHandle]) -> usize {
         let mut state = self
             .state
@@ -1163,17 +1237,24 @@ impl ActorInstanceStore {
             .expect("actor instance store lock poisoned");
         let mut removed = 0;
         for handle in handles {
-            let matches = state
-                .instances
-                .get(&handle.fence.incarnation)
-                .is_some_and(|instance| {
-                    ensure_instance_fence(instance, &handle.fence).is_ok()
-                        && Arc::ptr_eq(instance, &handle.instance)
-                });
-            if matches {
+            let Some(instance) = state.instances.get(&handle.fence.incarnation).cloned() else {
+                continue;
+            };
+            if ensure_instance_fence(&instance, &handle.fence).is_err()
+                || !Arc::ptr_eq(&instance, &handle.instance)
+            {
+                continue;
+            }
+            let mut instance_state = instance
+                .state
+                .lock()
+                .expect("actor instance state lock poisoned");
+            if instance_state.active_segments == 0 && instance_state.suspended_segments == 0 {
                 state.instances.remove(&handle.fence.incarnation);
                 handle.instance.admission_notify.notify_waiters();
                 removed += 1;
+            } else {
+                instance_state.pending_discard = true;
             }
         }
         removed
@@ -1193,7 +1274,9 @@ impl ActorInstanceStore {
 
     /// The later Actor executor enters field state through this exact-fence
     /// gate. The method is crate-private so ordinary host/request consumers
-    /// cannot turn an opaque handle into field access.
+    /// cannot turn an opaque handle into field access. The arena guard must be
+    /// quiescent (test helper; it fails fast instead of waiting on a live
+    /// segment).
     pub(crate) fn with_fields_for_executor<T>(
         &self,
         _authority: &ActorExecutorAuthority,
@@ -1229,75 +1312,137 @@ impl ActorInstanceStore {
             .state
             .lock()
             .expect("actor instance state lock poisoned");
-        let ActorInstanceState { fields, heap } = &mut *state;
-        Ok(operation(fields, heap))
+        let mut heap = state
+            .arena
+            .clone()
+            .try_lock_owned()
+            .expect("with_fields_for_executor requires a quiescent Actor arena");
+        Ok(operation(&mut state.fields, &mut heap))
     }
 
-    /// Waits for this exact incarnation's scheduler without holding a standard
-    /// mutex across the await, then revalidates every fence before snapshotting.
-    pub(crate) async fn acquire_execution(
+    /// Reads one field root (an arena handle or scalar) for the active segment.
+    pub(crate) fn field_root(
         &self,
-        _authority: &ActorExecutorAuthority,
         handle: &ActorInstanceHandle,
-    ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
-        let instance = self.wait_until_admitted(handle).await?;
-        let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
-        let instance = self.resolve_active_instance(handle)?;
+        field: &str,
+    ) -> Result<Option<ActorFieldValue>, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
         let state = instance
             .state
             .lock()
             .expect("actor instance state lock poisoned");
-        let nonce = instance
-            .next_execution_token
-            .fetch_add(1, Ordering::Relaxed);
-        let token = Arc::new(ActorExecutionToken {
-            nonce,
-            active: AtomicBool::new(true),
-        });
-        let fields = Arc::new(Mutex::new(state.fields.clone()));
-        let heap = state.heap.clone();
-        drop(state);
-        Ok(ActorInstanceExecutionLease {
-            instance,
-            _scheduler_guard: scheduler_guard,
-            token,
-            fields,
-            heap: Some(heap),
-        })
+        Ok(state
+            .fields
+            .iter()
+            .find(|candidate| candidate.name == field)
+            .cloned())
     }
 
-    /// Scheduler acquisition for the platform activation path (`create`).
+    /// Writes one field root directly into the shared arena (no wire roundtrip).
+    ///
+    /// Returns `Ok(false)` when the field is absent from the instance frame.
+    pub(crate) fn set_field_root(
+        &self,
+        handle: &ActorInstanceHandle,
+        field: &str,
+        value: RuntimeValue,
+    ) -> Result<bool, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let mut state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        let Some(target) = state
+            .fields
+            .iter_mut()
+            .find(|candidate| candidate.name == field)
+        else {
+            return Ok(false);
+        };
+        target.value = value;
+        target.assigned = true;
+        Ok(true)
+    }
+
+    /// Acquires one actor method segment.
+    ///
+    /// Waits for admission (ordinary methods), then locks the instance arena
+    /// and revalidates the instance fence, discard state and arena identity
+    /// after the lock. The returned lease holds the arena guard; the guard must
+    /// be released before any real `Pending` and reacquired after wake.
+    pub(crate) async fn acquire_segment(
+        &self,
+        _authority: &ActorExecutorAuthority,
+        handle: &ActorInstanceHandle,
+    ) -> Result<SegmentLease, ActorInstanceStoreError> {
+        let instance = self.wait_until_admitted(handle).await?;
+        self.acquire_segment_inner(instance, handle).await
+    }
+
+    /// Segment acquisition for the platform activation path (`create`).
     /// The instance is intentionally not admitted yet, so this path skips the
     /// admission gate that ordinary method execution waits on.
-    pub(crate) async fn acquire_execution_for_activation(
+    pub(crate) async fn acquire_segment_for_activation(
         &self,
         _authority: &ActorExecutorAuthority,
         handle: &ActorInstanceHandle,
-    ) -> Result<ActorInstanceExecutionLease, ActorInstanceStoreError> {
+    ) -> Result<SegmentLease, ActorInstanceStoreError> {
         let instance = self.resolve_active_instance(handle)?;
-        let scheduler_guard = Arc::clone(&instance.scheduler).lock_owned().await;
-        let instance = self.resolve_active_instance(handle)?;
-        let state = instance
-            .state
-            .lock()
-            .expect("actor instance state lock poisoned");
-        let nonce = instance
-            .next_execution_token
-            .fetch_add(1, Ordering::Relaxed);
-        let token = Arc::new(ActorExecutionToken {
-            nonce,
-            active: AtomicBool::new(true),
-        });
-        let fields = Arc::new(Mutex::new(state.fields.clone()));
-        let heap = state.heap.clone();
-        drop(state);
-        Ok(ActorInstanceExecutionLease {
-            instance,
-            _scheduler_guard: scheduler_guard,
-            token,
-            fields,
-            heap: Some(heap),
-        })
+        self.acquire_segment_inner(instance, handle).await
+    }
+
+    async fn acquire_segment_inner(
+        &self,
+        instance: Arc<ActorInstance>,
+        handle: &ActorInstanceHandle,
+    ) -> Result<SegmentLease, ActorInstanceStoreError> {
+        loop {
+            let (arena, epoch) = {
+                let state = instance
+                    .state
+                    .lock()
+                    .expect("actor instance state lock poisoned");
+                if state.pending_discard {
+                    return Err(ActorInstanceStoreError::InstanceReplaced);
+                }
+                (Arc::clone(&state.arena), state.arena_epoch)
+            };
+            let guard = arena.clone().lock_owned().await;
+            // Revalidate after acquiring the arena: the instance may have been
+            // upgraded, discarded, or compacted while this future waited.
+            let instance = self.resolve_active_instance(handle)?;
+            let mut state = instance
+                .state
+                .lock()
+                .expect("actor instance state lock poisoned");
+            if state.pending_discard {
+                return Err(ActorInstanceStoreError::InstanceReplaced);
+            }
+            if !Arc::ptr_eq(&state.arena, &arena) {
+                // A compaction swapped the arena between our snapshot and the
+                // lock; retry against the current arena.
+                drop(state);
+                continue;
+            }
+            debug_assert_eq!(state.arena_epoch, epoch);
+            let nonce = instance
+                .next_execution_token
+                .fetch_add(1, Ordering::Relaxed);
+            let token = Arc::new(ActorExecutionToken {
+                nonce,
+                active: AtomicBool::new(true),
+            });
+            state.active_segments += 1;
+            return Ok(SegmentLease {
+                store: self.clone(),
+                handle: handle.clone(),
+                token,
+                arena,
+                guard: Some(guard),
+                expected_epoch: epoch,
+                state: SegmentState::Active,
+            });
+        }
     }
 
     async fn wait_until_admitted(
@@ -1378,46 +1523,151 @@ impl ActorInstanceStore {
         Ok(())
     }
 
-    pub(crate) fn commit_execution(
+    /// Commits an active (or resumed) segment.
+    ///
+    /// Field mutations are already live in the shared arena; commit only
+    /// revalidates the instance fence and arena epoch, retires the execution
+    /// token and releases the continuation counter. A segment that hits a
+    /// discard fence still ends (counters are released and a pending discard is
+    /// reclaimed) but surfaces the replacement error.
+    pub(crate) fn commit_segment(
         &self,
         handle: &ActorInstanceHandle,
-        lease: ActorInstanceExecutionLease,
-        snapshot: ActorInstanceExecutionSnapshot,
+        lease: &mut SegmentLease,
     ) -> Result<(), ActorInstanceStoreError> {
-        let current = self.current_instance_for_execution_lease(handle, &lease)?;
+        if lease.is_finished() {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        let current = self.current_instance_for_execution_lease(handle, lease)?;
         let mut state = current
             .state
             .lock()
             .expect("actor instance state lock poisoned");
-        state.fields = snapshot.fields;
-        state.heap = snapshot.heap;
+        let result = if state.pending_discard {
+            Err(ActorInstanceStoreError::InstanceReplaced)
+        } else if lease.expected_epoch() != state.arena_epoch {
+            Err(ActorInstanceStoreError::InstanceReplaced)
+        } else {
+            Ok(())
+        };
+        match lease.state {
+            SegmentState::Active => {
+                debug_assert!(state.active_segments > 0);
+                state.active_segments = state.active_segments.saturating_sub(1);
+            }
+            SegmentState::Suspended => {
+                debug_assert!(state.suspended_segments > 0);
+                state.suspended_segments = state.suspended_segments.saturating_sub(1);
+            }
+            SegmentState::Finished => {}
+        }
         lease.token.active.store(false, Ordering::Release);
+        lease.state = SegmentState::Finished;
+        let reclaim =
+            state.active_segments == 0 && state.suspended_segments == 0 && state.pending_discard;
+        drop(state);
+        if reclaim {
+            let _ = self.discard_exact(handle);
+        }
+        result
+    }
+
+    /// Moves an active segment into the suspended counter at a real `Pending`.
+    pub(crate) fn suspend_segment(
+        &self,
+        handle: &ActorInstanceHandle,
+        lease: &mut SegmentLease,
+    ) -> Result<(), ActorInstanceStoreError> {
+        if lease.is_finished() {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        if lease.is_suspended() {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        let current = self.current_instance_for_execution_lease(handle, lease)?;
+        let mut state = current
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        debug_assert!(state.active_segments > 0);
+        state.active_segments = state.active_segments.saturating_sub(1);
+        state.suspended_segments += 1;
+        lease.state = SegmentState::Suspended;
         Ok(())
     }
 
-    /// Revalidates that an installed execution lease still belongs to the
-    /// exact instance currently published under `handle`.
-    ///
-    /// Token liveness alone is insufficient: same-epoch discard and
-    /// re-materialization can leave the old lease active while the store points
-    /// at a different `Arc<ActorInstance>`.
-    pub(crate) fn validate_current_execution_lease(
+    /// Revalidates a resumed segment (after the arena guard was reacquired)
+    /// and moves it back into the active counter.
+    pub(crate) fn resume_segment(
         &self,
         handle: &ActorInstanceHandle,
-        lease: &ActorInstanceExecutionLease,
+        lease: &mut SegmentLease,
     ) -> Result<(), ActorInstanceStoreError> {
-        self.current_instance_for_execution_lease(handle, lease)
-            .map(|_| ())
+        if lease.is_finished() {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        if !lease.is_suspended() {
+            return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
+        }
+        let current = self.current_instance_for_execution_lease(handle, lease)?;
+        let mut state = current
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        if state.pending_discard {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        if lease.expected_epoch() != state.arena_epoch {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        debug_assert!(state.suspended_segments > 0);
+        state.suspended_segments = state.suspended_segments.saturating_sub(1);
+        state.active_segments += 1;
+        lease.state = SegmentState::Active;
+        Ok(())
+    }
+
+    /// Releases a segment that ended without commit (error path or drop).
+    ///
+    /// Already-executed field mutations stay in the shared arena (design §3.4);
+    /// only the continuation counters are released. If a discard was pending,
+    /// the instance is reclaimed once the last segment ends.
+    pub(crate) fn abandon_segment(&self, handle: &ActorInstanceHandle, lease: &mut SegmentLease) {
+        if lease.is_finished() {
+            return;
+        }
+        let instance = &lease.handle.instance;
+        let mut state = instance
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match lease.state {
+            SegmentState::Active => {
+                state.active_segments = state.active_segments.saturating_sub(1);
+            }
+            SegmentState::Suspended => {
+                state.suspended_segments = state.suspended_segments.saturating_sub(1);
+            }
+            SegmentState::Finished => {}
+        }
+        lease.token.active.store(false, Ordering::Release);
+        lease.state = SegmentState::Finished;
+        let reclaim =
+            state.active_segments == 0 && state.suspended_segments == 0 && state.pending_discard;
+        drop(state);
+        if reclaim {
+            let _ = self.discard_exact(handle);
+        }
     }
 
     fn current_instance_for_execution_lease(
         &self,
         handle: &ActorInstanceHandle,
-        lease: &ActorInstanceExecutionLease,
+        lease: &SegmentLease,
     ) -> Result<Arc<ActorInstance>, ActorInstanceStoreError> {
         lease.token.ensure_active()?;
         let current = self.resolve_current_instance(handle)?;
-        if !Arc::ptr_eq(&current, &lease.instance) {
+        if !Arc::ptr_eq(&current, &lease.handle.instance) {
             return Err(ActorInstanceStoreError::InstanceReplaced);
         }
         // The nonce is private and monotonically issued by this instance. This
@@ -1483,6 +1733,193 @@ impl ActorInstanceStore {
         instance.admission_notify.notify_waiters();
         Ok(())
     }
+
+    /// Whole-arena replacement at quiescence.
+    ///
+    /// When the active and suspended continuation counters are both zero, no
+    /// upgrade or discard is pending, and the arena exceeds its compaction
+    /// threshold, the live field roots are cloned as one graph into a fresh
+    /// arena at epoch + 1 and the store arena is swapped atomically under the
+    /// instance state lock. Dead invocation nodes are dropped; old handles fail
+    /// closed because their epoch no longer matches the arena.
+    pub(crate) async fn compact_if_quiescent(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<bool, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let (arena, limits) = {
+            let state = instance
+                .state
+                .lock()
+                .expect("actor instance state lock poisoned");
+            if !quiescent_for_replacement(&state) || instance.upgrading.load(Ordering::Acquire) {
+                return Ok(false);
+            }
+            (Arc::clone(&state.arena), state.limits.clone())
+        };
+        let guard = arena.clone().lock_owned().await;
+        let compact_threshold = (limits.max_nodes / 2).max(1);
+        if guard.len() < compact_threshold {
+            return Ok(false);
+        }
+        // Revalidate quiescence and arena identity after the arena lock.
+        let current = self.resolve_current_instance(handle)?;
+        if !Arc::ptr_eq(&current, &instance) {
+            return Ok(false);
+        }
+        let (mut fields, old_epoch) = {
+            let state = current
+                .state
+                .lock()
+                .expect("actor instance state lock poisoned");
+            if !quiescent_for_replacement(&state)
+                || current.upgrading.load(Ordering::Acquire)
+                || !Arc::ptr_eq(&state.arena, &arena)
+            {
+                return Ok(false);
+            }
+            (state.fields.clone(), state.arena_epoch)
+        };
+        let new_epoch =
+            old_epoch
+                .checked_add(1)
+                .ok_or_else(|| ActorInstanceStoreError::CompactionFailed {
+                    message: "Actor arena epoch space exhausted".to_string(),
+                })?;
+        let roots = fields
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>();
+        reject_request_scoped_actor_field_values(&roots, &guard).map_err(|error| {
+            ActorInstanceStoreError::CompactionFailed {
+                message: error.to_string(),
+            }
+        })?;
+        let mut fresh = RequestHeap::new_with_epoch(new_epoch, limits.clone());
+        let cloned = deep_clone_runtime_values_between_heaps(&guard, &mut fresh, &roots).map_err(
+            |error| ActorInstanceStoreError::CompactionFailed {
+                message: error.to_string(),
+            },
+        )?;
+        for (field, value) in fields.iter_mut().zip(cloned) {
+            field.value = value;
+        }
+        let mut state = current
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        if !quiescent_for_replacement(&state)
+            || current.upgrading.load(Ordering::Acquire)
+            || !Arc::ptr_eq(&state.arena, &arena)
+        {
+            return Ok(false);
+        }
+        state.fields = fields;
+        state.arena = Arc::new(tokio::sync::Mutex::new(fresh));
+        state.arena_epoch = new_epoch;
+        Ok(true)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn arena_epoch_for_test(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<u32, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        Ok(state.arena_epoch)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn arena_ptr_for_test(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<usize, ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        Ok(Arc::as_ptr(&state.arena) as usize)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn segment_counters_for_test(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<(usize, usize), ActorInstanceStoreError> {
+        let instance = self.resolve_current_instance(handle)?;
+        let state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        Ok((state.active_segments, state.suspended_segments))
+    }
+}
+
+fn quiescent_for_replacement(state: &ActorInstanceState) -> bool {
+    state.active_segments == 0 && state.suspended_segments == 0 && !state.pending_discard
+}
+
+/// Request-scoped values cannot enter persistent Actor state (design §3.5).
+///
+/// Validation runs on the field write path and again during compaction root
+/// collection. Callback capabilities and request-local exceptions are
+/// rejected; stream-typed fields are rejected separately on the write path by
+/// the linked type plan.
+pub(crate) fn reject_request_scoped_actor_field_values(
+    roots: &[RuntimeValue],
+    heap: &RequestHeap,
+) -> Result<(), RuntimeError> {
+    let mut visited = HashSet::new();
+    let mut pending = roots.iter().map(|root| (root, 0_usize)).collect::<Vec<_>>();
+    while let Some((value, depth)) = pending.pop() {
+        if depth > heap.limits().max_clone_depth {
+            return Err(RuntimeError::ResourceLimitExceeded {
+                resource: "requestHeap".to_string(),
+                reason: "max persistent Actor graph depth".to_string(),
+                limit: heap.limits().max_clone_depth,
+                current: depth,
+                requested_delta: depth.saturating_sub(heap.limits().max_clone_depth),
+            });
+        }
+        let RuntimeValue::Heap(handle) = value else {
+            continue;
+        };
+        if !visited.insert(*handle) {
+            continue;
+        }
+        match heap.get(*handle)? {
+            HeapNode::Bytes(_) => {}
+            HeapNode::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Object(object) => {
+                pending.extend(object.fields().values().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Map(map) => {
+                pending.extend(map.values().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Interface(interface) => match interface.carrier() {
+                InterfaceCarrier::Local { payload, .. } => pending.push((payload, depth + 1)),
+                InterfaceCarrier::CallbackCapability(_) => {
+                    return Err(RuntimeError::Decode(
+                        "request-scoped callback capability cannot enter persistent Actor state"
+                            .to_string(),
+                    ));
+                }
+            },
+            HeapNode::Exception(_) => {
+                return Err(RuntimeError::Decode(
+                    "request-local exception cannot enter persistent Actor state".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_instance_fence(
@@ -1498,12 +1935,12 @@ fn ensure_instance_fence(
 
 struct MaterializedActorInstance {
     instance: ActorInstance,
-    heap: RequestHeap,
 }
 
 fn materialize_instance(
     request: &ActorActivationRequest<'_>,
     declaration: &LinkedActorDeclaration,
+    limits: &RequestHeapLimits,
 ) -> Result<MaterializedActorInstance, ActorInstanceStoreError> {
     if request.bootstrap_encoding_version != ACTOR_BOOTSTRAP_ENCODING_V1 {
         return Err(ActorInstanceStoreError::UnsupportedBootstrapEncoding {
@@ -1536,7 +1973,7 @@ fn materialize_instance(
         executable: 0,
     };
     let context = PlanContext::from_type_view(request.program, &current_addr);
-    let mut heap = RequestHeap::default();
+    let mut heap = RequestHeap::new_with_epoch(0, limits.clone());
     let mut fields = Vec::with_capacity(declaration.fields.len());
     for field in &declaration.fields {
         if field.encoding != ActorFieldEncodingIr::CanonicalValueV1 {
@@ -1582,9 +2019,13 @@ fn materialize_instance(
             fence: request.fence.clone(),
             state: Mutex::new(ActorInstanceState {
                 fields,
-                heap: RequestHeap::default(),
+                arena: Arc::new(tokio::sync::Mutex::new(heap)),
+                arena_epoch: 0,
+                limits: limits.clone(),
+                active_segments: 0,
+                suspended_segments: 0,
+                pending_discard: false,
             }),
-            scheduler: Arc::new(tokio::sync::Mutex::new(())),
             next_execution_token: AtomicU64::new(1),
             upgrading: AtomicBool::new(false),
             admitted: AtomicBool::new(false),
@@ -1592,7 +2033,6 @@ fn materialize_instance(
             #[cfg(test)]
             admission_wait_before_poll_action: Mutex::new(None),
         },
-        heap,
     })
 }
 
@@ -1704,6 +2144,8 @@ pub enum ActorInstanceStoreError {
     ExecutionTokenExpired,
     #[error("Actor execution token is invalid for this instance")]
     ExecutionTokenInvalid,
+    #[error("Actor arena compaction failed: {message}")]
+    CompactionFailed { message: String },
 }
 
 #[cfg(test)]

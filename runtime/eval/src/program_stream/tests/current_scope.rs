@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -26,13 +27,12 @@ use skiff_runtime_linked_program::{
     BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable, FileDeclarations,
     FileLinkTargets, LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner,
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedStmtIr, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
-    ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    LinkedStmtIr, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceSymbolRef,
+    SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::RuntimeValue,
-    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::*;
@@ -372,26 +372,20 @@ impl ActorFrameFixture {
         Self { store, handle }
     }
 
-    async fn frame(&self) -> (ActorExecutionFrame, RequestHeap) {
+    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess<'static>) {
         let authority = ActorExecutorAuthority::new();
-        let mut lease = self
+        let mut segment = self
             .store
-            .acquire_execution(&authority, &self.handle)
+            .acquire_segment(&authority, &self.handle)
             .await
             .expect("acquire stream Actor");
-        let heap = lease.take_heap();
+        let access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
+        };
         (
-            ActorExecutionFrame::new(
-                self.store.clone(),
-                self.handle.clone(),
-                lease,
-                vec![(
-                    "id".to_string(),
-                    RuntimeTypePlan::new("string", None, RuntimeTypeNode::String),
-                )],
-                false,
-            ),
-            heap,
+            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
+            access,
         )
     }
 }
@@ -544,10 +538,11 @@ fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait
     let addr = ExecutableAddr::service(0, 0);
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let stream_value = json!({"$stream": "f445h-e4r-pending"});
     let future = interpreter.exec_program_stream_for_in(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &addr,
         &file,
@@ -617,7 +612,7 @@ async fn f445h_e4r_stream_for_in_natural_end_is_the_only_disarmed_terminal() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &mut Env::new(),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -651,7 +646,7 @@ async fn f445h_e4r_stream_for_in_break_initiates_local_cleanup_once() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -680,7 +675,7 @@ async fn f445h_e4r_stream_for_in_return_initiates_local_cleanup_once() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -714,7 +709,7 @@ async fn f445h_e4r_stream_for_in_ordinary_error_initiates_local_cleanup_once() {
     let error = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -763,7 +758,7 @@ async fn tail_call_negative_stream_real_consumer_barrier_uses_ordinary_call_and_
     let error = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -798,9 +793,10 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
     let addr = ExecutableAddr::service(0, 0);
     let checkpoint = heap.checkpoint();
     let stats = heap.stats();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &addr,
         &file,
@@ -842,9 +838,10 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
     let context = scoped_context(&interpreter, runtime, test_runtime::execution_control());
     let mut error_heap = RequestHeap::default();
     let mut error_env = Env::new();
+    let mut error_access = HeapAccess::Exclusive(&mut error_heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
-        &mut error_heap,
+        &mut error_access,
         &mut error_env,
         &addr,
         &file,
@@ -886,9 +883,10 @@ fn f445h_e4r_stream_for_in_ancestor_cancel_wins_equal_expired_deadline() {
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
     let addr = ExecutableAddr::service(0, 0);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &addr,
         &file,
@@ -914,9 +912,9 @@ fn f445h_e4r_stream_for_in_ancestor_cancel_wins_equal_expired_deadline() {
 #[tokio::test]
 async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
     let actor = ActorFrameFixture::new();
-    let (frame, mut heap) = actor.frame().await;
+    let (frame, mut access) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
-    let mut competitor = Box::pin(actor.store.acquire_execution(&authority, &actor.handle));
+    let mut competitor = Box::pin(actor.store.acquire_segment(&authority, &actor.handle));
     let waker = Waker::from(Arc::new(NoopWake));
     let mut poll_context = std::task::Context::from_waker(&waker);
     assert!(competitor.as_mut().poll(&mut poll_context).is_pending());
@@ -931,7 +929,7 @@ async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
     let flow = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut heap,
+            &mut access,
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -957,7 +955,7 @@ async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
         "break remains a non-End cleanup path"
     );
     drop(competitor);
-    frame.finish(heap).expect("finish stream Actor segment");
+    frame.finish().expect("finish stream Actor segment");
 }
 
 #[test]
@@ -975,9 +973,10 @@ fn f445h_e4r_stream_for_in_buffered_ready_then_pending_observes_lease_child_scop
     let mut heap = RequestHeap::default();
     let mut env = Env::for_program_executable(&executable, None, 0).expect("loop env");
     let addr = ExecutableAddr::service(0, 0);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &addr,
         &file,

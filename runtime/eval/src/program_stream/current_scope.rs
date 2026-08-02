@@ -4,16 +4,16 @@ use serde_json::Value;
 use skiff_runtime_capability_context::{
     ExecutionScope, StreamCancelSignal, StreamPoll, StreamRuntime, StreamRuntimeResult,
 };
-use skiff_runtime_model::request_heap::RequestHeap;
 
 use crate::{
     error::{Result, RuntimeError, ScopeTerminalCarrier},
+    heap_access::{await_shared_with_release, HeapAccess},
     program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind, ProgramExecutionContext},
 };
 
 pub(super) async fn next_with_actor(
     context: &ProgramExecutionContext<'_>,
-    heap: &mut RequestHeap,
+    heap: &mut HeapAccess<'_>,
     runtime: &StreamRuntime,
     stream: &Value,
     stream_signals: &[StreamCancelSignal],
@@ -31,6 +31,7 @@ pub(super) async fn next_with_actor(
                 .await_if_pending(heap, &context.execution(), next)
                 .await??
         }
+        None if heap.is_shared() => await_shared_with_release(heap, next).await?,
         None => next.await?,
     };
     checkpoint(context, 0)?;

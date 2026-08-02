@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -8,39 +7,42 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use skiff_runtime_capability_context::DbCapabilityContext;
-use skiff_runtime_linked_program::ServiceMeta;
-use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
-use skiff_runtime_model::{
-    request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::RuntimeValue,
-};
+use skiff_runtime_model::{request_heap::RequestHeapLimits, runtime_value::RuntimeValue};
 
 use crate::{
     actor_executor::ActorExecutionFrame,
     actor_executor_test_runtime as test_runtime,
     actor_instance::{
         ActorActivationRequest, ActorExecutorAuthority, ActorIncarnationKey, ActorInstanceFence,
-        ActorInstanceHandle, ActorInstanceStore, ActorLogicalKey, ACTOR_BOOTSTRAP_ENCODING_V1,
+        ActorInstanceHandle, ActorInstanceStore, ActorLogicalKey, SegmentLease,
+        ACTOR_BOOTSTRAP_ENCODING_V1,
     },
     capabilities::TimeCapabilityContext,
+    heap_access::HeapAccess,
     program_execution::{ProgramExecutionContext, ProgramExecutionInput},
 };
 
 use super::{
-    actor_abi, actor_implementation, actor_owner, integer_type, FakeDbContext, FakeDbState,
-    LinkedDbActorFixture, ACTOR_SERVICE_ID, ACTOR_TYPE_ID,
+    actor_abi, actor_implementation, actor_owner, FakeDbContext, FakeDbState, LinkedDbActorFixture,
+    ACTOR_SERVICE_ID, ACTOR_TYPE_ID,
 };
 
 pub(in crate::program_db::tests) struct ActorFixture {
     pub store: ActorInstanceStore,
     pub handle: ActorInstanceHandle,
-    field_plan: RuntimeTypePlan,
-    id_field_plan: RuntimeTypePlan,
 }
 
 impl ActorFixture {
     fn new(linked: &LinkedDbActorFixture) -> Self {
-        let store = ActorInstanceStore::new();
+        Self::new_with_arena_limits(linked, RequestHeapLimits::default())
+    }
+
+    fn new_with_arena_limits(
+        linked: &LinkedDbActorFixture,
+        arena_limits: RequestHeapLimits,
+    ) -> Self {
+        let mut store = ActorInstanceStore::new();
+        store.arena_limits = arena_limits;
         let actor_id_bytes = br#""fixture-1""#.to_vec();
         let handle = store
             .activate(ActorActivationRequest {
@@ -79,91 +81,39 @@ impl ActorFixture {
         store
             .mark_admitted(&ActorExecutorAuthority::new(), &handle)
             .expect("DB/Actor fixture instance must be admitted");
-        let field_plan = RuntimeTypePlan::from_linked(
-            &integer_type(),
-            &PlanContext::from_type_view(linked.program.projection().type_view(), &linked.addr),
-        )
-        .expect("DB/Actor fixture field plan");
-        let id_field_plan = RuntimeTypePlan::from_linked(
-            &skiff_runtime_linked_program::LinkedTypeRef::Native {
-                name: "string".to_string(),
-                args: Vec::new(),
-            },
-            &PlanContext::from_type_view(linked.program.projection().type_view(), &linked.addr),
-        )
-        .expect("DB/Actor fixture id field plan");
-        Self {
-            store,
-            handle,
-            field_plan,
-            id_field_plan,
-        }
+        Self { store, handle }
     }
 
     pub(in crate::program_db::tests) async fn execution_frame(
         &self,
-    ) -> (ActorExecutionFrame, RequestHeap) {
+    ) -> (ActorExecutionFrame, HeapAccess<'static>) {
         let authority = ActorExecutorAuthority::new();
-        let mut lease = self
+        let mut segment = self
             .store
-            .acquire_execution(&authority, &self.handle)
+            .acquire_segment(&authority, &self.handle)
             .await
-            .expect("DB/Actor fixture execution lease");
-        let heap = lease.take_heap();
+            .expect("DB/Actor fixture execution segment");
+        let access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
+        };
         (
-            ActorExecutionFrame::new(
-                self.store.clone(),
-                self.handle.clone(),
-                lease,
-                vec![
-                    ("id".to_string(), self.id_field_plan.clone()),
-                    ("count".to_string(), self.field_plan.clone()),
-                    ("mirror".to_string(), self.field_plan.clone()),
-                ],
-                false,
-            ),
-            heap,
+            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
+            access,
         )
     }
 
     pub(in crate::program_db::tests) fn competing_acquire(
         &self,
-    ) -> impl Future<
-        Output = Result<
-            crate::actor_instance::ActorInstanceExecutionLease,
-            crate::actor_instance::ActorInstanceStoreError,
-        >,
-    > + Send
+    ) -> impl Future<Output = Result<SegmentLease, crate::actor_instance::ActorInstanceStoreError>>
+           + Send
            + 'static {
         let store = self.store.clone();
         let handle = self.handle.clone();
         async move {
             let authority = ActorExecutorAuthority::new();
-            store.acquire_execution(&authority, &handle).await
+            store.acquire_segment(&authority, &handle).await
         }
-    }
-
-    pub(in crate::program_db::tests) fn replace_same_epoch_while_leased(
-        &self,
-        linked: &LinkedDbActorFixture,
-    ) -> ActorInstanceHandle {
-        assert!(
-            self.store.discard_exact(&self.handle),
-            "fixture must discard the exact leased instance"
-        );
-        let replacement = self
-            .store
-            .activate(ActorActivationRequest {
-                fence: self.handle.fence().clone(),
-                bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: br#"[]"#,
-                program: linked.program.projection().type_view(),
-            })
-            .expect("same-epoch fixture replacement");
-        self.store
-            .mark_admitted(&ActorExecutorAuthority::new(), &replacement)
-            .expect("same-epoch replacement admission");
-        replacement
     }
 }
 
@@ -176,8 +126,15 @@ pub(in crate::program_db::tests) struct DbActorFixture {
 
 impl DbActorFixture {
     pub(in crate::program_db::tests) fn new(state: Arc<FakeDbState>) -> Self {
+        Self::new_with_arena_limits(state, RequestHeapLimits::default())
+    }
+
+    pub(in crate::program_db::tests) fn new_with_arena_limits(
+        state: Arc<FakeDbState>,
+        arena_limits: RequestHeapLimits,
+    ) -> Self {
         let linked = LinkedDbActorFixture::new();
-        let actor = ActorFixture::new(&linked);
+        let actor = ActorFixture::new_with_arena_limits(&linked, arena_limits);
         let db = FakeDbContext::new(Arc::clone(&state));
         Self {
             state,
@@ -191,26 +148,31 @@ impl DbActorFixture {
         &self,
         frame: ActorExecutionFrame,
     ) -> ProgramExecutionContext<'static> {
-        self.context_with_request(frame, test_runtime::request_context())
+        self.context_with_request(Some(frame), test_runtime::request_context())
     }
 
-    pub(in crate::program_db::tests) fn context_with_trace(
+    pub(in crate::program_db::tests) fn ordinary_context(
         &self,
-        frame: ActorExecutionFrame,
+    ) -> ProgramExecutionContext<'static> {
+        self.context_with_request(None, test_runtime::request_context())
+    }
+
+    pub(in crate::program_db::tests) fn ordinary_context_with_trace(
+        &self,
         trace_id: &'static str,
     ) -> ProgramExecutionContext<'static> {
-        self.context_with_request(frame, test_runtime::request_context_with_trace(trace_id))
+        self.context_with_request(None, test_runtime::request_context_with_trace(trace_id))
     }
 
     fn context_with_request(
         &self,
-        frame: ActorExecutionFrame,
+        frame: Option<ActorExecutionFrame>,
         request: skiff_runtime_capability_context::RequestCapabilityContext<'static>,
     ) -> ProgramExecutionContext<'static> {
         let execution = test_runtime::execution_control();
         let effects = test_runtime::effects_context();
         let actor = test_runtime::actor_context();
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let mut context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: test_runtime::config_context(),
             db: DbCapabilityContext::new(self.db.clone()),
@@ -230,8 +192,11 @@ impl DbActorFixture {
             actor: actor.clone(),
             request,
             request_heap_limits: RequestHeapLimits::default(),
-        })
-        .with_actor_execution_frame(frame)
+        });
+        if let Some(frame) = frame {
+            context = context.with_actor_execution_frame(frame);
+        }
+        context
     }
 }
 

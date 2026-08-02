@@ -50,6 +50,7 @@ use crate::{
     env::Env,
     error::{is_deadline_or_scope_terminal, stream_runtime_error_from_eval, Result, RuntimeError},
     eval_context::EvalContext,
+    heap_access::HeapAccess,
     program_execution::{
         ExecutionCheckpoint, ExecutionCheckpointKind, OwnedProgramExecutionContext,
         ProgramExecutionContext,
@@ -74,7 +75,7 @@ pub(crate) fn provider_stream_tasks_active_for_test() -> usize {
 }
 
 pub(crate) async fn execute_service_call(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -162,7 +163,7 @@ where
 }
 
 fn start_provider_stream(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -220,8 +221,12 @@ fn start_provider_stream(
 
     let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
     let hooks = CallbackNativeCapabilityHooks::new(&context.context);
-    let provider_args =
-        boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &hooks)?;
+    let provider_args = boundary.materialize_parameters(
+        &args,
+        context.heap.heap_mut(),
+        &mut provider_heap,
+        &hooks,
+    )?;
     let mut provider_context = provider_execution_context(&context.context, &target)?;
     let provider_stream_item_type = provider_stream_item_execution_plan(
         context.interpreter,
@@ -248,7 +253,7 @@ fn start_provider_stream(
         execution: execution.clone(),
         request: request.clone(),
     });
-    let receiver_value = match runtime_from_wire(&stream_value, context.heap) {
+    let receiver_value = match runtime_from_wire(&stream_value, context.heap.heap_mut()) {
         Ok(value) => value,
         Err(error) => {
             stream_runtime.cancel(&stream_value);
@@ -256,11 +261,14 @@ fn start_provider_stream(
         }
     };
 
-    let mut producer_env = context.env.clone();
-    producer_env.stream_sink = Some(sink.clone());
-    // This plan only serializes the provider File-IR value passed to `emit`. BoundaryStreamSink
-    // remains the semantic owner and applies the canonical contract plan before publication.
-    producer_env.current_stream_item_type = provider_stream_item_type;
+    let producer_env = provider_stream_producer_env(
+        context.env,
+        sink.clone(),
+        // This plan only serializes the provider File-IR value passed to `emit`.
+        // BoundaryStreamSink remains the semantic owner and applies the
+        // canonical contract plan before publication.
+        provider_stream_item_type,
+    );
     let producer = ProviderStreamTask {
         interpreter: context.interpreter.clone_for_stream_producer(),
         provider_context: owned_provider,
@@ -324,6 +332,21 @@ fn provider_stream_item_execution_plan(
         .map(Some)
 }
 
+/// Builds the detached provider-stream task env. Only owned call-site
+/// capabilities and type substitutions are copied (same rule as the unary
+/// path); caller slots/self may contain heap handles and must never reach the
+/// spawned provider task.
+fn provider_stream_producer_env(
+    caller: &Env,
+    sink: StreamSink,
+    item_type: Option<RuntimeTypePlan>,
+) -> Env {
+    let mut producer_env = prepared_unary::detached_provider_invocation_env(caller);
+    producer_env.stream_sink = Some(sink);
+    producer_env.current_stream_item_type = item_type;
+    producer_env
+}
+
 struct ProviderStreamTask {
     interpreter: crate::Interpreter,
     provider_context: Arc<OwnedProgramExecutionContext>,
@@ -367,10 +390,11 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
         if let Some(probe) = &producer.depth_probe {
             probe.record_callable_entry(&provider_context);
         }
+        let mut provider_access = HeapAccess::Exclusive(&mut producer.provider_heap);
         let provider_future = call_provider_callable(
             &producer.interpreter,
             provider_context,
-            &mut producer.provider_heap,
+            &mut provider_access,
             &producer.provider_env,
             &producer.caller_addr,
             &producer.provider_addr,
@@ -393,7 +417,7 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
 fn call_provider_callable<'call, 'ctx>(
     interpreter: &'call crate::Interpreter,
     context: ProgramExecutionContext<'ctx>,
-    heap: &'call mut RequestHeap,
+    heap: &'call mut HeapAccess<'call>,
     env: &'call Env,
     caller_addr: &'call ExecutableAddr,
     provider_addr: &'call ExecutableAddr,

@@ -22,16 +22,16 @@ mod prepared_operation;
 pub(crate) use prepared_operation::PreparedActorMethodInvocation;
 
 pub(crate) async fn dispatch_actor_method(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     plan: &LinkedActorMethodDispatchPlan,
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<RuntimeValueCarrier> {
     let prepared = prepare_actor_method(context, plan, values)?;
-    prepared.into_wait().await.finalize(context.heap)
+    prepared.into_wait().await.finalize(context.heap.heap_mut())
 }
 
 pub(crate) fn prepare_actor_method(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     plan: &LinkedActorMethodDispatchPlan,
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<PreparedActorMethodInvocation> {
@@ -84,7 +84,7 @@ pub(crate) fn prepare_actor_method(
                 BoundaryUse::NativeArg,
                 format!("Actor argument {index}"),
             )
-            .to_wire_json(value.value(), context.heap)
+            .to_wire_json(value.value(), context.heap.heap_mut())
             .map_err(RuntimeError::from)
         })
         .collect::<Result<Vec<Value>>>()?;

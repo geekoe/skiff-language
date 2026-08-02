@@ -12,7 +12,7 @@ use skiff_runtime_linked_program::{
 };
 
 use super::*;
-use crate::actor_executor::ActorExecutionFrame;
+use crate::{actor_executor::ActorExecutionFrame, heap_access::HeapAccess};
 
 struct ProgramFixture {
     service_files: Vec<Arc<LinkedFileUnit>>,
@@ -255,7 +255,7 @@ fn concurrent_activation_publishes_exactly_one_instance() {
 }
 
 #[tokio::test]
-async fn execution_lease_serializes_one_instance_but_not_another() {
+async fn segment_arena_serializes_one_instance_but_not_another() {
     let fixture = fixture();
     let bytes = payload();
     let store = ActorInstanceStore::new();
@@ -269,19 +269,20 @@ async fn execution_lease_serializes_one_instance_but_not_another() {
     admitted(&store, &second);
     let authority = ActorExecutorAuthority::new();
 
-    let first_lease = store.acquire_execution(&authority, &first).await.unwrap();
-    assert!(first.instance.scheduler.try_lock().is_err());
-    let second_lease = store.acquire_execution(&authority, &second).await.unwrap();
-    assert!(second.instance.scheduler.try_lock().is_err());
+    let first_segment = store.acquire_segment(&authority, &first).await.unwrap();
+    assert!(first_segment.arena().clone().try_lock_owned().is_err());
+    let second_segment = store.acquire_segment(&authority, &second).await.unwrap();
+    assert!(second_segment.arena().clone().try_lock_owned().is_err());
+    assert_eq!(store.segment_counters_for_test(&first).unwrap(), (1, 0));
 
-    drop(first_lease);
-    assert!(first.instance.scheduler.try_lock().is_ok());
-    assert!(second.instance.scheduler.try_lock().is_err());
-    drop(second_lease);
+    drop(first_segment);
+    assert!(store.segment_counters_for_test(&first).unwrap() == (0, 0));
+    assert!(second_segment.arena().clone().try_lock_owned().is_err());
+    drop(second_segment);
 }
 
 #[tokio::test]
-async fn failed_execution_snapshot_does_not_change_live_fields() {
+async fn abandoned_segment_releases_counters_and_leaves_arena_writes_in_place() {
     let fixture = fixture();
     let bytes = payload();
     let store = ActorInstanceStore::new();
@@ -290,46 +291,49 @@ async fn failed_execution_snapshot_does_not_change_live_fields() {
         .unwrap();
     admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
-    let lease = store.acquire_execution(&authority, &handle).await.unwrap();
-    let execution_fields = lease.fields();
-    execution_fields.lock().unwrap()[1].value = RuntimeValue::Number(99.0);
-    drop(lease);
-
-    let count = store
-        .with_fields_for_executor(&authority, &handle, |fields, _| fields[0].value.clone())
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    segment
+        .heap_mut()
+        .alloc_array(vec![RuntimeValue::Number(99.0)])
         .unwrap();
-    assert_eq!(count, RuntimeValue::String("doc-1".to_string()));
-}
-
-#[tokio::test]
-async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
-    let fixture = fixture();
-    let bytes = payload();
-    let store = ActorInstanceStore::new();
-    let handle = store
-        .activate(request(fixture.view(), fence(1), &bytes))
+    store
+        .set_field_root(&handle, "count", RuntimeValue::Number(99.0))
         .unwrap();
-    admitted(&store, &handle);
-    let authority = ActorExecutorAuthority::new();
-    let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
-    let mut heap = lease.take_heap();
-    let plan = RuntimeTypePlan::from_linked(
-        &builtin("integer"),
-        &PlanContext::from_type_view(fixture.view(), &ExecutableAddr::service(0, 0)),
-    )
-    .unwrap();
-    let id_plan = RuntimeTypePlan::from_linked(
-        &builtin("string"),
-        &PlanContext::from_type_view(fixture.view(), &ExecutableAddr::service(0, 0)),
-    )
-    .unwrap();
-    let frame = ActorExecutionFrame::new(
-        store.clone(),
-        handle,
-        lease,
-        vec![("id".to_string(), id_plan), ("count".to_string(), plan)],
-        false,
+    drop(segment);
+
+    assert_eq!(
+        store.segment_counters_for_test(&handle).unwrap(),
+        (0, 0),
+        "abandoning a segment must release its continuation counters"
     );
+    let fields = store
+        .with_fields_for_executor(&authority, &handle, |fields, heap| {
+            (fields[1].value.clone(), heap.len())
+        })
+        .unwrap();
+    assert_eq!(
+        fields,
+        (RuntimeValue::Number(99.0), 1),
+        "already-executed arena writes stay in place after the segment ends"
+    );
+}
+
+#[tokio::test]
+async fn execution_frame_rejects_wrong_field_type_and_suspends() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = ActorInstanceStore::new();
+    let handle = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    admitted(&store, &handle);
+    let authority = ActorExecutorAuthority::new();
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    let mut access = HeapAccess::Shared {
+        arena: segment.arena().clone(),
+        guard: Some(segment.take_guard()),
+    };
+    let frame = ActorExecutionFrame::new(store.clone(), handle, segment, false);
     assert!(frame
         .read_field("count")
         .unwrap_err()
@@ -342,7 +346,7 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
             fixture.view(),
             &ExecutableAddr::service(0, 0),
             &RuntimeValue::String("wrong".to_string()),
-            &mut heap,
+            access.heap_mut(),
         )
         .unwrap_err();
     assert!(error.to_string().contains("Actor self field count"));
@@ -353,15 +357,18 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
             fixture.view(),
             &ExecutableAddr::service(0, 0),
             &RuntimeValue::Number(7.0),
-            &mut heap,
+            access.heap_mut(),
         )
         .unwrap();
     assert_eq!(
         frame.read_field("count").unwrap(),
         RuntimeValue::Number(7.0)
     );
-    frame.suspend(&heap).unwrap();
+    frame.suspend().unwrap();
     assert!(frame.read_field("count").is_err());
+    assert!(frame.is_suspended());
+    drop(frame);
+    drop(access);
 }
 
 #[test]
@@ -525,7 +532,7 @@ fn discard_requires_exact_fence_and_old_fence_cannot_remove_new_incarnation() {
 }
 
 #[tokio::test]
-async fn upgrade_fence_allows_owned_sync_segment_to_commit_but_blocks_next_acquire() {
+async fn upgrade_fence_requires_zero_segments_and_blocks_next_acquire() {
     let fixture = fixture();
     let bytes = payload();
     let store = ActorInstanceStore::new();
@@ -534,28 +541,34 @@ async fn upgrade_fence_allows_owned_sync_segment_to_commit_but_blocks_next_acqui
         .unwrap();
     admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
-    let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
-    lease.fields().lock().unwrap()[0].value = RuntimeValue::Number(12.0);
-    let heap = lease.take_heap();
-    let snapshot =
-        ActorInstanceExecutionSnapshot::new(lease.fields().lock().unwrap().clone(), heap);
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    store
+        .set_field_root(&handle, "count", RuntimeValue::Number(12.0))
+        .unwrap();
+    assert!(
+        !store.begin_upgrade_exact(&handle),
+        "an active segment must gate upgrade"
+    );
+    segment.heap_mut().alloc_array(Vec::new()).unwrap();
+    store.commit_segment(&handle, &mut segment).unwrap();
+    drop(segment);
+    assert_eq!(store.segment_counters_for_test(&handle).unwrap(), (0, 0));
 
     assert!(store.begin_upgrade_exact(&handle));
-    store.commit_execution(&handle, lease, snapshot).unwrap();
     assert!(matches!(
-        store.acquire_execution(&authority, &handle).await,
+        store.acquire_segment(&authority, &handle).await,
         Err(ActorInstanceStoreError::InstanceReplaced)
     ));
     assert_eq!(
         store
             .with_fields_for_executor(&authority, &handle, |fields, _| { fields[0].value.clone() })
             .unwrap(),
-        RuntimeValue::Number(12.0)
+        RuntimeValue::String("doc-1".to_string())
     );
 }
 
 #[tokio::test]
-async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
+async fn suspended_continuation_gates_upgrade_until_released() {
     let fixture = fixture();
     let bytes = payload();
     let store = ActorInstanceStore::new();
@@ -564,17 +577,98 @@ async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
         .unwrap();
     admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
-    let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
-    let heap = lease.take_heap();
-    let snapshot =
-        ActorInstanceExecutionSnapshot::new(lease.fields().lock().unwrap().clone(), heap);
-    store.commit_execution(&handle, lease, snapshot).unwrap();
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    store.suspend_segment(&handle, &mut segment).unwrap();
+    assert_eq!(store.segment_counters_for_test(&handle).unwrap(), (0, 1));
+    assert!(
+        !store.begin_upgrade_exact(&handle),
+        "a suspended continuation must gate upgrade"
+    );
+    store.resume_segment(&handle, &mut segment).unwrap();
+    store.commit_segment(&handle, &mut segment).unwrap();
 
     assert!(store.begin_upgrade_exact(&handle));
     assert!(matches!(
-        store.acquire_execution(&authority, &handle).await,
+        store.acquire_segment(&authority, &handle).await,
         Err(ActorInstanceStoreError::InstanceReplaced)
     ));
+}
+
+#[tokio::test]
+async fn discard_requires_zero_segments_and_pending_mark_reclaims_on_abandon() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = ActorInstanceStore::new();
+    let handle = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    admitted(&store, &handle);
+    let authority = ActorExecutorAuthority::new();
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    store.suspend_segment(&handle, &mut segment).unwrap();
+
+    assert!(
+        !store.discard_exact(&handle),
+        "a live continuation must gate discard"
+    );
+    assert_eq!(store.len(), 1);
+    drop(segment);
+    assert!(
+        store.is_empty(),
+        "abandoning the last segment must reclaim the pending-discard instance"
+    );
+}
+
+#[tokio::test]
+async fn compaction_requires_quiescence_and_no_pending_discard() {
+    let fixture = fixture();
+    let bytes = payload();
+    let mut store = ActorInstanceStore::new();
+    store.arena_limits = RequestHeapLimits {
+        max_nodes: 16,
+        ..RequestHeapLimits::default()
+    };
+    let handle = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    admitted(&store, &handle);
+    let authority = ActorExecutorAuthority::new();
+    let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
+    for _ in 0..10 {
+        segment.heap_mut().alloc_array(Vec::new()).unwrap();
+    }
+
+    assert!(
+        !store
+            .compact_if_quiescent(&handle)
+            .await
+            .expect("quiescence probe must not fail"),
+        "an active segment must gate compaction"
+    );
+    store.suspend_segment(&handle, &mut segment).unwrap();
+    assert!(
+        !store
+            .compact_if_quiescent(&handle)
+            .await
+            .expect("quiescence probe must not fail"),
+        "a suspended continuation must gate compaction"
+    );
+    store.resume_segment(&handle, &mut segment).unwrap();
+    store.commit_segment(&handle, &mut segment).unwrap();
+    drop(segment);
+
+    let epoch_before = store.arena_epoch_for_test(&handle).unwrap();
+    assert!(
+        store
+            .compact_if_quiescent(&handle)
+            .await
+            .expect("quiescent compaction must succeed"),
+        "quiescence must allow compaction"
+    );
+    assert_eq!(
+        store.arena_epoch_for_test(&handle).unwrap(),
+        epoch_before + 1
+    );
 }
 
 #[test]

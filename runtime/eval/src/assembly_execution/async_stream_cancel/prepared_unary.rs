@@ -15,6 +15,7 @@ use crate::{
     env::Env,
     error::{Result, RuntimeError},
     eval_context::EvalContext,
+    heap_access::HeapAccess,
     program_execution::OwnedProgramExecutionContext,
     Interpreter, RuntimeAssemblyServiceCallTarget,
 };
@@ -87,7 +88,7 @@ impl Drop for ProviderUnaryRequestOwner {
 }
 
 pub(crate) fn prepare_provider_unary(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -154,10 +155,11 @@ impl PreparedProviderUnary {
             } = self;
             let terminal = {
                 let provider_context = provider_context.borrow();
+                let mut provider_access = HeapAccess::Exclusive(&mut provider_heap);
                 let provider_future = super::call_provider_callable(
                     &interpreter,
                     provider_context,
-                    &mut provider_heap,
+                    &mut provider_access,
                     &provider_invocation_env,
                     &caller_addr,
                     &provider_addr,
@@ -259,17 +261,17 @@ impl CompletedProviderUnary {
 }
 
 pub(crate) async fn execute_provider_unary(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
     let prepared = prepare_provider_unary(context, call, target, args)?;
     let completed = prepared.wait().await;
-    completed.finalize(context.heap)
+    completed.finalize(context.heap.heap_mut())
 }
 
-fn detached_provider_invocation_env(caller: &Env) -> Env {
+pub(super) fn detached_provider_invocation_env(caller: &Env) -> Env {
     // `call_program_executable` needs only these owned call-site capabilities
     // and type substitutions. Do not clone caller slots/self: they may contain
     // handles into the caller heap and are not provider state.
