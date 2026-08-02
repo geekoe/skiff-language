@@ -369,11 +369,19 @@ impl HandshakeState {
     /// The `runtime.registered` ACK was written (RegisterValidated ->
     /// Registered).
     pub fn on_ack_written(&mut self) -> Result<(), TerminalKind> {
-        if self.phase != HandshakePhase::RegisterValidated {
-            return Err(TerminalKind::WrongOrder);
+        match self.phase {
+            HandshakePhase::RegisterValidated => {
+                self.phase = HandshakePhase::Registered;
+                Ok(())
+            }
+            // E-activation §4.1 step 9/§8: a post-commit same-session
+            // re-register publishes a transition and writes a fresh
+            // `runtime.registered` ACK while the session is already
+            // Registered; that ACK completion must not terminate the
+            // exact session.
+            HandshakePhase::Registered => Ok(()),
+            _ => Err(TerminalKind::WrongOrder),
         }
-        self.phase = HandshakePhase::Registered;
-        Ok(())
     }
 
     pub fn on_ack_write_failed(&mut self) -> TerminalKind {

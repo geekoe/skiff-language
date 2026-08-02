@@ -258,12 +258,33 @@ fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn spawn_router(config_path: &Path) -> Child {
+fn seed_runtime_home(live: &LiveEnvironment) {
+    std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
+    std::fs::write(
+        live.runtime_home.join("runtime-id"),
+        format!("{}\n", live.replica_id),
+    )
+    .expect("seed runtime-id");
+}
+
+fn spawn_router(live: &LiveEnvironment, config_path: &Path) -> Child {
+    let stdout_path = live.temp_dir.join("router-activation.stdout.log");
+    let stderr_path = live.temp_dir.join("router-activation.stderr.log");
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stdout_path)
+        .expect("open router stdout log");
+    let stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_path)
+        .expect("open router stderr log");
     Command::new(env!("CARGO_BIN_EXE_skiff-router"))
         .arg(config_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
         .spawn()
         .expect("spawn skiff-router")
 }
@@ -953,6 +974,7 @@ mod tests {
     #[ignore = "requires SKIFF_ACTIVATION_LIVE_* temporary environment managed by the harness"]
     async fn activation_full_chain_live() {
         let live = LiveEnvironment::from_env();
+        seed_runtime_home(&live);
         let repository = connect_repository(&live).await;
         repository.ensure_indexes().await.expect("ensure indexes");
         seed_committed(&live, &repository).await;
@@ -963,7 +985,7 @@ mod tests {
 
         let router_config = write_router_config(&live);
         let runtime_config = write_runtime_config(&live);
-        let mut router = spawn_router(&router_config);
+        let mut router = spawn_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
 
         // Committed epoch published before the runtime connects.
@@ -1043,9 +1065,12 @@ mod tests {
         assert_eq!(old_status, 200, "old captured-epoch request must complete");
         assert!(old_body.contains("late"), "old request body: {old_body:?}");
 
-        let (new_status, new_body) = http_service_request(&live, "/unary", "0.1.1").await;
+        let (new_status, new_body) = http_service_request(&live, "/unary-new", "0.1.1").await;
         assert_eq!(new_status, 200, "new-generation request must succeed");
-        assert!(new_body.contains("pong"), "new request body: {new_body:?}");
+        assert!(
+            new_body.contains("pong-new"),
+            "new request body: {new_body:?}"
+        );
 
         let repository = connect_repository(&live).await;
         let durable = repository.read(&live.environment).await.expect("durable");
@@ -1155,8 +1180,9 @@ mod tests {
         let (mut runtime, connection_4) =
             spawn_runtime_await_handshake(&live, &relay_state, &runtime_config).await;
         let _ = wait_for_handshake(&relay_state, connection_4).await;
-        let (status, body) = http_service_request(&live, "/unary", "0.1.2").await;
+        let (status, body) = http_service_request(&live, "/unary-third", "0.1.2").await;
         assert_eq!(status, 200, "generation-3 request must succeed: {body}");
+        assert!(body.contains("pong-third"), "generation-3 body: {body:?}");
 
         // PHASE 4: cold recovery — committed published first, pending rebind
         // through the registration observer, commit to generation 4.
@@ -1181,7 +1207,7 @@ mod tests {
             third_snapshot.clone(),
         )
         .await;
-        let mut router = spawn_router(&router_config);
+        let mut router = spawn_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
         assert_bootstrap_tuple(&live, 3).await;
         let recovery_state = Arc::new(RelayState::new());
@@ -1207,7 +1233,7 @@ mod tests {
             2,
             "recovery prepare + commit audit must be exactly two"
         );
-        let (status, body) = http_service_request(&live, "/unary", "0.1.2").await;
+        let (status, body) = http_service_request(&live, "/unary-third", "0.1.2").await;
         assert_eq!(status, 200, "post-recovery request must succeed: {body}");
 
         // PHASE 5: cold recovery candidate load failure durably aborts.
@@ -1238,7 +1264,7 @@ mod tests {
             live.snapshot_ref(&live.third_config_snapshot_id),
         )
         .await;
-        let mut router = spawn_router(&router_config);
+        let mut router = spawn_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
         assert_bootstrap_tuple(&live, 4).await;
         let durable = wait_for_durable(&live, &repository, |state| {
