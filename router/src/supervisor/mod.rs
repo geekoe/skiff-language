@@ -30,6 +30,7 @@ use crate::bootstrap::{
 };
 use crate::config::RouterConfig;
 use crate::dispatch::{ActorMethodSpawnControl, RequestDispatcher, RuntimeDispatcherOptions};
+use crate::health::HealthAggregator;
 use crate::http::dispatch::HttpDispatchPort;
 use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
 use crate::http::server::{
@@ -37,8 +38,8 @@ use crate::http::server::{
     HttpGatewayServer, HttpGatewayServerOptions,
 };
 use crate::listener::{
-    start_runtime_control_listener_with_control, ClientWsContext, ListenerError, ListenerHandle,
-    ListenerStartOptions, WsTaskRegistry,
+    start_runtime_control_listener_with_control_and_health, ClientWsContext, ListenerError,
+    ListenerHandle, ListenerStartOptions, WsTaskRegistry,
 };
 use crate::session::consumer::{ConsumerKind, ConsumerManifest};
 use crate::session::demux::InboundSinkSet;
@@ -417,7 +418,7 @@ impl RouterComponents {
 /// Running supervisor listeners: the public HTTP gateway (production
 /// `HttpDispatchPort`) plus the shared runtime/control listener.
 pub struct SupervisorListeners {
-    pub public_http: HttpGatewayServer,
+    pub public_http: Arc<HttpGatewayServer>,
     pub runtime_control: ListenerHandle,
     pub session: Arc<SessionLayer>,
     pub ws_tasks: Arc<WsTaskRegistry>,
@@ -433,7 +434,36 @@ impl SupervisorListeners {
             session,
             ws_tasks,
         } = self;
-        let http_result = public_http.shutdown().await;
+        // The health aggregator holds only a `Weak` gateway reference, so the
+        // supervisor is the sole strong owner; a mid-flight health render may
+        // briefly upgrade it, so retry until the C-net drain deadline.
+        let http_result = {
+            let mut gateway = Some(public_http);
+            let mut server = None;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while let Some(shared) = gateway.take() {
+                match Arc::try_unwrap(shared) {
+                    Ok(unwrapped) => {
+                        server = Some(unwrapped);
+                        break;
+                    }
+                    Err(shared) => {
+                        if tokio::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        gateway = Some(shared);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            }
+            match server {
+                Some(server) => server.shutdown().await.map_err(|error| error.to_string()),
+                None => Err(
+                    "public http gateway still referenced by an in-flight health request"
+                        .to_string(),
+                ),
+            }
+        };
         runtime_control.begin_shutdown();
         let session_result = session.shutdown().await;
         let control_result = runtime_control.join_shutdown().await;
@@ -527,6 +557,19 @@ impl RouterSupervisor {
         )
         .await
         .map_err(|error| ListenerError::Http(error.to_string()))?;
+        let public_http = Arc::new(public_http);
+        let health = HealthAggregator::new(Arc::clone(&components));
+        health.set_http_health_source(Arc::new({
+            // The supervisor owns the only strong reference; the health
+            // source upgrades a weak handle for the duration of one render.
+            let gateway = Arc::downgrade(&public_http);
+            move || {
+                gateway
+                    .upgrade()
+                    .map(|server| server.health())
+                    .unwrap_or_default()
+            }
+        }));
         let activation_deadline =
             Duration::from_millis(components.config.activation_prepare_timeout_ms)
                 .saturating_mul(2)
@@ -535,11 +578,12 @@ impl RouterSupervisor {
             components.coordinator.clone(),
             activation_deadline,
         ));
-        let runtime_control = start_runtime_control_listener_with_control(
+        let runtime_control = start_runtime_control_listener_with_control_and_health(
             &components.config,
             options,
             Arc::clone(&components.session),
             Some(activation_http),
+            Some(health),
         )
         .await?;
         Ok(SupervisorListeners {

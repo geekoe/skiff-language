@@ -189,6 +189,12 @@ impl SessionLayer {
     ) -> Result<Self, SessionLayerError> {
         // Static manifest checker: every installed session-keyed component is
         // in the manifest, and every manifest kind has exactly one consumer.
+        // The health ledger is the single owner of retained observations:
+        // the layer records into it and registers it as the HealthLedger
+        // session consumer so the close barrier removes exact observations
+        // (batch 12 health leaf; without this, disconnected sessions leave
+        // stale observations forever).
+        let health = Arc::new(RuntimeHealthLedger::new());
         let mut consumer_kinds = std::collections::BTreeSet::new();
         for consumer in &options.consumers {
             if !consumer_kinds.insert(consumer.kind()) {
@@ -210,8 +216,14 @@ impl SessionLayer {
 
         let pre_auth_limit = usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX);
         let mut mailboxes = BTreeMap::new();
-        for consumer in &options.consumers {
-            let mailbox = ConsumerMailbox::spawn(Arc::clone(consumer), pre_auth_limit);
+        for consumer in options.consumers.iter().map(|consumer| {
+            if consumer.kind() == ConsumerKind::HealthLedger {
+                Arc::clone(&health) as Arc<dyn SessionConsumer>
+            } else {
+                Arc::clone(consumer)
+            }
+        }) {
+            let mailbox = ConsumerMailbox::spawn(Arc::clone(&consumer), pre_auth_limit);
             mailboxes.insert(consumer.kind(), mailbox);
         }
 
@@ -229,7 +241,7 @@ impl SessionLayer {
             manifest: options.manifest,
             directory: Mutex::new(directory),
             pre_auth: Mutex::new(pre_auth),
-            health: Arc::new(RuntimeHealthLedger::new()),
+            health,
             mailboxes,
             demux: RuntimeFrameDemux,
             registration_sink: RegistrationFrameSink,

@@ -132,8 +132,13 @@ Agent：`/root/dev_health`
 - `router/src/lib.rs`（additive：`pub mod health;` + re-export）；
 - `router/src/session/health.rs`（仅 additive 只读 `observations_snapshot()`，
   预检 5a 的最小 seam）；
+- `router/src/session/layer.rs`（自验收发现的 health 归零阻塞修复：layer
+  现在把自身 `RuntimeHealthLedger` 同时注册为 HealthLedger session consumer，
+  消除 supervisor 装配中“记录 ledger 与 close-cleanup ledger 是两份实例”的
+  既有缺陷；行为语义不变，只保证 disconnected 后 observation 真正归零）；
 - `router/src/listener.rs`（`/__router/health` 路由 + 控制 listener 的
-  aggregator 透传；本批唯一 wiring owner）；
+  aggregator 透传；本批唯一 wiring owner；405 前 bounded drain request body，
+  避免 hyper 未消费 body 时 TCP RST，与 public gateway 早期错误路径一致）；
 - `router/src/supervisor/mod.rs`（仅 health wiring：构造 aggregator、
   HTTP health source、透传；见预检 6）；
 - `router/tests/`（`health_*` 前缀：`health_common/`、`health_projection.rs`、
@@ -202,3 +207,49 @@ section 集合（test-runner 解码器按此 exact set 校验）：
 implementation commit/tree、写集、自验收矩阵与记录在案的 seam
 （registeredAt 省略、pin per-session 0、backpressureWaiters 0、cursor 省略、
 mailbox/writer-queue 部分面），并通知 root（父 Agent）。
+
+## 执行结果（提交前自验收填写）
+
+1. 写集：见“写入边界”+ 本叶子；`git diff origin/main` 仅含上表文件；
+   `router/src/health/`（mod/aggregator/counters/wire/time）、
+   `router/tests/health_common/`、`health_http.rs`、`health_projection.rs`、
+   listener.rs、supervisor/mod.rs（health wiring）、session/health.rs +
+   layer.rs（两处记录在案的 seam）、test-runner wire.rs + tests、
+   loop-risk scripts/tests、本叶子。
+2. 自验收：
+   - `cargo test -p skiff-router`：418 passed / 0 failed（含新
+     `health_http` 3 项 + `health_projection` 7 项；多轮稳定，405 RST
+     修复后 15/15 通过）。
+   - `cargo test -p skiff-test-runner --lib`：75 passed（含新增
+     `health_counters_contract_and_optional_registered_at`）；
+     `cargo test -p skiff-test-runner` 唯一失败为
+     `http_entry_test_service`（baseline 既有 fixture 缺口：该 fixture 的
+     seedBootstrap 不写 `records/actor-routing/current.json`，Rust strict
+     loader fail-closed；本节点未触碰相关文件，记录为 out-of-scope baseline
+     失败）。
+   - `node scripts/check-loop-risk-health.mjs --self-test` 通过；
+     `node --test scripts/tests/loop-risk-health.test.mjs` 8/8 通过。
+   - `node scripts/verify.mjs --only router,router-rust-process-smoke`：
+     2 passed（router:contracts + router-rust:process-smoke）。
+   - `cargo fmt -p skiff-router -p skiff-test-runner --check` 通过；
+     `cargo clippy -p skiff-router --all-targets` 新增文件零
+     warning/error（其余为既有 baseline advisory）。
+3. 真实边界证据：
+   - `health_http`：TS 基础 shape（ok/activeAssembly/pendingActivation/
+     capabilityConnections/replicas）+ `counters` 20 sections 全零；
+     `?detail=loop-risk` 字段齐全（observedAt/dispatcher/httpStream/
+     runtimes）；GET-only 405 + allow；fake Runtime 注册→health→
+     loopRisk fresh→disconnect→全归零；错误 terminal（stale register）→
+     归零。
+   - `health_projection`：非零 owner 计数正确渲染到输出层、replicas/
+     capabilityConnections/loopRisk 纯投影语义、registeredAt 省略与 pin
+     计数 0 的 wire 断言。
+4. 自验收发现并修复的两个既有问题（均记录于写集）：
+   - `SessionLayer::with_options` 里 `self.health` 与 manifest 的
+     HealthLedger consumer 是两份 `RuntimeHealthLedger`，close barrier 只清
+     理 consumer 实例，layer 的 observations 永不归零（泄漏）。修复为
+     layer 把自身 ledger 注册为 consumer（一处实例，两用）。
+   - 控制 listener 对非 GET health 请求未消费 request body，hyper 在
+     macOS 上以 RST 结束连接（响应完整但 read 报 ECONNRESET）。修复为
+     405 前 bounded drain（1 MiB，同 activation 控制端上限），与
+     public gateway 早期错误路径一致。

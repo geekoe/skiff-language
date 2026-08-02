@@ -28,7 +28,7 @@ use hyper::body::Incoming;
 use hyper::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -44,6 +44,7 @@ use crate::activation::http::ActivationHttpHandler;
 use crate::activation::ASSEMBLY_ACTIVATION_CONTROL_PATH;
 use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
+use crate::health::HealthAggregator;
 use crate::http::selector::{
     parse_request_target, parse_service_deployment_selector, RequestTarget,
 };
@@ -200,6 +201,7 @@ enum ListenerKind {
         runtime_path: String,
         session_layer: Arc<SessionLayer>,
         activation_http: Option<Arc<ActivationHttpHandler>>,
+        health: Option<Arc<HealthAggregator>>,
     },
 }
 
@@ -232,6 +234,26 @@ pub async fn start_runtime_control_listener_with_control(
     session_layer: Arc<SessionLayer>,
     activation_http: Option<Arc<ActivationHttpHandler>>,
 ) -> Result<ListenerHandle, ListenerError> {
+    start_runtime_control_listener_with_control_and_health(
+        config,
+        options,
+        session_layer,
+        activation_http,
+        None,
+    )
+    .await
+}
+
+/// Starts the shared runtime/control listener with the activation control
+/// HTTP handler and the health projection aggregator (batch 12: the only
+/// production wiring of `/__router/health`).
+pub async fn start_runtime_control_listener_with_control_and_health(
+    config: &RouterConfig,
+    options: &ListenerStartOptions,
+    session_layer: Arc<SessionLayer>,
+    activation_http: Option<Arc<ActivationHttpHandler>>,
+    health: Option<Arc<HealthAggregator>>,
+) -> Result<ListenerHandle, ListenerError> {
     let runtime_control_addr = match options.runtime_control_bind {
         Some(addr) => addr,
         None => resolve_listener_addr(&config.host, config.runtime_port)?,
@@ -256,6 +278,7 @@ pub async fn start_runtime_control_listener_with_control(
                 runtime_path: config.runtime_path.clone(),
                 session_layer: Arc::clone(&session_layer),
                 activation_http,
+                health,
             },
             runtime_control_shutdown_rx,
             options.drain_deadline,
@@ -446,6 +469,7 @@ async fn handle_request(
             runtime_path,
             session_layer,
             activation_http,
+            health,
         } => {
             if is_websocket_upgrade(&request) && request.uri().path() == runtime_path {
                 return handle_websocket_upgrade(
@@ -455,12 +479,75 @@ async fn handle_request(
                 )
                 .await;
             }
+            if request.uri().path() == "/__router/health" {
+                if let Some(health) = health {
+                    return handle_health_request(Arc::clone(health), request).await;
+                }
+                return Ok(empty_response(StatusCode::OK));
+            }
             if request.uri().path() == ASSEMBLY_ACTIVATION_CONTROL_PATH {
                 if let Some(handler) = activation_http {
                     return handler.handle(request).await;
                 }
             }
             Ok(empty_response(StatusCode::OK))
+        }
+    }
+}
+
+/// `/__router/health` production route (batch 12 health leaf; TS
+/// `AssemblyControlPlane` parity: GET-only, `?detail=loop-risk` adds the
+/// loopRisk object).
+async fn handle_health_request(
+    health: Arc<HealthAggregator>,
+    request: Request<Incoming>,
+) -> RouterResponse {
+    if request.method() != Method::GET {
+        // Drain the request body before responding so hyper closes the
+        // connection with FIN, not RST (mirrors the public gateway
+        // early-error path; bounded to the control body cap).
+        drain_request_body(request.into_body(), HEALTH_REQUEST_BODY_DRAIN_CAP).await;
+        let body = serde_json::json!({
+            "error": {
+                "code": "MethodNotAllowed",
+                "message": "router health requires GET",
+            }
+        })
+        .to_string();
+        return Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header("content-type", "application/json")
+            .header("allow", "GET")
+            .body(full_body(body))
+            .expect("static health 405 response is valid"));
+    }
+    let with_loop_risk = request
+        .uri()
+        .query()
+        .is_some_and(|query| query.split('&').any(|part| part == "detail=loop-risk"));
+    let body = health.render(with_loop_risk).await.to_string();
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(full_body(body))
+        .expect("health response is valid"))
+}
+
+/// Control-path body drain cap for early-error responses (1 MiB, same bound
+/// as the activation control endpoint).
+const HEALTH_REQUEST_BODY_DRAIN_CAP: usize = 1024 * 1024;
+
+async fn drain_request_body(mut body: Incoming, limit: usize) {
+    let mut total = 0usize;
+    while let Some(frame) = body.frame().await {
+        let Ok(frame) = frame else {
+            break;
+        };
+        if let Some(data) = frame.data_ref() {
+            total += data.len();
+            if total > limit {
+                break;
+            }
         }
     }
 }
@@ -518,6 +605,12 @@ fn empty_response(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> 
 
 fn empty_body() -> BoxBody<Bytes, hyper::Error> {
     Full::new(Bytes::new())
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+fn full_body(body: String) -> BoxBody<Bytes, hyper::Error> {
+    Full::new(Bytes::from(body))
         .map_err(|never| match never {})
         .boxed()
 }

@@ -62,6 +62,16 @@ impl RuntimeHealthLedger {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
     }
+
+    /// Read-only per-session observation snapshot for the health projection
+    /// (batch 12 health leaf; plan §3.2 `HealthAggregator` only consumes
+    /// owner-published snapshots and never mutates the ledger).
+    pub fn observations_snapshot(&self) -> HashMap<RuntimeSessionEpoch, RuntimeHealthFrameHeader> {
+        self.observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 impl SessionConsumer for RuntimeHealthLedger {

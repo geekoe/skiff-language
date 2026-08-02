@@ -743,8 +743,10 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         .expect("section object checked above");
     u64_field(epoch, "publishCount", &context("activeRoutingEpoch"))?;
     if !epoch.get("active").is_none_or(Value::is_object) {
-        return Err("router health counters.activeRoutingEpoch.active must be an object or null"
-            .to_string());
+        return Err(
+            "router health counters.activeRoutingEpoch.active must be an object or null"
+                .to_string(),
+        );
     }
 
     let sessions = counters["sessions"]
@@ -799,7 +801,11 @@ fn decode_counters(value: &Value) -> Result<(), String> {
     let generation_leases = counters["generationLeases"]
         .as_object()
         .expect("section object checked above");
-    u64_field(generation_leases, "pinsAcquired", &context("generationLeases"))?;
+    u64_field(
+        generation_leases,
+        "pinsAcquired",
+        &context("generationLeases"),
+    )?;
 
     let broker = counters["broker"]
         .as_object()
@@ -810,9 +816,19 @@ fn decode_counters(value: &Value) -> Result<(), String> {
     let actor = counters["actor"]
         .as_object()
         .expect("section object checked above");
-    for name in ["catalog", "ownership", "activation", "invocation", "control", "lease", "spawn"] {
+    for name in [
+        "catalog",
+        "ownership",
+        "activation",
+        "invocation",
+        "control",
+        "lease",
+        "spawn",
+    ] {
         if !actor.get(name).is_some_and(Value::is_object) {
-            return Err(format!("router health counters.actor.{name} must be an object"));
+            return Err(format!(
+                "router health counters.actor.{name} must be an object"
+            ));
         }
     }
 
@@ -824,11 +840,15 @@ fn decode_counters(value: &Value) -> Result<(), String> {
     let repository = activation
         .get("repository")
         .and_then(Value::as_object)
-        .ok_or_else(|| "router health counters.activation.repository must be an object".to_string())?;
+        .ok_or_else(|| {
+            "router health counters.activation.repository must be an object".to_string()
+        })?;
     let driver = repository
         .get("driver")
         .and_then(Value::as_object)
-        .ok_or_else(|| "router health counters.activation.repository.driver must be an object".to_string())?;
+        .ok_or_else(|| {
+            "router health counters.activation.repository.driver must be an object".to_string()
+        })?;
     bool_field(driver, "closed", &context("activation.repository.driver"))?;
 
     let http = counters["http"]
@@ -846,11 +866,7 @@ fn decode_counters(value: &Value) -> Result<(), String> {
     let writer_queues = counters["writerQueues"]
         .as_object()
         .expect("section object checked above");
-    u64_field(
-        writer_queues,
-        "wsSlowClientCount",
-        &context("writerQueues"),
-    )?;
+    u64_field(writer_queues, "wsSlowClientCount", &context("writerQueues"))?;
 
     let spawned_tasks = counters["spawnedTasks"]
         .as_object()
