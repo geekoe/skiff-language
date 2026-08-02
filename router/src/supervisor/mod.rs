@@ -53,9 +53,9 @@ use self::actor_sink::ActorFrameSink;
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
-    LayerSessionAbort, SessionCandidateViewSource, SessionHandle, SessionRuntimePeer,
-    SessionRuntimeViolationSink, StoreRoutingEpochSource, WsRuntimeGenerationPeer,
-    WsRuntimeSessionClose,
+    LayerSessionAbort, PendingHttpHandle, SessionCandidateViewSource, SessionHandle,
+    SessionRuntimePeer, SessionRuntimeViolationSink, StoreRoutingEpochSource,
+    WsRuntimeGenerationPeer, WsRuntimeSessionClose,
 };
 use self::sinks::{ActivationTransactionSink, ConnectionFrameSink};
 use self::ws::{
@@ -243,6 +243,7 @@ impl RouterComponents {
             },
         );
 
+        let pending_http_handle = PendingHttpHandle::new();
         let session = Arc::new(
             SessionLayer::with_options(
                 config.clone(),
@@ -261,7 +262,10 @@ impl RouterComponents {
                             Arc<dyn crate::session::consumer::SessionConsumer>,
                         > = vec![
                             Arc::new(RuntimeHealthLedger::new()),
-                            Arc::new(DispatcherSessionConsumer::new(Arc::clone(&dispatcher))),
+                            Arc::new(DispatcherSessionConsumer::new(
+                                Arc::clone(&dispatcher),
+                                pending_http_handle.clone(),
+                            )),
                             Arc::clone(&ws_lane.ledger) as Arc<dyn SessionConsumer>,
                             Arc::new(WsLaneSessionConsumer::new(
                                 Arc::clone(&ws_lane),
@@ -283,6 +287,7 @@ impl RouterComponents {
         session_handle.set(Arc::clone(&session));
 
         let pending_http = Arc::new(PendingHttpRouter::new());
+        pending_http_handle.set(Arc::clone(&pending_http));
         let request_sink = Arc::new(RequestFrameSink::new_with_ws(
             Arc::clone(&dispatcher),
             Arc::clone(&pending_http),

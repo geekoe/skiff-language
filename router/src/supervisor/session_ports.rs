@@ -46,6 +46,8 @@ use crate::ws::{
     RuntimeResponder, RuntimeSessionClose, RuntimeViolationSink,
 };
 
+use super::http::{HttpDispatchEvent, PendingHttpRouter};
+
 /// Deferred reference to the process `SessionLayer` (composition seam).
 ///
 /// The dispatcher/WS/activation/actor ports are constructed before the
@@ -72,6 +74,38 @@ impl SessionHandle {
 
     pub fn layer(&self) -> Option<Arc<SessionLayer>> {
         self.layer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Deferred reference to the composition `PendingHttpRouter`.
+///
+/// The dispatcher session consumer is constructed before the HTTP
+/// correlation router exists (the session layer requires its consumers at
+/// construction); the supervisor sets the router right after it is created.
+/// Until then, close terminals have no HTTP phase to deliver to and are
+/// safely dropped (the dispatcher already released the permit).
+#[derive(Debug, Clone, Default)]
+pub struct PendingHttpHandle {
+    router: Arc<Mutex<Option<Arc<PendingHttpRouter>>>>,
+}
+
+impl PendingHttpHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, router: Arc<PendingHttpRouter>) {
+        *self
+            .router
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(router);
+    }
+
+    fn router(&self) -> Option<Arc<PendingHttpRouter>> {
+        self.router
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -423,11 +457,12 @@ impl DispatchInbound for UnsupportedDispatchInbound {
 #[derive(Debug, Clone)]
 pub struct DispatcherSessionConsumer {
     dispatcher: Arc<RequestDispatcher>,
+    router: PendingHttpHandle,
 }
 
 impl DispatcherSessionConsumer {
-    pub fn new(dispatcher: Arc<RequestDispatcher>) -> Self {
-        Self { dispatcher }
+    pub fn new(dispatcher: Arc<RequestDispatcher>, router: PendingHttpHandle) -> Self {
+        Self { dispatcher, router }
     }
 }
 
@@ -438,7 +473,15 @@ impl SessionConsumer for DispatcherSessionConsumer {
 
     fn on_session_closed(&self, session: &RuntimeSessionEpoch) -> Result<(), String> {
         let terminals = self.dispatcher.on_session_closed(session);
-        let _ = terminals;
+        if let Some(router) = self.router.router() {
+            for terminal in terminals {
+                let request_id = terminal.request_id.clone();
+                // The HTTP phase may already be gone (client abandoned the
+                // correlation); the dispatcher already released the permit,
+                // so a failed delivery is a no-op, never a panic or retry.
+                let _ = router.deliver(&request_id, HttpDispatchEvent::Terminal { terminal });
+            }
+        }
         Ok(())
     }
 }
