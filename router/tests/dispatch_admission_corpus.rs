@@ -27,7 +27,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 
 use dispatch_harness::{
-    build_epoch, FakeActorMethodSpawnControl, FakeCandidateQuery, FakeEpochSource,
+    build_epoch, FakeActorMethodSpawnControl, FakeCandidateViewSource, FakeEpochSource,
     FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
 };
 
@@ -368,11 +368,22 @@ struct Scenario {
     expect: Expect,
 }
 
+fn scenario_deployment_ref(epoch: &Epoch) -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: epoch.deployment.service_id.clone(),
+        contract_version: epoch.deployment.contract_version.clone(),
+        deployment_revision: DeploymentRevision::new(epoch.deployment.deployment_revision.clone()),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(
+            epoch.deployment.deployment_artifact_identity.clone(),
+        ),
+    }
+}
+
 struct Harness {
     scenario: Scenario,
     dispatcher: RequestDispatcher,
     abort: FakeSessionAbort,
-    candidate: FakeCandidateQuery,
+    candidate: FakeCandidateViewSource,
     revalidate: FakeLeaseRevalidate,
     session_epochs: HashMap<String, RuntimeSessionEpoch>,
     session_ids: HashMap<RuntimeSessionEpoch, String>,
@@ -385,11 +396,13 @@ struct Harness {
 
 impl Harness {
     fn new(scenario: Scenario) -> Self {
+        let deployment = scenario_deployment_ref(&scenario.epoch);
         let epoch = build_epoch(
             &scenario.epoch.environment,
             scenario.epoch.generation,
             &scenario.epoch.assembly_identity,
             &scenario.epoch.config_snapshot_id,
+            deployment,
         );
         let mut session_epochs = HashMap::new();
         let mut session_ids = HashMap::new();
@@ -413,7 +426,7 @@ impl Harness {
                 }
             })
             .collect();
-        let candidate = FakeCandidateQuery::new(sessions);
+        let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
         let actor_control = FakeActorMethodSpawnControl::new();
@@ -541,16 +554,7 @@ impl Harness {
         prefer_session: Option<RuntimeSessionEpoch>,
     ) -> DispatchRequest {
         let epoch = &self.scenario.epoch;
-        let deployment = ServiceDeploymentRef {
-            service_id: epoch.deployment.service_id.clone(),
-            contract_version: epoch.deployment.contract_version.clone(),
-            deployment_revision: DeploymentRevision::new(
-                epoch.deployment.deployment_revision.clone(),
-            ),
-            deployment_artifact_identity: DeploymentArtifactIdentity::new(
-                epoch.deployment.deployment_artifact_identity.clone(),
-            ),
-        };
+        let deployment = scenario_deployment_ref(epoch);
         DispatchRequest {
             header: RuntimeAssemblyRequestStartFrameHeader {
                 schema_version: "skiff-runtime-frame-v3".to_string(),
@@ -604,12 +608,7 @@ impl Harness {
         RequestAuthority {
             assembly_identity: epoch.assembly_identity.clone(),
             assembly_generation: epoch.generation,
-            deployment: skiff_router::dispatch::ServiceDeploymentQuery {
-                service_id: epoch.deployment.service_id.clone(),
-                contract_version: epoch.deployment.contract_version.clone(),
-                deployment_revision: epoch.deployment.deployment_revision.clone(),
-                deployment_artifact_identity: epoch.deployment.deployment_artifact_identity.clone(),
-            },
+            deployment: scenario_deployment_ref(epoch),
             session_epoch: self.session(session_id),
         }
     }

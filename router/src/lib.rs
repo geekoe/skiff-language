@@ -20,13 +20,13 @@ pub use config::{
     TelemetryConfig, ROUTER_CONFIG_REDACTED_VALUE,
 };
 pub use dispatch::{
-    ActorMethodSpawnControl, AdmissionCounters, AdmissionHealth, CancelFrame, CandidateQuery,
-    CandidateQueryInput, DerivedSpawnResult, DispatchCapabilities, DispatchMode, DispatchRequest,
-    DispatchedFrame, DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate, PendingHealth,
-    PendingTerminal, Permit, PermitLedger, RegisteredSessionLease, RequestAuthority,
-    RequestDeadline, RequestDispatcher, RequestOutcome, Reservation, RevalidateOutcome,
-    RoutingEpochSource, RuntimeAdmissionPool, RuntimeDispatcherOptions, RuntimePeer,
-    RuntimeResponseFrame, ServiceDeploymentQuery, SessionAbortControl, SpawnHealth,
+    candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
+    dispatch_mode_from_wire, ActorMethodSpawnControl, AdmissionCounters, AdmissionHealth,
+    CancelFrame, CandidateViewSource, DerivedSpawnResult, DispatchRequest, DispatchedFrame,
+    DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate, PendingHealth, PendingTerminal,
+    Permit, PermitLedger, RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome,
+    Reservation, RevalidateOutcome, RoutingEpochSource, RuntimeAdmissionPool,
+    RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SpawnHealth,
     SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
     SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
 };

@@ -8,7 +8,7 @@
 //! The admission pipeline is:
 //!
 //! ```text
-//! capture RoutingEpoch -> CandidateQuery leases -> select + reserve permit
+//! capture RoutingEpoch -> RuntimeCandidateQuery leases -> select + reserve permit
 //!   -> revalidate (epoch/revision/tuple/cancellation)
 //!   -> enqueue (failure releases and reselects / fail closed)
 //!   -> terminal releases the permit exactly once
@@ -22,11 +22,13 @@
 //! the typed ports in [`candidate`], and session cancellation arrives through
 //! `on_session_closed` (the C-session barrier terminal).
 //!
-//! Same-wave seam: W-routing-query owns the stateless exact candidate
-//! projection; this module defines the dispatch-side typed port
-//! (`CandidateQuery`/`RegisteredSessionLease`/`LeaseRevalidate`) per the
-//! contracts-request chain and drives it with fake implementations in tests.
-//! Integration aligns the real W-routing-query port with this seam.
+//! Same-wave alignment: W-routing-query owns the stateless exact candidate
+//! projection (`RuntimeCandidateQuery`) and the canonical typed surface
+//! (`CandidateQuery`, `RegisteredSessionLease`, `SessionCancellation`,
+//! `DispatchCapabilities`, `DispatchMode`); dispatch consumes them through
+//! the narrow adapter in [`candidate`] and defines only the ports without a
+//! routing counterpart (`CandidateViewSource`, `LeaseRevalidate`,
+//! `RoutingEpochSource`). No candidate/lease type is duplicated.
 
 mod admission;
 mod candidate;
@@ -37,8 +39,9 @@ mod types;
 
 pub use admission::{AdmissionCounters, Permit, PermitLedger, Reservation, RuntimeAdmissionPool};
 pub use candidate::{
-    CandidateQuery, CandidateQueryInput, DispatchCapabilities, DispatchMode, LeaseRevalidate,
-    RegisteredSessionLease, RevalidateOutcome, RoutingEpochSource, ServiceDeploymentQuery,
+    candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
+    dispatch_mode_from_wire, CandidateViewSource, LeaseRevalidate, RevalidateOutcome,
+    RoutingEpochSource,
 };
 pub use dispatcher::{
     CancelFrame, DispatchedFrame, FrameOutcome, PendingTerminal, RequestDispatcher, RequestOutcome,

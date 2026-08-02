@@ -13,11 +13,12 @@ use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::bootstrap::RoutingEpoch;
+use crate::routing::{DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
 use crate::session::identity::RuntimeSessionEpoch;
 
 use super::admission::{Permit, PermitLedger, RuntimeAdmissionPool, SelectedLease};
 use super::candidate::{
-    CandidateQuery, CandidateQueryInput, DispatchMode, LeaseRevalidate, RegisteredSessionLease,
+    candidate_query_from_request, dispatch_mode_from_wire, CandidateViewSource, LeaseRevalidate,
     RevalidateOutcome, RoutingEpochSource,
 };
 use super::frame::{
@@ -38,7 +39,7 @@ use super::types::{
 pub struct RuntimeDispatcherOptions {
     pub max_concurrency: usize,
     pub epoch_source: Arc<dyn RoutingEpochSource>,
-    pub candidate_query: Arc<dyn CandidateQuery>,
+    pub candidate_view: Arc<dyn CandidateViewSource>,
     pub revalidate: Arc<dyn LeaseRevalidate>,
     pub peer: Arc<dyn RuntimePeer>,
     pub session_abort: Arc<dyn SessionAbortControl>,
@@ -50,7 +51,7 @@ impl RuntimeDispatcherOptions {
     pub fn new(
         max_concurrency: usize,
         epoch_source: Arc<dyn RoutingEpochSource>,
-        candidate_query: Arc<dyn CandidateQuery>,
+        candidate_view: Arc<dyn CandidateViewSource>,
         revalidate: Arc<dyn LeaseRevalidate>,
         peer: Arc<dyn RuntimePeer>,
         session_abort: Arc<dyn SessionAbortControl>,
@@ -62,7 +63,7 @@ impl RuntimeDispatcherOptions {
         Ok(Self {
             max_concurrency,
             epoch_source,
-            candidate_query,
+            candidate_view,
             revalidate,
             peer,
             session_abort,
@@ -187,12 +188,12 @@ impl RequestDispatcher {
             };
         }
 
-        let Some(mode) = DispatchMode::from_wire(&request.header.mode) else {
+        if dispatch_mode_from_wire(&request.header.mode).is_none() {
             return SubmitResult::Rejected {
                 request_id,
                 reason: SubmitRejectReason::InvalidMode,
             };
-        };
+        }
         let Some(epoch) = self.options.epoch_source.capture() else {
             inner.pool.record_no_candidate();
             return SubmitResult::Rejected {
@@ -200,19 +201,23 @@ impl RequestDispatcher {
                 reason: SubmitRejectReason::NoCandidate,
             };
         };
-        let query = CandidateQueryInput {
-            mode,
-            deployment: request.deployment_query(),
-        };
-        let leases = self
-            .options
-            .candidate_query
-            .query(&epoch, &query)
-            .into_iter()
-            .filter(|lease| {
-                !lease.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
-            })
-            .collect::<Vec<_>>();
+        let query = candidate_query_from_request(&request);
+        let view = self.options.candidate_view.view();
+        let leases = match RuntimeCandidateQuery.query(&epoch, &view, &query) {
+            Ok(leases) => leases,
+            Err(_) => {
+                inner.pool.record_no_candidate();
+                return SubmitResult::Rejected {
+                    request_id,
+                    reason: SubmitRejectReason::NoCandidate,
+                };
+            }
+        }
+        .into_iter()
+        .filter(|lease| {
+            !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
+        })
+        .collect::<Vec<_>>();
         if leases.is_empty() {
             inner.pool.record_no_candidate();
             return SubmitResult::Rejected {

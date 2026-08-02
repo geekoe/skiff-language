@@ -1,12 +1,14 @@
 //! Typed dispatch DTOs (C-dispatch §7.2, C-model-request §3).
 
+use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
 };
 
+use crate::routing::DispatchMode;
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::candidate::{DispatchMode, ServiceDeploymentQuery};
+use super::candidate::dispatch_mode_from_wire;
 
 /// Ordinary unary/stream request entering the admission pipeline.
 ///
@@ -28,16 +30,12 @@ impl DispatchRequest {
 
     /// Validated `request.start` mode. Precondition: codec-validated header.
     pub fn mode(&self) -> DispatchMode {
-        DispatchMode::from_wire(&self.header.mode)
+        dispatch_mode_from_wire(&self.header.mode)
             .expect("dispatch request mode must be codec-validated")
     }
 
     pub fn deadline(&self) -> Option<RequestDeadline> {
         self.header.deadline.as_ref().map(RequestDeadline::from)
-    }
-
-    pub fn deployment_query(&self) -> ServiceDeploymentQuery {
-        ServiceDeploymentQuery::from_deployment_ref(&self.header.routing.deployment)
     }
 
     /// Exact parent authority captured at admission (C-dispatch §5.1).
@@ -73,7 +71,7 @@ impl From<&RuntimeAssemblyRequestDeadlineFrameHeader> for RequestDeadline {
 pub struct RequestAuthority {
     pub assembly_identity: String,
     pub assembly_generation: u64,
-    pub deployment: ServiceDeploymentQuery,
+    pub deployment: ServiceDeploymentRef,
     pub session_epoch: RuntimeSessionEpoch,
 }
 
@@ -85,7 +83,7 @@ impl RequestAuthority {
         Self {
             assembly_identity: header.routing.assembly_identity.as_str().to_string(),
             assembly_generation: header.routing.assembly_generation,
-            deployment: ServiceDeploymentQuery::from_deployment_ref(&header.routing.deployment),
+            deployment: header.routing.deployment.clone(),
             session_epoch: session_epoch.clone(),
         }
     }
