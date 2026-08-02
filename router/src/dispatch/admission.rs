@@ -12,9 +12,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::routing::RegisteredSessionLease;
 use crate::session::identity::RuntimeSessionEpoch;
-
-use super::candidate::RegisteredSessionLease;
 
 /// Frozen admission counters (C-dispatch §7.6 `admission.*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

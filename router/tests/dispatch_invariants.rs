@@ -13,15 +13,15 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use dispatch_harness::{
     authority_for_session, corpus_epoch, request, session_state, FakeActorMethodSpawnControl,
-    FakeCandidateQuery, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort,
-    SessionState,
+    FakeCandidateViewSource, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer,
+    FakeSessionAbort, SessionState,
 };
 
 struct Rig {
     dispatcher: RequestDispatcher,
     peer: FakeRuntimePeer,
     abort: FakeSessionAbort,
-    candidate: FakeCandidateQuery,
+    candidate: FakeCandidateViewSource,
     revalidate: FakeLeaseRevalidate,
     session: RuntimeSessionEpoch,
 }
@@ -41,7 +41,7 @@ impl Rig {
         timeout_check: Option<Arc<dyn TimeoutCheck>>,
     ) -> Self {
         let session = sessions[0].epoch.clone();
-        let candidate = FakeCandidateQuery::new(sessions);
+        let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
         let actor = FakeActorMethodSpawnControl::new();
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn dispatch_no_epoch_source_fails_closed() {
-        let candidate = FakeCandidateQuery::new(vec![session_state("s1", "runtime-a", 1)]);
+        let candidate = FakeCandidateViewSource::new(vec![session_state("s1", "runtime-a", 1)]);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
         let actor = FakeActorMethodSpawnControl::new();

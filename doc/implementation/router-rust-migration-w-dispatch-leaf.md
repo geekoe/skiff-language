@@ -183,6 +183,73 @@ Agent：`/root/dev_w_dispatch`
 ## 交接
 
 完成后向 `/root/router_rust_integration_b6` 报告 branch、worktree、提交
-hash、测试命令与结果、seam 清单（`CandidateQuery`/`LeaseRevalidate`/
-`RoutingEpochSource`/`RuntimePeer`/`SessionAbortControl`/
+hash、测试命令与结果、seam 清单（`RuntimeCandidateQuery`（canonical）/
+`CandidateViewSource`/`LeaseRevalidate`/`RoutingEpochSource`/`RuntimePeer`/
+`SessionAbortControl`/
 `ActorMethodSpawnControl`/`TimeoutCheck`）与集成对齐点；同步通知 root。
+
+## Rework（Batch 6 主 Agent 裁决：与 W-routing-query 对齐）
+
+日期：2026-08-02（原任务窄范围返工；原分支已合入，不再修改）
+
+基线：集成分支 `integration/router-rust-migration-batch-6` @ `a3704e22`
+（含 W-model-request `bf7512d0` + W-routing-query `ccd39c78` + W-dispatch
+原合并）。
+
+### 裁决内容
+
+按 C-routing-query 冻结契约为 canonical，dispatch 侧消除 4 处公开类型名
+冲突（E0252）：`CandidateQuery`（dispatch trait vs routing struct）、
+`RegisteredSessionLease`（cancellation 形状）、`DispatchCapabilities` /
+`DispatchMode`（构造面）。
+
+### 对齐方式（最小充分，语义与全部测试不变）
+
+1. **端口统一**：dispatch 不再定义 candidate-query trait；admission 直接
+   消费 W-routing-query 的 canonical `RuntimeCandidateQuery`（stateless
+   投影，输入 `CandidateQuery` struct + `CandidateDirectoryView`）。
+   dispatch 侧只保留没有 routing 对口的端口：`CandidateViewSource`
+   （C-dispatch §3 step 2 的 directory view 来源）、`LeaseRevalidate` /
+   `RevalidateOutcome`（step 5）、`RoutingEpochSource`（step 1）。
+2. **Lease 形状**：`RegisteredSessionLease` 统一为 routing typed 形状
+   （`cancellation: SessionCancellation`）；dispatch 不再自建
+   `cancelled: bool` 副本，防御性过滤读 `lease.cancellation.cancelled`。
+3. **类型单一化**：`DispatchMode` / `DispatchCapabilities` 只保留 routing
+   canonical 类型；wire 构造收敛为 dispatch 适配函数
+   （`dispatch_mode_from_wire` / `dispatch_mode_as_str` /
+   `capabilities_from_wire_names` / `candidate_query_from_request`），
+   全部集中在 `router/src/dispatch/candidate.rs`。
+4. **lib.rs re-export 去重**：canonical 名只从 `routing` 导出一次；
+   dispatch 导出名单去掉重复项，新增适配函数与 `CandidateViewSource`。
+5. **corpus 增强**：19 场景 corpus 现在经由 `FakeCandidateViewSource`
+   提供 typed view，由**真实** `RuntimeCandidateQuery` 投影生成 leases
+   （与原 fake 投影语义等价：view revision Some(1)、capability 由 wire
+   名映射、epoch 含 exact deployment projection），验证 dispatch 与
+   W-routing-query 的真实接缝。
+
+### Rework 写集（全部在原边界内）
+
+- `router/src/dispatch/candidate.rs`（重写为适配层）
+- `router/src/dispatch/types.rs`（`RequestAuthority.deployment` 改为
+  canonical `ServiceDeploymentRef`；删除本地 mode/deployment query）
+- `router/src/dispatch/dispatcher.rs`（options/端口换接 + 投影调用）
+- `router/src/dispatch/admission.rs`（仅 import 指向 routing lease）
+- `router/src/dispatch/mod.rs`、`router/src/lib.rs`（re-export 去重）
+- `router/tests/dispatch_harness/mod.rs`（`FakeCandidateViewSource` +
+  epoch 携带 deployment）
+- `router/tests/dispatch_admission_corpus.rs`、
+  `router/tests/dispatch_invariants.rs`（接缝换接）
+- 本叶子文件（rework 记录）
+
+未改：C-routing-query/C-dispatch 契约语义、W-routing-query 交付
+（`router/src/routing/`）、W-model-request、其他节点文件。
+
+### Rework 自验收
+
+| 项 | 结果 |
+| --- | --- |
+| `cargo test -p skiff-router dispatch` | 19 场景 corpus + 22 invariants 全绿 |
+| `cargo test -p skiff-router` | 全量无回归 |
+| `node scripts/verify.mjs --only router-rust` | passed |
+| `cargo fmt -p skiff-router -- --check` + clippy | 通过 / router 零警告 |
+| rg 负例 | dispatch 内无 `CandidateQueryInput` / `ServiceDeploymentQuery` / 重复 canonical 类型定义 |

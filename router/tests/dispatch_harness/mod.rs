@@ -22,10 +22,11 @@ use skiff_deployment::projection::actor_routing::{
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::dispatch::{
-    ActorMethodSpawnControl, ActorMethodSpawnDispatch, CandidateQuery, CandidateQueryInput,
-    DispatchRequest, LeaseRevalidate, RegisteredSessionLease, RequestAuthority, RevalidateOutcome,
+    capabilities_from_wire_names, ActorMethodSpawnControl, ActorMethodSpawnDispatch,
+    CandidateViewSource, DispatchRequest, LeaseRevalidate, RequestAuthority, RevalidateOutcome,
     RoutingEpochSource, RuntimePeer, SessionAbortControl, SpawnSubmit,
 };
+use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -46,18 +47,6 @@ pub struct SessionState {
     pub capabilities: Vec<String>,
 }
 
-impl SessionState {
-    pub fn matches(&self, expected_tuple: &RegisteredAssemblyTuple, mode: &str) -> bool {
-        !self.cancelled
-            && self.revision == 1
-            && self.tuple == *expected_tuple
-            && self
-                .capabilities
-                .iter()
-                .any(|capability| capability == mode)
-    }
-}
-
 /// Fixed captured epoch (C-routing-query whole-epoch lease seam).
 #[derive(Debug)]
 pub struct FakeEpochSource {
@@ -70,17 +59,19 @@ impl RoutingEpochSource for FakeEpochSource {
     }
 }
 
-/// Fake stateless candidate projection over a mutable directory view.
+/// Fake directory view source over a mutable session-state view.
 ///
 /// Disconnect/replacement events update the view through
-/// [`FakeCandidateQuery::mark_cancelled`], mirroring how the real directory
-/// cancels an exact session before the new session becomes current.
+/// [`FakeCandidateViewSource::mark_cancelled`], mirroring how the real
+/// directory cancels an exact session before the new session becomes current.
+/// The canonical [`RuntimeCandidateQuery`] projection then runs over this
+/// view, exactly as it will in production.
 #[derive(Debug, Clone)]
-pub struct FakeCandidateQuery {
+pub struct FakeCandidateViewSource {
     pub sessions: Arc<Mutex<Vec<SessionState>>>,
 }
 
-impl FakeCandidateQuery {
+impl FakeCandidateViewSource {
     pub fn new(sessions: Vec<SessionState>) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(sessions)),
@@ -97,29 +88,26 @@ impl FakeCandidateQuery {
     }
 }
 
-impl CandidateQuery for FakeCandidateQuery {
-    fn query(
-        &self,
-        epoch: &RoutingEpoch,
-        query: &CandidateQueryInput,
-    ) -> Vec<RegisteredSessionLease> {
-        let expected_tuple = epoch.registered_tuple();
-        let mode = query.mode.as_str();
-        self.sessions
+impl CandidateViewSource for FakeCandidateViewSource {
+    fn view(&self) -> CandidateDirectoryView {
+        let sessions = self
+            .sessions
             .lock()
             .unwrap()
             .iter()
-            .filter(|session| session.matches(&expected_tuple, mode))
-            .map(|session| RegisteredSessionLease {
+            .map(|session| CandidateSession {
                 session_epoch: session.epoch.clone(),
+                registered: true,
+                registered_tuple: Some(session.tuple.clone()),
                 registration_revision: session.revision,
-                exact_registered_tuple: session.tuple.clone(),
                 cancelled: session.cancelled,
-                capabilities: skiff_router::dispatch::DispatchCapabilities::from_wire(
-                    &session.capabilities,
-                ),
+                capabilities: capabilities_from_wire_names(&session.capabilities),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        CandidateDirectoryView {
+            revision: Some(1),
+            sessions,
+        }
     }
 }
 
@@ -294,9 +282,11 @@ pub fn build_epoch(
     generation: u64,
     assembly_identity: &str,
     config_snapshot_id: &str,
+    deployment: ServiceDeploymentRef,
 ) -> Arc<RoutingEpoch> {
     let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
     assembly.assembly_identity = AssemblyIdentity::new(assembly_identity);
+    assembly.resolved_deployments = vec![deployment];
     let snapshot = Arc::new(
         RuntimeConfigSnapshot::new(
             environment,
@@ -346,7 +336,20 @@ pub fn corpus_epoch() -> Arc<RoutingEpoch> {
         CORPUS_GENERATION,
         CORPUS_ASSEMBLY_IDENTITY,
         CORPUS_CONFIG_SNAPSHOT_ID,
+        corpus_deployment_ref(),
     )
+}
+
+/// Fixed corpus-shaped deployment reference.
+pub fn corpus_deployment_ref() -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: CORPUS_SERVICE_ID.to_string(),
+        contract_version: CORPUS_CONTRACT_VERSION.to_string(),
+        deployment_revision: DeploymentRevision::new(CORPUS_DEPLOYMENT_REVISION),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(
+            CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY,
+        ),
+    }
 }
 
 /// Fixed corpus-shaped session fact.
@@ -441,12 +444,7 @@ pub fn authority_for_session(session: &RuntimeSessionEpoch) -> RequestAuthority 
     RequestAuthority {
         assembly_identity: CORPUS_ASSEMBLY_IDENTITY.to_string(),
         assembly_generation: CORPUS_GENERATION,
-        deployment: skiff_router::dispatch::ServiceDeploymentQuery {
-            service_id: CORPUS_SERVICE_ID.to_string(),
-            contract_version: CORPUS_CONTRACT_VERSION.to_string(),
-            deployment_revision: CORPUS_DEPLOYMENT_REVISION.to_string(),
-            deployment_artifact_identity: CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY.to_string(),
-        },
+        deployment: corpus_deployment_ref(),
         session_epoch: session.clone(),
     }
 }
