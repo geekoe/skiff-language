@@ -319,6 +319,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-chat-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-chat-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:chat',
+        description:
+          'pinned service artifact manifest (Skiff/internals/skiff-packages commits + every service artifact identity) loaded on an isolated Rust Router instance (real compiler artifact + temporary Mongo + real Rust Router/Runtime binaries), then `npm run e2e:chat-smoke` in internals/agine through a local ingress; real gate owned by the private internals repository trusted workflow, this script is the local equivalent using the same manifest schema and command',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-chat',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'npm', 'mongod', 'mongosh', 'git'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',

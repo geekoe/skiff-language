@@ -41,7 +41,7 @@ jobs:
             echo "related=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/check-router-http-live\.mjs|scripts/lib/http_live_|scripts/check-router-ws-live\.mjs|scripts/check-router-actor-live\.mjs|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
+          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/check-router-http-live\.mjs|scripts/lib/http_live_|scripts/check-router-ws-live\.mjs|scripts/check-router-actor-live\.mjs|scripts/check-router-chat-live\.mjs|scripts/lib/router-chat-live-manifest\.mjs|scripts/fixtures/router-chat-live/|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
             echo "related=true" >> "$GITHUB_OUTPUT"
           else
             echo "related=false" >> "$GITHUB_OUTPUT"
@@ -437,3 +437,37 @@ jobs:
       - name: Run router-live:actor managed gate
         if: needs.change-classifier.outputs.related == 'true'
         run: node scripts/check-router-actor-live.mjs
+
+  # Stable check-name placeholder: `Router Rust Chat (internals trusted
+  # workflow)`. `router-live:chat` is owned by the private `internals`
+  # repository trusted workflow (plan §8): it checks out the requested public
+  # Skiff SHA, builds the pinned service artifact manifest (Skiff/internals/
+  # skiff-packages commits + all service artifact identities) and runs the
+  # Agine chat smoke against an isolated Rust Router instance, reporting the
+  # result under its own stable check name. Public/fork PRs never inject
+  # private credentials, so this public job only keeps the required check name
+  # present and explicitly defers to the internals trusted workflow; it must
+  # not be treated as the gate itself.
+  router-rust-chat-placeholder:
+    name: Router Rust Chat (internals trusted workflow)
+    needs: change-classifier
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Skip unrelated change
+        if: needs.change-classifier.outputs.related == 'false'
+        run: echo "Unrelated change; router-live:chat placeholder skipped (required check succeeds)"
+
+      - name: Defer to internals trusted workflow
+        if: needs.change-classifier.outputs.related == 'true'
+        run: |
+          echo "router-live:chat is owned by the private internals repository trusted workflow"
+          echo "pinned commits + artifact manifest + Agine chat smoke cannot run from public/fork PRs"
+          echo "placeholder succeeds only to keep the required check name present"
