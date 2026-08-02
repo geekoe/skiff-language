@@ -824,6 +824,12 @@ async fn send_binary(socket: &mut PeerSocket, bytes: Vec<u8>) {
         .expect("send failed");
 }
 
+async fn send_binary_tolerant(socket: &mut PeerSocket, bytes: Vec<u8>) -> bool {
+    timeout(CLIENT_TIMEOUT, socket.send(Message::Binary(bytes.into())))
+        .await
+        .is_ok_and(|result| result.is_ok())
+}
+
 async fn expect_closed(socket: &mut PeerSocket) {
     let outcome = timeout(CLIENT_TIMEOUT, socket.next())
         .await
@@ -927,10 +933,15 @@ async fn ingress_saturation_test(live: &LiveEnvironment, state: &Arc<RelayState>
     let health_before = count_health_frames(state, 3);
     let mut socket = connect_direct(live.runtime_control_addr()).await;
     complete_direct_handshake(live, &mut socket, SATURATION_REPLICA_ID).await;
-    // 70 health frames exceed the frozen inbound frame cap (64 total frames);
+    // 4200 health frames exceed the process default inbound frame cap
+    // (4096 cumulative frames; C-session §5.3 default corrected 2026-08-03);
     // the exact session must be aborted while other sessions keep running.
-    for _ in 0..70 {
-        send_binary(&mut socket, health_frame(SATURATION_REPLICA_ID)).await;
+    // Sends tolerate the abort mid-loop (the socket closes once the budget
+    // is exceeded).
+    for _ in 0..4200 {
+        if !send_binary_tolerant(&mut socket, health_frame(SATURATION_REPLICA_ID)).await {
+            break;
+        }
     }
     expect_closed(&mut socket).await;
     let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;

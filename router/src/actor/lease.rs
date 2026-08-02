@@ -215,6 +215,18 @@ impl ActorLeaseExpiryScheduler {
         Ok(())
     }
 
+    /// Forgets one actor's idle/eviction bookkeeping after its owner fence was
+    /// released outside the sweep path (disconnect/replace/shutdown). The
+    /// registry fence removal is owned by the caller; this only drops the
+    /// scheduler-local clock so a later re-activation starts a fresh idle
+    /// window and no stale eviction is retried against an unowned actor.
+    pub fn forget(&self, key: &ActorLogicalKey) {
+        let mut inner = self.lock();
+        inner.idle_since.remove(key);
+        inner.connections.remove(key);
+        inner.evictions.remove(key);
+    }
+
     /// Shutdown: cancel every scheduler timer/bookkeeping.
     pub fn shutdown(&self) {
         let mut inner = self.lock();

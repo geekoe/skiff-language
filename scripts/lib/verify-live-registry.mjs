@@ -241,6 +241,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-actor-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-actor-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:actor',
+        description:
+          'two real Runtime replicas + real Rust Router binary + real compiler artifact: actor claim token/activation broker/invocation/owner control/lease scheduler full chain, function spawn and actor-method spawn parent authority, disconnect/replacement/concurrent claim/lease race/spawn mismatch fail closed, and zero actor invocation/control/lease/timer residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-actor',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-differential-live',
     source: {
       type: 'script',
