@@ -137,6 +137,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-session-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-session-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:session',
+        description:
+          'real Rust Router binary + real Rust Runtime process bootstrap/register/health/reconnect/shutdown roundtrip with session barrier, pre-auth limit/timeout, ingress saturation and zero residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-session',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',
