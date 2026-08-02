@@ -107,6 +107,23 @@ function readCatalog(): FrameCatalog {
   ) as FrameCatalog;
 }
 
+// Spawn family frame-level direction table (C-model-spawn §3.0):
+// `spawn.submit.request` is Runtime->Router; response/error are
+// Router->Runtime.
+function expectedDirection(name: string): string {
+  switch (name) {
+    case 'spawn.submit.request.function':
+    case 'spawn.submit.request.actorMethod':
+    case 'spawn.submit.request.legacy-no-caller-kind':
+      return 'RuntimeToRouter';
+    case 'spawn.submit.response':
+    case 'spawn.submit.error.parentNotFound':
+      return 'RouterToRuntime';
+    default:
+      throw new Error(`unexpected spawn frame ${name}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Resolver / router reference model (C-model-spawn §4, C-spawn §2-§4)
 // ---------------------------------------------------------------------------
@@ -282,7 +299,7 @@ describe('H-spawn-parent-cut shared spawn-wire corpus (TS consumer)', () => {
     }
     expect(Object.keys(catalog.frames).length).toBe(REQUIRED_FRAMES.length);
     for (const [name, entry] of Object.entries(catalog.frames)) {
-      expect(entry.direction).toBe('RouterToRuntime');
+      expect(entry.direction).toBe(expectedDirection(name));
       expect(entry.header.schemaVersion).toBe('skiff-runtime-frame-v3');
       expect(entry.header.type).toBe(entry.frameType);
       const decoded = decodeBinaryFrame(hexBytes(entry.frameHex));
