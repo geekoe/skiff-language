@@ -1,11 +1,11 @@
 # Router Rust Migration Batch 10 — E-chat leaf（router-live:chat 本地等价）
 
 日期：2026-08-03
-状态：execution leaf（一次性有界会话）→ **TASK_SCOPE_EXPANDED（第二轮）**
+状态：execution leaf（一次性有界会话）→ **PASS**
 
-第一轮阻塞（HTTP surface 重复 gateway entry key）已按 root 授权修复并通过自验收；
-本地等价 gate 仍被第二个生产缺口阻塞（Runtime 注册后 ~1.35s 被 Router 关闭），
-详见「阻塞项与证据」。
+三轮修复后，`node scripts/check-router-chat-live.mjs` 在 isolated Rust Router
+实例上以真实 agine stack 跑通 `npm run e2e:chat-smoke`（含 cleanup），产出
+evidence manifest 与四 SHA。修复与证据如下。
 
 ## 引用链
 
@@ -178,40 +178,38 @@ deployment, selector }`）把 HTTP surface 视图键改为
 - 自验收：`cargo test -p skiff-router` 全绿（含既有 HTTP/WS/actor/differential
   suites，live probes 预期 ignored）；`ws_live_surface` 3/3。
 
-#### 仍然阻塞：Runtime 首次注册后 ~1.35s 被 Router 关闭（新缺口，超出本轮授权）
+#### 已修复：Runtime 首次注册后 ~1.35s 被 Router 关闭（session lane，root 授权）
 
-修复第一缺口后，真实链路已跑通到 chat 执行前：session、provider list、
-WebSocket、agents/create、chat/create 全部经 Rust Router + 真实 Runtime
-成功；`npm run e2e:chat-smoke` 在 `chat/send` 处失败：
+真实根因（用 env-gated session 诊断定位）：chat/send 的服务端→客户端 WS 事件
+以 Runtime `connection.send` 帧到达 Router；Connection-family sink 不识别该帧，
+返回 `MalformedFrame` → 终止 exact Runtime session（即观测到的注册后空 Close）。
+TS Router 会投递这些帧，属于 Rust parity 缺口。
 
-```text
-[agine:e2e] chat ok id=chat_...
-[agine:e2e] failed: ChatSmokePrimaryAndCleanupError: chat/send failed:
-Runtime request runtime_disconnect: runtime_disconnect
-```
+修复（TS parity）：
 
-证据链（KEEP_ON_FAILURE 保留实例 + RUST_LOG=debug 复现）：
+- `router/src/supervisor/sinks.rs`：`ConnectionFrameSink` 接受并解码
+  `connection.send`；delivery miss 非致命（warn + continue），protocol
+  violation 终止 exact session（TS 1008）。
+- `router/src/ws/lane.rs` + `broker.rs`：按 `connectionId` 或
+  `businessIdentity` 路由，校验 service/entry 元数据，经 captured
+  `PeerWriter` 投递 text/binary。
+- `router/src/ws/types.rs` / `index.rs` / `listener.rs`：`PeerWriter` 增加
+  `write_binary`（含 slow-client budget/fence）。
 
-- Router 对 Runtime 发送**空 Close 帧**（runtime debug log：
-  `Received close frame: None`），Router stderr 无任何输出；Runtime
-  随后 `runtime.router_disconnected` + 重连。
-- 时序与 chat/send **无关**：每次全新 isolated instance 都是
-  “Runtime 注册成功 → ~1.35s 后被关 → 重连再注册后稳定”。smoke 的
-  chat/send 恰好落在这个窗口所以失败；等待 >2min 后手动执行
-  session/provider/WS/agents/create/chat/create/chat/send 全部成功。
-- 排除项：无 client WS 时 chat/send 同样杀会话；subagentsEnabled=false
-  同样杀会话；deepseek API key 直连有效（200）；aihub 的
-  `/v1/chat/completions` 经 Router 直调成功且会话存活；裸 WS 保持 6s
-  正常；首次注册后的第二次注册稳定不再被杀。
-- 另一独立现象：Runtime 冷启动时 whole-assembly service DB index
-  provisioning 需 ~10-21s，超过 session handshake 的
-  `bootstrap: 10s` 时限时第一次连接被关（随后重连复用缓存完成注册）。
+冷启动 deadline（第二个授权项）：全新 Runtime 在 `runtime.capabilities` 前
+需完成 whole-assembly service DB index provisioning（实测 10-21s）；
+`SessionTiming` 默认 bootstrap/capabilities 由 10s 放宽到 30s（TS 无分阶段
+握手 deadline；registered 后不再存在任何握手 deadline）。契约文档
+`c-session-contract.md` 已更新默认值与理由。
 
-疑似 owner（需 router 侧诊断日志定位，本叶子禁止写这些模块）：
-`router/src/session/*`（handshake/ack barrier、`SessionTiming`）、
-`router/src/activation/coordinator.rs`（cold recovery rebind 观察路径）、
-或 `router/src/dispatch|ws` 的 abort/violation 路径。修复后重跑
-`node scripts/check-router-chat-live.mjs` 即可继续。
+#### 已修复：derived function spawn 的 recoverable args payload（清理路径）
+
+chat smoke 主链路 PASS 后，cleanup 暴露第三个缺口：派生 function spawn 的
+`request.start` 以空 payload 编码，Runtime 严格解码器拒绝
+（“recoverable args payload must be present”）并断开控制连接。TS parity
+`dispatchDerivedSpawn(ws, request, payloadBytes)` 转发原始 spawn.submit
+payload；`SessionRuntimePeer::send_spawn_submit` 现在从 captured
+`SpawnWireStore` 取回 payload（wire 缺失时 fail-closed）。
 
 ### 运行证据（harness `scripts/check-router-chat-live.mjs`）
 
@@ -232,7 +230,17 @@ Runtime request runtime_disconnect: runtime_disconnect
   artifact identities 已按 `skiff-router-chat-live-manifest-v1` schema 校验通过
   （`scripts/lib/router-chat-live-manifest.mjs`，示例数据 services=3 /
   packages=8 验证 PASS）。
-- 注意：第二轮起 Skiff SHA 为分支头 `f140ee8d…`（含 HTTP surface 修复）。
+- 最终 PASS 运行（2026-08-03）：
+  - Skiff：`c5463fda086c58cfe29c7ed5f30d1d4a1e722de1`（分支头，含全部修复）
+  - internals：`deff2357393d539013db843538b0d229f9bd5174`（工作树 dirty，
+    diff sha256 `2f95b53b…`，未改 internals）
+  - skiff-packages：`db4ddd9e05936b6fa8beff42ed242c8a73f08de3`
+  - Assembly：`skiff-runtime-assembly-v3:sha256:2a8fa377f903002abcbbf972050f64f1fdef183741aebe956290b2e611e5ff3d`
+  - Config snapshot：`skiff-runtime-config-snapshot-v1:06976ada6a4c4d789de9c1564bf48153`
+  - smoke：session/provider/WS/agents/chat create/send/reply（chars=12，
+    first_visible 1128.5ms）/cleanup 全部 PASS
+  - evidence manifest：
+    `scripts/fixtures/router-chat-live/manifest.json`
 
 ### 已交付（本分支）
 
@@ -242,14 +250,23 @@ Runtime request runtime_disconnect: runtime_disconnect
   surface per-deployment 键修复，root 授权）
 - `router/tests/ws_live_surface.rs`（重复 gateway entry key 回归测试 + API
   适配）
+- `router/src/session/layer.rs` + `router/tests/session_handshake_probe.rs`
+  （冷启动 deadline 放宽 + 注册后无 deadline/重连回归测试）
+- `router/src/supervisor/sinks.rs` + `router/src/ws/*` + `listener.rs`
+  （`connection.send` 投递，text/binary，TS parity）
+- `router/src/supervisor/session_ports.rs`（derived spawn recoverable args
+  payload）
+- `doc/implementation/router-rust-migration-c-session-contract.md`（deadline
+  默认值与理由）
 - `scripts/lib/verify-live-registry.mjs` 的 `router-live:chat` 条目
 - `scripts/tests/verify-live-registry.test.mjs` LIVE_SELECTORS 同步
 - `.github/workflows/router-rust-integration.yml` CI 占位 job（注明 trusted
   workflow 归属）
 - 本叶子文档与阻塞证据
 
-gate 未 PASS，`scripts/fixtures/router-chat-live/manifest.json` 未生成（harness
-只在 smoke PASS 时写 evidence manifest）；集成 Agent 在第二个缺口修复后重跑
-`node scripts/check-router-chat-live.mjs` 即可产出并提交该 fixture。
+gate 已 PASS：`scripts/fixtures/router-chat-live/manifest.json` 为本轮真实运行
+evidence（三仓库 SHA + assembly/config snapshot + 3 service + 8 package
+identities + PASS 结果）；重跑 `node scripts/check-router-chat-live.mjs`
+即可复现。
 
 <!-- 运行结果由 harness 填充后回填 -->
