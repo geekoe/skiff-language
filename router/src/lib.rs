@@ -6,6 +6,7 @@ pub mod artifact;
 pub mod bootstrap;
 pub mod config;
 pub mod dispatch;
+pub mod http;
 pub mod listener;
 pub mod routing;
 pub mod session;
@@ -30,6 +31,13 @@ pub use dispatch::{
     RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SpawnHealth,
     SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
     SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
+};
+pub use http::{
+    CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
+    HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
+    HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
+    HttpStreamSink, UnaryHttpResponse,
 };
 pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
