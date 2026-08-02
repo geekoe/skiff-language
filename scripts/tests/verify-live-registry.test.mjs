@@ -46,6 +46,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'router-live:bootstrap',
     'router-live:session',
     'router-live:differential',
+    'router-live:http',
     'loop-risk-health-live',
     'loop-risk-stress-live',
   ]);
