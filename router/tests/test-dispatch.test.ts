@@ -126,7 +126,6 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     const runtime = await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-test-dispatch',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
@@ -134,7 +133,7 @@ describe('router test dispatch control endpoint', () => {
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((entry) => entry.target),
       activationIdentity: 'skiff-runtime-activation-v1:opaque:test-dispatch'
-    });
+    }, registry);
     runtime.onRequestFrame((request) => {
       runtime.sendBinaryResponse(request.header.requestId, request.payloadBytes);
     });
@@ -226,7 +225,6 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     const runtime = await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-test-dispatch-error',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
@@ -234,7 +232,7 @@ describe('router test dispatch control endpoint', () => {
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((entry) => entry.target),
       activationIdentity: 'skiff-runtime-activation-v1:opaque:test-dispatch-error'
-    });
+    }, registry);
     runtime.onRequestFrame((request) => {
       runtime.sendError(request.header.requestId, {
         code: 'UnhandledServiceError',
@@ -289,7 +287,6 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     const runtime = await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-test-dispatch-explicit',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
@@ -297,7 +294,7 @@ describe('router test dispatch control endpoint', () => {
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target],
       activationIdentity: 'skiff-runtime-activation-v1:opaque:explicit-test-dispatch'
-    });
+    }, registry);
     runtime.respondWithBinaryJsonPayload({ ok: true });
     const requestFrames = runtime.collectRequestFrames(1, 'explicit test dispatch request');
     const controlUrl = listen.url.replace('ws://', 'http://').replace('/runtime', '');
@@ -354,14 +351,13 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     const runtime = await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-test-dispatch-explicit-collision',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: explicitProtocolIdentity,
       targets: [operation.target]
-    });
+    }, registry);
     runtime.respondWithBinaryJsonPayload({ ok: true });
     const requestFrames = runtime.collectRequestFrames(
       1,
@@ -565,14 +561,13 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-without-package-test-capability',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((entry) => entry.target)
-    });
+    }, registry);
     const controlUrl = listen.url.replace('ws://', 'http://').replace('/runtime', '');
 
     const response = await requestHttp({
@@ -609,16 +604,14 @@ describe('router test dispatch control endpoint', () => {
     });
     const listen = await endpoint.listen({ port: 0, controlPlane });
     await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-service-only-for-package-test',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((entry) => entry.target)
-    });
+    }, registry);
     const runtime = await MockRuntime.register(listen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-package-test-capable',
       serviceId: manifest.service.id,
       revisionId: `${manifest.service.revisionId}-package-test`,
@@ -628,7 +621,7 @@ describe('router test dispatch control endpoint', () => {
       capabilities: {
         packageTestDispatch: true
       }
-    });
+    }, registry);
     const packageFrame = collectPackageTestFrame(runtime, 'package test dispatch frame');
     runtime.ws.on('message', (data) => {
       const frame = decodeRuntimeFrame(data);

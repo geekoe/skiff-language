@@ -1393,7 +1393,16 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
   ])('rejects $name correlation headers without ordinary dispatch', async ({ headers, status }) => {
     const fixture = await createFixture();
     let runtimeFrames = 0;
-    fixture.runtime.on('message', () => runtimeFrames += 1);
+    fixture.runtime.on('message', (data) => {
+      try {
+        if (decodeBinaryFrame(data as Buffer).header.type === 'runtime.registered') {
+          return;
+        }
+      } catch {
+        // Not a decodable frame; count it.
+      }
+      runtimeFrames += 1;
+    });
     const response = await sendHttp(
       fixture.httpUrl,
       new Uint8Array(),
@@ -1673,15 +1682,34 @@ async function openSocket(url: string): Promise<WebSocket> {
 
 async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 1000);
-    ws.once('message', (data, isBinary) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for binary frame'));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
       clearTimeout(timeout);
       if (!isBinary) {
+        cleanup();
         reject(new Error('expected binary runtime frame'));
         return;
       }
-      resolve(rawDataBuffer(data));
-    });
+      const buffer = rawDataBuffer(data);
+      try {
+        if (decodeBinaryFrame(buffer).header.type === 'runtime.registered') {
+          // Skip the registered ACK handshake frame.
+          return;
+        }
+      } catch {
+        // Not a decodable binary frame; pass through.
+      }
+      cleanup();
+      resolve(buffer);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
   });
 }
 

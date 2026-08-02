@@ -165,23 +165,21 @@ describe('router control listener', () => {
     const controlUrl = registryListen.url.replace('ws://', 'http://').replace('/runtime', '');
 
     await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-control-prune-stale',
       serviceId: manifest.service.id,
       revisionId: 'revision-control-prune-stale',
       buildId: staleBuild,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
     await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-control-prune-current',
       serviceId: manifest.service.id,
       revisionId: 'revision-control-prune-current',
       buildId: currentBuild,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
 
     const publicPrune = await requestHttp({
       url: `${gatewayListen.url}/__router/prune-runtimes`,

@@ -121,6 +121,7 @@ const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
   actorGetCreateControl,
   assemblyRegistry: registry,
+  preAuthMaxConcurrency: config.runtimeMaxConcurrency,
   bootstrap: () => {
     const active = snapshots.get();
     return runtimeBootstrapForRouterConfig(config, {

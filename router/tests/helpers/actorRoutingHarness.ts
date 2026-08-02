@@ -210,12 +210,12 @@ async function createHarness({
   });
   endpoint.setActorMethods(actorMethods);
   const listening = await endpoint.listen({ port: 0 });
-  const left = await runtime(listening.url, 'runtime-a');
+  const left = await runtime(listening.url, 'runtime-a', SERVICE_ID, registry);
   const right = secondRuntime
-    ? await runtime(listening.url, 'runtime-b')
+    ? await runtime(listening.url, 'runtime-b', SERVICE_ID, registry)
     : undefined;
   const external = externalRuntime
-    ? await runtime(listening.url, 'runtime-c', EXTERNAL_SERVICE_ID)
+    ? await runtime(listening.url, 'runtime-c', EXTERNAL_SERVICE_ID, registry)
     : undefined;
   let dispatcherInstance: RuntimeDispatcher | undefined;
   if (dispatcher) {
@@ -549,7 +549,8 @@ export function terminalLedgerState(
 export async function runtime(
   url: string,
   runtimeId: string,
-  serviceId = SERVICE_ID
+  serviceId: string,
+  registry: RuntimeRegistry
 ): Promise<WebSocket> {
   const socket = new WebSocket(url);
   sockets.push(socket);
@@ -563,20 +564,22 @@ export async function runtime(
     runtimeId,
     capabilities: { runtimeProgram: true },
   }));
-  socket.send(encodeRuntimeFrame({
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'runtime.register',
+  const deadline = Date.now() + 2_000;
+  while (registry.runtimeConnection(runtimeId) === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for capability connection ${runtimeId}`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const serverSide = registry.runtimeConnection(runtimeId)!.ws;
+  registry.registerRuntime(serverSide, {
     runtimeId,
     serviceId,
     revisionId: 'a'.repeat(64),
     buildId: BUILD,
     serviceProtocolIdentity: SERVICE_PROTOCOL,
     targets: ['actor.example.Counter.increment'],
-  }));
-  const response = decodeBinaryFrame(await nextBinary(socket));
-  if (response.header.type !== 'runtime.registered') {
-    throw new Error(`expected runtime.registered, got ${response.header.type}`);
-  }
+  });
   return socket;
 }
 

@@ -125,7 +125,7 @@ describe('actor method spawn submit', () => {
     });
     endpoint.setActorMethods(actorMethods);
     const listening = await endpoint.listen({ port: 0 });
-    const left = await runtime(listening.url, 'runtime-a');
+    const left = await runtime(listening.url, 'runtime-a', SERVICE_ID, registry);
     failClosedSockets.push(left);
     const actor = await registry
       .actorManager()
@@ -586,7 +586,7 @@ describe('actor method spawn submit', () => {
       returnEncodingVersion: ACTOR_RETURN_ENCODING_V1,
     }, new Uint8Array());
     await warmupReturn;
-    const caller = await runtime(url, 'runtime-b');
+    const caller = await runtime(url, 'runtime-b', SERVICE_ID, registry);
     const callerServer = registry.runtimeConnection('runtime-b')!.ws;
 
     const pendingDisconnect = invocation(actor, 'caller-disconnect-pending');
@@ -955,7 +955,7 @@ describe('actor method spawn submit', () => {
       returnEncodingVersion: ACTOR_RETURN_ENCODING_V1,
     }, new Uint8Array());
     await warmupReturn;
-    await runtime(url, 'runtime-batch-caller');
+    await runtime(url, 'runtime-batch-caller', SERVICE_ID, registry);
     const caller = registry.runtimeConnection('runtime-batch-caller')!.ws;
     const invocationIds = [
       'disconnect-batch-first',

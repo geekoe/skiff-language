@@ -13,8 +13,7 @@ import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   isRecord,
-  RUNTIME_FRAME_SCHEMA_VERSION,
-  type RuntimeRegisterEnvelope
+  RUNTIME_FRAME_SCHEMA_VERSION
 } from '../src/protocol/envelope.js';
 import {
   DEFAULT_TEST_BUILD_ID,
@@ -28,7 +27,8 @@ import {
 import { RouterHarness } from './helpers/routerHarness.js';
 import {
   closeTrackedResources,
-  type RuntimeRequestFrame
+  type RuntimeRequestFrame,
+  type RuntimeTestRegisterInput
 } from './helpers/runtime.js';
 
 afterEach(closeTrackedResources);
@@ -1137,8 +1137,7 @@ describe('router raw HTTP gateway', () => {
     const manifest = withBuildId(await loadManifestFile('fixtures/hello/manifest.json'));
     const harness = await RouterHarness.http({ manifest });
 
-    const register: RuntimeRegisterEnvelope = {
-      type: 'runtime.register',
+    const register: RuntimeTestRegisterInput = {
       runtimeId: 'runtime-test-1',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,

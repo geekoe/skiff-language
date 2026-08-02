@@ -49,11 +49,24 @@ use tracing::{info, warn};
 use crate::error::{Result, RuntimeError};
 
 mod activation;
+mod handshake;
 
 use activation::{
     cleanup_session_activation, dispatch_session_activation_frame, router_binary_frame_type,
     terminal_message, SessionActivationState,
 };
+use handshake::{
+    ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
+    HandshakeDeadlines,
+};
+
+fn handshake_terminal_error(terminal: ClientTerminalKind) -> RuntimeError {
+    RuntimeError::Decode(format!(
+        "runtime handshake terminal {}: {}",
+        terminal.description(),
+        format!("{terminal:?}")
+    ))
+}
 
 const TERMINAL_ABORT_GRACE: Duration = Duration::from_millis(2);
 
@@ -80,6 +93,20 @@ where
     run_connected_session_with_bootstrap(host, ws, router_session_id, None).await
 }
 
+#[cfg(test)]
+pub(super) async fn run_connected_session_with_deadlines<S>(
+    host: super::RuntimeHost,
+    ws: WebSocketStream<S>,
+    router_session_id: String,
+    initial_bootstrap: Option<ConnectionBootstrap>,
+    deadlines: HandshakeDeadlines,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    run_connected_session_full(host, ws, router_session_id, initial_bootstrap, deadlines).await
+}
+
 async fn run_connected_session_with_bootstrap<S>(
     host: super::RuntimeHost,
     ws: WebSocketStream<S>,
@@ -89,9 +116,40 @@ async fn run_connected_session_with_bootstrap<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    run_connected_session_full(
+        host,
+        ws,
+        router_session_id,
+        initial_bootstrap,
+        HandshakeDeadlines::default(),
+    )
+    .await
+}
+
+async fn run_connected_session_full<S>(
+    host: super::RuntimeHost,
+    ws: WebSocketStream<S>,
+    router_session_id: String,
+    initial_bootstrap: Option<ConnectionBootstrap>,
+    handshake_deadlines: HandshakeDeadlines,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut ws = ws;
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
     let mut receiver = receiver;
+    // Test shortcut connections start with the handshake already completed.
+    let mut handshake = if initial_bootstrap.is_some() {
+        ClientHandshake::registered()
+    } else {
+        ClientHandshake::new()
+    };
+    let mut handshake_deadline = if handshake.phase() == ClientHandshakePhase::WaitingBootstrap {
+        Some(tokio::time::Instant::now() + handshake_deadlines.bootstrap)
+    } else {
+        None
+    };
 
     host.websocket_generations.connect(&router_session_id)?;
     if let Err(error) = host.open_actor_instance_session(&router_session_id) {
@@ -133,6 +191,7 @@ where
                         &sender,
                         &mut health_reporter,
                         &mut bootstrap,
+                        &mut handshake,
                         &mut child_tasks,
                         &mut activation_state,
                         &mut activation_prepare_tasks,
@@ -140,6 +199,16 @@ where
                     .await?
                     {
                         break;
+                    }
+                    if handshake.phase() == ClientHandshakePhase::BootstrapReceived {
+                        handshake_deadline = Some(
+                            tokio::time::Instant::now() + handshake_deadlines.registered,
+                        );
+                    } else if matches!(
+                        handshake.phase(),
+                        ClientHandshakePhase::Registered | ClientHandshakePhase::Closed
+                    ) {
+                        handshake_deadline = None;
                     }
                     continue;
                 }
@@ -164,6 +233,7 @@ where
                         &sender,
                         &mut health_reporter,
                         &mut bootstrap,
+                        &mut handshake,
                         &mut child_tasks,
                         &mut activation_state,
                         &mut activation_prepare_tasks,
@@ -172,12 +242,26 @@ where
                     {
                         break;
                     }
+                    if handshake.phase() == ClientHandshakePhase::BootstrapReceived {
+                        handshake_deadline = Some(
+                            tokio::time::Instant::now() + handshake_deadlines.registered,
+                        );
+                    } else if matches!(
+                        handshake.phase(),
+                        ClientHandshakePhase::Registered | ClientHandshakePhase::Closed
+                    ) {
+                        handshake_deadline = None;
+                    }
                 }
                 message = receiver.recv() => {
                     let Some(message) = message else {
                         break;
                     };
                     send_writer_message(&mut ws, message).await?;
+                    handshake.on_registration_write_flushed();
+                    if handshake.phase() == ClientHandshakePhase::Registered {
+                        handshake_deadline = None;
+                    }
                 }
                 completed = activation_prepare_tasks.join_next(), if activation_state.is_preparing() => {
                     let result = match completed {
@@ -204,6 +288,15 @@ where
                     health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
                 }
                 _ = child_tasks.next(), if !child_tasks.is_empty() => {}
+                _ = tokio::time::sleep_until(handshake_deadline.unwrap_or_else(|| tokio::time::Instant::now())), if handshake_deadline.is_some() => {
+                    let kind = if handshake.phase() == ClientHandshakePhase::WaitingBootstrap {
+                        ClientTimeoutKind::Bootstrap
+                    } else {
+                        ClientTimeoutKind::Registered
+                    };
+                    let terminal = handshake.on_timeout(kind);
+                    return Err(handshake_terminal_error(terminal));
+                }
             }
         }
 
@@ -232,6 +325,7 @@ async fn handle_router_session_message<S>(
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
     bootstrap: &mut Option<ConnectionBootstrap>,
+    handshake: &mut ClientHandshake,
     child_tasks: &mut RouterSessionChildTasks,
     activation_state: &mut SessionActivationState,
     activation_prepare_tasks: &mut JoinSet<activation::ActivationPrepareTaskResult>,
@@ -249,7 +343,25 @@ where
             reject_router_text_message(text.as_str())?;
         }
         Message::Binary(bytes) => {
-            if router_binary_frame_type(&bytes)? == ASSEMBLY_ACTIVATION_FRAME_TYPE {
+            let frame_type = router_binary_frame_type(&bytes)?;
+            if frame_type == "router.bootstrap" {
+                if let Err(terminal) = handshake.on_bootstrap() {
+                    return Err(handshake_terminal_error(terminal));
+                }
+            } else if frame_type != "runtime.registered"
+                && matches!(
+                    frame_type.as_str(),
+                    "runtime.capabilities" | "runtime.health" | "runtime.register"
+                )
+            {
+                let terminal = handshake.on_direction_violation(&frame_type);
+                return Err(handshake_terminal_error(terminal));
+            } else if frame_type != "runtime.registered" {
+                if let Err(terminal) = handshake.on_business_frame() {
+                    return Err(handshake_terminal_error(terminal));
+                }
+            }
+            if frame_type == ASSEMBLY_ACTIVATION_FRAME_TYPE {
                 if let Some(reply) = dispatch_session_activation_frame(
                     host,
                     &bytes,
@@ -269,6 +381,7 @@ where
                     sender,
                     health_reporter,
                     bootstrap,
+                    handshake,
                     child_tasks,
                 )
                 .await?;
@@ -622,6 +735,7 @@ async fn dispatch_router_binary_frame(
         activation: test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     });
+    let mut handshake = ClientHandshake::registered();
     dispatch_router_binary_frame_inner(
         host,
         "skiff-router-session-v1:opaque:test-session",
@@ -629,6 +743,7 @@ async fn dispatch_router_binary_frame(
         sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -659,6 +774,7 @@ async fn dispatch_router_binary_frame_with_http_response_max(
         activation: test_bootstrap_activation(),
         max_response_bytes,
     });
+    let mut handshake = ClientHandshake::registered();
     dispatch_router_binary_frame_inner(
         host,
         "skiff-router-session-v1:opaque:test-session",
@@ -666,6 +782,7 @@ async fn dispatch_router_binary_frame_with_http_response_max(
         sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -678,6 +795,7 @@ async fn dispatch_router_binary_frame_with_health(
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
     bootstrap: &mut Option<ConnectionBootstrap>,
+    handshake: &mut ClientHandshake,
     child_tasks: &mut RouterSessionChildTasks,
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
@@ -687,6 +805,7 @@ async fn dispatch_router_binary_frame_with_health(
         sender,
         Some(health_reporter),
         bootstrap,
+        handshake,
         RouterSessionChildTaskDispatch::Owned(child_tasks),
     )
     .await
@@ -699,6 +818,7 @@ async fn dispatch_router_binary_frame_inner(
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
     bootstrap: &mut Option<ConnectionBootstrap>,
+    handshake: &mut ClientHandshake,
     child_tasks: RouterSessionChildTaskDispatch<'_>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
@@ -722,6 +842,7 @@ async fn dispatch_router_binary_frame_inner(
             )
             .await?;
             host.queue_connection_registration(sender.clone())?;
+            handshake.mark_registration_queued();
             *bootstrap = Some(installed);
         }
         ASSEMBLY_ACTIVATION_FRAME_TYPE => {
@@ -753,11 +874,6 @@ async fn dispatch_router_binary_frame_inner(
                 .dispatch_router_control(router_session_id, bytes, sender)?;
         }
         "runtime.registered" => {
-            if bootstrap.is_none() {
-                return Err(RuntimeError::Decode(
-                    "runtime.registered requires router.bootstrap first".to_string(),
-                ));
-            }
             let (header, payload) =
                 decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
@@ -766,6 +882,9 @@ async fn dispatch_router_binary_frame_inner(
                     "runtime.registered binary frame payload must be empty".to_string(),
                 ));
             }
+            handshake
+                .on_registered(&header.runtime_id, &host.base_runtime_id)
+                .map_err(handshake_terminal_error)?;
             let mut rest = serde_json::Map::new();
             rest.insert("runtimeId".to_string(), Value::String(header.runtime_id));
             host.log_registered(&rest);

@@ -122,7 +122,14 @@ describe('runtime connection.send sender binding and observability', () => {
         } satisfies ConnectionSendDisposition;
       });
       let sourceMessages = 0;
-      fixture.runtime.on('message', () => {
+      fixture.runtime.on('message', (data) => {
+        try {
+          if (decodeBinaryFrame(data as Buffer).header.type === 'runtime.registered') {
+            return;
+          }
+        } catch {
+          // Not a decodable frame; count it.
+        }
         sourceMessages += 1;
       });
 
@@ -156,7 +163,14 @@ describe('runtime connection.send sender binding and observability', () => {
       connectionId: 'connection-closed'
     }));
     let sourceMessages = 0;
-    fixture.runtime.on('message', () => {
+    fixture.runtime.on('message', (data) => {
+      try {
+        if (decodeBinaryFrame(data as Buffer).header.type === 'runtime.registered') {
+          return;
+        }
+      } catch {
+        // Not a decodable frame; count it.
+      }
       sourceMessages += 1;
     });
 
@@ -446,15 +460,30 @@ async function waitForClose(ws: WebSocket): Promise<[number, string]> {
 
 async function nextRuntimeFrame(ws: WebSocket): Promise<ReturnType<typeof decodeRuntimeFrame>> {
   return await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('timed out waiting for frame')), 1_000);
-    ws.once('message', (data) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for frame'));
+    }, 1_000);
+    const onMessage = (data: WebSocket.RawData) => {
       clearTimeout(timeout);
       try {
-        resolve(decodeRuntimeFrame(data));
+        const frame = decodeRuntimeFrame(data);
+        if (frame.header.type === 'runtime.registered') {
+          // Skip the registered ACK handshake frame.
+          return;
+        }
+        cleanup();
+        resolve(frame);
       } catch (error) {
+        cleanup();
         reject(error);
       }
-    });
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
   });
 }
 

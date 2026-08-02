@@ -103,24 +103,22 @@ describe('router version routing', () => {
     const gatewayListen = await gateway.listen();
 
     const runtimeA = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-build-a',
       serviceId: manifest.service.id,
       revisionId: 'revision-build-a',
       buildId: buildA,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
     respondWithRawHttpRuntime(runtimeA, 'runtime-build-a');
     const runtimeB = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-build-b',
       serviceId: manifest.service.id,
       revisionId: 'revision-build-b',
       buildId: buildB,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
     respondWithRawHttpRuntime(runtimeB, 'runtime-build-b');
 
     const response = await requestHttp({
@@ -187,14 +185,13 @@ describe('router version routing', () => {
     const gatewayListen = await gateway.listen();
 
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-typed-release',
       serviceId: manifest.service.id,
       revisionId: 'revision-typed-release',
       buildId,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [typedTarget]
-    });
+    }, registry);
     const requestsPromise = collectRuntimeRequests(runtime, 1, 'typed release route request');
     respondWithRawHttpRuntime(runtime, 'runtime-typed-release');
 
@@ -236,14 +233,13 @@ describe('router version routing', () => {
     const gatewayListen = await gateway.listen();
 
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
       runtimeId: 'runtime-build-release-header',
       serviceId: manifest.service.id,
       revisionId: 'revision-build-release-header',
       buildId,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
     respondWithRawHttpRuntime(runtime, 'runtime-build-release-header');
 
     const releaseHeaderResponse = await requestHttp({
