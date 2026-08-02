@@ -147,6 +147,17 @@ Agent：`/root/dev_e_ws_gate`
   WebSocketJsonRpc 的 unary 表面）记录给 runtime owner（E-dispatch gate /
   集成）后续扩展，不改 runtime 本节点。
 
+### Batch 10 WS-only routing 后续处理
+
+`/root/dev_ws_only_routing` 已关闭上述残余缺口（分支
+`feat/router-rust-ws-only-routing`，叶子：
+`doc/implementation/router-rust-ws-only-routing-leaf.md`）：
+`dispatch_modes_from_gateway_entries` 现覆盖 WebSocket surface——
+WebSocketConnect 表面贡献 unary，WebSocketJsonRpc 表面按其
+`dispatch_mode` 贡献 unary/serverStream。harness 已删除 HTTP 兜底条目
+（`http.yml`/`main.ping`），服务 artifact 恢复为纯 WS gateway，真实
+Router+Runtime 全链验证 PASS。
+
 ### 执行中发现并修复的 ws lane 小修（本节点授权范围内）
 
 1. **broker params span bug**（`router/src/ws/broker.rs`）：私有
