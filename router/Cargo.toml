@@ -12,6 +12,8 @@ name = "skiff-router"
 path = "src/main.rs"
 
 [dependencies]
+skiff-runtime-request-contract = { path = "../runtime/request-contract" }
+skiff-runtime-transport = { path = "../runtime/transport" }
 
 [dev-dependencies]
 # C-net: final listener mechanism probes (see doc/implementation/router-rust-migration-c-net-contract.md).

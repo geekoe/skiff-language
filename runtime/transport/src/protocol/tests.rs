@@ -22,7 +22,7 @@ use crate::protocol::{
     TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
     ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_model::service_error::ServiceErrorEnvelope;
+use skiff_runtime_request_contract::ServiceErrorEnvelope;
 
 const SERVICE_PROTOCOL_A: &str =
     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

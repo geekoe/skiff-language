@@ -11,7 +11,6 @@ serde_json = "1.0"
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-canonical-json = { path = "../../canonical-json" }
-skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 url = "2.5"
 

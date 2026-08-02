@@ -14,7 +14,7 @@ use crate::runtime_assembly_request::{
     RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
 };
-use skiff_runtime_model::service_error::OpaqueServiceError;
+use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_request_contract::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseEnd,
     ResponseError, ResponseEvent,

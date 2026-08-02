@@ -8,7 +8,6 @@ publish = false
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-runtime-capability-context = { path = "../capability-context" }
 
 [lints]
 workspace = true

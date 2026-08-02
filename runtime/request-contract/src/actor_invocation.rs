@@ -1,9 +1,25 @@
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
-use skiff_runtime_request_contract::ActorRef;
 
-pub use skiff_runtime_request_contract::{
-    ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
-};
+use crate::actor_ref::ActorRef;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorInvocationOwnerUnit {
+    Service,
+    Package(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorInvocationOwnerFile {
+    LoadedFileIndex(u64),
+    FileIrIdentity(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorInvocationDeclarationOwner {
+    pub unit: ActorInvocationOwnerUnit,
+    pub file: ActorInvocationOwnerFile,
+    pub actor_symbol: String,
+}
 
 /// Identity facts which must survive the Router/Runtime boundary unchanged.
 /// Payload bytes deliberately remain outside this value.
@@ -58,6 +74,3 @@ pub enum ActorInvocationOutcome {
     ActorError(ActorInvocationError),
     Cancelled(ActorInvocationCancellation),
 }
-
-#[cfg(test)]
-mod tests;

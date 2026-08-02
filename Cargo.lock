@@ -2402,6 +2402,8 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "skiff-runtime-request-contract",
+ "skiff-runtime-transport",
  "tokio",
  "tokio-tungstenite",
 ]
@@ -2441,6 +2443,7 @@ dependencies = [
  "skiff-runtime-boundary",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
+ "skiff-runtime-request-contract",
  "tokio",
 ]
 
@@ -2603,6 +2606,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-artifact-model",
+ "skiff-runtime-request-contract",
  "thiserror",
 ]
 
@@ -2673,7 +2677,6 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-artifact-model",
- "skiff-runtime-capability-context",
 ]
 
 [[package]]
@@ -2714,7 +2717,6 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "skiff-runtime-model",
  "skiff-runtime-request-contract",
  "url",
 ]

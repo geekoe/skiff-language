@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::IngressSelector;
 
-pub use skiff_runtime_capability_context::HttpNameValue;
+pub use crate::response::HttpNameValue;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
