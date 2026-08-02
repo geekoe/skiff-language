@@ -37,6 +37,12 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
   private readonly executions = new Map<string, ActorExecution>();
   private readonly invocationLedger = new InMemoryActorInvocationLedger();
   private readonly upgradeWaiters = new Map<string, Set<() => void>>();
+  // Old owner identity captured when an entry flips to `upgrading`, so the
+  // upgrade fence survives owner loss (eviction ACK, lease expiry, disconnect).
+  private readonly upgradeOwnerSnapshots = new Map<
+    string,
+    { ownerRuntimeId: string; ownerLeaseId: string }
+  >();
 
   async getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry> {
     const now = input.now ?? new Date();
@@ -60,6 +66,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     now: Date
   ): ActorRegistryEntry {
     const key = actorLogicalKey(input.actorKey);
+    this.upgradeOwnerSnapshots.delete(key);
     const existing = this.entries.get(key);
     const createdAt = existing?.createdAt ?? now;
     const entry: ActorRegistryEntry = {
@@ -90,6 +97,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
 
   async remove(actorKey: ActorKey, now = new Date()): Promise<boolean> {
     const key = actorLogicalKey(actorKey);
+    this.upgradeOwnerSnapshots.delete(key);
     const entry = this.entries.get(key);
     if (entry === undefined || entry.status !== 'present') {
       return false;
@@ -146,6 +154,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.idleEvictionRequestId = undefined;
     entry.idleEvictionRequestedAt = undefined;
     entry.lifecycleState = 'activating';
+    this.upgradeOwnerSnapshots.delete(actorLogicalKey(input.actorKey));
     entry.updatedAt = now;
     const cloned = cloneEntry(entry);
     return { ok: true, entry: cloned, fence: ownerFence(cloned) };
@@ -302,8 +311,16 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       ) {
         return { ok: false, rejection: { reason: 'OwnerUnavailable' } };
       }
+      const upgradeOwnerRuntimeId = entry.ownerRuntimeId;
+      const upgradeOwnerLeaseId = entry.ownerLeaseId;
       entry.lifecycleState = 'upgrading';
       entry.targetImplementationIdentity = input.requestedImplementationIdentity;
+      entry.idleEvictionRequestId = undefined;
+      entry.idleEvictionRequestedAt = undefined;
+      this.upgradeOwnerSnapshots.set(actorLogicalKey(input.actorKey), {
+        ownerRuntimeId: upgradeOwnerRuntimeId,
+        ownerLeaseId: upgradeOwnerLeaseId,
+      });
       entry.updatedAt = input.now ?? new Date();
       return {
         ok: false,
@@ -388,19 +405,23 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
   }
 
   async actorUpgradeFence(actorKey: ActorKey): Promise<ActorUpgradeFence | undefined> {
-    const entry = this.entries.get(actorLogicalKey(actorKey));
-    return entry === undefined ? undefined : upgradeFence(entry);
+    const key = actorLogicalKey(actorKey);
+    const entry = this.entries.get(key);
+    return entry === undefined
+      ? undefined
+      : upgradeFence(entry, this.upgradeOwnerSnapshots.get(key));
   }
 
   async completeActorUpgrade(input: {
     fence: ActorUpgradeFence;
     now?: Date | undefined;
   }): Promise<CompleteActorUpgradeResult> {
-    const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
+    const key = actorLogicalKey(input.fence.actorKey);
+    const entry = this.entries.get(key);
     if (entry === undefined || entry.status !== 'present') {
       return { ok: false, reason: 'NotPresent' };
     }
-    if (!upgradeFenceMatches(entry, input.fence)) {
+    if (!upgradeFenceMatches(entry, input.fence, this.upgradeOwnerSnapshots.get(key))) {
       return { ok: false, reason: 'FenceMismatch' };
     }
     if (
@@ -435,6 +456,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerLeaseExpiresAt = undefined;
     entry.idleEvictionRequestId = undefined;
     entry.idleEvictionRequestedAt = undefined;
+    this.upgradeOwnerSnapshots.delete(key);
     entry.lastIdleAt = now;
     entry.updatedAt = now;
     const transition = {
@@ -628,6 +650,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
     if (
       entry === undefined ||
+      entry.lifecycleState !== 'live' ||
       entry.idleEvictionRequestId !== input.fence.evictionRequestId ||
       !ownerFenceMatches(entry, {
         expectedEpoch: input.fence.epoch,
@@ -704,7 +727,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
   }
 
   async evictIdleActor(actorKey: ActorKey, now = new Date()): Promise<boolean> {
-    const entry = this.entries.get(actorLogicalKey(actorKey));
+    const key = actorLogicalKey(actorKey);
+    const entry = this.entries.get(key);
     if (entry === undefined || entry.status !== 'present') {
       return false;
     }
@@ -716,6 +740,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerLeaseExpiresAt = undefined;
     entry.idleEvictionRequestId = undefined;
     entry.idleEvictionRequestedAt = undefined;
+    this.upgradeOwnerSnapshots.delete(key);
     entry.lifecycleState = 'inactive';
     entry.lastIdleAt = now;
     entry.updatedAt = now;
@@ -782,6 +807,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerLeaseExpiresAt = undefined;
     entry.idleEvictionRequestId = undefined;
     entry.idleEvictionRequestedAt = undefined;
+    this.upgradeOwnerSnapshots.delete(actorLogicalKey(entry.actorKey));
     entry.lastIdleAt = now;
     entry.updatedAt = now;
   }
@@ -802,8 +828,9 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
   private upgradeDrainState(
     fence: ActorUpgradeFence
   ): 'Waiting' | 'Drained' | 'FenceMismatch' {
-    const entry = this.entries.get(actorLogicalKey(fence.actorKey));
-    if (entry === undefined || !upgradeFenceMatches(entry, fence)) {
+    const key = actorLogicalKey(fence.actorKey);
+    const entry = this.entries.get(key);
+    if (entry === undefined || !upgradeFenceMatches(entry, fence, this.upgradeOwnerSnapshots.get(key))) {
       return 'FenceMismatch';
     }
     return this.invocationLedger.activeCountForFence({
@@ -902,31 +929,38 @@ function ownerFenceMatches(
   );
 }
 
-function upgradeFence(entry: ActorRegistryEntry): ActorUpgradeFence | undefined {
+function upgradeFence(
+  entry: ActorRegistryEntry,
+  ownerSnapshot?: { ownerRuntimeId: string; ownerLeaseId: string }
+): ActorUpgradeFence | undefined {
   if (
     entry.status !== 'present' ||
     entry.lifecycleState !== 'upgrading' ||
-    entry.targetImplementationIdentity === undefined ||
-    entry.ownerRuntimeId === undefined ||
-    entry.ownerLeaseId === undefined
+    entry.targetImplementationIdentity === undefined
   ) {
+    return undefined;
+  }
+  const oldOwnerRuntimeId = entry.ownerRuntimeId ?? ownerSnapshot?.ownerRuntimeId;
+  const oldOwnerLeaseId = entry.ownerLeaseId ?? ownerSnapshot?.ownerLeaseId;
+  if (oldOwnerRuntimeId === undefined || oldOwnerLeaseId === undefined) {
     return undefined;
   }
   return {
     actorKey: cloneActorKey(entry.actorKey),
     oldEpoch: entry.epoch,
     oldImplementationIdentity: entry.actorImplementationIdentity,
-    oldOwnerRuntimeId: entry.ownerRuntimeId,
-    oldOwnerLeaseId: entry.ownerLeaseId,
+    oldOwnerRuntimeId,
+    oldOwnerLeaseId,
     targetImplementationIdentity: entry.targetImplementationIdentity,
   };
 }
 
 function upgradeFenceMatches(
   entry: ActorRegistryEntry,
-  fence: ActorUpgradeFence
+  fence: ActorUpgradeFence,
+  ownerSnapshot?: { ownerRuntimeId: string; ownerLeaseId: string }
 ): boolean {
-  const current = upgradeFence(entry);
+  const current = upgradeFence(entry, ownerSnapshot);
   return (
     current !== undefined &&
     actorLogicalKey(current.actorKey) === actorLogicalKey(fence.actorKey) &&
