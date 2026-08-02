@@ -150,6 +150,7 @@ export class ActorGetCreateActivationCoordinator {
           actorKey,
           actorAbiIdentity: input.header.actorAbiIdentity,
           actorImplementationIdentity: input.header.actorImplementationIdentity,
+          declarationOwner: input.header.declarationOwner,
           bootstrapEncodingVersion: input.header.bootstrapEncodingVersion,
           encodedBootstrapBytes: new Uint8Array(input.payloadBytes),
           now: this.now(),

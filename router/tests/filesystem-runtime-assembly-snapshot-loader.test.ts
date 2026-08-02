@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
 import {
+  ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+  ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+  canonicalJsonBytes,
+} from '../src/router/actorRoutingProjection.js';
+import {
   deriveCurrentRuntimeAssemblyServiceDeploymentIdentity,
   deriveWebSocketEntryId
 } from '../src/router/runtimeAssemblyDeploymentSnapshot.js';
@@ -24,6 +29,7 @@ const WEBSOCKET_GATEWAY_IDENTITY =
   'skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d';
 const WEBSOCKET_METHOD_IDENTITY =
   'skiff-gateway-entry-v2:sha256:76fd205e35d35474a2082dd58b914b25b653eeecbfd8b6c96c52d3d070eae331';
+const EMPTY_ACTOR_PROJECTION = `{"methods":[],"schemaVersion":"${ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION}"}`;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -290,7 +296,7 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     }
   );
 
-  it('accepts only PackageArtifact v10 records addressed by package build v10', async () => {
+  it('loads the actor catalog only from the canonical projection record', async () => {
     const packageRef: PackageRefFixture = {
       packageId: 'skiff.run/echo',
       packageVersion: '1.0.0',
@@ -303,36 +309,121 @@ describe('filesystem RuntimeAssembly snapshot loader', () => {
     const currentFixture = canonicalFixture();
     currentFixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
     await writeFixture(current, currentFixture);
-    await writeJson(current, packagePath(packageRef), {
-      schemaVersion: 'skiff-package-artifact-v10',
-      files: []
-    });
     await expect(
       loader(current).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
     ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
 
-    const legacySchema = await fixtureRoot();
-    await writeFixture(legacySchema, currentFixture);
-    await writeJson(legacySchema, packagePath(packageRef), {
+    // Even a stale/legacy PackageArtifact record is inert: the production
+    // actor catalog never reads PackageArtifact or File IR anymore.
+    const legacyPackage = await fixtureRoot();
+    const legacyPackageFixture = canonicalFixture();
+    legacyPackageFixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
+    await writeFixture(legacyPackage, legacyPackageFixture);
+    await writeJson(legacyPackage, packagePath(packageRef), {
       schemaVersion: 'skiff-package-artifact-v9',
       files: []
     });
     await expect(
-      loader(legacySchema).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
-    ).rejects.toThrow(/schemaVersion must be skiff-package-artifact-v10/);
+      loader(legacyPackage).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).resolves.toMatchObject({ assemblyIdentity: ASSEMBLY_IDENTITY });
+  });
 
-    const legacyBuild = await fixtureRoot();
-    const legacyBuildFixture = canonicalFixture();
-    legacyBuildFixture.assembly.packageLinkPlan.codeSlots = [{
-      package: {
-        ...packageRef,
-        packageBuildId: `skiff-package-build-v9:sha256:${'d'.repeat(64)}`
-      }
-    }];
-    await writeFixture(legacyBuild, legacyBuildFixture);
+  it('rejects a legacy File IR actor catalog without the projection record', async () => {
+    const packageRef: PackageRefFixture = {
+      packageId: 'skiff.run/echo',
+      packageVersion: '1.0.0',
+      packageBuildId: `skiff-package-build-v10:sha256:${'d'.repeat(64)}`,
+      packageLocalAbiIdentity:
+        `skiff-package-local-abi-v7:sha256:${'e'.repeat(64)}`
+    };
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    fixture.assembly.packageLinkPlan.codeSlots = [{ package: packageRef }];
+    await writeFixture(root, fixture, { actorProjection: null });
+    await writeJson(root, packagePath(packageRef), {
+      schemaVersion: 'skiff-package-artifact-v10',
+      files: [{
+        fileIrIdentity: `skiff-file-ir-v11:sha256:${'a'.repeat(64)}`
+      }]
+    });
     await expect(
-      loader(legacyBuild).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
-    ).rejects.toThrow(/packageBuildId is invalid/);
+      loader(root).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/actor routing projection record is unavailable/);
+  });
+
+  it('loads actor methods from one canonical projection record', async () => {
+    const root = await fixtureRoot();
+    const fixture = canonicalFixture();
+    await writeFixture(root, fixture);
+    const method = {
+      actor: {
+        serviceId: 'skiff.run/echo',
+        actorAbiIdentity: `skiff-actor-abi-v1:sha256:${'a'.repeat(64)}`,
+      },
+      actorImplementationIdentity:
+        `skiff-actor-implementation-v1:sha256:${'b'.repeat(64)}`,
+      methodIdentity: `skiff-actor-method-v1:sha256:${'c'.repeat(64)}`,
+      deployment: {
+        serviceId: 'skiff.run/echo',
+        contractVersion: '1.0.0',
+        deploymentRevision: 'rev-1',
+        deploymentArtifactIdentity:
+          `skiff-deployment-artifact-v4:sha256:${'d'.repeat(64)}`,
+      },
+      package: {
+        packageId: 'skiff.run/echo-package',
+        packageVersion: '1.0.0',
+        packageBuildId: `skiff-package-build-v10:sha256:${'e'.repeat(64)}`,
+        packageLocalAbiIdentity:
+          `skiff-package-local-abi-v7:sha256:${'f'.repeat(64)}`,
+      },
+    };
+    await writeBytes(
+      root,
+      ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+      canonicalJsonBytes({
+        schemaVersion: ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+        methods: [method],
+      })
+    );
+    const loaded = await loader(root).load({
+      assemblyIdentity: ASSEMBLY_IDENTITY,
+    });
+    expect(loaded.actorMethods).toEqual([method]);
+  });
+
+  it('fails closed for missing, malformed and unsupported projection records', async () => {
+    const missing = await fixtureRoot();
+    const fixture = canonicalFixture();
+    await writeFixture(missing, fixture, { actorProjection: null });
+    await expect(
+      loader(missing).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/actor routing projection record is unavailable/);
+
+    const malformed = await fixtureRoot();
+    await writeFixture(malformed, canonicalFixture());
+    await writeText(
+      malformed,
+      ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+      '{"schemaVersion":"skiff-actor-routing-projection-v1","schemaVersion":"duplicate"}'
+    );
+    await expect(
+      loader(malformed).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/not strict JSON/);
+
+    const unsupported = await fixtureRoot();
+    await writeFixture(unsupported, canonicalFixture());
+    await writeText(
+      unsupported,
+      ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+      JSON.stringify({
+        schemaVersion: 'skiff-actor-routing-projection-v0',
+        methods: [],
+      })
+    );
+    await expect(
+      loader(unsupported).load({ assemblyIdentity: ASSEMBLY_IDENTITY })
+    ).rejects.toThrow(/unsupported schemaVersion/);
   });
 
   it('rejects a v1 RuntimeAssembly identity prefix before artifact lookup', async () => {
@@ -906,13 +997,24 @@ async function fixtureRoot(): Promise<string> {
   return root;
 }
 
-async function writeFixture(root: string, fixture: Fixture): Promise<void> {
+async function writeFixture(
+  root: string,
+  fixture: Fixture,
+  options: { actorProjection?: string | null } = {}
+): Promise<void> {
   await writeJson(root, assemblyPath(), fixture.assembly);
   for (const [index, deploymentRecord] of fixture.deployments.entries()) {
     await writeJson(
       root,
       deploymentPath(deploymentRef(fixture.assembly, index)),
       deploymentRecord
+    );
+  }
+  if (options.actorProjection !== null) {
+    await writeText(
+      root,
+      ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+      options.actorProjection ?? EMPTY_ACTOR_PROJECTION
     );
   }
 }
@@ -979,6 +1081,12 @@ async function writeJson(root: string, path: string, value: unknown): Promise<vo
 }
 
 async function writeText(root: string, path: string, value: string): Promise<void> {
+  const target = join(root, path);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, value);
+}
+
+async function writeBytes(root: string, path: string, value: Uint8Array): Promise<void> {
   const target = join(root, path);
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, value);

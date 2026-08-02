@@ -5,6 +5,11 @@ import type { RuntimeAssemblyRef } from '../protocol/assemblyActivationProtocol.
 import { parseStrictJson } from '../protocol/strictJson.js';
 import { joinRuntimeAssemblyDeployments } from './runtimeAssemblyDeploymentSnapshot.js';
 import {
+  ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+  decodeActorRoutingProjectionRecord,
+  MAX_ACTOR_ROUTING_PROJECTION_RECORD_BYTES,
+} from './actorRoutingProjection.js';
+import {
   decodeRuntimeAssemblyRecord,
   type LoadedRuntimeAssembly,
   type RuntimeAssemblyActorMethod,
@@ -14,8 +19,6 @@ import {
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const ASSEMBLY_IDENTITY = /^skiff-runtime-assembly-v3:sha256:([0-9a-f]{64})$/;
-const PACKAGE_ARTIFACT_SCHEMA_VERSION = 'skiff-package-artifact-v10';
-const PACKAGE_BUILD_IDENTITY_PREFIX = 'skiff-package-build-v10:sha256:';
 
 export class FilesystemRuntimeAssemblySnapshotLoader
 implements RuntimeAssemblySnapshotLoader {
@@ -48,7 +51,7 @@ implements RuntimeAssemblySnapshotLoader {
       )
     );
     const decoded = joinRuntimeAssemblyDeployments(recordSurface, serviceDeployments);
-    const actorMethods = await this.loadActorMethods(assemblyObject);
+    const actorMethods = await this.loadActorMethods();
     return actorMethods.length === 0 ? decoded : { ...decoded, actorMethods };
   }
 
@@ -76,87 +79,48 @@ implements RuntimeAssemblySnapshotLoader {
     );
   }
 
-  private async loadActorMethods(
-    assembly: Record<string, unknown>
-  ): Promise<RuntimeAssemblyActorMethod[]> {
-    const plan = record(assembly.packageLinkPlan, 'RuntimeAssembly.packageLinkPlan');
-    if (!Array.isArray(plan.codeSlots)) return [];
-    const methods: RuntimeAssemblyActorMethod[] = [];
-    for (const [codeSlot, rawSlot] of plan.codeSlots.entries()) {
-      const slot = record(rawSlot, `RuntimeAssembly.packageLinkPlan.codeSlots[${codeSlot}]`);
-      const implementation = record(slot.package, 'PackageCodeSlot.package');
-      const packageId = requiredString(implementation, 'packageId');
-      const packageVersion = safeSegment(
-        requiredString(implementation, 'packageVersion'),
-        'packageVersion'
-      );
-      const packageBuildId = requiredString(implementation, 'packageBuildId');
-      const buildHash = identityHash(
-        packageBuildId,
-        PACKAGE_BUILD_IDENTITY_PREFIX,
-        'packageBuildId'
-      );
-      const packageRecord = record(
-        await this.readRecord(
-          `records/package-artifacts/${coordinate(packageId, 'packageId')}/${packageVersion}/${buildHash}/package.json`,
-          `PackageArtifact ${packageId}@${packageVersion}`
-        ),
-        'PackageArtifact'
-      );
-      if (requiredString(packageRecord, 'schemaVersion') !== PACKAGE_ARTIFACT_SCHEMA_VERSION) {
-        throw new Error(
-          `PackageArtifact schemaVersion must be ${PACKAGE_ARTIFACT_SCHEMA_VERSION}`
-        );
-      }
-      if (!Array.isArray(packageRecord.files)) continue;
-      for (const [fileIndex, rawFile] of packageRecord.files.entries()) {
-        const fileRef = record(rawFile, `PackageArtifact.files[${fileIndex}]`);
-        const fileIdentity = requiredString(fileRef, 'fileIrIdentity');
-        const fileHash = identityHash(
-          fileIdentity,
-          'skiff-file-ir-v11:sha256:',
-          'fileIrIdentity'
-        );
-        const file = record(
-          await this.readRecord(
-            `records/package-artifacts/${coordinate(packageId, 'packageId')}/${packageVersion}/${buildHash}/file-ir/${fileHash}.json`,
-            `FileIr ${fileIdentity}`
-          ),
-          'FileIr'
-        );
-        if (!Array.isArray(file.actorDeclarations)) continue;
-        for (const rawActor of file.actorDeclarations) {
-          const actor = record(rawActor, 'ActorDeclaration');
-          const abi = record(actor.abi, 'ActorDeclaration.abi');
-          const actorSymbol = requiredString(abi, 'actorName');
-          const actorAbiIdentity = requiredString(actor, 'actorAbiIdentity');
-          const actorImplementationIdentity = requiredString(
-            actor,
-            'actorImplementationIdentity'
-          );
-          const implementations = record(
-            actor.methodImplementations,
-            'ActorDeclaration.methodImplementations'
-          );
-          for (const methodIdentity of Object.keys(implementations)) {
-            methods.push({
-              declarationOwner: {
-                unit: { kind: 'package', value: codeSlot },
-                file: { kind: 'loadedFileIndex', value: fileIndex },
-                actorSymbol,
-              },
-              actorAbiIdentity,
-              actorImplementationIdentity,
-              methodIdentity,
-            });
-          }
-        }
-      }
-    }
-    return methods;
+  /**
+   * Loads the actor method catalog strictly from the canonical actor routing
+   * projection record (A0 §2). PackageArtifact / File IR / source / payload are
+   * never read for actor catalog construction.
+   */
+  private async loadActorMethods(): Promise<RuntimeAssemblyActorMethod[]> {
+    const bytes = await this.readRecordBytes(
+      ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+      'actor routing projection',
+      MAX_ACTOR_ROUTING_PROJECTION_RECORD_BYTES
+    );
+    const projection = decodeActorRoutingProjectionRecord(bytes);
+    return projection.methods.map((method) => ({
+      actor: {
+        serviceId: method.actor.serviceId,
+        actorAbiIdentity: method.actor.actorAbiIdentity,
+      },
+      actorImplementationIdentity: method.actorImplementationIdentity,
+      methodIdentity: method.methodIdentity,
+      deployment: method.deployment,
+      package: method.package,
+    }));
   }
 
-  private async readRecord(relativePath: string, label: string): Promise<unknown> {
+  private async readRecord(
+    relativePath: string,
+    label: string,
+    maxBytes = MAX_RECORD_BYTES
+  ): Promise<unknown> {
+    const bytes = await this.readRecordBytes(relativePath, label, maxBytes);
+    try {
+      return parseStrictJson(bytes);
+    } catch (error) {
+      throw new Error(`${label} record is not strict JSON`, { cause: error });
+    }
+  }
+
+  private async readRecordBytes(
+    relativePath: string,
+    label: string,
+    maxBytes: number
+  ): Promise<Uint8Array> {
     const root = await realpath(this.artifactsPath);
     const candidate = resolve(root, relativePath);
     assertContained(root, candidate, label);
@@ -168,14 +132,10 @@ implements RuntimeAssemblySnapshotLoader {
     }
     assertContained(root, canonical, label);
     const bytes = await readFile(canonical);
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_RECORD_BYTES) {
+    if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
       throw new Error(`${label} record has an invalid bounded size`);
     }
-    try {
-      return parseStrictJson(bytes);
-    } catch (error) {
-      throw new Error(`${label} record is not strict JSON`, { cause: error });
-    }
+    return bytes;
   }
 }
 

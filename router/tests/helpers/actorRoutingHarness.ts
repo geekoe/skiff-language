@@ -188,7 +188,6 @@ async function createHarness({
               ? result.then(() => true)
               : true;
           },
-      declarationOwnerFor: () => DECLARATION_OWNER,
     },
     send: (ws, bytes) => {
       ws.send(bytes);
@@ -412,6 +411,7 @@ export function actorBootstrap(
     },
     actorAbiIdentity: ACTOR_ABI,
     actorImplementationIdentity: ACTOR_IMPLEMENTATION,
+    declarationOwner: DECLARATION_OWNER,
     bootstrapEncodingVersion: 'skiff-canonical-v1',
     encodedBootstrapBytes: Buffer.from('{}'),
   };

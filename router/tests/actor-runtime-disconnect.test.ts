@@ -12,6 +12,11 @@ const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementation = identity('skiff-actor-implementation-v1:sha256', 'b');
 const methodIdentity = identity('skiff-actor-method-v1:sha256', 'c');
 const baseTime = new Date('2026-07-25T00:00:00.000Z');
+const DECLARATION_OWNER = {
+  unit: { kind: 'service' as const },
+  file: { kind: 'loadedFileIndex' as const, value: 0 },
+  actorSymbol: 'Counter',
+};
 
 describe('Actor Runtime disconnect cleanup', () => {
   it('closes admission, fails unfinished calls, releases owners, and preserves bootstrap', async () => {
@@ -343,6 +348,7 @@ async function liveActor(
     actorKey,
     actorAbiIdentity: actorAbi,
     actorImplementationIdentity: implementation,
+    declarationOwner: DECLARATION_OWNER,
     bootstrapEncodingVersion: 'skiff-canonical-v1',
     encodedBootstrapBytes: new Uint8Array([1, 2, 3]),
     now: baseTime,

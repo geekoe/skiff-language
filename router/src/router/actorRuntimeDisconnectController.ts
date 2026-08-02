@@ -205,6 +205,11 @@ function cloneOwnerFence(fence: ActorOwnerFence): ActorOwnerFence {
         fence.actorKey.canonicalActorIdKeyBytes
       ),
     },
+    declarationOwner: {
+      unit: { ...fence.declarationOwner.unit },
+      file: { ...fence.declarationOwner.file },
+      actorSymbol: fence.declarationOwner.actorSymbol,
+    },
     ownerLeaseExpiresAt: new Date(fence.ownerLeaseExpiresAt),
   };
 }

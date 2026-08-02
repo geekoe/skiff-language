@@ -23,6 +23,11 @@ import {
 const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementation = identity('skiff-actor-implementation-v1:sha256', 'b');
 const methodIdentity = identity('skiff-actor-method-v1:sha256', 'c');
+const DECLARATION_OWNER = {
+  unit: { kind: 'service' as const },
+  file: { kind: 'fileIrIdentity' as const, value: 'file:actor' },
+  actorSymbol: 'Counter',
+};
 
 interface FakeSocket extends WebSocket {
   sent: Buffer[];
@@ -217,6 +222,7 @@ describe('Actor getOrCreate activation contract', () => {
           actorKey: makeActorKey(actorKeyInput()),
           epoch: entry!.epoch,
           implementationIdentity: implementation,
+          declarationOwner: DECLARATION_OWNER,
           ownerRuntimeId: 'runtime-1',
           ownerLeaseId: entry!.ownerLeaseId!,
           ownerLeaseExpiresAt: entry!.ownerLeaseExpiresAt!,
@@ -408,6 +414,7 @@ describe('Actor getOrCreate activation contract', () => {
       actorKey: actorKeyInput(),
       actorAbiIdentity: actorAbi,
       actorImplementationIdentity: implementation,
+      declarationOwner: DECLARATION_OWNER,
       bootstrapEncodingVersion: 'skiff-canonical-v1',
       encodedBootstrapBytes: new Uint8Array([9, 9]),
     });
@@ -522,6 +529,7 @@ describe('Actor getOrCreate activation contract', () => {
       actorKey: actorKeyInput(),
       actorAbiIdentity: actorAbi,
       actorImplementationIdentity: implementation,
+      declarationOwner: DECLARATION_OWNER,
       bootstrapEncodingVersion: 'skiff-canonical-v1',
       encodedBootstrapBytes: new Uint8Array([7, 7]),
     });
