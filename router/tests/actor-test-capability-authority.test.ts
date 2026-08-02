@@ -144,6 +144,7 @@ describe('actor test capability authority', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: 'capability-parent-2',
         actor,
         serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -290,6 +291,7 @@ describe('actor test capability authority', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: 'generation-actor-parent',
         actor,
         generation: 1,
@@ -314,6 +316,7 @@ describe('actor test capability authority', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: 'generation-actor-parent',
         actor,
         generation: 2,
@@ -438,6 +441,7 @@ describe('actor test capability authority', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: parent.requestId,
         actor: externalActor,
       }),
@@ -472,6 +476,7 @@ describe('actor test capability authority', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: 'capability-cross-actor-parent',
         actor: externalActor,
         serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -538,6 +543,7 @@ describe('actor test capability authority', () => {
       registry.runtimeConnection('runtime-b')!.ws,
       spawnSubmit({
         runtimeId: 'runtime-b',
+        callerKind: 'actorInvocation',
         callerRequestId: parent.requestId,
         actor,
       }),

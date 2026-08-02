@@ -759,6 +759,11 @@ export interface ActorRemoveResponseFrameHeader
 
 export type SpawnSubmitTargetKind = 'function' | 'actorMethod';
 
+/** Closed parent-kind namespace (C-model-spawn §2): `callerKind` selects the
+ * exact parent resolver. The old shape (missing `callerKind`) is rejected
+ * with no compatible reader. */
+export type SpawnCallerKind = 'request' | 'actorInvocation';
+
 export interface SpawnActorMethodTargetFrameMetadata {
   actorRef: ActorRefFrameMetadata;
   declarationOwner: ActorDeclarationOwnerFrameMetadata;
@@ -769,6 +774,7 @@ export interface SpawnActorMethodTargetFrameMetadata {
 
 export interface SpawnSubmitRequestFrameHeader
   extends RuntimeControlRequestFrameHeaderBase<'spawn.submit.request'> {
+  callerKind: SpawnCallerKind;
   targetKind: SpawnSubmitTargetKind;
   serviceId: string;
   serviceVersion: string;

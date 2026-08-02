@@ -15,6 +15,7 @@ import {
   decodeBinaryFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  type SpawnCallerKind,
   type SpawnSubmitRequestFrameHeader,
 } from '../../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../../src/protocol/runtimeAssemblyRequest.js';
@@ -309,6 +310,7 @@ async function createHarness({
 
 export function spawnSubmit({
   runtimeId,
+  callerKind = 'request',
   callerRequestId,
   actor,
   traceId,
@@ -317,6 +319,7 @@ export function spawnSubmit({
   serviceId = SERVICE_ID,
 }: {
   runtimeId: string;
+  callerKind?: SpawnCallerKind;
   callerRequestId: string;
   actor: ActorRecord;
   traceId?: string;
@@ -329,6 +332,7 @@ export function spawnSubmit({
     type: 'spawn.submit.request',
     rpcId: 'spawn-rpc-1',
     runtimeId,
+    callerKind,
     activationIdentity: {
       assemblyIdentity: ASSEMBLY,
       generation,

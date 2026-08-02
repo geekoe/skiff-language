@@ -98,6 +98,7 @@ describe('actor test capability terminal lifecycle', () => {
         registry.runtimeConnection('runtime-a')!.ws,
         spawnSubmit({
           runtimeId: 'runtime-a',
+          callerKind: 'actorInvocation',
           callerRequestId: parentId,
           actor,
           serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -106,7 +107,10 @@ describe('actor test capability terminal lifecycle', () => {
       );
       expect(rejected.header).toMatchObject({
         type: 'spawn.submit.error',
-        error: { message: expect.stringContaining('active request or actor') },
+        error: {
+          message:
+            'spawn callerRequestId does not identify an active actor invocation parent on the same runtime connection',
+        },
       });
       expect(issuedIds).toHaveLength(issuedBefore);
       await delay(20);

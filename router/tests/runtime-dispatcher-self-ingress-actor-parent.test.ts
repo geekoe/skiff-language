@@ -296,54 +296,122 @@ describe('RuntimeDispatcher actor-parent self-ingress capability', () => {
 });
 
 describe('RuntimeDispatcher spawn parent collision', () => {
-  it.each(['actorMethod', 'function'] as const)(
-    'rejects an active request/actor ID collision before %s dispatch',
-    async (targetKind) => {
-      const w1 = openSocket('w1');
-      const authority = rootAuthority();
-      const ambiguousId = `spawn-${targetKind}-ambiguous-parent`;
-      const harness = createHarness({
-        connections: [[RUNTIME_ID, w1]],
-        actorParentResolver: () => undefined,
-        directActorParentResolver: ({ invocationId }) =>
-          invocationId === ambiguousId ? actorParent(w1, authority) : undefined,
-        assemblyTestConnection: runtimeConnection(w1),
-      });
-      const root = harness.dispatcher.dispatchAssemblyTestBinary(
-        {
-          header: testRequest(ambiguousId, CAPABILITY),
-          payloadBytes: new Uint8Array(),
-        },
-        1_000
-      );
-      expect(harness.sent).toHaveLength(1);
+  it('selects the exact request parent when the same id also names an actor invocation', async () => {
+    const w1 = openSocket('w1');
+    const authority = rootAuthority();
+    const sharedId = 'shared-request-actor-id';
+    const harness = createHarness({
+      connections: [[RUNTIME_ID, w1]],
+      actorParentResolver: () => undefined,
+      directActorParentResolver: ({ invocationId }) =>
+        invocationId === sharedId ? actorParent(w1, authority) : undefined,
+      assemblyTestConnection: runtimeConnection(w1),
+    });
+    const root = harness.dispatcher.dispatchAssemblyTestBinary(
+      {
+        header: testRequest(sharedId, CAPABILITY),
+        payloadBytes: new Uint8Array(),
+      },
+      1_000
+    );
+    expect(harness.sent).toHaveLength(1);
 
-      const result = await harness.dispatcher.handleSpawnSubmit(
-        w1,
-        spawnSubmit(ambiguousId, targetKind),
-        new Uint8Array()
-      );
+    const result = await harness.dispatcher.handleSpawnSubmit(
+      w1,
+      spawnSubmit(sharedId, 'function', 'request'),
+      new Uint8Array()
+    );
+    expect(result.header).toMatchObject({
+      type: 'spawn.submit.response',
+      status: 'submitted',
+    });
+    expect(harness.directActorParentResolver).not.toHaveBeenCalled();
+    expect(harness.submitSpawn).not.toHaveBeenCalled();
+    expect(harness.sent).toHaveLength(2);
 
-      expect(result.header).toMatchObject({
-        type: 'spawn.submit.error',
-        error: {
-          message:
-            'spawn callerRequestId is ambiguous across active request and actor invocation parents',
-        },
-      });
-      expect(harness.directActorParentResolver).toHaveBeenCalledWith({
-        invocationId: ambiguousId,
-        ws: w1,
-        serviceId: SERVICE_ID,
-        serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY,
-      });
-      expect(harness.submitSpawn).not.toHaveBeenCalled();
-      expect(harness.sent).toHaveLength(1);
+    harness.dispatcher.resolveRequest(w1, response(sharedId));
+    await root;
+  });
 
-      harness.dispatcher.resolveRequest(w1, response(ambiguousId));
-      await root;
-    }
-  );
+  it('selects the exact actor invocation parent when the same id also names a request', async () => {
+    const w1 = openSocket('w1');
+    const authority = rootAuthority();
+    const sharedId = 'shared-request-actor-id';
+    const harness = createHarness({
+      connections: [[RUNTIME_ID, w1]],
+      actorParentResolver: () => undefined,
+      directActorParentResolver: ({ invocationId }) =>
+        invocationId === sharedId ? actorParent(w1, authority) : undefined,
+      assemblyTestConnection: runtimeConnection(w1),
+    });
+    const root = harness.dispatcher.dispatchAssemblyTestBinary(
+      {
+        header: testRequest(sharedId, CAPABILITY),
+        payloadBytes: new Uint8Array(),
+      },
+      1_000
+    );
+    expect(harness.sent).toHaveLength(1);
+
+    const result = await harness.dispatcher.handleSpawnSubmit(
+      w1,
+      spawnSubmit(sharedId, 'actorMethod', 'actorInvocation'),
+      new Uint8Array()
+    );
+    expect(result.header).toMatchObject({
+      type: 'spawn.submit.response',
+      status: 'submitted',
+    });
+    expect(harness.directActorParentResolver).toHaveBeenCalledWith({
+      invocationId: sharedId,
+      ws: w1,
+      serviceId: SERVICE_ID,
+      serviceProtocolIdentity: SERVICE_PROTOCOL_IDENTITY,
+    });
+    expect(harness.submitSpawn).toHaveBeenCalledTimes(1);
+    expect(harness.sent).toHaveLength(1);
+
+    harness.dispatcher.resolveRequest(w1, response(sharedId));
+    await root;
+  });
+
+  it('rejects a function target whose exact actorInvocation parent cannot produce a request parent', async () => {
+    const w1 = openSocket('w1');
+    const authority = rootAuthority();
+    const sharedId = 'shared-request-actor-id';
+    const harness = createHarness({
+      connections: [[RUNTIME_ID, w1]],
+      actorParentResolver: () => undefined,
+      directActorParentResolver: ({ invocationId }) =>
+        invocationId === sharedId ? actorParent(w1, authority) : undefined,
+      assemblyTestConnection: runtimeConnection(w1),
+    });
+    const root = harness.dispatcher.dispatchAssemblyTestBinary(
+      {
+        header: testRequest(sharedId, CAPABILITY),
+        payloadBytes: new Uint8Array(),
+      },
+      1_000
+    );
+    expect(harness.sent).toHaveLength(1);
+
+    const result = await harness.dispatcher.handleSpawnSubmit(
+      w1,
+      spawnSubmit(sharedId, 'function', 'actorInvocation'),
+      new Uint8Array()
+    );
+    expect(result.header).toMatchObject({
+      type: 'spawn.submit.error',
+      error: {
+        message: 'function spawn requires a runtime assembly request parent',
+      },
+    });
+    expect(harness.submitSpawn).not.toHaveBeenCalled();
+    expect(harness.sent).toHaveLength(1);
+
+    harness.dispatcher.resolveRequest(w1, response(sharedId));
+    await root;
+  });
 });
 
 function createHarness(options: {
@@ -416,13 +484,15 @@ function createHarness(options: {
 
 function spawnSubmit(
   callerRequestId: string,
-  targetKind: 'actorMethod' | 'function'
+  targetKind: 'actorMethod' | 'function',
+  callerKind: 'request' | 'actorInvocation' = 'request'
 ): SpawnSubmitRequestFrameHeader {
   return {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'spawn.submit.request',
     rpcId: `spawn-rpc-${targetKind}`,
     runtimeId: RUNTIME_ID,
+    callerKind,
     activationIdentity: {
       assemblyIdentity: ASSEMBLY_IDENTITY,
       generation: 1,

@@ -5,21 +5,48 @@ pub mod activation;
 pub mod artifact;
 pub mod bootstrap;
 pub mod config;
+pub mod dispatch;
+pub mod http;
 pub mod listener;
+pub mod routing;
 pub mod session;
 
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
-    BootstrapStrictLoader, CommittedActivationBootstrapReader, RoutingEpoch,
+    BootstrapStrictLoader, CommittedActivationBootstrapReader, RouterBootstrapAssembly,
+    RoutingEpoch, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
 };
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
     FileBackendOssConfig, RouterConfig, RouterConfigError, RouterRewriteRule, ServiceDbConfig,
     TelemetryConfig, ROUTER_CONFIG_REDACTED_VALUE,
 };
+pub use dispatch::{
+    candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
+    dispatch_mode_from_wire, ActorMethodSpawnControl, AdmissionCounters, AdmissionHealth,
+    CancelFrame, CandidateViewSource, DerivedSpawnResult, DispatchedFrame,
+    DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate, PendingHealth, PendingTerminal,
+    Permit, PermitLedger, RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome,
+    Reservation, RevalidateOutcome, RoutingEpochSource, RuntimeAdmissionPool,
+    RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SpawnHealth,
+    SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
+    SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
+};
+pub use http::{
+    CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
+    HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
+    HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
+    HttpStreamSink, UnaryHttpResponse,
+};
 pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
     RouterListeners,
+};
+pub use routing::{
+    CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
+    DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
+    RuntimeCandidateQuery, SessionCancellation,
 };
 pub use session::{
     ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,

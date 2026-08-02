@@ -313,15 +313,17 @@ async fn submit_with_response(
         CancellationToken::new(),
     );
     let client = RequestClient::new(context);
-    let submit = client.submit_spawn(spawn_submit_request(), Vec::new());
+    let submit = client.submit_spawn(
+        spawn_submit_request(),
+        Vec::new(),
+        skiff_runtime_capability_context::SpawnCallerKind::Request,
+    );
     tokio::pin!(submit);
 
     let sent_request = tokio::select! {
         result = &mut submit => panic!("spawn submit completed before response: {result:?}"),
         message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
-            RouterWriterMessage::Control(
-                OutboundControlMessage::SpawnSubmit { request, .. }
-            ) => request,
+            RouterWriterMessage::SpawnSubmit(message) => message.request,
             other => panic!("unexpected router message: {other:?}"),
         }
     };

@@ -83,6 +83,7 @@ mod connection_lifecycle;
 mod control_response_lifecycle;
 mod foreign_db_exact_identity;
 mod h_registration_cut;
+mod h_spawn_parent_cut;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
 mod websocket_jsonrpc_dispatch;
@@ -896,8 +897,8 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
     }
 
     let encoded_frames = Arc::new(AtomicUsize::new(0));
-    let message = super::super::RouterWriterMessage::Control(
-        skiff_runtime_request::OutboundControlMessage::SpawnSubmit {
+    let message = super::super::RouterWriterMessage::SpawnSubmit(
+        skiff_runtime_request::SpawnSubmitControlMessage {
             request: skiff_runtime_request::SpawnSubmitControlRequest {
                 rpc_id: "rpc-spawn".to_string(),
                 runtime_id: "runtime-1".to_string(),
@@ -925,6 +926,7 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
                 actor_method: None,
             },
             payload: b"opaque spawn args".to_vec(),
+            caller_kind: skiff_runtime_request::SpawnCallerKind::Request,
         },
     );
     send_writer_message(&mut CountingSocket(Arc::clone(&encoded_frames)), message)

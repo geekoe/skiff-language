@@ -30,7 +30,7 @@ pub use outbound::{
     ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    RequestCancelControl, RuntimeDeadlineControl, SpawnCallerKind, SpawnSubmitControlRequest,
 };
 pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

@@ -264,6 +264,7 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
                 .test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
+            SpawnCallerKind::Request,
             self.input.cancellation.clone(),
         );
         let effects = effects(
