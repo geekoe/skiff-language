@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use skiff_artifact_identity::{runtime_assembly_ref, ArtifactRelativePath};
+use skiff_artifact_identity::runtime_assembly_ref;
 use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyIdentity, CanonicalPackageLinkPlan, RuntimeAssembly,
     RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
@@ -32,7 +32,7 @@ use skiff_router::activation::{
     CandidateLoadError, CommitInput, EnqueueResult, EpochStorePublishPort, NoopHealthSink,
     PrepareInput, PublishCommittedEpochPort, RuntimeCandidateQueryPort, SessionEnqueuePort,
 };
-use skiff_router::artifact::{ActorRoutingCatalog, ActorRoutingProjectionRef};
+use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::{ActiveRoutingEpochStore, RouterBootstrapAssembly, RoutingEpoch};
 use skiff_router::config::RouterConfig;
 use skiff_router::routing::{DispatchCapabilities, RegisteredSessionLease, SessionCancellation};

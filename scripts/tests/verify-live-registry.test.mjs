@@ -45,6 +45,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'db-encrypted-storage-live',
     'router-live:bootstrap',
     'router-live:session',
+    'router-live:activation-full-chain',
     'router-live:differential',
     'loop-risk-health-live',
     'loop-risk-stress-live',
