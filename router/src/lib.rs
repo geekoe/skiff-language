@@ -56,8 +56,8 @@ pub use http::{
     HttpStreamSink, UnaryHttpResponse,
 };
 pub use listener::{
-    run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
-    RouterListeners,
+    run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,
+    ListenerStartOptions, RouterListeners, WsTaskRegistry,
 };
 pub use routing::{
     CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,

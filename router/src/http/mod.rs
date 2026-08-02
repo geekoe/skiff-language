@@ -33,7 +33,10 @@ pub use ingress::{
     EpochHttpIngressResolver, HttpAdapterKind, HttpDispatchMode, HttpGatewaySurface,
     HttpGatewaySurfaceView, HttpIngressBinding, HttpIngressResolver,
 };
-pub use server::{start_http_gateway, HttpGatewayServer, HttpGatewayServerOptions};
+pub use server::{
+    start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,
+    HttpGatewayServerOptions,
+};
 pub use stream::{HttpStreamError, HttpStreamErrorSource, HttpStreamSink};
 
 /// HTTP-layer health counters (plan §10; no payload/requestId exposure).

@@ -190,13 +190,13 @@ mod tests {
                 skiff_router::session::ConsumerKind::ActivationCoordinator,
             ]
         );
-        // Installed sink bundle: request/connection/activation wired; actor/spawn
-        // remain unimplemented (E-gate owned).
+        // Installed sink bundle: request/connection/activation/actor wired;
+        // spawn remains unimplemented (M-spawn-repair shared-model node).
         let sinks = components.session.inbound_sinks();
         assert!(sinks.request.is_some());
         assert!(sinks.connection.is_some());
         assert!(sinks.activation_transaction.is_some());
-        assert!(sinks.actor.is_none());
+        assert!(sinks.actor.is_some());
         assert!(sinks.spawn.is_none());
 
         // Components are live and empty.

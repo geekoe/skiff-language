@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
@@ -49,6 +50,26 @@ pub const DEFAULT_BACKPRESSURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10)
 pub const DEFAULT_PUBLIC_MAX_CONNECTIONS: usize = 1024;
 pub const DEFAULT_DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Optional WebSocket upgrade seam (E-ws wiring; additive, default `None`).
+///
+/// When set, the gateway accept loop calls [`GatewayUpgradeHandler::handle`]
+/// for requests whose path matches [`GatewayUpgradeOptions::path`] and whose
+/// `Upgrade` header is `websocket`, and the hyper connection is served with
+/// `.with_upgrades()`. The handler owns the 101 handshake response and any
+/// upgraded connection task (the supervisor tracks those tasks for shutdown).
+/// When unset, the gateway keeps its exact pre-seam behavior: no upgrade
+/// handling and no `.with_upgrades()`.
+#[async_trait]
+pub trait GatewayUpgradeHandler: Send + Sync + fmt::Debug {
+    async fn handle(&self, request: Request<Incoming>) -> GatewayResponse;
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayUpgradeOptions {
+    pub path: String,
+    pub handler: Arc<dyn GatewayUpgradeHandler>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpGatewayServerOptions {
     pub bind: SocketAddr,
@@ -59,6 +80,8 @@ pub struct HttpGatewayServerOptions {
     pub max_connections: usize,
     pub drain_deadline: Duration,
     pub stream_channel_capacity: usize,
+    /// Additive E-ws seam: absent by default; see [`GatewayUpgradeOptions`].
+    pub websocket_upgrade: Option<GatewayUpgradeOptions>,
 }
 
 impl HttpGatewayServerOptions {
@@ -72,6 +95,7 @@ impl HttpGatewayServerOptions {
             max_connections: DEFAULT_PUBLIC_MAX_CONNECTIONS,
             drain_deadline: DEFAULT_DRAIN_DEADLINE,
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
+            websocket_upgrade: None,
         }
     }
 }
@@ -237,23 +261,60 @@ async fn serve(
                     }
                 };
                 let context = Arc::clone(&context);
+                let upgrade_seam = context
+                    .options
+                    .websocket_upgrade
+                    .as_ref()
+                    .map(|options| {
+                        (
+                            options.path.clone(),
+                            Arc::clone(&options.handler),
+                        )
+                    });
+                let use_upgrades = upgrade_seam.is_some();
                 let mut connection_shutdown = shutdown_rx.clone();
                 connections.spawn(async move {
                     let _permit = permit;
                     let service = service_fn(move |request: Request<Incoming>| {
                         let context = Arc::clone(&context);
-                        async move { handle_request(&context, request).await }
-                    });
-                    let connection = http1::Builder::new()
-                        .serve_connection(TokioIo::new(stream), service);
-                    tokio::pin!(connection);
-                    tokio::select! {
-                        result = connection.as_mut() => {
-                            let _ = result;
+                        let upgrade_seam = upgrade_seam.clone();
+                        async move {
+                            if let Some((path, handler)) = &upgrade_seam {
+                                if is_websocket_upgrade(&request)
+                                    && request.uri().path() == path
+                                {
+                                    return handler.handle(request).await;
+                                }
+                            }
+                            handle_request(&context, request).await
                         }
-                        _ = connection_shutdown.changed() => {
-                            connection.as_mut().graceful_shutdown();
-                            let _ = connection.await;
+                    });
+                    if use_upgrades {
+                        let connection = http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .with_upgrades();
+                        tokio::pin!(connection);
+                        tokio::select! {
+                            result = connection.as_mut() => {
+                                let _ = result;
+                            }
+                            _ = connection_shutdown.changed() => {
+                                connection.as_mut().graceful_shutdown();
+                                let _ = connection.await;
+                            }
+                        }
+                    } else {
+                        let connection = http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service);
+                        tokio::pin!(connection);
+                        tokio::select! {
+                            result = connection.as_mut() => {
+                                let _ = result;
+                            }
+                            _ = connection_shutdown.changed() => {
+                                connection.as_mut().graceful_shutdown();
+                                let _ = connection.await;
+                            }
                         }
                     }
                 });
@@ -275,6 +336,14 @@ async fn reject_over_capacity(mut stream: TcpStream) {
 }
 
 type GatewayResponse = Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>;
+
+fn is_websocket_upgrade(request: &Request<Incoming>) -> bool {
+    request
+        .headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
 
 async fn handle_request(context: &GatewayContext, request: Request<Incoming>) -> GatewayResponse {
     context.counters.bump(&context.counters.requests);

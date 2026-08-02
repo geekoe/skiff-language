@@ -15,10 +15,13 @@
 
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -29,15 +32,30 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::task::{AbortHandle, JoinError, JoinSet};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, Role};
 use tokio_tungstenite::WebSocketStream;
 
+use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
+use crate::http::selector::{
+    parse_request_target, parse_service_deployment_selector, RequestTarget,
+};
+use crate::http::GatewayUpgradeHandler;
+use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::SessionLayer;
+use crate::supervisor::ws::{
+    ConnectOutcome, WsConnectMetadata, WsConnectSelector, WsConnectionRecord, WsDispatchStore,
+    WsGatewaySurfaceView,
+};
+use crate::ws::{AttachMeta, BusinessKey, ClientTerminal, PeerWriter, WebSocketLane};
+use skiff_artifact_model::AssemblyIdentity;
+use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
+use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 
 /// Public listener connection cap. The frozen Router config has no public
 /// connection-limit field; this placeholder keeps the C-net Semaphore
@@ -486,4 +504,490 @@ async fn reject_over_capacity(mut stream: TcpStream) {
         b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
     let _ = stream.write_all(response).await;
     let _ = stream.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Client WebSocket accept path (E-ws wiring).
+//
+// The public HTTP gateway upgrade seam (`http::server`) hands matching
+// `websocket_path` upgrade requests to [`ClientWsContext`]; this module owns
+// the socket-level accept path: selector/ingress resolution, connect
+// admission through the WS lane + composition store, the 101 handshake and
+// the upgraded peer task. No WS lane internals are touched.
+// ---------------------------------------------------------------------------
+
+/// Tracks spawned client WS tasks so the supervisor can abort stragglers at
+/// shutdown (C-net §5 upgraded-task tracking).
+#[derive(Debug, Default)]
+pub struct WsTaskRegistry {
+    tasks: Mutex<Vec<AbortHandle>>,
+}
+
+impl WsTaskRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn track(&self, handle: AbortHandle) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(handle);
+    }
+
+    pub fn abort_all(&self) {
+        let tasks = std::mem::take(
+            &mut *self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for handle in tasks {
+            handle.abort();
+        }
+    }
+}
+
+/// Production client WebSocket accept context (E-ws).
+#[derive(Debug, Clone)]
+pub struct ClientWsContext {
+    pub surface: Arc<WsGatewaySurfaceView>,
+    pub lane: Arc<WebSocketLane>,
+    pub store: Arc<WsDispatchStore>,
+    pub selector: Arc<dyn WsConnectSelector>,
+    pub epoch_store: Arc<ActiveRoutingEpochStore>,
+    pub path: String,
+    pub connect_timeout_ms: u64,
+    pub tasks: Arc<WsTaskRegistry>,
+    next_connection_id: Arc<AtomicU64>,
+}
+
+impl ClientWsContext {
+    pub fn new(
+        surface: Arc<WsGatewaySurfaceView>,
+        lane: Arc<WebSocketLane>,
+        store: Arc<WsDispatchStore>,
+        selector: Arc<dyn WsConnectSelector>,
+        epoch_store: Arc<ActiveRoutingEpochStore>,
+        path: String,
+        connect_timeout_ms: u64,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            surface,
+            lane,
+            store,
+            selector,
+            epoch_store,
+            path,
+            connect_timeout_ms,
+            tasks: Arc::new(WsTaskRegistry::new()),
+            next_connection_id: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    fn new_connection_id(&self) -> String {
+        format!(
+            "wsconn-{}-{}",
+            now_nanos(),
+            self.next_connection_id.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn fail_reservation(&self, connection_id: &str) {
+        self.selector.release(connection_id);
+        let _ = self
+            .lane
+            .finish(connection_id, ClientTerminal::PolicyRejected, None);
+    }
+}
+
+#[async_trait]
+impl GatewayUpgradeHandler for ClientWsContext {
+    async fn handle(&self, mut request: Request<Incoming>) -> RouterResponse {
+        let Some(key) = request
+            .headers()
+            .get(SEC_WEBSOCKET_KEY)
+            .and_then(|value| value.to_str().ok())
+        else {
+            return Ok(empty_response(StatusCode::BAD_REQUEST));
+        };
+        let accept = derive_accept_key(key.as_bytes());
+        let selector = match parse_service_deployment_selector(request.headers()) {
+            Ok(selector) => selector,
+            Err(_) => return Ok(empty_response(StatusCode::BAD_REQUEST)),
+        };
+        let target = match parse_request_target(request.headers(), request.uri()) {
+            Ok(target) => target,
+            Err(_) => return Ok(empty_response(StatusCode::BAD_REQUEST)),
+        };
+        if target.path != self.path {
+            return Ok(empty_response(StatusCode::NOT_FOUND));
+        }
+        let Some(binding) = self
+            .surface
+            .resolve(&selector.service_id, &target.path)
+            .cloned()
+        else {
+            return Ok(empty_response(StatusCode::NOT_FOUND));
+        };
+        if !binding.connect_handler && binding.methods.is_empty() {
+            // The WS lane attach requires an exact runtime; handler-less and
+            // method-less bindings fail closed (composition decision, TS
+            // `requiresRuntimePin == false` parity gap documented in the leaf).
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        }
+        let Some(epoch) = self.epoch_store.capture() else {
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        };
+        let assembly_identity = AssemblyIdentity::new(epoch.assembly_identity().to_string());
+        let assembly_generation = epoch.assembly_generation();
+        let connection_id = self.new_connection_id();
+        if let Err(_) = self.lane.reserve(&connection_id) {
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        }
+        let runtime = match self.selector.select(&connection_id, &binding) {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                self.fail_reservation(&connection_id);
+                return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+            }
+        };
+        // Admission expectation. `router_session_id` is the router-side
+        // session token; parity with the Runtime-minted
+        // `skiff-router-session-v1:opaque:<uuid>` router session id is a
+        // documented E-ws lane item (see leaf; fake-runtime tests use a
+        // self-consistent tuple).
+        let tuple = WebSocketGenerationLifecycleTuple {
+            router_session_id: format!("{}#{}", runtime.replica_id, runtime.connection_generation),
+            service_id: binding.service_id.clone(),
+            assembly_identity: assembly_identity.clone(),
+            assembly_generation,
+            websocket_entry_id: binding.websocket_entry_id.clone(),
+            connection_id: connection_id.clone(),
+        };
+        if let Err(_) = self.lane.ledger.expect_connection(tuple) {
+            self.fail_reservation(&connection_id);
+            return Ok(empty_response(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+        let metadata = build_ws_connect_metadata(&target, request.headers());
+        let (connect_request_id, mut connect_wait) = match self.store.connect_begin(
+            &connection_id,
+            &binding,
+            &runtime,
+            &assembly_identity,
+            assembly_generation,
+            &metadata,
+            self.connect_timeout_ms,
+        ) {
+            Ok(parts) => parts,
+            Err(_) => {
+                self.fail_reservation(&connection_id);
+                return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+            }
+        };
+        let outcome = tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(self.connect_timeout_ms + 1000)) => {
+                self.store.connect_unavailable(
+                    &connect_request_id,
+                    "websocket connect timed out".to_string(),
+                );
+                None
+            }
+            changed = connect_wait.changed() => {
+                let _ = changed;
+                connect_wait.borrow_and_update().clone()
+            }
+        };
+        self.selector.release(&connection_id);
+        let Some(outcome) = outcome else {
+            let _ = self
+                .lane
+                .finish(&connection_id, ClientTerminal::ReleaseTimeout, None);
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        };
+        let ConnectOutcome::Accepted {
+            business_identity,
+            admission_rank,
+            max_connections,
+            overflow,
+            close_code: _,
+            close_reason: _,
+        } = outcome
+        else {
+            let _ = self
+                .lane
+                .finish(&connection_id, ClientTerminal::PolicyRejected, None);
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        };
+        let business_key = business_identity.as_deref().map(|identity| {
+            BusinessKey::from_parts(&binding.service_id, &binding.websocket_entry_id, identity)
+        });
+        let admission = self.lane.admit(
+            &connection_id,
+            business_key,
+            admission_rank,
+            usize::try_from(max_connections).unwrap_or(usize::MAX),
+            overflow,
+        );
+        let close_after_upgrade = match admission {
+            crate::ws::AdmissionOutcome::Accepted => None,
+            crate::ws::AdmissionOutcome::Rejected { close } => {
+                let _ = self.lane.finish(
+                    &connection_id,
+                    ClientTerminal::PolicyRejected,
+                    Some(close.clone()),
+                );
+                if admission_rank.is_some() {
+                    // Ranked high-water rejection closes after upgrade
+                    // (TS parity).
+                    Some(close)
+                } else {
+                    return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+                }
+            }
+        };
+        self.store.register_connection(WsConnectionRecord {
+            connection_id: connection_id.clone(),
+            runtime: runtime.clone(),
+            binding: binding.clone(),
+            business_identity: business_identity.clone(),
+            assembly_identity,
+            assembly_generation,
+        });
+        let upgrade = hyper::upgrade::on(&mut request);
+        let context = self.clone();
+        let handle = tokio::spawn(async move {
+            let upgraded = match upgrade.await {
+                Ok(upgraded) => upgraded,
+                Err(_) => {
+                    context.store.unregister_connection(&connection_id);
+                    return;
+                }
+            };
+            let socket =
+                WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+            if let Some(close) = close_after_upgrade {
+                let (mut write_half, _) = socket.split();
+                let _ = write_half
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Iana(close.code),
+                        reason: close.reason.into(),
+                    })))
+                    .await;
+                let _ = write_half.send(Message::Close(None)).await;
+                context.store.unregister_connection(&connection_id);
+                return;
+            }
+            run_client_ws_peer(context, connection_id, runtime, socket).await;
+        });
+        self.tasks.track(handle.abort_handle());
+        Ok(Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header(UPGRADE, "websocket")
+            .header(CONNECTION, "upgrade")
+            .header(SEC_WEBSOCKET_ACCEPT, accept)
+            .body(empty_body())
+            .expect("static upgrade response is valid"))
+    }
+}
+
+enum Outbound {
+    Text(String),
+    Close(u16, String),
+}
+
+/// Real socket single-writer adapter: bounded queue + writer task; terminate
+/// aborts the socket immediately (C-client-lifecycle §3.4).
+#[derive(Debug)]
+struct SocketPeerWriter {
+    tx: mpsc::Sender<Outbound>,
+    buffered: Arc<AtomicU64>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl PeerWriter for SocketPeerWriter {
+    fn write_text(&self, frame: String) -> Result<(), String> {
+        let bytes = frame.len() as u64;
+        self.tx
+            .try_send(Outbound::Text(frame))
+            .map_err(|_| "writer queue full".to_string())?;
+        self.buffered.fetch_add(bytes, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn buffered_bytes(&self) -> u64 {
+        self.buffered.load(Ordering::SeqCst)
+    }
+
+    fn close(&self, code: u16, reason: &str) -> Result<(), String> {
+        if self
+            .tx
+            .try_send(Outbound::Close(code, reason.to_string()))
+            .is_err()
+        {
+            // Slow-client overflow: never wait for the queue to accept the
+            // close frame; abort the socket.
+            self.task.abort();
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) {
+        self.task.abort();
+    }
+}
+
+async fn writer_loop<S>(
+    mut write_half: futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    mut rx: mpsc::Receiver<Outbound>,
+    buffered: Arc<AtomicU64>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    while let Some(command) = rx.recv().await {
+        match command {
+            Outbound::Text(text) => {
+                let bytes = text.len() as u64;
+                let sent = write_half.send(Message::Text(text.into())).await;
+                buffered.fetch_sub(bytes, Ordering::SeqCst);
+                if sent.is_err() {
+                    break;
+                }
+            }
+            Outbound::Close(code, reason) => {
+                let _ = write_half
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Iana(code),
+                        reason: reason.into(),
+                    })))
+                    .await;
+                break;
+            }
+        }
+    }
+    let _ = write_half.send(Message::Close(None)).await;
+}
+
+async fn run_client_ws_peer(
+    context: ClientWsContext,
+    connection_id: String,
+    runtime: RuntimeSessionEpoch,
+    socket: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+) {
+    let Some(record) = context.store.connection_record(&connection_id) else {
+        return;
+    };
+    let (write_half, read_half) = socket.split();
+    let (tx, rx) = mpsc::channel::<Outbound>(64);
+    let buffered = Arc::new(AtomicU64::new(0));
+    let writer_task = tokio::spawn(writer_loop(write_half, rx, buffered.clone()));
+    let writer: Arc<dyn PeerWriter> = Arc::new(SocketPeerWriter {
+        tx,
+        buffered,
+        task: writer_task,
+    });
+    if let Err(_) = context.lane.attach(
+        &connection_id,
+        1,
+        connection_id.clone(),
+        runtime,
+        writer,
+        AttachMeta {
+            service_id: record.binding.service_id.clone(),
+            websocket_entry_id: record.binding.websocket_entry_id.clone(),
+            profile: WebSocketRpcProfile::JsonRpc2_0Text,
+        },
+    ) {
+        context.store.unregister_connection(&connection_id);
+        let _ = context
+            .lane
+            .finish(&connection_id, ClientTerminal::TransportError, None);
+        return;
+    }
+    reader_loop(context, connection_id, read_half).await;
+}
+
+async fn reader_loop<S>(
+    context: ClientWsContext,
+    connection_id: String,
+    mut read_half: futures_util::stream::SplitStream<WebSocketStream<S>>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    while let Some(message) = read_half.next().await {
+        match message {
+            Ok(Message::Text(text)) => {
+                let _ = context
+                    .lane
+                    .handle_peer_text(&connection_id, text.as_bytes());
+            }
+            Ok(Message::Binary(_)) => {
+                let _ = context.lane.handle_peer_binary(&connection_id);
+            }
+            Ok(Message::Close(_)) | Err(_) => {
+                let _ = context.lane.handle_peer_disconnect(&connection_id);
+                break;
+            }
+            _ => {}
+        }
+    }
+    context.store.unregister_connection(&connection_id);
+}
+
+fn build_ws_connect_metadata(
+    target: &RequestTarget,
+    headers: &hyper::HeaderMap,
+) -> WsConnectMetadata {
+    let query = target
+        .query
+        .iter()
+        .map(|value| skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+            name: value.name.clone(),
+            value: value.value.clone(),
+        })
+        .collect();
+    let mut request_headers = Vec::new();
+    let mut cookies = Vec::new();
+    for (name, value) in headers {
+        let name = name.as_str().to_string();
+        let value = value.to_str().unwrap_or_default().to_string();
+        if name.eq_ignore_ascii_case("cookie") {
+            for segment in value.split(';') {
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    continue;
+                }
+                let (cookie_name, cookie_value) = match segment.split_once('=') {
+                    Some((name, value)) => (name.to_string(), value.to_string()),
+                    None => (segment.to_string(), String::new()),
+                };
+                cookies.push(
+                    skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+                        name: cookie_name,
+                        value: cookie_value,
+                    },
+                );
+            }
+        } else {
+            request_headers.push(
+                skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+                    name,
+                    value,
+                },
+            );
+        }
+    }
+    WsConnectMetadata {
+        url: target.url.replacen("http://", "ws://", 1),
+        query,
+        headers: request_headers,
+        cookies,
+    }
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
