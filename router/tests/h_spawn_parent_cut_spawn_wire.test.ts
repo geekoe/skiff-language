@@ -302,8 +302,8 @@ describe('H-spawn-parent-cut shared spawn-wire corpus (TS consumer)', () => {
 
   it('freezes the target request shape with a required closed callerKind', () => {
     const catalog = readCatalog();
-    const functionFrame = catalog.frames['spawn.submit.request.function'];
-    const actorFrame = catalog.frames['spawn.submit.request.actorMethod'];
+    const functionFrame = catalog.frames['spawn.submit.request.function']!;
+    const actorFrame = catalog.frames['spawn.submit.request.actorMethod']!;
     expect(functionFrame.header.callerKind).toBe('request');
     expect(functionFrame.header.callerRequestId).toBe('parent-1');
     expect(actorFrame.header.callerKind).toBe('actorInvocation');
@@ -311,7 +311,7 @@ describe('H-spawn-parent-cut shared spawn-wire corpus (TS consumer)', () => {
     expect(actorFrame.legacyCut).toBe(false);
     expect(functionFrame.legacyCut).toBe(false);
 
-    const legacy = catalog.frames['spawn.submit.request.legacy-no-caller-kind'];
+    const legacy = catalog.frames['spawn.submit.request.legacy-no-caller-kind']!;
     expect(legacy.legacyCut).toBe(true);
     expect('callerKind' in legacy.header).toBe(false);
     expect(legacy.header.callerRequestId).toBe('parent-1');

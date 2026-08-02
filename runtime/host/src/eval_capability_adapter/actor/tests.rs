@@ -7,14 +7,12 @@ use skiff_runtime_capability_context::{
     ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
     ActorInvocationIdentity, ActorInvocationOutcome, ActorInvocationOwnerFile,
     ActorInvocationOwnerUnit, ActorInvocationRequest, ActorKeyControlMetadata,
-    OutboundControlMessage, RouterWriterMessage,
+    OutboundControlMessage, RouterWriterMessage, SpawnCallerKind, SpawnSubmitControlMessage,
 };
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
 };
-use skiff_runtime_transport::{
-    control_mapper::encode_outbound_control_message, protocol::decode_binary_frame,
-};
+use skiff_runtime_transport::protocol::decode_binary_frame;
 use tokio::time::{timeout, Duration};
 
 const BUILD_ID: &str =
@@ -37,7 +35,10 @@ async fn test_aware_spawn_submit_encodes_only_caller_request_id() {
     };
 
     let spawn = capture_spawn_submit(&context, &mut router_receiver).await;
-    assert_eq!(spawn.caller_request_id.as_deref(), Some("request-test"));
+    assert_eq!(
+        spawn.request.caller_request_id.as_deref(),
+        Some("request-test")
+    );
     assert_spawn_submit_wire_omits_test_authority(spawn);
 
     let get_or_create = capture_actor_get_or_create(&context, &mut router_receiver).await;
@@ -59,12 +60,40 @@ async fn ordinary_spawn_submit_encodes_only_caller_request_id() {
     let context = RuntimeOwnedRequestCapabilityContext(parts);
 
     let spawn = capture_spawn_submit(&context, &mut router_receiver).await;
-    assert_eq!(spawn.caller_request_id.as_deref(), Some("request-test"));
+    assert_eq!(
+        spawn.request.caller_request_id.as_deref(),
+        Some("request-test")
+    );
     assert_spawn_submit_wire_omits_test_authority(spawn);
 
     let get_or_create = capture_actor_get_or_create(&context, &mut router_receiver).await;
     assert_eq!(get_or_create.test_case_capability, None);
     assert_eq!(get_or_create.test_case_parent_request_id, None);
+}
+
+#[tokio::test]
+async fn actor_invocation_spawn_submit_encodes_closed_actor_invocation_caller_kind() {
+    let (mut parts, _, mut router_receiver, _) = actor_invocation_fixture(
+        30_000,
+        CancellationToken::new(),
+        "actor-invocation-spawn-parent",
+    );
+    parts.activation_identity = Some(test_activation_identity());
+    parts.spawn_caller_kind = SpawnCallerKind::ActorInvocation;
+    let borrowed = parts.clone();
+    let context = RuntimeActorCapabilityContext {
+        actor_context: concrete_actor_context_from_owned(&borrowed),
+        request_context: concrete_request_context_from_owned(&borrowed),
+        owned: parts,
+    };
+
+    let spawn = capture_spawn_submit(&context, &mut router_receiver).await;
+    assert_eq!(spawn.caller_kind, SpawnCallerKind::ActorInvocation);
+    let frame = crate::host::router_session::spawn_submit::encode_spawn_submit_wire_message(spawn)
+        .expect("canonical spawn submit must encode");
+    let wire = decode_binary_frame(&frame).expect("spawn submit wire must decode");
+    assert_eq!(wire.header["callerKind"], "actorInvocation");
+    assert_eq!(wire.header["callerRequestId"], "request-test");
 }
 
 #[tokio::test]
@@ -336,7 +365,7 @@ async fn f445h_i6_actor_scope_method_outer_deadline_keeps_post_await_owner() {
 async fn capture_spawn_submit<C>(
     context: &C,
     router_receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
-) -> SpawnSubmitControlRequest
+) -> SpawnSubmitControlMessage
 where
     C: capability_contract::RequestCapabilityApi + ?Sized,
 {
@@ -351,8 +380,8 @@ where
         tokio::select! {
             result = &mut submit => panic!("spawn submit completed before control dispatch: {result:?}"),
             message = router_receiver.recv() => match message {
-                Some(RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit { request, .. })) => {
-                    break request;
+                Some(RouterWriterMessage::SpawnSubmit(message)) => {
+                    break message;
                 }
                 Some(RouterWriterMessage::Control(OutboundControlMessage::RequestCancel { .. })) => {
                     continue;
@@ -364,13 +393,12 @@ where
     }
 }
 
-fn assert_spawn_submit_wire_omits_test_authority(request: SpawnSubmitControlRequest) {
-    let frame = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
-        request,
-        payload: Vec::new(),
-    })
-    .expect("spawn submit control must encode");
+fn assert_spawn_submit_wire_omits_test_authority(message: SpawnSubmitControlMessage) {
+    let frame =
+        crate::host::router_session::spawn_submit::encode_spawn_submit_wire_message(message)
+            .expect("canonical spawn submit must encode");
     let wire = decode_binary_frame(&frame).expect("spawn submit wire must decode");
+    assert_eq!(wire.header["callerKind"], "request");
     assert_eq!(wire.header["callerRequestId"], "request-test");
     assert!(wire.header.get("testCaseCapability").is_none());
     assert!(wire.header.get("testCaseParentRequestId").is_none());
@@ -501,6 +529,7 @@ fn actor_invocation_fixture(
         activation_identity: None,
         trace_id: Some("trace:actor-invoke".to_string()),
         test_case_capability: None,
+        spawn_caller_kind: SpawnCallerKind::Request,
         router_sender: Some(router_sender),
         outbound_requests: Arc::new(OutboundRequestRegistry::default()),
         actor_method_outbound: actor_method_outbound.clone(),

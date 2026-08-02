@@ -6,5 +6,5 @@ pub use crate::outbound_control::{
     ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    RequestCancelControl, RuntimeDeadlineControl, SpawnCallerKind, SpawnSubmitControlRequest,
 };

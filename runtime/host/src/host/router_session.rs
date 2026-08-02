@@ -50,6 +50,7 @@ use crate::error::{Result, RuntimeError};
 
 mod activation;
 mod handshake;
+pub(crate) mod spawn_submit;
 
 use activation::{
     cleanup_session_activation, dispatch_session_activation_frame, router_binary_frame_type,
@@ -59,6 +60,7 @@ use handshake::{
     ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
     HandshakeDeadlines,
 };
+use spawn_submit::{encode_spawn_submit_wire_message, legacy_spawn_submit_rejected};
 
 fn handshake_terminal_error(terminal: ClientTerminalKind) -> RuntimeError {
     RuntimeError::Decode(format!(
@@ -1442,9 +1444,17 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
 fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message> {
     match message {
         super::RouterWriterMessage::Binary(bytes) => Ok(Message::Binary(bytes.into())),
-        super::RouterWriterMessage::Control(command) => encode_outbound_control_message(command)
-            .map_err(super::transport_error_into_runtime_error)
-            .map(|bytes| Message::Binary(bytes.into())),
+        super::RouterWriterMessage::SpawnSubmit(message) => {
+            encode_spawn_submit_wire_message(message).map(|bytes| Message::Binary(bytes.into()))
+        }
+        super::RouterWriterMessage::Control(command) => match command {
+            skiff_runtime_request::OutboundControlMessage::SpawnSubmit { .. } => {
+                Err(legacy_spawn_submit_rejected())
+            }
+            other => encode_outbound_control_message(other)
+                .map_err(super::transport_error_into_runtime_error)
+                .map(|bytes| Message::Binary(bytes.into())),
+        },
     }
 }
 

@@ -6,7 +6,8 @@ use skiff_runtime_capability_context::{
     CancellationToken, ExecutionScope, ExecutionScopeLeaseTerminal, ExecutionScopeTerminal,
     InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
     OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
+    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnCallerKind,
+    SpawnSubmitControlMessage, SpawnSubmitControlRequest,
 };
 use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -210,8 +211,9 @@ impl<'a> RequestClient<'a> {
         &self,
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
+        caller_kind: SpawnCallerKind,
     ) -> Result<SpawnSubmitResponseFrameHeader> {
-        self.submit_spawn_with_scope(request, args_payload, None)
+        self.submit_spawn_with_scope(request, args_payload, None, caller_kind)
             .await
     }
 
@@ -220,8 +222,9 @@ impl<'a> RequestClient<'a> {
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
         scope: ExecutionScope,
+        caller_kind: SpawnCallerKind,
     ) -> Result<SpawnSubmitResponseFrameHeader> {
-        self.submit_spawn_with_scope(request, args_payload, Some(scope))
+        self.submit_spawn_with_scope(request, args_payload, Some(scope), caller_kind)
             .await
     }
 
@@ -230,6 +233,7 @@ impl<'a> RequestClient<'a> {
         mut request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
+        caller_kind: SpawnCallerKind,
     ) -> Result<SpawnSubmitResponseFrameHeader> {
         request.rpc_id = control_rpc_id(&self.context, SPAWN_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
@@ -237,12 +241,13 @@ impl<'a> RequestClient<'a> {
             .context
             .current_activation_identity(SPAWN_SUBMIT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
-        let command = OutboundControlMessage::SpawnSubmit {
+        let message = SpawnSubmitControlMessage {
             request,
             payload: args_payload,
+            caller_kind,
         };
         let response: SpawnSubmitResponseFrameHeader =
-            send_control_request(&self.context, SPAWN_SUBMIT_TARGET, &rpc_id, command, scope)
+            send_spawn_submit_request(&self.context, SPAWN_SUBMIT_TARGET, &rpc_id, message, scope)
                 .await?;
         validate_spawn_submit_response(&response, &rpc_id)?;
         Ok(response)
@@ -457,6 +462,8 @@ trait ControlContext {
         request_id: &str,
         command: OutboundControlMessage,
     ) -> Result<()>;
+    fn send_spawn_submit(&self, request_id: &str, message: SpawnSubmitControlMessage)
+        -> Result<()>;
     fn cancellation_token(&self) -> CancellationToken;
     fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender>;
 }
@@ -487,6 +494,14 @@ impl ControlContext for ActorClientContext<'_> {
         command: OutboundControlMessage,
     ) -> Result<()> {
         send_outbound_request(self.router_sender, request_id, command)
+    }
+
+    fn send_spawn_submit(
+        &self,
+        request_id: &str,
+        message: SpawnSubmitControlMessage,
+    ) -> Result<()> {
+        send_spawn_submit(self.router_sender, request_id, message)
     }
 
     fn cancellation_token(&self) -> CancellationToken {
@@ -524,6 +539,14 @@ impl ControlContext for RequestClientContext<'_> {
         command: OutboundControlMessage,
     ) -> Result<()> {
         send_outbound_request(self.router_sender, request_id, command)
+    }
+
+    fn send_spawn_submit(
+        &self,
+        request_id: &str,
+        message: SpawnSubmitControlMessage,
+    ) -> Result<()> {
+        send_spawn_submit(self.router_sender, request_id, message)
     }
 
     fn cancellation_token(&self) -> CancellationToken {
@@ -578,6 +601,23 @@ fn send_outbound_request(
         })
 }
 
+fn send_spawn_submit(
+    router_sender: Option<&mpsc::UnboundedSender<RouterWriterMessage>>,
+    request_id: &str,
+    message: SpawnSubmitControlMessage,
+) -> Result<()> {
+    let sender = router_sender.ok_or_else(|| RuntimeError::ProviderUnavailable {
+        target: request_id.to_string(),
+        reason: "router writer is not available".to_string(),
+    })?;
+    sender
+        .send(RouterWriterMessage::SpawnSubmit(message))
+        .map_err(|_| RuntimeError::ProviderUnavailable {
+            target: request_id.to_string(),
+            reason: "router writer channel closed".to_string(),
+        })
+}
+
 fn outbound_cancel_sender(
     router_sender: Option<&mpsc::UnboundedSender<RouterWriterMessage>>,
 ) -> Option<OutboundRequestCancelSender> {
@@ -625,6 +665,54 @@ async fn send_raw_control_request<C: ControlContext>(
     }
     let (response_rx, lease) = context.open_outbound_response_lease(rpc_id)?;
     if let Err(error) = context.send_outbound_request(rpc_id, command) {
+        let _ = lease.cancel("runtime_disconnect");
+        return Err(error);
+    }
+
+    match scope {
+        Some(scope) => {
+            await_control_response_in_scope(context, target, lease, response_rx, scope).await
+        }
+        None => await_control_response(context, target, lease, response_rx).await,
+    }
+}
+
+async fn send_spawn_submit_request<C, TResponse>(
+    context: &C,
+    target: &str,
+    rpc_id: &str,
+    message: SpawnSubmitControlMessage,
+    scope: Option<ExecutionScope>,
+) -> Result<TResponse>
+where
+    C: ControlContext,
+    TResponse: DeserializeOwned,
+{
+    let payload = send_raw_spawn_submit_request(context, target, rpc_id, message, scope).await?;
+    serde_json::from_slice(&payload).map_err(|error| {
+        RuntimeError::decode_target(
+            target,
+            format!("control response header is not valid JSON: {error}"),
+        )
+    })
+}
+
+async fn send_raw_spawn_submit_request<C: ControlContext>(
+    context: &C,
+    target: &str,
+    rpc_id: &str,
+    message: SpawnSubmitControlMessage,
+    scope: Option<ExecutionScope>,
+) -> Result<Vec<u8>> {
+    if scope
+        .as_ref()
+        .and_then(|scope| scope.terminal_at(std::time::Instant::now()))
+        .is_some()
+    {
+        return Err(RuntimeError::cancelled());
+    }
+    let (response_rx, lease) = context.open_outbound_response_lease(rpc_id)?;
+    if let Err(error) = context.send_spawn_submit(rpc_id, message) {
         let _ = lease.cancel("runtime_disconnect");
         return Err(error);
     }
