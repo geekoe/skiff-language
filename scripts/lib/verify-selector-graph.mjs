@@ -3,11 +3,21 @@ import {
   RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
 } from './verify-rust-subjects.mjs';
 
+const routerSubject = RUST_IMPLEMENTATION_SUBJECTS.find(
+  (subject) => subject.selector === 'router',
+);
+if (!routerSubject) {
+  throw new Error('Rust subject registry must keep a single router subject');
+}
+
+// The Rust subject `router` and the manual public `router` selector intentionally
+// share one name after the registry transition. The manual expansion below is the
+// single graph entry for `router` and derives its subject leaf from the registry,
+// so no duplicate leaf task can be hand-registered for the same subject.
 const rustSubjectExpansions = Object.fromEntries(
-  RUST_IMPLEMENTATION_SUBJECTS.map(({ selector, leafSelector }) => [
-    selector,
-    [leafSelector],
-  ]),
+  RUST_IMPLEMENTATION_SUBJECTS
+    .filter((subject) => subject.selector !== 'router')
+    .map(({ selector, leafSelector }) => [selector, [leafSelector]]),
 );
 
 const selectorGraph = {
@@ -17,7 +27,6 @@ const selectorGraph = {
     'skiff-tests',
     'implementation-tests',
     ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-    'router',
     'router-rust-process-smoke',
     'telemetry',
     'tooling',
@@ -35,7 +44,6 @@ const selectorGraph = {
     tests: ['skiff-tests', 'implementation-tests'],
     'implementation-tests': [
       ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-      'router',
       'telemetry',
       'tooling',
     ],
@@ -52,7 +60,10 @@ const selectorGraph = {
       'runtime-eval-error-boundary',
       'checks-default',
     ],
-    router: ['router-ts-tests', 'router-rust', 'router-rust-process-smoke'],
+    router: [
+      routerSubject.leafSelector,
+      'router-rust-process-smoke',
+    ],
     telemetry: ['telemetry-tests'],
     tooling: ['scripts', 'vscode'],
     scripts: ['scripts-tests', 'scripts-dev-sync'],
