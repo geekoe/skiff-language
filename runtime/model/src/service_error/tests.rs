@@ -1,9 +1,10 @@
 use serde_json::json;
-use skiff_artifact_model::{SourcePosition, SourceSpanRef};
+use skiff_artifact_model::{PackageSchemaTypeId, SourcePosition, SourceSpanRef};
+use skiff_runtime_request_contract::WirePayload;
 
 use super::*;
 use crate::{
-    addr::{FileAddr, UnitAddr},
+    addr::{FileAddr, TypeAddr, UnitAddr},
     value::{RuntimeValue, RuntimeValueCarrier},
 };
 
