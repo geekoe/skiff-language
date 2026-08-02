@@ -51,8 +51,14 @@ pub use session::{
     RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 pub use spawn::{
-    ActorSpawnRuntimeErrorFrameHeader, SpawnActorMethodTargetFrameMetadata,
-    SpawnSubmitRequestFrameHeader, SpawnSubmitResponseFrameHeader,
+    decode_spawn_submit_error_frame, decode_spawn_submit_request_frame,
+    decode_spawn_submit_response_frame, encode_spawn_submit_error_frame,
+    encode_spawn_submit_request_frame, encode_spawn_submit_response_frame,
+    ActorSpawnRuntimeErrorFrameHeader, SpawnActorMethodTargetFrameMetadata, SpawnCallerKind,
+    SpawnSubmitRequestFrameHeader, SpawnSubmitRequestFrameHeaderV2, SpawnSubmitResponseFrameHeader,
+    SpawnTargetKind, SPAWN_CALLER_KIND_ACTOR_INVOCATION, SPAWN_CALLER_KIND_REQUEST,
+    SPAWN_SUBMIT_ERROR_FRAME_TYPE, SPAWN_SUBMIT_REQUEST_FRAME_TYPE,
+    SPAWN_SUBMIT_RESPONSE_FRAME_TYPE, SPAWN_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
 
 pub use crate::BinaryFrameError;
