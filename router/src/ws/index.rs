@@ -670,6 +670,20 @@ impl ClientConnectionIndex {
             .map(|terminal| terminal.as_str().to_string())
     }
 
+    /// Live connection ids for one business identity (Runtime
+    /// `connection.send` targeting `businessIdentity`, TS parity). Only
+    /// admitted connections with a current record are returned.
+    pub fn connections_for_business_identity(
+        &self,
+        service_id: &str,
+        websocket_entry_id: &str,
+        business_identity: &str,
+    ) -> Vec<String> {
+        let key = BusinessKey::from_parts(service_id, websocket_entry_id, business_identity);
+        let inner = self.lock();
+        self.existing_for(&inner, &key)
+    }
+
     pub fn finalizer_terminal(&self, id: &str) -> Option<ClientTerminal> {
         self.lock().finalizing.get(id).map(|record| record.terminal)
     }
@@ -751,6 +765,31 @@ impl PeerWriter for CapturedPeerWriter {
             }
         }
         let result = self.transport.write_text(frame);
+        if result.is_err() {
+            self.index
+                .complete_write(&self.connection_id, &self.generation, bytes);
+        }
+        result
+    }
+
+    fn write_binary(&self, payload: Vec<u8>) -> Result<(), String> {
+        let bytes = payload.len() as u64;
+        match self
+            .index
+            .reserve_write(&self.connection_id, &self.generation, bytes)
+        {
+            WriteBudget::Accepted => {}
+            WriteBudget::Stale => return Err("captured writer is stale".to_string()),
+            WriteBudget::OverBudget => {
+                let _ = self.index.clone().finish(
+                    &self.connection_id,
+                    ClientTerminal::SlowClient,
+                    None,
+                );
+                return Err("websocket client is too slow".to_string());
+            }
+        }
+        let result = self.transport.write_binary(payload);
         if result.is_err() {
             self.index
                 .complete_write(&self.connection_id, &self.generation, bytes);

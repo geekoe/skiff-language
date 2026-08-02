@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "skiff-router-chat-live-manifest-v1",
+  "pinned": {
+    "skiff": {
+      "repository": "skiff",
+      "commit": "c5463fda086c58cfe29c7ed5f30d1d4a1e722de1"
+    },
+    "internals": {
+      "repository": "internals",
+      "commit": "deff2357393d539013db843538b0d229f9bd5174"
+    },
+    "skiffPackages": {
+      "repository": "skiff-packages",
+      "commit": "db4ddd9e05936b6fa8beff42ed242c8a73f08de3"
+    }
+  },
+  "environment": "router-live-chat",
+  "generation": 1,
+  "assembly": {
+    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:2a8fa377f903002abcbbf972050f64f1fdef183741aebe956290b2e611e5ff3d"
+  },
+  "configSnapshot": {
+    "snapshotId": "skiff-runtime-config-snapshot-v1:06976ada6a4c4d789de9c1564bf48153"
+  },
+  "services": [
+    {
+      "serviceId": "agine.ai/codex-relay",
+      "contractVersion": "0.1.0",
+      "deploymentRevision": "sha256-c8e585e3d264be6a69455c7346747c388a1d55786cf77271c083d4545ef381b2",
+      "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:b10d2a2d60d6b98fd9ef5191a259d057aa6be06b046e6c883253d5f18e9f655e",
+      "implementationPackageBuildId": "skiff-package-build-v10:sha256:a2241467d5e304c9104d763c03cbfb03fe4c5aebe20efc9d967d697a26b00d1f"
+    },
+    {
+      "serviceId": "agine.ai/aihub",
+      "contractVersion": "0.1.0",
+      "deploymentRevision": "sha256-e2839e9d4a4fcbb5da23a229246d2a3e44f72a5bdcfa6d4e31ea39aa5d90723a",
+      "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:1b26d6d17f1a5ca0a68a075ca2aee002d26066bcd48d050a9daf1ac92ccdc991",
+      "implementationPackageBuildId": "skiff-package-build-v10:sha256:b8e55945385c1b427a66676423a8121c0f49c5ead4a6482b677a3663648bdfc6"
+    },
+    {
+      "serviceId": "agine.ai/api",
+      "contractVersion": "0.1.0",
+      "deploymentRevision": "sha256-8aace1b810e77b2e799b4ea049ae9013d78e2ce796683de11feb297c0c338a6c",
+      "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:5599cdf9aef26e5a256add6f51e621a3b6f4d37940d0f2bd873c7f4359c64e3c",
+      "implementationPackageBuildId": "skiff-package-build-v10:sha256:9bf4b722c918e23e71d1969ab3e50e481a8c1085047fa8e13d311d9db0dd09bf"
+    }
+  ],
+  "packages": [
+    {
+      "packageId": "agine.ai/llm-api",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:d384b97dc5f9ac80c4d2283844677bb9ca3fbb436017b2719bfbc0a054762e37",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:7a643d9e1c325e8de8a11d669a5392cf288d8004a2fc41ef7328d50c862e868e"
+    },
+    {
+      "packageId": "agine.ai/llm-providers",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:6047c0e26a2aa2107fa77e47c351dddc7f2e759ad6f8ee7870fb6d7ef9bb0ef9",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:19fc929831aefc8b3bfb901f7084776f6a1c127f973e1f6a38a9a16a05fc920e"
+    },
+    {
+      "packageId": "skiff.run/http-session",
+      "packageVersion": "1.0.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:095745a835ab49c949128f470c763189609a71de380420054fce25d9d5c5ddc8",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:4268965bead30efcd7021c6ad7c192cf00bdbfe8c971dea1ad78da7d5beecb40"
+    },
+    {
+      "packageId": "skiff.run/track",
+      "packageVersion": "1.0.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:31cf788a52327d51541ecb87724841682ca4f102c5e3e4500f857a4fe58bf604",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:04effd79ec5e85333ac850d5e4345bee812b77864a18c5ab301df2788fe43ef7"
+    },
+    {
+      "packageId": "agine.ai/codex-relay",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:a2241467d5e304c9104d763c03cbfb03fe4c5aebe20efc9d967d697a26b00d1f",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:74e538a3b6f3e8090c6d598cd7f6c4fa58b0bdf4d6d9607bc3798371b7eab8ce"
+    },
+    {
+      "packageId": "agine.ai/agent",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:8937488d32f62d9469b840369293bbd1d952a3b6469c0c297a3a9890f4caabcd",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:f23006f65460bf091e559cac6460f50ba3acff1033a192e236693758780f4634"
+    },
+    {
+      "packageId": "agine.ai/aihub",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:b8e55945385c1b427a66676423a8121c0f49c5ead4a6482b677a3663648bdfc6",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1200c3870bdfb2b6dc7e372bd6a9b97a12c3e3635a40e42c8ff079801cc3c5f2"
+    },
+    {
+      "packageId": "agine.ai/api",
+      "packageVersion": "0.1.0",
+      "packageBuildId": "skiff-package-build-v10:sha256:9bf4b722c918e23e71d1969ab3e50e481a8c1085047fa8e13d311d9db0dd09bf",
+      "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:d6f2a516af63aec002260949882ad6286f83bb55372f828d33b135544f685d84"
+    }
+  ],
+  "smoke": {
+    "command": "npm run e2e:chat-smoke",
+    "cwd": "/Users/geek/workspace/internals/agine",
+    "ingressBase": "http://127.0.0.1:45283",
+    "status": "PASS",
+    "finishedAt": "2026-08-02T20:57:24.310Z"
+  }
+}

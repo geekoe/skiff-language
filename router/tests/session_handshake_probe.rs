@@ -18,9 +18,22 @@ use skiff_artifact_model::{
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::{start_listeners_with_session, ListenerStartOptions, RouterListeners};
 use skiff_router::session::consumer::ConsumerManifest;
+use skiff_router::session::demux::InboundSinkSet;
 use skiff_router::session::health::RuntimeHealthLedger;
 use skiff_router::session::identity::RegisteredAssemblyTuple;
 use skiff_router::session::layer::{SessionLayer, SessionLayerOptions, SessionTiming};
+use skiff_router::supervisor::session_ports::SessionHandle;
+use skiff_router::supervisor::sinks::ConnectionFrameSink;
+use skiff_router::ws::types::{
+    EmptyMethodCatalog, InboundDispatchAction, NoopNotificationObserver, NoopRuntimeViolationSink,
+};
+use skiff_router::ws::{
+    AllowAnyPendingAdmission, DispatchInbound, RuntimeGenerationPeer, RuntimeSessionClose,
+    WebSocketLane, WebSocketLaneOptions,
+};
+use skiff_runtime_transport::protocol::{
+    encode_binary_frame, ConnectionSendFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -190,6 +203,61 @@ async fn complete_handshake(socket: &mut PeerSocket, frames: &Value) {
         frame(frames, "registered.runtime-a"),
         "wire runtime.registered must match the corpus bytes"
     );
+}
+
+fn connection_send_frame(connection_id: &str, both_targets: bool) -> Vec<u8> {
+    let header = ConnectionSendFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "connection.send".to_string(),
+        service_id: "test.skiff/router-rust-ws-live".to_string(),
+        websocket_entry_id: Some(
+            "skiff-websocket-entry-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+        ),
+        business_identity: both_targets.then(|| "alice".to_string()),
+        connection_id: Some(connection_id.to_string()),
+        payload_kind: Some("text".to_string()),
+    };
+    encode_binary_frame(&header, br#"{"eventName":"chat/text-delta"}"#).expect("encode send")
+}
+
+mod noop_ws_ports {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct NoopRuntimeGenerationPeer;
+
+    impl RuntimeGenerationPeer for NoopRuntimeGenerationPeer {
+        fn send_control(
+            &self,
+            _runtime: &skiff_router::session::RuntimeSessionEpoch,
+            _control: &skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleControl,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct NoopRuntimeSessionClose;
+
+    impl RuntimeSessionClose for NoopRuntimeSessionClose {
+        fn close_session(
+            &self,
+            _runtime: &skiff_router::session::RuntimeSessionEpoch,
+            _code: u16,
+            _reason: &str,
+        ) {
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct NoopDispatchInbound;
+
+    impl DispatchInbound for NoopDispatchInbound {
+        fn dispatch(&self, _action: InboundDispatchAction) -> Result<(), String> {
+            Err("noop dispatch".to_string())
+        }
+    }
 }
 
 async fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -401,5 +469,131 @@ mod tests {
         assert_eq!(snapshot.pre_auth_connections, 0);
         assert_eq!(snapshot.observed_health, 1);
         assert!(snapshot.fail_stop.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handshake_deadline_does_not_fire_after_registration() {
+        let frames = corpus_frames();
+        let timing = SessionTiming {
+            bootstrap: Duration::from_millis(150),
+            capabilities: Duration::from_millis(150),
+            register: Duration::from_millis(150),
+            ack_write: Duration::from_secs(5),
+            close_barrier: Duration::from_secs(2),
+            shutdown_total: Duration::from_secs(5),
+        };
+        let (listeners, layer) = start(test_config(4), Some(timing), None).await;
+        let mut socket = connect(listeners.runtime_control.addr()).await;
+        complete_handshake(&mut socket, &frames).await;
+        // Every handshake deadline has long expired; a registered session
+        // must never be closed by the bootstrap/capabilities/register window.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let snapshot = layer.health_snapshot();
+        assert_eq!(snapshot.registered_sessions, 1);
+        assert_eq!(snapshot.live_session_tasks, 1);
+        // The connection is still usable: a health frame is observed.
+        send_binary(&mut socket, frame(&frames, "health.empty")).await;
+        wait_until(|| layer.health().observed_total() == 1).await;
+        let _ = socket.close(None).await;
+        listeners.shutdown().await.expect("graceful shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cold_start_capabilities_within_window_registers() {
+        let frames = corpus_frames();
+        // Cold-start parity: a fresh Runtime may provision its whole-assembly
+        // service DB indexes before sending capabilities; the window must
+        // cover that delay instead of killing the first connection.
+        let timing = SessionTiming {
+            bootstrap: Duration::from_secs(10),
+            capabilities: Duration::from_secs(3),
+            register: Duration::from_secs(3),
+            ack_write: Duration::from_secs(5),
+            close_barrier: Duration::from_secs(2),
+            shutdown_total: Duration::from_secs(5),
+        };
+        let (listeners, layer) = start(test_config(4), Some(timing), None).await;
+        let mut socket = connect(listeners.runtime_control.addr()).await;
+        let _ = recv_binary(&mut socket).await;
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        send_binary(&mut socket, frame(&frames, "capabilities.runtime-a")).await;
+        send_binary(&mut socket, frame(&frames, "register.prod.42.a")).await;
+        let _ = recv_binary(&mut socket).await;
+        wait_until(|| layer.health_snapshot().registered_sessions == 1).await;
+        assert_eq!(layer.health_snapshot().registered_sessions, 1);
+        let _ = socket.close(None).await;
+        listeners.shutdown().await.expect("graceful shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_registers_again_after_disconnect() {
+        let frames = corpus_frames();
+        let (listeners, layer) = start(test_config(4), None, None).await;
+        let mut first = connect(listeners.runtime_control.addr()).await;
+        complete_handshake(&mut first, &frames).await;
+        let _ = first.close(None).await;
+        wait_until(|| layer.health_snapshot().registered_sessions == 0).await;
+
+        let mut second = connect(listeners.runtime_control.addr()).await;
+        complete_handshake(&mut second, &frames).await;
+        wait_until(|| layer.health_snapshot().registered_sessions == 1).await;
+        assert_eq!(layer.health_snapshot().registered_sessions, 1);
+        assert_eq!(
+            layer.candidates(&committed_epoch()),
+            vec![skiff_router::session::RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 2,
+            }]
+        );
+        let _ = second.close(None).await;
+        listeners.shutdown().await.expect("graceful shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connection_send_delivery_miss_keeps_registered_session_alive() {
+        let frames = corpus_frames();
+        let (listeners, layer) = start(test_config(4), None, None).await;
+        let lane = WebSocketLane::new(
+            WebSocketLaneOptions::default(),
+            Arc::new(noop_ws_ports::NoopRuntimeGenerationPeer),
+            Arc::new(noop_ws_ports::NoopRuntimeSessionClose),
+            Arc::new(AllowAnyPendingAdmission),
+            Arc::new(EmptyMethodCatalog),
+            Arc::new(NoopNotificationObserver),
+            Arc::new(NoopRuntimeViolationSink),
+            Arc::new(noop_ws_ports::NoopDispatchInbound),
+        );
+        let handle = SessionHandle::new();
+        handle.set(Arc::clone(&layer));
+        layer.install_inbound_sinks(Arc::new(InboundSinkSet {
+            connection: Some(Arc::new(ConnectionFrameSink::new(lane, handle))),
+            ..Default::default()
+        }));
+
+        let mut socket = connect(listeners.runtime_control.addr()).await;
+        complete_handshake(&mut socket, &frames).await;
+
+        // A `connection.send` for an unknown client connection is a delivery
+        // miss (TS parity: warn, continue) and must not kill the Runtime
+        // session.
+        send_binary(
+            &mut socket,
+            connection_send_frame("missing-connection", false),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(layer.health_snapshot().registered_sessions, 1);
+
+        // An envelope with both connectionId and businessIdentity is a
+        // protocol violation and terminates the exact session (TS 1008).
+        send_binary(
+            &mut socket,
+            connection_send_frame("missing-connection", true),
+        )
+        .await;
+        expect_closed(&mut socket).await;
+        wait_until(|| layer.health_snapshot().registered_sessions == 0).await;
+        assert_eq!(layer.health_snapshot().registered_sessions, 0);
+        listeners.shutdown().await.expect("graceful shutdown");
     }
 }

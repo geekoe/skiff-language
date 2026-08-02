@@ -283,6 +283,11 @@ pub trait PeerWriter: Send + Sync + fmt::Debug {
     /// decides whether to finish the connection.
     fn write_text(&self, frame: String) -> Result<(), String>;
 
+    /// Enqueue one binary frame (Runtime `connection.send` with
+    /// `payloadKind: "binary"`, TS parity). `Err` means queue full or
+    /// transport closed.
+    fn write_binary(&self, payload: Vec<u8>) -> Result<(), String>;
+
     /// Queued + in-flight bytes (budget input).
     fn buffered_bytes(&self) -> u64;
 

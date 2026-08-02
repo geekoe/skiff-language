@@ -55,8 +55,13 @@ pub struct SessionTiming {
 impl Default for SessionTiming {
     fn default() -> Self {
         Self {
-            bootstrap: Duration::from_secs(10),
-            capabilities: Duration::from_secs(10),
+            // Cold-start parity (TS had no per-phase handshake deadlines):
+            // a fresh Runtime may spend 10-21s provisioning the
+            // whole-assembly service DB indexes before it can send
+            // `runtime.capabilities`; the deadline must cover that window.
+            // Registered sessions never consult these deadlines again.
+            bootstrap: Duration::from_secs(30),
+            capabilities: Duration::from_secs(30),
             register: Duration::from_secs(30),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(20),

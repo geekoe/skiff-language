@@ -816,6 +816,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
 
 enum Outbound {
     Text(String),
+    Binary(Vec<u8>),
     Close(u16, String),
 }
 
@@ -833,6 +834,15 @@ impl PeerWriter for SocketPeerWriter {
         let bytes = frame.len() as u64;
         self.tx
             .try_send(Outbound::Text(frame))
+            .map_err(|_| "writer queue full".to_string())?;
+        self.buffered.fetch_add(bytes, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn write_binary(&self, payload: Vec<u8>) -> Result<(), String> {
+        let bytes = payload.len() as u64;
+        self.tx
+            .try_send(Outbound::Binary(payload))
             .map_err(|_| "writer queue full".to_string())?;
         self.buffered.fetch_add(bytes, Ordering::SeqCst);
         Ok(())
@@ -872,6 +882,14 @@ async fn writer_loop<S>(
             Outbound::Text(text) => {
                 let bytes = text.len() as u64;
                 let sent = write_half.send(Message::Text(text.into())).await;
+                buffered.fetch_sub(bytes, Ordering::SeqCst);
+                if sent.is_err() {
+                    break;
+                }
+            }
+            Outbound::Binary(payload) => {
+                let bytes = payload.len() as u64;
+                let sent = write_half.send(Message::Binary(payload.into())).await;
                 buffered.fetch_sub(bytes, Ordering::SeqCst);
                 if sent.is_err() {
                     break;

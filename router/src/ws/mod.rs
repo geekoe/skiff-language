@@ -18,7 +18,8 @@ pub mod types;
 
 pub use broker::{
     BrokerHealthSnapshot, InboundCompletionOutcome, PeerTextOutcome, RuntimeRequest,
-    RuntimeRequestOutcome, WebSocketRequestBroker, WebSocketRequestBrokerOptions,
+    RuntimeRequestOutcome, RuntimeSendOutcome, WebSocketRequestBroker,
+    WebSocketRequestBrokerOptions,
 };
 pub use index::{
     AdmissionOutcome, AttachMeta, BrokerGenerationPort, ClientConnectionIndex,

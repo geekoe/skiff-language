@@ -281,11 +281,20 @@ impl RuntimePeer for SessionRuntimePeer {
         // Derived function spawn execution frame (TS `derivedSpawnRequest`
         // parity): the dispatcher owns the derived pending; this port maps
         // it onto the canonical `runtimeAssembly spawn request.start` wire.
-        let wire_trace_id = self
+        // The recoverable args payload is the original spawn.submit payload
+        // (TS `dispatchDerivedSpawn(ws, request, payloadBytes)`); the strict
+        // Runtime decoder requires it to be present.
+        let wire = self
             .spawn_wire_store
             .as_ref()
             .and_then(|store| store.get(&spawn.spawn_request_id))
-            .and_then(|wire| wire.frame.header.trace_id.clone());
+            .ok_or_else(|| {
+                format!(
+                    "derived spawn {} has no captured spawn wire",
+                    spawn.spawn_request_id
+                )
+            })?;
+        let wire_trace_id = wire.frame.header.trace_id.clone();
         let span_id = format!(
             "{:016x}",
             now_nanos().wrapping_add(SPAWN_SPAN_SEQUENCE.fetch_add(1, Ordering::Relaxed))
@@ -326,7 +335,7 @@ impl RuntimePeer for SessionRuntimePeer {
             test_effects_enabled: false,
             test_case_capability: None,
         };
-        let bytes = encode_binary_frame(&header, &[])
+        let bytes = encode_binary_frame(&header, &wire.frame.payload)
             .map_err(|error| format!("derived spawn request.start encode failed: {error}"))?;
         write_session_frame(&self.session, session, bytes)
     }

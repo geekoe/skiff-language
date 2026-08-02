@@ -12,8 +12,11 @@ use skiff_runtime_transport::assembly_activation::{
 };
 use skiff_runtime_transport::connection_protocol::{
     decode_connection_request_cancel_frame, decode_connection_request_frame,
+    CONNECTION_REQUEST_MAX_PAYLOAD_BYTES,
 };
-use skiff_runtime_transport::protocol::RuntimeFrameFamily;
+use skiff_runtime_transport::protocol::{
+    decode_typed_binary_frame, ConnectionSendFrameHeader, RuntimeFrameFamily,
+};
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
     WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
@@ -23,7 +26,7 @@ use crate::activation::ActivationCoordinatorHandle;
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
-use crate::ws::{BrokerRuntimeSource, RuntimeRequest, WebSocketLane};
+use crate::ws::{BrokerRuntimeSource, RuntimeRequest, RuntimeSendOutcome, WebSocketLane};
 
 use super::session_ports::{SessionHandle, WsRuntimeResponder};
 
@@ -189,6 +192,57 @@ impl ConnectionFrameSink {
         self.lane.handle_runtime_cancel(&source, &header.request_id);
         Ok(())
     }
+
+    /// Runtime `connection.send` (server->client business message, TS
+    /// parity). Delivery misses are non-fatal (the connection may have
+    /// closed concurrently); protocol violations terminate the exact Runtime
+    /// session, matching the TS 1008 close.
+    fn handle_send(
+        &self,
+        _runtime: &RuntimeSessionEpoch,
+        header: &ConnectionSendFrameHeader,
+        payload: &[u8],
+    ) -> Result<(), TerminalKind> {
+        if header.envelope_type != "connection.send"
+            || header.service_id.trim().is_empty()
+            || payload.is_empty()
+            || payload.len() > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES
+        {
+            return Err(TerminalKind::MalformedFrame);
+        }
+        let connection_id = header.connection_id.as_deref();
+        let business_identity = header.business_identity.as_deref();
+        // TS parity: exactly one of connectionId / businessIdentity.
+        if connection_id.is_some() == business_identity.is_some() {
+            return Err(TerminalKind::MalformedFrame);
+        }
+        let websocket_entry_id = header.websocket_entry_id.as_deref().unwrap_or_default();
+        if websocket_entry_id.trim().is_empty() {
+            return Err(TerminalKind::MalformedFrame);
+        }
+        let payload_kind = header.payload_kind.as_deref().unwrap_or_default();
+        if payload_kind != "text" && payload_kind != "binary" {
+            return Err(TerminalKind::MalformedFrame);
+        }
+        match self.lane.handle_runtime_send(
+            connection_id,
+            business_identity,
+            &header.service_id,
+            websocket_entry_id,
+            payload_kind,
+            payload,
+        ) {
+            RuntimeSendOutcome::Delivered => Ok(()),
+            RuntimeSendOutcome::DeliveryMiss { reason } => {
+                eprintln!("[connection.send] delivery miss: {reason}");
+                Ok(())
+            }
+            RuntimeSendOutcome::ProtocolViolation { reason } => {
+                eprintln!("[connection.send] protocol violation: {reason}");
+                Err(TerminalKind::MalformedFrame)
+            }
+        }
+    }
 }
 
 impl InboundFrameSink for ConnectionFrameSink {
@@ -199,7 +253,10 @@ impl InboundFrameSink for ConnectionFrameSink {
     fn accepts_frame_type(&self, frame_type: &str) -> bool {
         matches!(
             frame_type,
-            "websocket.generation.lifecycle" | "connection.request" | "connection.request.cancel"
+            "websocket.generation.lifecycle"
+                | "connection.request"
+                | "connection.request.cancel"
+                | "connection.send"
         )
     }
 
@@ -215,6 +272,9 @@ impl InboundFrameSink for ConnectionFrameSink {
         }
         if let Ok(header) = decode_connection_request_cancel_frame(raw) {
             return self.handle_cancel(runtime, &header);
+        }
+        if let Ok((header, payload)) = decode_typed_binary_frame::<ConnectionSendFrameHeader>(raw) {
+            return self.handle_send(runtime, &header, &payload);
         }
         Err(TerminalKind::MalformedFrame)
     }
