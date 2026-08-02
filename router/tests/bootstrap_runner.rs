@@ -235,10 +235,15 @@ mod tests {
             .expect("initialize");
         let runner = runner(Arc::new(repo), &chain, default_pool());
 
-        let epoch = runner
+        let outcome = runner
             .run_initial("prod", &chain.actor_ref)
             .await
             .expect("initial bootstrap must publish");
+        let epoch = outcome.epoch;
+        assert!(
+            outcome.pending.is_none(),
+            "committed-only state has no pending"
+        );
         assert_eq!(epoch.environment(), "prod");
         assert_eq!(epoch.assembly_generation(), 7);
         assert_eq!(
@@ -260,7 +265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_fails_closed_without_publishing() {
+    async fn pending_publishes_committed_and_surfaces_recovery() {
         let chain = materialize("prod");
         let repo = MemoryActivationStateRepository::new();
         repo.initialize(&state_for("prod", 7, chain.assembly_ref.clone()))
@@ -279,18 +284,24 @@ mod tests {
         .expect("prepare pending");
         let runner = runner(Arc::new(repo), &chain, default_pool());
 
-        let error = runner
+        let outcome = runner
             .run_initial("prod", &chain.actor_ref)
             .await
-            .expect_err("pending must fail closed");
-        assert!(matches!(
-            error,
-            BootstrapError::Read(skiff_router::bootstrap::BootstrapReadOutcome::FailClosedPending {
-                activation_id
-            }) if activation_id == "act-1"
-        ));
-        assert_eq!(runner.epoch_store().capture(), None);
-        assert_eq!(runner.epoch_store().publish_count(), 0);
+            .expect("pending must publish the committed epoch");
+        assert_eq!(outcome.epoch.assembly_generation(), 7);
+        let pending = outcome.pending.expect("pending recovery must be surfaced");
+        assert_eq!(pending.activation_id, "act-1");
+        assert_eq!(pending.expected_generation, 7);
+        assert_eq!(pending.candidate_generation, 8);
+        assert_eq!(
+            runner
+                .epoch_store()
+                .capture()
+                .expect("published epoch")
+                .assembly_generation(),
+            7
+        );
+        assert_eq!(runner.epoch_store().publish_count(), 1);
         assert_eq!(runner.reader().fail_closed().pending, 1);
     }
 

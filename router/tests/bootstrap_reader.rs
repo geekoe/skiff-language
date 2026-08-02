@@ -113,7 +113,7 @@ fn reader(
 fn outcome_name(outcome: &BootstrapReadOutcome) -> &'static str {
     match outcome {
         BootstrapReadOutcome::StableCommitted { .. } => "stableCommitted",
-        BootstrapReadOutcome::FailClosedPending { .. } => "failClosedPending",
+        BootstrapReadOutcome::CommittedWithPending { .. } => "committedWithPending",
         BootstrapReadOutcome::FailClosedMissing => "failClosedMissing",
         BootstrapReadOutcome::FailClosedMalformed { .. } => "failClosedMalformed",
         BootstrapReadOutcome::FailClosedIdentityMismatch { .. } => "failClosedIdentityMismatch",
@@ -220,7 +220,11 @@ mod tests {
                     Arc::new(repo)
                 }
                 "pendingPresent" => {
-                    let assembly_ref = assembly_ref_hex(&"a".repeat(64));
+                    // Plan §4.2: the committed epoch must be constructible
+                    // first, so the pending case uses a real materialized
+                    // assembly (the contracts-bootstrap corpus label is the
+                    // legacy E-bootstrap fail-closed name; see below).
+                    let assembly_ref = materialize_assembly(root.path());
                     let repo = MemoryActivationStateRepository::new();
                     repo.initialize(&state_for("prod", committed(1, assembly_ref.clone())))
                         .await
@@ -273,17 +277,27 @@ mod tests {
                 other => panic!("unexpected corpus kind {other}"),
             };
             let outcome = reader(repo, root.path()).read_committed("prod").await;
-            assert_eq!(
-                outcome_name(&outcome),
-                case["bootstrapOutcome"].as_str().expect("expected outcome"),
-                "{}",
-                case["id"]
-            );
+            // The frozen corpus labels pendingPresent as failClosedPending;
+            // E-activation changed the reader contract (committed published +
+            // recovery surfaced), so the consumer asserts the new outcome and
+            // the deployment-side fixture label is updated by its owner.
+            let expected = if kind == "pendingPresent" {
+                "committedWithPending"
+            } else {
+                case["bootstrapOutcome"].as_str().expect("expected outcome")
+            };
+            assert_eq!(outcome_name(&outcome), expected, "{}", case["id"]);
             match kind {
                 "committedOnly" => assert!(outcome.is_stable(), "committedOnly must be stable"),
+                // The contracts-bootstrap corpus still labels the pending
+                // state with the E-bootstrap fail-closed name; E-activation
+                // (plan §4.2) changed the semantics to committed-published +
+                // recovery-surfaced. The fixture label is updated by the
+                // deployment-side owner; the consumer asserts the new
+                // semantics here.
                 "pendingPresent" => assert!(matches!(
                     outcome,
-                    BootstrapReadOutcome::FailClosedPending { activation_id } if activation_id == "act-1"
+                    BootstrapReadOutcome::CommittedWithPending { pending, .. } if pending.activation_id == "act-1"
                 )),
                 "missing" => assert_eq!(outcome, BootstrapReadOutcome::FailClosedMissing),
                 "malformed" => assert!(matches!(
@@ -348,9 +362,12 @@ mod tests {
             .await;
         assert!(matches!(
             outcome,
-            BootstrapReadOutcome::FailClosedPending { .. }
+            BootstrapReadOutcome::CommittedWithPending { .. }
         ));
-        assert!(outcome.refs().is_none(), "pending must never project");
+        assert!(
+            outcome.refs().is_some(),
+            "pending state must still project the committed refs (§4.2)"
+        );
 
         let refs = CommittedBootstrapRefs::project_committed(&committed(3, assembly_ref.clone()));
         assert_eq!(refs.generation, 3);

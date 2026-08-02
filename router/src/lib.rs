@@ -66,8 +66,8 @@ pub use routing::{
     RuntimeCandidateQuery, SessionCancellation,
 };
 pub use session::{
-    ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
-    SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
+    ConsumerKind, ConsumerManifest, RegistrationObserver, RuntimeRegistrationDirectory,
+    RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
 };
 pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
 pub use ws::{
