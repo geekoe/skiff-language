@@ -1,11 +1,12 @@
-//! Final listener skeleton (PR 0b), assembled from the C-net frozen mechanism.
+//! Final listener skeleton (PR 0b), assembled from the C-net frozen mechanism
+//! with the W-session `/runtime` WebSocket assembly.
 //!
 //! Public HTTP and the shared runtime/control socket are bound with the
 //! frozen stack (Tokio multi-thread, hyper 1 with upgrades, tokio-tungstenite
 //! 0.26, Semaphore caps, watch + drain + deadline abort). Only mechanism is
-//! assembled here: empty HTTP responses, a health placeholder and an empty
-//! `/runtime` WebSocket upgrade. No request dispatch, WS broker, activation
-//! transaction or runtime registration business exists in this PR.
+//! assembled here: empty HTTP responses, a health placeholder and the
+//! `/runtime` WebSocket upgrade handed to `SessionLayer` (W-session). No
+//! request dispatch, WS broker or activation transaction business exists.
 
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -13,7 +14,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -32,6 +32,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::config::RouterConfig;
+use crate::session::SessionLayer;
 
 /// Public listener connection cap. The frozen Router config has no public
 /// connection-limit field; this placeholder keeps the C-net Semaphore
@@ -49,6 +50,7 @@ pub enum ListenerError {
     Io(std::io::Error),
     Resolve(String),
     Join(String),
+    FailStop(String),
 }
 
 impl fmt::Display for ListenerError {
@@ -59,6 +61,7 @@ impl fmt::Display for ListenerError {
                 write!(formatter, "listener address error: {message}")
             }
             ListenerError::Join(message) => write!(formatter, "listener join error: {message}"),
+            ListenerError::FailStop(message) => write!(formatter, "listener fail-stop: {message}"),
         }
     }
 }
@@ -112,32 +115,52 @@ impl ListenerHandle {
 pub struct RouterListeners {
     pub public: ListenerHandle,
     pub runtime_control: ListenerHandle,
+    pub session: Arc<SessionLayer>,
 }
 
 impl RouterListeners {
     pub async fn shutdown(self) -> Result<(), ListenerError> {
-        let (public, runtime_control) =
-            tokio::join!(self.public.shutdown(), self.runtime_control.shutdown(),);
-        match (public, runtime_control) {
-            (Ok(()), Ok(())) => Ok(()),
-            (public, runtime_control) => {
-                let mut messages = Vec::new();
-                if let Err(error) = public {
-                    messages.push(format!("public: {error}"));
-                }
-                if let Err(error) = runtime_control {
-                    messages.push(format!("runtime-control: {error}"));
-                }
-                Err(ListenerError::Join(messages.join("; ")))
-            }
+        let RouterListeners {
+            public,
+            runtime_control,
+            session,
+        } = self;
+        // C-process-lifecycle: S1 stop accepting, then S6 close Runtime
+        // sessions via the barrier, then join listener tasks.
+        let _ = public.shutdown_tx.send(());
+        let _ = runtime_control.shutdown_tx.send(());
+        let session_result = session.shutdown().await;
+        let (public, runtime_control) = tokio::join!(public.task, runtime_control.task);
+        let mut errors = Vec::new();
+        let mut session_failed = false;
+        if let Err(error) = session_result {
+            errors.push(format!("session: {error}"));
+            session_failed = true;
         }
+        if let Err(error) = public {
+            errors.push(format!("public: {error}"));
+        }
+        if let Err(error) = runtime_control {
+            errors.push(format!("runtime-control: {error}"));
+        }
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let message = errors.join("; ");
+        if session_failed {
+            return Err(ListenerError::FailStop(message));
+        }
+        Err(ListenerError::Join(message))
     }
 }
 
 #[derive(Debug, Clone)]
 enum ListenerKind {
     Public,
-    RuntimeControl { runtime_path: String },
+    RuntimeControl {
+        runtime_path: String,
+        session_layer: Arc<SessionLayer>,
+    },
 }
 
 /// Starts the public and runtime/control listeners from a validated
@@ -145,6 +168,16 @@ enum ListenerKind {
 pub async fn start_listeners(
     config: &RouterConfig,
     options: &ListenerStartOptions,
+) -> Result<RouterListeners, ListenerError> {
+    start_listeners_with_session(config, options, Arc::new(SessionLayer::new(config.clone()))).await
+}
+
+/// Listener construction with an explicitly assembled session layer (tests
+/// inject the corpus committed epoch, timing and fake consumer manifests).
+pub async fn start_listeners_with_session(
+    config: &RouterConfig,
+    options: &ListenerStartOptions,
+    session_layer: Arc<SessionLayer>,
 ) -> Result<RouterListeners, ListenerError> {
     let public_addr = match options.public_bind {
         Some(addr) => addr,
@@ -192,6 +225,7 @@ pub async fn start_listeners(
             )),
             ListenerKind::RuntimeControl {
                 runtime_path: config.runtime_path.clone(),
+                session_layer: Arc::clone(&session_layer),
             },
             runtime_control_shutdown_rx,
             options.drain_deadline,
@@ -201,13 +235,18 @@ pub async fn start_listeners(
     Ok(RouterListeners {
         public,
         runtime_control,
+        session: session_layer,
     })
 }
 
 /// Runs the listeners until SIGINT/SIGTERM, then shuts them down gracefully.
 pub async fn run_router(config: RouterConfig) -> Result<(), ListenerError> {
     let listeners = start_listeners(&config, &ListenerStartOptions::default()).await?;
-    wait_for_shutdown_signal().await;
+    let mut fail_stop_rx = listeners.session.fail_stop_subscribe();
+    tokio::select! {
+        _ = wait_for_shutdown_signal() => {}
+        _ = fail_stop_rx.changed() => {}
+    }
     listeners.shutdown().await
 }
 
@@ -266,14 +305,11 @@ async fn serve_listener(
                 let websocket_registry = Arc::clone(&websocket_registry);
                 connections.spawn(async move {
                     let _permit = permit;
-                    let service_shutdown = connection_shutdown.clone();
                     let service = service_fn(move |request: Request<Incoming>| {
                         let kind = kind.clone();
-                        let connection_shutdown = service_shutdown.clone();
                         let websocket_registry = Arc::clone(&websocket_registry);
                         async move {
-                            handle_request(&kind, &connection_shutdown, &websocket_registry, request)
-                                .await
+                            handle_request(&kind, &websocket_registry, request).await
                         }
                     });
                     let connection = http1::Builder::new()
@@ -315,15 +351,22 @@ type RouterResponse = Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Erro
 
 async fn handle_request(
     kind: &ListenerKind,
-    shutdown_rx: &watch::Receiver<()>,
     websocket_registry: &Arc<Mutex<Vec<AbortHandle>>>,
     request: Request<Incoming>,
 ) -> RouterResponse {
     match kind {
         ListenerKind::Public => Ok(empty_response(StatusCode::OK)),
-        ListenerKind::RuntimeControl { runtime_path } => {
+        ListenerKind::RuntimeControl {
+            runtime_path,
+            session_layer,
+        } => {
             if is_websocket_upgrade(&request) && request.uri().path() == runtime_path {
-                return handle_websocket_upgrade(request, shutdown_rx, websocket_registry).await;
+                return handle_websocket_upgrade(
+                    request,
+                    websocket_registry,
+                    Arc::clone(session_layer),
+                )
+                .await;
             }
             Ok(empty_response(StatusCode::OK))
         }
@@ -340,8 +383,8 @@ fn is_websocket_upgrade(request: &Request<Incoming>) -> bool {
 
 async fn handle_websocket_upgrade(
     mut request: Request<Incoming>,
-    shutdown_rx: &watch::Receiver<()>,
     websocket_registry: &Arc<Mutex<Vec<AbortHandle>>>,
+    session_layer: Arc<SessionLayer>,
 ) -> RouterResponse {
     let Some(key) = request
         .headers()
@@ -352,21 +395,14 @@ async fn handle_websocket_upgrade(
     };
     let accept = derive_accept_key(key.as_bytes());
     let upgrade = hyper::upgrade::on(&mut request);
-    let shutdown_rx = shutdown_rx.clone();
     let handle = tokio::spawn(async move {
         let upgraded = match upgrade.await {
             Ok(upgraded) => upgraded,
             Err(_) => return,
         };
-        let mut socket =
+        let socket =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        let mut shutdown_rx = shutdown_rx;
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                let _ = socket.close(None).await;
-            }
-            _ = drain_websocket(&mut socket) => {}
-        }
+        session_layer.accept(socket);
     });
     websocket_registry
         .lock()
@@ -379,17 +415,6 @@ async fn handle_websocket_upgrade(
         .header(SEC_WEBSOCKET_ACCEPT, accept)
         .body(empty_body())
         .expect("static upgrade response is valid"))
-}
-
-/// Reads frames until the client closes or errors; no business protocol is
-/// interpreted in the PR 0b skeleton.
-async fn drain_websocket(socket: &mut WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>) {
-    while let Some(frame) = socket.next().await {
-        match frame {
-            Ok(_) => {}
-            Err(_) => return,
-        }
-    }
 }
 
 fn empty_response(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {

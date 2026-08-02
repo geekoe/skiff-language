@@ -12,6 +12,7 @@ name = "skiff-router"
 path = "src/main.rs"
 
 [dependencies]
+skiff-artifact-model = { path = "../artifact-model" }
 skiff-runtime-request-contract = { path = "../runtime/request-contract" }
 skiff-runtime-transport = { path = "../runtime/transport" }
 
@@ -30,4 +31,5 @@ unsafe-libyaml = "0.2"
 [dev-dependencies]
 # Golden corpus consumer tests and process-listener probes.
 regex = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"

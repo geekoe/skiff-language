@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod listener;
+pub mod session;
 
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
@@ -12,4 +13,8 @@ pub use config::{
 pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
     RouterListeners,
+};
+pub use session::{
+    ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
+    SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
 };
