@@ -45,13 +45,16 @@ async fn host_direct_spawn_executes_exact_route_and_cleans_supervision() {
         .await
         .expect("spawn submit timeout")
         .expect("spawn submit channel");
-    let RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit {
-        request: submit,
-        payload,
-    }) = message
-    else {
-        panic!("compiled spawn statement must emit spawn.submit")
+    let RouterWriterMessage::SpawnSubmit(message) = message else {
+        panic!("compiled spawn statement must emit canonical spawn.submit")
     };
+    let submit = message.request;
+    let payload = message.payload;
+    assert_eq!(
+        skiff_runtime_request::SpawnCallerKind::Request,
+        message.caller_kind,
+        "ordinary request spawn parent must be callerKind=request"
+    );
     assert!(submit
         .build_id
         .as_deref()

@@ -52,6 +52,7 @@ describe('RuntimeEndpoint Actor message FIFO admission', () => {
     const childSubmit = {
       ...spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: parent.requestId,
         actor,
         serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -105,6 +106,7 @@ describe('RuntimeEndpoint Actor message FIFO admission', () => {
     const childSubmit = {
       ...spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: parent.requestId,
         actor,
         serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -121,7 +123,8 @@ describe('RuntimeEndpoint Actor message FIFO admission', () => {
       type: 'spawn.submit.error',
       rpcId: childSubmit.rpcId,
       error: {
-        message: expect.stringContaining('active request or actor invocation'),
+        message:
+          'spawn callerRequestId does not identify an active actor invocation parent on the same runtime connection',
       },
     });
   });

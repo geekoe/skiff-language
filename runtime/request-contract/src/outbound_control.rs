@@ -133,6 +133,26 @@ pub struct SpawnSubmitControlRequest {
     pub actor_method: Option<ActorMethodSpawnTargetControl>,
 }
 
+/// Closed parent-kind namespace for the canonical spawn wire generation
+/// (C-model-spawn §2). `callerKind` selects the unique parent resolver:
+/// `request` -> FunctionSpawnParentResolver, `actorInvocation` ->
+/// ActorSpawnParentResolver. The old shape (missing `callerKind`) is rejected
+/// with no compatible reader; `H-spawn-parent-cut` is the production hard cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnCallerKind {
+    Request,
+    ActorInvocation,
+}
+
+impl SpawnCallerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::ActorInvocation => "actorInvocation",
+        }
+    }
+}
+
 /// Actor-method target facts for a `spawn.submit` whose targetKind is
 /// `actorMethod`. The receiver travels as identity metadata (never inside the
 /// recoverable args payload); the owner runtime routes by it and re-activates

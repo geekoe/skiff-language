@@ -668,65 +668,44 @@ export class RuntimeDispatcher {
     ws: WebSocket,
     submit: SpawnSubmitRequestFrameHeader
   ): SpawnSubmitParent {
-    const pending = this.pending.get(submit.callerRequestId);
-    const requestParent =
-      pending !== undefined &&
-      pending.ws === ws &&
-      isRuntimeAssemblyRequestDispatchHeader(pending.request)
-        ? { pending, request: pending.request }
-        : undefined;
-    const actorParent = this.options.actorMethodSpawn?.activeActorInvocationParent({
-      invocationId: submit.callerRequestId,
-      ws,
-      serviceId: submit.serviceId,
-      serviceProtocolIdentity: submit.serviceProtocolIdentity
-    });
-    const requestResolution = requestParent === undefined
-      ? {}
-      : this.resolveSpawnParentCandidate(() =>
-          this.resolveSpawnRequestParent(requestParent, submit)
+    // H-spawn-parent-cut: `callerKind` is the closed typed parent namespace
+    // selector. `request` resolves exclusively through the RequestDispatcher
+    // pending; `actorInvocation` exclusively through the ActorInvocationRelay
+    // parent store. There is no fallback and no cross-namespace lookup; the
+    // same `callerRequestId` may exist in both namespaces without collision.
+    if (submit.callerKind === 'request') {
+      const pending = this.pending.get(submit.callerRequestId);
+      const requestParent =
+        pending !== undefined &&
+        pending.ws === ws &&
+        isRuntimeAssemblyRequestDispatchHeader(pending.request)
+          ? { pending, request: pending.request }
+          : undefined;
+      if (requestParent === undefined) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn callerRequestId does not identify an active request parent on the same runtime connection'
         );
-    const actorResolution = actorParent === undefined
-      ? {}
-      : this.resolveSpawnParentCandidate(() =>
-          this.resolveSpawnActorParent(ws, submit, actorParent)
-        );
-    if (
-      requestResolution.parent !== undefined &&
-      actorResolution.parent !== undefined
-    ) {
-      throw new ServiceProtocolBoundaryError(
-        'spawn callerRequestId is ambiguous across active request and actor invocation parents'
-      );
-    }
-    if (requestResolution.parent !== undefined) {
-      return requestResolution.parent;
-    }
-    if (actorResolution.parent !== undefined) {
-      return actorResolution.parent;
-    }
-    if (requestResolution.rejection !== undefined) {
-      throw requestResolution.rejection;
-    }
-    if (actorResolution.rejection !== undefined) {
-      throw actorResolution.rejection;
-    }
-    throw new ServiceProtocolBoundaryError(
-      'spawn callerRequestId must identify an active request or actor invocation on the same runtime connection'
-    );
-  }
-
-  private resolveSpawnParentCandidate(
-    resolve: () => SpawnSubmitParent
-  ): { parent?: SpawnSubmitParent; rejection?: ServiceProtocolBoundaryError } {
-    try {
-      return { parent: resolve() };
-    } catch (error) {
-      if (error instanceof ServiceProtocolBoundaryError) {
-        return { rejection: error };
       }
-      throw error;
+      return this.resolveSpawnRequestParent(requestParent, submit);
     }
+    if (submit.callerKind === 'actorInvocation') {
+      const actorParent = this.options.actorMethodSpawn?.activeActorInvocationParent({
+        invocationId: submit.callerRequestId,
+        ws,
+        serviceId: submit.serviceId,
+        serviceProtocolIdentity: submit.serviceProtocolIdentity
+      });
+      if (actorParent === undefined) {
+        throw new ServiceProtocolBoundaryError(
+          'spawn callerRequestId does not identify an active actor invocation parent on the same runtime connection'
+        );
+      }
+      return this.resolveSpawnActorParent(ws, submit, actorParent);
+    }
+    // Unreachable through the closed-enum frame validation; fail closed anyway.
+    throw new ServiceProtocolBoundaryError(
+      `spawn callerKind ${String(submit.callerKind)} is not a supported parent kind`
+    );
   }
 
   private resolveSpawnRequestParent(

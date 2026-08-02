@@ -67,7 +67,7 @@ pub use outbound::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage,
-    RuntimeDeadlineControl, SpawnSubmitControlRequest,
+    RuntimeDeadlineControl, SpawnCallerKind, SpawnSubmitControlMessage, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

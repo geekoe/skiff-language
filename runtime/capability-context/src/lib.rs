@@ -77,8 +77,8 @@ pub use outbound_control::{
     ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl,
-    SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
+    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, SpawnCallerKind,
+    SpawnSubmitControlMessage, SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{

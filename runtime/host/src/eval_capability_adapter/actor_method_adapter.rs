@@ -230,6 +230,7 @@ impl ActorMethodEvalExecution {
             self.test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
+            SpawnCallerKind::ActorInvocation,
             self.cancellation.clone(),
         );
         let stream_runtime = self.interpreter.stream_runtime.clone();

@@ -13,6 +13,7 @@ pub(super) struct RuntimeOwnedRequestParts {
     pub(super) activation_identity: Option<ActivationIdentityControl>,
     pub(super) trace_id: Option<String>,
     pub(super) test_case_capability: Option<String>,
+    pub(super) spawn_caller_kind: SpawnCallerKind,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(super) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
@@ -202,11 +203,13 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         let request = spawn_submit_with_caller_request(request, &self.owned);
+        let caller_kind = self.owned.spawn_caller_kind;
         Box::pin(submit_spawn(
             self.request_context.clone(),
             request,
             args_payload,
             execution_control,
+            caller_kind,
         ))
     }
 }
@@ -368,11 +371,13 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         let request = spawn_submit_with_caller_request(request, &self.0);
+        let caller_kind = self.0.spawn_caller_kind;
         Box::pin(submit_spawn(
             concrete_request_context_from_owned(&self.0),
             request,
             args_payload,
             execution_control,
+            caller_kind,
         ))
     }
 }
@@ -633,11 +638,12 @@ async fn submit_spawn(
     request: SpawnSubmitControlRequest,
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
+    caller_kind: SpawnCallerKind,
 ) -> capability_contract::CapabilityResult<()> {
     let scope = actor_execution_scope(&execution_control)?;
     root_result_into_capability(
         concrete::RequestClient::new(context)
-            .submit_spawn_in_scope(request, args_payload, scope)
+            .submit_spawn_in_scope(request, args_payload, scope, caller_kind)
             .await,
     )
     .await

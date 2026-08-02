@@ -84,16 +84,21 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
     let lifecycle = scope.clone();
     let context = actor_context(&host, &router_sender, &activation);
     let client = RequestClient::new(context);
-    let submit = client.submit_spawn_in_scope(spawn_submit_request(), Vec::new(), scope);
+    let submit = client.submit_spawn_in_scope(
+        spawn_submit_request(),
+        Vec::new(),
+        scope,
+        skiff_runtime_request::SpawnCallerKind::Request,
+    );
     tokio::pin!(submit);
 
     let rpc_id = tokio::select! {
         result = &mut submit => panic!("scoped spawn submit completed before dispatch: {result:?}"),
         message = router_receiver.recv() => {
-            let Some(RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit { request, .. })) = message else {
-                panic!("spawn submit must emit its control request")
+            let Some(RouterWriterMessage::SpawnSubmit(message)) = message else {
+                panic!("spawn submit must emit its canonical writer message")
             };
-            request.rpc_id
+            message.request.rpc_id
         }
     };
     let frame = encode_binary_frame(

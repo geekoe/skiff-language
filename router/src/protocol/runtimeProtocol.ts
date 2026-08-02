@@ -266,6 +266,7 @@ const configShapeProtocolSchema = {
 const cancelReasons = REQUEST_CANCEL_REASONS satisfies readonly RequestCancelReason[];
 
 const spawnTargetKinds = ['function', 'actorMethod'] as const;
+const spawnCallerKinds = ['request', 'actorInvocation'] as const;
 const dispatchModes = ['unary', 'serverStream'] as const;
 const websocketAdapterSourceKinds = [
   'websocket.connectRequest',
@@ -1316,6 +1317,7 @@ export const runtimeFrameHeaderSchemas = {
       'type',
       'rpcId',
       'runtimeId',
+      'callerKind',
       'activationIdentity',
       'targetKind',
       'serviceId',
@@ -1328,6 +1330,7 @@ export const runtimeFrameHeaderSchemas = {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.submit.request'] },
       ...runtimeRpcRequestBaseProperties,
+      callerKind: { type: 'string', enum: spawnCallerKinds },
       targetKind: { type: 'string', enum: spawnTargetKinds },
       serviceId: { type: 'string' },
       serviceVersion: { type: 'string' },
@@ -2490,6 +2493,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.submit.request',
     rpcId: 'spawn-submit-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    callerKind: 'request',
     activationIdentity: actorControlActivationIdentityFixture,
     targetKind: 'function',
     serviceId: spawnFixture.serviceId,
@@ -3329,6 +3333,7 @@ function validateActorRemoveResponse(envelope: Record<string, unknown>): string 
 function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string | null {
   return (
     validateRuntimeRpcRequestBase(envelope, 'spawn.submit.request') ??
+    requireEnum(envelope, 'spawn.submit.request', 'callerKind', spawnCallerKinds) ??
     requireEnum(envelope, 'spawn.submit.request', 'targetKind', spawnTargetKinds) ??
     requirePublicationId(envelope, 'spawn.submit.request', 'serviceId') ??
     requireString(envelope, 'spawn.submit.request', 'serviceVersion') ??

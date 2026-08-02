@@ -243,6 +243,7 @@ impl RuntimeAssemblyExecutionContext {
             test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
+            SpawnCallerKind::Request,
             cancellation.clone(),
         );
         let stream_runtime = interpreter.stream_runtime.clone();

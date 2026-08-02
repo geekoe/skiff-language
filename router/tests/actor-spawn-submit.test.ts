@@ -437,6 +437,7 @@ describe('actor method spawn submit', () => {
 
     const submit = spawnSubmit({
       runtimeId: 'runtime-a',
+      callerKind: 'actorInvocation',
       callerRequestId: 'parent-invoke-1',
       actor,
       serviceProtocolIdentity: SERVICE_PROTOCOL,
@@ -492,6 +493,7 @@ describe('actor method spawn submit', () => {
       serverWs,
       spawnSubmit({
         runtimeId: 'runtime-a',
+        callerKind: 'actorInvocation',
         callerRequestId: 'parent-invoke-wrong-protocol',
         actor,
         serviceProtocolIdentity: wrongServiceProtocol,
@@ -1252,6 +1254,7 @@ describe('actor method spawn submit', () => {
 
     const submit = spawnSubmit({
       runtimeId: 'runtime-a',
+      callerKind: 'actorInvocation',
       callerRequestId: 'parent-invoke-1',
       actor,
     });
