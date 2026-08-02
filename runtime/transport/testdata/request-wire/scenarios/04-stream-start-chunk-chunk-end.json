@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "scenario": "stream-start-chunk-chunk-end",
+  "events": [
+    { "kind": "start", "requestId": "req-2", "mode": "serverStream" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.start.req2" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.chunk.req2.seq0" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.chunk.req2.seq1" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.end.req2.empty" }
+  ],
+  "expect": {
+    "outcomes": { "req-2": "completed" },
+    "terminalSources": { "req-2": "runtime_response_end" },
+    "chunks": { "req-2": ["6368756e6b2d30", "6368756e6b2d31"] },
+    "payload": {},
+    "protocolErrors": 0,
+    "ignoredStale": 0
+  }
+}

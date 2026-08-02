@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "scenario": "capability-server-stream-missing-excluded",
+  "epoch": {
+    "environment": "prod",
+    "generation": 42,
+    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configSnapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deployment": {
+      "serviceId": "example.com/service-1",
+      "contractVersion": "1.0.0",
+      "deploymentRevision": "deployment-1",
+      "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "query": { "mode": "serverStream" },
+  "sessions": [
+    {
+      "id": "s1",
+      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "revision": 1,
+      "registered": true,
+      "tuple": {
+        "environment": "prod",
+        "generation": 42,
+        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "cancelled": false,
+      "capabilities": ["unary"]
+    }
+  ],
+  "expect": {
+    "candidates": [],
+    "note": "missing serverStream capability excludes the session"
+  }
+}

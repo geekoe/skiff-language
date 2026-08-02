@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "scenario": "stream-chunk-seq-gap-rejected",
+  "events": [
+    { "kind": "start", "requestId": "req-2", "mode": "serverStream" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.start.req2" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.chunk.req2.seq0" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.chunk.req2.seq2" }
+  ],
+  "expect": {
+    "outcomes": { "req-2": "protocolError" },
+    "terminalSources": { "req-2": "protocol_error" },
+    "chunks": { "req-2": ["6368756e6b2d30"] },
+    "payload": {},
+    "protocolErrors": 1,
+    "ignoredStale": 0
+  }
+}
