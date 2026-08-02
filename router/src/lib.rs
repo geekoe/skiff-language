@@ -1,6 +1,7 @@
 //! Skiff Router Rust migration (PR 0b): frozen Router config parser and the
 //! final listener skeleton assembled from the C-net mechanism.
 
+pub mod activation;
 pub mod artifact;
 pub mod config;
 pub mod listener;
