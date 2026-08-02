@@ -415,6 +415,59 @@ fn health_unknown_missing_and_wrong_typed_fields_fail_closed() {
 }
 
 #[test]
+fn health_counters_contract_and_optional_registered_at() {
+    let valid = || {
+        serde_json::from_str::<Value>(&health_body(
+            ENVIRONMENT,
+            2,
+            ASSEMBLY_B,
+            Value::Null,
+            vec![replica(2, ASSEMBLY_B, "healthy", true)],
+            vec![capability(REPLICA, true)],
+        ))
+        .unwrap()
+    };
+
+    // The §10 counters object is optional on the base TS-compatible shape.
+    let mut without_counters = valid();
+    without_counters.as_object_mut().unwrap().remove("counters");
+    assert!(
+        decode_health_snapshot(&without_counters.to_string()).is_ok(),
+        "health without counters must stay decodable"
+    );
+
+    // Unknown or missing counter sections fail closed.
+    let mut unknown_section = valid();
+    unknown_section["counters"]["legacy"] = serde_json::json!({});
+    assert!(decode_health_snapshot(&unknown_section.to_string()).is_err());
+    let mut missing_section = valid();
+    missing_section["counters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sessions");
+    assert!(decode_health_snapshot(&missing_section.to_string()).is_err());
+    let mut wrong_section = valid();
+    wrong_section["counters"]["sessions"] = serde_json::json!(7);
+    assert!(decode_health_snapshot(&wrong_section.to_string()).is_err());
+
+    // Rust health omits registration timestamps; the decoder treats
+    // registeredAt as optional on replicas and capabilityConnections.
+    let mut no_registered_at = valid();
+    no_registered_at["replicas"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("registeredAt");
+    no_registered_at["capabilityConnections"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("registeredAt");
+    let health = decode_health_snapshot(&no_registered_at.to_string())
+        .expect("registeredAt must be optional");
+    assert_eq!(health.replicas[0].replica_id, REPLICA);
+    assert!(health.capability_connections[0].connected);
+}
+
+#[test]
 fn replica_connection_lifecycle_counts_decode_as_required_safe_integers() {
     const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 

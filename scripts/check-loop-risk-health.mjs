@@ -157,6 +157,66 @@ function runSelfTest() {
     evaluateLoopRiskHealth(withDisconnectedNonzero, { touchedRuntimeIds: [] }).ok,
     false,
   );
+
+  // Canonical full shape produced by the Rust /__router/health projection
+  // (batch 12 health leaf): observedAt plus the TS AssemblyControlPlane
+  // loopRisk fields must evaluate clean with all-zero counters.
+  const fullCanonical = {
+    observedAt: '2026-08-03T00:00:00.000Z',
+    router: zeroRouter,
+    runtimes: [connectedZero],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(fullCanonical, { touchedRuntimeIds: ['runtime-a'] }).ok,
+    true,
+    'full canonical Rust loopRisk shape must be accepted',
+  );
+
+  // Missing required evaluator fields must keep failing: each router counter
+  // and each runtime counter is independently required.
+  const missingHttpStreamWaiters = {
+    router: {
+      dispatcher: { pendingUnary: 0, pendingStream: 0 },
+      httpStream: { backpressureCancels: 0 },
+    },
+    runtimes: [connectedZero],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(missingHttpStreamWaiters, { touchedRuntimeIds: [] }).ok,
+    false,
+    'missing httpStream.backpressureWaiters must fail',
+  );
+  const missingDispatcherStream = {
+    router: {
+      dispatcher: { pendingUnary: 0 },
+      httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
+    },
+    runtimes: [connectedZero],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(missingDispatcherStream, { touchedRuntimeIds: [] }).ok,
+    false,
+    'missing dispatcher.pendingStream must fail',
+  );
+  const missingRuntimeCounter = {
+    router: zeroRouter,
+    runtimes: [{
+      runtimeId: 'runtime-a',
+      connected: true,
+      fresh: true,
+      counters: {
+        outboundRequestsPending: 0,
+        outboundStreamLeasesActive: 0,
+        streamRuntimeStreamsActive: 0,
+        flagBackedCancelWaitersActive: 0,
+      },
+    }],
+  };
+  assert.equal(
+    evaluateLoopRiskHealth(missingRuntimeCounter, { touchedRuntimeIds: [] }).ok,
+    false,
+    'missing runtime counter must fail',
+  );
   console.log(JSON.stringify({ ok: true, selfTest: 'check-loop-risk-health' }));
 }
 

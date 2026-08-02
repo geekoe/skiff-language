@@ -409,10 +409,13 @@ fn decode_health_snapshot_inner(body: &str) -> Result<HealthSnapshot, String> {
             "capabilityConnections",
             "replicas",
         ],
-        &[],
+        &["counters"],
         "router health",
     )?;
     require_true(root, "ok", "router health")?;
+    if let Some(counters) = root.get("counters") {
+        decode_counters(counters)?;
+    }
     let active = decode_active(
         field(root, "activeAssembly", "router health")?,
         true,
@@ -554,11 +557,15 @@ fn decode_capability_connections(value: &Value) -> Result<Vec<CapabilityConnecti
             let context = format!("capabilityConnections[{index}]");
             let connection = exact_object(
                 value,
-                &["runtimeId", "connected", "registeredAt", "capabilities"],
-                &[],
+                &["runtimeId", "connected", "capabilities"],
+                &["registeredAt"],
                 &context,
             )?;
-            string_field(connection, "registeredAt", &context)?;
+            if let Some(registered_at) = connection.get("registeredAt") {
+                if !registered_at.is_string() {
+                    return Err(format!("{context}.registeredAt must be a string"));
+                }
+            }
             decode_capabilities(field(connection, "capabilities", &context)?, &context)?;
             Ok(CapabilityConnection {
                 runtime_id: string_field(connection, "runtimeId", &context)?.to_string(),
@@ -623,16 +630,19 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
             "inFlightCount",
             "connectionPinCount",
             "connectionReleaseAckCount",
-            "registeredAt",
         ],
-        &["lastHealthAt", "healthCounters"],
+        &["registeredAt", "lastHealthAt", "healthCounters"],
         &context,
     )?;
     u64_field(replica, "inFlightCount", &context)?;
     let connection_pin_count = safe_u64_field(replica, "connectionPinCount", &context)?;
     let connection_release_ack_count =
         safe_u64_field(replica, "connectionReleaseAckCount", &context)?;
-    string_field(replica, "registeredAt", &context)?;
+    if let Some(registered_at) = replica.get("registeredAt") {
+        if !registered_at.is_string() {
+            return Err(format!("{context}.registeredAt must be a string"));
+        }
+    }
     if replica
         .get("lastHealthAt")
         .is_some_and(|value| !value.is_string())
@@ -680,6 +690,178 @@ fn decode_health_counters(value: &Value, parent: &str) -> Result<(), String> {
     for name in names {
         u64_field(counters, name, &context)?;
     }
+    Ok(())
+}
+
+/// Canonical §10 counting-surface sections (plan §10; batch 12 health leaf).
+///
+/// The base TS-compatible health projection carries these counters as the
+/// optional top-level `counters` object. Every section is required when the
+/// object is present so a missing owner surface fails the wire contract.
+const HEALTH_COUNTER_SECTIONS: &[&str] = &[
+    "activeRoutingEpoch",
+    "bootstrap",
+    "blockingLoader",
+    "sessions",
+    "capabilities",
+    "health",
+    "barrier",
+    "admission",
+    "requestPending",
+    "terminal",
+    "clientConnections",
+    "generationLeases",
+    "broker",
+    "actor",
+    "activation",
+    "http",
+    "mailboxes",
+    "writerQueues",
+    "spawnedTasks",
+    "shutdown",
+];
+
+fn decode_counters(value: &Value) -> Result<(), String> {
+    let counters = exact_object(
+        value,
+        HEALTH_COUNTER_SECTIONS,
+        &[],
+        "router health counters",
+    )?;
+    for section in HEALTH_COUNTER_SECTIONS {
+        let section_value = field(counters, section, "router health counters")?;
+        if !section_value.is_object() {
+            return Err(format!(
+                "router health counters.{section} must be an object"
+            ));
+        }
+    }
+    let context = |section: &str| format!("router health counters.{section}");
+
+    let epoch = counters["activeRoutingEpoch"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(epoch, "publishCount", &context("activeRoutingEpoch"))?;
+    if !epoch.get("active").is_none_or(Value::is_object) {
+        return Err("router health counters.activeRoutingEpoch.active must be an object or null"
+            .to_string());
+    }
+
+    let sessions = counters["sessions"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(sessions, "preAuthConnections", &context("sessions"))?;
+    u64_field(sessions, "registeredSessions", &context("sessions"))?;
+    u64_field(sessions, "barrierPending", &context("sessions"))?;
+
+    let capabilities = counters["capabilities"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(capabilities, "connections", &context("capabilities"))?;
+
+    let health = counters["health"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(health, "observations", &context("health"))?;
+
+    let barrier = counters["barrier"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(barrier, "pending", &context("barrier"))?;
+
+    let admission = counters["admission"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(admission, "permitsHeld", &context("admission"))?;
+
+    let request_pending = counters["requestPending"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(request_pending, "unary", &context("requestPending"))?;
+    u64_field(request_pending, "stream", &context("requestPending"))?;
+    u64_field(request_pending, "derivedSpawn", &context("requestPending"))?;
+    bool_field(request_pending, "stopped", &context("requestPending"))?;
+
+    let terminal = counters["terminal"]
+        .as_object()
+        .expect("section object checked above");
+    field(terminal, "bySource", &context("terminal"))?;
+
+    let client_connections = counters["clientConnections"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(
+        client_connections,
+        "connectionCount",
+        &context("clientConnections"),
+    )?;
+
+    let generation_leases = counters["generationLeases"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(generation_leases, "pinsAcquired", &context("generationLeases"))?;
+
+    let broker = counters["broker"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(broker, "outboundPending", &context("broker"))?;
+    u64_field(broker, "inboundPending", &context("broker"))?;
+
+    let actor = counters["actor"]
+        .as_object()
+        .expect("section object checked above");
+    for name in ["catalog", "ownership", "activation", "invocation", "control", "lease", "spawn"] {
+        if !actor.get(name).is_some_and(Value::is_object) {
+            return Err(format!("router health counters.actor.{name} must be an object"));
+        }
+    }
+
+    let activation = counters["activation"]
+        .as_object()
+        .expect("section object checked above");
+    string_field(activation, "phase", &context("activation"))?;
+    bool_field(activation, "readiness", &context("activation"))?;
+    let repository = activation
+        .get("repository")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "router health counters.activation.repository must be an object".to_string())?;
+    let driver = repository
+        .get("driver")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "router health counters.activation.repository.driver must be an object".to_string())?;
+    bool_field(driver, "closed", &context("activation.repository.driver"))?;
+
+    let http = counters["http"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(http, "requests", &context("http"))?;
+
+    let mailboxes = counters["mailboxes"]
+        .as_object()
+        .expect("section object checked above");
+    if !mailboxes.get("coordinator").is_some_and(Value::is_object) {
+        return Err("router health counters.mailboxes.coordinator must be an object".to_string());
+    }
+
+    let writer_queues = counters["writerQueues"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(
+        writer_queues,
+        "wsSlowClientCount",
+        &context("writerQueues"),
+    )?;
+
+    let spawned_tasks = counters["spawnedTasks"]
+        .as_object()
+        .expect("section object checked above");
+    u64_field(spawned_tasks, "liveSessionTasks", &context("spawnedTasks"))?;
+
+    let shutdown = counters["shutdown"]
+        .as_object()
+        .expect("section object checked above");
+    bool_field(shutdown, "coordinatorShutdown", &context("shutdown"))?;
+    bool_field(shutdown, "dispatcherStopped", &context("shutdown"))?;
     Ok(())
 }
 
