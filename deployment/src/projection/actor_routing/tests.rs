@@ -15,6 +15,8 @@ use super::{
     ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 
+mod producer;
+
 fn hex64(byte: u8) -> String {
     assert!(byte.is_ascii_hexdigit(), "fixture byte must be a hex digit");
     String::from_utf8(vec![byte; 64]).expect("fixture hex digit")

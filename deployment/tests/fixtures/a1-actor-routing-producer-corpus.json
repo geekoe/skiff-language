@@ -1,0 +1,478 @@
+{
+  "schemaVersion": "skiff-actor-routing-a1-corpus-v1",
+  "cases": [
+    {
+      "id": "valid-empty-assembly",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": []
+      },
+      "expect": {
+        "valid": true,
+        "projection": {
+          "schemaVersion": "skiff-actor-routing-projection-v1",
+          "methods": []
+        }
+      }
+    },
+    {
+      "id": "valid-multi-package-cross-package-triple",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                  "skiff-actor-method-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ]
+              }
+            ]
+          },
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-b",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                  "skiff-actor-method-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": true,
+        "projection": {
+          "schemaVersion": "skiff-actor-routing-projection-v1",
+          "methods": [
+            {
+              "actor": {
+                "serviceId": "example.com/docs",
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "methodIdentity": "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "deployment": {
+                "serviceId": "example.com/docs",
+                "contractVersion": "1.0.0",
+                "deploymentRevision": "rev-1",
+                "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "package": {
+                "packageId": "example.com/docs-pkg-a",
+                "packageVersion": "1.0.0",
+                "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            },
+            {
+              "actor": {
+                "serviceId": "example.com/docs",
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "methodIdentity": "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "deployment": {
+                "serviceId": "example.com/docs",
+                "contractVersion": "1.0.0",
+                "deploymentRevision": "rev-1",
+                "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "package": {
+                "packageId": "example.com/docs-pkg-b",
+                "packageVersion": "1.0.0",
+                "packageBuildId": "skiff-package-build-v10:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            },
+            {
+              "actor": {
+                "serviceId": "example.com/docs",
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "methodIdentity": "skiff-actor-method-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "deployment": {
+                "serviceId": "example.com/docs",
+                "contractVersion": "1.0.0",
+                "deploymentRevision": "rev-1",
+                "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "package": {
+                "packageId": "example.com/docs-pkg-a",
+                "packageVersion": "1.0.0",
+                "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+              }
+            },
+            {
+              "actor": {
+                "serviceId": "example.com/docs",
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "methodIdentity": "skiff-actor-method-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "deployment": {
+                "serviceId": "example.com/docs",
+                "contractVersion": "1.0.0",
+                "deploymentRevision": "rev-1",
+                "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              "package": {
+                "packageId": "example.com/docs-pkg-b",
+                "packageVersion": "1.0.0",
+                "packageBuildId": "skiff-package-build-v10:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "valid-empty-actor-list",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": []
+          }
+        ]
+      },
+      "expect": {
+        "valid": true,
+        "projection": {
+          "schemaVersion": "skiff-actor-routing-projection-v1",
+          "methods": []
+        }
+      }
+    },
+    {
+      "id": "rejects-wrong-input-schema-version",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v0",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": []
+      },
+      "expect": {
+        "valid": false,
+        "error": "ProducerUnsupportedSchemaVersion"
+      }
+    },
+    {
+      "id": "rejects-actor-without-methods",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": []
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "ProducerActorWithoutMethods"
+      }
+    },
+    {
+      "id": "rejects-duplicate-actor-method",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "ProducerDuplicateActorMethod"
+      }
+    },
+    {
+      "id": "rejects-duplicate-actor-in-package",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              },
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "ProducerDuplicateActor"
+      }
+    },
+    {
+      "id": "rejects-duplicate-entries-identical-package-ref",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              }
+            ]
+          },
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "DuplicateMethod"
+      }
+    },
+    {
+      "id": "rejects-invalid-abi-identity",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "InvalidIdentity"
+      }
+    },
+    {
+      "id": "rejects-invalid-deployment-identity",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "not-a-framed-identity"
+        },
+        "packages": []
+      },
+      "expect": {
+        "valid": false,
+        "error": "InvalidIdentity"
+      }
+    },
+    {
+      "id": "rejects-empty-service-id",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [
+          {
+            "package": {
+              "packageId": "example.com/docs-pkg-a",
+              "packageVersion": "1.0.0",
+              "packageBuildId": "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "packageLocalAbiIdentity": "skiff-package-local-abi-v7:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "actors": [
+              {
+                "actorAbiIdentity": "skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "actorImplementationIdentity": "skiff-actor-implementation-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "methods": [
+                  "skiff-actor-method-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "valid": false,
+        "error": "InvalidIdentity"
+      }
+    },
+    {
+      "id": "rejects-unknown-input-field",
+      "input": {
+        "schemaVersion": "skiff-actor-routing-producer-input-v1",
+        "deployment": {
+          "serviceId": "example.com/docs",
+          "contractVersion": "1.0.0",
+          "deploymentRevision": "rev-1",
+          "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "packages": [],
+        "unexpectedField": "must be rejected"
+      },
+      "expect": {
+        "valid": false,
+        "error": "Deserialize"
+      }
+    }
+  ]
+}
