@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "stream-start-on-unary-rejected",
+  "events": [
+    { "kind": "start", "requestId": "req-1", "mode": "unary" },
+    { "kind": "read", "requestId": "req-1", "frame": "response.start.req1.unexpected" }
+  ],
+  "expect": {
+    "outcomes": { "req-1": "protocolError" },
+    "terminalSources": { "req-1": "protocol_error" },
+    "chunks": {},
+    "payload": {},
+    "protocolErrors": 1,
+    "ignoredStale": 0
+  }
+}

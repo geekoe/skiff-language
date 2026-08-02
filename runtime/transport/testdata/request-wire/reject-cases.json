@@ -1,0 +1,348 @@
+{
+  "schemaVersion": 1,
+  "corpus": "request-wire-v1-reject",
+  "cases": [
+    {
+      "id": "wrong-schema-version",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "request.start schemaVersion must be skiff-runtime-frame-v3",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v2",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "wrong-type",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "binary frame type must be request.start",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.begin",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "invalid-mode",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "request.start mode must be unary or serverStream",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "stream",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "caller-kind",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "runtimeAssembly caller.kind must be gateway",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "service" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "routing-kind",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "request.start routing.kind must be runtimeAssembly",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "legacy",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "deployment-artifact-identity",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "request.start routing.deployment.deploymentArtifactIdentity must be skiff-deployment-artifact-v4:sha256:<64 lowercase hex>",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:not-hex"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "ingress-path-relative",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "routing.ingress.path must be an absolute path",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false
+      }
+    },
+    {
+      "id": "test-effects-mismatch",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "testEffectsEnabled must match testCaseCapability presence",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": true
+      }
+    },
+    {
+      "id": "parent-without-capability",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "testCaseParentRequestId requires testCaseCapability",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false,
+        "testCaseParentRequestId": "parent-1"
+      }
+    },
+    {
+      "id": "unknown-field",
+      "decodeAs": "RequestStartHttpUnary",
+      "expectErrorContains": "unknown field",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "req-1",
+        "mode": "unary",
+        "caller": { "kind": "gateway" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 42,
+          "deployment": {
+            "serviceId": "example.com/service-1",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "gatewayEntryIdentity": "skiff-gateway-entry-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ingress": { "protocol": "http", "method": "POST", "path": "/items" }
+        },
+        "trace": { "traceId": "trace-req-1", "spanId": "span-req-1" },
+        "httpRequest": {
+          "method": "POST",
+          "url": "https://example.com/items",
+          "path": "/items",
+          "query": [],
+          "headers": []
+        },
+        "testEffectsEnabled": false,
+        "bogus": 1
+      }
+    }
+  ]
+}

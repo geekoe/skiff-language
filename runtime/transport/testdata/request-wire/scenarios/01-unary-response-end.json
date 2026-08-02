@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "unary-response-end",
+  "events": [
+    { "kind": "start", "requestId": "req-1", "mode": "unary" },
+    { "kind": "read", "requestId": "req-1", "frame": "response.end.req1.payload" }
+  ],
+  "expect": {
+    "outcomes": { "req-1": "completed" },
+    "terminalSources": { "req-1": "runtime_response_end" },
+    "chunks": {},
+    "payload": { "req-1": "7b226f6b223a747275657d" },
+    "protocolErrors": 0,
+    "ignoredStale": 0
+  }
+}

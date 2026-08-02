@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scenario": "stream-duplicate-start-rejected",
+  "events": [
+    { "kind": "start", "requestId": "req-2", "mode": "serverStream" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.start.req2" },
+    { "kind": "read", "requestId": "req-2", "frame": "response.start.req2" }
+  ],
+  "expect": {
+    "outcomes": { "req-2": "protocolError" },
+    "terminalSources": { "req-2": "protocol_error" },
+    "chunks": {},
+    "payload": {},
+    "protocolErrors": 1,
+    "ignoredStale": 0
+  }
+}

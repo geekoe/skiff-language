@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "scenario": "request-id-duplicate-fail-closed",
+  "maxConcurrency": 2,
+  "epoch": {
+    "environment": "prod",
+    "generation": 42,
+    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configSnapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deployment": {
+      "serviceId": "example.com/service-1",
+      "contractVersion": "1.0.0",
+      "deploymentRevision": "deployment-1",
+      "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "sessions": [
+    {
+      "id": "s1",
+      "replicaId": "runtime-a",
+      "connectionGeneration": 1,
+      "revision": 1,
+      "cancelled": false,
+      "tuple": {
+        "environment": "prod",
+        "generation": 42,
+        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "capabilities": ["unary", "serverStream"]
+    }
+  ],
+  "actorInvocationParents": {},
+  "events": [
+    { "kind": "request", "requestId": "req-1", "mode": "unary" },
+    { "kind": "request", "requestId": "req-1", "mode": "unary" },
+    { "kind": "responseEnd", "requestId": "req-1", "payloadPresent": true }
+  ],
+  "expect": {
+    "requestOutcomes": { "req-1": "completed" },
+    "rejectReasons": { "req-1": "duplicate" },
+    "terminalSources": { "req-1": "runtime_response_end" },
+    "sessionBindings": { "req-1": "s1" },
+    "cancelFrames": [],
+    "permitsHeld": 0,
+    "releases": 1,
+    "actorLaneSpawns": 0,
+    "derivedSpawns": 0,
+    "failStop": false
+  }
+}

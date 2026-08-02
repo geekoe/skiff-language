@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "scenario": "unary-response-error-control",
+  "events": [
+    { "kind": "start", "requestId": "req-1", "mode": "unary" },
+    { "kind": "read", "requestId": "req-1", "frame": "response.error.req1.control" }
+  ],
+  "expect": {
+    "outcomes": { "req-1": "failed" },
+    "terminalSources": { "req-1": "runtime_response_error" },
+    "chunks": {},
+    "payload": {},
+    "protocolErrors": 0,
+    "ignoredStale": 0
+  }
+}
