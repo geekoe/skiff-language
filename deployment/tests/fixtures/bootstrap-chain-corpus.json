@@ -11,7 +11,7 @@
       "id": "pending-present",
       "kind": "pendingPresent",
       "repositoryRead": "ok",
-      "bootstrapOutcome": "failClosedPending"
+      "bootstrapOutcome": "recoverPending"
     },
     {
       "id": "missing-environment",

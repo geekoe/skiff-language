@@ -277,24 +277,16 @@ mod tests {
                 other => panic!("unexpected corpus kind {other}"),
             };
             let outcome = reader(repo, root.path()).read_committed("prod").await;
-            // The frozen corpus labels pendingPresent as failClosedPending;
-            // E-activation changed the reader contract (committed published +
-            // recovery surfaced), so the consumer asserts the new outcome and
-            // the deployment-side fixture label is updated by its owner.
-            let expected = if kind == "pendingPresent" {
-                "committedWithPending"
-            } else {
-                case["bootstrapOutcome"].as_str().expect("expected outcome")
+            // E-activation (plan §4.2) changed the pending semantics to
+            // committed-published + recovery-surfaced; the deployment-owned
+            // corpus labels that state `recoverPending`.
+            let expected = match case["bootstrapOutcome"].as_str().expect("expected outcome") {
+                "recoverPending" => "committedWithPending",
+                outcome => outcome,
             };
             assert_eq!(outcome_name(&outcome), expected, "{}", case["id"]);
             match kind {
                 "committedOnly" => assert!(outcome.is_stable(), "committedOnly must be stable"),
-                // The contracts-bootstrap corpus still labels the pending
-                // state with the E-bootstrap fail-closed name; E-activation
-                // (plan §4.2) changed the semantics to committed-published +
-                // recovery-surfaced. The fixture label is updated by the
-                // deployment-side owner; the consumer asserts the new
-                // semantics here.
                 "pendingPresent" => assert!(matches!(
                     outcome,
                     BootstrapReadOutcome::CommittedWithPending { pending, .. } if pending.activation_id == "act-1"

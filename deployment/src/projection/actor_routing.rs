@@ -37,6 +37,13 @@ use skiff_artifact_model::{
 /// Frozen schema version of the actor routing projection.
 pub const ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION: &str = "skiff-actor-routing-projection-v1";
 
+/// Canonical relative record path of the current actor routing projection.
+///
+/// A1 owns the producer output surface (A3 leaf D2): the compiler publish
+/// path writes this mutable "current" record and the A2 TS loader / A3 Rust
+/// strict reader consume the same relative path inside the artifact root.
+pub const ACTOR_ROUTING_PROJECTION_RECORD_PATH: &str = "records/actor-routing/current.json";
+
 /// Stable, source-free actor declaration reference.
 ///
 /// `actor_abi_identity` canonically covers the actor type, key field type and

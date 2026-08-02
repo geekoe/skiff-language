@@ -43,6 +43,7 @@ use crate::{
     PackageSourceInput,
 };
 
+mod actor_routing;
 mod package_publication;
 
 use package_publication::publish_package_artifact_records_to_store;
@@ -161,6 +162,8 @@ fn build_package_after_platform_context_guard(
         output.insert("serviceApiReceipt".to_string(), service_api_receipt);
     }
 
+    let mut service_deployment = None;
+    let mut service_package_closure: Vec<PackageArtifact> = Vec::new();
     if let Some((service_root, service_api)) = service_data {
         let contract = &service_api.contract;
         let contract_path = store.write_service_contract(contract)?;
@@ -193,6 +196,8 @@ fn build_package_after_platform_context_guard(
                 "recordPath": relative_path(store, &deployment_path)?,
             }),
         );
+        service_deployment = Some(deployment);
+        service_package_closure = package_closure;
 
         if publish_pointer {
             let contract_candidate = ServiceContractPointer::new(contract_ref.clone())?;
@@ -253,6 +258,16 @@ fn build_package_after_platform_context_guard(
             }),
         );
     }
+    let mut deployment_packages = service_package_closure;
+    if service_deployment.is_some() {
+        deployment_packages.push(published.artifact.clone());
+    }
+    let projection = actor_routing::project_package_actor_routing(
+        store,
+        service_deployment.as_ref(),
+        &deployment_packages,
+    )?;
+    store.write_actor_routing_projection(&projection)?;
     Ok(Value::Object(output))
 }
 
@@ -282,6 +297,9 @@ fn project_runtime_assembly_to_store(
     let assembly =
         resolve_runtime_assembly(root_deployments, &deployment_values, &contracts, &packages)?;
     let record_path = store.write_runtime_assembly(&assembly)?;
+    let projection =
+        actor_routing::project_assembly_actor_routing(store, &deployment_values, &packages)?;
+    store.write_actor_routing_projection(&projection)?;
     let reference = runtime_assembly_ref(&assembly)?;
     let mut output = Map::from_iter([(
         "runtimeAssemblyReceipt".to_string(),

@@ -8,7 +8,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_deployment::projection::actor_routing::{
-    project_actor_routing, ActorRoutingProducerInput, ActorRoutingProjectionError,
+    project_actor_routing, ActorRoutingProducerInput, ActorRoutingProjection,
+    ActorRoutingProjectionError,
 };
 
 const CORPUS_SCHEMA_VERSION: &str = "skiff-actor-routing-a1-corpus-v1";
@@ -156,5 +157,86 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn projection_record_writer_roundtrips_and_replaces_canonical_current() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        use skiff_canonical_json::canonical_json_bytes;
+        use skiff_deployment::{
+            projection::actor_routing::ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+            storage::CanonicalArtifactStore,
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "skiff-a1-actor-routing-record-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let store = CanonicalArtifactStore::create(&root).unwrap();
+
+        let corpus = corpus();
+        let first = corpus
+            .cases
+            .iter()
+            .find(|case| case.id == "valid-multi-package-cross-package-triple")
+            .expect("corpus must contain the multi-package valid case");
+        let projection: ActorRoutingProjection = project_actor_routing(
+            serde_json::from_value(first.input.clone())
+                .expect("valid producer input must deserialize"),
+        )
+        .expect("valid producer input must project");
+        let record_path = store
+            .write_actor_routing_projection(&projection)
+            .expect("write current projection");
+        assert_eq!(
+            record_path,
+            store.root().join(ACTOR_ROUTING_PROJECTION_RECORD_PATH),
+            "record path must be the canonical A1 producer output surface"
+        );
+
+        let bytes = fs::read(&record_path).unwrap();
+        assert_eq!(
+            canonical_json_bytes(&projection).unwrap(),
+            bytes,
+            "current record bytes must be canonical JSON"
+        );
+        let decoded: ActorRoutingProjection =
+            serde_json::from_slice(&bytes).expect("strict typed decode");
+        assert_eq!(decoded, projection);
+
+        let replacement: ActorRoutingProjection = project_actor_routing(
+            serde_json::from_value(
+                corpus
+                    .cases
+                    .iter()
+                    .find(|case| case.id == "valid-empty-assembly")
+                    .expect("empty assembly case")
+                    .input
+                    .clone(),
+            )
+            .expect("empty assembly input must deserialize"),
+        )
+        .expect("empty assembly input must project");
+        store
+            .write_actor_routing_projection(&replacement)
+            .expect("replace current projection");
+        let replaced = fs::read(&record_path).unwrap();
+        assert_eq!(
+            canonical_json_bytes(&replacement).unwrap(),
+            replaced,
+            "a later publish must atomically replace the current record"
+        );
+        assert_ne!(replaced, bytes);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
