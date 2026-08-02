@@ -30,6 +30,31 @@ impl RequestCancelReason {
         RequestCancelReason::RouterShutdown,
     ];
 
+    /// Whether this reason is a frozen `CONTRACT_H` wire value
+    /// (C-model-request §4). The codec rejects any other reason.
+    pub const fn is_contract_h(self) -> bool {
+        matches!(
+            self,
+            RequestCancelReason::CallerCancel
+                | RequestCancelReason::ClientDisconnect
+                | RequestCancelReason::Timeout
+                | RequestCancelReason::DeadlineExceeded
+                | RequestCancelReason::Backpressure
+                | RequestCancelReason::ProtocolError
+                | RequestCancelReason::StreamDropped
+                | RequestCancelReason::RuntimeDisconnect
+                | RequestCancelReason::RouterShutdown
+        )
+    }
+
+    /// Parses a wire reason and rejects values outside the frozen
+    /// `CONTRACT_H` vocabulary (legacy internal reasons such as
+    /// `gateway_disconnect` / `drain` / `retire` are not legal wire values).
+    pub fn from_contract_h_wire(reason: &str) -> Option<Self> {
+        let parsed = Self::from_wire(reason)?;
+        parsed.is_contract_h().then_some(parsed)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             RequestCancelReason::Timeout => "timeout",

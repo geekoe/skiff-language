@@ -4,10 +4,22 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use skiff_runtime_request_contract::{OpaqueServiceError, RuntimeClientSessionControl};
 
+use crate::cancel_reason::RequestCancelReason;
 use crate::{
-    protocol::frame::{decode_binary_frame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION},
+    protocol::frame::{
+        decode_binary_frame, decode_typed_binary_frame, encode_binary_frame,
+        RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
+    },
+    protocol::{FrameDirection, RUNTIME_FRAME_SCHEMA_VERSION},
     BinaryFrameError, TransportError,
 };
+
+pub const REQUEST_START_FRAME_TYPE: &str = "request.start";
+pub const REQUEST_CANCEL_FRAME_TYPE: &str = "request.cancel";
+pub const RESPONSE_START_FRAME_TYPE: &str = "response.start";
+pub const RESPONSE_CHUNK_FRAME_TYPE: &str = "response.chunk";
+pub const RESPONSE_END_FRAME_TYPE: &str = "response.end";
+pub const RESPONSE_ERROR_FRAME_TYPE: &str = "response.error";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -447,6 +459,236 @@ pub struct RequestCancelFrameHeader {
     pub envelope_type: String,
     pub request_id: String,
     pub reason: String,
+}
+
+/// Frame-level direction/payload-presence surface for the Request family
+/// (C-model-request §2). W-dispatch uses this when wiring the closed demux
+/// and sink bundle (plan §5.5); the codec-level payload rules are enforced by
+/// the frame-specific `decode_*` / `encode_*` functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestFrameKind {
+    Start,
+    Cancel,
+    ResponseStart,
+    ResponseChunk,
+    ResponseEnd,
+    ResponseError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestFramePayloadPresence {
+    /// Optional opaque bytes; `response.end` additionally requires
+    /// `payloadPresent == !payload.is_empty()` (codec enforced).
+    Optional,
+    /// Payload must be empty (codec enforced).
+    Empty,
+    /// Variant-decided: `response.error` fixedService = required, control =
+    /// empty (enforced by `validate_response_error_frame`).
+    Variant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestFrameRule {
+    pub kind: RequestFrameKind,
+    pub direction: FrameDirection,
+    pub payload_presence: RequestFramePayloadPresence,
+}
+
+/// Frozen frame-level rules for the Request family (C-model-request §2).
+pub fn request_frame_rule(frame_type: &str) -> Option<RequestFrameRule> {
+    match frame_type {
+        REQUEST_START_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::Start,
+            direction: FrameDirection::RouterToRuntime,
+            payload_presence: RequestFramePayloadPresence::Optional,
+        }),
+        REQUEST_CANCEL_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::Cancel,
+            direction: FrameDirection::Either,
+            payload_presence: RequestFramePayloadPresence::Empty,
+        }),
+        RESPONSE_START_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::ResponseStart,
+            direction: FrameDirection::RuntimeToRouter,
+            payload_presence: RequestFramePayloadPresence::Empty,
+        }),
+        RESPONSE_CHUNK_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::ResponseChunk,
+            direction: FrameDirection::RuntimeToRouter,
+            payload_presence: RequestFramePayloadPresence::Optional,
+        }),
+        RESPONSE_END_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::ResponseEnd,
+            direction: FrameDirection::RuntimeToRouter,
+            payload_presence: RequestFramePayloadPresence::Optional,
+        }),
+        RESPONSE_ERROR_FRAME_TYPE => Some(RequestFrameRule {
+            kind: RequestFrameKind::ResponseError,
+            direction: FrameDirection::RuntimeToRouter,
+            payload_presence: RequestFramePayloadPresence::Variant,
+        }),
+        _ => None,
+    }
+}
+
+pub fn decode_request_cancel_frame(
+    frame: &[u8],
+) -> Result<RequestCancelFrameHeader, BinaryFrameError> {
+    let (header, payload): (RequestCancelFrameHeader, Vec<u8>) = decode_typed_binary_frame(frame)?;
+    validate_request_cancel_frame(&header, &payload)?;
+    Ok(header)
+}
+
+pub fn encode_request_cancel_frame(
+    header: &RequestCancelFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_request_cancel_frame(header, &[])?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn validate_request_cancel_frame(
+    header: &RequestCancelFrameHeader,
+    payload: &[u8],
+) -> Result<(), BinaryFrameError> {
+    validate_request_frame_identity(
+        REQUEST_CANCEL_FRAME_TYPE,
+        &header.schema_version,
+        &header.envelope_type,
+        &header.request_id,
+    )?;
+    if !payload.is_empty() {
+        return Err(TransportError::decode(
+            "request.cancel frame payload must be empty",
+        ));
+    }
+    if RequestCancelReason::from_contract_h_wire(&header.reason).is_none() {
+        return Err(TransportError::decode(
+            "request.cancel reason must be one of the CONTRACT_H wire reasons",
+        ));
+    }
+    Ok(())
+}
+
+pub fn decode_response_start_frame(
+    frame: &[u8],
+) -> Result<ResponseStartFrameHeader, BinaryFrameError> {
+    let (header, payload): (ResponseStartFrameHeader, Vec<u8>) = decode_typed_binary_frame(frame)?;
+    validate_response_start_frame(&header, &payload)?;
+    Ok(header)
+}
+
+pub fn encode_response_start_frame(
+    header: &ResponseStartFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_response_start_frame(header, &[])?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn validate_response_start_frame(
+    header: &ResponseStartFrameHeader,
+    payload: &[u8],
+) -> Result<(), BinaryFrameError> {
+    validate_request_frame_identity(
+        RESPONSE_START_FRAME_TYPE,
+        &header.schema_version,
+        &header.envelope_type,
+        &header.request_id,
+    )?;
+    if !payload.is_empty() {
+        return Err(TransportError::decode(
+            "response.start frame payload must be empty",
+        ));
+    }
+    Ok(())
+}
+
+pub fn decode_response_chunk_frame(
+    frame: &[u8],
+) -> Result<(ResponseChunkFrameHeader, Vec<u8>), BinaryFrameError> {
+    let (header, payload): (ResponseChunkFrameHeader, Vec<u8>) = decode_typed_binary_frame(frame)?;
+    validate_response_chunk_frame(&header)?;
+    Ok((header, payload))
+}
+
+pub fn encode_response_chunk_frame(
+    header: &ResponseChunkFrameHeader,
+    payload: &[u8],
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_response_chunk_frame(header)?;
+    encode_binary_frame(header, payload)
+}
+
+pub fn validate_response_chunk_frame(
+    header: &ResponseChunkFrameHeader,
+) -> Result<(), BinaryFrameError> {
+    validate_request_frame_identity(
+        RESPONSE_CHUNK_FRAME_TYPE,
+        &header.schema_version,
+        &header.envelope_type,
+        &header.request_id,
+    )
+}
+
+pub fn decode_response_end_frame(
+    frame: &[u8],
+) -> Result<(ResponseEndFrameHeader, Vec<u8>), BinaryFrameError> {
+    let (header, payload): (ResponseEndFrameHeader, Vec<u8>) = decode_typed_binary_frame(frame)?;
+    validate_response_end_frame_wire(&header, &payload)?;
+    Ok((header, payload))
+}
+
+pub fn encode_response_end_frame(
+    header: &ResponseEndFrameHeader,
+    payload: &[u8],
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_response_end_frame_wire(header, payload)?;
+    encode_binary_frame(header, payload)
+}
+
+/// Wire-level `response.end` phase consistency (C-model-request §5.2):
+/// `payloadPresent` must equal `!payload.is_empty()`. This covers the unary
+/// Payload/Http phases and the stream empty terminal; mode-specific stream
+/// ordering stays with the dispatcher state machine (C-model-request §5.4).
+pub fn validate_response_end_frame_wire(
+    header: &ResponseEndFrameHeader,
+    payload: &[u8],
+) -> Result<(), BinaryFrameError> {
+    validate_request_frame_identity(
+        RESPONSE_END_FRAME_TYPE,
+        &header.schema_version,
+        &header.envelope_type,
+        &header.request_id,
+    )?;
+    if header.payload_present != !payload.is_empty() {
+        return Err(TransportError::decode(
+            "response.end payloadPresent must match payload presence",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_request_frame_identity(
+    frame_type: &str,
+    schema_version: &str,
+    envelope_type: &str,
+    request_id: &str,
+) -> Result<(), BinaryFrameError> {
+    if schema_version != RUNTIME_FRAME_SCHEMA_VERSION {
+        return Err(TransportError::decode(format!(
+            "{frame_type} schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}"
+        )));
+    }
+    if envelope_type != frame_type {
+        return Err(TransportError::decode(format!(
+            "{frame_type} type must be {frame_type}"
+        )));
+    }
+    if request_id.trim().is_empty() {
+        return Err(TransportError::decode(format!(
+            "{frame_type} requestId must be non-empty"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -50,3 +50,28 @@ fn internal_reason_mapping_exposes_original_and_wire_reason() {
     assert_eq!(mapping.internal_reason, "unknown_internal_reason");
     assert_eq!(mapping.wire_reason, RequestCancelReason::CallerCancel);
 }
+
+#[test]
+fn contract_h_wire_parser_rejects_non_frozen_reasons() {
+    for reason in RequestCancelReason::CONTRACT_H {
+        let wire = reason.as_str();
+        assert!(reason.is_contract_h(), "{wire} must be in CONTRACT_H");
+        assert_eq!(
+            RequestCancelReason::from_contract_h_wire(wire),
+            Some(reason),
+            "{wire} must parse as CONTRACT_H"
+        );
+    }
+
+    for wire in ["gateway_disconnect", "drain", "retire", "unknown", ""] {
+        assert_eq!(
+            RequestCancelReason::from_contract_h_wire(wire),
+            None,
+            "{wire} must not parse as a CONTRACT_H wire reason"
+        );
+    }
+
+    // The full enum keeps internal-only reasons for legacy mapping; only the
+    // frozen 9 are legal on the wire (C-model-request §4).
+    assert_eq!(RequestCancelReason::CONTRACT_H.len(), 9);
+}
