@@ -386,7 +386,7 @@ fn validate_common(schema: &str, actual: &str, expected: &str) -> Result<(), Str
     Ok(())
 }
 
-fn validate_token(value: &str, name: &str) -> Result<(), String> {
+pub(crate) fn validate_token(value: &str, name: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 256
         || !value
@@ -398,7 +398,7 @@ fn validate_token(value: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_identity(value: &str, prefix: &str) -> Result<(), String> {
+pub(crate) fn validate_identity(value: &str, prefix: &str) -> Result<(), String> {
     let Some(digest) = value.strip_prefix(&format!("{prefix}:")) else {
         return Err(format!("identity must use {prefix}"));
     };
@@ -412,7 +412,7 @@ fn validate_identity(value: &str, prefix: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_actor_ref(actor_ref: &ActorLogicalRefFrameHeader) -> Result<(), String> {
+pub(crate) fn validate_actor_ref(actor_ref: &ActorLogicalRefFrameHeader) -> Result<(), String> {
     for (value, name) in [
         (&actor_ref.service_id, "actorRef.serviceId"),
         (&actor_ref.actor_type_identity, "actorRef.actorTypeIdentity"),
@@ -461,7 +461,7 @@ fn validate_sha256(value: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_owner(owner: &ActorDeclarationOwnerFrameHeader) -> Result<(), String> {
+pub(crate) fn validate_owner(owner: &ActorDeclarationOwnerFrameHeader) -> Result<(), String> {
     if owner.actor_symbol.trim().is_empty() {
         return Err("declarationOwner.actorSymbol must be non-empty".into());
     }

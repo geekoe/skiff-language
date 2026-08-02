@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { ActivationLookup } from '../src/artifacts/activationLookup.js';
 import { loadManifestFile as loadManifestFileSource } from '../src/manifest/loadManifest.js';
 import {
+  encodeBinaryFrame,
   decodeRuntimeFrame,
   encodeRuntimeFrame,
   type DispatchMode,
@@ -626,14 +627,13 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
     const runtime = await openBinaryRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-binary-register',
+            runtimeId: 'runtime-binary-register',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-binary-register');
     const dispatch = dispatchBinaryJson(dispatcher,
@@ -658,12 +658,11 @@ describe('router runtime registry dispatch', () => {
   it('skips saturated runtimes for service calls and reuses capacity after response.end', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
-    const { dispatcher, endpoint } = runtimeRouter;
+    const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const target = 'service.skiff~run~~hello.HelloApi.hello';
     const registration = {
-      type: 'runtime.register' as const,
-      serviceId: manifest.service.id,
+            serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
@@ -672,11 +671,11 @@ describe('router runtime registry dispatch', () => {
     const runtimeA = await openBinaryRegisteredRuntime(registryListen.url, {
       ...registration,
       runtimeId: 'runtime-capacity-a'
-    });
+    }, registry);
     const runtimeB = await openBinaryRegisteredRuntime(registryListen.url, {
       ...registration,
       runtimeId: 'runtime-capacity-b'
-    });
+    }, registry);
     const dispatch = (requestId: string) =>
       dispatcher.dispatchBinary(
         {
@@ -775,19 +774,18 @@ describe('router runtime registry dispatch', () => {
   it('runs a binary-only runtime session through control, dispatch, timeout cancel, and connection.send', async () => {
     const manifest = loadRuntimeTestManifest();
     const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint } = runtimeRouter;
+    const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const target = manifest.operations[0]!.target;
 
     const runtime = await openBinaryRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-binary-session-flow',
+            runtimeId: 'runtime-binary-session-flow',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     const controlMessage = onceWithTimeout(
       runtime,
@@ -932,14 +930,13 @@ describe('router runtime registry dispatch', () => {
     lazyRuntime.on('message', lazyRuntimeMessage);
 
     const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-service-relay-rejected',
+            runtimeId: 'runtime-service-relay-rejected',
       serviceId: manifest.service.id,
       revisionId: 'revision-service-relay-rejected',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [callerTarget]
-    });
+    }, registry);
     const beforeSnapshot = registry.snapshot();
     const expectedError = {
       code: 'InProcessServiceCallRequired',
@@ -1009,23 +1006,21 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
     const runtimeA = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-control-a',
+            runtimeId: 'runtime-control-a',
       serviceId: manifest.service.id,
       revisionId: 'revision-control-a',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     const runtimeB = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-control-b',
+            runtimeId: 'runtime-control-b',
       serviceId: manifest.service.id,
       revisionId: 'revision-control-b',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     const controlA = onceWithTimeout(
       runtimeA,
@@ -1056,7 +1051,7 @@ describe('router runtime registry dispatch', () => {
     }
   });
 
-  it('closes binary runtime.register frames with non-empty payloads', async () => {
+  it('closes legacy runtime.register frames with non-empty payloads', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
@@ -1066,7 +1061,7 @@ describe('router runtime registry dispatch', () => {
     await onceWithTimeout(ws, 'open', 'binary register payload socket open');
 
     ws.send(
-      encodeRuntimeFrame(
+      encodeBinaryFrame(
         {
           schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
           type: 'runtime.register',
@@ -1076,7 +1071,7 @@ describe('router runtime registry dispatch', () => {
           buildId: DEFAULT_TEST_BUILD_ID,
           serviceProtocolIdentity: manifest.service.protocolIdentity,
           targets: ['service.skiff~run~~hello.HelloApi.hello']
-        },
+        } as Record<string, unknown>,
         Buffer.from('unexpected payload')
       )
     );
@@ -1088,11 +1083,11 @@ describe('router runtime registry dispatch', () => {
     );
     expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
-      'runtime.register binary frame payload must be empty'
+      'legacy runtime registration frame is not a handshake frame'
     );
   });
 
-  it('closes runtime.register frames with raw service targets', async () => {
+  it('closes legacy runtime.register frames regardless of legacy fields', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
@@ -1102,7 +1097,7 @@ describe('router runtime registry dispatch', () => {
     await onceWithTimeout(ws, 'open', 'raw register target socket open');
 
     ws.send(
-      encodeRuntimeFrame({
+      encodeBinaryFrame({
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
         type: 'runtime.register',
         runtimeId: 'runtime-raw-register-target',
@@ -1111,7 +1106,7 @@ describe('router runtime registry dispatch', () => {
         buildId: DEFAULT_TEST_BUILD_ID,
         serviceProtocolIdentity: manifest.service.protocolIdentity,
         targets: ['service.skiff.run/hello.HelloApi.hello']
-      })
+      } as Record<string, unknown>)
     );
 
     const [code, reason] = await onceWithTimeout(
@@ -1121,7 +1116,7 @@ describe('router runtime registry dispatch', () => {
     );
     expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
-      'invalid runtime.register envelope: targets items must use service.skiff~run~~hello.<target suffix>'
+      'legacy runtime registration frame is not a handshake frame'
     );
   });
 
@@ -1134,14 +1129,13 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
     const runtimeA = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-owner-a',
+            runtimeId: 'runtime-owner-a',
       serviceId: manifest.service.id,
       revisionId: 'revision-owner-a',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     const ownerRequestPromise = waitForRuntimeRequestFrame(runtimeA, 'request-owned-by-a');
     const dispatch = dispatchBinaryJson(dispatcher,
       createRequestStart({
@@ -1154,14 +1148,13 @@ describe('router runtime registry dispatch', () => {
     const ownerRequest = await ownerRequestPromise;
 
     const runtimeB = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-owner-b',
+            runtimeId: 'runtime-owner-b',
       serviceId: manifest.service.id,
       revisionId: 'revision-owner-b',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     sendRuntimeBinaryResponse(
       runtimeB,
       ownerRequest.header.requestId,
@@ -1205,14 +1198,13 @@ describe('router runtime registry dispatch', () => {
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-cancel-timeout',
+            runtimeId: 'runtime-cancel-timeout',
       serviceId: manifest.service.id,
       revisionId: 'revision-cancel-timeout',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-cancel-timeout');
     const cancelPromise = waitForRuntimeCancel(
       runtime,
@@ -1264,17 +1256,16 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.stream';
 
     const runtimeRouter = trackResource(createRuntimeRouter({}, 1));
-    const { dispatcher, endpoint } = runtimeRouter;
+    const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-stream-pending-start',
+            runtimeId: 'runtime-stream-pending-start',
       serviceId: manifest.service.id,
       revisionId: 'revision-stream-pending-start',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     let closeCount = 0;
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-pending-start');
@@ -1386,17 +1377,16 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.streamCallbackError';
 
     const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint } = runtimeRouter;
+    const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-stream-callback-error',
+            runtimeId: 'runtime-stream-callback-error',
       serviceId: manifest.service.id,
       revisionId: 'revision-stream-callback-error',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     let closedTerminalSource: string | undefined;
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-callback-error');
@@ -1462,17 +1452,16 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.streamProtocolError';
 
     const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint } = runtimeRouter;
+    const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-stream-protocol-error',
+            runtimeId: 'runtime-stream-protocol-error',
       serviceId: manifest.service.id,
       revisionId: 'revision-stream-protocol-error',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
 
     let closedTerminalSource: string | undefined;
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-protocol-error');
@@ -1543,14 +1532,13 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-unary-chunk',
+            runtimeId: 'runtime-unary-chunk',
       serviceId: manifest.service.id,
       revisionId: 'revision-unary-chunk',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-unary-chunk');
     const dispatch = dispatchBinaryJson(dispatcher,
       createRequestStart({
@@ -1619,14 +1607,13 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
 
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-text-response-error',
+            runtimeId: 'runtime-text-response-error',
       serviceId: manifest.service.id,
       revisionId: 'revision-text-response-error',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [target]
-    });
+    }, registry);
     const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-text-response-error');
     const dispatch = dispatchBinaryJson(dispatcher,
       createRequestStart({
@@ -2003,6 +1990,21 @@ describe('router runtime registry dispatch', () => {
     trackResource({ close: () => ws.close() });
     await onceWithTimeout(ws, 'open', 'runtime socket open');
 
+    ws.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'runtime.capabilities',
+      runtimeId: 'runtime-cancel-compatible',
+      capabilities: { packageTestDispatch: true, requestCancel: true }
+    }));
+    registry.registerRuntime(ws, {
+      runtimeId: 'runtime-cancel-compatible',
+      serviceId: manifest.service.id,
+      revisionId: manifest.service.revisionId,
+      buildId: DEFAULT_TEST_BUILD_ID,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: manifest.operations.map((operation) => operation.target)
+    });
+
     ws.send(
       encodeRuntimeFrame({
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -2011,27 +2013,7 @@ describe('router runtime registry dispatch', () => {
         reason: 'drain'
       })
     );
-    const registered = onceWithTimeout(ws, 'message', 'runtime cancel compatible registration');
-    ws.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'runtime.register',
-        runtimeId: 'runtime-cancel-compatible',
-        serviceId: manifest.service.id,
-        revisionId: manifest.service.revisionId,
-        buildId: DEFAULT_TEST_BUILD_ID,
-        serviceProtocolIdentity: manifest.service.protocolIdentity,
-        targets: manifest.operations.map((operation) => operation.target)
-      })
-    );
-
-    const [registeredData, registeredIsBinary] = await registered;
-    expect(registeredIsBinary).toBe(true);
-    expect(decodeRuntimeFrame(registeredData as WebSocket.RawData).header).toEqual({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'runtime.registered',
-      runtimeId: 'runtime-cancel-compatible'
-    });
+    await delay(10);
     expect(ws.readyState).toBe(WebSocket.OPEN);
   });
 
@@ -2082,14 +2064,13 @@ describe('router runtime registry dispatch', () => {
     trackResource({ close: () => unsubscribe() });
 
     const ws = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-actor-connection-send',
+            runtimeId: 'runtime-actor-connection-send',
       serviceId: manifest.service.id,
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
 
     ws.send(
       encodeRuntimeFrame(
@@ -2130,23 +2111,21 @@ describe('router runtime registry dispatch', () => {
     trackResource({ close: () => unsubscribe() });
 
     const textRuntime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-text-kind-connection-send',
+            runtimeId: 'runtime-text-kind-connection-send',
       serviceId: manifest.service.id,
       revisionId: `${manifest.service.revisionId}-text-kind`,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
     const binaryRuntime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-default-binary-kind-connection-send',
+            runtimeId: 'runtime-default-binary-kind-connection-send',
       serviceId: manifest.service.id,
       revisionId: `${manifest.service.revisionId}-binary-kind`,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
 
     textRuntime.send(
       encodeRuntimeFrame(
@@ -2175,15 +2154,14 @@ describe('router runtime registry dispatch', () => {
     );
 
     await delay(10);
-    expect(forwarded).toEqual([
-      {
-        type: 'connection.send',
-        serviceId: manifest.service.id,
-        websocketEntryId: 'client',
-        businessIdentity: 'actor-text-kind',
-        payloadKind: 'text',
-        payloadBytes: Buffer.from('hello typed text', 'utf8')
-      },
+    // Two independent runtime connections may be processed in either order.
+    const byIdentity = [...forwarded].sort(
+      (left, right) =>
+        (left as { businessIdentity: string }).businessIdentity.localeCompare(
+          (right as { businessIdentity: string }).businessIdentity
+        )
+    );
+    expect(byIdentity).toEqual([
       {
         type: 'connection.send',
         serviceId: manifest.service.id,
@@ -2191,6 +2169,14 @@ describe('router runtime registry dispatch', () => {
         businessIdentity: 'actor-binary-kind',
         payloadKind: 'binary',
         payloadBytes: Buffer.from([4, 5, 6])
+      },
+      {
+        type: 'connection.send',
+        serviceId: manifest.service.id,
+        websocketEntryId: 'client',
+        businessIdentity: 'actor-text-kind',
+        payloadKind: 'text',
+        payloadBytes: Buffer.from('hello typed text', 'utf8')
       }
     ]);
   });
@@ -2202,14 +2188,13 @@ describe('router runtime registry dispatch', () => {
     const registryListen = await endpoint.listen({ port: 0 });
 
     const runtime = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-invalid-text-kind-connection-send',
+            runtimeId: 'runtime-invalid-text-kind-connection-send',
       serviceId: manifest.service.id,
       revisionId: `${manifest.service.revisionId}-invalid-text-kind`,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: manifest.operations.map((operation) => operation.target)
-    });
+    }, registry);
 
     runtime.send(
       encodeRuntimeFrame(

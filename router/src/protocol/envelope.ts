@@ -66,7 +66,6 @@ export class BinaryFrameDecodeError extends Error {
 }
 
 export type RuntimeFrameHeaderName =
-  | 'runtime.register'
   | 'runtime.capabilities'
   | 'runtime.health'
   | 'runtime.registered'
@@ -181,28 +180,6 @@ export interface TelemetryBatchEnvelope {
 }
 
 export type TelemetryEnvelope = TelemetryRegisterEnvelope | TelemetryBatchEnvelope;
-
-export interface RuntimeRegisterEnvelope {
-  type: 'runtime.register';
-  runtimeId: string;
-  serviceId: string;
-  // Stable published version this build serves; lets the registry tie a
-  // registered build to the (serviceId, version) addressing coordinate.
-  version?: string;
-  revisionId: string;
-  activationIdentity?: string;
-  buildId: string;
-  serviceProtocolIdentity: string;
-  targets: string[];
-  runtimeVersion?: string;
-  codeRevisionId?: string;
-  artifactIdentity?: string;
-  gatewayEntryIdentities?: string[];
-  capabilities?: RuntimeCapabilitiesMetadata;
-}
-
-export type RuntimeRegisterFrameHeader = RuntimeFrameHeaderBase<'runtime.register'> &
-  Omit<RuntimeRegisterEnvelope, 'type'>;
 
 export interface RuntimeCapabilitiesEnvelope {
   type: 'runtime.capabilities';
@@ -856,7 +833,6 @@ export type RouterToRuntimeFrameHeader =
   | ResponseErrorFrameHeader;
 
 export type RuntimeToRouterFrameHeader =
-  | RuntimeRegisterFrameHeader
   | RuntimeCapabilitiesFrameHeader
   | RuntimeHealthFrameHeader
   | ActorSpawnRuntimeRequestFrameHeader

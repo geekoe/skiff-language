@@ -7,19 +7,21 @@
 //! `callerKind = request | actorInvocation` (plan §5.3) with a typed parent
 //! namespace and no string-prefix fallback. The old shape (no `callerKind`)
 //! is `legacyCut` and must be rejected with no compatible reader. The frame
-//! hexes are produced from TEST-ONLY mirror structs because the production
-//! codec does not yet carry `callerKind`; `H-spawn-parent-cut` is exactly the
-//! change that lets the real codec take over the same corpus.
+//! hexes are frozen from the target mirror (C-model-spawn); since W-model-spawn
+//! the production canonical codec carries `callerKind` and takes over the same
+//! corpus byte-exactly. `H-spawn-parent-cut` is exactly the later change that
+//! switches the production consumers and deletes the old shape.
 
 use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
-    decode_typed_binary_frame, encode_binary_frame, ActivationIdentityFrameMetadata,
-    ActorSpawnRuntimeErrorFrameHeader, SpawnActorMethodTargetFrameMetadata,
-    SpawnSubmitResponseFrameHeader,
+    decode_spawn_submit_error_frame, decode_spawn_submit_request_frame,
+    decode_spawn_submit_response_frame, encode_spawn_submit_error_frame,
+    encode_spawn_submit_request_frame, encode_spawn_submit_response_frame,
+    SpawnSubmitRequestFrameHeaderV2,
 };
 
 const REQUIRED_FRAMES: [&str; 5] = [
@@ -29,63 +31,6 @@ const REQUIRED_FRAMES: [&str; 5] = [
     "spawn.submit.response",
     "spawn.submit.error.parentNotFound",
 ];
-
-// ---------------------------------------------------------------------------
-// Target wire mirror (C-model-spawn §3.1)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TargetSpawnSubmitRequestFrameHeader {
-    schema_version: String,
-    #[serde(rename = "type")]
-    envelope_type: String,
-    rpc_id: String,
-    runtime_id: String,
-    caller_kind: String,
-    caller_request_id: String,
-    target_kind: String,
-    service_id: String,
-    service_version: String,
-    service_protocol_identity: String,
-    target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    spawn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    build_id: Option<String>,
-    activation_identity: ActivationIdentityFrameMetadata,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    caller_target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_queue_wait_ms: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    actor_method: Option<SpawnActorMethodTargetFrameMetadata>,
-}
-
-impl TargetSpawnSubmitRequestFrameHeader {
-    fn validate(&self) -> Result<(), &'static str> {
-        match self.caller_kind.as_str() {
-            "request" | "actorInvocation" => {}
-            _ => return Err("CallerKindRejected"),
-        }
-        match self.target_kind.as_str() {
-            "function" => {
-                if self.actor_method.is_some() {
-                    return Err("TargetKindMismatch");
-                }
-            }
-            "actorMethod" => {
-                if self.actor_method.is_none() {
-                    return Err("TargetKindMismatch");
-                }
-            }
-            _ => return Err("TargetKindMismatch"),
-        }
-        Ok(())
-    }
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -510,19 +455,15 @@ mod tests {
         ] {
             let entry = &catalog.frames[name];
             let bytes = hex_bytes(&entry.frame_hex);
-            let header: TargetSpawnSubmitRequestFrameHeader =
-                decode_typed_binary_frame(&bytes)
-                    .expect("target shape must decode")
-                    .0;
-            header.validate().unwrap_or_else(|error| {
-                panic!("{name}: target shape must validate: {error}")
-            });
-            let reencoded =
-                encode_binary_frame(&header, &payload_of(entry)).expect("target shape re-encode");
+            let (header, payload) = decode_spawn_submit_request_frame(&bytes)
+                .expect("target shape must decode through the canonical codec");
+            let reencoded = encode_spawn_submit_request_frame(&header, &payload)
+                .expect("target shape re-encode");
             assert_eq!(bytes, reencoded, "{name} must be byte-exact");
-            let fixture_header: TargetSpawnSubmitRequestFrameHeader =
+            let fixture_header: SpawnSubmitRequestFrameHeaderV2 =
                 serde_json::from_value(entry.header.clone()).expect("fixture header typed");
             assert_eq!(fixture_header, header, "{name} header mismatch");
+            assert_eq!(payload, payload_of(entry), "{name} payload mismatch");
             assert!(!entry.legacy_cut, "{name} is not legacy cut");
         }
     }
@@ -533,13 +474,15 @@ mod tests {
         let entry = &catalog.frames["spawn.submit.request.legacy-no-caller-kind"];
         assert!(entry.legacy_cut);
         let bytes = hex_bytes(&entry.frame_hex);
-        let result = decode_typed_binary_frame::<TargetSpawnSubmitRequestFrameHeader>(&bytes);
-        assert!(
-            result.is_err(),
-            "legacy old-shape frame (no callerKind) must be rejected by the target mirror"
+        let error = decode_spawn_submit_request_frame(&bytes).expect_err(
+            "legacy old-shape frame (no callerKind) must be rejected by the canonical codec",
         );
-        // No fallback: the closed enum has exactly two values and the mirror
-        // requires the field. A reader that guessed a default would accept
+        assert!(
+            error.to_string().contains("callerKind"),
+            "legacy rejection must name callerKind, got {error}"
+        );
+        // No fallback: the closed enum has exactly two values and the canonical
+        // codec requires the field. A reader that guessed a default would accept
         // this frame; the frozen contract forbids that reader.
         let header_json: Value = serde_json::from_str(
             r#"{
@@ -563,11 +506,9 @@ mod tests {
             }"#,
         )
         .expect("probe json");
-        let probe: TargetSpawnSubmitRequestFrameHeader =
-            serde_json::from_value(header_json).expect("probe parses as a string field");
-        assert_eq!(
-            probe.validate(),
-            Err("CallerKindRejected"),
+        let probe_result = serde_json::from_value::<SpawnSubmitRequestFrameHeaderV2>(header_json);
+        assert!(
+            probe_result.is_err(),
             "callerKind=function is not a valid parent kind; closed enum must reject it"
         );
     }
@@ -576,23 +517,19 @@ mod tests {
     fn response_and_error_frames_round_trip_through_canonical_dtos() {
         let catalog = catalog();
         let entry = &catalog.frames["spawn.submit.response"];
-        let header: SpawnSubmitResponseFrameHeader =
-            decode_typed_binary_frame(&hex_bytes(&entry.frame_hex))
-                .expect("spawn.submit.response must decode")
-                .0;
+        let header = decode_spawn_submit_response_frame(&hex_bytes(&entry.frame_hex))
+            .expect("spawn.submit.response must decode");
         assert_eq!(
-            bytes_hex(&encode_binary_frame(&header, &[]).expect("re-encode")),
+            bytes_hex(&encode_spawn_submit_response_frame(&header).expect("re-encode")),
             entry.frame_hex,
             "spawn.submit.response must be byte-exact"
         );
 
         let entry = &catalog.frames["spawn.submit.error.parentNotFound"];
-        let header: ActorSpawnRuntimeErrorFrameHeader =
-            decode_typed_binary_frame(&hex_bytes(&entry.frame_hex))
-                .expect("spawn.submit.error must decode")
-                .0;
+        let header = decode_spawn_submit_error_frame(&hex_bytes(&entry.frame_hex))
+            .expect("spawn.submit.error must decode");
         assert_eq!(
-            bytes_hex(&encode_binary_frame(&header, &[]).expect("re-encode")),
+            bytes_hex(&encode_spawn_submit_error_frame(&header).expect("re-encode")),
             entry.frame_hex,
             "spawn.submit.error must be byte-exact"
         );

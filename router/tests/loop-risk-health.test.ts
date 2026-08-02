@@ -158,6 +158,7 @@ describe('loop-risk health detail on the AssemblyControlPlane', () => {
     const second = await openSocket(fixture.url);
     sendCapabilities(second, RUNTIME_ID);
     sendActivation(second, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
     second.send(
       encodeRuntimeFrame(runtimeHealthFrame(RUNTIME_ID, zeroRuntimeCounters()))
     );
@@ -624,18 +625,34 @@ async function nextRuntimeFrame(
 
 async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error('timed out waiting for binary frame')),
-      1000
-    );
-    ws.once('message', (data, isBinary) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for binary frame'));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
       clearTimeout(timeout);
       if (!isBinary) {
+        cleanup();
         reject(new Error('expected binary runtime frame'));
         return;
       }
-      resolve(rawDataBuffer(data));
-    });
+      const buffer = rawDataBuffer(data);
+      try {
+        if (decodeRuntimeFrame(buffer).header.type === 'runtime.registered') {
+          // Skip the registered ACK handshake frame.
+          return;
+        }
+      } catch {
+        // Not a typed runtime frame; pass through.
+      }
+      cleanup();
+      resolve(buffer);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
   });
 }
 

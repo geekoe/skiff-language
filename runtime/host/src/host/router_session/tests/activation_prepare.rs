@@ -19,7 +19,8 @@ use skiff_runtime_transport::{
         AssemblyActivationFrameDirection, ASSEMBLY_ACTIVATION_FRAME_TYPE,
     },
     protocol::{
-        decode_typed_binary_frame, encode_binary_frame, TypedEnvelope, RUNTIME_FRAME_SCHEMA_VERSION,
+        decode_typed_binary_frame, encode_binary_frame, RuntimeRegisteredFrameHeader,
+        TypedEnvelope, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
         decode_runtime_assembly_websocket_connect_response_end_frame,
@@ -295,9 +296,11 @@ async fn activation_contract_errors_run_through_the_live_session_path() {
         .wait_for_session("activation before bootstrap")
         .await
         .expect_err("activation before bootstrap must fail");
-    assert!(error
-        .to_string()
-        .contains("assembly activation requires router.bootstrap first"));
+    assert!(
+        error.to_string().contains("runtime handshake terminal")
+            && error.to_string().contains("WrongOrder"),
+        "activation before bootstrap must be a strict handshake terminal: {error:?}"
+    );
 
     let mut foreign_environment = ActivationSession::start("foreign-environment").await;
     let mut prepare = foreign_environment.prepare("activation-foreign-environment");
@@ -570,11 +573,60 @@ impl ActivationSession {
             .send(Message::Binary(bootstrap.into()))
             .await
             .expect("send bootstrap");
-        timeout(Duration::from_secs(10), self.router.next())
+        // H-registration-cut: the Runtime must send capabilities and
+        // assembly.activation:Register before it is bound, and only the
+        // registered ACK transitions it to Registered.
+        let register = timeout(Duration::from_secs(10), async {
+            let mut saw_capabilities = false;
+            loop {
+                let message = self
+                    .router
+                    .next()
+                    .await
+                    .expect("bootstrap registration frame")
+                    .expect("valid bootstrap registration frame");
+                let Message::Binary(frame) = message else {
+                    continue;
+                };
+                let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&frame)
+                    .expect("runtime binary frame during bootstrap");
+                if typed.envelope_type == "runtime.capabilities" {
+                    saw_capabilities = true;
+                    continue;
+                }
+                if typed.envelope_type == ASSEMBLY_ACTIVATION_FRAME_TYPE {
+                    let control = decode_assembly_activation_frame(
+                        AssemblyActivationFrameDirection::RuntimeToRouter,
+                        &frame,
+                    )
+                    .expect("runtime registration frame during bootstrap");
+                    assert!(
+                        matches!(control, AssemblyActivationControl::Register { .. }),
+                        "bootstrap must be answered with assembly.activation:Register"
+                    );
+                    assert!(
+                        saw_capabilities,
+                        "runtime.capabilities must precede assembly.activation:Register"
+                    );
+                    return frame;
+                }
+            }
+        })
+        .await
+        .expect("bootstrap registration timeout");
+        let ack = encode_binary_frame(
+            &RuntimeRegisteredFrameHeader {
+                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                envelope_type: "runtime.registered".to_string(),
+                runtime_id: self.runtime_id.clone(),
+            },
+            &[],
+        )
+        .expect("registered ACK frame");
+        self.router
+            .send(Message::Binary(ack.into()))
             .await
-            .expect("bootstrap registration timeout")
-            .expect("bootstrap registration frame")
-            .expect("valid bootstrap registration frame");
+            .expect("send registered ACK");
         assert_eq!(
             self.host
                 .active_runtime_assembly()

@@ -725,26 +725,38 @@ async function openSocket(url: string): Promise<WebSocket> {
 
 async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
   return await new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error('timed out waiting for RuntimeAssembly request')),
-      1_000
-    );
-    ws.once('message', (data, isBinary) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('timed out waiting for RuntimeAssembly request'));
+    }, 1_000);
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
       clearTimeout(timeout);
       if (!isBinary) {
+        cleanup();
         reject(new Error('expected binary runtime frame'));
         return;
       }
-      if (Array.isArray(data)) {
-        resolve(Buffer.concat(data));
-        return;
+      const buffer = Array.isArray(data)
+        ? Buffer.concat(data)
+        : data instanceof ArrayBuffer
+          ? Buffer.from(new Uint8Array(data))
+          : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      try {
+        if (decodeBinaryFrame(buffer).header.type === 'runtime.registered') {
+          // Skip the registered ACK handshake frame.
+          return;
+        }
+      } catch {
+        // Not a decodable binary frame; pass through.
       }
-      if (data instanceof ArrayBuffer) {
-        resolve(Buffer.from(new Uint8Array(data)));
-        return;
-      }
-      resolve(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
-    });
+      cleanup();
+      resolve(buffer);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
   });
 }
 

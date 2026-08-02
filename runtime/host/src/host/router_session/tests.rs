@@ -82,6 +82,7 @@ mod activation_prepare;
 mod connection_lifecycle;
 mod control_response_lifecycle;
 mod foreign_db_exact_identity;
+mod h_registration_cut;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
 mod websocket_jsonrpc_dispatch;
@@ -749,6 +750,7 @@ async fn actor_owner_authority_errors_propagate_through_dispatch_and_cross_sessi
     )
     .unwrap();
     let mut bootstrap = Some(super::test_connection_bootstrap("cross-session").unwrap());
+    let mut handshake = super::handshake::ClientHandshake::registered();
     let error = super::dispatch_router_binary_frame_inner(
         &host,
         SESSION_B,
@@ -756,6 +758,7 @@ async fn actor_owner_authority_errors_propagate_through_dispatch_and_cross_sessi
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -784,6 +787,7 @@ async fn actor_owner_authority_errors_propagate_through_dispatch_and_cross_sessi
     )
     .unwrap();
     let mut bootstrap = Some(super::test_connection_bootstrap("stale-parent").unwrap());
+    let mut handshake = super::handshake::ClientHandshake::registered();
     let error = super::dispatch_router_binary_frame_inner(
         &host,
         SESSION_A,
@@ -791,6 +795,7 @@ async fn actor_owner_authority_errors_propagate_through_dispatch_and_cross_sessi
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -1096,30 +1101,30 @@ async fn runtime_health_reporter_sends_final_frame_before_session_close() {
 async fn binary_runtime_registered_with_empty_payload_is_accepted() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
+    let mut bootstrap = Some(super::test_connection_bootstrap("registered-ack-accepted").unwrap());
+    let mut handshake = super::handshake::ClientHandshake::register_sent();
     let frame = encode_binary_frame(
         &RuntimeRegisteredFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "runtime.registered".to_string(),
-            runtime_id: "runtime-registered-binary".to_string(),
+            runtime_id: "runtime-base".to_string(),
         },
         &[],
     )
     .expect("runtime.registered frame should encode");
 
-    dispatch_router_binary_frame(
+    super::dispatch_router_binary_frame_inner(
         &host,
+        "skiff-router-session-v1:opaque:test-session",
         &frame,
         &sender,
-        &mut control,
-        &mut artifact_fingerprint,
+        None,
+        &mut bootstrap,
+        &mut handshake,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect("binary runtime.registered should be accepted");
-
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
 }
 
 async fn recv_runtime_health(
@@ -1160,24 +1165,27 @@ fn runtime_health_counters_for_test(
 async fn binary_runtime_registered_rejects_non_empty_payload() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
+    let mut bootstrap = Some(super::test_connection_bootstrap("registered-ack-payload").unwrap());
+    let mut handshake = super::handshake::ClientHandshake::register_sent();
     let frame = encode_binary_frame(
         &RuntimeRegisteredFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "runtime.registered".to_string(),
-            runtime_id: "runtime-registered-binary".to_string(),
+            runtime_id: "runtime-base".to_string(),
         },
         b"unexpected",
     )
     .expect("runtime.registered frame should encode");
 
-    let error = dispatch_router_binary_frame(
+    let error = super::dispatch_router_binary_frame_inner(
         &host,
+        "skiff-router-session-v1:opaque:test-session",
         &frame,
         &sender,
-        &mut control,
-        &mut artifact_fingerprint,
+        None,
+        &mut bootstrap,
+        &mut handshake,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect_err("non-empty runtime.registered payload should fail");
@@ -1186,8 +1194,38 @@ async fn binary_runtime_registered_rejects_non_empty_payload() {
     assert!(error
         .to_string()
         .contains("runtime.registered binary frame payload must be empty"));
-    assert!(control.is_none());
-    assert!(artifact_fingerprint.is_none());
+}
+
+#[tokio::test]
+async fn binary_runtime_registered_identity_change_is_terminal() {
+    let host = test_host();
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let mut bootstrap = Some(super::test_connection_bootstrap("registered-ack-identity").unwrap());
+    let mut handshake = super::handshake::ClientHandshake::register_sent();
+    let frame = encode_binary_frame(
+        &RuntimeRegisteredFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "runtime.registered".to_string(),
+            runtime_id: "runtime-other-replica".to_string(),
+        },
+        &[],
+    )
+    .expect("runtime.registered frame should encode");
+
+    let error = super::dispatch_router_binary_frame_inner(
+        &host,
+        "skiff-router-session-v1:opaque:test-session",
+        &frame,
+        &sender,
+        None,
+        &mut bootstrap,
+        &mut handshake,
+        RouterSessionChildTaskDispatch::Detached,
+    )
+    .await
+    .expect_err("mismatched ACK identity must fail");
+
+    assert!(error.to_string().contains("IdentityChange"));
 }
 
 #[tokio::test]
@@ -1301,6 +1339,7 @@ async fn assembly_activation_fails_closed_before_connection_bootstrap() {
     )
     .expect("router activation command should encode");
     let mut bootstrap = None;
+    let mut handshake = super::handshake::ClientHandshake::registered();
 
     let error = super::dispatch_router_binary_frame_inner(
         &host,
@@ -1309,6 +1348,7 @@ async fn assembly_activation_fails_closed_before_connection_bootstrap() {
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -1368,6 +1408,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         &[],
     )
     .expect("bootstrap frame should encode");
+    let mut handshake = super::handshake::ClientHandshake::registered();
 
     let error = super::dispatch_router_binary_frame_inner(
         &host,
@@ -1376,6 +1417,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -1424,6 +1466,7 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         &activation,
     )
     .expect("activation frame should encode");
+    let mut handshake = super::handshake::ClientHandshake::registered();
 
     let error = super::dispatch_router_binary_frame_inner(
         &host,
@@ -1432,6 +1475,7 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
@@ -1480,6 +1524,7 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
         &activation,
     )
     .expect("activation frame should encode");
+    let mut handshake = super::handshake::ClientHandshake::registered();
 
     let error = super::dispatch_router_binary_frame_inner(
         &host,
@@ -1488,6 +1533,7 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
         &sender,
         None,
         &mut bootstrap,
+        &mut handshake,
         RouterSessionChildTaskDispatch::Detached,
     )
     .await

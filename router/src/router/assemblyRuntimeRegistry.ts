@@ -28,6 +28,7 @@ import type {
 } from './runtimeRegistry.js';
 import type { RuntimeControlSource } from './actorSpawnRuntimeControl.js';
 import type { RuntimeSpawnParentAuthority } from './runtimeDispatcher.js';
+import type { RuntimeRegisteredAssemblyTuple } from './runtimeHandshake.js';
 import {
   canonicalHttpHost,
   RouterActiveAssemblySnapshotStore,
@@ -47,6 +48,8 @@ interface AssemblyReplica extends RuntimeDispatchRuntimeIdentity {
   configSnapshotId: string;
   replicaId: string;
   state: AssemblyReplicaState;
+  /** RegisterValidated 阶段 pending 发布；ACK 前不参与 routable/health/snapshot。 */
+  pending: boolean;
   registeredAt: string;
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
@@ -107,7 +110,24 @@ export class AssemblyRuntimeRegistry {
     this.connectionPinCounter = counter;
   }
 
+  /**
+   * Direct registration convenience used by in-process callers and tests:
+   * publish pending and immediately commit (as if the ACK was already
+   * written). The RuntimeEndpoint handshake uses `publishPending` /
+   * `commitPending` / `rollbackPending` instead so ACK loss never leaves a
+   * routable session.
+   */
   register(ws: WebSocket, control: AssemblyRegisterControl): void {
+    this.publishPending(ws, control);
+    this.commitPending(ws);
+  }
+
+  /**
+   * `assembly.activation:Register` 验证通过后的 pending 发布（§3.5 第 6 步，
+   * `RuntimeRegistrationTransition` 语义）。pending 记录不进入 routable/
+   * health/snapshot；ACK 写出成功后才由 `commitPending` 转正。
+   */
+  publishPending(ws: WebSocket, control: AssemblyRegisterControl): void {
     const active = this.snapshots.get();
     if (!matchesActiveSnapshot(control, active)) {
       throw new Error(
@@ -117,6 +137,16 @@ export class AssemblyRuntimeRegistry {
     const connectionReplicaId = this.replicaIdByConnection.get(ws);
     if (connectionReplicaId !== undefined && connectionReplicaId !== control.replicaId) {
       throw new Error('runtime connection cannot change replica identity');
+    }
+    const existingOnConnection = this.replicas.get(control.replicaId);
+    if (
+      connectionReplicaId !== undefined &&
+      existingOnConnection !== undefined &&
+      existingOnConnection.ws === ws
+    ) {
+      throw new Error(
+        `duplicate assembly registration before ACK for replica ${control.replicaId}`
+      );
     }
     const existing = this.replicas.get(control.replicaId);
     if (existing !== undefined && existing.ws !== ws) {
@@ -132,11 +162,76 @@ export class AssemblyRuntimeRegistry {
       assemblyIdentity: control.assembly.assemblyIdentity,
       configSnapshotId: control.configSnapshot.snapshotId,
       state: 'healthy',
+      pending: true,
       registeredAt: new Date().toISOString(),
       deploymentBindingsByService: deploymentBindingsByService(active),
       ws
     });
     this.replicaIdByConnection.set(ws, control.replicaId);
+  }
+
+  /** ACK 写出成功：pending 发布转正为 registered（§3.5 第 7 步后）。 */
+  commitPending(ws: WebSocket): void {
+    const replicaId = this.replicaIdByConnection.get(ws);
+    if (replicaId === undefined) {
+      throw new Error('runtime connection has no pending assembly registration');
+    }
+    const replica = this.replicas.get(replicaId);
+    if (replica === undefined || replica.ws !== ws || !replica.pending) {
+      throw new Error(
+        `runtime connection is not pending registration as replica ${replicaId}`
+      );
+    }
+    replica.pending = false;
+    replica.state = 'healthy';
+    replica.registeredAt = new Date().toISOString();
+    this.nextReplicaCursor = 0;
+  }
+
+  /** strict terminal 回滚：pending 发布绝不残留。 */
+  rollbackPending(ws: WebSocket): void {
+    const replicaId = this.replicaIdByConnection.get(ws);
+    if (replicaId === undefined) {
+      return;
+    }
+    const replica = this.replicas.get(replicaId);
+    if (replica !== undefined && replica.ws === ws && replica.pending) {
+      this.replicas.delete(replicaId);
+      this.replicaIdByConnection.delete(ws);
+    }
+  }
+
+  /**
+   * Post-commit re-register on the same physical session
+   * (`RuntimeRegistrationTransition`, C-session §3.3): the machine already
+   * verified the tuple matches the committed epoch; this publishes the new
+   * revision on the existing replica record.
+   */
+  transition(ws: WebSocket, control: AssemblyRegisterControl): void {
+    const active = this.snapshots.get();
+    if (!matchesActiveSnapshot(control, active)) {
+      throw new Error(
+        `stale assembly registration transition ${control.replicaId} does not match committed generation`
+      );
+    }
+    const replicaId = this.replicaIdByConnection.get(ws);
+    if (replicaId === undefined || replicaId !== control.replicaId) {
+      throw new Error('runtime connection cannot change replica identity');
+    }
+    const replica = this.replicas.get(replicaId);
+    if (replica === undefined || replica.ws !== ws || replica.pending) {
+      throw new Error(
+        `runtime connection is not registered as replica ${replicaId}`
+      );
+    }
+    replica.environment = control.environment;
+    replica.generation = control.generation;
+    replica.assemblyIdentity = control.assembly.assemblyIdentity;
+    replica.configSnapshotId = control.configSnapshot.snapshotId;
+    replica.state = 'healthy';
+    replica.registeredAt = new Date().toISOString();
+    replica.deploymentBindingsByService = deploymentBindingsByService(active);
+    this.nextReplicaCursor = 0;
   }
 
   recordHealth(
@@ -146,12 +241,20 @@ export class AssemblyRuntimeRegistry {
     counters: RuntimeHealthCounters
   ): void {
     const replica = this.registeredReplicaForConnection(ws, replicaId);
+    if (replica.pending) {
+      throw new Error(
+        `runtime.health must not be recorded before the registered ACK for ${replicaId}`
+      );
+    }
     replica.lastHealthAt = observedAt;
     replica.healthCounters = { ...counters };
   }
 
   activate(snapshot: RouterActiveAssemblySnapshot): void {
     for (const replica of this.replicas.values()) {
+      if (replica.pending) {
+        continue;
+      }
       replica.state = matchesActiveSnapshot(replica, snapshot) ? 'healthy' : 'draining';
     }
     this.nextReplicaCursor = 0;
@@ -171,6 +274,7 @@ export class AssemblyRuntimeRegistry {
     const replica = this.replicas.get(replicaId);
     return (
       replica !== undefined &&
+      !replica.pending &&
       replica.state !== 'disconnected' &&
       replica.ws.readyState === WebSocket.OPEN
     );
@@ -178,7 +282,9 @@ export class AssemblyRuntimeRegistry {
 
   connectionForReplica(replicaId: string): WebSocket | undefined {
     const replica = this.replicas.get(replicaId);
-    return replica !== undefined && replica.ws.readyState === WebSocket.OPEN
+    return replica !== undefined &&
+      !replica.pending &&
+      replica.ws.readyState === WebSocket.OPEN
       ? replica.ws
       : undefined;
   }
@@ -199,6 +305,20 @@ export class AssemblyRuntimeRegistry {
     return this.replicaIdByConnection.get(ws);
   }
 
+  /** Committed routing epoch tuple used by the handshake register validation. */
+  committedTuple(): RuntimeRegisteredAssemblyTuple | undefined {
+    const active = this.snapshots.get();
+    if (active === undefined) {
+      return undefined;
+    }
+    return {
+      environment: active.environment,
+      generation: active.generation,
+      assembly: { ...active.assembly },
+      configSnapshot: { ...active.configSnapshot }
+    };
+  }
+
   assertReplicaConnection(ws: WebSocket, replicaId: string): void {
     this.registeredReplicaForConnection(ws, replicaId);
   }
@@ -214,6 +334,7 @@ export class AssemblyRuntimeRegistry {
       replica === undefined ||
       replica.ws !== ws ||
       replica.ws.readyState !== WebSocket.OPEN ||
+      replica.pending ||
       replica.state === 'disconnected' ||
       header.runtimeId !== replica.replicaId ||
       header.activationIdentity.runtimeReplicaId !== replica.replicaId ||
@@ -256,6 +377,7 @@ export class AssemblyRuntimeRegistry {
       replica === undefined ||
       replica.ws !== ws ||
       replica.ws.readyState !== WebSocket.OPEN ||
+      replica.pending ||
       replica.state === 'disconnected' ||
       header.runtimeId !== replica.replicaId ||
       header.activationIdentity.runtimeReplicaId !== replica.replicaId ||
@@ -296,6 +418,7 @@ export class AssemblyRuntimeRegistry {
     if (
       replica === undefined ||
       replica.ws.readyState !== WebSocket.OPEN ||
+      replica.pending ||
       replica.state === 'disconnected' ||
       !this.replicaCanUseActivation(replica) ||
       !replica.deploymentBindingsByService.has(serviceId)
@@ -315,7 +438,9 @@ export class AssemblyRuntimeRegistry {
     }
     this.replicaIdByConnection.delete(ws);
     const replica = this.replicas.get(replicaId);
-    if (replica !== undefined && replica.ws === ws) {
+    if (replica !== undefined && replica.ws === ws && replica.pending) {
+      this.replicas.delete(replicaId);
+    } else if (replica !== undefined && replica.ws === ws) {
       replica.state = 'disconnected';
     }
     return replicaId;
@@ -323,7 +448,11 @@ export class AssemblyRuntimeRegistry {
 
   closeRuntimeConnections(): void {
     for (const replica of this.replicas.values()) {
-      replica.state = 'disconnected';
+      if (replica.pending) {
+        this.replicas.delete(replica.replicaId);
+      } else {
+        replica.state = 'disconnected';
+      }
       replica.ws.close();
     }
     this.replicaIdByConnection.clear();
@@ -332,13 +461,17 @@ export class AssemblyRuntimeRegistry {
   registeredConnections(): Set<WebSocket> {
     return new Set(
       Array.from(this.replicas.values())
-        .filter((replica) => replica.state !== 'disconnected')
+        .filter(
+          (replica) => !replica.pending && replica.state !== 'disconnected'
+        )
         .map((replica) => replica.ws)
     );
   }
 
   snapshot(): AssemblyReplicaSnapshot[] {
-    return Array.from(this.replicas.values()).map((replica) => ({
+    return Array.from(this.replicas.values())
+      .filter((replica) => !replica.pending)
+      .map((replica) => ({
       replicaId: replica.replicaId,
       environment: replica.environment,
       generation: replica.generation,
@@ -356,7 +489,7 @@ export class AssemblyRuntimeRegistry {
       ...(replica.healthCounters !== undefined
         ? { healthCounters: { ...replica.healthCounters } }
         : {})
-    }));
+      }));
   }
 
   pickDispatchConnection(
@@ -477,6 +610,7 @@ export class AssemblyRuntimeRegistry {
     const active = this.snapshots.get();
     return Array.from(this.replicas.values()).filter(
       (replica) =>
+        !replica.pending &&
         replica.state === 'healthy' &&
         replica.ws.readyState === WebSocket.OPEN &&
         matchesActiveSnapshot(replica, active)
@@ -491,6 +625,11 @@ export class AssemblyRuntimeRegistry {
       this.replicaIdByConnection.get(ws) !== replicaId
     ) {
       throw new Error(`runtime connection is not registered as replica ${replicaId}`);
+    }
+    if (replica.pending) {
+      throw new Error(
+        `runtime connection ${replicaId} is pending registration; ACK required`
+      );
     }
     return replica;
   }

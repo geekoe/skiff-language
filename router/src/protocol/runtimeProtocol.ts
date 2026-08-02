@@ -129,7 +129,6 @@ export type ValidatedResponseErrorFrame =
     };
 
 const runtimeToRouterFrameHeaderTypes = [
-  'runtime.register',
   'runtime.capabilities',
   'runtime.health',
   'actor.getOrCreate.request',
@@ -290,23 +289,6 @@ const runtimeCapabilitiesProtocolSchema = {
   },
   additionalProperties: false
 } as const satisfies ProtocolSchemaProperty;
-
-const runtimeRegisterProperties = {
-  type: { type: 'string', enum: ['runtime.register'] },
-  runtimeId: { type: 'string' },
-  serviceId: { type: 'string' },
-  version: { type: 'string' },
-  revisionId: { type: 'string' },
-  activationIdentity: { type: 'string' },
-  buildId: { type: 'string' },
-  serviceProtocolIdentity: { type: 'string' },
-  targets: { type: 'array', items: { type: 'string' } },
-  runtimeVersion: { type: 'string' },
-  codeRevisionId: { type: 'string' },
-  artifactIdentity: { type: 'string' },
-  gatewayEntryIdentities: { type: 'array', items: { type: 'string' } },
-  capabilities: runtimeCapabilitiesProtocolSchema
-} as const satisfies Record<string, ProtocolSchemaProperty>;
 
 const runtimeCapabilitiesProperties = {
   type: { type: 'string', enum: ['runtime.capabilities'] },
@@ -1111,24 +1093,6 @@ const connectionRemoteErrorProperty = {
 } as const satisfies ProtocolSchemaProperty;
 
 export const runtimeFrameHeaderSchemas = {
-  'runtime.register': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'runtimeId',
-      'serviceId',
-      'revisionId',
-      'buildId',
-      'serviceProtocolIdentity',
-      'targets'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      ...runtimeRegisterProperties
-    },
-    additionalProperties: false
-  },
   'runtime.capabilities': {
     type: 'object',
     required: ['schemaVersion', 'type', 'runtimeId', 'capabilities'],
@@ -2187,20 +2151,19 @@ export const runtimeFrameHeaderSchemas = {
   }
 } as const satisfies Record<RuntimeProtocolFrameHeaderName, ProtocolEnvelopeSchema>;
 
-const runtimeRegisterTargetFixture = 'service.example~com~~hello.HelloApi.hello' as const;
-const spawnTargetFixture = `function:${runtimeRegisterTargetFixture}` as const;
+const runtimeTargetFixture = 'service.example~com~~hello.HelloApi.hello' as const;
+const spawnTargetFixture = `function:${runtimeTargetFixture}` as const;
 const serviceProtocolIdentityFixture =
   'skiff-service-protocol-v5:sha256:1111111111111111111111111111111111111111111111111111111111111111' as const;
 
-const runtimeRegisterFixture = {
-  type: 'runtime.register',
+const runtimeIdentityFixture = {
   runtimeId: 'runtime-fixture-1',
   serviceId: 'example.com/hello',
   revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
   buildId:
     'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333',
   serviceProtocolIdentity: serviceProtocolIdentityFixture,
-  targets: [runtimeRegisterTargetFixture] as string[],
+  targets: [runtimeTargetFixture] as string[],
   runtimeVersion: 'fixture-runtime-1',
   codeRevisionId: 'code-fixture-1',
   artifactIdentity: 'artifact-fixture-1',
@@ -2360,9 +2323,9 @@ const actorControlActivationIdentityFixture = {
 } as const;
 
 const spawnFixture = {
-  runtimeId: runtimeRegisterFixture.runtimeId,
+  runtimeId: runtimeIdentityFixture.runtimeId,
   workerId: 'spawn-worker-fixture-1',
-  serviceId: runtimeRegisterFixture.serviceId,
+  serviceId: runtimeIdentityFixture.serviceId,
   serviceVersion: '0.1.0',
   serviceProtocolIdentity: serviceProtocolIdentityFixture,
   buildId:
@@ -2383,10 +2346,6 @@ const actorDeclarationOwnerFixture = {
 } as const;
 
 export const runtimeFrameHeaderFixtures = {
-  'runtime.register': {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    ...runtimeRegisterFixture
-  },
   'runtime.capabilities': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     ...runtimeCapabilitiesFixture
@@ -2430,7 +2389,7 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'actor.getOrCreate.request',
     rpcId: 'actor-put-rpc-fixture-1',
-    runtimeId: runtimeRegisterFixture.runtimeId,
+    runtimeId: runtimeIdentityFixture.runtimeId,
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
     actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -2458,7 +2417,7 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'actor.replace.request',
     rpcId: 'actor-replace-rpc-fixture-1',
-    runtimeId: runtimeRegisterFixture.runtimeId,
+    runtimeId: runtimeIdentityFixture.runtimeId,
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
     actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -2483,7 +2442,7 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'actor.find.request',
     rpcId: 'actor-find-rpc-fixture-1',
-    runtimeId: runtimeRegisterFixture.runtimeId,
+    runtimeId: runtimeIdentityFixture.runtimeId,
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture
   },
@@ -2507,7 +2466,7 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'actor.remove.request',
     rpcId: 'actor-remove-rpc-fixture-1',
-    runtimeId: runtimeRegisterFixture.runtimeId,
+    runtimeId: runtimeIdentityFixture.runtimeId,
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture
   },
@@ -2541,7 +2500,7 @@ export const runtimeFrameHeaderFixtures = {
     buildId: spawnFixture.buildId,
     callerRequestId: 'caller-request-fixture-1',
     traceId: 'trace-fixture-1',
-    callerTarget: runtimeRegisterTargetFixture
+    callerTarget: runtimeTargetFixture
   },
   'spawn.submit.response': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -2656,9 +2615,7 @@ export function validateRuntimeToRouterFrameHeader(
   const { envelope, type } = typeResult;
   const error =
     validateFrameHeaderBase(envelope, type) ??
-    (type === 'runtime.register'
-      ? validateRuntimeRegister(envelope)
-      : type === 'runtime.capabilities'
+    (type === 'runtime.capabilities'
         ? validateRuntimeCapabilities(envelope)
       : type === 'runtime.health'
         ? validateRuntimeHealth(envelope)
@@ -3046,73 +3003,6 @@ function validateEnvelopeType<const TType extends string>(
   };
 }
 
-function validateRuntimeRegister(envelope: Record<string, unknown>): string | null {
-  return (
-    rejectUnsupportedFrameHeaderFields(envelope, 'runtime.register', [
-      'schemaVersion',
-      'type',
-      'runtimeId',
-      'serviceId',
-      'version',
-      'revisionId',
-      'activationIdentity',
-      'buildId',
-      'serviceProtocolIdentity',
-      'targets',
-      'runtimeVersion',
-      'codeRevisionId',
-      'artifactIdentity',
-      'gatewayEntryIdentities',
-      'capabilities'
-    ]) ??
-    requireString(envelope, 'runtime.register', 'runtimeId') ??
-    requirePublicationId(envelope, 'runtime.register', 'serviceId') ??
-    requireStringPattern(
-      envelope,
-      'runtime.register',
-      'revisionId',
-      REVISION_ID_PATTERN,
-      '<64 lowercase hex>'
-    ) ??
-    requireStringPattern(
-      envelope,
-      'runtime.register',
-      'buildId',
-      BUILD_ID_PATTERN,
-      'skiff-service-build-v1:sha256:<64 lowercase hex>'
-    ) ??
-    requireString(envelope, 'runtime.register', 'serviceProtocolIdentity') ??
-    requirePattern(
-      envelope,
-      'runtime.register',
-      'serviceProtocolIdentity',
-      SERVICE_PROTOCOL_IDENTITY_PATTERN,
-      'skiff-service-protocol-v5:sha256:<64 lowercase hex>'
-    ) ??
-    requireNonEmptyStringArray(envelope, 'runtime.register', 'targets') ??
-    optionalString(envelope, 'runtime.register', 'runtimeVersion') ??
-    optionalString(envelope, 'runtime.register', 'codeRevisionId') ??
-    optionalString(envelope, 'runtime.register', 'artifactIdentity') ??
-    optionalStringPattern(
-      envelope,
-      'runtime.register',
-      'activationIdentity',
-      ACTIVATION_IDENTITY_PATTERN,
-      'skiff-runtime-activation-v1:opaque:<opaque id>'
-    ) ??
-    validateRuntimeRegisterTargets(envelope) ??
-    optionalStringArray(envelope, 'runtime.register', 'gatewayEntryIdentities') ??
-    optionalStringArrayPattern(
-      envelope,
-      'runtime.register',
-      'gatewayEntryIdentities',
-      GATEWAY_IDENTITY_PATTERN,
-      'skiff-gateway-v1:sha256:<64 lowercase hex>'
-    ) ??
-    validateRuntimeCapabilitiesMetadata(envelope.capabilities, 'runtime.register', 'capabilities')
-  );
-}
-
 function validateRuntimeCapabilities(envelope: Record<string, unknown>): string | null {
   return (
     rejectUnsupportedFrameHeaderFields(envelope, 'runtime.capabilities', [
@@ -3195,37 +3085,6 @@ function validateRuntimeCapabilitiesMetadata(
       return `invalid ${envelopeType} envelope: ${field}.${booleanField} must be a boolean`;
     }
   }
-  return null;
-}
-
-function validateRuntimeRegisterTargets(envelope: Record<string, unknown>): string | null {
-  const serviceId = getPathValue(envelope, 'serviceId');
-  const targets = getPathValue(envelope, 'targets');
-  if (typeof serviceId !== 'string' || !isPublicationId(serviceId) || !Array.isArray(targets)) {
-    return null;
-  }
-
-  const expectedServiceComponent = publicationStorageSegment(serviceId);
-  for (const target of targets) {
-    if (typeof target !== 'string') {
-      continue;
-    }
-    if (!target.startsWith('service.') && !target.startsWith('gateway.')) {
-      continue;
-    }
-
-    const [namespace, serviceComponent, ...suffix] = target.split('.');
-    const expectedPrefix = `${namespace}.${expectedServiceComponent}`;
-    if (
-      serviceComponent !== expectedServiceComponent ||
-      serviceComponent.includes('/') ||
-      suffix.length === 0 ||
-      suffix.some((component) => component.length === 0 || component.includes('/'))
-    ) {
-      return `invalid runtime.register envelope: targets items must use ${expectedPrefix}.<target suffix>`;
-    }
-  }
-
   return null;
 }
 

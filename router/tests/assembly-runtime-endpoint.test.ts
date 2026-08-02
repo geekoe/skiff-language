@@ -1590,56 +1590,23 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     expect(ws.readyState).toBe(WebSocket.OPEN);
   });
 
-  it('keeps the complete generic runtime switch on the composite endpoint', async () => {
+  it('rejects the legacy runtime.register wire frame on the composite endpoint', async () => {
     const fixture = await createFixture();
     const ws = await openSocket(fixture.url);
-    const runtimeId = runtimeFrameHeaderFixtures['runtime.register'].runtimeId;
-    sendCapabilities(ws, runtimeId);
-    const registered = nextRuntimeRegisteredAfterInitialBootstrap(ws);
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.register']));
-    await expect(registered).resolves.toMatchObject({
-      header: { type: 'runtime.registered', runtimeId }
-    });
-
-    const actorResponse = nextRuntimeFrame(ws, 'actor.find.error');
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['actor.find.request']));
-    await expect(actorResponse).resolves.toMatchObject({
-      header: {
-        type: 'actor.find.error',
-        error: { code: 'RuntimeActivationMismatch', status: 403 }
-      }
-    });
-
-    const spawnResponse = nextRuntimeFrame(ws, 'spawn.submit.error');
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['spawn.submit.request']));
-    await expect(spawnResponse).resolves.toMatchObject({
-      header: { type: 'spawn.submit.error' }
-    });
-
-    const serviceRequestResponse = nextRuntimeFrame(ws, 'response.error');
-    ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['request.start'],
-      caller: {
-        kind: 'service',
-        target: runtimeFrameHeaderFixtures['request.start'].caller.target
-      }
-    }));
-    const serviceRequestError = await serviceRequestResponse;
-    expect(serviceRequestError.header).toMatchObject({
-      schemaVersion: RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
-      type: 'response.error',
-      errorKind: 'control',
-      error: { code: 'InProcessServiceCallRequired' }
-    });
-    expect(serviceRequestError.payloadBytes).toHaveLength(0);
-
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.health']));
-    await until(() => fixture.runtimeRegistry.loopRiskRuntimeHealthSnapshot().length === 1);
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['response.end']));
-    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['request.cancel']));
-    await nextTurn();
-    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.send(encodeBinaryFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'runtime.register',
+      runtimeId: 'runtime-legacy-rejected'
+    } as Record<string, unknown>));
+    const [code, reason] = await waitForClose(ws);
+    expect(code).toBe(1008);
+    expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
+      'legacy runtime registration frame is not a handshake frame'
+    );
     expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
+    expect(
+      fixture.assemblyRegistry.healthyParticipantReplicaIds()
+    ).toEqual([]);
   });
 
   it('keeps capability sessions separate from committed registrations and clears both on disconnect', async () => {
@@ -2340,57 +2307,38 @@ async function nextRuntimeFrame(ws: WebSocket, type: string): Promise<RuntimeBin
   return frame;
 }
 
-async function nextRuntimeRegisteredAfterInitialBootstrap(
-  ws: WebSocket
-): Promise<RuntimeBinaryFrame> {
-  return await new Promise<RuntimeBinaryFrame>((resolve, reject) => {
-    let skippedInitialBootstrap = false;
+async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error('timed out waiting for binary frame'));
     }, 1000);
     const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+      clearTimeout(timeout);
       if (!isBinary) {
         cleanup();
         reject(new Error('expected binary runtime frame'));
         return;
       }
+      const buffer = rawDataBuffer(data);
       try {
-        const frame = decodeRuntimeFrame(rawDataBuffer(data));
-        if (
-          !skippedInitialBootstrap &&
-          frame.header.type === 'router.bootstrap'
-        ) {
-          skippedInitialBootstrap = true;
+        const frame = decodeRuntimeFrame(buffer);
+        if (frame.header.type === 'runtime.registered') {
+          // The registered ACK is a handshake frame, not the frame the test
+          // is waiting for; skip it so post-registration waits stay stable.
           return;
         }
-        expect(frame.header.type).toBe('runtime.registered');
-        cleanup();
-        resolve(frame);
-      } catch (error) {
-        cleanup();
-        reject(error);
+      } catch {
+        // Not a typed runtime frame; pass through to the caller.
       }
+      cleanup();
+      resolve(buffer);
     };
     const cleanup = () => {
       clearTimeout(timeout);
       ws.off('message', onMessage);
     };
     ws.on('message', onMessage);
-  });
-}
-
-async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
-  return await new Promise<Buffer>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 1000);
-    ws.once('message', (data, isBinary) => {
-      clearTimeout(timeout);
-      if (!isBinary) {
-        reject(new Error('expected binary runtime frame'));
-        return;
-      }
-      resolve(rawDataBuffer(data));
-    });
   });
 }
 
@@ -2407,7 +2355,16 @@ async function nextBinaryMessages(ws: WebSocket, count: number): Promise<Buffer[
         reject(new Error('expected binary runtime frame'));
         return;
       }
-      messages.push(rawDataBuffer(data));
+      const buffer = rawDataBuffer(data);
+      try {
+        const frame = decodeRuntimeFrame(buffer);
+        if (frame.header.type === 'runtime.registered') {
+          return;
+        }
+      } catch {
+        // Not a typed runtime frame; collect it.
+      }
+      messages.push(buffer);
       if (messages.length === count) {
         cleanup();
         resolve(messages);

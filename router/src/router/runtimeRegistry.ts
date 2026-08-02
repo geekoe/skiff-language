@@ -8,8 +8,7 @@ import {
   type RuntimeCapabilitiesEnvelope,
   type RuntimeCapabilitiesMetadata,
   type RuntimeHealthCounters,
-  type RuntimeHealthEnvelope,
-  type RuntimeRegisterEnvelope
+  type RuntimeHealthEnvelope
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestStartFrameWireHeader
@@ -172,9 +171,32 @@ interface RegisteredRuntime extends RuntimeRegistryRuntime {
   gatewayEntryIdentities?: Set<string>;
 }
 
+/**
+ * Structural input for the in-process legacy registration API. The wire
+ * legacy registration frame is not a target handshake frame
+ * (H-registration-cut); this API exists only for in-process callers and
+ * tests that drive the legacy service-level dispatch components.
+ */
+export interface RuntimeLegacyRegistration {
+  runtimeId: string;
+  serviceId: string;
+  version?: string;
+  revisionId: string;
+  activationIdentity?: string;
+  buildId: string;
+  serviceProtocolIdentity: string;
+  targets: readonly string[];
+  runtimeVersion?: string;
+  codeRevisionId?: string;
+  artifactIdentity?: string;
+  gatewayEntryIdentities?: readonly string[];
+  capabilities?: RuntimeCapabilitiesMetadata;
+}
+
 interface RuntimeCapabilityRegistration {
-  // Assembly Hosts do not send legacy runtime.register, so the capability
-  // connection itself owns the exact session fence used by Actor cleanup.
+  // Assembly Hosts do not send the legacy registration frame, so the
+  // capability connection itself owns the exact session fence used by Actor
+  // cleanup.
   sessionId: string;
   runtimeId: string;
   capabilities: RuntimeCapabilitiesMetadata;
@@ -344,10 +366,10 @@ export class RuntimeRegistry {
 
   registerRuntime(
     ws: WebSocket,
-    envelope: RuntimeRegisterEnvelope
+    envelope: RuntimeLegacyRegistration
   ): RouterToRuntimeFrameHeader {
     if (!Array.isArray(envelope.targets) || envelope.targets.length === 0) {
-      throw new Error('runtime.register.targets must be a non-empty array');
+      throw new Error('legacy runtime registration targets must be a non-empty array');
     }
     const capability = this.runtimeCapabilitiesByConnection.get(ws);
     if (capability !== undefined && capability.runtimeId !== envelope.runtimeId) {

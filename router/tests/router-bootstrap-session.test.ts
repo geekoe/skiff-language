@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import {
+  encodeBinaryFrame,
   decodeRuntimeFrame,
   encodeRuntimeFrame
 } from '../src/protocol/envelope.js';
@@ -13,10 +14,6 @@ import { loadRouterConfig } from '../src/router/config.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
-import {
-  DEFAULT_TEST_BUILD_ID,
-  loadRawHttpManifest
-} from './helpers/manifests.js';
 
 const tempDirs: string[] = [];
 const sockets: WebSocket[] = [];
@@ -140,22 +137,15 @@ describe('Router runtime bootstrap session', () => {
       }
     ]);
 
-    const manifest = loadRawHttpManifest();
-    socket.send(encodeRuntimeFrame({
+    // Legacy inbound registration is not a target handshake frame
+    // (H-registration-cut): the connection is closed and no ACK is sent.
+    socket.send(encodeBinaryFrame({
       schemaVersion: 'skiff-runtime-frame-v3',
       type: 'runtime.register',
-      runtimeId: 'runtime-bootstrap-order',
-      serviceId: manifest.service.id,
-      revisionId: manifest.service.revisionId,
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [manifest.operations[0]!.target]
-    }));
-    await waitFor(() => frames.length === 2);
-    expect(frames[1]).toMatchObject({
-      type: 'runtime.registered',
       runtimeId: 'runtime-bootstrap-order'
-    });
+    } as Record<string, unknown>));
+    await waitFor(() => socket.readyState === WebSocket.CLOSED);
+    expect(frames).toHaveLength(1);
     expect(frames.filter((frame) =>
       typeof frame === 'object' && frame !== null && 'type' in frame &&
       frame.type === 'router.bootstrap'

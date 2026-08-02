@@ -2411,6 +2411,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-canonical-json",
  "skiff-deployment",
+ "skiff-runtime-config-snapshot",
  "skiff-runtime-request-contract",
  "skiff-runtime-transport",
  "thiserror",
