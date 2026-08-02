@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "scenario": "05-reject-new-preserves-existing",
+  "limits": { "connectionLimit": 4, "slowClientBudgetBytes": 1024, "perGenerationCapacity": 2 },
+  "events": [
+    { "kind": "acceptConnection", "connection": "c1", "businessKey": "b1", "maxConnections": 1, "overflow": "reject-new" },
+    { "kind": "attach", "connection": "c1", "socketGeneration": "g1", "runtime": "r1" },
+    { "kind": "acceptConnection", "connection": "c2", "businessKey": "b1", "maxConnections": 1, "overflow": "reject-new" },
+    { "kind": "peerClose", "connection": "c1" }
+  ],
+  "expect": {
+    "terminals": { "c1": "PeerClose", "c2": "PolicyRejected" },
+    "connectionCount": 0,
+    "generationCount": 0,
+    "outboundPending": 0,
+    "inboundPending": 0,
+    "tombstones": 0,
+    "pinsAcquired": 0,
+    "pinsPendingRelease": 0,
+    "releaseAcks": 0,
+    "finalizerCount": 2,
+    "runtimeClosed": false,
+    "failStop": false,
+    "openConnections": []
+  }
+}
