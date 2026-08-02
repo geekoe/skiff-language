@@ -116,12 +116,14 @@ corpus 放 `deployment/tests/fixtures/a3-actor-routing/`（A0 类型 owner 侧�
 未来 A1 producer 与 A3 consumer 同读同一 corpus）：
 
 - `corpus.json`：schema `skiff-router-rust-actor-routing-corpus-v1`，case 列表
-  （path + expected outcome）；
-- `records/*.json`：合法记录（含空投影、多 entry、单 entry）与负例记录
-  （schema version、identity 前缀、serviceId 一致、duplicate、deny_unknown_fields
-  反例：`modulePath`/`actorName`/`methodName`/`fileIrIdentity`/`codeSlot`/
-  `executableIndex`/`sourceSpan`/`actorSymbol`/`actorTypeIdentity`、非 canonical、
-  duplicate JSON keys、malformed、missing）。
+  （name + 精确 record content bytes + expected outcome）；合法记录（含空投影、
+  多 entry、单 entry）与负例记录（schema version、identity 前缀、serviceId 一致、
+  duplicate、deny_unknown_fields 反例：`modulePath`/`actorName`/`methodName`/
+  `fileIrIdentity`/`codeSlot`/`executableIndex`/`sourceSpan`/`actorSymbol`/
+  `actorTypeIdentity`、非 canonical、unsorted（构造归一化后 bytes 不再 canonical）、
+  duplicate JSON keys、malformed、missing）都以内嵌 content 字符串给出；
+  测试在临时 artifact root 物化 content 后经真实文件边界读取（与
+  `bootstrap_artifact_reader_corpus.rs` 的临时 root 模式一致）。
 
 deployment 测试（`a3_actor_routing_corpus.rs`）验证 A0 typed 边界与 corpus 一致；
 router 测试（`artifact_actor_routing_corpus.rs`）验证 strict reader/loader 在真实
@@ -142,7 +144,8 @@ router 测试（`artifact_actor_routing_corpus.rs`）验证 strict reader/loader
 
 - `router/tests/artifact_actor_routing_corpus.rs`（artifact_* 前缀）；
 - `deployment/tests/a3_actor_routing_corpus.rs`（a3_* 前缀）；
-- `deployment/tests/fixtures/a3-actor-routing/`（corpus + records）；
+- `deployment/tests/fixtures/a3-actor-routing/corpus.json`（内嵌 record content，
+  records 文件不落盘）；
 - 本叶子文档 `doc/implementation/router-rust-migration-a3-leaf.md`。
 
 禁止写：`router/src/session/`、`router/src/activation/`、`router/src/main.rs`、
@@ -168,6 +171,34 @@ scripts README、verify.yml、`skiff-instance.mjs`、A0 契约与 canonical 类�
   `TASK_SCOPE_EXPANDED` / `TASK_NOT_EXECUTABLE` 附证据。
 - 兄弟 ownership 冲突（router `src/lib.rs` / deployment 生产代码）：先通知 root
   与集成 Agent，不静默改写。
+
+## 执行结果（提交前自验收）
+
+- `cargo test -p skiff-router --test artifact_actor_routing_corpus --no-fail-fast`：
+  8 passed（corpus 形态、正例、负例 fail-closed 矩阵、canonical roundtrip、
+  catalog index、oversized/missing/escape/root 边界探针）。
+- `cargo test -p skiff-deployment --test a3_actor_routing_corpus --no-fail-fast`：
+  5 passed（typed 边界与共享 corpus 一致、deny_unknown_fields 反例、
+  schema/malformed/非 canonical、构造归一化）。
+- `cargo test -p skiff-router -p skiff-deployment --no-fail-fast`：全量通过
+  （router 75 unit + 既有 integration suites 全绿）。
+- `cargo tree -p skiff-router -e normal` 负例：不含 `skiff-runtime-model` /
+  `skiff-runtime-host` / `skiff-runtime-eval` / request execution。
+- `rg` 负例：`router/src/artifact/` 与 `router/tests/artifact_actor_routing_corpus.rs`
+  无 File IR / source / executable payload 代码引用（仅文档注释中的否定表述；
+  File IR 反例只存在于 deployment 侧 corpus 测试数据）。
+- `cargo fmt -p skiff-router -p skiff-deployment -- --check`：通过；
+  `cargo clippy -p skiff-router -p skiff-deployment --all-targets`：exit 0
+  （仅既有 advisory warning）。
+
+## A1 合流对齐点
+
+- `ActorRoutingProjectionRef { record_path }` 是 consumer 侧临时 seam；A1 /
+  contracts-bootstrap 提供 canonical 记录身份 / 路径推导后，只替换 ref 构造，
+  reader 校验链与 catalog 不变。
+- 共享 corpus `deployment/tests/fixtures/a3-actor-routing/corpus.json`
+  （schema `skiff-router-rust-actor-routing-corpus-v1`）内嵌精确 record bytes，
+  A1 producer 测试可直接消费同一 corpus。
 
 ## 交接
 
