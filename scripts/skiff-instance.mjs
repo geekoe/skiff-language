@@ -199,7 +199,6 @@ async function printStatus(rawArgs, configPath) {
   }
   console.log(`configPath: ${config.paths.configPath}`);
   console.log(`routerHttpUrl: ${config.urls.routerHttp}`);
-  console.log(`routerReloadUrl: ${config.urls.routerReload}`);
   console.log(`telemetryUrl: ${config.urls.telemetry}`);
   for (const processStatus of result.processes) {
     console.log(renderProcessStatusLine(processStatus));
@@ -483,7 +482,6 @@ function routerConfigText(config) {
     host: '127.0.0.1',
     environment: config.environment,
     artifactsPath: config.paths.artifactRoot,
-    ecosystemStoreCliPath: config.paths.ecosystemStoreCli,
     devReload: true,
     requestTimeoutMs: 20000,
     activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
@@ -1100,7 +1098,6 @@ async function instanceStatus(config) {
     urls: {
       routerHttp: config.urls.routerHttp,
       routerControl: config.urls.routerControl,
-      routerReload: config.urls.routerReload,
       telemetry: config.urls.telemetry,
     },
     listenerDiscovery: {

@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TELEMETRY_PROTOCOL, TELEMETRY_TOPICS } from '../src/protocol/envelope.js';
 import {
   loadRouterConfig,
+  redactRouterConfig,
+  ROUTER_CONFIG_REDACTED_VALUE,
   runtimeBootstrapForRouterConfig
 } from '../src/router/config.js';
 
@@ -610,6 +612,137 @@ describe('router config', () => {
     );
   });
 
+  it('rejects unknown top-level keys under the frozen schema', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'unknown-top-level.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'ecosystemStoreCliPath: /tmp/skiff/bin/skiff-compiler',
+        ''
+      ].join('\n')
+    );
+
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /router config ecosystemStoreCliPath is not supported/
+    );
+  });
+
+  it('rejects unknown nested keys under the frozen schema', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'unknown-nested.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'http:',
+        '  additional: 1',
+        ''
+      ].join('\n')
+    );
+
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /router config http\.additional is not supported/
+    );
+  });
+
+  it('rejects duplicate YAML keys', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'duplicate-key.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      ['profile: dev', 'profile: prod', ''].join('\n')
+    );
+
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(/duplicate key/);
+  });
+
+  it('rejects YAML anchors, aliases, and tags', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+
+    const anchorPath = join(dir, 'anchor.yml');
+    await writeRouterConfigFixture(
+      anchorPath,
+      ['profile: dev', 'host: &anchor 127.0.0.1', ''].join('\n')
+    );
+    await expect(loadRouterConfig(anchorPath)).rejects.toThrow(
+      /config YAML anchors are not supported/
+    );
+
+    const aliasPath = join(dir, 'alias.yml');
+    await writeRouterConfigFixture(
+      aliasPath,
+      [
+        'profile: dev',
+        'host: &host 127.0.0.1',
+        'aliasHost: *host',
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(aliasPath)).rejects.toThrow(
+      /config YAML aliases are not supported/
+    );
+
+    const tagPath = join(dir, 'tag.yml');
+    await writeRouterConfigFixture(
+      tagPath,
+      ['profile: dev', 'requestTimeoutMs: !!str 20000', ''].join('\n')
+    );
+    await expect(loadRouterConfig(tagPath)).rejects.toThrow(
+      /config YAML tags are not supported/
+    );
+  });
+
+  it('redacts secret leaves for diagnostics without mutating the config', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'secrets.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'serviceDb:',
+        '  mongoUrl: mongodb://user:pass@127.0.0.1:27017/skiff',
+        'fileBackend:',
+        '  oss:',
+        '    endpoint: https://oss-cn-hangzhou.aliyuncs.com',
+        '    bucket: skiff-files',
+        '    accessKeyId: local-only-id',
+        '    accessKeySecret: local-only-secret',
+        '    accessKeyIdEnv: SKIFF_OSS_ACCESS_KEY_ID',
+        '    accessKeySecretEnv: SKIFF_OSS_ACCESS_KEY_SECRET',
+        ''
+      ].join('\n')
+    );
+
+    const config = await loadRouterConfig(configPath);
+    const redacted = redactRouterConfig(config);
+    expect(redacted.serviceDb.mongoUrl).toBe(ROUTER_CONFIG_REDACTED_VALUE);
+    expect(redacted.fileBackend?.oss?.accessKeyId).toBe(
+      ROUTER_CONFIG_REDACTED_VALUE
+    );
+    expect(redacted.fileBackend?.oss?.accessKeySecret).toBe(
+      ROUTER_CONFIG_REDACTED_VALUE
+    );
+    expect(redacted.fileBackend?.oss?.accessKeyIdEnv).toBe(
+      'SKIFF_OSS_ACCESS_KEY_ID'
+    );
+    expect(redacted.fileBackend?.oss?.accessKeySecretEnv).toBe(
+      'SKIFF_OSS_ACCESS_KEY_SECRET'
+    );
+    expect(redacted.fileBackend?.oss?.endpoint).toBe(
+      'https://oss-cn-hangzhou.aliyuncs.com'
+    );
+    expect(config.serviceDb.mongoUrl).toBe(
+      'mongodb://user:pass@127.0.0.1:27017/skiff'
+    );
+  });
+
   it('omits telemetry when disabled or endpoint is not configured', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
@@ -895,7 +1028,7 @@ describe('router config', () => {
     const configPath = join(dir, 'router.yml');
     await writeRouterConfigFixture(
       configPath,
-      ['profile: dev', 'hosts:', '  localhost:3011: sample', ''].join('\n')
+      ['profile: dev', 'hosts:', '  localhost: sample', ''].join('\n')
     );
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(

@@ -86,6 +86,20 @@ export function parseConfigYamlSource(
   text: string,
   metadata: { label: string; sourceClass: ConfigSourceClass }
 ): ConfigSource {
+  return {
+    sourceClass: metadata.sourceClass,
+    label: metadata.label,
+    value: parseStrictYamlObject(text, metadata.label)
+  };
+}
+
+/**
+ * Strict YAML object parsing shared by the service config shape machinery and
+ * the Router process config contract: duplicate keys, anchors, aliases and
+ * custom tags are rejected, and every key must be a plain
+ * `[A-Za-z_][A-Za-z0-9_-]*` segment (dotted keys are not supported).
+ */
+export function parseStrictYamlObject(text: string, label: string): JsonObject {
   const document = parseDocument(text, {
     uniqueKeys: true,
     merge: false,
@@ -95,21 +109,16 @@ export function parseConfigYamlSource(
   const parseProblems = [...document.errors, ...document.warnings];
   if (parseProblems.length > 0) {
     const message = parseProblems[0]?.message ?? 'invalid YAML';
-    throw new Error(`${metadata.label} config YAML parse error: ${normalizeYamlError(message)}`);
+    throw new Error(`${label} config YAML parse error: ${normalizeYamlError(message)}`);
   }
   if (document.contents === null) {
-    throw new Error(`${metadata.label} config root must be an object`);
+    throw new Error(`${label} config root must be an object`);
   }
-  rejectUnsupportedYamlNodeFeatures(document.contents, metadata.label);
+  rejectUnsupportedYamlNodeFeatures(document.contents, label);
   if (!isMap(document.contents)) {
-    throw new Error(`${metadata.label} config root must be an object`);
+    throw new Error(`${label} config root must be an object`);
   }
-  const value = yamlMapToJsonObject(document.contents, metadata.label, []);
-  return {
-    sourceClass: metadata.sourceClass,
-    label: metadata.label,
-    value
-  };
+  return yamlMapToJsonObject(document.contents, label, []);
 }
 
 export function readConfigShape(value: unknown, label: string): ConfigShape {

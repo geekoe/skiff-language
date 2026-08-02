@@ -1,0 +1,12 @@
+profile: dev
+artifactsPath: ./artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/skiff
+http:
+  port: "4000"
+  maxRequestBytes: "16777216"
+  maxResponseBytes: "8388608"
+runtime:
+  port: "4001"
+  maxConcurrency: 1
+requestTimeoutMs: "7000"

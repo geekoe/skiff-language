@@ -61,10 +61,7 @@ test('instance init writes the configured environment and root into router/runti
       routerConfig,
       /^environment: "f04-host-test"$/m,
     );
-    assert.match(
-      routerConfig,
-      new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(expectedCompiler)}$`, 'm'),
-    );
+    assert.doesNotMatch(routerConfig, /^ecosystemStoreCliPath:/m);
     assert.match(
       routerConfig,
       new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'),
