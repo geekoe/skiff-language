@@ -12,3 +12,5 @@ name = "skiff-router"
 path = "src/main.rs"
 
 [dependencies]
+skiff-runtime-request-contract = { path = "../runtime/request-contract" }
+skiff-runtime-transport = { path = "../runtime/transport" }

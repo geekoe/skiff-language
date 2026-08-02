@@ -13,20 +13,7 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::ResponseError;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum OutboundResponse {
-    End { payload: Vec<u8> },
-    Error(ResponseError),
-}
-
-impl OutboundResponse {
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::End { .. } => "response.end",
-            Self::Error(_) => "response.error",
-        }
-    }
-}
+pub use skiff_runtime_request_contract::OutboundResponse;
 
 pub type OutboundResponseReceiver = mpsc::UnboundedReceiver<OutboundResponse>;
 pub type OutboundResponseSender = mpsc::UnboundedSender<OutboundResponse>;

@@ -1,6 +1,4 @@
-pub use skiff_runtime_capability_context::{
-    FixedServiceResponseFailure, HttpResponseMetadata, ResponseError,
-};
+pub use crate::response::{FixedServiceResponseFailure, HttpResponseMetadata, ResponseError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoundaryResponse {
