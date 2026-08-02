@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
+skiff-artifact-model = { path = "../artifact-model" }
 skiff-canonical-json = { path = "../canonical-json" }
 skiff-deployment = { path = "../deployment" }
 skiff-runtime-request-contract = { path = "../runtime/request-contract" }
@@ -39,4 +40,3 @@ unsafe-libyaml = "0.2"
 # Golden corpus consumer tests and process-listener probes.
 regex = "1"
 serde = { version = "1.0", features = ["derive"] }
-skiff-artifact-model = { path = "../artifact-model" }
