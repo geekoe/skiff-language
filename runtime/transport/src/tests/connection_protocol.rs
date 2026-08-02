@@ -3,12 +3,13 @@ use skiff_artifact_model::WebSocketEntryId;
 
 use crate::{
     connection_protocol::{
-        decode_connection_request_cancel_frame, decode_connection_request_frame,
-        decode_connection_response_frame, encode_connection_request_cancel_frame,
-        encode_connection_request_frame, encode_connection_response_frame,
-        ConnectionRemoteErrorFrameHeader, ConnectionRequestCancelFrameHeader,
-        ConnectionRequestFrameHeader, ConnectionResponseFrameHeader, ConnectionResponseOutcome,
-        WebSocketRpcProfile,
+        classify_jsonrpc_20_text_frame, decode_connection_request_cancel_frame,
+        decode_connection_request_frame, decode_connection_response_frame,
+        encode_connection_request_cancel_frame, encode_connection_request_frame,
+        encode_connection_response_frame, ClientSocketGeneration, ConnectionRemoteErrorFrameHeader,
+        ConnectionRequestCancelFrameHeader, ConnectionRequestFrameHeader,
+        ConnectionResponseFrameHeader, ConnectionResponseOutcome, JsonRpcPlatformErrorKind,
+        OpaquePeerId, ProfileAction, WebSocketRpcProfile,
     },
     protocol::{RuntimeDeadlineFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION},
 };
@@ -186,4 +187,164 @@ fn connection_response_payload_presence_matches_exact_outcome() {
     ] {
         assert!(encode_connection_response_frame(&malformed.0, malformed.1).is_err());
     }
+}
+
+#[test]
+fn client_socket_generation_newtype_requires_canonical_connection_id() {
+    let generation = ClientSocketGeneration::new("connection-1", 7)
+        .expect("canonical connection id must construct");
+    assert_eq!(generation.connection_id, "connection-1");
+    assert_eq!(generation.generation, 7);
+
+    for invalid in [
+        "",
+        " connection",
+        "connection ",
+        "conn\u{0000}ection",
+        &"c".repeat(1025),
+    ] {
+        assert!(
+            ClientSocketGeneration::new(invalid, 0).is_err(),
+            "connectionId {invalid:?} must fail closed"
+        );
+    }
+}
+
+#[test]
+fn jsonrpc_text_classifier_canonicalizes_numeric_ids_without_float_roundtrip() {
+    let request =
+        |id: &str| format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"status.get","params":[]}}"#);
+    let action = classify_jsonrpc_20_text_frame(request("1e0").as_bytes());
+    assert_eq!(
+        action,
+        ProfileAction::Request {
+            id: OpaquePeerId::SafeInteger(1),
+            method: "status.get".to_string(),
+        }
+    );
+    let ProfileAction::Request { id, .. } =
+        classify_jsonrpc_20_text_frame(request("1e0").as_bytes())
+    else {
+        panic!("1e0 must classify as a request");
+    };
+    assert_eq!(id.canonical_key(), "n:1");
+
+    for (lexeme, canonical) in [
+        ("-0", "0"),
+        ("-0.0e+3", "0"),
+        ("1.000e2", "100"),
+        ("1E+2", "100"),
+        ("9007199254740991", "9007199254740991"),
+        ("-9007199254740991", "-9007199254740991"),
+    ] {
+        let action = classify_jsonrpc_20_text_frame(request(lexeme).as_bytes());
+        let ProfileAction::Request { id, .. } = action else {
+            panic!("{lexeme} must classify as a request");
+        };
+        assert_eq!(id.canonical_key(), format!("n:{canonical}"), "{lexeme}");
+    }
+
+    for lexeme in [
+        "1.5",
+        "-0.5",
+        "9007199254740992",
+        "1e-324",
+        "1.0000000000000000001",
+        "1e21",
+    ] {
+        let action = classify_jsonrpc_20_text_frame(request(lexeme).as_bytes());
+        assert_eq!(
+            action,
+            ProfileAction::PlatformError {
+                kind: JsonRpcPlatformErrorKind::InvalidRequest
+            },
+            "{lexeme} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn jsonrpc_text_classifier_follows_frozen_profile_contract() {
+    // String id request with object params.
+    let action = classify_jsonrpc_20_text_frame(
+        br#"{"jsonrpc":"2.0","id":"peer-1","method":"chat.send","params":{"n":1}}"#,
+    );
+    assert_eq!(
+        action,
+        ProfileAction::Request {
+            id: OpaquePeerId::String("peer-1".to_string()),
+            method: "chat.send".to_string(),
+        }
+    );
+
+    // Notification (no id) is classified without terminal semantics.
+    let action =
+        classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","method":"chat.event","params":{}}"#);
+    assert_eq!(
+        action,
+        ProfileAction::Notification {
+            method: "chat.event".to_string()
+        }
+    );
+
+    // Response with string id is accepted; numeric response id closes 1002.
+    let action =
+        classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","id":"peer-a","result":null}"#);
+    assert_eq!(
+        action,
+        ProfileAction::Response {
+            id: "peer-a".to_string()
+        }
+    );
+    let action = classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","id":1,"result":null}"#);
+    assert_eq!(action, ProfileAction::Close { code: 1002 });
+    let action =
+        classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","id":"a","result":null,"extra":true}"#);
+    assert_eq!(action, ProfileAction::Close { code: 1002 });
+
+    // Array/scalar/duplicate members are invalidRequest; leading-zero number
+    // is a parse error; missing params is invalidParams.
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(b"[1]"),
+        ProfileAction::PlatformError {
+            kind: JsonRpcPlatformErrorKind::InvalidRequest
+        }
+    );
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(b"null"),
+        ProfileAction::PlatformError {
+            kind: JsonRpcPlatformErrorKind::InvalidRequest
+        }
+    );
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(
+            br#"{"jsonrpc":"2.0","id":"a","id":"b","method":"m","params":[]}"#
+        ),
+        ProfileAction::PlatformError {
+            kind: JsonRpcPlatformErrorKind::InvalidRequest
+        }
+    );
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","id":01,"method":"m","params":[]}"#),
+        ProfileAction::PlatformError {
+            kind: JsonRpcPlatformErrorKind::Parse
+        }
+    );
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(br#"{"jsonrpc":"2.0","id":"a","method":"m"}"#),
+        ProfileAction::PlatformError {
+            kind: JsonRpcPlatformErrorKind::InvalidParams
+        }
+    );
+
+    // Non-UTF-8 and oversize frames close 1009.
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(b"\xff"),
+        ProfileAction::Close { code: 1009 }
+    );
+    let oversize = vec![b' '; crate::connection_protocol::WEBSOCKET_JSONRPC_MAX_TEXT_BYTES + 1];
+    assert_eq!(
+        classify_jsonrpc_20_text_frame(&oversize),
+        ProfileAction::Close { code: 1009 }
+    );
 }
