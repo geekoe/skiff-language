@@ -12,3 +12,14 @@ name = "skiff-router"
 path = "src/main.rs"
 
 [dependencies]
+
+[dev-dependencies]
+# C-net: final listener mechanism probes (see doc/implementation/router-rust-migration-c-net-contract.md).
+# Dev-only today; PR 0b promotes the production subset when assembling final listeners.
+bytes = "1"
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "0.26"
