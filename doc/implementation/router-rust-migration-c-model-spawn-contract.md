@@ -4,6 +4,16 @@
 状态：frozen（contract pack freeze；供 W-model-spawn / M-spawn /
 `H-spawn-parent-cut` 消费）
 
+> M-spawn-repair（2026-08-03）：按权威设计 §6.1（阻断迁移的 bug fix 先更新
+> canonical contract/corpus，再修改所有消费者）修复冻结契约中的方向自相矛盾：
+> `spawn.submit.request` 的真实 wire 方向是 Runtime→Router（Runtime driver
+> 出站、TS Router inbound 处理），`spawn.submit.response/error` 是
+> Router→Runtime；spawn family 为 mixed-direction，family 级 `Either` +
+> 帧级 direction 表（见 §3.0、§6.1）。同时补齐 `SpawnSubmitAcceptance`
+> 数据面（§7.2）：acceptance 必须携带重建出站 `spawn.submit.request`
+> 所需的原始 wire header/payload（service/activation identity、
+> actorMethod 元数据、args bytes）。`frameHex` golden bytes 不变。
+
 ## 引用链
 
 - 权威设计：`doc/implementation/router-rust-migration-plan.md`
@@ -70,6 +80,30 @@ ambiguous——这就是设计要求删除的“靠字符串猜测”fallback。
   `H-spawn-parent-cut` 依赖 M-spawn），本契约冻结目标 wire，不提前实现。
 
 ## 3. 目标 wire（frozen shape）
+
+### 3.0 方向（M-spawn-repair 修复后的 canonical 事实）
+
+spawn family 是 mixed-direction 族：family 级 registry 标注 `Either`，
+帧级 direction 表如下（demux/consumer 必须按帧收窄，禁止把 family 级
+`Either` 当作任意方向都合法）：
+
+| 帧 | 方向 |
+| --- | --- |
+| `spawn.submit.request` | RuntimeToRouter（Runtime driver 出站） |
+| `spawn.submit.response` | RouterToRuntime（Router 出站） |
+| `spawn.submit.error` | RouterToRuntime（Router 出站） |
+
+- `spawn.submit.request` 是唯一 inbound 帧：Router 侧在
+  `validateRuntimeToRouterFrameHeader` 与 demux 的 RuntimeToRouter 面消费。
+- `spawn.submit.response` / `spawn.submit.error` 是唯一 outbound 帧：
+  Runtime 侧按 inbound 消费（`rpcId` correlation）。
+- 不存在额外的 Router→Runtime forwarding/accept 帧：accept/reject 就是
+  `spawn.submit.response` / `spawn.submit.error`。
+- correlation 形态：request 携带 `rpcId`，response/error 回显同一 `rpcId`；
+  response 额外携带 Router 生成的 `spawnId` + `requestId`（accepted spawn
+  的后续执行 correlation 唯一键）。
+- 任何方向违例（Router 收到 response/error、Runtime 收到 request）按
+  protocol violation fail closed，无兼容 reader。
 
 ### 3.1 SpawnSubmitRequestFrameHeader（target）
 
@@ -185,7 +219,7 @@ ambiguous——这就是设计要求删除的“靠字符串猜测”fallback。
   "corpus": "spawn-wire-v1",
   "frames": {
     "<frame-name>": {
-      "direction": "RouterToRuntime",
+      "direction": "RuntimeToRouter | RouterToRuntime",
       "frameType": "spawn.submit.request | spawn.submit.response | spawn.submit.error",
       "decodeAs": "SpawnSubmitRequest | SpawnSubmitResponse | SpawnSubmitError",
       "payloadPresence": "required | empty",
@@ -197,6 +231,11 @@ ambiguous——这就是设计要求删除的“靠字符串猜测”fallback。
   }
 }
 ```
+
+方向按 §3.0 帧级表冻结：三个 `spawn.submit.request` 帧为
+`RuntimeToRouter`，`spawn.submit.response` / `spawn.submit.error` 为
+`RouterToRuntime`。`frameHex` 是 byte-exact 事实，方向标注修复不改变
+golden bytes。
 
 必选帧：
 
@@ -258,8 +297,26 @@ production codec 实现，因此 frameHex 由 mirror 生成，cut 后由真实 c
 
 - Inputs：`SpawnSubmitRequestFrameHeader`（target shape）、
   `RuntimeSpawnParentAuthority` snapshot、parent pending 查询 port。
-- Outputs：`SpawnParentResolution`、`SpawnSubmitAcceptance { spawn_id,
-  request_id }`、`spawn.submit.response` / `spawn.submit.error`。
+- Outputs：`SpawnParentResolution`、`SpawnSubmitAcceptance`、
+  `spawn.submit.response` / `spawn.submit.error`。
+- `SpawnSubmitAcceptance`（M-spawn-repair 补齐数据面）：
+
+  ```text
+  SpawnSubmitAcceptance {
+    request: SpawnSubmitRequestFrame {
+      header: SpawnSubmitRequestFrameHeaderV2,  // 原始 wire header
+      payload: Vec<u8>,                          // 不可变 opaque args bytes
+    },
+    spawn_id: String,
+    request_id: String,
+  }
+  ```
+
+  acceptance 边界必须携带重建出站 `spawn.submit.request` 所需的原始 wire
+  header/payload（service/activation identity、actorMethod 元数据、args
+  bytes）或等价 typed 投影，供真实执行 sink 使用（E-actor-rust 前置）；
+  `request_id` 是 Router 生成的后续执行 correlation 唯一键。执行 sink
+  不得重新 parse 原始 bytes，也不得丢失任何 wire 字段。
 
 ### 7.3 capacity
 

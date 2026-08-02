@@ -173,6 +173,69 @@ fn response_and_error_frames_enforce_empty_payload() {
     assert!(error.to_string().contains("payload must be empty"));
 }
 
+#[test]
+fn spawn_frame_direction_table_is_frozen_per_frame() {
+    use crate::protocol::FrameDirection;
+    assert_eq!(
+        spawn_submit_frame_direction(SPAWN_SUBMIT_REQUEST_FRAME_TYPE),
+        Some(FrameDirection::RuntimeToRouter)
+    );
+    assert_eq!(
+        spawn_submit_frame_direction(SPAWN_SUBMIT_RESPONSE_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        spawn_submit_frame_direction(SPAWN_SUBMIT_ERROR_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        spawn_submit_frame_direction("spawn.submit.unknown"),
+        None,
+        "unknown spawn frame types have no direction"
+    );
+}
+
+#[test]
+fn spawn_submit_acceptance_carries_raw_wire_request_and_response_projection() {
+    let mut header = canonical_request(
+        SpawnCallerKind::ActorInvocation,
+        SpawnTargetKind::ActorMethod,
+    );
+    header.actor_method = Some(actor_method_metadata());
+    let request = SpawnSubmitRequestFrame {
+        header: header.clone(),
+        payload: b"\x01\x02".to_vec(),
+    };
+    let acceptance = SpawnSubmitAcceptance {
+        request,
+        spawn_id: "spawn-1".to_string(),
+        request_id: "req:spawned-1".to_string(),
+    };
+
+    // The acceptance boundary preserves the raw wire header + args bytes so
+    // the execution sink can reconstruct the outbound request without
+    // re-parsing (C-model-spawn §7.2).
+    let reconstructed =
+        encode_spawn_submit_request_frame(&acceptance.request.header, &acceptance.request.payload)
+            .expect("accepted request must re-encode");
+    assert_eq!(
+        decode_spawn_submit_request_frame(&reconstructed).expect("must decode"),
+        (header, b"\x01\x02".to_vec())
+    );
+
+    let response = acceptance.response_header();
+    assert_eq!(response.rpc_id, "rpc:spawn-1");
+    assert_eq!(response.spawn_id, "spawn-1");
+    assert_eq!(response.request_id, "req:spawned-1");
+    assert_eq!(response.status, SPAWN_SUBMIT_RESPONSE_STATUS_SUBMITTED);
+    let response_bytes = encode_spawn_submit_response_frame(&response)
+        .expect("acceptance response projection must encode");
+    assert_eq!(
+        decode_spawn_submit_response_frame(&response_bytes).expect("must decode"),
+        response
+    );
+}
+
 fn activation_identity_json() -> serde_json::Value {
     json!({
         "assemblyIdentity": format!(
