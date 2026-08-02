@@ -1,4 +1,3 @@
-use crate::heap_access::HeapAccess;
 use std::{
     future::Future,
     pin::{pin, Pin},
@@ -10,10 +9,7 @@ use std::{
 use serde_json::json;
 use skiff_runtime_capability_context::DbDocument;
 use skiff_runtime_linked_program::{ExprRefIr, LinkedExprIr};
-use skiff_runtime_model::{
-    request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::RuntimeValue,
-};
+use skiff_runtime_model::{request_heap::RequestHeapLimits, runtime_value::RuntimeValue};
 
 use crate::{env::Env, error::RuntimeError};
 
@@ -177,12 +173,11 @@ async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
     let claim_expression = ExprRefIr {
         expression: u32::try_from(claim_expression).expect("fixture expression index"),
     };
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
     let value = {
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = pin!(fixture.linked.interpreter.eval_program_expr_ref(
             context,
             &mut access,
@@ -216,7 +211,7 @@ async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
 
     assert!(matches!(value.into_value(), RuntimeValue::Bool(false)));
     assert_no_lease_binding(&env);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_eq!(
         state.metrics(DbPhase::Claim),
         OperationMetrics {
@@ -240,7 +235,7 @@ async fn db_actor_lease_claim_none_ready_has_no_binding_or_terminal_phases() {
     let state = FakeDbState::new();
     state.claim.push_ready(Ok(None));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
 
@@ -249,7 +244,7 @@ async fn db_actor_lease_claim_none_ready_has_no_binding_or_terminal_phases() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -262,7 +257,7 @@ async fn db_actor_lease_claim_none_ready_has_no_binding_or_terminal_phases() {
     assert!(matches!(result, RuntimeValue::Bool(false)));
     assert_no_lease_binding(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::Claim);
     assert_eq!(state.phases(), vec![DbPhase::Claim]);
     assert_phase_not_started(&state, DbPhase::Renew);
@@ -282,7 +277,7 @@ async fn db_actor_lease_claim_success_ready_imports_binding_once() {
     state.lease_lost.push_ready(Ok(false));
     state.release.push_ready(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
 
@@ -291,7 +286,7 @@ async fn db_actor_lease_claim_success_ready_imports_binding_once() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -304,7 +299,7 @@ async fn db_actor_lease_claim_success_ready_imports_binding_once() {
     assert!(matches!(result, RuntimeValue::Bool(true)));
     assert_lease_binding_visible(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::Claim);
     assert_ready_once(&state, DbPhase::LeaseLost);
     assert_ready_once(&state, DbPhase::Release);
@@ -327,10 +322,9 @@ async fn db_actor_lease_claim_success_pending_imports_only_after_same_future_res
     state.lease_lost.push_ready(Ok(false));
     state.release.push_ready(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
         &mut access,
@@ -363,7 +357,7 @@ async fn db_actor_lease_claim_success_pending_imports_only_after_same_future_res
     assert!(matches!(result, RuntimeValue::Bool(true)));
     assert_lease_binding_visible(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::Claim);
     assert_ready_once(&state, DbPhase::LeaseLost);
     assert_ready_once(&state, DbPhase::Release);
@@ -400,12 +394,11 @@ async fn db_actor_lease_body_pending_cleanup_stops_renew_before_terminals() {
         state.lease_lost.push_ready(Ok(false));
         state.release.push_ready(Ok(()));
         let fixture = DbActorFixture::new(state.clone());
-        let (frame, mut heap) = fixture.actor.execution_frame().await;
+        let (frame, mut access) = fixture.actor.execution_frame().await;
         let mut claim = fixture.linked.claim.clone();
         claim.body = BODY_CREATE_BLOCK_LABEL.to_string();
         let mut env = lease_env(&fixture);
         assert_no_lease_binding(&env);
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
             fixture.context(frame.clone()),
             &mut access,
@@ -459,14 +452,14 @@ async fn db_actor_lease_body_pending_cleanup_stops_renew_before_terminals() {
                     RuntimeValue::Bool(true)
                 ));
                 assert!(
-                    heap.len() > heap_len_while_pending,
+                    access.len() > heap_len_while_pending,
                     "body result must materialize only after its gate"
                 );
             }
         }
         assert_lease_binding_visible(&env);
         assert_actor_segment_held(&fixture);
-        frame.finish(heap).expect("Actor frame must finish");
+        frame.finish().expect("Actor frame must finish");
         assert_pending_then_ready_once(&state, DbPhase::BodyCreate);
         assert_pending_dropped_once(&state, DbPhase::Renew);
         assert_ready_once(&state, DbPhase::LeaseLost);
@@ -505,7 +498,7 @@ async fn db_actor_lease_illegal_flow_still_runs_lost_and_release() {
     state.lease_lost.push_ready(Ok(false));
     state.release.push_ready(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut claim = fixture.linked.claim.clone();
     claim.body = ILLEGAL_FLOW_BLOCK_LABEL.to_string();
     let mut env = lease_env(&fixture);
@@ -514,7 +507,7 @@ async fn db_actor_lease_illegal_flow_still_runs_lost_and_release() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -530,7 +523,7 @@ async fn db_actor_lease_illegal_flow_still_runs_lost_and_release() {
     );
     assert_lease_binding_visible(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::Claim);
     assert_ready_once(&state, DbPhase::LeaseLost);
     assert_ready_once(&state, DbPhase::Release);
@@ -552,8 +545,8 @@ async fn tail_call_negative_db_lease() {
     state.lease_lost.push_ready(Ok(false));
     state.release.push_ready(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
-    let initial_heap_len = heap.len();
+    let (frame, mut access) = fixture.actor.execution_frame().await;
+    let initial_heap_len = access.len();
     let mut claim = fixture.linked.claim.clone();
     claim.binding_slot = None;
     claim.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
@@ -563,7 +556,7 @@ async fn tail_call_negative_db_lease() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -578,12 +571,12 @@ async fn tail_call_negative_db_lease() {
         "ordinary structured result must complete before claim-flow validation: {error:?}"
     );
     assert!(
-        heap.len() > initial_heap_len,
+        access.len() > initial_heap_len,
         "ordinary exact local call must materialize its structured result"
     );
     assert_no_lease_binding(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::Claim);
     assert_ready_once(&state, DbPhase::LeaseLost);
     assert_ready_once(&state, DbPhase::Release);
@@ -603,8 +596,8 @@ async fn tail_call_negative_db_lease() {
     state.lease_lost.push_ready(Ok(false));
     state.release.push_ready(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
-    let initial_heap_len = heap.len();
+    let (frame, mut access) = fixture.actor.execution_frame().await;
+    let initial_heap_len = access.len();
     let mut claim = fixture.linked.claim.clone();
     claim.binding_slot = None;
     claim.body = TAIL_CALL_BARRIER_BLOCK_LABEL.to_string();
@@ -616,7 +609,7 @@ async fn tail_call_negative_db_lease() {
             fixture
                 .context(frame.clone())
                 .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -637,13 +630,13 @@ async fn tail_call_negative_db_lease() {
         } if resource == "programCallDepth"
     ));
     assert_eq!(
-        heap.len(),
+        access.len(),
         initial_heap_len,
         "depth rejection must not materialize the structured callee result"
     );
     assert_no_lease_binding(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::Claim);
     assert_ready_once(&state, DbPhase::LeaseLost);
     assert_ready_once(&state, DbPhase::Release);
@@ -687,13 +680,12 @@ async fn db_actor_lease_lost_and_release_error_priority_matrix() {
         }
         state.release.push_ready(Err(db_error("release failure")));
         let fixture = DbActorFixture::new(state.clone());
-        let (frame, mut heap) = fixture.actor.execution_frame().await;
+        let (frame, mut access) = fixture.actor.execution_frame().await;
         let mut claim = fixture.linked.claim.clone();
         if illegal_flow {
             claim.body = ILLEGAL_FLOW_BLOCK_LABEL.to_string();
         }
         let mut env = lease_env(&fixture);
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
             fixture.context(frame.clone()),
             &mut access,
@@ -740,7 +732,7 @@ async fn db_actor_lease_lost_and_release_error_priority_matrix() {
         }
         assert_lease_binding_visible(&env);
         assert_actor_segment_held(&fixture);
-        frame.finish(heap).expect("Actor frame must finish");
+        frame.finish().expect("Actor frame must finish");
         assert_ready_once(&state, DbPhase::Claim);
         if pending_lost {
             assert_pending_then_ready_once(&state, DbPhase::LeaseLost);
@@ -770,11 +762,10 @@ async fn db_actor_lease_body_pending_drop_aborts_real_renew_future() {
     }))));
     let renew_gate = state.renew.push_pending(Ok(true));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut claim = fixture.linked.claim.clone();
     claim.body = BODY_CREATE_BLOCK_LABEL.to_string();
     let mut env = lease_env(&fixture);
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
         &mut access,
@@ -829,7 +820,7 @@ async fn db_actor_lease_body_pending_drop_aborts_real_renew_future() {
     );
     drop(competing);
     drop(frame);
-    drop(heap);
+    drop(access);
 }
 
 #[tokio::test]
@@ -844,9 +835,8 @@ async fn db_actor_lease_release_pending_drop_has_no_late_terminal() {
     state.lease_lost.push_ready(Ok(false));
     let release_gate = state.release.push_pending(Ok(()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
         &mut access,
@@ -886,7 +876,7 @@ async fn db_actor_lease_release_pending_drop_has_no_late_terminal() {
     assert_phase_not_started(&state, DbPhase::Renew);
     drop(competing);
     drop(frame);
-    drop(heap);
+    drop(access);
 }
 
 #[tokio::test]
@@ -914,14 +904,14 @@ async fn db_actor_lease_read_ready_none_and_store_error_matrix() {
         let state = FakeDbState::new();
         state.read.push_ready(terminal);
         let fixture = DbActorFixture::new(state.clone());
-        let (frame, mut heap) = fixture.actor.execution_frame().await;
+        let (frame, mut access) = fixture.actor.execution_frame().await;
         let mut env = lease_env(&fixture);
         let result = fixture
             .linked
             .interpreter
             .eval_program_db_lease_read(
                 fixture.context(frame.clone()),
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &mut env,
                 &fixture.linked.addr,
                 &fixture.linked.file,
@@ -951,7 +941,7 @@ async fn db_actor_lease_read_ready_none_and_store_error_matrix() {
         }
         assert_no_lease_binding(&env);
         assert_actor_segment_held(&fixture);
-        frame.finish(heap).expect("Actor frame must finish");
+        frame.finish().expect("Actor frame must finish");
         assert_ready_once(&state, DbPhase::Read);
         assert_eq!(state.phases(), vec![DbPhase::Read]);
         for phase in [
@@ -973,9 +963,8 @@ async fn db_actor_lease_read_pending_resumes_same_future_and_materializes_after_
         .read
         .push_pending(Ok(Some(json!(["owner", "pending"]))));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_read(
         fixture.context(frame.clone()),
         &mut access,
@@ -1005,12 +994,12 @@ async fn db_actor_lease_read_pending_resumes_same_future_and_materializes_after_
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert!(
-        heap.len() > pending_heap_len,
+        access.len() > pending_heap_len,
         "Read result must materialize only after the gate"
     );
     assert_no_lease_binding(&env);
     assert_actor_segment_held(&fixture);
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::Read);
     assert_eq!(state.phases(), vec![DbPhase::Read]);
 }
@@ -1024,20 +1013,21 @@ async fn db_actor_lease_read_limited_heap_rejects_object_and_array_decode() {
         eprintln!("phase=read variant={variant}");
         let state = FakeDbState::new();
         state.read.push_ready(Ok(Some(value)));
-        let fixture = DbActorFixture::new(state.clone());
-        let (frame, actor_heap) = fixture.actor.execution_frame().await;
-        drop(actor_heap);
-        let mut heap = RequestHeap::new(RequestHeapLimits {
-            max_nodes: 0,
-            ..RequestHeapLimits::default()
-        });
+        let fixture = DbActorFixture::new_with_arena_limits(
+            state.clone(),
+            RequestHeapLimits {
+                max_nodes: 0,
+                ..RequestHeapLimits::default()
+            },
+        );
+        let (frame, mut access) = fixture.actor.execution_frame().await;
         let mut env = lease_env(&fixture);
         let result = fixture
             .linked
             .interpreter
             .eval_program_db_lease_read(
                 fixture.context(frame.clone()),
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &mut env,
                 &fixture.linked.addr,
                 &fixture.linked.file,
@@ -1051,13 +1041,13 @@ async fn db_actor_lease_read_limited_heap_rejects_object_and_array_decode() {
             "restricted RequestHeapLimits must reject {variant}"
         );
         assert_eq!(
-            heap.len(),
+            access.len(),
             0,
             "failed decode must not materialize a heap node"
         );
         assert_no_lease_binding(&env);
         assert_actor_segment_held(&fixture);
-        frame.finish(heap).expect("Actor frame must finish");
+        frame.finish().expect("Actor frame must finish");
         assert_ready_once(&state, DbPhase::Read);
         assert_eq!(state.phases(), vec![DbPhase::Read]);
     }
@@ -1071,9 +1061,8 @@ async fn db_actor_lease_read_pending_drop_does_not_rebuild_or_materialize() {
         .read
         .push_pending(Ok(Some(json!({ "owner": "late" }))));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_read(
         fixture.context(frame.clone()),
         &mut access,
@@ -1122,5 +1111,5 @@ async fn db_actor_lease_read_pending_drop_does_not_rebuild_or_materialize() {
     }
     drop(competing);
     drop(frame);
-    drop(heap);
+    drop(access);
 }

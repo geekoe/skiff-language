@@ -11,8 +11,8 @@ use skiff_runtime_linked_program::{
     LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedExecutable,
     LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr,
     LinkedTypeDescriptor, LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext,
-    ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr,
-    TypeDeclIr, UnitAddr,
+    ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, TypeDeclIr,
+    UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
@@ -334,7 +334,7 @@ fn fixture_from_file(
     file: Arc<LinkedFileUnit>,
     initialize: impl FnOnce(&mut [ActorFieldValue], &mut RequestHeap),
 ) -> Fixture {
-    fixture_from_file_with_admission(file, initialize, true)
+    fixture_from_file_with_limits(file, initialize, true, RequestHeapLimits::default())
 }
 
 fn fixture_from_file_with_admission(
@@ -342,8 +342,18 @@ fn fixture_from_file_with_admission(
     initialize: impl FnOnce(&mut [ActorFieldValue], &mut RequestHeap),
     admitted: bool,
 ) -> Fixture {
+    fixture_from_file_with_limits(file, initialize, admitted, RequestHeapLimits::default())
+}
+
+fn fixture_from_file_with_limits(
+    file: Arc<LinkedFileUnit>,
+    initialize: impl FnOnce(&mut [ActorFieldValue], &mut RequestHeap),
+    admitted: bool,
+    arena_limits: RequestHeapLimits,
+) -> Fixture {
     let (interpreter, program) = interpreter_for(file);
-    let store = ActorInstanceStore::new();
+    let mut store = ActorInstanceStore::new();
+    store.arena_limits = arena_limits;
     let id_bytes = br#""counter-1""#.to_vec();
     let fence = ActorInstanceFence {
         incarnation: ActorIncarnationKey {
@@ -399,6 +409,22 @@ fn fixture_with_admission(
             fields[1].assigned = true;
         },
         admitted,
+    )
+}
+
+fn fixture_with_arena_limits(
+    return_type: LinkedTypeRef,
+    may_suspend: bool,
+    arena_limits: RequestHeapLimits,
+) -> Fixture {
+    fixture_from_file_with_limits(
+        actor_file(return_type, may_suspend),
+        |fields, _| {
+            fields[1].value = RuntimeValue::Number(1.0);
+            fields[1].assigned = true;
+        },
+        true,
+        arena_limits,
     )
 }
 
@@ -832,7 +858,12 @@ async fn session_close_terminates_pending_create_owner_scope_and_allows_retry() 
     assert_eq!(store.len(), 1);
     assert_eq!(tracker.tracked_owner_count_for_test(), 1);
 
-    assert_eq!(tracker.discard_session(SESSION_ID), 1);
+    assert_eq!(
+        tracker.discard_session(SESSION_ID),
+        0,
+        "discard is deferred while the pending create segment is live"
+    );
+    assert_eq!(tracker.tracked_owner_count_for_test(), 0);
     let terminal = tokio::time::timeout(Duration::from_secs(1), activation)
         .await
         .expect("session close must terminate the pending owner activation scope")
@@ -899,9 +930,31 @@ async fn session_close_during_create_fences_delayed_guard_from_new_materializati
     assert_eq!(store.len(), 1);
     assert_eq!(tracker.tracked_owner_count_for_test(), 1);
 
-    assert_eq!(tracker.discard_session(SESSION_ID), 1);
-    assert!(store.is_empty());
+    assert_eq!(
+        tracker.discard_session(SESSION_ID),
+        0,
+        "the live create segment defers exact discard"
+    );
     assert_eq!(tracker.tracked_owner_count_for_test(), 0);
+
+    old_gate.release();
+    let old_error = tokio::time::timeout(Duration::from_secs(1), old_activation)
+        .await
+        .expect("closed-session activation must terminate after create resumes")
+        .unwrap_err();
+    assert!(
+        matches!(
+            &old_error,
+            ActorMethodExecutorError::Execution(RuntimeError::ActorInstance(
+                ActorInstanceStoreError::InstanceReplaced
+            ))
+        ),
+        "unexpected closed-session activation error: {old_error:?}"
+    );
+    assert!(
+        store.is_empty(),
+        "the pending-discard instance must be reclaimed when the old segment ends"
+    );
 
     tracker.open_session(SESSION_ID).unwrap();
     let new_session = tracker.session_lease(SESSION_ID).unwrap();
@@ -921,27 +974,6 @@ async fn session_close_during_create_fences_delayed_guard_from_new_materializati
         .await_admission(&new_handle)
         .await
         .expect("new exact materialization must be admitted");
-    assert_eq!(store.len(), 1);
-    assert_eq!(tracker.tracked_owner_count_for_test(), 1);
-
-    old_gate.release();
-    let old_error = tokio::time::timeout(Duration::from_secs(1), old_activation)
-        .await
-        .expect("closed-session activation must terminate after create resumes")
-        .unwrap_err();
-    assert!(
-        matches!(
-            &old_error,
-            ActorMethodExecutorError::Execution(RuntimeError::ActorInstance(
-                ActorInstanceStoreError::InstanceReplaced
-            ))
-        ),
-        "unexpected closed-session activation error: {old_error:?}"
-    );
-    store
-        .await_admission(&new_handle)
-        .await
-        .expect("delayed old guard cleanup must not remove the new Arc");
     assert_eq!(store.len(), 1);
     assert_eq!(tracker.tracked_owner_count_for_test(), 1);
 
@@ -968,50 +1000,40 @@ async fn execute(
         .await
 }
 
-async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, RequestHeap) {
+async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, HeapAccess<'static>) {
     execution_frame_with_activation(fixture, false).await
 }
 
 async fn execution_frame_with_activation(
     fixture: &Fixture,
     activation: bool,
-) -> (ActorExecutionFrame, RequestHeap) {
+) -> (ActorExecutionFrame, HeapAccess<'static>) {
     let authority = ActorExecutorAuthority::new();
-    let mut lease = if activation {
+    let mut segment = if activation {
         fixture
             .store
-            .acquire_execution_for_activation(&authority, &fixture.handle)
+            .acquire_segment_for_activation(&authority, &fixture.handle)
             .await
             .unwrap()
     } else {
         fixture
             .store
-            .acquire_execution(&authority, &fixture.handle)
+            .acquire_segment(&authority, &fixture.handle)
             .await
             .unwrap()
     };
-    let heap = lease.take_heap();
-    let program = fixture.interpreter.program_projection().unwrap();
-    let addr = ExecutableAddr {
-        unit: UnitAddr::Service,
-        file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
-        executable: 0,
+    let access = HeapAccess::Shared {
+        arena: segment.arena().clone(),
+        guard: Some(segment.take_guard()),
     };
-    let declaration = resolve_actor_declaration(
-        program.type_view(),
-        &fixture.handle.fence().declaration_owner,
-    )
-    .unwrap();
-    let field_plans = actor_field_plans(declaration, program.type_view(), &addr).unwrap();
     (
         ActorExecutionFrame::new(
             fixture.store.clone(),
             fixture.handle.clone(),
-            lease,
-            field_plans,
+            segment,
             activation,
         ),
-        heap,
+        access,
     )
 }
 
@@ -1028,11 +1050,11 @@ fn stored_heap_len(fixture: &Fixture) -> usize {
 
 async fn force_pending_cut(
     frame: &ActorExecutionFrame,
-    heap: &mut RequestHeap,
+    access: &mut HeapAccess<'static>,
     execution: &crate::capabilities::ExecutionControl<'_>,
 ) {
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
-    let waiting = frame.await_if_pending(heap, execution, receiver);
+    let waiting = frame.await_if_pending(access, execution, receiver);
     let wake = async {
         tokio::task::yield_now().await;
         sender.send(()).expect("pending cut receiver stays live");
@@ -1062,7 +1084,7 @@ async fn scheduler_queue_observes_request_cancellation() {
     let authority = ActorExecutorAuthority::new();
     let scheduler_owner = fixture
         .store
-        .acquire_execution(&authority, &fixture.handle)
+        .acquire_segment(&authority, &fixture.handle)
         .await
         .unwrap();
     let execution = test_runtime::execution_control();
@@ -1146,7 +1168,8 @@ async fn method_and_argument_errors_fail_closed_without_changing_live_field() {
 }
 
 #[tokio::test]
-async fn wrong_return_type_rolls_back_and_may_suspend_method_executes() {
+async fn wrong_return_type_leaves_partial_field_writes_and_may_suspend_method_executes() {
+    // Design §3.4: a failed segment keeps already-executed field mutations.
     let wrong_return = fixture(
         LinkedTypeRef::Native {
             name: "string".to_string(),
@@ -1158,6 +1181,25 @@ async fn wrong_return_type_rolls_back_and_may_suspend_method_executes() {
         execute(&wrong_return, &wrong_return.method, b"[9]").await,
         Err(ActorMethodExecutorError::ReturnEncode(_))
     ));
+    let fields = wrong_return
+        .store
+        .with_fields_for_executor(
+            &ActorExecutorAuthority::new(),
+            &wrong_return.handle,
+            |fields, _| fields.to_vec(),
+        )
+        .unwrap();
+    assert_eq!(fields[1].value, RuntimeValue::Number(9.0));
+    assert!(fields[1].assigned);
+    assert_eq!(
+        wrong_return
+            .store
+            .segment_counters_for_test(&wrong_return.handle)
+            .unwrap(),
+        (0, 0),
+        "the failed segment must still release its continuation counters"
+    );
+
     let suspended = fixture(integer(), true);
     assert_eq!(
         execute(&suspended, &suspended.method, b"[9]")
@@ -1174,146 +1216,177 @@ async fn wrong_return_type_rolls_back_and_may_suspend_method_executes() {
 }
 
 #[tokio::test]
-async fn suspended_segment_commits_releases_and_resumes_with_latest_field() {
+async fn real_suspension_is_zero_copy_and_keeps_continuation_handles() {
     let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
-    let local_handle = heap
+    let arena_before = fixture.store.arena_ptr_for_test(&fixture.handle).unwrap();
+    let epoch_before = fixture.store.arena_epoch_for_test(&fixture.handle).unwrap();
+    let (frame, mut access) = execution_frame(&fixture).await;
+    let nodes_before = access.len();
+    let continuation_local = access
         .alloc_array(vec![RuntimeValue::String("continuation-local".to_string())])
         .unwrap();
     for index in 0..512 {
-        heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
-            "dead-local".to_string(),
-            RuntimeValue::Number(index as f64),
-        )])))
-        .unwrap();
+        access
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                "dead-local".to_string(),
+                RuntimeValue::Number(index as f64),
+            )])))
+            .unwrap();
     }
     let program = fixture.interpreter.program_projection().unwrap();
+    let addr = ExecutableAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+        executable: 0,
+    };
     frame
         .write_field(
             "count",
             &integer(),
             program.type_view(),
-            &ExecutableAddr {
-                unit: UnitAddr::Service,
-                file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
-                executable: 0,
-            },
+            &addr,
             &RuntimeValue::Number(5.0),
-            &mut heap,
+            access.heap_mut(),
         )
         .unwrap();
 
-    frame.suspend(&heap).unwrap();
-    assert_eq!(
-        stored_heap_len(&fixture),
-        0,
-        "suspension must persist only primitive Actor fields, not invocation locals"
-    );
-    assert!(frame.suspension.lease.lock().unwrap().is_none());
-    assert!(frame.read_field("count").is_err());
+    let execution = context(&fixture.interpreter).execution();
+    force_pending_cut(&frame, &mut access, &execution).await;
 
     assert_eq!(
-        execute(&fixture, &fixture.method, b"[9]").await.unwrap(),
-        b"9"
+        fixture.store.arena_ptr_for_test(&fixture.handle).unwrap(),
+        arena_before,
+        "a real Pending cut must not clone or replace the shared arena"
     );
-    let execution = context(&fixture.interpreter).execution();
-    frame.resume(&mut heap, &execution).await.unwrap();
+    assert_eq!(
+        fixture.store.arena_epoch_for_test(&fixture.handle).unwrap(),
+        epoch_before
+    );
+    assert_eq!(
+        access.len(),
+        nodes_before + 513,
+        "continuation locals and the field graph stay in the same arena"
+    );
+    assert_eq!(
+        access.get(continuation_local).unwrap(),
+        &HeapNode::Array(vec![RuntimeValue::String("continuation-local".to_string())])
+    );
     assert_eq!(
         frame.read_field("count").unwrap(),
-        RuntimeValue::Number(9.0)
+        RuntimeValue::Number(5.0)
     );
-    assert!(matches!(
-        heap.get(local_handle).unwrap(),
-        skiff_runtime_model::runtime_value::HeapNode::Array(items)
-            if items == &[RuntimeValue::String("continuation-local".to_string())]
-    ));
-    frame.finish(heap).unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .segment_counters_for_test(&fixture.handle)
+            .unwrap(),
+        (1, 0)
+    );
+    frame.finish().unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .segment_counters_for_test(&fixture.handle)
+            .unwrap(),
+        (0, 0)
+    );
 }
 
 #[tokio::test]
-async fn repeated_actor_invocations_do_not_accumulate_dead_local_heap_nodes() {
-    let fixture = fixture(integer(), true);
-
-    for round in 0..8 {
-        let (frame, mut heap) = execution_frame(&fixture).await;
-        assert_eq!(
-            heap.len(),
-            0,
-            "invocation {round} inherited dead nodes from an earlier method"
-        );
-        for index in 0..256 {
-            heap.alloc_array(vec![
-                RuntimeValue::Number(round as f64),
-                RuntimeValue::Number(index as f64),
-            ])
-            .unwrap();
-        }
-        frame.finish(heap).unwrap();
-        assert_eq!(
-            stored_heap_len(&fixture),
-            0,
-            "invocation {round} committed non-field local nodes"
-        );
-    }
-}
-
-#[tokio::test]
-async fn primitive_actor_does_not_retain_temporary_heaps_across_pending_calls() {
-    const ROUNDS: usize = 5;
-    const PENDING_CUTS_PER_ROUND: usize = 3;
-    const TEMP_STRUCTURES_PER_CUT: usize = 128;
-
-    let fixture = fixture(integer(), true);
+async fn repeated_invocations_reuse_the_arena_and_quiescence_compaction_drops_locals() {
+    let fixture = fixture_with_arena_limits(
+        integer(),
+        true,
+        RequestHeapLimits {
+            max_nodes: 256,
+            ..RequestHeapLimits::default()
+        },
+    );
+    let arena_before = fixture.store.arena_ptr_for_test(&fixture.handle).unwrap();
+    let epoch_before = fixture.store.arena_epoch_for_test(&fixture.handle).unwrap();
     let baseline = stored_heap_len(&fixture);
-    let mut persistent_counts = Vec::with_capacity(ROUNDS);
 
-    for round in 0..ROUNDS {
-        let (frame, mut heap) = execution_frame(&fixture).await;
-        let execution = context(&fixture.interpreter).execution();
-        let continuation_local = heap
-            .alloc_array(vec![RuntimeValue::String(format!("continuation-{round}"))])
-            .expect("continuation local should allocate");
-        for cut in 0..PENDING_CUTS_PER_ROUND {
-            for item in 0..TEMP_STRUCTURES_PER_CUT {
-                let leaf = heap
-                    .alloc_array(vec![
-                        RuntimeValue::Number(round as f64),
-                        RuntimeValue::Number(cut as f64),
-                        RuntimeValue::Number(item as f64),
-                    ])
-                    .expect("temporary leaf should allocate");
-                let wrapper = heap
-                    .alloc_object(RuntimeObject::unshaped(BTreeMap::from([
-                        ("leaf".to_string(), RuntimeValue::Heap(leaf)),
-                        (
-                            "label".to_string(),
-                            RuntimeValue::String(format!("{round}:{cut}:{item}")),
-                        ),
-                    ])))
-                    .expect("temporary wrapper should allocate");
-                heap.alloc_array(vec![RuntimeValue::Heap(wrapper)])
-                    .expect("temporary root should allocate");
-            }
-            force_pending_cut(&frame, &mut heap, &execution).await;
-            assert_eq!(
-                heap.get(continuation_local).unwrap(),
-                &HeapNode::Array(vec![RuntimeValue::String(format!("continuation-{round}"))]),
-                "real Pending cut must keep the continuation heap and handles intact"
-            );
+    for round in 0..4 {
+        let (frame, mut access) = execution_frame(&fixture).await;
+        for index in 0..48 {
+            access
+                .alloc_array(vec![
+                    RuntimeValue::Number(round as f64),
+                    RuntimeValue::Number(index as f64),
+                ])
+                .unwrap();
         }
-        frame.finish(heap).expect("Actor call should finish");
-        persistent_counts.push(stored_heap_len(&fixture));
+        frame.finish().unwrap();
+        drop(access);
+        assert_eq!(
+            fixture.store.arena_ptr_for_test(&fixture.handle).unwrap(),
+            arena_before,
+            "invocation {round} must reuse the shared arena"
+        );
     }
-
+    let grown = stored_heap_len(&fixture);
     assert!(
-        persistent_counts.iter().all(|count| *count == baseline),
-        "primitive-only Actor retained request-local heaps: baseline={baseline}, persistent_counts={persistent_counts:?}"
+        grown > baseline,
+        "dead invocation locals accumulate until compaction"
     );
+
+    let compacted = fixture
+        .store
+        .compact_if_quiescent(&fixture.handle)
+        .await
+        .unwrap();
+    assert!(compacted);
+    assert_eq!(
+        stored_heap_len(&fixture),
+        baseline,
+        "quiescence compaction must drop dead invocation locals"
+    );
+    assert_eq!(
+        fixture.store.arena_epoch_for_test(&fixture.handle).unwrap(),
+        epoch_before + 1,
+        "compaction must bump the arena epoch"
+    );
+    assert_ne!(
+        fixture.store.arena_ptr_for_test(&fixture.handle).unwrap(),
+        arena_before
+    );
+
+    let (frame, mut access) = execution_frame(&fixture).await;
+    assert_eq!(
+        frame.read_field("count").unwrap(),
+        RuntimeValue::Number(1.0),
+        "field roots must survive compaction"
+    );
+    let stale = access
+        .alloc_array(vec![RuntimeValue::from("new-epoch-local")])
+        .unwrap();
+    for index in 0..130 {
+        access
+            .alloc_array(vec![RuntimeValue::Number(index as f64)])
+            .unwrap();
+    }
+    frame.finish().unwrap();
+    drop(access);
+    drop(frame);
+
+    assert!(fixture
+        .store
+        .compact_if_quiescent(&fixture.handle)
+        .await
+        .unwrap());
+    let (_frame, access) = execution_frame(&fixture).await;
+    let error = access.get(stale).unwrap_err();
+    assert!(
+        error.to_string().contains("epoch does not match heap slot"),
+        "stale handles from a compacted arena must fail closed: {error}"
+    );
+    frame_finish_and_drop(_frame, access).await;
 }
 
 #[tokio::test]
-async fn heap_backed_actor_field_survives_compacted_heap_across_calls() {
+async fn heap_backed_actor_field_lives_in_one_arena_across_calls() {
     let fixture = heap_field_fixture();
+    let arena_before = fixture.store.arena_ptr_for_test(&fixture.handle).unwrap();
     let item_array = array(integer());
     let program = fixture.interpreter.program_projection().unwrap();
     let addr = ExecutableAddr {
@@ -1322,8 +1395,8 @@ async fn heap_backed_actor_field_survives_compacted_heap_across_calls() {
         executable: 0,
     };
 
-    let (first_frame, mut first_heap) = execution_frame(&fixture).await;
-    let replacement = first_heap
+    let (first_frame, mut first_access) = execution_frame(&fixture).await;
+    let replacement = first_access
         .alloc_array(vec![
             RuntimeValue::Number(2.0),
             RuntimeValue::Number(3.0),
@@ -1337,14 +1410,20 @@ async fn heap_backed_actor_field_survives_compacted_heap_across_calls() {
             program.type_view(),
             &addr,
             &RuntimeValue::Heap(replacement),
-            &mut first_heap,
+            first_access.heap_mut(),
         )
         .expect("heap-backed Actor field should be writable");
     first_frame
-        .finish(first_heap)
+        .finish()
         .expect("first Actor call should commit");
+    drop(first_access);
 
-    let (second_frame, second_heap) = execution_frame(&fixture).await;
+    let (second_frame, second_access) = execution_frame(&fixture).await;
+    assert_eq!(
+        fixture.store.arena_ptr_for_test(&fixture.handle).unwrap(),
+        arena_before,
+        "calls must share one arena (zero-copy commit)"
+    );
     let RuntimeValue::Heap(items) = second_frame
         .read_field("items")
         .expect("heap-backed Actor field should survive into the next call")
@@ -1352,7 +1431,11 @@ async fn heap_backed_actor_field_survives_compacted_heap_across_calls() {
         panic!("heap-backed Actor field must remain a heap value")
     };
     assert_eq!(
-        second_heap.get(items).unwrap(),
+        items, replacement,
+        "field roots must keep handle identity across calls"
+    );
+    assert_eq!(
+        second_access.get(items).unwrap(),
         &HeapNode::Array(vec![
             RuntimeValue::Number(2.0),
             RuntimeValue::Number(3.0),
@@ -1360,27 +1443,35 @@ async fn heap_backed_actor_field_survives_compacted_heap_across_calls() {
         ])
     );
     second_frame
-        .finish(second_heap)
+        .finish()
         .expect("second Actor call should commit");
+    drop(second_access);
 }
 
 #[tokio::test]
-async fn nominal_nested_collection_actor_field_survives_compacted_invocations() {
+async fn nominal_aliased_field_graph_is_live_across_pending_cuts_and_compaction() {
     const ITEM_COUNT: usize = 32;
-    const PERSISTENT_GRAPH_NODES: usize = 2 + ITEM_COUNT * 2;
     const PENDING_CUTS: usize = 5;
 
-    let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
+    let fixture = fixture_with_arena_limits(
+        integer(),
+        true,
+        RequestHeapLimits {
+            max_nodes: 1024,
+            ..RequestHeapLimits::default()
+        },
+    );
+    let arena_before = fixture.store.arena_ptr_for_test(&fixture.handle).unwrap();
+    let (frame, mut access) = execution_frame(&fixture).await;
     let mut item_values = Vec::with_capacity(ITEM_COUNT);
     for index in 0..ITEM_COUNT {
-        let tags = heap
+        let tags = access
             .alloc_array(vec![
                 RuntimeValue::from("runtime"),
                 RuntimeValue::from(format!("actor-{index}")),
             ])
             .unwrap();
-        let item = heap
+        let item = access
             .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([
                 (
                     "name".to_string(),
@@ -1395,358 +1486,135 @@ async fn nominal_nested_collection_actor_field_survives_compacted_invocations() 
             .unwrap();
         item_values.push(RuntimeValue::Heap(item));
     }
-    let items = heap.alloc_array(item_values).unwrap();
-    let payload = heap
+    let items = access.alloc_array(item_values).unwrap();
+    let payload = access
         .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
             "items".to_string(),
             RuntimeValue::Heap(items),
         )])))
         .unwrap();
     let program = fixture.interpreter.program_projection().unwrap();
+    let addr = ExecutableAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+        executable: 0,
+    };
     frame
         .write_field(
             "payload",
             &payload_type(),
             program.type_view(),
-            &ExecutableAddr {
-                unit: UnitAddr::Service,
-                file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
-                executable: 0,
-            },
+            &addr,
             &RuntimeValue::Heap(payload),
-            &mut heap,
+            access.heap_mut(),
         )
         .unwrap();
     let payload_value = frame.read_field("payload").unwrap();
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let alias = fields
-        .iter_mut()
-        .find(|field| field.name == "payload_alias")
-        .unwrap();
-    alias.value = payload_value;
-    alias.assigned = true;
-    drop(fields);
-    for index in 0..128 {
-        heap.alloc_array(vec![RuntimeValue::Number(index as f64)])
+    assert!(
+        fixture
+            .store
+            .set_field_root(&fixture.handle, "payload_alias", payload_value.clone())
+            .unwrap(),
+        "payload_alias root must exist"
+    );
+    for index in 0..600 {
+        access
+            .alloc_array(vec![RuntimeValue::Number(index as f64)])
             .unwrap();
     }
-    let continuation_local = heap
+    let stale_local = access
         .alloc_array(vec![RuntimeValue::from("continuation-local")])
         .unwrap();
     let execution = context(&fixture.interpreter).execution();
-    let continuation_heap_before_pending = heap.len();
-    for cut in 1..=PENDING_CUTS {
-        force_pending_cut(&frame, &mut heap, &execution).await;
+    let nodes_before_pending = access.len();
+    for _ in 0..PENDING_CUTS {
+        force_pending_cut(&frame, &mut access, &execution).await;
         assert_eq!(
-            heap.len(),
-            continuation_heap_before_pending + PERSISTENT_GRAPH_NODES * cut,
-            "each real resume currently imports one fresh copy of the reachable Actor field graph"
+            access.len(),
+            nodes_before_pending,
+            "real Pending cuts must not clone or import the Actor field graph"
         );
         assert_eq!(
-            stored_heap_len(&fixture),
-            PERSISTENT_GRAPH_NODES,
-            "the persistent Actor snapshot itself must remain compact"
+            fixture.store.arena_ptr_for_test(&fixture.handle).unwrap(),
+            arena_before
         );
     }
-    let resumed_payload = frame.read_field("payload").unwrap();
     assert_eq!(
         frame.read_field("payload_alias").unwrap(),
-        resumed_payload,
-        "suspend/resume must import all field roots with one shared clone context"
+        frame.read_field("payload").unwrap(),
+        "aliases stay live across suspension"
     );
     assert_eq!(
-        heap.get(continuation_local).unwrap(),
+        access.get(stale_local).unwrap(),
         &HeapNode::Array(vec![RuntimeValue::from("continuation-local")])
     );
-    frame.finish(heap).unwrap();
-    assert_eq!(
-        stored_heap_len(&fixture),
-        PERSISTENT_GRAPH_NODES,
-        "only the nominal payload graph is persistent"
-    );
+    frame.finish().unwrap();
+    drop(access);
 
-    for _ in 0..3 {
-        let (frame, heap) = execution_frame(&fixture).await;
-        let RuntimeValue::Heap(payload) = frame.read_field("payload").unwrap() else {
-            panic!("payload field must remain heap-backed");
-        };
-        assert_eq!(
-            frame.read_field("payload_alias").unwrap(),
-            RuntimeValue::Heap(payload),
-            "multi-root compaction must preserve aliases between Actor fields"
-        );
-        let HeapNode::Object(payload) = heap.get(payload).unwrap() else {
-            panic!("payload must remain a nominal record object");
-        };
-        let items = payload.fields()["items"].as_heap_handle().unwrap();
-        let HeapNode::Array(items) = heap.get(items).unwrap() else {
-            panic!("payload.items must remain an array");
-        };
-        let item = items[0].as_heap_handle().unwrap();
-        let HeapNode::Object(item) = heap.get(item).unwrap() else {
-            panic!("payload item must remain a record object");
-        };
-        assert_eq!(item.fields()["name"], RuntimeValue::from("first"));
-        let tags = item.fields()["tags"].as_heap_handle().unwrap();
-        assert_eq!(
-            heap.get(tags).unwrap(),
-            &HeapNode::Array(vec![
-                RuntimeValue::from("runtime"),
-                RuntimeValue::from("actor-0")
-            ])
-        );
-        frame.finish(heap).unwrap();
-        assert_eq!(stored_heap_len(&fixture), PERSISTENT_GRAPH_NODES);
-    }
-}
-
-#[tokio::test]
-async fn failed_heap_field_compaction_does_not_publish_partial_actor_state() {
-    let fixture = fixture(integer(), true);
-    let (frame, heap) = execution_frame(&fixture).await;
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let count = fields
-        .iter_mut()
-        .find(|field| field.name == "count")
-        .unwrap();
-    count.value = RuntimeValue::Number(99.0);
-    let payload = fields
-        .iter_mut()
-        .find(|field| field.name == "payload")
-        .unwrap();
-    payload.value = RuntimeValue::Heap(skiff_runtime_model::runtime_value::HeapHandle::new(
-        u32::MAX,
-        0,
-    ));
-    payload.assigned = true;
-    drop(fields);
-
-    let error = frame.finish(heap).unwrap_err();
-    assert!(error.to_string().contains("heap handle"));
-    assert!(!frame.has_execution_lease());
-    assert!(frame.read_field("count").is_err());
-    fixture
+    let compacted = fixture
         .store
-        .with_fields_for_executor(
-            &ActorExecutorAuthority::new(),
-            &fixture.handle,
-            |fields, stored_heap| {
-                assert_eq!(fields[1].value, RuntimeValue::Number(1.0));
-                assert_eq!(stored_heap.len(), 0);
-            },
-        )
-        .unwrap();
-    let authority = ActorExecutorAuthority::new();
-    let competing = fixture.store.acquire_execution(&authority, &fixture.handle);
-    tokio::time::timeout(std::time::Duration::from_secs(1), competing)
+        .compact_if_quiescent(&fixture.handle)
         .await
-        .expect("failed finish must release the Actor scheduler")
         .unwrap();
-}
-
-#[tokio::test]
-async fn deeply_nested_actor_field_fails_at_heap_depth_limit_without_recursion() {
-    let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
-    let mut value = RuntimeValue::from("leaf");
-    for _ in 0..=heap.limits().max_clone_depth {
-        value = RuntimeValue::Heap(heap.alloc_array(vec![value]).unwrap());
-    }
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let payload = fields
-        .iter_mut()
-        .find(|field| field.name == "payload")
-        .unwrap();
-    payload.value = value;
-    payload.assigned = true;
-    drop(fields);
-
-    let error = frame.finish(heap).unwrap_err();
-    assert!(matches!(
-        error,
-        RuntimeError::ResourceLimitExceeded { reason, .. }
-            if reason == "max persistent Actor graph depth"
-    ));
-    assert_eq!(stored_heap_len(&fixture), 0);
-}
-
-#[tokio::test]
-async fn partial_create_unassigned_heap_value_is_not_persisted_and_can_resume_assignment() {
-    let fixture = activation_fixture();
-    let (frame, mut heap) = execution_frame_with_activation(&fixture, true).await;
-    let dead = heap
-        .alloc_array(vec![RuntimeValue::from("unassigned-local")])
-        .unwrap();
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let payload = fields
-        .iter_mut()
-        .find(|field| field.name == "payload")
-        .unwrap();
-    assert!(!payload.assigned);
-    payload.value = RuntimeValue::Heap(dead);
-    drop(fields);
-
-    frame.suspend(&heap).unwrap();
-    fixture
-        .store
-        .with_fields_for_executor(
-            &ActorExecutorAuthority::new(),
-            &fixture.handle,
-            |fields, stored_heap| {
-                let payload = fields.iter().find(|field| field.name == "payload").unwrap();
-                assert!(!payload.assigned);
-                assert_eq!(payload.value, RuntimeValue::Null);
-                assert_eq!(stored_heap.len(), 0);
-            },
-        )
-        .unwrap();
-
-    let execution = context(&fixture.interpreter).execution();
-    frame.resume(&mut heap, &execution).await.unwrap();
-    assert!(frame.read_field("payload").is_err());
-    assert_eq!(
-        heap.get(dead).unwrap(),
-        &HeapNode::Array(vec![RuntimeValue::from("unassigned-local")])
+    assert!(compacted);
+    let compacted_len = stored_heap_len(&fixture);
+    assert!(
+        compacted_len < nodes_before_pending,
+        "compaction must drop dead invocation locals"
     );
-    let items = heap.alloc_array(Vec::new()).unwrap();
-    let payload = heap
-        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
-            "items".to_string(),
-            RuntimeValue::Heap(items),
-        )])))
-        .unwrap();
-    let program = fixture.interpreter.program_projection().unwrap();
-    frame
-        .write_field(
-            "payload",
-            &payload_type(),
-            program.type_view(),
-            &ExecutableAddr {
-                unit: UnitAddr::Service,
-                file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
-                executable: 0,
-            },
-            &RuntimeValue::Heap(payload),
-            &mut heap,
-        )
-        .unwrap();
-    frame.finish(heap).unwrap();
-    assert_eq!(stored_heap_len(&fixture), 2);
-}
 
-#[tokio::test]
-async fn resume_limit_failure_rolls_back_continuation_heap_and_releases_scheduler() {
-    let fixture = fixture(integer(), true);
-    let (writer, mut writer_heap) = execution_frame(&fixture).await;
-    let first_items = writer_heap.alloc_array(Vec::new()).unwrap();
-    let first = writer_heap
-        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
-            "items".to_string(),
-            RuntimeValue::Heap(first_items),
-        )])))
-        .unwrap();
-    let second_items = writer_heap.alloc_array(Vec::new()).unwrap();
-    let second = writer_heap
-        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
-            "items".to_string(),
-            RuntimeValue::Heap(second_items),
-        )])))
-        .unwrap();
-    let fields = writer
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    for (name, value) in [
-        ("payload", RuntimeValue::Heap(first)),
-        ("payload_alias", RuntimeValue::Heap(second)),
-    ] {
-        let field = fields.iter_mut().find(|field| field.name == name).unwrap();
-        field.value = value;
-        field.assigned = true;
-    }
-    drop(fields);
-    writer.finish(writer_heap).unwrap();
-    assert_eq!(stored_heap_len(&fixture), 4);
-
-    let (frame, source_heap) = execution_frame(&fixture).await;
-    frame.suspend(&source_heap).unwrap();
-    let mut continuation_heap = RequestHeap::new(RequestHeapLimits {
-        max_nodes: 3,
-        ..RequestHeapLimits::default()
-    });
-    let sentinel = continuation_heap
-        .alloc_array(vec![RuntimeValue::from("existing-local")])
-        .unwrap();
-    let before_len = continuation_heap.len();
-    let before_stats = continuation_heap.stats();
-    let execution = context(&fixture.interpreter).execution();
-
-    let error = frame
-        .resume(&mut continuation_heap, &execution)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("max heap nodes"));
-    assert_eq!(continuation_heap.len(), before_len);
-    assert_eq!(continuation_heap.stats(), before_stats);
+    let (frame, access) = execution_frame(&fixture).await;
+    let payload = frame.read_field("payload").unwrap();
     assert_eq!(
-        continuation_heap.get(sentinel).unwrap(),
-        &HeapNode::Array(vec![RuntimeValue::from("existing-local")])
+        frame.read_field("payload_alias").unwrap(),
+        payload,
+        "multi-root compaction must preserve aliases between Actor fields"
     );
-    assert!(frame.read_field("payload").is_err());
-    assert!(!frame.has_execution_lease());
-
-    let authority = ActorExecutorAuthority::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        fixture.store.acquire_execution(&authority, &fixture.handle),
-    )
-    .await
-    .expect("failed resume must release its temporary scheduler lease")
-    .unwrap();
+    let RuntimeValue::Heap(payload) = payload else {
+        panic!("payload field must remain heap-backed");
+    };
+    let HeapNode::Object(payload_node) = access.get(payload).unwrap() else {
+        panic!("payload must remain a nominal record object");
+    };
+    let items = payload_node.fields()["items"].as_heap_handle().unwrap();
+    let HeapNode::Array(items_node) = access.get(items).unwrap() else {
+        panic!("payload.items must remain an array");
+    };
+    let item = items_node[0].as_heap_handle().unwrap();
+    let HeapNode::Object(item_node) = access.get(item).unwrap() else {
+        panic!("payload item must remain a record object");
+    };
+    assert_eq!(item_node.fields()["name"], RuntimeValue::from("first"));
+    let tags = item_node.fields()["tags"].as_heap_handle().unwrap();
+    assert_eq!(
+        access.get(tags).unwrap(),
+        &HeapNode::Array(vec![
+            RuntimeValue::from("runtime"),
+            RuntimeValue::from("actor-0")
+        ])
+    );
+    let error = access.get(stale_local).unwrap_err();
+    assert!(
+        error.to_string().contains("epoch does not match heap slot"),
+        "stale handles must fail closed after compaction: {error}"
+    );
+    frame.finish().unwrap();
+    drop(access);
 }
 
 #[tokio::test]
-async fn request_scoped_callback_capability_cannot_enter_actor_snapshot() {
-    let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
-    let capability = heap
+async fn compaction_root_scan_rejects_request_scoped_callback_and_exception() {
+    let fixture = fixture_with_arena_limits(
+        integer(),
+        true,
+        RequestHeapLimits {
+            max_nodes: 16,
+            ..RequestHeapLimits::default()
+        },
+    );
+
+    let (frame, mut access) = execution_frame(&fixture).await;
+    let capability = access
         .alloc_interface(InterfaceValue::new(
             "contract:reader".to_string(),
             InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
@@ -1758,39 +1626,48 @@ async fn request_scoped_callback_capability_cannot_enter_actor_snapshot() {
             )),
         ))
         .unwrap();
-    let nested = heap
+    let nested = access
         .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
             "callback".to_string(),
             RuntimeValue::Heap(capability),
         )])))
         .unwrap();
-    let root = heap.alloc_array(vec![RuntimeValue::Heap(nested)]).unwrap();
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let payload = fields
-        .iter_mut()
-        .find(|field| field.name == "payload")
+    let root = access
+        .alloc_array(vec![RuntimeValue::Heap(nested)])
         .unwrap();
-    payload.value = RuntimeValue::Heap(root);
-    payload.assigned = true;
-    drop(fields);
+    for index in 0..8 {
+        access
+            .alloc_array(vec![RuntimeValue::Number(index as f64)])
+            .unwrap();
+    }
+    assert!(fixture
+        .store
+        .set_field_root(&fixture.handle, "payload", RuntimeValue::Heap(root))
+        .unwrap());
+    frame.finish().unwrap();
+    drop(access);
 
-    let error = frame.finish(heap).unwrap_err();
-    assert!(error.to_string().contains("callback capability"));
-    assert_eq!(stored_heap_len(&fixture), 0);
-}
+    let error = fixture
+        .store
+        .compact_if_quiescent(&fixture.handle)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("callback capability"),
+        "unexpected compaction error: {error}"
+    );
+    assert_eq!(fixture.store.len(), 1);
 
-#[tokio::test]
-async fn request_local_exception_cannot_enter_actor_snapshot() {
-    let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
+    // Request-local exceptions are rejected the same way at root collection.
+    let fixture = fixture_with_arena_limits(
+        integer(),
+        true,
+        RequestHeapLimits {
+            max_nodes: 16,
+            ..RequestHeapLimits::default()
+        },
+    );
+    let (frame, mut access) = execution_frame(&fixture).await;
     let site = InstructionSourceSite::Synthetic {
         reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
     };
@@ -1811,97 +1688,214 @@ async fn request_local_exception_cannot_enter_actor_snapshot() {
         site.clone(),
         vec![ExceptionStackFrame::Local { site }],
         ErrorCorrelation {
-            trace_id: "trace-actor-snapshot".to_string(),
-            error_id: "error-actor-snapshot".to_string(),
+            trace_id: "trace-actor-compaction".to_string(),
+            error_id: "error-actor-compaction".to_string(),
         },
     )
     .unwrap();
-    let exception = heap.alloc_exception(exception).unwrap();
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let payload = fields
-        .iter_mut()
-        .find(|field| field.name == "payload")
-        .unwrap();
-    payload.value = RuntimeValue::Heap(exception);
-    payload.assigned = true;
-    drop(fields);
+    let exception = access.alloc_exception(exception).unwrap();
+    for index in 0..8 {
+        access
+            .alloc_array(vec![RuntimeValue::Number(index as f64)])
+            .unwrap();
+    }
+    assert!(fixture
+        .store
+        .set_field_root(&fixture.handle, "payload", RuntimeValue::Heap(exception))
+        .unwrap());
+    frame.finish().unwrap();
+    drop(access);
 
-    let error = frame.finish(heap).unwrap_err();
-    assert!(error.to_string().contains("request-local exception"));
-    assert_eq!(stored_heap_len(&fixture), 0);
+    let error = fixture
+        .store
+        .compact_if_quiescent(&fixture.handle)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("request-local exception"),
+        "unexpected compaction error: {error}"
+    );
 }
 
 #[tokio::test]
-async fn request_scoped_stream_type_cannot_enter_actor_snapshot() {
+async fn request_scoped_stream_type_is_rejected_on_the_write_path() {
     let fixture = stream_field_fixture();
-    let (frame, heap) = execution_frame(&fixture).await;
-    let fields = frame
-        .suspension
-        .lease
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .fields();
-    let mut fields = fields.lock().unwrap();
-    let stream = fields
-        .iter_mut()
-        .find(|field| field.name == "stream")
-        .unwrap();
-    stream.value = RuntimeValue::from("request-scoped-stream");
-    stream.assigned = true;
-    drop(fields);
-
-    let error = frame.finish(heap).unwrap_err();
+    let (frame, mut access) = execution_frame(&fixture).await;
+    let program = fixture.interpreter.program_projection().unwrap();
+    let addr = ExecutableAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+        executable: 0,
+    };
+    let stream_type = array(LinkedTypeRef::Nullable {
+        inner: Box::new(LinkedTypeRef::Native {
+            name: "Stream".to_string(),
+            args: vec![string()],
+        }),
+    });
+    let error = frame
+        .write_field(
+            "stream",
+            &stream_type,
+            program.type_view(),
+            &addr,
+            &RuntimeValue::String("request-scoped-stream".to_string()),
+            access.heap_mut(),
+        )
+        .unwrap_err();
     assert!(error.to_string().contains("request-scoped Stream"));
-    assert_eq!(stored_heap_len(&fixture), 0);
+    assert!(
+        frame.read_field("stream").is_err(),
+        "rejected write must not assign the field root"
+    );
+    frame.finish().unwrap();
+}
+
+#[tokio::test]
+async fn arena_limits_error_path_reports_resource_limit_and_releases_segment() {
+    let fixture = fixture_with_arena_limits(
+        integer(),
+        true,
+        RequestHeapLimits {
+            max_nodes: 2,
+            ..RequestHeapLimits::default()
+        },
+    );
+    let (frame, mut access) = execution_frame(&fixture).await;
+    access.alloc_array(Vec::new()).unwrap();
+    access.alloc_array(Vec::new()).unwrap();
+    let error = access
+        .alloc_array(Vec::new())
+        .expect_err("the third allocation must exceed the per-instance arena limit");
+    assert!(matches!(
+        error,
+        skiff_runtime_model::error::RuntimeModelError::ResourceLimitExceeded { reason, .. }
+            if reason == "max heap nodes"
+    ));
+    assert_eq!(
+        fixture
+            .store
+            .segment_counters_for_test(&fixture.handle)
+            .unwrap(),
+        (1, 0),
+        "the segment is still live while the method handles the limit error"
+    );
+    frame.finish().unwrap();
+    drop(access);
+    assert_eq!(
+        fixture
+            .store
+            .segment_counters_for_test(&fixture.handle)
+            .unwrap(),
+        (0, 0)
+    );
+}
+
+#[tokio::test]
+async fn partial_create_unassigned_roots_stay_null_and_resume_can_assign() {
+    let fixture = activation_fixture();
+    let (frame, mut access) = execution_frame_with_activation(&fixture, true).await;
+    assert!(
+        frame.read_field("payload").is_err(),
+        "unassigned create roots are not readable"
+    );
+    let execution = context(&fixture.interpreter).execution();
+    force_pending_cut(&frame, &mut access, &execution).await;
+    assert!(
+        frame.read_field("payload").is_err(),
+        "unassigned roots remain unreadable across suspension"
+    );
+    let items = access.alloc_array(Vec::new()).unwrap();
+    let payload = access
+        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+            "items".to_string(),
+            RuntimeValue::Heap(items),
+        )])))
+        .unwrap();
+    let program = fixture.interpreter.program_projection().unwrap();
+    frame
+        .write_field(
+            "payload",
+            &payload_type(),
+            program.type_view(),
+            &ExecutableAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
+                executable: 0,
+            },
+            &RuntimeValue::Heap(payload),
+            access.heap_mut(),
+        )
+        .unwrap();
+    assert_eq!(
+        frame.read_field("payload").unwrap(),
+        RuntimeValue::Heap(payload)
+    );
+    frame.finish().unwrap();
+    drop(access);
+    assert_eq!(stored_heap_len(&fixture), 2);
+}
+
+async fn frame_finish_and_drop(frame: ActorExecutionFrame, access: HeapAccess<'static>) {
+    frame.finish().unwrap();
+    drop(access);
 }
 
 #[tokio::test]
 async fn buffered_stream_next_does_not_create_a_scheduler_cut_point() {
     let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
+    let (frame, mut access) = execution_frame(&fixture).await;
     let execution = context(&fixture.interpreter).execution();
 
     let item = frame
-        .await_if_pending(&mut heap, &execution, async {
+        .await_if_pending(&mut access, &execution, async {
             RuntimeValue::String("buffered".to_string())
         })
         .await
         .unwrap();
 
     assert_eq!(item, RuntimeValue::String("buffered".to_string()));
-    assert!(frame.suspension.lease.lock().unwrap().is_some());
+    assert!(frame.has_execution_lease());
+    assert!(!frame.is_suspended());
+    assert_eq!(
+        fixture
+            .store
+            .segment_counters_for_test(&fixture.handle)
+            .unwrap(),
+        (1, 0),
+        "a Ready poll must keep the segment active"
+    );
     assert_eq!(
         frame.read_field("count").unwrap(),
         RuntimeValue::Number(1.0)
     );
-    frame.finish(heap).unwrap();
+    frame.finish().unwrap();
 }
 
 #[tokio::test]
 async fn pending_stream_next_releases_scheduler_until_item_arrives() {
     let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
+    let (frame, mut access) = execution_frame(&fixture).await;
     let execution = context(&fixture.interpreter).execution();
     let (sender, receiver) = tokio::sync::oneshot::channel();
 
     let waiting = async {
         frame
-            .await_if_pending(&mut heap, &execution, receiver)
+            .await_if_pending(&mut access, &execution, receiver)
             .await
             .unwrap()
             .unwrap()
     };
     let concurrent_method = async {
+        tokio::task::yield_now().await;
+        assert_eq!(
+            fixture
+                .store
+                .segment_counters_for_test(&fixture.handle)
+                .unwrap(),
+            (0, 1),
+            "the guard must be released and the continuation suspended at Pending"
+        );
         assert_eq!(
             execute(&fixture, &fixture.method, b"[17]").await.unwrap(),
             b"17"
@@ -1913,16 +1907,18 @@ async fn pending_stream_next_releases_scheduler_until_item_arrives() {
     assert_eq!(item, "ready");
     assert_eq!(
         frame.read_field("count").unwrap(),
-        RuntimeValue::Number(17.0)
+        RuntimeValue::Number(17.0),
+        "aliases live: the resumed segment reads the concurrent method's write"
     );
-    frame.finish(heap).unwrap();
+    frame.finish().unwrap();
 }
 
 #[tokio::test]
 async fn stale_epoch_resume_fails_without_reinstalling_execution_lease() {
     let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
-    frame.suspend(&heap).unwrap();
+    let (frame, mut access) = execution_frame(&fixture).await;
+    frame.suspend().unwrap();
+    access.release();
 
     let mut newer_fence = fixture.handle.fence().clone();
     newer_fence.incarnation.epoch = 2;
@@ -1938,9 +1934,11 @@ async fn stale_epoch_resume_fails_without_reinstalling_execution_lease() {
         .unwrap();
 
     let execution = context(&fixture.interpreter).execution();
-    let error = frame.resume(&mut heap, &execution).await.unwrap_err();
+    let error = frame.resume(&execution).unwrap_err();
     assert!(error.to_string().contains("stale Actor epoch"));
-    assert!(frame.suspension.lease.lock().unwrap().is_none());
+    assert!(frame.is_suspended());
+    drop(frame);
+    drop(access);
 }
 
 #[tokio::test]
@@ -1948,14 +1946,17 @@ async fn cancelled_resume_does_not_reinstall_execution_lease() {
     use std::sync::atomic::Ordering;
 
     let fixture = fixture(integer(), true);
-    let (frame, mut heap) = execution_frame(&fixture).await;
-    frame.suspend(&heap).unwrap();
+    let (frame, mut access) = execution_frame(&fixture).await;
+    frame.suspend().unwrap();
+    access.release();
     let execution = context(&fixture.interpreter).execution();
     execution.cancel_flag().store(true, Ordering::Release);
 
-    let error = frame.resume(&mut heap, &execution).await.unwrap_err();
+    let error = frame.resume(&execution).unwrap_err();
     assert!(error.is_cancelled());
-    assert!(frame.suspension.lease.lock().unwrap().is_none());
+    assert!(frame.is_suspended());
+    drop(frame);
+    drop(access);
 }
 
 #[test]
@@ -2078,7 +2079,7 @@ async fn executor_rechecks_abi_implementation_epoch_and_rejects_ordinary_context
         .interpreter
         .call_program_executable(
             context(&ordinary.interpreter),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &crate::env::Env::new(),
             &addr,
             &addr,

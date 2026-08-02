@@ -1,4 +1,3 @@
-use crate::heap_access::HeapAccess;
 use std::{pin::pin, task::Poll};
 
 use serde_json::json;
@@ -64,13 +63,13 @@ async fn assert_actor_held(fixture: &DbActorFixture) {
 async fn db_actor_ordinary_query_ready_keeps_segment_and_does_not_touch_store() {
     let state = FakeDbState::new();
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_query_value(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -84,7 +83,7 @@ async fn db_actor_ordinary_query_ready_keeps_segment_and_does_not_touch_store() 
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_eq!(state.context_require_calls(), 0);
     assert!(state.phases().is_empty());
 }
@@ -94,13 +93,13 @@ async fn db_actor_ordinary_raw_create_ready_once_keeps_segment() {
     let state = FakeDbState::new();
     state.raw_create.push_ready(Ok(raw_document("raw-ready")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -112,7 +111,7 @@ async fn db_actor_ordinary_raw_create_ready_once_keeps_segment() {
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::RawCreate);
     assert_eq!(state.context_require_calls(), 1);
 }
@@ -124,12 +123,11 @@ async fn db_actor_ordinary_raw_create_pending_releases_and_reacquires_segment() 
         .raw_create
         .push_pending(Ok(raw_document("raw-pending")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut competing = Box::pin(fixture.actor.competing_acquire());
     assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -152,11 +150,11 @@ async fn db_actor_ordinary_raw_create_pending_releases_and_reacquires_segment() 
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert!(
-        heap.len() > pending_heap_len,
+        access.len() > pending_heap_len,
         "raw result must materialize only after the pending operation resumes"
     );
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::RawCreate);
 }
 
@@ -167,13 +165,13 @@ async fn db_actor_ordinary_raw_create_ready_error_is_not_rebuilt() {
         .raw_create
         .push_ready(Err(db_error("raw ready failure")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -184,7 +182,7 @@ async fn db_actor_ordinary_raw_create_ready_error_is_not_rebuilt() {
 
     assert!(result.is_err());
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::RawCreate);
 }
 
@@ -195,10 +193,9 @@ async fn db_actor_ordinary_raw_create_pending_error_is_not_rebuilt() {
         .raw_create
         .push_pending(Err(db_error("raw pending failure")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -217,7 +214,7 @@ async fn db_actor_ordinary_raw_create_pending_error_is_not_rebuilt() {
 
     assert!(result.is_err());
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::RawCreate);
 }
 
@@ -228,10 +225,9 @@ async fn db_actor_ordinary_raw_create_pending_drop_drops_only_same_future() {
         .raw_create
         .push_pending(Ok(raw_document("must-not-materialize")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -249,7 +245,7 @@ async fn db_actor_ordinary_raw_create_pending_drop_drops_only_same_future() {
     assert_dropped_pending_once(&state, DbPhase::RawCreate);
     drop(competing_lease);
     drop(frame);
-    drop(heap);
+    drop(access);
 }
 
 #[tokio::test]
@@ -257,13 +253,13 @@ async fn db_actor_ordinary_prepared_create_ready_wait_and_finalizer_once() {
     let state = FakeDbState::new();
     state.prepared_create.push_ready(Ok(prepared_heap_value()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -275,7 +271,7 @@ async fn db_actor_ordinary_prepared_create_ready_wait_and_finalizer_once() {
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::PreparedCreateWait);
     assert_ready_once(&state, DbPhase::PreparedCreateFinalize);
     assert_eq!(state.legacy_runtime_calls(), 0);
@@ -288,12 +284,11 @@ async fn db_actor_ordinary_prepared_create_pending_finalizes_only_after_resume()
         .prepared_create
         .push_pending(Ok(prepared_heap_value()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let mut competing = Box::pin(fixture.actor.competing_acquire());
     assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -317,11 +312,11 @@ async fn db_actor_ordinary_prepared_create_pending_finalizes_only_after_resume()
 
     assert!(matches!(result, RuntimeValue::Heap(_)));
     assert!(
-        heap.len() > pending_heap_len,
+        access.len() > pending_heap_len,
         "prepared finalizer must materialize only after the wait resumes"
     );
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::PreparedCreateWait);
     assert_ready_once(&state, DbPhase::PreparedCreateFinalize);
 }
@@ -333,13 +328,13 @@ async fn db_actor_ordinary_prepared_wait_ready_error_is_not_replayed() {
         .prepared_create
         .push_ready(Err(db_error("prepared ready failure")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -350,7 +345,7 @@ async fn db_actor_ordinary_prepared_wait_ready_error_is_not_replayed() {
 
     assert!(result.is_err());
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::PreparedCreateWait);
     assert_eq!(
         state.metrics(DbPhase::PreparedCreateFinalize),
@@ -365,10 +360,9 @@ async fn db_actor_ordinary_prepared_wait_pending_error_is_not_replayed() {
         .prepared_create
         .push_pending(Err(db_error("prepared pending failure")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -387,7 +381,7 @@ async fn db_actor_ordinary_prepared_wait_pending_error_is_not_replayed() {
 
     assert!(result.is_err());
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_pending_then_ready_once(&state, DbPhase::PreparedCreateWait);
     assert_eq!(
         state.metrics(DbPhase::PreparedCreateFinalize),
@@ -402,13 +396,13 @@ async fn db_actor_ordinary_prepared_finalizer_error_is_not_replayed() {
         .prepared_create
         .push_ready(Ok(PreparedFinalize::error("finalizer failure")));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let result = fixture
         .linked
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -419,7 +413,7 @@ async fn db_actor_ordinary_prepared_finalizer_error_is_not_replayed() {
 
     assert!(result.is_err());
     assert_actor_held(&fixture).await;
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
     assert_ready_once(&state, DbPhase::PreparedCreateWait);
     assert_ready_once(&state, DbPhase::PreparedCreateFinalize);
 }
@@ -431,10 +425,9 @@ async fn db_actor_ordinary_prepared_pending_drop_does_not_finalize_or_rebuild() 
         .prepared_create
         .push_pending(Ok(prepared_heap_value()));
     let fixture = DbActorFixture::new(state.clone());
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
         &mut access,
@@ -456,5 +449,5 @@ async fn db_actor_ordinary_prepared_pending_drop_does_not_finalize_or_rebuild() 
     );
     drop(competing_lease);
     drop(frame);
-    drop(heap);
+    drop(access);
 }

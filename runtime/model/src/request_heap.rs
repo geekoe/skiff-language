@@ -110,19 +110,34 @@ pub struct RequestHeap {
     nodes: Vec<HeapSlot>,
     limits: RequestHeapLimits,
     stats: RequestHeapStats,
+    epoch: u32,
 }
 
 impl RequestHeap {
     pub fn new(limits: RequestHeapLimits) -> Self {
+        Self::new_with_epoch(0, limits)
+    }
+
+    /// Creates a heap whose allocated handles are stamped with `epoch`.
+    ///
+    /// Actor instance compaction replaces the whole arena with a fresh heap at
+    /// epoch + 1, so stale handles from the previous arena fail closed in
+    /// `slot`/`slot_mut`. Ordinary requests use epoch 0.
+    pub fn new_with_epoch(epoch: u32, limits: RequestHeapLimits) -> Self {
         Self {
             nodes: Vec::new(),
             limits,
             stats: RequestHeapStats::default(),
+            epoch,
         }
     }
 
     pub fn limits(&self) -> &RequestHeapLimits {
         &self.limits
+    }
+
+    pub fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     pub fn stats(&self) -> RequestHeapStats {
@@ -981,7 +996,8 @@ impl RequestHeap {
             ));
         }
 
-        let handle = HeapHandle::new(self.nodes.len() as u32, INITIAL_GENERATION);
+        let handle =
+            HeapHandle::new_with_epoch(self.nodes.len() as u32, INITIAL_GENERATION, self.epoch);
         self.nodes.push(HeapSlot {
             generation: INITIAL_GENERATION,
             estimated_bytes,
@@ -1209,6 +1225,12 @@ impl RequestHeap {
     }
 
     fn slot(&self, handle: HeapHandle) -> Result<&HeapSlot> {
+        if handle.epoch() != self.epoch {
+            return Err(invalid_handle_error(
+                handle,
+                "epoch does not match heap slot",
+            ));
+        }
         let index = handle.index() as usize;
         let Some(slot) = self.nodes.get(index) else {
             return Err(invalid_handle_error(handle, "index is out of bounds"));
@@ -1223,6 +1245,12 @@ impl RequestHeap {
     }
 
     fn slot_mut(&mut self, handle: HeapHandle) -> Result<&mut HeapSlot> {
+        if handle.epoch() != self.epoch {
+            return Err(invalid_handle_error(
+                handle,
+                "epoch does not match heap slot",
+            ));
+        }
         let index = handle.index() as usize;
         let Some(slot) = self.nodes.get_mut(index) else {
             return Err(invalid_handle_error(handle, "index is out of bounds"));
@@ -1351,7 +1379,8 @@ impl<'a> RollbackRebaseBuilder<'a> {
             .iter()
             .enumerate()
             .map(|(index, slot)| {
-                let handle = HeapHandle::new(index as u32, slot.generation);
+                let handle =
+                    HeapHandle::new_with_epoch(index as u32, slot.generation, source.epoch);
                 (handle, handle)
             })
             .collect();
@@ -1369,7 +1398,10 @@ impl<'a> RollbackRebaseBuilder<'a> {
     fn discover(&mut self, explicit_roots: &[RuntimeValue]) -> Result<()> {
         for index in 0..self.checkpoint.len {
             let slot = &self.source.nodes[index];
-            self.schedule(HeapHandle::new(index as u32, slot.generation), 0)?;
+            self.schedule(
+                HeapHandle::new_with_epoch(index as u32, slot.generation, self.source.epoch),
+                0,
+            )?;
         }
         for root in explicit_roots {
             if let RuntimeValue::Heap(handle) = root {
@@ -1441,7 +1473,8 @@ impl<'a> RollbackRebaseBuilder<'a> {
                 })?,
                 None => INITIAL_GENERATION,
             };
-            let destination = HeapHandle::new(destination_index as u32, generation);
+            let destination =
+                HeapHandle::new_with_epoch(destination_index as u32, generation, self.source.epoch);
             self.mapped.insert(handle, destination);
             self.suffix_sources.push(handle);
         }

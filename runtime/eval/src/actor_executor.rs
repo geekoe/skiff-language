@@ -28,11 +28,12 @@ use thiserror::Error;
 use crate::{
     actor_instance::{
         resolve_actor_declaration, validate_declaration_fence, ActorActivation,
-        ActorExecutorAuthority, ActorInstanceExecutionLease, ActorInstanceHandle,
-        ActorInstanceSessionLease, ActorInstanceSessionTrackError, ActorInstanceSessionTracker,
-        ActorInstanceStore, ActorInstanceStoreError,
+        ActorExecutorAuthority, ActorInstanceHandle, ActorInstanceSessionLease,
+        ActorInstanceSessionTrackError, ActorInstanceSessionTracker, ActorInstanceStore,
+        ActorInstanceStoreError, SegmentLease,
     },
     error::{extract_actor_instance_store_error, RuntimeError, ScopeTerminalCarrier},
+    heap_access::HeapAccess,
     program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind, ProgramExecutionContext},
     Interpreter,
 };
@@ -214,28 +215,25 @@ impl<'a> ActorMethodExecutor<'a> {
         let executable_addr = method_executable_addr(request.instance, &method.implementation);
 
         let scope = request.context.execution_scope()?;
-        let mut lease = acquire_execution_in_scope(
+        let mut segment = acquire_segment_in_scope(
             scope,
             self.store
-                .acquire_execution(&self.authority, request.instance),
+                .acquire_segment(&self.authority, request.instance),
         )
         .await?;
-        let mut heap = lease.take_heap();
+        let mut access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
+        };
         let args = decode_arguments(
             request.arguments_payload,
             method,
             program,
             &executable_addr,
-            &mut heap,
+            access.heap_mut(),
         )?;
-        let field_plans = actor_field_plans(declaration, program, &executable_addr)?;
-        let frame = ActorExecutionFrame::new(
-            self.store.clone(),
-            request.instance.clone(),
-            lease,
-            field_plans,
-            false,
-        );
+        let frame =
+            ActorExecutionFrame::new(self.store.clone(), request.instance.clone(), segment, false);
         let context = request
             .context
             .clone()
@@ -244,7 +242,7 @@ impl<'a> ActorMethodExecutor<'a> {
         let value = interpreter
             .call_program_executable_with_self_direct(
                 context,
-                &mut heap,
+                &mut access,
                 &crate::env::Env::new(),
                 &executable_addr,
                 &executable_addr,
@@ -259,9 +257,11 @@ impl<'a> ActorMethodExecutor<'a> {
             &method.return_type,
             program,
             &executable_addr,
-            &mut heap,
+            access.heap_mut(),
         )?;
-        frame.finish(heap)?;
+        frame.finish()?;
+        drop(access);
+        let _ = self.store.compact_if_quiescent(request.instance).await;
         Ok(payload)
     }
 
@@ -275,22 +275,22 @@ impl<'a> ActorMethodExecutor<'a> {
         program: ProgramTypeView<'_>,
     ) -> Result<(), ActorMethodExecutorError> {
         let executable_addr = method_executable_addr(handle, &create.implementation);
-        let mut lease = self
+        let mut segment = self
             .store
-            .acquire_execution_for_activation(&self.authority, handle)
+            .acquire_segment_for_activation(&self.authority, handle)
             .await?;
-        let mut heap = lease.take_heap();
+        let mut access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
+        };
         let args = decode_create_arguments(
             create_args_payload,
             create,
             program,
             &executable_addr,
-            &mut heap,
+            access.heap_mut(),
         )?;
-        let declaration = resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
-        let field_plans = actor_field_plans(declaration, program, &executable_addr)?;
-        let frame =
-            ActorExecutionFrame::new(self.store.clone(), handle.clone(), lease, field_plans, true);
+        let frame = ActorExecutionFrame::new(self.store.clone(), handle.clone(), segment, true);
         let context = context.clone().with_actor_execution_frame(frame.clone());
         let self_value = RuntimeValue::ActorRef(frame.current_actor_ref()?);
         #[cfg(any(test, feature = "test-support"))]
@@ -298,7 +298,7 @@ impl<'a> ActorMethodExecutor<'a> {
         interpreter
             .call_program_executable_with_self_direct(
                 context,
-                &mut heap,
+                &mut access,
                 &crate::env::Env::new(),
                 &executable_addr,
                 &executable_addr,
@@ -308,7 +308,9 @@ impl<'a> ActorMethodExecutor<'a> {
             )
             .await
             .map_err(actor_execution_error)?;
-        frame.finish(heap)?;
+        frame.finish()?;
+        drop(access);
+        let _ = self.store.compact_if_quiescent(handle).await;
         Ok(())
     }
 }
@@ -421,12 +423,12 @@ async fn await_actor_create_test_gate(handle: &ActorInstanceHandle) {
     }
 }
 
-async fn acquire_execution_in_scope<F>(
+async fn acquire_segment_in_scope<F>(
     scope: skiff_runtime_capability_context::ExecutionScope,
     acquire: F,
-) -> Result<ActorInstanceExecutionLease, ActorMethodExecutorError>
+) -> Result<SegmentLease, ActorMethodExecutorError>
 where
-    F: Future<Output = Result<ActorInstanceExecutionLease, ActorInstanceStoreError>>,
+    F: Future<Output = Result<SegmentLease, ActorInstanceStoreError>>,
 {
     await_store_operation_in_scope(scope, acquire).await
 }
@@ -510,23 +512,6 @@ fn current_scope_terminal(
                 )
             }),
     )
-}
-
-fn actor_field_plans(
-    declaration: &skiff_runtime_linked_program::LinkedActorDeclaration,
-    program: ProgramTypeView<'_>,
-    executable_addr: &ExecutableAddr,
-) -> Result<Vec<(String, RuntimeTypePlan)>, ActorMethodExecutorError> {
-    let field_context = PlanContext::from_type_view(program, executable_addr);
-    declaration
-        .fields
-        .iter()
-        .map(|field| {
-            RuntimeTypePlan::from_linked(&field.ty, &field_context)
-                .map(|plan| (field.name.clone(), plan))
-                .map_err(|error| ActorMethodExecutorError::TypePlan(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()
 }
 
 fn exact_method<'a>(

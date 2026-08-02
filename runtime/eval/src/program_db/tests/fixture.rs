@@ -1,5 +1,3 @@
-use crate::heap_access::HeapAccess;
-
 mod actor;
 mod program;
 mod state;
@@ -135,7 +133,7 @@ async fn db_actor_fixture_checkpoint() {
         LinkedExprIr::ArrayLiteral { .. }
     ));
 
-    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let (frame, mut access) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
 
     let mut competing = pin!(fixture.actor.competing_acquire());
@@ -146,7 +144,7 @@ async fn db_actor_fixture_checkpoint() {
         .interpreter
         .eval_program_db_operation(
             context.clone(),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -162,7 +160,7 @@ async fn db_actor_fixture_checkpoint() {
         .interpreter
         .eval_program_db_operation(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -174,7 +172,8 @@ async fn db_actor_fixture_checkpoint() {
     assert!(matches!(prepared, RuntimeValue::Heap(_)));
 
     assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
-    frame.finish(heap).expect("Actor frame must finish");
+    frame.finish().expect("Actor frame must finish");
+    drop(access);
     let competing_lease = competing
         .await
         .expect("competing Actor acquire must complete after finish");

@@ -459,6 +459,119 @@ fn get_rejects_stale_generation() {
 }
 
 #[test]
+fn new_with_epoch_stamps_allocated_handles() {
+    let mut heap = RequestHeap::new_with_epoch(7, RequestHeapLimits::default());
+    assert_eq!(heap.epoch(), 7);
+
+    let handle = heap
+        .alloc_array(vec![RuntimeValue::from("epoch-stamped")])
+        .expect("array should allocate");
+
+    assert_eq!(handle.epoch(), 7);
+    assert_eq!(handle.index(), 0);
+    assert_eq!(handle.generation(), 0);
+    assert_eq!(
+        heap.get(handle)
+            .expect("epoch-stamped handle should resolve"),
+        &HeapNode::Array(vec![RuntimeValue::from("epoch-stamped")])
+    );
+}
+
+#[test]
+fn get_rejects_stale_epoch_handle() {
+    let mut heap = RequestHeap::new_with_epoch(3, RequestHeapLimits::default());
+    let handle = heap.alloc_array(Vec::new()).expect("array should allocate");
+
+    let stale = HeapHandle::new_with_epoch(handle.index(), handle.generation(), 0);
+    let error = heap.get(stale).unwrap_err();
+    assert!(
+        error.to_string().contains("epoch does not match heap slot"),
+        "unexpected error: {error}"
+    );
+
+    let stale = HeapHandle::new_with_epoch(handle.index(), handle.generation(), 4);
+    let error = heap.get(stale).unwrap_err();
+    assert!(
+        error.to_string().contains("epoch does not match heap slot"),
+        "unexpected error: {error}"
+    );
+
+    assert!(heap.get(handle).is_ok());
+}
+
+#[test]
+fn mutation_rejects_stale_epoch_handle() {
+    let mut heap = RequestHeap::new_with_epoch(2, RequestHeapLimits::default());
+    let handle = heap.alloc_array(Vec::new()).expect("array should allocate");
+
+    let stale = HeapHandle::new_with_epoch(handle.index(), handle.generation(), 1);
+    assert!(matches!(
+        heap.push_array_item(stale, RuntimeValue::from("late")),
+        Err(RuntimeModelError::Decode(_))
+    ));
+    assert_eq!(heap.stats().node_count, 1);
+}
+
+#[test]
+fn rollback_rebase_preserves_heap_epoch() {
+    let mut heap = RequestHeap::new_with_epoch(5, RequestHeapLimits::default());
+    let inner = heap
+        .alloc_array(vec![RuntimeValue::from("retained")])
+        .expect("inner prefix node should allocate");
+    let prefix = heap
+        .alloc_array(vec![RuntimeValue::Heap(inner)])
+        .expect("prefix should allocate");
+    let checkpoint = heap.checkpoint();
+    let discarded = heap
+        .alloc_array(vec![RuntimeValue::from("discarded")])
+        .expect("discarded suffix should allocate");
+
+    let prepared = heap
+        .prepare_rollback_rebase(checkpoint, &[RuntimeValue::Heap(prefix)])
+        .expect("rollback rebase should prepare");
+    heap.commit_prepared_rollback_rebase(prepared);
+
+    assert_eq!(heap.epoch(), 5);
+    assert_eq!(
+        heap.get(prefix).unwrap(),
+        &HeapNode::Array(vec![RuntimeValue::Heap(inner)])
+    );
+    assert!(heap.get(discarded).is_err());
+    let HeapNode::Array(prefix_items) = heap.get(prefix).unwrap() else {
+        panic!("prefix must remain an array");
+    };
+    let RuntimeValue::Heap(retained) = prefix_items[0] else {
+        panic!("prefix array item is a heap handle");
+    };
+    assert_eq!(retained.epoch(), 5);
+    assert!(heap.get(retained).is_ok());
+}
+
+#[test]
+fn cross_heap_clone_stamps_destination_epoch() {
+    let mut source = RequestHeap::new_with_epoch(1, RequestHeapLimits::default());
+    let root = source
+        .alloc_array(vec![RuntimeValue::from("source")])
+        .expect("source root should allocate");
+
+    let mut dest = RequestHeap::new_with_epoch(2, RequestHeapLimits::default());
+    let cloned =
+        deep_clone_runtime_value_between_heaps(&source, &mut dest, &RuntimeValue::Heap(root))
+            .expect("cross-heap clone should succeed");
+    let RuntimeValue::Heap(cloned_handle) = cloned else {
+        panic!("cloned root must remain a heap value")
+    };
+
+    assert_eq!(cloned_handle.epoch(), 2);
+    assert_eq!(dest.epoch(), 2);
+    assert!(dest.get(cloned_handle).is_ok());
+    assert!(
+        dest.get(root).is_err(),
+        "source-epoch handle must fail closed"
+    );
+}
+
+#[test]
 fn alloc_map_uses_plain_string_key_identity() {
     let mut heap = RequestHeap::default();
     let mut map = BTreeMap::new();

@@ -27,13 +27,12 @@ use skiff_runtime_linked_program::{
     BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable, FileDeclarations,
     FileLinkTargets, LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner,
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedStmtIr, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
-    ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    LinkedStmtIr, LinkedTypeRef, PublicationResourceTable, RuntimeTypeContext, ServiceSymbolRef,
+    SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::RuntimeValue,
-    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::*;
@@ -373,26 +372,20 @@ impl ActorFrameFixture {
         Self { store, handle }
     }
 
-    async fn frame(&self) -> (ActorExecutionFrame, RequestHeap) {
+    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess<'static>) {
         let authority = ActorExecutorAuthority::new();
-        let mut lease = self
+        let mut segment = self
             .store
-            .acquire_execution(&authority, &self.handle)
+            .acquire_segment(&authority, &self.handle)
             .await
             .expect("acquire stream Actor");
-        let heap = lease.take_heap();
+        let access = HeapAccess::Shared {
+            arena: segment.arena().clone(),
+            guard: Some(segment.take_guard()),
+        };
         (
-            ActorExecutionFrame::new(
-                self.store.clone(),
-                self.handle.clone(),
-                lease,
-                vec![(
-                    "id".to_string(),
-                    RuntimeTypePlan::new("string", None, RuntimeTypeNode::String),
-                )],
-                false,
-            ),
-            heap,
+            ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
+            access,
         )
     }
 }
@@ -545,8 +538,8 @@ fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait
     let addr = ExecutableAddr::service(0, 0);
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
-    let stream_value = json!({"$stream": "f445h-e4r-pending"});
     let mut access = HeapAccess::Exclusive(&mut heap);
+    let stream_value = json!({"$stream": "f445h-e4r-pending"});
     let future = interpreter.exec_program_stream_for_in(
         context,
         &mut access,
@@ -919,9 +912,9 @@ fn f445h_e4r_stream_for_in_ancestor_cancel_wins_equal_expired_deadline() {
 #[tokio::test]
 async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
     let actor = ActorFrameFixture::new();
-    let (frame, mut heap) = actor.frame().await;
+    let (frame, mut access) = actor.frame().await;
     let authority = ActorExecutorAuthority::new();
-    let mut competitor = Box::pin(actor.store.acquire_execution(&authority, &actor.handle));
+    let mut competitor = Box::pin(actor.store.acquire_segment(&authority, &actor.handle));
     let waker = Waker::from(Arc::new(NoopWake));
     let mut poll_context = std::task::Context::from_waker(&waker);
     assert!(competitor.as_mut().poll(&mut poll_context).is_pending());
@@ -936,7 +929,7 @@ async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
     let flow = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -962,7 +955,7 @@ async fn f445h_e4r_stream_for_in_buffered_ready_keeps_actor_segment() {
         "break remains a non-End cleanup path"
     );
     drop(competitor);
-    frame.finish(heap).expect("finish stream Actor segment");
+    frame.finish().expect("finish stream Actor segment");
 }
 
 #[test]
