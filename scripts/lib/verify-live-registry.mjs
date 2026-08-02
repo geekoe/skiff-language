@@ -163,6 +163,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-ws-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-ws-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:ws',
+        description:
+          'real client WebSocket -> real Rust Router binary -> real Rust Runtime process: generation acquire/release, business replacement, JSON-RPC id lexeme corpus, slow-client/frame budget, disconnect races and zero residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-ws',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-differential-live',
     source: {
       type: 'script',
