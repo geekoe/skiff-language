@@ -25,9 +25,10 @@ pub fn format_iso_millis(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z")
 }
 
-/// Parses the fixed UTC RFC3339 shapes emitted by the runtime and router
-/// (`YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.mmmZ`) into epoch
-/// milliseconds. Returns `None` for any other shape (fail-closed freshness).
+/// Parses the UTC RFC3339 shapes emitted by the runtime and router
+/// (`YYYY-MM-DDTHH:MM:SSZ` with 0 or 1-9 fractional-second digits, truncated
+/// to milliseconds) into epoch milliseconds. Returns `None` for any other
+/// shape (fail-closed freshness).
 pub fn parse_iso_utc_millis(value: &str) -> Option<u64> {
     let bytes = value.as_bytes();
     if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
@@ -50,14 +51,22 @@ pub fn parse_iso_utc_millis(value: &str) -> Option<u64> {
     if bytes.get(index) == Some(&b'.') {
         index += 1;
         let mut digits = 0_u32;
-        while digits < 3 {
+        // RFC3339 permits any fractional precision; the runtime emits
+        // 0/3/6/9 digits. Accept 1-9 digits and truncate to milliseconds
+        // (the first three digits; fewer are right-padded with zeros).
+        while digits < 9 {
             let digit = bytes.get(index).copied()?;
             if !digit.is_ascii_digit() {
                 break;
             }
-            millis = millis * 10 + u64::from(digit - b'0');
+            if digits < 3 {
+                millis = millis * 10 + u64::from(digit - b'0');
+            }
             index += 1;
             digits += 1;
+        }
+        if digits == 0 {
+            return None;
         }
         while digits < 3 {
             millis *= 10;
@@ -139,6 +148,44 @@ mod tests {
             parse_iso_utc_millis("2026-08-02T00:00:00.123Z"),
             Some(1_785_628_800_123)
         );
+    }
+
+    #[test]
+    fn parse_accepts_one_to_nine_fractional_digits_and_truncates_to_millis() {
+        assert_eq!(
+            parse_iso_utc_millis("2026-08-02T00:00:00.1Z"),
+            Some(1_785_628_800_100)
+        );
+        assert_eq!(
+            parse_iso_utc_millis("2026-08-02T00:00:00.12Z"),
+            Some(1_785_628_800_120)
+        );
+        assert_eq!(
+            parse_iso_utc_millis("2026-08-02T00:00:00.123456Z"),
+            Some(1_785_628_800_123)
+        );
+        assert_eq!(
+            parse_iso_utc_millis("2026-08-02T00:00:00.123456789Z"),
+            Some(1_785_628_800_123)
+        );
+        // Six/four-digit truncation never rounds: extra digits are dropped.
+        assert_eq!(
+            parse_iso_utc_millis("2026-08-02T00:00:00.999999Z"),
+            Some(1_785_628_800_999)
+        );
+    }
+
+    #[test]
+    fn parse_rejects_invalid_fractional_shapes() {
+        for value in [
+            "2026-08-02T00:00:00.Z",
+            "2026-08-02T00:00:00..1Z",
+            "2026-08-02T00:00:00.1aZ",
+            "2026-08-02T00:00:00.1234567890Z",
+            "2026-08-02T00:00:00.123Z ",
+        ] {
+            assert_eq!(parse_iso_utc_millis(value), None, "{value}");
+        }
     }
 
     #[test]
