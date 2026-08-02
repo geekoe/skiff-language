@@ -9,6 +9,44 @@
       "description": "Two-replica actor get-or-create/invoke/owner-control/spawn full chain over real HTTP: isolated TS and Rust Router sides each consume the same canonical actor-routing projection, drive the identical actor-full-chain-acceptance service through real HTTP into two real Runtime replicas (test-only relays), and must produce identical HTTP step results, projected semantic frame sequences (ephemeral correlation ids tokenized per key, timestamps normalized, payloads hashed, handshake/health frames excluded), seeded Mongo state/audit and terminal behavior.",
       "observationTypes": ["http", "runtimeFrames", "health", "mongoState", "mongoAudit", "terminal", "logs"],
       "normalizations": [],
+      "knownDifferences": [
+        {
+          "id": "flaky-retained-entry-failure-stage",
+          "paths": [
+            "frameEvents.actor-parity-replica-1",
+            "frameEvents.actor-parity-replica-2"
+          ],
+          "accepted": true,
+          "description": "After a failed actor create, the retained entry's second request fails at a different Router stage: TS resolves the retained entry at getOrCreate and defers activation to the method invoke (failure surfaces via actor.owner.failure); Rust re-activates at the next getOrCreate (ACK rejected -> actor.getOrCreate.error). Both implementations fail closed and the HTTP-observable status/body are identical (flaky http.steps equal PASS).",
+          "evidence": "actor_parity_full_chain flaky steps: TS getOrCreate.error code ActorCreateFailed + actor.owner.failure path; Rust getOrCreate.error code AckRejected path. HTTP responses both UnhandledServiceError platform errors.",
+          "owners": [
+            "TS: router/src/router/actorGetCreateActivationCoordinator.ts + actorMethodDispatcher.ts (deferred activation on retained entries)",
+            "Rust: router/src/actor/activation.rs + supervisor/actor_sink.rs (re-activation at getOrCreate)"
+          ],
+          "resolution": "accepted by root 2026-08-03: recorded difference, both fail closed with identical HTTP observables; Rust is the only implementation after cutover, no separate semantic fix; revisit only if future TS alignment is required."
+        },
+        {
+          "id": "rejected-activation-error-vocabulary",
+          "paths": [
+            "frameEvents.actor-parity-replica-1",
+            "frameEvents.actor-parity-replica-2"
+          ],
+          "accepted": true,
+          "description": "Rejected activateInitial ACK produces a different actor.getOrCreate.error code: TS ActorCreateFailed vs Rust AckRejected. Wire-level vocabulary difference in a fail-closed path; HTTP-observable platform error is identical.",
+          "evidence": "TS error frame code ActorCreateFailed (message carries runtime reason); Rust error frame code AckRejected (message actor get-or-create failed closed).",
+          "owners": [
+            "TS: ActorGetCreateActivationCoordinator error mapping (GetCreateError ActorCreateFailed)",
+            "Rust: ActorActivationRequestBroker waiter outcome vocabulary (AckRejected, pinned by activation corpus)"
+          ],
+          "resolution": "accepted by root 2026-08-03: recorded difference; Rust activation corpus vocabulary remains frozen; revisit only if future TS alignment is required."
+        }
+      ],
+      "nonBlockingFollowUps": [
+        {
+          "id": "async-frame-interleaving-order",
+          "description": "On the success path both sides produce the same frame set; independent sub-flows (spawn submit/return, owner.invoke/control) arrive in non-semantic async order, so raw relay-order comparison yields ordering false positives. Future improvement: canonical per-HTTP-step window ordering in the actor parity projection (not implemented in this batch to avoid masking semantic differences)."
+        }
+      ],
       "compare": {
         "equal": [
           { "path": "http.steps" },

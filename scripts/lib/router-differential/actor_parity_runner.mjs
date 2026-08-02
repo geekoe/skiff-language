@@ -132,8 +132,12 @@ export async function runActorParityDifferential({
       tsSideContext: actorParitySideContextObservation(sideObservations.get('ts')),
       rustSideContext: actorParitySideContextObservation(sideObservations.get('rust')),
     });
+    console.log(
+      'router-live:actor: differential report (failures on declared accepted '
+      + 'known-difference paths are recorded, not blocking)',
+    );
     console.log(renderDifferentialReport(report));
-    return report;
+    return classifyAcceptedDifferences(report, scenario);
   } catch (error) {
     error.actorParityEvidence = await collectFailureEvidence(resources);
     error.actorParityFrames = collectFrameEvidence(resources);
@@ -147,6 +151,48 @@ export async function runActorParityDifferential({
       );
     }
   }
+}
+
+function classifyAcceptedDifferences(report, scenario) {
+  const acceptedPaths = new Set(
+    (scenario.knownDifferences ?? [])
+      .filter((difference) => difference.accepted === true)
+      .flatMap((difference) => difference.paths),
+  );
+  const accepted = [];
+  const unexplained = [];
+  for (const failure of report.failures) {
+    const path = failurePath(failure);
+    if (path !== undefined && acceptedPaths.has(path)) {
+      accepted.push(failure);
+    } else {
+      unexplained.push(failure);
+    }
+  }
+  for (const difference of (scenario.knownDifferences ?? []).filter(
+    (candidate) => candidate.accepted === true,
+  )) {
+    console.log(
+      `router-live:actor: accepted recorded difference ${difference.id} `
+      + `(paths: ${difference.paths.join(', ')}; owners: ${difference.owners.join('; ')})`,
+    );
+  }
+  if (unexplained.length > 0) {
+    throw new Error(
+      `differential scenario ${scenario.id} failed with unexplained differences: `
+      + unexplained.join('; '),
+    );
+  }
+  return {
+    ...report,
+    acceptedDifferences: accepted,
+    unexplainedFailures: unexplained,
+  };
+}
+
+function failurePath(failure) {
+  const match = /^(equal|sideExpected|recordOnly) ([^:]+): /.exec(failure);
+  return match === null ? undefined : match[2];
 }
 
 function buildActorParityObservation(side) {

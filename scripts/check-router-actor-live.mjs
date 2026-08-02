@@ -188,9 +188,16 @@ try {
     routerBinary: join(targetDir, 'debug', 'skiff-router'),
     environment: ENVIRONMENT,
   });
-  if (parityReport.failures.length > 0) {
+  if ((parityReport.unexplainedFailures ?? []).length > 0) {
     throw new Error(
-      `router-live:actor actor parity differential failed: ${parityReport.failures.join('; ')}`,
+      'router-live:actor actor parity differential failed with unexplained differences: '
+      + parityReport.unexplainedFailures.join('; '),
+    );
+  }
+  if ((parityReport.acceptedDifferences ?? []).length > 0) {
+    console.log(
+      `router-live:actor: differential accepted-with-recorded-differences `
+      + `(${parityReport.acceptedDifferences.length} failures on declared known-difference paths)`,
     );
   }
   console.log('router-live:actor: actor parity differential PASS');

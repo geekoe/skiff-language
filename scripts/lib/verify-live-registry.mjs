@@ -250,7 +250,7 @@ export const LIVE_REGISTRY = deepFreeze([
       {
         selector: 'router-live:actor',
         description:
-          'TS/Rust differential actor full chain: both Router implementations consume the same canonical actor-routing projection and drive the identical two-real-Runtime replica actor get-or-create/invoke/owner-control/lease/function-spawn/actor-method-spawn chain through real HTTP with no unexplained differences (HTTP steps, projected Runtime frames, Mongo state/audit, terminal); plus the Rust-only disconnect/replacement/claim-race/spawn-mismatch fail-closed and zero-residue regression layer (managed CI, isolated instances + explicit processes)',
+          'TS/Rust differential actor full chain: both Router implementations consume the same canonical actor-routing projection and drive the identical two-real-Runtime replica actor get-or-create/invoke/owner-control/lease/function-spawn/actor-method-spawn chain through real HTTP with no unexplained differences (HTTP steps, projected Runtime frames, Mongo state/audit, terminal); two recorded accepted failure-path differences (flaky retained-entry stage + rejected-activation error code; both fail closed with identical HTTP observables) are declared in the actor parity inventory; plus the Rust-only disconnect/replacement/claim-race/spawn-mismatch fail-closed and zero-residue regression layer (managed CI, isolated instances + explicit processes)',
         plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
         id: 'live:router-rust-actor',
         args: [],

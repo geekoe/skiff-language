@@ -125,6 +125,7 @@ function assertActorParityScenario(scenario) {
   if (scenario.compare === undefined) {
     throw new Error(`actor parity scenario ${scenario.id} requires a compare contract`);
   }
+  assertActorParityKnownDifferences(scenario);
   const { equal, sideExpected, recordOnly } = scenario.compare;
   for (const [label, entries] of [
     ['equal', equal],
@@ -172,6 +173,64 @@ function assertActorParityScenario(scenario) {
           + 'which is not covered by compare.sideExpected or compare.recordOnly',
         );
       }
+    }
+  }
+}
+
+function assertActorParityKnownDifferences(scenario) {
+  const known = scenario.knownDifferences ?? [];
+  if (!Array.isArray(known)) {
+    throw new Error(`actor parity scenario ${scenario.id} knownDifferences must be an array`);
+  }
+  for (const difference of known) {
+    if (
+      difference === null
+      || typeof difference !== 'object'
+      || typeof difference.id !== 'string'
+      || difference.id.trim().length === 0
+    ) {
+      throw new Error(
+        `actor parity scenario ${scenario.id} knownDifferences entries require a non-empty id`,
+      );
+    }
+    if (
+      !Array.isArray(difference.paths)
+      || difference.paths.length === 0
+      || difference.paths.some((path) => typeof path !== 'string' || path.length === 0)
+    ) {
+      throw new Error(
+        `actor parity scenario ${scenario.id} knownDifferences ${difference.id} requires non-empty paths`,
+      );
+    }
+    if (typeof difference.accepted !== 'boolean') {
+      throw new Error(
+        `actor parity scenario ${scenario.id} knownDifferences ${difference.id} requires an accepted boolean`,
+      );
+    }
+    if (typeof difference.description !== 'string' || difference.description.length === 0) {
+      throw new Error(
+        `actor parity scenario ${scenario.id} knownDifferences ${difference.id} requires a description`,
+      );
+    }
+  }
+  const followUps = scenario.nonBlockingFollowUps ?? [];
+  if (!Array.isArray(followUps)) {
+    throw new Error(
+      `actor parity scenario ${scenario.id} nonBlockingFollowUps must be an array`,
+    );
+  }
+  for (const followUp of followUps) {
+    if (
+      followUp === null
+      || typeof followUp !== 'object'
+      || typeof followUp.id !== 'string'
+      || followUp.id.trim().length === 0
+      || typeof followUp.description !== 'string'
+      || followUp.description.length === 0
+    ) {
+      throw new Error(
+        `actor parity scenario ${scenario.id} nonBlockingFollowUps entries require an id and description`,
+      );
     }
   }
 }
