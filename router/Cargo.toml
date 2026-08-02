@@ -1,0 +1,14 @@
+[package]
+name = "skiff-router"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "skiff-router"
+path = "src/main.rs"
+
+[dependencies]

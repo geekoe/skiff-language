@@ -171,10 +171,7 @@ test('router deploy provisions the manifest compiler and writes only supported P
   const result = await runDeploy({ only: 'router' });
   try {
     assert.equal(result.code, 0, result.stderr);
-    assert.match(
-      result.routerConfig,
-      /^ecosystemStoreCliPath: "\/srv\/skiff\/bin\/skiff-compiler"$/m,
-    );
+    assert.doesNotMatch(result.routerConfig, /^ecosystemStoreCliPath:/m);
     assert.match(result.routerConfig, /^artifactsPath: "\/srv\/skiff\/artifacts"$/m);
     assert.match(result.routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
     assert.match(result.routerConfig, /^  maxRequestBytes: 67108864$/m);

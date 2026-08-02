@@ -5,7 +5,8 @@ import { ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT } from '../protocol/assemblyActiva
 import { decodeRawAssemblyActivationRequest } from '../protocol/assemblyActivationRawCodec.js';
 import {
   RUNTIME_FRAME_SCHEMA_VERSION,
-  type HttpRequestFrameMetadata
+  type HttpRequestFrameMetadata,
+  type RuntimeHealthCounters
 } from '../protocol/envelope.js';
 import type {
   RuntimeAssemblyRequestRoutingFrameHeader,
@@ -16,6 +17,7 @@ import type { AssemblyActivationCoordinator } from './assemblyActivationCoordina
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import { assemblyTestHttpRequestHeader } from './assemblyHttpGateway.js';
 import { toGatewayError } from './errors.js';
+import type { HttpStreamLifecycleCounters } from './httpGateway.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
 import {
@@ -29,6 +31,7 @@ const ACTIVATION_PATH = ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT.slice('POST '.lengt
 export interface AssemblyControlPlaneOptions {
   coordinator: AssemblyActivationCoordinator;
   dispatcher: RuntimeDispatcher;
+  httpStreamCounters?: () => HttpStreamLifecycleCounters;
   registry: AssemblyRuntimeRegistry;
   runtimeRegistry: Pick<RuntimeRegistry, 'capabilityConnectionsSnapshot'>;
   snapshots: RouterActiveAssemblySnapshotStore;
@@ -52,7 +55,7 @@ export class AssemblyControlPlane {
       }
       const snapshot = this.options.snapshots.get();
       const state = this.options.coordinator.activationState();
-      this.writeJson(response, 200, {
+      const payload = {
         ok: true,
         activeAssembly: {
           environment: snapshot.environment,
@@ -64,7 +67,17 @@ export class AssemblyControlPlane {
         pendingActivation: state.pending,
         capabilityConnections: this.options.runtimeRegistry.capabilityConnectionsSnapshot(),
         replicas: this.options.registry.snapshot()
-      });
+      };
+      this.writeJson(
+        response,
+        200,
+        url.searchParams.get('detail') === 'loop-risk'
+          ? {
+              ...payload,
+              loopRisk: this.loopRiskHealthSnapshot()
+            }
+          : payload
+      );
       return true;
     }
     if (url.pathname === '/__skiff/test-dispatch') {
@@ -96,6 +109,64 @@ export class AssemblyControlPlane {
       replicas: this.options.registry.snapshot()
     });
     return true;
+  }
+
+  setHttpStreamCounterSource(source: () => HttpStreamLifecycleCounters): void {
+    this.options.httpStreamCounters = source;
+  }
+
+  private loopRiskHealthSnapshot(): {
+    observedAt: string;
+    router: {
+      dispatcher: ReturnType<RuntimeDispatcher['pendingLifecycleCounters']>;
+      httpStream: {
+        backpressureWaiters: number;
+        backpressureCancels: number;
+      };
+    };
+    runtimes: Array<{
+      runtimeId: string;
+      connected: boolean;
+      fresh: boolean;
+      counters: RuntimeHealthCounters;
+    }>;
+  } {
+    const observedAt = new Date();
+    const observedAtMs = observedAt.getTime();
+    const httpStream = this.options.httpStreamCounters?.();
+    const runtimes = this.options.registry
+      .snapshot()
+      .flatMap((replica) => {
+        if (replica.healthCounters === undefined) {
+          return [];
+        }
+        const healthObservedAtMs =
+          replica.lastHealthAt === undefined
+            ? Number.NaN
+            : Date.parse(replica.lastHealthAt);
+        return [
+          {
+            runtimeId: replica.replicaId,
+            connected: replica.connected,
+            fresh:
+              replica.connected &&
+              Number.isFinite(healthObservedAtMs) &&
+              observedAtMs - healthObservedAtMs <= 5000,
+            counters: { ...replica.healthCounters }
+          }
+        ];
+      });
+    return {
+      observedAt: observedAt.toISOString(),
+      router: {
+        dispatcher: this.options.dispatcher.pendingLifecycleCounters(),
+        httpStream: {
+          backpressureWaiters: httpStream?.backpressureWaiters ?? 0,
+          backpressureCancels: httpStream?.backpressureCancels ?? 0
+        }
+      },
+      runtimes
+    };
   }
 
   private async handleTestDispatch(

@@ -8,6 +8,7 @@ members = [
   "runtime-config-snapshot",
   "config-snapshot-tooling",
   "syntax",
+  "router",
   "compiler/core",
   "compiler/contract",
   "compiler/input-model",

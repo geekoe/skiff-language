@@ -367,7 +367,6 @@ async function devInit(rawArgs) {
   const writes = [];
   writes.push(await writeDevInitFile(join(devHome, 'router.yml'), routerDevConfig({
     artifactRoot,
-    ecosystemStoreCliPath: runtimePaths.ecosystemStoreCli,
     serviceDbMongoUrl,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
@@ -733,7 +732,6 @@ function routerDevConfig(options) {
     host: '0.0.0.0',
     environment: 'dev',
     artifactsPath: options.artifactRoot,
-    ecosystemStoreCliPath: options.ecosystemStoreCliPath,
     devReload: true,
     requestTimeoutMs: 20000,
     activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,

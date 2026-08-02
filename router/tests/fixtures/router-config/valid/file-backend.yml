@@ -1,0 +1,18 @@
+profile: dev
+artifactsPath: ./artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/skiff
+http:
+  maxRequestBytes: 1
+  maxResponseBytes: 1
+runtime:
+  maxConcurrency: 1
+fileBackend:
+  local:
+    root: ../var/blobs
+  oss:
+    endpoint: https://oss-cn-hangzhou.aliyuncs.com
+    bucket: skiff-files
+    region: cn-hangzhou
+    accessKeyIdEnv: SKIFF_OSS_ACCESS_KEY_ID
+    accessKeySecretEnv: SKIFF_OSS_ACCESS_KEY_SECRET

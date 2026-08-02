@@ -353,7 +353,6 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     host: '127.0.0.1',
     environment: 'prod',
     artifactsPath: `${remoteSkiff}/artifacts`,
-    ecosystemStoreCliPath: `${remoteSkiff}/bin/skiff-compiler`,
     releaseMode: true,
     devReload: false,
     requestTimeoutMs: 20000,

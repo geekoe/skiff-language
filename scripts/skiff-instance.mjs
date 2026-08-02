@@ -22,6 +22,10 @@ import {
   renderDevSyncArgs,
 } from './lib/dev-sync-args.mjs';
 import {
+  resolveRouterProcessSpec,
+  routerProcessInvocation,
+} from './lib/dev-runtime-paths.mjs';
+import {
   defaultInstanceConfig,
   defaultInstanceConfigText,
   instanceBasePaths,
@@ -34,6 +38,7 @@ import {
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
 import { ensureLocalServiceDbKeyring } from './lib/service-db-keyring.mjs';
+import { parseSimpleYamlObject } from './lib/simple-yaml.mjs';
 import {
   binaryIdentitiesEqual,
   binaryIdentity,
@@ -199,7 +204,6 @@ async function printStatus(rawArgs, configPath) {
   }
   console.log(`configPath: ${config.paths.configPath}`);
   console.log(`routerHttpUrl: ${config.urls.routerHttp}`);
-  console.log(`routerReloadUrl: ${config.urls.routerReload}`);
   console.log(`telemetryUrl: ${config.urls.telemetry}`);
   for (const processStatus of result.processes) {
     console.log(renderProcessStatusLine(processStatus));
@@ -442,10 +446,37 @@ async function syncInstance(rawArgs, configPath, watch) {
 }
 
 async function loadInstance(configPath) {
-  return readInstanceConfig({
+  const config = await readInstanceConfig({
     configPath,
     repoRoot: skiffRoot,
   });
+  const source = await readFile(config.paths.configPath, 'utf8');
+  config.routerProcessSpec = resolveRouterProcessSpec({
+    devHome: config.paths.devHome,
+    implementation: routerImplementationFromInstanceConfig(
+      source,
+      config.paths.configPath,
+    ),
+    repoRoot: skiffRoot,
+  });
+  return config;
+}
+
+function routerImplementationFromInstanceConfig(source, label) {
+  const raw = parseSimpleYamlObject(source, label);
+  const router = raw.router;
+  if (router !== undefined && !isPlainRecord(router)) {
+    throw new Error(`${label}: router must be a mapping`);
+  }
+  const implementation = router?.implementation ?? 'ts';
+  if (implementation !== 'ts' && implementation !== 'rust') {
+    throw new Error(`${label}: router.implementation must be exactly "ts" or "rust"`);
+  }
+  return implementation;
+}
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function ensureInstanceDirs(paths) {
@@ -483,7 +514,6 @@ function routerConfigText(config) {
     host: '127.0.0.1',
     environment: config.environment,
     artifactsPath: config.paths.artifactRoot,
-    ecosystemStoreCliPath: config.paths.ecosystemStoreCli,
     devReload: true,
     requestTimeoutMs: 20000,
     activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
@@ -543,6 +573,19 @@ async function buildComponentBinaries(config) {
     config,
   });
 
+  if (config.routerProcessSpec.implementation === 'rust') {
+    await buildRustBinary({
+      manifest: join(skiffRoot, 'router', 'Cargo.toml'),
+      bin: 'skiff-router',
+      source: join(
+        config.paths.cargoTargetDir,
+        'debug',
+        process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router',
+      ),
+      destination: config.routerProcessSpec.rust_binary_path,
+      config,
+    });
+  }
 }
 
 async function buildRustBinary({ manifest, bin, source, destination, config }) {
@@ -587,13 +630,7 @@ function managedProcessSpecs(config) {
           cwd: skiffRoot,
           ports: [config.ports.telemetry],
         }]),
-    {
-      name: 'router',
-      command: 'pnpm',
-      args: ['--dir', join(skiffRoot, 'router'), 'dev', '--config', config.paths.routerConfig],
-      cwd: skiffRoot,
-      ports: [config.ports.routerHttp, config.ports.routerControl],
-    },
+    routerManagedProcessSpec(config),
     {
       name: 'runtime',
       command: config.paths.runtimeBinary,
@@ -621,6 +658,23 @@ function managedProcessSpecs(config) {
         }]
       : []),
   ];
+}
+
+function routerManagedProcessSpec(config) {
+  const spec = config.routerProcessSpec;
+  const invocation = routerProcessInvocation(spec);
+  return {
+    name: 'router',
+    command: invocation.command,
+    args: invocation.args,
+    cwd: skiffRoot,
+    ports: spec.implementation === 'ts'
+      ? [config.ports.routerHttp, config.ports.routerControl]
+      : [],
+    ...(spec.implementation === 'rust'
+      ? { managedBinary: spec.rust_binary_path }
+      : {}),
+  };
 }
 
 function processEnv() {
@@ -1100,7 +1154,6 @@ async function instanceStatus(config) {
     urls: {
       routerHttp: config.urls.routerHttp,
       routerControl: config.urls.routerControl,
-      routerReload: config.urls.routerReload,
       telemetry: config.urls.telemetry,
     },
     listenerDiscovery: {
@@ -1349,8 +1402,7 @@ function commandMatchesComponent(config, spec, tokens) {
       return commandLooksLikePnpmDev(tokens, join(skiffRoot, 'telemetry'), config.paths.telemetryConfig)
         || commandLooksLikeTsxService(tokens, join(skiffRoot, 'telemetry', 'src', 'main.ts'), 'src/main.ts', config.paths.telemetryConfig);
     case 'router':
-      return commandLooksLikePnpmDev(tokens, join(skiffRoot, 'router'), config.paths.routerConfig)
-        || commandLooksLikeTsxService(tokens, join(skiffRoot, 'router', 'src', 'router', 'server.ts'), 'src/router/server.ts', config.paths.routerConfig);
+      return commandMatchesRouterProcess(config.routerProcessSpec, tokens);
     case 'runtime':
       return commandLooksLikeRuntime(config, tokens);
     case 'watch':
@@ -1358,6 +1410,25 @@ function commandMatchesComponent(config, spec, tokens) {
     default:
       return false;
   }
+}
+
+function commandMatchesRouterProcess(spec, tokens) {
+  if (spec.implementation === 'ts') {
+    return commandLooksLikePnpmDev(tokens, spec.ts_source_root, spec.config_path)
+      || commandLooksLikeTsxService(
+        tokens,
+        join(spec.ts_source_root, 'src', 'router', 'server.ts'),
+        'src/router/server.ts',
+        spec.config_path,
+      );
+  }
+  return commandLooksLikeRouterRust(tokens, spec);
+}
+
+function commandLooksLikeRouterRust(tokens, spec) {
+  return tokens[0] !== undefined
+    && pathTokenMatches(tokens[0], spec.rust_binary_path)
+    && tokens.slice(1).some((token) => pathTokenMatches(token, spec.config_path));
 }
 
 function commandLooksLikePnpmDev(tokens, projectDir, configPath) {

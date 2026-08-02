@@ -29,8 +29,9 @@ harness 各自拥有一套；`node scripts/run-skiff-tests.mjs` 为整个 canoni
 遗漏在默认 non-live gate 之外。
 
 Router 不接受空 artifact root。CLI 必须在 supervisor 启动前，用当前 checkout 的
-`skiff-dev-sync` 向临时 artifact/build root 写入专用 bootstrap service，并显式
-`--no-reload`。readiness 先通过带 service/version selector 的 isolated HTTP bootstrap 路由
+`skiff-dev-sync` 向临时 artifact/build root 写入专用 bootstrap service（不激活、不
+reload，activation 由后续显式 bootstrap/activation URL 完成）。readiness 先通过带
+service/version selector 的 isolated HTTP bootstrap 路由
 触发 lazy runtime；路由响应成功后，还必须同时观察 isolated health、临时 artifact root 和
 bootstrap service 的 runtime registration。health 200 本身不代表 runtime 已能 dispatch。
 
@@ -118,18 +119,20 @@ test-effect共享。production request、同步Actor call与Actor spawn均不携
 把test-only same-service约束应用到production。首版每个case只允许一个active self-ingress；stream在EOF、
 失败或consumer drop/break后才释放active slot，并沿普通HTTP disconnect/backpressure链收束。
 
-Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
-`SKIFF_DEV_HOME`，并向Rust runner显式传入当前隔离stack的business ingress URL。canonical registry中
+Node host 向 Rust runner 显式注入 `SKIFF_DEV_HOME`、`SKIFF_TEST_RUNTIME_ARTIFACT_ROOT`、
+`SKIFF_TEST_ACTIVATION_URL`（精确指向 `/__skiff/activate-assembly`）、
+`SKIFF_TEST_INGRESS_URL`、`SKIFF_TEST_ENVIRONMENT`、`SKIFF_TEST_EXPECTED_GENERATION` 和
+`SKIFF_TEST_PLATFORM_SOURCE_ROOT`。canonical registry中
 每个runner child结束后，Node host必须从同一隔离Router的health读取已settle active generation，作为下一
 child的expected generation；registry index或预估batch数不能充当generation source。live 与非 live
-runtime path 都在任何 health/reload 网络请求前验证 reload URL 和 artifact root 同时存在；需要
-self-ingress的non-live path还必须在共享test service assembly activation前验证business ingress
-URL。CLI options高于
+runtime path 都在任何 health/activation 网络请求前验证 activation URL 和 artifact root 同时存在；
+需要 self-ingress 的 non-live path 还必须在共享 test service assembly activation 前验证 business
+ingress URL。CLI options高于
 环境变量，缺任一都 fail closed。两种模式都
-不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。reload
-target 只接受带显式端口的 IPv4/DNS `http://` URL，以及空 path、`/` 或精确
-`/__skiff/reload-artifacts`；HTTPS、默认端口、IPv6、userinfo、其它 path、query 和 fragment
-均在网络前拒绝且错误不回显原 URL。
+不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。activation
+target 只接受带显式端口的 IPv4/DNS `http://` URL，且 path 精确为
+`/__skiff/activate-assembly`；HTTPS、默认端口、IPv6、userinfo、其它 path、query 和 fragment
+均在网络前拒绝且错误不回显原 URL。stale `/__skiff/reload-artifacts` 不是当前契约。
 
 真正的 live fixture 仍使用显式 live selector，不属于 Cargo workspace 默认测试。canonical
 `runtime-live` 还同时启用 `--deny-skips` 和 `--require-tests`：任意 SKIP 或零 discovered result
@@ -166,7 +169,7 @@ non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 
 `node`/`ps` 和从 `router/package.json` 解析的 `ws` 模块。plan/list 阶段只读检查文件类型和
 executable bit，execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有
 `live/manual` task 仍排除在默认 verify、所有普通 non-live selector 和 CI 之外。
-Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 reload URL 也会
+Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 activation URL 也会
 逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
 
 loop-risk 的两个 selector 只接受 `--loop-risk-config <path>` 或 `SKIFF_LOOP_RISK_CONFIG`。

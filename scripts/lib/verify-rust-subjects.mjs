@@ -64,6 +64,14 @@ const rustImplementationSubjects = [
       rustPackage('test-runner', 'skiff-test-runner'),
     ],
   },
+  {
+    selector: 'router-rust',
+    leafSelector: 'router-rust-contracts',
+    taskId: 'router-rust:contracts',
+    packages: [
+      rustPackage('router', 'skiff-router'),
+    ],
+  },
 ];
 
 export const RUST_IMPLEMENTATION_SUBJECTS = deepFreeze(rustImplementationSubjects);

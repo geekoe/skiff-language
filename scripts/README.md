@@ -40,11 +40,13 @@ exact code assembly, publishes a new opaque snapshot, and commits a new
 activation generation carrying both references. For the main worktree instance
 the artifact root is `.skiff-instance/dev-home/artifacts`, and snapshots are
 stored securely below its `runtime-config/` directory. `skiff check <root>` runs
-compile validation without syncing local instance artifacts or reloading the
-router. The local control endpoint is
-`http://127.0.0.1:4001/__skiff/reload-artifacts`; override with
-`--artifact-root`, `--reload-url`, `SKIFF_ARTIFACT_ROOT`, or
-`SKIFF_DEV_RELOAD_URL` only for explicit non-standard service-dev environments.
+compile validation without syncing local instance artifacts or activating a
+new assembly. `skiff dev sync` / `skiff dev watch` publish a new active
+assembly through the canonical control endpoint
+`http://127.0.0.1:4001/__skiff/activate-assembly`; override with
+`--artifact-root` and `--activation-url` only for explicit non-standard
+service-dev environments. The retired `/__skiff/reload-artifacts` control
+endpoint is not part of the current contract.
 
 Non-instance service-dev commands default to the main Skiff worktree's
 `.skiff-instance/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and

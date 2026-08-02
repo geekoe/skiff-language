@@ -213,11 +213,20 @@ router: ws://127.0.0.1:4001/runtime
 runtime-home: /opt/skiff/runtime-home
 ```
 
-更新 artifacts 或 release pointer 后，可以调用 control reload：
+更新 artifacts 或 release pointer 后，通过 canonical control 端点
+`/__skiff/activate-assembly` 发布新的 active assembly（本地实例控制端口为
+`4001`）。CLI 形式：
 
 ```bash
-curl -X POST http://127.0.0.1:4001/__skiff/reload-artifacts
+node scripts/skiff.mjs assembly activate \
+  --artifact-root /path/to/artifacts \
+  --environment <environment> \
+  --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' \
+  --expected-generation <n> \
+  --activation-url http://127.0.0.1:4001/__skiff/activate-assembly
 ```
+
+stale `/__skiff/reload-artifacts` 已从当前契约移除，不作为 control reload 使用。
 
 ## 文档维护
 

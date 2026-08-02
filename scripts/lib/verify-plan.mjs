@@ -281,7 +281,7 @@ function taskBuilders({
     'router-type-check': async () => [
       packageTask(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
     ],
-    'router-tests': async () => [
+    'router-ts-tests': async () => [
       packageTask(
         root,
         'implementation:router',
@@ -289,6 +289,11 @@ function taskBuilders({
         'router',
         ['test'],
       ),
+    ],
+    'router-rust-process-smoke': async () => [
+      task(root, 'router-rust:process-smoke', 'implementation:router', 'node', [
+        'scripts/run-router-process-smoke.mjs',
+      ]),
     ],
     'telemetry-type-check': async () => [
       packageTask(

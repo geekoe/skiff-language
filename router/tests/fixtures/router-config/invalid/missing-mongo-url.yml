@@ -1,0 +1,8 @@
+profile: dev
+artifactsPath: ./artifacts
+serviceDb: {}
+http:
+  maxRequestBytes: 1
+  maxResponseBytes: 1
+runtime:
+  maxConcurrency: 1

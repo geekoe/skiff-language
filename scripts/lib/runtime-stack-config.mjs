@@ -7,7 +7,6 @@ export function renderRouterConfig({
   host,
   environment,
   artifactsPath,
-  ecosystemStoreCliPath,
   devReload,
   releaseMode,
   requestTimeoutMs = 20000,
@@ -21,12 +20,20 @@ export function renderRouterConfig({
   serviceDbMongoUrl,
   telemetryEndpoint,
   rewrite = [],
+  ecosystemStoreCliPath,
 }) {
+  if (ecosystemStoreCliPath !== undefined) {
+    throw new Error('router config ecosystemStoreCliPath is not supported');
+  }
   if (typeof environment !== 'string' || environment.length === 0) {
     throw new Error('router environment is required');
   }
-  if (typeof ecosystemStoreCliPath !== 'string' || ecosystemStoreCliPath.trim().length === 0) {
-    throw new Error('router ecosystemStoreCliPath is required');
+  if (
+    !/^[A-Za-z0-9._-]{1,200}$/.test(environment)
+    || environment === '.'
+    || environment === '..'
+  ) {
+    throw new Error('router environment must be a canonical ASCII token');
   }
   if (
     typeof artifactsPath !== 'string'
@@ -38,6 +45,21 @@ export function renderRouterConfig({
   if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
     throw new Error('router serviceDb.mongoUrl is required');
   }
+  if (typeof profile !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile)) {
+    throw new Error('router profile must match [A-Za-z_][A-Za-z0-9_]*');
+  }
+  if (typeof host !== 'string' || host.trim().length === 0) {
+    throw new Error('router host must be a non-empty string');
+  }
+  requirePort(httpPort, 'router http.port');
+  requirePort(runtimePort, 'router runtime.port');
+  if (typeof runtimePath !== 'string' || !runtimePath.startsWith('/')) {
+    throw new Error('router runtime.path must start with /');
+  }
+  requirePositiveSafeInteger(
+    requestTimeoutMs,
+    'router requestTimeoutMs must be a positive safe integer',
+  );
   requirePositiveSafeInteger(httpMaxRequestBytes, 'router http.maxRequestBytes');
   requirePositiveSafeInteger(httpMaxResponseBytes, 'router http.maxResponseBytes');
   requirePositiveSafeInteger(
@@ -48,12 +70,24 @@ export function renderRouterConfig({
     runtimeMaxConcurrency,
     'router runtime.maxConcurrency',
   );
+  if (devReload !== undefined && typeof devReload !== 'boolean') {
+    throw new Error('router devReload must be a boolean');
+  }
+  if (releaseMode !== undefined && typeof releaseMode !== 'boolean') {
+    throw new Error('router releaseMode must be a boolean');
+  }
+  if (
+    telemetryEndpoint !== undefined
+    && (typeof telemetryEndpoint !== 'string' || telemetryEndpoint.trim().length === 0)
+  ) {
+    throw new Error('router telemetry.endpoint must be a non-empty string');
+  }
+  validateRewrite(rewrite);
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
     `environment: ${quoteYamlString(environment)}`,
     `artifactsPath: ${quoteYamlString(artifactsPath)}`,
-    `ecosystemStoreCliPath: ${quoteYamlString(ecosystemStoreCliPath)}`,
   ];
   if (releaseMode !== undefined) {
     lines.push(`releaseMode: ${releaseMode ? 'true' : 'false'}`);
@@ -129,6 +163,44 @@ function requirePositiveSafeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive safe integer`);
   }
+}
+
+function requirePort(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 65535) {
+    throw new Error(`${label} must be a TCP port`);
+  }
+}
+
+function validateRewrite(rewrite) {
+  if (!Array.isArray(rewrite)) {
+    throw new Error('router rewrite must be an array');
+  }
+  for (let index = 0; index < rewrite.length; index += 1) {
+    const item = rewrite[index];
+    const label = `router rewrite[${index}]`;
+    if (!isRecord(item)) {
+      throw new Error(`${label} must be an object`);
+    }
+    if (typeof item.host !== 'string' || item.host.trim().length === 0) {
+      throw new Error(`${label}.host must be a non-empty string`);
+    }
+    if (typeof item.service !== 'string' || item.service.trim().length === 0) {
+      throw new Error(`${label}.service must be a non-empty string`);
+    }
+    if (item.path !== undefined && (typeof item.path !== 'string' || !item.path.startsWith('/'))) {
+      throw new Error(`${label}.path must start with /`);
+    }
+    if (
+      item.version !== undefined
+      && (typeof item.version !== 'string' || item.version.trim().length === 0)
+    ) {
+      throw new Error(`${label}.version must be a non-empty string`);
+    }
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function renderTelemetryConfig({

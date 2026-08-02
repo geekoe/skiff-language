@@ -1,8 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-import { parse } from 'yaml';
-
 import {
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
@@ -13,6 +11,7 @@ import {
   type TelemetryControlConfig,
   type TelemetryTopic
 } from '../protocol/envelope.js';
+import { parseStrictYamlObject, type JsonObject } from '../config/index.js';
 import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './activationTimeout.js';
 import { readRewriteRules, type RouterRewriteRule } from './rewrite.js';
 
@@ -20,6 +19,72 @@ const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS = 10000;
 const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS = 200;
 const DEFAULT_TELEMETRY_BATCH_MAX_BYTES = 262144;
 const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 1000;
+
+/**
+ * The single frozen Router process config contract. Every key accepted by the
+ * parser (and every key emitted by renderers) is listed here; any other key is
+ * rejected with `router config <path> is not supported`.
+ */
+const ROUTER_CONFIG_TOP_LEVEL_KEYS = new Set([
+  'activation',
+  'artifactsPath',
+  'devReload',
+  'environment',
+  'fileBackend',
+  'host',
+  'http',
+  'httpPort',
+  'manifest',
+  'manifests',
+  'profile',
+  'releaseMode',
+  'requestTimeoutMs',
+  'rewrite',
+  'runtime',
+  'runtimePath',
+  'runtimePort',
+  'serviceDb',
+  'telemetry',
+  'websocket',
+]);
+const ROUTER_CONFIG_ACTIVATION_KEYS = new Set(['prepareTimeoutMs']);
+const ROUTER_CONFIG_HTTP_KEYS = new Set([
+  'port',
+  'maxRequestBytes',
+  'maxResponseBytes',
+]);
+const ROUTER_CONFIG_RUNTIME_KEYS = new Set(['port', 'path', 'maxConcurrency']);
+const ROUTER_CONFIG_WEBSOCKET_KEYS = new Set(['path']);
+const ROUTER_CONFIG_SERVICE_DB_KEYS = new Set(['mongoUrl']);
+const ROUTER_CONFIG_TELEMETRY_KEYS = new Set([
+  'enabled',
+  'endpoint',
+  'protocol',
+  'topics',
+  'queueMaxEvents',
+  'batchMaxEvents',
+  'batchMaxBytes',
+  'flushIntervalMs',
+]);
+const ROUTER_CONFIG_FILE_BACKEND_KEYS = new Set(['local', 'oss']);
+const ROUTER_CONFIG_FILE_BACKEND_LOCAL_KEYS = new Set(['root']);
+const ROUTER_CONFIG_FILE_BACKEND_OSS_KEYS = new Set([
+  'endpoint',
+  'bucket',
+  'region',
+  'accessKeyId',
+  'accessKeySecret',
+  'accessKeyIdEnv',
+  'accessKeySecretEnv',
+]);
+
+export const ROUTER_CONFIG_REDACTED_VALUE = '[REDACTED]';
+const ROUTER_CONFIG_SECRET_PATHS = [
+  'serviceDb.mongoUrl',
+  'fileBackend.oss.accessKeyId',
+  'fileBackend.oss.accessKeySecret',
+] as const;
+
 export interface RouterConfig {
   activationPrepareTimeoutMs: number;
   artifactsPath: string;
@@ -71,6 +136,39 @@ export function runtimeBootstrapForRouterConfig(
     http: { maxResponseBytes: config.httpMaxResponseBytes },
     activation
   };
+}
+
+/**
+ * Diagnostic projection for the frozen Router process config contract. Secret
+ * leaves (`serviceDb.mongoUrl`, direct OSS credential values) are replaced by
+ * `[REDACTED]`. The runtime bootstrap keeps the unredacted values because the
+ * runtime needs the real Mongo URL and credentials.
+ */
+export function redactRouterConfig(config: RouterConfig): RouterConfig {
+  const redacted = structuredClone(config);
+  for (const dottedPath of ROUTER_CONFIG_SECRET_PATHS) {
+    const segments = dottedPath.split('.');
+    const parent = getConfigObjectAtPath(redacted, segments.slice(0, -1));
+    const leaf = segments[segments.length - 1]!;
+    if (parent !== undefined && typeof parent[leaf] === 'string') {
+      parent[leaf] = ROUTER_CONFIG_REDACTED_VALUE;
+    }
+  }
+  return redacted;
+}
+
+function getConfigObjectAtPath(
+  config: RouterConfig,
+  segments: string[]
+): Record<string, unknown> | undefined {
+  let cursor: unknown = config;
+  for (const segment of segments) {
+    if (!isRecord(cursor)) {
+      return undefined;
+    }
+    cursor = cursor[segment];
+  }
+  return isRecord(cursor) ? cursor : undefined;
 }
 
 interface RawRouterConfig {
@@ -125,11 +223,10 @@ export async function loadRouterConfig(
     );
   }
 
-  const parsed = parse(text) as unknown;
-  if (!isRecord(parsed)) {
-    throw new Error(`router config ${absoluteConfigPath} must be a YAML object`);
-  }
-
+  const parsed: JsonObject = parseStrictYamlObject(
+    text,
+    `router config ${absoluteConfigPath}`
+  );
   const raw = parsed as RawRouterConfig;
   if (
     raw.http !== undefined &&
@@ -153,6 +250,10 @@ export async function loadRouterConfig(
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
   const profile = readRequiredProfile(overrides.profile ?? rawProfile, 'profile');
   rejectRemovedHosts(raw.hosts);
+  rejectUnknownConfigKeys(raw, ROUTER_CONFIG_TOP_LEVEL_KEYS, '');
+  rejectUnknownConfigKeys(raw.http, ROUTER_CONFIG_HTTP_KEYS, 'http');
+  rejectUnknownConfigKeys(raw.runtime, ROUTER_CONFIG_RUNTIME_KEYS, 'runtime');
+  rejectUnknownConfigKeys(raw.websocket, ROUTER_CONFIG_WEBSOCKET_KEYS, 'websocket');
 
   const config: RouterConfig = {
     activationPrepareTimeoutMs: readActivationPrepareTimeout(
@@ -233,6 +334,7 @@ function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput {
   if (Object.prototype.hasOwnProperty.call(value, 'storageNamespace')) {
     throw new Error('router config serviceDb.storageNamespace is no longer supported');
   }
+  rejectUnknownConfigKeys(value, ROUTER_CONFIG_SERVICE_DB_KEYS, 'serviceDb');
   return {
     mongoUrl: readRequiredString(value.mongoUrl, 'serviceDb.mongoUrl')
   };
@@ -248,6 +350,7 @@ function readFileBackendConfig(
   if (!isRecord(value)) {
     throw new Error('router config fileBackend must be an object');
   }
+  rejectUnknownConfigKeys(value, ROUTER_CONFIG_FILE_BACKEND_KEYS, 'fileBackend');
   const local = readFileBackendLocalConfig(value.local, configDir);
   const oss = readFileBackendOssConfig(value.oss);
   if (local === undefined && oss === undefined) {
@@ -269,6 +372,11 @@ function readFileBackendLocalConfig(
   if (!isRecord(value)) {
     throw new Error('router config fileBackend.local must be an object');
   }
+  rejectUnknownConfigKeys(
+    value,
+    ROUTER_CONFIG_FILE_BACKEND_LOCAL_KEYS,
+    'fileBackend.local'
+  );
   return {
     root: resolveConfigPath(
       configDir,
@@ -286,6 +394,11 @@ function readFileBackendOssConfig(
   if (!isRecord(value)) {
     throw new Error('router config fileBackend.oss must be an object');
   }
+  rejectUnknownConfigKeys(
+    value,
+    ROUTER_CONFIG_FILE_BACKEND_OSS_KEYS,
+    'fileBackend.oss'
+  );
 
   const accessKeyId = readOptionalNonEmptyString(
     value.accessKeyId,
@@ -336,6 +449,23 @@ function rejectRemovedArtifactRootConfig(raw: RawRouterConfig): void {
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'artifacts')) {
     throw new Error('router config artifacts is no longer supported; use artifactsPath');
+  }
+}
+
+function rejectUnknownConfigKeys(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    return;
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `router config ${path === '' ? key : `${path}.${key}`} is not supported`
+      );
+    }
   }
 }
 
@@ -414,6 +544,7 @@ function readTelemetryConfig(value: unknown): TelemetryControlConfig | undefined
   if (!isRecord(value)) {
     throw new Error('router config telemetry must be an object');
   }
+  rejectUnknownConfigKeys(value, ROUTER_CONFIG_TELEMETRY_KEYS, 'telemetry');
 
   const enabled = readOptionalBoolean(value.enabled, 'telemetry.enabled') ?? true;
   if (!enabled) {
@@ -587,6 +718,7 @@ function readActivationPrepareTimeout(
       'router config activation.prepareTimeoutMs must be a positive integer'
     );
   }
+  rejectUnknownConfigKeys(value, ROUTER_CONFIG_ACTIVATION_KEYS, 'activation');
   const prepareTimeoutMs = value.prepareTimeoutMs;
   if (prepareTimeoutMs === undefined || prepareTimeoutMs === null) {
     return DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
