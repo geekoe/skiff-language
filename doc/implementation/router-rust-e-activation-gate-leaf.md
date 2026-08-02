@@ -297,6 +297,42 @@ Runtime prepared→commit→swap→commit→re-register→new-generation request
 old-epoch lease、decision 前 abort/decision 后 reconcile、cold recovery、
 audit/CAS/retry）。
 
+### 集成态复跑记录（2026-08-03，commit 010d1799）
+
+并入集成分支 head 73a96a0f（merge c853b154）后复跑，逐层定位并修复：
+
+1. **artifact variant identity**：deployment identity 剥离 human version
+   label，仅改 package.yml version 产生相同 assembly（immutable record
+   conflict）；三个 variant 改用互异 ingress path（/unary、/unary-new、
+   /unary-third）+ variant-specific program。
+2. **runtime-id**：probe 未 seed runtime-home/runtime-id，replica id 不匹配；
+   已补 seed。
+3. **service_db wire**：supervisor 把 `service_db_mongo_url: Some(...)`
+   传给 coordinator → Prepare 携带 wire serviceDb → Runtime 拒绝
+   （“use connection bootstrap”，TS 也不发）；改为 None。
+4. **activation ACK sink 投递**：`sink_for` 排除 `Activation` family →
+   Prepared/Reject 帧被 Unimplemented 终止 exact session，ACK 永远到不了
+   coordinator；修复为可投递 activation_transaction sink（无 sink 时保持
+   fail-closed）。该缺陷在 a9c8715b 基线已存在，属 E-activation 生产缺口。
+5. **同 session re-register ACK 相位**：`HandshakeState::on_ack_written`
+   只接受 RegisterValidated → post-commit 同连接 re-register 的 ACK 完成把
+   session 打成 WrongOrder 终止；修复为 Registered 相位幂等接受。
+
+复跑状态：激活链（activate HTTP→durable prepare→real Runtime
+prepared→durable commit→epoch swap→Runtime commit→re-register→
+new-generation request）已通过至 old-epoch request 断言；该断言仍 FAIL
+（503 runtime_disconnect），根因在 **runtime 侧**：
+`runtime/host/src/host/router_session/handshake.rs::on_registered` 只接受
+RegisterSent 相位，post-commit 同连接 re-register 的第二个
+`runtime.registered` ACK 触发 WrongOrder → Runtime 关闭 WS → Router
+dispatcher 以 runtime_disconnect 终止在飞 old-epoch request。最小修复
+（约 3 行，E-dispatch lane）：Registered 相位且 ack_runtime_id ==
+expected_runtime_id 时幂等 Ok。已上报 root/b9，等待 E-dispatch 修复后
+复跑取证。
+
+本批 Router 侧修复聚焦测试全绿（session handshake/corpus/directory/demux、
+composition、activation recovery/coordinator、bootstrap、lib 41）。
+
 ### 已知 seam / 协调项
 
 - `replicas: []`：Rust composition 尚未暴露 replica snapshot 投影，

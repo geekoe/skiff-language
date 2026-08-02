@@ -33,8 +33,8 @@ use crate::dispatch::{ActorMethodSpawnControl, RequestDispatcher, RuntimeDispatc
 use crate::http::dispatch::HttpDispatchPort;
 use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
 use crate::http::server::{
-    start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,
-    HttpGatewayServerOptions,
+    start_http_gateway_with_epoch_store, GatewayUpgradeHandler, GatewayUpgradeOptions,
+    HttpGatewayServer, HttpGatewayServerOptions,
 };
 use crate::listener::{
     start_runtime_control_listener_with_control, ClientWsContext, ListenerError, ListenerHandle,
@@ -509,12 +509,19 @@ impl RouterSupervisor {
             }),
             ..http_options
         };
-        let resolver = Arc::new(EpochHttpIngressResolver::new(Arc::clone(
-            &components.surface_view,
-        )));
-        let public_http = start_http_gateway(
+        let artifact_store = skiff_deployment::storage::CanonicalArtifactStore::open(
+            &components.config.artifacts_path,
+        )
+        .map_err(|error| ListenerError::Http(error.to_string()))?;
+        let resolver = Arc::new(EpochHttpIngressResolver::new_with_epoch_store(
+            Arc::clone(&components.surface_view),
+            Arc::clone(&components.epoch_store),
+            artifact_store,
+        ));
+        let public_http = start_http_gateway_with_epoch_store(
             http_options,
             Arc::clone(&components.epoch),
+            Some(Arc::clone(&components.epoch_store)),
             resolver,
             Arc::clone(&components.http_dispatcher) as Arc<dyn HttpDispatchPort>,
         )
