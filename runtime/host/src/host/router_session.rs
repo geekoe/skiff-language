@@ -40,12 +40,22 @@ use skiff_runtime_transport::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::mpsc,
+    task::JoinSet,
     time::{Duration, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tracing::{info, warn};
 
 use crate::error::{Result, RuntimeError};
+
+mod activation;
+
+use activation::{
+    cleanup_session_activation, dispatch_session_activation_frame, router_binary_frame_type,
+    terminal_message, SessionActivationState,
+};
+
+const TERMINAL_ABORT_GRACE: Duration = Duration::from_millis(2);
 
 pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (ws, _) = connect_async(&host.router_url)
@@ -94,6 +104,8 @@ where
     // detaching Tokio tasks, so every exit path drops all in-flight activation/test leases before
     // session teardown returns.
     let mut child_tasks = RouterSessionChildTasks::default();
+    let mut activation_state = SessionActivationState::Idle;
+    let mut activation_prepare_tasks = JoinSet::new();
 
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
@@ -104,46 +116,61 @@ where
         health_zero_transition_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
+            activation_state.assert_task_invariant(&activation_prepare_tasks)?;
+
+            // Give an exact Abort that raced prepare completion one bounded read opportunity.
+            // Once this single probe is consumed, terminal delivery is forced before the
+            // ordinary fair session select can read another frame.
+            if activation_state.should_probe_terminal_abort() {
+                let inbound = tokio::time::timeout(TERMINAL_ABORT_GRACE, ws.next()).await;
+                activation_state.finish_terminal_abort_probe()?;
+                if let Ok(message) = inbound {
+                    if !handle_router_session_message(
+                        &host,
+                        &mut ws,
+                        message,
+                        &router_session_id,
+                        &sender,
+                        &mut health_reporter,
+                        &mut bootstrap,
+                        &mut child_tasks,
+                        &mut activation_state,
+                        &mut activation_prepare_tasks,
+                    )
+                    .await?
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            if activation_state.is_terminal_ready() {
+                let message = terminal_message(&activation_state)?;
+                #[cfg(test)]
+                activation::inject_terminal_send_failure(&activation_state)?;
+                send_writer_message(&mut ws, message).await?;
+                activation_state.mark_terminal_sent()?;
+                continue;
+            }
+
             tokio::select! {
                 message = ws.next() => {
-                    let Some(message) = message else {
+                    if !handle_router_session_message(
+                        &host,
+                        &mut ws,
+                        message,
+                        &router_session_id,
+                        &sender,
+                        &mut health_reporter,
+                        &mut bootstrap,
+                        &mut child_tasks,
+                        &mut activation_state,
+                        &mut activation_prepare_tasks,
+                    )
+                    .await?
+                    {
                         break;
-                    };
-                    let message = message
-                        .map_err(|error| RuntimeError::Decode(format!("router read failed: {error}")))?;
-                    match message {
-                        Message::Text(text) => {
-                            reject_router_text_message(text.as_str())?;
-                        }
-                        Message::Binary(bytes) => {
-                            dispatch_router_binary_frame_with_health(
-                                &host,
-                                &router_session_id,
-                                &bytes,
-                                &sender,
-                                &mut health_reporter,
-                                &mut bootstrap,
-                                &mut child_tasks,
-                            )
-                            .await?;
-                        }
-                        Message::Ping(_) => {
-                            ws.flush()
-                                .await
-                                .map_err(|error| RuntimeError::Decode(format!(
-                                    "failed to flush Router ping reply: {error}"
-                                )))?;
-                        }
-                        Message::Pong(_) => {}
-                        Message::Close(_) => {
-                            ws.flush()
-                                .await
-                                .map_err(|error| RuntimeError::Decode(format!(
-                                    "failed to flush Router close reply: {error}"
-                                )))?;
-                            return Ok(());
-                        }
-                        Message::Frame(_) => {}
                     }
                 }
                 message = receiver.recv() => {
@@ -151,6 +178,24 @@ where
                         break;
                     };
                     send_writer_message(&mut ws, message).await?;
+                }
+                completed = activation_prepare_tasks.join_next(), if activation_state.is_preparing() => {
+                    let result = match completed {
+                        Some(Ok(Ok(result))) => result,
+                        Some(Ok(Err(error))) => return Err(error),
+                        Some(Err(error)) => return Err(RuntimeError::Decode(format!(
+                            "assembly activation prepare task failed: {error}"
+                        ))),
+                        None => return Err(RuntimeError::Decode(
+                            "pending assembly activation task disappeared".to_string()
+                        )),
+                    };
+                    if !activation_prepare_tasks.is_empty() {
+                        return Err(RuntimeError::Decode(
+                            "multiple assembly activation prepare tasks were active".to_string()
+                        ));
+                    }
+                    activation_state.complete_prepare(result)?;
                 }
                 _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
                     health_reporter.send_periodic(&host, &sender).await?;
@@ -169,9 +214,81 @@ where
     // Dropping the owned futures synchronously runs their activation and test-derived lease RAII.
     // Do this before closing Actor/test registries, so teardown never races a surviving child.
     drop(child_tasks);
+    let activation_cleanup_result =
+        cleanup_session_activation(&host, &mut activation_state, &mut activation_prepare_tasks)
+            .await;
     let disconnect_result = session_guard.close();
     drop(sender);
-    session_result.and(disconnect_result)
+    session_result
+        .and(activation_cleanup_result)
+        .and(disconnect_result)
+}
+
+async fn handle_router_session_message<S>(
+    host: &super::RuntimeHost,
+    ws: &mut WebSocketStream<S>,
+    message: Option<std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    router_session_id: &str,
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    health_reporter: &mut RuntimeHealthReporter,
+    bootstrap: &mut Option<ConnectionBootstrap>,
+    child_tasks: &mut RouterSessionChildTasks,
+    activation_state: &mut SessionActivationState,
+    activation_prepare_tasks: &mut JoinSet<activation::ActivationPrepareTaskResult>,
+) -> Result<bool>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let Some(message) = message else {
+        return Ok(false);
+    };
+    let message =
+        message.map_err(|error| RuntimeError::Decode(format!("router read failed: {error}")))?;
+    match message {
+        Message::Text(text) => {
+            reject_router_text_message(text.as_str())?;
+        }
+        Message::Binary(bytes) => {
+            if router_binary_frame_type(&bytes)? == ASSEMBLY_ACTIVATION_FRAME_TYPE {
+                if let Some(reply) = dispatch_session_activation_frame(
+                    host,
+                    &bytes,
+                    bootstrap,
+                    activation_state,
+                    activation_prepare_tasks,
+                )
+                .await?
+                {
+                    send_writer_message(ws, reply).await?;
+                }
+            } else {
+                dispatch_router_binary_frame_with_health(
+                    host,
+                    router_session_id,
+                    &bytes,
+                    sender,
+                    health_reporter,
+                    bootstrap,
+                    child_tasks,
+                )
+                .await?;
+            }
+        }
+        Message::Ping(_) => {
+            ws.flush().await.map_err(|error| {
+                RuntimeError::Decode(format!("failed to flush Router ping reply: {error}"))
+            })?;
+        }
+        Message::Pong(_) => {}
+        Message::Close(_) => {
+            ws.flush().await.map_err(|error| {
+                RuntimeError::Decode(format!("failed to flush Router close reply: {error}"))
+            })?;
+            return Ok(false);
+        }
+        Message::Frame(_) => {}
+    }
+    Ok(true)
 }
 
 type RouterSessionChildTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -1229,8 +1346,6 @@ fn reject_router_text_message(_text: &str) -> Result<()> {
             .to_string(),
     ))
 }
-
-mod activation;
 
 #[cfg(test)]
 mod tests;
