@@ -39,7 +39,7 @@
       "legacyCut": false
     },
     "spawn.submit.request.function": {
-      "direction": "RouterToRuntime",
+      "direction": "RuntimeToRouter",
       "frameType": "spawn.submit.request",
       "decodeAs": "SpawnSubmitRequest",
       "payloadPresence": "required",
@@ -68,7 +68,7 @@
       "legacyCut": false
     },
     "spawn.submit.request.actorMethod": {
-      "direction": "RouterToRuntime",
+      "direction": "RuntimeToRouter",
       "frameType": "spawn.submit.request",
       "decodeAs": "SpawnSubmitRequest",
       "payloadPresence": "required",
@@ -121,7 +121,7 @@
       "legacyCut": false
     },
     "spawn.submit.request.legacy-no-caller-kind": {
-      "direction": "RouterToRuntime",
+      "direction": "RuntimeToRouter",
       "frameType": "spawn.submit.request",
       "decodeAs": "SpawnSubmitRequest",
       "payloadPresence": "required",

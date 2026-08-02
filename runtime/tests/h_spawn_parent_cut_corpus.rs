@@ -191,7 +191,10 @@ struct SpawnExpect {
 
 fn event_key(event: &SubmitEvent) -> String {
     if event.legacy {
-        format!("legacy:{}", event.caller_request_id.as_deref().unwrap_or("?"))
+        format!(
+            "legacy:{}",
+            event.caller_request_id.as_deref().unwrap_or("?")
+        )
     } else {
         format!(
             "{}:{}",
@@ -210,7 +213,10 @@ fn reference_submit(stores: &ParentStores, event: &SubmitEvent) -> Result<String
         return Err("CallerKindRejected");
     }
     let parent = stores
-        .get(caller_kind, event.caller_request_id.as_deref().expect("callerRequestId"))
+        .get(
+            caller_kind,
+            event.caller_request_id.as_deref().expect("callerRequestId"),
+        )
         .ok_or("ParentNotFound")?;
     if !parent.active {
         return Err("ParentTerminal");
@@ -242,8 +248,7 @@ fn reference_submit(stores: &ParentStores, event: &SubmitEvent) -> Result<String
 }
 
 fn run_spawn_scenario(expected_name: &str, raw: &str) {
-    let scenario: SpawnScenario =
-        serde_json::from_str(raw).expect("spawn scenario must decode");
+    let scenario: SpawnScenario = serde_json::from_str(raw).expect("spawn scenario must decode");
     assert_eq!(scenario.schema_version, 1);
     assert_eq!(scenario.scenario, expected_name);
     let mut stores = ParentStores::default();
@@ -293,7 +298,10 @@ fn run_spawn_scenario(expected_name: &str, raw: &str) {
             "parentTerminal" => {
                 let record = stores
                     .get_mut(
-                        event.caller_kind.as_deref().expect("parentTerminal callerKind"),
+                        event
+                            .caller_kind
+                            .as_deref()
+                            .expect("parentTerminal callerKind"),
                         event
                             .caller_request_id
                             .as_deref()
@@ -353,7 +361,11 @@ mod tests {
             "legacy old-shape frame must be legacyCut"
         );
         for (name, entry) in &catalog.frames {
-            assert_eq!(entry.direction, "RouterToRuntime", "{name}: direction");
+            assert_eq!(
+                entry.direction,
+                expected_direction(name),
+                "{name}: direction"
+            );
             assert_eq!(
                 entry.header["schemaVersion"], "skiff-runtime-frame-v3",
                 "{name}: schemaVersion"
@@ -428,8 +440,7 @@ mod tests {
         entries.sort();
         for path in entries {
             let raw = std::fs::read_to_string(&path).expect("scenario must be readable");
-            let scenario: SpawnScenario =
-                serde_json::from_str(&raw).expect("scenario must decode");
+            let scenario: SpawnScenario = serde_json::from_str(&raw).expect("scenario must decode");
             names.push(scenario.scenario.clone());
             run_spawn_scenario(&scenario.scenario, &raw);
         }
@@ -440,5 +451,15 @@ mod tests {
             );
         }
         assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
+    }
+
+    fn expected_direction(name: &str) -> &'static str {
+        match name {
+            "spawn.submit.request.function"
+            | "spawn.submit.request.actorMethod"
+            | "spawn.submit.request.legacy-no-caller-kind" => "RuntimeToRouter",
+            "spawn.submit.response" | "spawn.submit.error.parentNotFound" => "RouterToRuntime",
+            _ => panic!("unexpected spawn frame {name}"),
+        }
     }
 }

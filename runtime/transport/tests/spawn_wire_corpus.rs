@@ -128,7 +128,10 @@ impl SpawnSubmitRouter {
         event: &SubmitEvent,
     ) -> Result<String, &'static str> {
         let key = if event.legacy {
-            format!("legacy:{}", event.caller_request_id.as_deref().unwrap_or("?"))
+            format!(
+                "legacy:{}",
+                event.caller_request_id.as_deref().unwrap_or("?")
+            )
         } else {
             format!(
                 "{}:{}",
@@ -144,7 +147,10 @@ impl SpawnSubmitRouter {
             return Err("CallerKindRejected");
         }
         let parent = stores
-            .get(caller_kind, event.caller_request_id.as_deref().expect("callerRequestId"))
+            .get(
+                caller_kind,
+                event.caller_request_id.as_deref().expect("callerRequestId"),
+            )
             .ok_or("ParentNotFound")?;
         if !parent.active {
             return Err("ParentTerminal");
@@ -281,7 +287,10 @@ fn run_spawn_scenario(expected_name: &str, raw: &str) {
         match event.op.as_str() {
             "submit" => {
                 let key = if event.legacy {
-                    format!("legacy:{}", event.caller_request_id.as_deref().unwrap_or("?"))
+                    format!(
+                        "legacy:{}",
+                        event.caller_request_id.as_deref().unwrap_or("?")
+                    )
                 } else {
                     format!(
                         "{}:{}",
@@ -300,7 +309,10 @@ fn run_spawn_scenario(expected_name: &str, raw: &str) {
             "parentTerminal" => {
                 let record = stores
                     .get_mut(
-                        event.caller_kind.as_deref().expect("parentTerminal callerKind"),
+                        event
+                            .caller_kind
+                            .as_deref()
+                            .expect("parentTerminal callerKind"),
                         event
                             .caller_request_id
                             .as_deref()
@@ -346,27 +358,39 @@ const SPAWN_SCENARIOS: [(&str, &str); 10] = [
     ),
     (
         "resolve-actor-invocation-parent-exact",
-        include_str!("../testdata/spawn-wire/scenarios/02-resolve-actor-invocation-parent-exact.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/02-resolve-actor-invocation-parent-exact.json"
+        ),
     ),
     (
         "same-request-id-both-namespaces-no-collision",
-        include_str!("../testdata/spawn-wire/scenarios/03-same-request-id-both-namespaces-no-collision.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/03-same-request-id-both-namespaces-no-collision.json"
+        ),
     ),
     (
         "missing-caller-kind-legacy-cut-rejected",
-        include_str!("../testdata/spawn-wire/scenarios/04-missing-caller-kind-legacy-cut-rejected.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/04-missing-caller-kind-legacy-cut-rejected.json"
+        ),
     ),
     (
         "parent-terminal-before-submit-rejected",
-        include_str!("../testdata/spawn-wire/scenarios/05-parent-terminal-before-submit-rejected.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/05-parent-terminal-before-submit-rejected.json"
+        ),
     ),
     (
         "parent-replaced-before-submit-rejected",
-        include_str!("../testdata/spawn-wire/scenarios/06-parent-replaced-before-submit-rejected.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/06-parent-replaced-before-submit-rejected.json"
+        ),
     ),
     (
         "parent-connection-mismatch-rejected",
-        include_str!("../testdata/spawn-wire/scenarios/07-parent-connection-mismatch-rejected.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/07-parent-connection-mismatch-rejected.json"
+        ),
     ),
     (
         "authority-mismatch-rejected",
@@ -374,7 +398,9 @@ const SPAWN_SCENARIOS: [(&str, &str); 10] = [
     ),
     (
         "accepted-spawn-outlives-parent-terminal",
-        include_str!("../testdata/spawn-wire/scenarios/09-accepted-spawn-outlives-parent-terminal.json"),
+        include_str!(
+            "../testdata/spawn-wire/scenarios/09-accepted-spawn-outlives-parent-terminal.json"
+        ),
     ),
     (
         "target-kind-mismatch-rejected",
@@ -399,30 +425,52 @@ mod tests {
         }
         assert_eq!(catalog.frames.len(), REQUIRED_FRAMES.len());
         let legacy = &catalog.frames["spawn.submit.request.legacy-no-caller-kind"];
-        assert!(legacy.legacy_cut, "legacy old-shape frame must be legacyCut");
+        assert!(
+            legacy.legacy_cut,
+            "legacy old-shape frame must be legacyCut"
+        );
     }
 
     #[test]
-    fn spawn_family_rule_is_router_to_runtime_with_required_payload() {
+    fn spawn_family_rule_is_mixed_direction_with_required_payload_and_frame_table() {
+        use skiff_runtime_transport::protocol::spawn_submit_frame_direction;
         use skiff_runtime_transport::protocol::{
-            FrameDirection, PayloadPresenceRule, RuntimeFrameFamily,
+            FrameDirection, PayloadPresenceRule, RuntimeFrameFamily, SPAWN_SUBMIT_ERROR_FRAME_TYPE,
+            SPAWN_SUBMIT_REQUEST_FRAME_TYPE, SPAWN_SUBMIT_RESPONSE_FRAME_TYPE,
         };
         assert_eq!(
             RuntimeFrameFamily::Spawn.direction(),
-            FrameDirection::RouterToRuntime
+            FrameDirection::Either,
+            "spawn family is mixed-direction; consumers narrow per frame"
         );
         assert_eq!(
             RuntimeFrameFamily::Spawn.payload_presence(),
             PayloadPresenceRule::Required
         );
         assert_eq!(RuntimeFrameFamily::Spawn.wire_type_prefix(), "spawn.");
+        assert_eq!(
+            spawn_submit_frame_direction(SPAWN_SUBMIT_REQUEST_FRAME_TYPE),
+            Some(FrameDirection::RuntimeToRouter)
+        );
+        assert_eq!(
+            spawn_submit_frame_direction(SPAWN_SUBMIT_RESPONSE_FRAME_TYPE),
+            Some(FrameDirection::RouterToRuntime)
+        );
+        assert_eq!(
+            spawn_submit_frame_direction(SPAWN_SUBMIT_ERROR_FRAME_TYPE),
+            Some(FrameDirection::RouterToRuntime)
+        );
     }
 
     #[test]
     fn frame_metadata_is_frozen() {
         let catalog = catalog();
         for (name, entry) in &catalog.frames {
-            assert_eq!(entry.direction, "RouterToRuntime", "{name}: direction");
+            assert_eq!(
+                entry.direction,
+                expected_direction(name),
+                "{name}: direction"
+            );
             let (frame_type, decode_as, presence) = match name.as_str() {
                 "spawn.submit.request.function"
                 | "spawn.submit.request.actorMethod"
@@ -439,10 +487,17 @@ mod tests {
             };
             assert_eq!(entry.frame_type, frame_type, "{name}: frameType");
             assert_eq!(entry.decode_as, decode_as, "{name}: decodeAs");
-            assert_eq!(
-                entry.payload_presence, presence,
-                "{name}: payloadPresence"
-            );
+            assert_eq!(entry.payload_presence, presence, "{name}: payloadPresence");
+        }
+    }
+
+    fn expected_direction(name: &str) -> &'static str {
+        match name {
+            "spawn.submit.request.function"
+            | "spawn.submit.request.actorMethod"
+            | "spawn.submit.request.legacy-no-caller-kind" => "RuntimeToRouter",
+            "spawn.submit.response" | "spawn.submit.error.parentNotFound" => "RouterToRuntime",
+            _ => panic!("unexpected spawn frame {name}"),
         }
     }
 
@@ -564,7 +619,9 @@ mod tests {
         }
         for name in required {
             assert!(
-                SPAWN_SCENARIOS.iter().any(|(scenario, _)| *scenario == name),
+                SPAWN_SCENARIOS
+                    .iter()
+                    .any(|(scenario, _)| *scenario == name),
                 "required spawn scenario {name} is missing"
             );
         }

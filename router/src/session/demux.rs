@@ -17,8 +17,8 @@ use skiff_runtime_transport::assembly_activation::{
     decode_assembly_activation_frame, AssemblyActivationFrameDirection,
 };
 use skiff_runtime_transport::protocol::{
-    decode_binary_frame, decode_typed_binary_frame, RuntimeCapabilitiesFrameHeader,
-    RuntimeFrameFamily, RuntimeHealthFrameHeader,
+    decode_binary_frame, decode_typed_binary_frame, spawn_submit_frame_direction, FrameDirection,
+    RuntimeCapabilitiesFrameHeader, RuntimeFrameFamily, RuntimeHealthFrameHeader,
 };
 
 use super::consumer::ConsumerKind;
@@ -94,8 +94,10 @@ impl RuntimeFrameDemux {
         };
 
         // Inbound frames must be Runtime->Router. The Spawn family is
-        // Router->Runtime only; all others are Either at family level and are
-        // narrowed frame-level below.
+        // mixed-direction (submit.request = Runtime->Router;
+        // submit.response/error = Router->Runtime) and is narrowed
+        // frame-level below; all others are Either at family level and are
+        // also narrowed frame-level.
         if !matches!(
             family.direction(),
             skiff_runtime_transport::protocol::FrameDirection::Either
@@ -122,7 +124,25 @@ impl RuntimeFrameDemux {
                 sink_or_unimplemented(sinks.connection.as_ref(), family, raw)
             }
             RuntimeFrameFamily::Actor => sink_or_unimplemented(sinks.actor.as_ref(), family, raw),
-            RuntimeFrameFamily::Spawn => sink_or_unimplemented(sinks.spawn.as_ref(), family, raw),
+            RuntimeFrameFamily::Spawn => self.classify_spawn(frame_type, raw, sinks),
+        }
+    }
+
+    /// Spawn family frame-level direction narrowing (C-model-spawn §3.0).
+    ///
+    /// Only `spawn.submit.request` may arrive from the Runtime and reach the
+    /// installed spawn sink; `spawn.submit.response/error` are Router->Runtime
+    /// frames and are direction violations here (fail closed, even with a
+    /// sink installed). Without an installed sink the request terminates the
+    /// exact session via `Unimplemented` (authority design §6.1).
+    fn classify_spawn(&self, frame_type: &str, raw: &[u8], sinks: &InboundSinkSet) -> DemuxOutcome {
+        match spawn_submit_frame_direction(frame_type) {
+            Some(FrameDirection::RuntimeToRouter) => {
+                sink_or_unimplemented(sinks.spawn.as_ref(), RuntimeFrameFamily::Spawn, raw)
+            }
+            Some(FrameDirection::RouterToRuntime) | Some(FrameDirection::Either) | None => {
+                DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
+            }
         }
     }
 
