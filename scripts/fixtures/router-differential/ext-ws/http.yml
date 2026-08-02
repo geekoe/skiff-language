@@ -1,8 +1,0 @@
-ping:
-  method: GET
-  path: /ping
-  kind: rawHttp
-  handler: main.ping
-  adapterArgs:
-    - param: request
-      source: { kind: http.request }
