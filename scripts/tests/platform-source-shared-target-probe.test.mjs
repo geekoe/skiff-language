@@ -117,7 +117,11 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(fullDouble.commands.filter(isMergeOnlyFixture).length, 0);
     assert.equal(fullDouble.commands.filter(isIdentityProbe).length, 0);
     assert.equal(fullDouble.commands.filter(isRunSkiffTests).length, 1);
-    assert.equal(fullDouble.commands.filter(isRouterDependencyInstall).length, 1);
+    assert.equal(
+      fullDouble.commands.filter((entry) =>
+        isRouterDependencyInstall(entry, join(fullOptions.bWorktree, 'router'))).length,
+      1,
+    );
     assert.equal(fullDouble.commands.filter(isLocalRouterTsx).length, 1);
     assert.equal(fullDouble.commands.filter(isRunnerBuild).length, 2);
     assert.equal(fullDouble.commands.filter(isCompilerBuild).length, 0);
@@ -144,7 +148,8 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(full.cleanup.processGroupsAbsent, true);
     assert.equal(full.cleanup.portsAbsent, true);
     assert.equal(full.nodeDependencies.status, 'PASS');
-    const installIndex = fullDouble.commands.findIndex(isRouterDependencyInstall);
+    const installIndex = fullDouble.commands.findIndex((entry) =>
+      isRouterDependencyInstall(entry, join(fullOptions.bWorktree, 'router')));
     const tsxIndex = fullDouble.commands.findIndex(isLocalRouterTsx);
     const hostIndex = fullDouble.commands.findIndex(isRunSkiffTests);
     const bBuildIndex = fullDouble.commands.findLastIndex(isRunnerBuild);
@@ -155,7 +160,11 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.ok(bBuildIndex < installIndex && installIndex < tsxIndex && tsxIndex < hostIndex);
     const install = fullDouble.commands[installIndex];
     assert.deepEqual(install.args, [
-      '--dir', 'router', 'install', '--frozen-lockfile', '--offline',
+      '--dir',
+      join(fullOptions.bWorktree, 'router'),
+      'install',
+      '--frozen-lockfile',
+      '--offline',
     ]);
     assert.equal(install.options.cwd, fullOptions.bWorktree);
     assert.equal(fullDouble.commands[tsxIndex].options.cwd, fullOptions.bWorktree);
@@ -214,7 +223,14 @@ test('Router dependencies fail closed before Host and preserve owned cleanup', a
         );
         assert.match(ledger.firstError, /Gate Router dependency phase/);
         assert.equal(commandDouble.commands.filter(isRunSkiffTests).length, 0);
-        assert.equal(commandDouble.commands.filter(isRouterDependencyInstall).length, 1);
+        assert.equal(
+          commandDouble.commands.filter((entry) =>
+            isRouterDependencyInstall(
+              entry,
+              join(commandDouble.targetRoot, 'router'),
+            )).length,
+          1,
+        );
         assert.equal(
           commandDouble.commands.filter(isLocalRouterTsx).length,
           dependencyScenario === 'tsx-signal' ? 1 : 0,
@@ -1052,10 +1068,12 @@ function isRunSkiffTests({ command, args }) {
   return command === 'node' && args.some((value) => value.endsWith('run-skiff-tests.mjs'));
 }
 
-function isRouterDependencyInstall({ command, args }) {
+function isRouterDependencyInstall({ command, args }, routerSourceRoot) {
   return command === 'pnpm'
-    && JSON.stringify(args) === JSON.stringify([
-      '--dir', 'router', 'install', '--frozen-lockfile', '--offline',
+    && args[0] === '--dir'
+    && args[1] === routerSourceRoot
+    && JSON.stringify(args.slice(2)) === JSON.stringify([
+      'install', '--frozen-lockfile', '--offline',
     ]);
 }
 

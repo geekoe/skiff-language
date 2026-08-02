@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
+import { assertRouterImplementation } from './dev-runtime-paths.mjs';
 import { buildIsolatedActivationState } from './isolated-test-activation-seed.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 
@@ -19,15 +20,19 @@ export function isolatedTestInstanceConfigText({
   basePort,
   mongoPort,
   environment = 'skiff-test',
+  routerImplementation = 'ts',
 }) {
   if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
     throw new Error('isolated test instance mongoPort must be a positive integer');
   }
+  assertRouterImplementation(routerImplementation);
   return [
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
     `environment: ${JSON.stringify(environment)}`,
     'packageDirs:',
+    'router:',
+    `  implementation: ${routerImplementation}`,
     'ports:',
     `  base: ${basePort}`,
     `  mongo: ${mongoPort}`,

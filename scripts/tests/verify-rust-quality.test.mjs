@@ -86,8 +86,13 @@ test('CI runs canonical test domains plus a distinct quality/check scope', async
   assert.deepEqual(commands, [
     'node scripts/verify.mjs --only skiff-tests',
     'node scripts/verify.mjs --only implementation-tests',
+    'node scripts/verify.mjs --only router-rust,router-rust-process-smoke',
     'node scripts/verify.mjs --only rust-quality,type-check,checks',
   ]);
+  assert.equal(
+    commands.filter((command) => command.includes('router-rust')).length,
+    1,
+  );
   assert.equal(
     commands.filter((command) => command.includes('rust-quality')).length,
     1,
