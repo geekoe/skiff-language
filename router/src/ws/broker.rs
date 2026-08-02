@@ -425,7 +425,7 @@ impl WebSocketRequestBroker {
                 return RuntimeRequestOutcome::ResourceLimit;
             }
         };
-        let peer_id = {
+        let (peer_id, generation_uid) = {
             let state = inner
                 .generations
                 .get_mut(connection_id)
@@ -435,9 +435,9 @@ impl WebSocketRequestBroker {
                 state.handle.socket_generation, state.sequence
             ));
             state.sequence += 1;
-            peer_id
+            (peer_id, state.uid)
         };
-        let peer_key = peer_id.canonical_key();
+        let peer_key = generation_peer_key(generation_uid, &peer_id);
         if inner.outbound_by_peer.contains_key(&peer_key)
             || inner.outbound_tombstones.contains(&peer_key, now)
         {
@@ -447,11 +447,6 @@ impl WebSocketRequestBroker {
             inner.protocol_violations += 1;
             return RuntimeRequestOutcome::ProtocolError;
         }
-        let generation_uid = inner
-            .generations
-            .get(connection_id)
-            .map(|state| state.uid)
-            .expect("generation");
         let deadline_at_ms = request
             .deadline
             .as_ref()
@@ -653,7 +648,14 @@ impl WebSocketRequestBroker {
         peer_id: &str,
         frame: &[u8],
     ) -> PeerTextOutcome {
-        let peer_key = format!("s:{peer_id}");
+        let Some(generation_uid) = inner.generations.get(connection_id).map(|state| state.uid)
+        else {
+            return PeerTextOutcome::Close(WebSocketLifecycleClose {
+                code: 1002,
+                reason: "unknown JSON-RPC response id".to_string(),
+            });
+        };
+        let peer_key = format!("{generation_uid}:s:{peer_id}");
         let Some(entry) = inner.outbound_by_peer.get(&peer_key).cloned() else {
             let now = self.clock.now_ms();
             if inner.outbound_tombstones.contains(&peer_key, now) {
@@ -723,7 +725,11 @@ impl WebSocketRequestBroker {
         frame: &[u8],
     ) -> PeerTextOutcome {
         let now = self.clock.now_ms();
-        let peer_key = peer_id.canonical_key();
+        let Some(state) = inner.generations.get(connection_id) else {
+            return PeerTextOutcome::Ok;
+        };
+        let generation_uid = state.uid;
+        let peer_key = generation_peer_key(generation_uid, &peer_id);
         if inner.inbound_by_peer.contains_key(&peer_key)
             || inner.inbound_tombstones.contains(&peer_key, now)
         {
@@ -732,9 +738,6 @@ impl WebSocketRequestBroker {
                 reason: "duplicate JSON-RPC request id".to_string(),
             });
         }
-        let Some(state) = inner.generations.get(connection_id) else {
-            return PeerTextOutcome::Ok;
-        };
         if !state.open {
             return PeerTextOutcome::Ok;
         }
@@ -833,7 +836,11 @@ impl WebSocketRequestBroker {
         kind: PlatformErrorKind,
     ) -> PeerTextOutcome {
         let now = self.clock.now_ms();
-        let peer_key = peer_id.canonical_key();
+        let Some(state) = inner.generations.get(connection_id) else {
+            return PeerTextOutcome::Ok;
+        };
+        let generation_uid = state.uid;
+        let peer_key = generation_peer_key(generation_uid, &peer_id);
         if inner.inbound_by_peer.contains_key(&peer_key)
             || inner.inbound_tombstones.contains(&peer_key, now)
         {
@@ -842,10 +849,6 @@ impl WebSocketRequestBroker {
                 reason: "duplicate JSON-RPC request id".to_string(),
             });
         }
-        let Some(state) = inner.generations.get(connection_id) else {
-            return PeerTextOutcome::Ok;
-        };
-        let generation_uid = state.uid;
         inner.inbound_tombstones.add(peer_key, generation_uid, now);
         let frame = self.profile.encode_platform_error(Some(&peer_id), kind);
         match frame.and_then(|frame| {
@@ -1164,6 +1167,14 @@ fn extract_request_params(frame: &[u8]) -> Option<Vec<u8>> {
     Some(source[span].as_bytes().to_vec())
 }
 
+/// TS parity `peerKey` (webSocketRequestBroker.ts): peer correlation keys are
+/// scoped by the socket generation uid, so identical JSON-RPC ids on
+/// different socket generations never collide in the active maps or
+/// tombstones.
+fn generation_peer_key(generation_uid: u64, peer_id: &OpaquePeerId) -> String {
+    format!("{}:{}", generation_uid, peer_id.canonical_key())
+}
+
 fn extract_peer_id(frame: &[u8]) -> Option<OpaquePeerId> {
     let source = std::str::from_utf8(frame).ok()?;
     let members = top_level_members(source)?;
@@ -1220,10 +1231,11 @@ fn top_level_members(source: &str) -> Option<Vec<(String, std::ops::Range<usize>
         }
         index += 1;
         skip_ws_at(bytes, &mut index);
+        let value_start = index;
         if !scan_value_span(bytes, &mut index) {
             return None;
         }
-        members.push((key, key_start..index));
+        members.push((key, value_start..index));
         skip_ws_at(bytes, &mut index);
         match bytes.get(index) {
             Some(b',') => {
