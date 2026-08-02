@@ -19,9 +19,10 @@ use std::time::Duration;
 
 use crate::activation::{
     ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorOptions,
-    ActivationCoordinatorPorts, ActivationStateRepository, BlockingLoaderCandidatePort,
-    EpochStorePublishPort, MongoActivationStateRepository, MongoActivationStateRepositoryOptions,
-    NoopHealthSink, RoutingCandidateQueryPortAdapter, SystemClock,
+    ActivationCoordinatorPorts, ActivationHttpHandler, ActivationStateRepository,
+    BlockingLoaderCandidatePort, EpochStorePublishPort, MongoActivationStateRepository,
+    MongoActivationStateRepositoryOptions, NoopHealthSink, RoutingCandidateQueryPortAdapter,
+    SystemClock,
 };
 use crate::bootstrap::{
     ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
@@ -35,7 +36,7 @@ use crate::http::server::{
     HttpGatewayServerOptions,
 };
 use crate::listener::{
-    start_runtime_control_listener, ClientWsContext, ListenerError, ListenerHandle,
+    start_runtime_control_listener_with_control, ClientWsContext, ListenerError, ListenerHandle,
     ListenerStartOptions, WsTaskRegistry,
 };
 use crate::session::consumer::{ConsumerKind, ConsumerManifest};
@@ -459,10 +460,19 @@ impl RouterSupervisor {
         )
         .await
         .map_err(|error| ListenerError::Http(error.to_string()))?;
-        let runtime_control = start_runtime_control_listener(
+        let activation_deadline =
+            Duration::from_millis(components.config.activation_prepare_timeout_ms)
+                .saturating_mul(2)
+                .max(Duration::from_secs(30));
+        let activation_http = Arc::new(ActivationHttpHandler::with_deadline(
+            components.coordinator.clone(),
+            activation_deadline,
+        ));
+        let runtime_control = start_runtime_control_listener_with_control(
             &components.config,
             options,
             Arc::clone(&components.session),
+            Some(activation_http),
         )
         .await?;
         Ok(SupervisorListeners {

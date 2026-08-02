@@ -40,6 +40,8 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, Role};
 use tokio_tungstenite::WebSocketStream;
 
+use crate::activation::http::ActivationHttpHandler;
+use crate::activation::ASSEMBLY_ACTIVATION_CONTROL_PATH;
 use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
 use crate::http::selector::{
@@ -197,6 +199,7 @@ enum ListenerKind {
     RuntimeControl {
         runtime_path: String,
         session_layer: Arc<SessionLayer>,
+        activation_http: Option<Arc<ActivationHttpHandler>>,
     },
 }
 
@@ -215,6 +218,19 @@ pub async fn start_runtime_control_listener(
     config: &RouterConfig,
     options: &ListenerStartOptions,
     session_layer: Arc<SessionLayer>,
+) -> Result<ListenerHandle, ListenerError> {
+    start_runtime_control_listener_with_control(config, options, session_layer, None).await
+}
+
+/// Starts the shared runtime/control listener with the activation control
+/// HTTP handler (E-activation: `POST /__skiff/activate-assembly`). The
+/// handler is optional so the legacy listener seam (and tests that call the
+/// 3-argument form) keep the previous empty-response behavior byte for byte.
+pub async fn start_runtime_control_listener_with_control(
+    config: &RouterConfig,
+    options: &ListenerStartOptions,
+    session_layer: Arc<SessionLayer>,
+    activation_http: Option<Arc<ActivationHttpHandler>>,
 ) -> Result<ListenerHandle, ListenerError> {
     let runtime_control_addr = match options.runtime_control_bind {
         Some(addr) => addr,
@@ -239,6 +255,7 @@ pub async fn start_runtime_control_listener(
             ListenerKind::RuntimeControl {
                 runtime_path: config.runtime_path.clone(),
                 session_layer: Arc::clone(&session_layer),
+                activation_http,
             },
             runtime_control_shutdown_rx,
             options.drain_deadline,
@@ -428,6 +445,7 @@ async fn handle_request(
         ListenerKind::RuntimeControl {
             runtime_path,
             session_layer,
+            activation_http,
         } => {
             if is_websocket_upgrade(&request) && request.uri().path() == runtime_path {
                 return handle_websocket_upgrade(
@@ -436,6 +454,11 @@ async fn handle_request(
                     Arc::clone(session_layer),
                 )
                 .await;
+            }
+            if request.uri().path() == ASSEMBLY_ACTIVATION_CONTROL_PATH {
+                if let Some(handler) = activation_http {
+                    return handler.handle(request).await;
+                }
             }
             Ok(empty_response(StatusCode::OK))
         }

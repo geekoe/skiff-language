@@ -16,10 +16,11 @@ pub mod ws;
 
 pub use activation::{
     ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
-    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationParticipantBinding,
-    ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort, CandidateEpochRefs,
-    CoordinatorError, EnqueueResult, PublishCommittedEpochPort, RecoveryTransaction,
-    RuntimeCandidateQueryPort, SessionEnqueuePort,
+    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationHttpHandler,
+    ActivationParticipantBinding, ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort,
+    CandidateEpochRefs, CoordinatorError, EnqueueResult, PublishCommittedEpochPort,
+    RecoveryTransaction, RuntimeCandidateQueryPort, SessionEnqueuePort,
+    ACTIVATION_REQUEST_BODY_CAP, ASSEMBLY_ACTIVATION_CONTROL_PATH,
 };
 pub use actor::{
     ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneSpawnControl,
