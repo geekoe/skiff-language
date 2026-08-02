@@ -191,7 +191,7 @@ Agent：`/root/dev_e_actor_parity`
 | --- | --- |
 | ownerLeaseId reconciliation 单测 | `cargo test -p skiff-router --test actor_activation_broker actor_ownership_registry composition_components actor_live_lane` 全绿（含新 reconciliation 用例） |
 | TS 侧 lease-id 断言 | `pnpm --dir router exec vitest run tests/actor-get-create-activation.test.ts` 全绿 |
-| differential 全链 | `node scripts/check-router-actor-live.mjs` PASS（Rust probe + TS/Rust 对比无未解释差异） |
+| differential 全链 | `node scripts/check-router-actor-live.mjs` PASS（Rust probe + TS/Rust 对比：18/20 equal + 2 项已记录并接受的 known-differences，无未声明差异） |
 | registry | `node scripts/verify.mjs --only router-live:actor --list` 描述为 differential；`node --test scripts/tests/verify-live-registry.test.mjs` 全绿 |
 | workflow YAML | Python yaml 解析通过；actor job 含 pnpm/install 步骤 |
 | 写集 | `git status` 仅本叶子声明文件；`git diff origin/main...HEAD` 聚焦 |
@@ -253,7 +253,14 @@ Agent：`/root/dev_e_actor_parity`
   PASS（two-replica + 负例/归零）；differential 全链 18/20 通过，2 项
   frameEvents 对比失败（见下）。
 
-### 剩余差异（已定位 owner；触发停止条件，上报不掩盖）
+### 剩余差异（已定位 owner → 已记录并接受；root 裁决 2026-08-03）
+
+root 裁决：两项差异为"已解释、已留证、双侧 fail-closed、HTTP 可观测一致"
+的记录差异，E-actor-parity gate 按 **accepted-with-recorded-differences**
+通过交付，不另派语义修复（cutover 后 Rust 是唯一实现；若未来需要 TS 对齐
+再单独立项）。runner 只放行精确命中 inventory `knownDifferences`
+（`accepted: true`）路径的失败；未声明路径仍 fail closed。异步帧交织顺序
+记录为 non-blocking follow-up。
 
 1. **flaky/retained-entry 失败路径语义**（owner：TS
    `ActorGetCreateActivationCoordinator`/`ActorMethodDispatcher` vs Rust
@@ -275,9 +282,9 @@ Agent：`/root/dev_e_actor_parity`
    非语义；当前投影按 relay 记录序比较会产生顺序 false positive。后续可
    用按 HTTP 步窗口的 canonical 排序收敛（本批未实施，避免掩盖语义差异）。
 
-结论：E-actor-parity 成功路径 parity 已达成并留证；剩余 2 项为已定位的
-失败路径 wire 差异（可复现、有证据），按停止条件交接给
-`/root/router_rust_integration_b10` 与 root 裁决。
+结论：E-actor-parity 成功路径 parity 达成并留证；2 项失败路径 wire 差异
+（可复现、有证据）经 root 裁决接受并记录，gate 按 accepted-with-recorded-
+differences 交付。
 
 ## 交接
 

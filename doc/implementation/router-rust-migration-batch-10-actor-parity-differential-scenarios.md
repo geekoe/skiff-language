@@ -80,21 +80,30 @@ A2 硬切对 `actor.method.invoke` 的 UnknownMethod fail-closed 与 Rust
 - CI `Router Rust Actor (managed)` job 安装 pnpm + TS router deps 后运行
   同一脚本；change classifier 覆盖 `actor_parity_*` 路径。
 
-## 已知差异（E-actor-parity 停止条件证据，2026-08-03）
+## 已记录并接受的差异（root 裁决 2026-08-03）
 
-differential 全链 18/20 通过；`http.steps`（含 flaky 失败步）、health、
-Mongo、terminal 全部 equal。剩余 2 项均为 `frameEvents` 对比，已定位
-owner：
+differential 全链按 **accepted-with-recorded-differences** 交付：
+`http.steps`（含 flaky 失败步）、health、Mongo、terminal 全部 equal；
+`frameEvents` 对比的 2 项失败（replica-1/replica-2）全部落在 inventory
+`knownDifferences` 声明的已接受路径上（`accepted: true`），不再阻塞 gate。
+runner 只允许失败路径精确命中已声明 knownDifferences；出现任何未声明路径
+仍 fail closed。
 
-1. flaky/retained-entry 失败路径：TS 对 retained entry 的第二次 getOrCreate
-   直接 resolve 并在 method invoke 时延迟激活（`actor.owner.failure`）；
-   Rust 在第二次 getOrCreate 重新 activation（ACK rejected →
-   `actor.getOrCreate.error`）。HTTP 可观测完全一致；wire 序列不同。
-   Owner：TS `ActorGetCreateActivationCoordinator`/`ActorMethodDispatcher`
-   vs Rust `ActorActivationRequestBroker`/`ActorFrameSink`。
-2. rejected activation 的 `actor.getOrCreate.error` code：TS
-   `ActorCreateFailed` vs Rust `AckRejected`。Owner：TS coordinator 错误
-   映射 vs Rust activation broker waiter outcome 词汇（corpus 冻结）。
-3. 非语义异步帧交织顺序（harness 观察问题）：成功路径两侧帧集合一致；
-   独立子流到达顺序不同导致顺序 false positive。后续按 HTTP 步窗口
-   canonical 排序收敛（本批未实施，避免掩盖语义差异）。
+1. **flaky/retained-entry 失败路径**（accepted；id
+   `flaky-retained-entry-failure-stage`）：TS 对 retained entry 的第二次
+   getOrCreate 直接 resolve 并在 method invoke 时延迟激活（失败经
+   `actor.owner.failure` 显现）；Rust 在第二次 getOrCreate 重新 activation
+   （ACK rejected → `actor.getOrCreate.error`）。两侧均 fail closed，HTTP
+   可观测（status/body）完全一致。Owner 建议：TS
+   `ActorGetCreateActivationCoordinator`/`ActorMethodDispatcher` vs Rust
+   `ActorActivationRequestBroker`/`ActorFrameSink`；cutover 后 Rust 为唯一
+   实现，不另派语义修复；未来如需 TS 对齐再单独立项。
+2. **rejected activation 的 `actor.getOrCreate.error` code**（accepted；id
+   `rejected-activation-error-vocabulary`）：TS `ActorCreateFailed` vs Rust
+   `AckRejected`（Rust activation corpus 冻结词汇）。Owner 建议：TS
+   coordinator 错误映射 vs Rust broker waiter outcome 词汇；同上不另派修复。
+3. **异步帧交织顺序**（non-blocking follow-up；id
+   `async-frame-interleaving-order`）：成功路径两侧帧集合一致，独立子流
+   （spawn 提交/返回、owner.invoke/control）到达顺序非语义，当前按 relay
+   记录序比较产生顺序 false positive。后续可按 HTTP 步窗口 canonical
+   排序收敛；本批未实施，避免掩盖语义差异。

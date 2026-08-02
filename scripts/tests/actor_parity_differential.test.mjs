@@ -39,6 +39,26 @@ test('checked-in actor parity inventory is complete and consistent', async () =>
   assert.equal(scenario.lane, 'actor');
   assert.ok(scenario.description.includes('TS and Rust'));
   assert.deepEqual(scenario.normalizations, []);
+  assert.ok(Array.isArray(scenario.knownDifferences));
+  assert.ok(scenario.knownDifferences.length >= 2);
+  assert.ok(
+    scenario.knownDifferences.every((difference) => difference.accepted === true),
+  );
+  assert.ok(
+    scenario.knownDifferences.some(
+      (difference) => difference.id === 'flaky-retained-entry-failure-stage',
+    ),
+  );
+  assert.ok(
+    scenario.knownDifferences.some(
+      (difference) => difference.id === 'rejected-activation-error-vocabulary',
+    ),
+  );
+  assert.ok(
+    (scenario.nonBlockingFollowUps ?? []).some(
+      (followUp) => followUp.id === 'async-frame-interleaving-order',
+    ),
+  );
   assert.ok(scenario.compare.equal.some((entry) => entry.path === 'http.steps'));
   assert.ok(scenario.compare.equal.some((entry) =>
     entry.path === 'frameEvents.actor-parity-replica-1'));
