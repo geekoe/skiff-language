@@ -143,7 +143,6 @@ export function instanceSummary(config) {
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
-    routerReloadUrl: config.urls.routerReload,
     telemetryUrl: config.urls.telemetry,
     components: config.components,
     packageDirs: config.packageDirs,
@@ -210,7 +209,6 @@ function normalizeInstanceConfig(raw, context) {
       routerHttp: `http://127.0.0.1:${ports.routerHttp}`,
       routerControl: `http://127.0.0.1:${ports.routerControl}`,
       routerRuntime: `ws://127.0.0.1:${ports.routerControl}/runtime`,
-      routerReload: `http://127.0.0.1:${ports.routerControl}/__skiff/reload-artifacts`,
       telemetry: `ws://127.0.0.1:${ports.telemetry}/telemetry`,
     },
   };

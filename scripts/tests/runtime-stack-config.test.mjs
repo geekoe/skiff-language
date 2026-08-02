@@ -20,7 +20,6 @@ const routerConfig = {
   host: '127.0.0.1',
   environment: 'f04-host-test',
   artifactsPath: '/tmp/skiff/artifacts',
-  ecosystemStoreCliPath: '/tmp/skiff/bin/skiff-compiler',
   devReload: true,
   releaseMode: false,
   activationPrepareTimeoutMs: 120000,
@@ -42,11 +41,8 @@ test('router config renders an explicit environment', () => {
   const rendered = renderRouterConfig(routerConfig);
 
   assert.match(rendered, /^environment: "f04-host-test"$/m);
-  assert.match(
-    rendered,
-    /^ecosystemStoreCliPath: "\/tmp\/skiff\/bin\/skiff-compiler"$/m,
-  );
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
+  assert.doesNotMatch(rendered, /^ecosystemStoreCliPath:/m);
   assert.match(rendered, /^artifactsPath: "\/tmp\/skiff\/artifacts"$/m);
   assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
   assert.match(rendered, /^  maxRequestBytes: 67108864$/m);
@@ -120,16 +116,118 @@ test('router config fails closed when environment is omitted or empty', () => {
   );
 });
 
-test('router config fails closed when ecosystemStoreCliPath is omitted or empty', () => {
-  const { ecosystemStoreCliPath: _ecosystemStoreCliPath, ...withoutStoreCli } = routerConfig;
+test('router config fails closed when the retired ecosystemStoreCliPath is still passed', () => {
   assert.throws(
-    () => renderRouterConfig(withoutStoreCli),
-    /router ecosystemStoreCliPath is required/,
+    () => renderRouterConfig({ ...routerConfig, ecosystemStoreCliPath: '/tmp/skiff/bin/skiff-compiler' }),
+    /router config ecosystemStoreCliPath is not supported/,
+  );
+});
+
+test('router config rejects invalid profile, host, ports, and runtime path', () => {
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, profile: 'prod-us' }),
+    /router profile must match \[A-Za-z_\]\[A-Za-z0-9_\]\*/,
   );
   assert.throws(
-    () => renderRouterConfig({ ...routerConfig, ecosystemStoreCliPath: '   ' }),
-    /router ecosystemStoreCliPath is required/,
+    () => renderRouterConfig({ ...routerConfig, host: '   ' }),
+    /router host must be a non-empty string/,
   );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, httpPort: 70000 }),
+    /router http\.port must be a TCP port/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, runtimePort: 0 }),
+    /router runtime\.port must be a TCP port/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, runtimePath: 'runtime' }),
+    /router runtime\.path must start with \//,
+  );
+});
+
+test('router config rejects invalid environment tokens', () => {
+  for (const environment of ['bad env!', '..', 'a'.repeat(201)]) {
+    assert.throws(
+      () => renderRouterConfig({ ...routerConfig, environment }),
+      /router environment must be a canonical ASCII token/,
+    );
+  }
+});
+
+test('router config validates request timeout, booleans, and telemetry endpoint', () => {
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, requestTimeoutMs: 0 }),
+    /router requestTimeoutMs must be a positive safe integer/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, devReload: 'true' }),
+    /router devReload must be a boolean/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, releaseMode: 1 }),
+    /router releaseMode must be a boolean/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, telemetryEndpoint: '   ' }),
+    /router telemetry\.endpoint must be a non-empty string/,
+  );
+});
+
+test('router config validates rewrite items against the frozen schema', () => {
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, rewrite: 'no' }),
+    /router rewrite must be an array/,
+  );
+  assert.throws(
+    () => renderRouterConfig({
+      ...routerConfig,
+      rewrite: [{ service: 'skiff.run/account' }],
+    }),
+    /router rewrite\[0\]\.host must be a non-empty string/,
+  );
+  assert.throws(
+    () => renderRouterConfig({
+      ...routerConfig,
+      rewrite: [{ host: 'a.localhost', path: 'api', service: 'skiff.run/account' }],
+    }),
+    /router rewrite\[0\]\.path must start with \//,
+  );
+});
+
+test('router config renderer emits only the frozen schema keys', async () => {
+  const { parseDocument } = await import('yaml');
+  const rendered = renderRouterConfig(routerConfig);
+  const document = parseDocument(rendered);
+  assert.equal(document.errors.length, 0);
+  const value = document.toJS();
+  assert.deepEqual(
+    Object.keys(value).sort(),
+    [
+      'activation',
+      'artifactsPath',
+      'devReload',
+      'environment',
+      'host',
+      'http',
+      'profile',
+      'releaseMode',
+      'requestTimeoutMs',
+      'runtime',
+      'serviceDb',
+    ].sort(),
+  );
+  assert.deepEqual(
+    Object.keys(value.http).sort(),
+    ['maxRequestBytes', 'maxResponseBytes', 'port'],
+  );
+  assert.deepEqual(
+    Object.keys(value.runtime).sort(),
+    ['maxConcurrency', 'path', 'port'],
+  );
+  assert.deepEqual(Object.keys(value.activation), ['prepareTimeoutMs']);
+  assert.deepEqual(Object.keys(value.serviceDb), ['mongoUrl']);
+  assert.equal(Object.hasOwn(value, 'ecosystemStoreCliPath'), false);
 });
 
 test('router config fails closed when artifact path or Mongo URL is omitted', () => {
@@ -220,10 +318,7 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     assert.doesNotMatch(router, /idleTimeoutMs/);
     assert.doesNotMatch(router, /bodyLimitBytes/);
     assert.doesNotMatch(router, /^artifactRoots?:/m);
-    assert.match(
-      router,
-      new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(join(devHome, 'bin', process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler'))}$`, 'm'),
-    );
+    assert.doesNotMatch(router, /^ecosystemStoreCliPath:/m);
     assert.doesNotMatch(router, /^rewrite:/m);
   } finally {
     await rm(devHome, { recursive: true, force: true });

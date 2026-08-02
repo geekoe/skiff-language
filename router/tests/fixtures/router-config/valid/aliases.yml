@@ -1,0 +1,15 @@
+profile: staging
+manifest: manifests/one.json
+httpPort: 5010
+runtimePort: 5011
+runtimePath: /runtime-dev
+websocket:
+  path: /socket
+artifactsPath: ./artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/skiff
+http:
+  maxRequestBytes: 2
+  maxResponseBytes: 2
+runtime:
+  maxConcurrency: 2

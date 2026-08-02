@@ -53,8 +53,6 @@ try {
     expected.paths.serviceDbEncryptionKeyringFile,
     join(instanceRoot, 'dev-home', 'secrets', 'service-db-keyring.json'),
   );
-  assert.equal(expected.urls.routerReload, 'http://127.0.0.1:4101/__skiff/reload-artifacts');
-
   await run('node', [skiffCli, 'instance', 'init', configPath]);
   const configText = await readFile(configPath, 'utf8');
   assert.match(configText, /^devHome: /m);
@@ -131,8 +129,6 @@ try {
   assert.equal(paths.mongoPort, 27017);
   assert.equal(paths.httpMaxRequestBytes, 67108864);
   assert.equal(paths.httpMaxResponseBytes, 8388608);
-  assert.equal(paths.routerReloadUrl, 'http://127.0.0.1:4101/__skiff/reload-artifacts');
-
   const status = JSON.parse(await runCapture('node', [skiffCli, 'instance', 'status', configPath, '--json']));
   assert.equal(status.configPath, configPath);
   assert.equal(status.instanceRoot, instanceRoot);

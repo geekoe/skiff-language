@@ -1,0 +1,16 @@
+profile: dev
+artifactsPath: ./artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/skiff
+http:
+  maxRequestBytes: 1
+  maxResponseBytes: 1
+runtime:
+  maxConcurrency: 1
+rewrite:
+  - host: account.localhost
+    path: /api
+    service: skiff.run/account
+    version: 0.1.0
+  - host: registry.localhost
+    service: skiff.run/registry

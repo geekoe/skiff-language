@@ -1,3 +1,7 @@
+# Router process config — frozen contract (see
+# doc/implementation/router-rust-migration-c-config-leaf.md). Unknown keys are
+# rejected; relative paths resolve against this file; secret leaves
+# (serviceDb.mongoUrl, direct OSS credentials) are redacted in diagnostics.
 profile: dev
 environment: dev
 host: 127.0.0.1

@@ -1,0 +1,24 @@
+profile: dev
+host: 127.0.0.1
+environment: "dev"
+artifactsPath: "/tmp/skiff/artifacts"
+devReload: true
+requestTimeoutMs: 20000
+activation:
+  prepareTimeoutMs: 120000
+
+http:
+  port: 4000
+  maxRequestBytes: 67108864
+  maxResponseBytes: 8388608
+
+runtime:
+  port: 4001
+  path: /runtime
+  maxConcurrency: 128
+
+serviceDb:
+  mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false"
+
+telemetry:
+  endpoint: "ws://127.0.0.1:4002/telemetry"
