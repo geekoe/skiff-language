@@ -140,15 +140,13 @@ try {
     remoteNodeBin,
   });
 
-  await remoteExec(`mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,telemetry,router,scripts,runtime-home}`);
+  await remoteExec(`mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,telemetry,scripts,runtime-home}`);
 
   if (deploySelection.has('router')) {
-    await rsync(`${skiffRoot}/router/`, `${remote}:${remoteSkiff}/router/`, [
-      '--exclude', 'node_modules',
-      '--exclude', '.playwright-profile',
-      '--exclude', '.browser-screenshot',
-      '--exclude', 'router.yml',
-    ]);
+    await uploadBinary(
+      await binaryPathFor('router'),
+      `${remoteSkiff}/bin/skiff-router`,
+    );
     await rsync(
       path.join(configDir, 'router.yml'),
       `${remote}:${remoteSkiff}/config/router.yml`,
@@ -195,9 +193,6 @@ try {
     await rsync(`${tempRoot}/ecosystem.config.cjs`, `${remote}:${remoteSkiff}/ecosystem.config.cjs`);
   }
 
-  if (deploySelection.has('router')) {
-    await remoteExec(`cd ${remoteSkiff}/router && PATH=${remoteNodeBin}:$PATH pnpm install --prod=false --ignore-scripts`);
-  }
   if (deploySelection.has('telemetry')) {
     await remoteExec(`cd ${remoteSkiff}/telemetry && PATH=${remoteNodeBin}:$PATH pnpm install --prod=false --ignore-scripts`);
   }
@@ -210,7 +205,7 @@ try {
     buildManifest: buildManifestPath,
     buildCommit: buildManifest.commit,
     remoteSkiff,
-    router: `${remoteSkiff}/router`,
+    router: `${remoteSkiff}/bin/skiff-router`,
     runtimeHome: `${remoteSkiff}/runtime-home`,
     config: `${remoteSkiff}/config`,
     binaries: `${remoteSkiff}/bin`,
@@ -245,7 +240,7 @@ try {
 
 async function validateSelectedBuildUnits(selection) {
   for (const unitName of selection) {
-    if (unitName === 'router' || unitName === 'telemetry') {
+    if (unitName === 'telemetry') {
       await assertCurrentVerifiedTsUnit(unitName);
       continue;
     }
@@ -336,7 +331,7 @@ async function readBuildManifest(file) {
 
 function canDeployWithoutBuildManifest(selection) {
   for (const unitName of selection) {
-    if (unitName === 'router' || unitName === 'telemetry') {
+    if (unitName === 'telemetry' || unitName === 'router') {
       return false;
     }
     if (unitName === 'runtime' && !args.runtimeBinary) {
@@ -402,17 +397,16 @@ module.exports = {
   apps: [
     {
       name: 'skiff-router',
-      cwd: '${options.remoteSkiff}/router',
-      script: 'src/router/server.ts',
-      interpreter: NODE_BIN + '/node',
-      interpreter_args: '--import tsx',
+      cwd: '${options.remoteSkiff}',
+      script: '${options.remoteSkiff}/bin/skiff-router',
       args: '--config ${options.remoteSkiff}/config/router.yml',
+      interpreter: 'none',
       watch: false,
       autorestart: true,
       max_restarts: 5,
       restart_delay: 2000,
       env: {
-        NODE_ENV: 'production',
+        RUST_LOG: 'info',
       },
     },
     {
@@ -540,7 +534,7 @@ function expandDeploySelector(rawOnly) {
     case 'runtime':
       return ['runtime'];
     case 'router':
-      return ['router', 'compiler'];
+      return ['router'];
     case 'telemetry':
       return [rawOnly];
     default:

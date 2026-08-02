@@ -1,20 +1,17 @@
-// Test-side A0 actor-routing projection producer for the actor parity
-// differential (plan §2.4 A1/A2, E-actor-parity).
+// Test-side A1 actor-routing projection producer for `router-live:actor`.
 //
 // The production A1 producer (compiler publish path) is a sibling batch-10
-// node; this harness needs the same canonical record today so both Router
-// implementations consume the *same real* projection. It reads only the
-// compiler-produced PackageArtifact / File IR records inside the artifact
-// root (test-side A1 producer role, never imported by production code) and
-// writes the canonical `records/actor-routing/current.json` byte stream.
+// node; this harness needs the same canonical record today so the Rust
+// Router consumes the real projection. It reads only the compiler-produced
+// PackageArtifact / File IR records inside the artifact root (test-side A1
+// producer role, never imported by production code) and writes the canonical
+// `records/actor-routing/current.json` byte stream.
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import {
-  ACTOR_ROUTING_PROJECTION_RECORD_PATH,
-} from './actor_parity_constants.mjs';
-
+export const ACTOR_ROUTING_PROJECTION_RECORD_PATH =
+  'records/actor-routing/current.json';
 export const ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION =
   'skiff-actor-routing-projection-v1';
 
@@ -104,16 +101,16 @@ function canonicalJsonString(value) {
       .map((key) => `"${canonicalEscape(key)}":${canonicalJsonString(record[key])}`)
       .join(',')}}`;
   }
-  throw new Error('actor parity projection contains a non-JSON value');
+  throw new Error('actor live projection contains a non-JSON value');
 }
 
 function canonicalNumber(value) {
   if (Object.is(value, -0)) return '0';
   if (!Number.isFinite(value)) {
-    throw new Error('actor parity projection contains a non-finite number');
+    throw new Error('actor live projection contains a non-finite number');
   }
   if (!Number.isInteger(value) || !Number.isSafeInteger(value)) {
-    throw new Error('actor parity projection contains a non-canonical number');
+    throw new Error('actor live projection contains a non-canonical number');
   }
   return String(value);
 }
@@ -182,7 +179,7 @@ async function loadAssemblyRecordForDeployment(artifactRoot, serviceId) {
     }
   }
   throw new Error(
-    `actor parity artifact has no runtime assembly for deployment service ${serviceId} `
+    `actor live artifact has no runtime assembly for deployment service ${serviceId} `
     + `(scanned ${files.length} assembly records)`,
   );
 }
@@ -197,7 +194,7 @@ function firstActivationTemplate(assembly) {
     || typeof template !== 'object'
     || typeof template.implementationPackageBuildId !== 'string'
   ) {
-    throw new Error('actor parity runtime assembly has no activation template package build');
+    throw new Error('actor live runtime assembly has no activation template package build');
   }
   return template;
 }
@@ -205,7 +202,7 @@ function firstActivationTemplate(assembly) {
 function codeSlotPackageForBuild(assembly, packageBuildId) {
   const codeSlots = assembly?.packageLinkPlan?.codeSlots;
   if (!Array.isArray(codeSlots)) {
-    throw new Error('actor parity runtime assembly has no packageLinkPlan.codeSlots');
+    throw new Error('actor live runtime assembly has no packageLinkPlan.codeSlots');
   }
   const slot = codeSlots.find(
     (candidate) => candidate?.package?.packageBuildId === packageBuildId,
@@ -220,7 +217,7 @@ function codeSlotPackageForBuild(assembly, packageBuildId) {
     || typeof packageRef.packageLocalAbiIdentity !== 'string'
   ) {
     throw new Error(
-      `actor parity assembly code slot for build ${packageBuildId} has no exact package ref`,
+      `actor live assembly code slot for build ${packageBuildId} has no exact package ref`,
     );
   }
   return {

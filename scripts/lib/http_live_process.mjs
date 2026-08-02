@@ -1,13 +1,11 @@
 // Process orchestration for the `router-live:http` managed harness.
 //
-// The TS→Rust→TS rollback roundtrip switches the Router process through the
-// canonical `RouterProcessSpec` / rollback-manifest seam only: TS is started
-// with the frozen `pnpm --dir <router> dev --config <path>` command and Rust
-// with the explicit binary, both reading the same devHome/router.yml and the
-// same committed activation tuple. The real Runtime process is started once
-// and stays alive through all three phases; a test-only WS relay records
-// every frame so the harness can assert the handshake tuple, request frames
-// and cancel frames without production seams.
+// Post-cutover the Router is always the Rust binary: the harness starts the
+// explicit `skiff-router` binary with the canonical
+// `RouterProcessSpec`/`devHome/router.yml` and the same committed activation
+// tuple. The real Runtime process is started per phase; a test-only WS relay
+// records every frame so the harness can assert the handshake tuple, request
+// frames and cancel frames without production seams.
 
 import { spawn } from 'node:child_process';
 import {
@@ -28,10 +26,6 @@ import {
   routerProcessInvocation,
 } from './dev-runtime-paths.mjs';
 import { assertPortsClosed } from './local-port-lease.mjs';
-import {
-  buildRouterRollbackManifest,
-  assertRouterRollbackManifest,
-} from './rollback-manifest.mjs';
 import { renderRouterConfig, renderRuntimeConfig } from './runtime-stack-config.mjs';
 
 const LISTENER_TIMEOUT_MS = 45_000;
@@ -46,52 +40,13 @@ const HANDSHAKE_SEQUENCE = [
   'runtime.health',
 ];
 
-export async function ensureTsRouterDependencies({ repoRoot, pnpm = 'pnpm' }) {
-  const nodeModules = join(repoRoot, 'router', 'node_modules');
-  try {
-    await access(nodeModules);
-    return false;
-  } catch {
-    console.log('router-live:http: installing TS router dependencies (frozen lockfile)');
-    await captureCheckedCommand(
-      pnpm,
-      ['--dir', join(repoRoot, 'router'), 'install', '--frozen-lockfile'],
-      { cwd: repoRoot },
-    );
-    await access(nodeModules);
-    return true;
-  }
-}
-
 export function createHttpLiveRouterSpecs({ repoRoot, devHome }) {
-  const tsSpec = resolveRouterProcessSpec({
-    devHome,
-    implementation: 'ts',
-    repoRoot,
-  });
-  const rustSpec = resolveRouterProcessSpec({
-    devHome,
-    implementation: 'rust',
-    repoRoot,
-  });
-  const tsManifest = assertRouterRollbackManifest(
-    buildRouterRollbackManifest(tsSpec),
-  );
-  const rustManifest = assertRouterRollbackManifest(
-    buildRouterRollbackManifest(rustSpec),
-  );
+  const rustSpec = resolveRouterProcessSpec({ devHome, repoRoot });
   return {
-    ts: {
-      implementation: 'ts',
-      spec: tsSpec,
-      invocation: routerProcessInvocation(tsSpec),
-      manifest: tsManifest,
-    },
     rust: {
       implementation: 'rust',
       spec: rustSpec,
       invocation: routerProcessInvocation(rustSpec),
-      manifest: rustManifest,
     },
   };
 }
@@ -169,6 +124,7 @@ export async function spawnLoggedProcess(command, args, {
 }) {
   const stdoutLog = await open(stdoutPath, 'w');
   const stderrLog = await open(stderrPath, 'w');
+  // child-process-owner: http-live-process-spawn
   const child = spawn(command, args, {
     cwd,
     stdio: ['ignore', stdoutLog.fd, stderrLog.fd],

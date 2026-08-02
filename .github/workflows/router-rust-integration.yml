@@ -41,7 +41,7 @@ jobs:
             echo "related=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/check-router-http-live\.mjs|scripts/lib/http_live_|scripts/check-router-ws-live\.mjs|scripts/check-router-actor-live\.mjs|scripts/lib/router-differential/actor_parity_|scripts/fixtures/router-differential/actor_parity_inventory\.json|scripts/check-router-chat-live\.mjs|scripts/lib/router-chat-live-manifest\.mjs|scripts/fixtures/router-chat-live/|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
+          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/check-router-session-live\.mjs|scripts/check-router-dispatch-live\.mjs|scripts/check-router-activation-live\.mjs|scripts/check-router-http-live\.mjs|scripts/lib/http_live_|scripts/check-router-ws-live\.mjs|scripts/check-router-actor-live\.mjs|scripts/check-router-chat-live\.mjs|scripts/lib/router-chat-live-manifest\.mjs|scripts/fixtures/router-chat-live/|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/|runtime/(driver|host|loader)/)'; then
             echo "related=true" >> "$GITHUB_OUTPUT"
           else
             echo "related=false" >> "$GITHUB_OUTPUT"
@@ -267,9 +267,9 @@ jobs:
   # Stable required-check name: `Router Rust HTTP (managed)`. Same
   # classifier semantics as the other managed jobs: the job always exists and
   # always succeeds (explicit skip for unrelated PRs), so the required check
-  # can never be missing. Related PRs run real HTTP through real Router
-  # (TS -> Rust -> TS rollback roundtrip) and real Runtime against an
-  # isolated temporary Mongo replica set.
+  # can never be missing. Related PRs run real HTTP through the real Rust
+  # Router binary and real Runtime against an isolated temporary Mongo
+  # replica set.
   router-rust-http-managed:
     name: Router Rust HTTP (managed)
     needs: change-classifier
@@ -294,10 +294,6 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Set up pnpm
-        if: needs.change-classifier.outputs.related == 'true'
-        run: npm install --global pnpm@10.29.2
-
       - name: Set up Rust
         if: needs.change-classifier.outputs.related == 'true'
         run: |
@@ -318,10 +314,6 @@ jobs:
           echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
           sudo apt-get update
           sudo apt-get install -y mongodb-org-server mongodb-mongosh
-
-      - name: Install TS router dependencies (rollback roundtrip process)
-        if: needs.change-classifier.outputs.related == 'true'
-        run: pnpm --dir router install --frozen-lockfile
 
       - name: Run router-live:http managed gate
         if: needs.change-classifier.outputs.related == 'true'
@@ -386,11 +378,10 @@ jobs:
   # Stable required-check name: `Router Rust Actor (managed)`. Same
   # classifier semantics as the bootstrap/session jobs: the job always exists
   # and always succeeds (explicit skip for unrelated PRs). Related PRs run the
-  # TS/Rust differential actor full chain (both Router implementations consume
-  # the same canonical actor-routing projection; two real Runtime replicas per
-  # side with independent runtime homes through test-only relays) plus the
-  # Rust-only fail-closed/zero-residue regression layer, against isolated
-  # temporary Mongo replica sets.
+  # Rust-only two-replica actor full chain (real compiler artifact + canonical
+  # actor-routing projection + two real Runtime replicas with independent
+  # runtime homes through test-only relays) plus the fail-closed/zero-residue
+  # regression layer, against isolated temporary Mongo replica sets.
   router-rust-actor-managed:
     name: Router Rust Actor (managed)
     needs: change-classifier
@@ -415,10 +406,6 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Set up pnpm
-        if: needs.change-classifier.outputs.related == 'true'
-        run: npm install --global pnpm@10.29.2
-
       - name: Set up Rust
         if: needs.change-classifier.outputs.related == 'true'
         run: |
@@ -439,10 +426,6 @@ jobs:
           echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
           sudo apt-get update
           sudo apt-get install -y mongodb-org-server mongodb-mongosh
-
-      - name: Install TS router dependencies (differential TS side)
-        if: needs.change-classifier.outputs.related == 'true'
-        run: pnpm --dir router install --frozen-lockfile
 
       - name: Run router-live:actor managed gate
         if: needs.change-classifier.outputs.related == 'true'

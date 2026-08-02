@@ -72,7 +72,6 @@ test('combined and full modes remain disjoint command-double orchestrations', as
       1,
     );
     assert.equal(combinedDouble.commands.filter(isRunSkiffTests).length, 0);
-    assert.equal(combinedDouble.commands.filter(isRouterDependencyCommand).length, 0);
     assert.equal(combinedDouble.commands.filter(isIdentityProbe).length, 4);
     assert.equal(combinedDouble.commands.filter(isRunnerBuild).length, 3);
     assert.equal(combinedDouble.commands.filter(isCompilerBuild).length, 3);
@@ -117,12 +116,6 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(fullDouble.commands.filter(isMergeOnlyFixture).length, 0);
     assert.equal(fullDouble.commands.filter(isIdentityProbe).length, 0);
     assert.equal(fullDouble.commands.filter(isRunSkiffTests).length, 1);
-    assert.equal(
-      fullDouble.commands.filter((entry) =>
-        isRouterDependencyInstall(entry, join(fullOptions.bWorktree, 'router'))).length,
-      1,
-    );
-    assert.equal(fullDouble.commands.filter(isLocalRouterTsx).length, 1);
     assert.equal(fullDouble.commands.filter(isRunnerBuild).length, 2);
     assert.equal(fullDouble.commands.filter(isCompilerBuild).length, 0);
     assert.deepEqual(full.rounds.map((round) => round.label), ['A-origin-full']);
@@ -147,127 +140,9 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.match(full.hostAttempt.outputSha256, /^[a-f0-9]{64}$/);
     assert.equal(full.cleanup.processGroupsAbsent, true);
     assert.equal(full.cleanup.portsAbsent, true);
-    assert.equal(full.nodeDependencies.status, 'PASS');
-    const installIndex = fullDouble.commands.findIndex((entry) =>
-      isRouterDependencyInstall(entry, join(fullOptions.bWorktree, 'router')));
-    const tsxIndex = fullDouble.commands.findIndex(isLocalRouterTsx);
     const hostIndex = fullDouble.commands.findIndex(isRunSkiffTests);
     const bBuildIndex = fullDouble.commands.findLastIndex(isRunnerBuild);
-    const bWorktreeIndex = fullDouble.commands.findIndex(({ command, args }) => (
-      command === 'git' && args.includes('add') && args.includes(fullOptions.bWorktree)
-    ));
-    assert.ok(bWorktreeIndex < installIndex);
-    assert.ok(bBuildIndex < installIndex && installIndex < tsxIndex && tsxIndex < hostIndex);
-    const install = fullDouble.commands[installIndex];
-    assert.deepEqual(install.args, [
-      '--dir',
-      join(fullOptions.bWorktree, 'router'),
-      'install',
-      '--frozen-lockfile',
-      '--offline',
-    ]);
-    assert.equal(install.options.cwd, fullOptions.bWorktree);
-    assert.equal(fullDouble.commands[tsxIndex].options.cwd, fullOptions.bWorktree);
-    assert.equal(
-      fullDouble.commands[tsxIndex].command,
-      join(fullOptions.bWorktree, 'router', 'node_modules', '.bin', 'tsx'),
-    );
-    const nodeModuleReferences = fullDouble.commands.flatMap(({ command, args }) => (
-      [command, ...args].filter((value) => value.includes('node_modules'))
-    ));
-    assert.deepEqual(nodeModuleReferences, [
-      join(fullOptions.bWorktree, 'router', 'node_modules', '.bin', 'tsx'),
-    ]);
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test('Router dependencies fail closed before Host and preserve owned cleanup', async (t) => {
-  const scenarios = [
-    ['install-nonzero', 'install', 7, null],
-    ['install-throw', 'install', null, null],
-    ['tsx-signal', 'tsxExecutable', null, 'SIGTERM'],
-  ];
-  for (const [dependencyScenario, failedStep, code, signal] of scenarios) {
-    await t.test(dependencyScenario, async () => {
-      const fixture = await gateFixture();
-      try {
-        const combinedOptions = await createCombinedLedger(fixture);
-        const commandDouble = fixture.commandDouble('full', {
-          combinedLedger: combinedOptions.ledger,
-          dependencyScenario,
-        });
-        const ledger = await runPlatformSourceSharedTargetProbe(
-          fixture.options('full', { combinedLedger: combinedOptions.ledger }),
-          fixture.dependencies(commandDouble),
-        );
-        assert.equal(ledger.status, 'FAIL');
-        assert.equal(ledger.fullProbeRuns, 0);
-        assert.equal(ledger.hostAttempt, null);
-        assert.equal(ledger.nodeDependencies.status, 'FAIL');
-        assert.equal(ledger.nodeDependencies.phase, 'router-dependencies');
-        assert.equal(ledger.nodeDependencies[failedStep].code, code);
-        assert.equal(ledger.nodeDependencies[failedStep].signal, signal);
-        if (dependencyScenario === 'install-throw') {
-          assert.equal(ledger.nodeDependencies[failedStep].stdoutSha256, null);
-          assert.equal(ledger.nodeDependencies[failedStep].stderrSha256, null);
-          assert.equal(ledger.nodeDependencies[failedStep].spawnError.code, 'ABORT_ERR');
-        } else {
-          assert.match(ledger.nodeDependencies[failedStep].stdoutSha256, /^[a-f0-9]{64}$/);
-          assert.match(ledger.nodeDependencies[failedStep].stderrSha256, /^[a-f0-9]{64}$/);
-        }
-        assert.equal(
-          JSON.stringify(ledger).includes('P5_F21C_DEPENDENCY_OUTPUT_SENTINEL'),
-          false,
-        );
-        assert.match(ledger.firstError, /Gate Router dependency phase/);
-        assert.equal(commandDouble.commands.filter(isRunSkiffTests).length, 0);
-        assert.equal(
-          commandDouble.commands.filter((entry) =>
-            isRouterDependencyInstall(
-              entry,
-              join(commandDouble.targetRoot, 'router'),
-            )).length,
-          1,
-        );
-        assert.equal(
-          commandDouble.commands.filter(isLocalRouterTsx).length,
-          dependencyScenario === 'tsx-signal' ? 1 : 0,
-        );
-        assert.equal(ledger.cleanup.aWorktreeAbsent, true);
-        assert.equal(ledger.cleanup.bWorktreeAbsent, true);
-        assert.equal(ledger.cleanup.taskRootAbsent, true);
-      } finally {
-        await rm(fixture.root, { recursive: true, force: true });
-      }
-    });
-  }
-});
-
-test('Router dependency primary failure remains first when worktree cleanup also fails', async () => {
-  const fixture = await gateFixture();
-  try {
-    const combinedOptions = await createCombinedLedger(fixture);
-    const commandDouble = fixture.commandDouble('full', {
-      combinedLedger: combinedOptions.ledger,
-      dependencyScenario: 'install-nonzero',
-      failRemove: true,
-    });
-    const ledger = await runPlatformSourceSharedTargetProbe(
-      fixture.options('full', { combinedLedger: combinedOptions.ledger }),
-      fixture.dependencies(commandDouble),
-    );
-    assert.equal(ledger.status, 'FAIL');
-    assert.match(ledger.firstError, /Router dependency phase install failed/);
-    assert.equal(ledger.cleanup.errors.length > 0, true);
-    assert.equal(
-      commandDouble.commands.filter(({ command, args }) => (
-        command === 'git' && args.includes('worktree') && args.includes('remove')
-      )).length,
-      2,
-    );
-    assert.equal(commandDouble.commands.filter(isRunSkiffTests).length, 0);
+    assert.ok(bBuildIndex < hostIndex);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -448,7 +323,6 @@ test('full artifact evidence blocks dependencies unless root materialization is 
         assert.equal(ledger.status, 'FAIL');
         assert.equal(ledger.fullProbeRuns, 0);
         assert.equal(ledger.hostAttempt, null);
-        assert.equal(commandDouble.commands.filter(isRouterDependencyCommand).length, 0);
         assert.equal(ledger.artifactEvidence.length, 1);
         const evidence = ledger.artifactEvidence[0];
         assert.equal(evidence.verdict, 'FAIL');
@@ -771,7 +645,6 @@ function createCommandDouble({
   failRemove = false,
   artifactScenario = 'legal-root-materialization',
   hostScenario = 'pass',
-  dependencyScenario = 'pass',
   hostSource,
 }) {
   const commands = [];
@@ -847,23 +720,6 @@ function createCommandDouble({
         missing: artifactScenario === 'missing-fresh' ? 'skiff-compiler-source' : null,
         conflict: artifactScenario === 'fresh-conflict' ? 'skiff-compiler' : null,
       });
-    } else if (command === 'pnpm' && args.includes('install')) {
-      if (dependencyScenario === 'install-throw') {
-        const error = new Error('P5_F21C_DEPENDENCY_OUTPUT_SENTINEL');
-        error.code = 'ABORT_ERR';
-        throw error;
-      }
-      if (dependencyScenario === 'install-nonzero') {
-        outcome.code = 7;
-        outcome.stderr = 'offline dependency cache is incomplete P5_F21C_DEPENDENCY_OUTPUT_SENTINEL';
-      }
-    } else if (command.endsWith(join('router', 'node_modules', '.bin', 'tsx'))) {
-      outcome.stdout = 'tsx v4.21.0\n';
-      if (dependencyScenario === 'tsx-signal') {
-        outcome.code = null;
-        outcome.signal = 'SIGTERM';
-        outcome.stderr = 'tsx stopped P5_F21C_DEPENDENCY_OUTPUT_SENTINEL';
-      }
     } else if (command === 'rg') {
       outcome.code = 1;
     } else if (command === 'node' && args.some((value) => value.endsWith('run-skiff-tests.mjs'))) {
@@ -1066,24 +922,6 @@ function isMergeOnlyFixture({ command, args }) {
 
 function isRunSkiffTests({ command, args }) {
   return command === 'node' && args.some((value) => value.endsWith('run-skiff-tests.mjs'));
-}
-
-function isRouterDependencyInstall({ command, args }, routerSourceRoot) {
-  return command === 'pnpm'
-    && args[0] === '--dir'
-    && args[1] === routerSourceRoot
-    && JSON.stringify(args.slice(2)) === JSON.stringify([
-      'install', '--frozen-lockfile', '--offline',
-    ]);
-}
-
-function isLocalRouterTsx({ command, args }) {
-  return command.endsWith(join('router', 'node_modules', '.bin', 'tsx'))
-    && JSON.stringify(args) === JSON.stringify(['--version']);
-}
-
-function isRouterDependencyCommand(entry) {
-  return isRouterDependencyInstall(entry) || isLocalRouterTsx(entry);
 }
 
 function isIdentityProbe({ command, args }) {

@@ -7,7 +7,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
-import { assertRouterImplementation } from './dev-runtime-paths.mjs';
 import { buildIsolatedActivationState } from './isolated-test-activation-seed.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 
@@ -20,19 +19,15 @@ export function isolatedTestInstanceConfigText({
   basePort,
   mongoPort,
   environment = 'skiff-test',
-  routerImplementation = 'ts',
 }) {
   if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
     throw new Error('isolated test instance mongoPort must be a positive integer');
   }
-  assertRouterImplementation(routerImplementation);
   return [
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
     `environment: ${JSON.stringify(environment)}`,
     'packageDirs:',
-    'router:',
-    `  implementation: ${routerImplementation}`,
     'ports:',
     `  base: ${basePort}`,
     `  mongo: ${mongoPort}`,
@@ -165,6 +160,16 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment }),
         { cwd: skiffRoot, env, signal },
       );
+      // The Rust Router bootstrap strictly loads the canonical actor-routing
+      // projection record. The generation-zero isolated fixture has no actor
+      // methods; write the empty canonical record so the real binary starts.
+      const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
+      await mkdir(projectionDirectory, { recursive: true });
+      await writeFile(
+        join(projectionDirectory, 'current.json'),
+        '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}',
+        { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+      );
       return JSON.parse(result.stdout);
     },
     spawnSupervisor: ({ configPath, startupGate, startupReady, env }) => {
@@ -290,7 +295,7 @@ async function initializeRouterActivationState({
     state,
   };
   const script = [
-    'db.router_assembly_activation_states.insertOne(',
+    'db.getSiblingDB("skiff-router").getCollection("activation_state").insertOne(',
     JSON.stringify(document),
     ');',
   ].join('');

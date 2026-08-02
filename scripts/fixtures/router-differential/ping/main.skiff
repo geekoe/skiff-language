@@ -1,5 +1,0 @@
-import std
-
-function ping() -> string {
-  return "pong"
-}

@@ -4,7 +4,6 @@ export const REQUIRED_RUNTIME_EXECUTION_BOUNDARY_SUBJECT_IDS = Object.freeze([
   'owned-context-user-code-spawn',
   'required-host-request-entry',
   'recoverable-callback-rejection',
-  'router-runtime-service-rejection',
 ]);
 
 export const REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES = Object.freeze([
@@ -22,14 +21,12 @@ export const REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES = Object.freeze([
   'assembly-request-wire',
   'assembly-request-spawn',
   'recoverable-callback-encoder',
-  'router-runtime-service-rejection',
 ]);
 
 export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
   defineRuntimeExecutionBoundaryRegistry({
     sourceRoots: [
       { id: 'runtime-rust', language: 'rust', root: 'runtime' },
-      { id: 'router-typescript', language: 'typescript', root: 'router/src' },
     ],
     subjects: [
       {
@@ -106,15 +103,6 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
           'runtime/boundary/src/persistent.rs',
         ],
         requiredFiles: ['runtime/boundary/src/recoverable.rs'],
-      },
-      {
-        id: 'router-runtime-service-rejection',
-        language: 'typescript',
-        discoveryRoots: ['router/src'],
-        requiredFiles: [
-          'router/src/router/runtimeDispatcher.ts',
-          'router/src/router/runtimeEndpoint.ts',
-        ],
       },
     ],
     owners: [
@@ -270,16 +258,6 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         symbol: 'RecoverableBoundaryCodec',
         ownedRoots: ['runtime/boundary/src/recoverable.rs'],
         requiredFile: 'runtime/boundary/src/recoverable.rs',
-      },
-      {
-        role: 'router-runtime-service-rejection',
-        subjectId: 'router-runtime-service-rejection',
-        language: 'typescript',
-        declarationKind: 'method',
-        symbol: 'handleBinaryMessage',
-        ownedRoots: ['router/src/router/runtimeEndpoint.ts'],
-        requiredFile: 'router/src/router/runtimeEndpoint.ts',
-        requiredAnchors: [],
       },
     ],
   });

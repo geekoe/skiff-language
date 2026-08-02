@@ -179,6 +179,10 @@ test('package and test transports share the platform root while assembly stays f
         root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
         subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
       },
+      {
+        id: 'actor-test-effect-capability',
+        root: 'test-runner/fixtures/actor-full-chain-acceptance',
+      },
     ]);
 
     const omitted = await runProcess('cargo', [

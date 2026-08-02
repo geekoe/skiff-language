@@ -122,7 +122,13 @@ async function unitSpec(unitName) {
         inputs: ['artifact-identity', 'artifact-model'],
       });
     case 'router':
-      return tsUnit(unitName, 'router');
+      return rsUnit({
+        unitName,
+        manifest: 'router/Cargo.toml',
+        cargoBin: 'skiff-router',
+        outputName: 'skiff-router',
+        inputs: ['router', 'artifact-identity', 'artifact-model'],
+      });
     case 'telemetry':
       return tsUnit(unitName, 'telemetry');
     default:

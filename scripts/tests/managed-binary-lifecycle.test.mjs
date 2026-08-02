@@ -234,6 +234,10 @@ setInterval(() => {}, 60_000);
   const output = join(outputDir, process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler');
   writeFileSync(output, '#!/usr/bin/env node\\n');
   chmodSync(output, 0o755);
+} else if (bin === 'skiff-router') {
+  const output = join(outputDir, process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router');
+  writeFileSync(output, '#!/usr/bin/env node\\nimport { readFileSync } from \\'node:fs\\';\\nimport net from \\'node:net\\';\\nconst source = readFileSync(process.argv[2], \\'utf8\\');\\nconst ports = [...source.matchAll(/^\\\\s+port:\\\\s*(\\\\d+)$/gm)].map((match) => Number(match[1]));\\nfor (const port of new Set(ports)) { net.createServer(() => {}).listen(port, \\'127.0.0.1\\'); }\\nsetInterval(() => {}, 60_000);\\n');
+  chmodSync(output, 0o755);
 } else {
   throw new Error('unexpected fake cargo bin ' + bin);
 }

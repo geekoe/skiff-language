@@ -24,7 +24,7 @@ jobs:
           - scope: Implementation Tests
             command: node scripts/verify.mjs --only implementation-tests
           - scope: Router Rust Contracts and Process Smoke
-            command: node scripts/verify.mjs --only router-rust,router-rust-process-smoke
+            command: node scripts/verify.mjs --only router,router-rust-process-smoke
           - scope: Quality and Checks
             command: node scripts/verify.mjs --only rust-quality,type-check,checks
     steps:
@@ -49,7 +49,6 @@ jobs:
 
       - name: Install package dependencies
         run: |
-          pnpm --dir router install --frozen-lockfile
           pnpm --dir telemetry install --frozen-lockfile
           pnpm --dir scripts install --frozen-lockfile
           pnpm --dir vscode install --frozen-lockfile
