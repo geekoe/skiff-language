@@ -16,7 +16,8 @@ use skiff_runtime_linked_program::{
     LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
     LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTypeRef, PublicationResourceTable,
-    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, UnitAddr,
+    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr,
+    TypeDeclIr, UnitAddr,
 };
 
 use crate::{actor_executor_test_runtime as test_runtime, EvalRuntimeProgram, Interpreter};
@@ -27,6 +28,7 @@ pub(in crate::program_db::tests) const ACTOR_TYPE_ID: &str = "svc.main.Checkpoin
 pub(in crate::program_db::tests) const BODY_CREATE_BLOCK_LABEL: &str = "body-create";
 pub(in crate::program_db::tests) const ILLEGAL_FLOW_BLOCK_LABEL: &str = "illegal-flow";
 pub(in crate::program_db::tests) const TAIL_CALL_BARRIER_BLOCK_LABEL: &str = "tail-call-barrier";
+pub(in crate::program_db::tests) const ROLLBACK_THROW_BLOCK_LABEL: &str = "rollback-throw";
 const DB_PACKAGE_ID: &str = "skiff.run/db-actor-fixture-package";
 const DB_PACKAGE_VERSION: &str = "1.0.0";
 const DB_PACKAGE_BUILD: &str = "build:db-actor-fixture";
@@ -46,6 +48,8 @@ pub(in crate::program_db::tests) struct LinkedDbActorFixture {
     pub claim: DbLeaseClaimIr,
     pub read: DbLeaseReadIr,
     pub exact_local_call: CallIr,
+    pub rollback_catch_exception: ExprRefIr,
+    pub rollback_throw_transaction: DbTransactionIr,
 }
 
 impl LinkedDbActorFixture {
@@ -66,6 +70,13 @@ impl LinkedDbActorFixture {
             file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
             executable: 0,
         };
+        let mut types = RuntimeTypeContext::default();
+        types
+            .descriptors
+            .insert(nested_payload_addr(), nested_payload_decl());
+        types
+            .descriptors
+            .insert(transaction_failure_addr(), transaction_failure_decl());
         let program = Arc::new(EvalRuntimeProgram::new(
             ACTOR_SERVICE_ID,
             vec![Arc::clone(&file)],
@@ -73,7 +84,7 @@ impl LinkedDbActorFixture {
             PublicationResourceTable::default(),
             HashMap::new(),
             LinkOverlay::default(),
-            RuntimeTypeContext::default(),
+            types,
         ));
         let interpreter =
             Interpreter::with_program(Arc::clone(&program), test_runtime::runtime_factory());
@@ -91,6 +102,8 @@ impl LinkedDbActorFixture {
             claim: ir.claim,
             read: ir.read,
             exact_local_call: ir.exact_local_call,
+            rollback_catch_exception: ir.rollback_catch_exception,
+            rollback_throw_transaction: ir.rollback_throw_transaction,
         }
     }
 
@@ -112,9 +125,12 @@ struct FixtureIr {
     claim: DbLeaseClaimIr,
     read: DbLeaseReadIr,
     exact_local_call: CallIr,
+    rollback_catch_exception: ExprRefIr,
+    rollback_throw_transaction: DbTransactionIr,
 }
 
 fn fixture_ir() -> FixtureIr {
+    let rollback_throw_transaction = rollback_throw_transaction();
     FixtureIr {
         raw_create: raw_create(),
         prepared_create: prepared_create(),
@@ -125,6 +141,8 @@ fn fixture_ir() -> FixtureIr {
         claim: lease_claim(),
         read: lease_read(),
         exact_local_call: exact_local_call(),
+        rollback_catch_exception: ExprRefIr { expression: 20 },
+        rollback_throw_transaction,
     }
 }
 
@@ -169,6 +187,54 @@ fn runtime_string_type() -> LinkedTypeRef {
     LinkedTypeRef::Native {
         name: "string".to_string(),
         args: Vec::new(),
+    }
+}
+
+fn nested_payload_addr() -> TypeAddr {
+    TypeAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::loaded_file(0),
+        type_index: 2,
+    }
+}
+
+fn transaction_failure_addr() -> TypeAddr {
+    TypeAddr {
+        unit: UnitAddr::Service,
+        file: FileAddr::loaded_file(0),
+        type_index: 3,
+    }
+}
+
+fn nested_payload_type() -> LinkedTypeRef {
+    LinkedTypeRef::Address {
+        addr: nested_payload_addr(),
+    }
+}
+
+fn transaction_failure_type() -> LinkedTypeRef {
+    LinkedTypeRef::Address {
+        addr: transaction_failure_addr(),
+    }
+}
+
+fn nested_payload_decl() -> TypeDeclIr {
+    TypeDeclIr {
+        name: "NestedPayload".to_string(),
+        descriptor: skiff_runtime_linked_program::LinkedTypeDescriptor::Record {
+            fields: BTreeMap::from([("message".to_string(), runtime_string_type())]),
+        },
+        ..TypeDeclIr::default()
+    }
+}
+
+fn transaction_failure_decl() -> TypeDeclIr {
+    TypeDeclIr {
+        name: "TransactionFailure".to_string(),
+        descriptor: skiff_runtime_linked_program::LinkedTypeDescriptor::Record {
+            fields: BTreeMap::from([("nested".to_string(), nested_payload_type())]),
+        },
+        ..TypeDeclIr::default()
     }
 }
 
@@ -263,6 +329,15 @@ fn explicit_transaction() -> DbTransactionIr {
     }
 }
 
+fn rollback_throw_transaction() -> DbTransactionIr {
+    DbTransactionIr {
+        mode: DbTransactionModeIr::Value,
+        body: ROLLBACK_THROW_BLOCK_LABEL.to_string(),
+        result: Some(ExprRefIr { expression: 17 }),
+        result_type: transaction_failure_type(),
+    }
+}
+
 fn lease_claim() -> DbLeaseClaimIr {
     DbLeaseClaimIr {
         target: thread_target(),
@@ -326,6 +401,22 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
         TypeDeclarationIr {
             type_index: 1,
             symbol: "RawThread".to_string(),
+            source_span: None,
+        },
+    );
+    declarations.types.insert(
+        "NestedPayload".to_string(),
+        TypeDeclarationIr {
+            type_index: 2,
+            symbol: "NestedPayload".to_string(),
+            source_span: None,
+        },
+    );
+    declarations.types.insert(
+        "TransactionFailure".to_string(),
+        TypeDeclarationIr {
+            type_index: 3,
+            symbol: "TransactionFailure".to_string(),
             source_span: None,
         },
     );
@@ -404,6 +495,11 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                     ty: integer_type(),
                     encoding: ActorFieldEncodingIr::CanonicalValueV1,
                 },
+                LinkedActorField {
+                    name: "mirror".to_string(),
+                    ty: integer_type(),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
             ],
             create: None,
             public_methods: Vec::new(),
@@ -422,6 +518,8 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                     fields: BTreeMap::new(),
                 },
             ),
+            nested_payload_decl(),
+            transaction_failure_decl(),
         ],
         constants: Vec::new(),
         executables: vec![LinkedExecutable {
@@ -462,6 +560,10 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                         label: TAIL_CALL_BARRIER_BLOCK_LABEL.to_string(),
                         statements: vec![StmtRefIr { statement: 2 }],
                     },
+                    BlockIr {
+                        label: ROLLBACK_THROW_BLOCK_LABEL.to_string(),
+                        statements: vec![StmtRefIr { statement: 4 }],
+                    },
                 ],
                 statements: vec![
                     LinkedStmtIr::Expr {
@@ -475,6 +577,9 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                     },
                     LinkedStmtIr::Return {
                         value: Some(ExprRefIr { expression: 10 }),
+                    },
+                    LinkedStmtIr::Expr {
+                        value: ExprRefIr { expression: 13 },
                     },
                 ],
                 expressions: vec![
@@ -520,6 +625,63 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
                         value: LiteralIr::String {
                             value: "structured-tail-result".to_string(),
                         },
+                    },
+                    LinkedExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "dead-transaction-node".to_string(),
+                        },
+                    },
+                    LinkedExprIr::ArrayLiteral {
+                        items: vec![ExprRefIr { expression: 12 }],
+                    },
+                    LinkedExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "nested-survives-rollback".to_string(),
+                        },
+                    },
+                    LinkedExprIr::Construct {
+                        type_ref: nested_payload_type(),
+                        fields: BTreeMap::from([(
+                            "message".to_string(),
+                            ExprRefIr { expression: 14 },
+                        )]),
+                    },
+                    LinkedExprIr::Construct {
+                        type_ref: transaction_failure_type(),
+                        fields: BTreeMap::from([(
+                            "nested".to_string(),
+                            ExprRefIr { expression: 15 },
+                        )]),
+                    },
+                    LinkedExprIr::Throw {
+                        value: ExprRefIr { expression: 16 },
+                        payload_type: transaction_failure_type(),
+                        site: synthetic_site(),
+                    },
+                    LinkedExprIr::DbTransaction {
+                        transaction: ir.rollback_throw_transaction.clone(),
+                    },
+                    LinkedExprIr::Catch {
+                        try_expression: ExprRefIr { expression: 18 },
+                        catch_slot: 0,
+                        catch_type: transaction_failure_type(),
+                        body: ExprRefIr { expression: 0 },
+                    },
+                    LinkedExprIr::Field {
+                        object: ExprRefIr { expression: 19 },
+                        field: "exception".to_string(),
+                    },
+                    LinkedExprIr::Field {
+                        object: ExprRefIr { expression: 20 },
+                        field: "error".to_string(),
+                    },
+                    LinkedExprIr::Field {
+                        object: ExprRefIr { expression: 21 },
+                        field: "nested".to_string(),
+                    },
+                    LinkedExprIr::Field {
+                        object: ExprRefIr { expression: 22 },
+                        field: "message".to_string(),
                     },
                 ],
             },

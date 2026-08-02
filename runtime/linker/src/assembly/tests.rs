@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, FileIrRef, FileIrUnit, PackageArtifact,
-    PackageArtifactRef, PublicationResourceRef, RuntimeAssembly, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceIngressKey,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageArtifactRef, PackageLocalAbiSymbol, PublicationResourceRef, RuntimeAssembly,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceIngressKey, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
 
@@ -533,6 +533,13 @@ fn link_plan_abi_protocol_and_ingress_tamper_fail_closed() {
 fn relink_cycle_execution_files(
     mutate: impl FnOnce(&mut skiff_runtime_linked_program::LinkedFileUnit),
 ) -> anyhow::Result<()> {
+    relink_cycle_execution_files_at("example.shared", mutate)
+}
+
+fn relink_cycle_execution_files_at(
+    package_id: &str,
+    mutate: impl FnOnce(&mut skiff_runtime_linked_program::LinkedFileUnit),
+) -> anyhow::Result<()> {
     let fixture = CycleFixture::new();
     let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver).load(fixture.assembly)?;
     let candidate = link_runtime_assembly(hydrated)?;
@@ -542,7 +549,13 @@ fn relink_cycle_execution_files(
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
-    mutate(Arc::make_mut(&mut files[0][0]));
+    let code_slot = candidate
+        .shared_image()
+        .code_slots()
+        .iter()
+        .position(|code| code.artifact().package_id == package_id)
+        .ok_or_else(|| anyhow::anyhow!("missing fixture package {package_id}"))?;
+    mutate(Arc::make_mut(&mut files[code_slot][0]));
     crate::assembly_execution::relink_execution_files_for_test(
         candidate.shared_image().as_ref(),
         &files,
@@ -1392,70 +1405,15 @@ fn assembly_execution_call_validation_rejects_receiver_target_and_abi_tamper() {
 
 #[test]
 fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls() {
-    use crate::program::linked::TypeDeclarationIr;
-    use skiff_artifact_model::{NativeTarget, ServiceSymbolRef, TypeRefIr};
+    use skiff_artifact_model::{NativeTarget, TypeRefIr};
     use skiff_runtime_linked_program::{
-        FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LinkedCallTarget, LinkedExprIr,
-        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef, TypeDeclIr,
+        LinkedCallTarget, LinkedExprIr, LinkedInterfaceInstantiationRef, LinkedTypeRef,
     };
 
-    relink_cycle_execution_files(|file| {
-        let interface_name = "Reader";
-        let interface_abi_id =
-            skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: file.module_path.clone(),
-                    symbol: interface_name.to_string(),
-                },
-            });
-        file.declarations.types.insert(
-            interface_name.to_string(),
-            TypeDeclarationIr {
-                type_index: file.types.len(),
-                symbol: format!("{}.{}", file.module_path, interface_name),
-                source_span: None,
-            },
-        );
-        file.declarations.interfaces.insert(
-            interface_name.to_string(),
-            InterfaceDeclIr {
-                name: interface_name.to_string(),
-                type_params: Vec::new(),
-                operations: vec![InterfaceOperationIr {
-                    name: "read".to_string(),
-                    type_params: Vec::new(),
-                    params: vec![FunctionTypeParamIr {
-                        name: "self".to_string(),
-                        ty: LinkedTypeRef::TypeParam {
-                            name: "Self".to_string(),
-                        },
-                    }],
-                    return_type: LinkedTypeRef::Native {
-                        name: "string".to_string(),
-                        args: Vec::new(),
-                    },
-                    is_native: false,
-                    is_provider: false,
-                    is_static: false,
-                    implicit_self: None,
-                }],
-                source_span: None,
-            },
-        );
-        file.types.push(TypeDeclIr {
-            name: interface_name.to_string(),
-            descriptor: LinkedTypeDescriptor::Interface,
-            type_params: Vec::new(),
-            implements: Vec::new(),
-            source_span: None,
-        });
-        let interface = LinkedInterfaceInstantiationRef {
-            interface_abi_id,
-            canonical_type_args: Vec::new(),
-        };
+    relink_cycle_execution_files_at("example.helper", |file| {
         let local_interface = LinkedInterfaceInstantiationRef {
             interface_abi_id: skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::LocalType {
-                type_index: (file.types.len() - 1) as u32,
+                type_index: 1,
             }),
             canonical_type_args: Vec::new(),
         };
@@ -1487,16 +1445,6 @@ fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls
                 ),
             },
             LinkedExprIr::Call { call: native },
-            LinkedExprIr::Call {
-                call: linked_call(
-                    LinkedCallTarget::InterfaceMethod {
-                        method_abi_id: format!("method:{}:read", interface.interface_abi_id),
-                        interface,
-                        slot: 0,
-                    },
-                    0,
-                ),
-            },
             LinkedExprIr::Call {
                 call: linked_call(
                     LinkedCallTarget::InterfaceMethod {
@@ -1786,8 +1734,16 @@ fn assembly_execution_normalizes_recoverable_interface_owner_spellings() {
     );
 }
 
-fn relink_helper_local_interface_with_artifact_mutation(
+#[derive(Clone, Copy)]
+enum FixtureInterfaceOwnerSpelling<'a> {
+    Local,
+    Publication,
+    PackageDependencySymbol(&'a str),
+}
+
+fn relink_helper_interface_with_artifact_mutation(
     canonical_symbol_path: &str,
+    owner_spelling: FixtureInterfaceOwnerSpelling<'_>,
     mutate: impl FnOnce(&mut PackageArtifact),
 ) -> anyhow::Result<(String, String, String)> {
     use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
@@ -1849,8 +1805,31 @@ fn relink_helper_local_interface_with_artifact_mutation(
         });
     let local_interface_abi_id =
         skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::LocalType { type_index: 1 });
+    let source_interface_type = match owner_spelling {
+        FixtureInterfaceOwnerSpelling::Local => TypeRefIr::LocalType { type_index: 1 },
+        FixtureInterfaceOwnerSpelling::Publication => TypeRefIr::PublicationType {
+            module_path: "helper.main".to_string(),
+            type_index: 1,
+        },
+        FixtureInterfaceOwnerSpelling::PackageDependencySymbol(symbol_path) => {
+            TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::Dependency {
+                        dependency_ref: "helper".to_string(),
+                    },
+                    symbol_path: symbol_path.to_string(),
+                    abi_expectation: Some(
+                        shared.code_slots()[helper_slot]
+                            .local_abi_identity()
+                            .as_str()
+                            .to_string(),
+                    ),
+                },
+            }
+        }
+    };
     let interface = LinkedInterfaceInstantiationRef {
-        interface_abi_id: local_interface_abi_id.clone(),
+        interface_abi_id: skiff_artifact_identity::type_ref_abi_key(&source_interface_type),
         canonical_type_args: Vec::new(),
     };
     let mut files = execution
@@ -1858,7 +1837,19 @@ fn relink_helper_local_interface_with_artifact_mutation(
         .iter()
         .map(|code| code.files().to_vec())
         .collect::<Vec<_>>();
-    Arc::make_mut(&mut files[helper_slot][0]).executables[0]
+    let source_slot = if matches!(
+        owner_spelling,
+        FixtureInterfaceOwnerSpelling::PackageDependencySymbol(_)
+    ) {
+        shared
+            .code_slots()
+            .iter()
+            .position(|code| code.artifact().package_id == "example.shared")
+            .expect("shared consumer package code slot")
+    } else {
+        helper_slot
+    };
+    Arc::make_mut(&mut files[source_slot][0]).executables[0]
         .body
         .expressions
         .push(LinkedExprIr::InterfaceBox {
@@ -1878,7 +1869,7 @@ fn relink_helper_local_interface_with_artifact_mutation(
             },
         });
     let linked = crate::assembly_execution::relink_execution_files_for_test(&shared, &files)?;
-    let LinkedExprIr::InterfaceBox { interface, .. } = linked[helper_slot][0].executables[0]
+    let LinkedExprIr::InterfaceBox { interface, .. } = linked[source_slot][0].executables[0]
         .body
         .expressions
         .last()
@@ -1895,9 +1886,11 @@ fn relink_helper_local_interface_with_artifact_mutation(
 
 #[test]
 fn assembly_execution_uses_public_interface_name_when_implementation_alias_shares_coordinate() {
-    let (actual, _, canonical) =
-        relink_helper_local_interface_with_artifact_mutation("LlmClient", |artifact| {
-            let symbol = artifact
+    let (actual, _, canonical) = relink_helper_interface_with_artifact_mutation(
+        "LlmClient",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            let mut symbol = artifact
                 .package_local_abi
                 .public_symbols
                 .remove("Reader")
@@ -1907,42 +1900,43 @@ fn assembly_execution_uses_public_interface_name_when_implementation_alias_share
                 .types
                 .remove("Reader")
                 .expect("fixture interface link");
+            let PackageLocalAbiSymbol::Type { local_type_id, .. } = &mut symbol else {
+                panic!("fixture public interface symbol")
+            };
+            *local_type_id = "type:LlmClient".to_string();
             artifact
                 .package_local_abi
                 .public_symbols
-                .insert("LlmClient".to_string(), symbol.clone());
-            artifact
-                .package_local_abi
-                .implementation_symbols
-                .insert("types.LlmClient".to_string(), symbol);
+                .insert("LlmClient".to_string(), symbol);
             artifact
                 .implementation_links
                 .types
-                .insert("LlmClient".to_string(), export.clone());
-            artifact
-                .implementation_links
-                .types
-                .insert("types.LlmClient".to_string(), export);
-        })
-        .expect("an implementation alias must not compete with its public interface name");
+                .insert("LlmClient".to_string(), export);
+        },
+    )
+    .expect("an implementation alias must not compete with its public interface name");
 
     assert_eq!(actual, canonical);
 }
 
 #[test]
 fn assembly_execution_rejects_two_public_interface_aliases_at_one_coordinate() {
-    let error = relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
-        let symbol = artifact.package_local_abi.public_symbols["Reader"].clone();
-        let export = artifact.implementation_links.types["Reader"].clone();
-        artifact
-            .package_local_abi
-            .public_symbols
-            .insert("ReaderAlias".to_string(), symbol);
-        artifact
-            .implementation_links
-            .types
-            .insert("ReaderAlias".to_string(), export);
-    })
+    let error = relink_helper_interface_with_artifact_mutation(
+        "Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            let symbol = artifact.package_local_abi.public_symbols["Reader"].clone();
+            let export = artifact.implementation_links.types["Reader"].clone();
+            artifact
+                .package_local_abi
+                .public_symbols
+                .insert("ReaderAlias".to_string(), symbol);
+            artifact
+                .implementation_links
+                .types
+                .insert("ReaderAlias".to_string(), export);
+        },
+    )
     .expect_err("two public names for one exact interface coordinate must fail closed");
 
     assert!(
@@ -1952,48 +1946,282 @@ fn assembly_execution_rejects_two_public_interface_aliases_at_one_coordinate() {
 }
 
 #[test]
-fn assembly_execution_preserves_private_interface_owner_spelling() {
-    let (actual, local, _) =
-        relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
-            let symbol = artifact
+fn assembly_execution_canonicalizes_private_interface_to_unique_implementation_symbol() {
+    let (actual, local, canonical) = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+        },
+    )
+    .expect("a private interface should use its unique implementation symbol identity");
+
+    assert_ne!(actual, local);
+    assert_eq!(actual, canonical);
+}
+
+#[test]
+fn assembly_execution_accepts_unqualified_export_for_exact_public_source_collision() {
+    let (actual, local, canonical) = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            let mut public_symbol = artifact
                 .package_local_abi
                 .public_symbols
                 .remove("Reader")
-                .expect("fixture public interface");
+                .expect("fixture public interface symbol");
+            let PackageLocalAbiSymbol::Type { local_type_id, .. } = &mut public_symbol else {
+                panic!("fixture public interface symbol")
+            };
+            *local_type_id = "type:helper.main.Reader".to_string();
+            artifact
+                .package_local_abi
+                .public_symbols
+                .insert("helper.main.Reader".to_string(), public_symbol);
+            artifact.implementation_links.types.remove("Reader");
+            artifact
+                .implementation_links
+                .types
+                .get_mut("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .symbol = "Reader".to_string();
+        },
+    )
+    .expect("an exact public source collision may retain its unqualified public export symbol");
+
+    assert_ne!(actual, local);
+    assert_eq!(actual, canonical);
+}
+
+#[test]
+fn assembly_execution_rejects_private_unqualified_implementation_interface_export_symbol() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+            artifact
+                .implementation_links
+                .types
+                .get_mut("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .symbol = "Reader".to_string();
+        },
+    )
+    .expect_err("an unqualified private implementation export symbol must fail closed");
+
+    assert!(
+        format!("{error:#}").contains("canonical implementation interface source export"),
+        "unexpected private implementation export symbol error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_unrelated_implementation_interface_export_symbol() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+            artifact
+                .implementation_links
+                .types
+                .get_mut("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .symbol = "UnrelatedReader".to_string();
+        },
+    )
+    .expect_err("an unrelated implementation export symbol must fail closed");
+
+    assert!(
+        format!("{error:#}").contains("canonical implementation interface source export"),
+        "unexpected unrelated implementation export symbol error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_implementation_interface_without_source_provenance() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+            artifact
+                .implementation_links
+                .types
+                .get_mut("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .file
+                .source_ast_hash = None;
+        },
+    )
+    .expect_err("an implementation interface export without exact provenance must fail closed");
+
+    assert!(
+        format!("{error:#}").contains("ImplementationLinkFileMismatch"),
+        "unexpected missing implementation provenance error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_implementation_interface_without_interface_descriptor() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+            artifact
+                .implementation_links
+                .types
+                .get_mut("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .descriptor = None;
+        },
+    )
+    .expect_err("an implementation interface export requires an interface descriptor");
+
+    assert!(
+        format!("{error:#}").contains("non-alias implementation package interface export"),
+        "unexpected implementation descriptor error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_converges_private_publication_and_package_interface_spellings() {
+    let relink = |owner_spelling| {
+        relink_helper_interface_with_artifact_mutation(
+            "helper.main.Reader",
+            owner_spelling,
+            |artifact| {
+                artifact.package_local_abi.public_symbols.remove("Reader");
+                artifact.implementation_links.types.remove("Reader");
+            },
+        )
+        .expect("private interface owner spelling should link")
+    };
+    let (publication, _, canonical) = relink(FixtureInterfaceOwnerSpelling::Publication);
+    let (package, _, package_canonical) = relink(
+        FixtureInterfaceOwnerSpelling::PackageDependencySymbol("helper.main.Reader"),
+    );
+
+    assert_eq!(publication, canonical);
+    assert_eq!(package, package_canonical);
+    assert_eq!(publication, package);
+}
+
+#[test]
+fn assembly_execution_rejects_two_implementation_interface_aliases_at_one_coordinate() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "helper.main.Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact.package_local_abi.public_symbols.remove("Reader");
+            artifact.implementation_links.types.remove("Reader");
+            let mut symbol = artifact
+                .package_local_abi
+                .implementation_symbols
+                .get("helper.main.Reader")
+                .expect("fixture implementation interface")
+                .clone();
             let export = artifact
                 .implementation_links
                 .types
-                .remove("Reader")
-                .expect("fixture interface link");
+                .get("helper.main.Reader")
+                .expect("fixture implementation interface link")
+                .clone();
+            let PackageLocalAbiSymbol::Type { local_type_id, .. } = &mut symbol else {
+                panic!("fixture implementation interface symbol")
+            };
+            *local_type_id = "type:example.helper:top-level:alias.Reader".to_string();
             artifact
                 .package_local_abi
                 .implementation_symbols
-                .insert("types.Reader".to_string(), symbol);
+                .insert("alias.Reader".to_string(), symbol);
             artifact
                 .implementation_links
                 .types
-                .insert("types.Reader".to_string(), export);
-        })
-        .expect("a private interface keeps its exact local owner spelling");
+                .insert("alias.Reader".to_string(), export);
+        },
+    )
+    .expect_err("two implementation names for one exact interface coordinate must fail closed");
 
-    assert_eq!(actual, local);
+    assert!(
+        format!("{error:#}").contains("unique implementation package interface export"),
+        "unexpected duplicate implementation interface error: {error:#}"
+    );
 }
 
 #[test]
 fn assembly_execution_rejects_public_interface_link_with_non_interface_export() {
-    let error = relink_helper_local_interface_with_artifact_mutation("Reader", |artifact| {
-        artifact
-            .implementation_links
-            .types
-            .get_mut("Reader")
-            .expect("fixture interface link")
-            .is_interface = false;
-    })
+    let error = relink_helper_interface_with_artifact_mutation(
+        "Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact
+                .implementation_links
+                .types
+                .get_mut("Reader")
+                .expect("fixture interface link")
+                .is_interface = false;
+        },
+    )
     .expect_err("a public interface link must remain marked as an interface export");
 
     assert!(
-        format!("{error:#}").contains("package interface export at exact owner coordinate"),
+        format!("{error:#}").contains("public package interface export"),
         "unexpected non-interface export error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_unrelated_public_interface_export_symbol() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact
+                .implementation_links
+                .types
+                .get_mut("Reader")
+                .expect("fixture public interface link")
+                .symbol = "UnrelatedReader".to_string();
+        },
+    )
+    .expect_err("a public interface export must retain its exact owner declaration name");
+
+    assert!(
+        format!("{error:#}").contains("canonical public interface source export"),
+        "unexpected public interface export symbol error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_missing_implementation_interface_even_with_public_overlay() {
+    let error = relink_helper_interface_with_artifact_mutation(
+        "Reader",
+        FixtureInterfaceOwnerSpelling::Local,
+        |artifact| {
+            artifact
+                .package_local_abi
+                .implementation_symbols
+                .remove("helper.main.Reader");
+            artifact
+                .implementation_links
+                .types
+                .remove("helper.main.Reader");
+        },
+    )
+    .expect_err("a public overlay must not hide a missing implementation source interface");
+
+    assert!(
+        format!("{error:#}").contains("unique implementation package interface export"),
+        "unexpected missing implementation interface error: {error:#}"
     );
 }
 

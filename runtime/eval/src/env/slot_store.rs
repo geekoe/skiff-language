@@ -19,6 +19,11 @@ pub struct SlotDebugBinding {
     pub kind: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct SlotStoreRollbackCheckpoint {
+    occupied: Vec<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RuntimeSlotLayout {
     pub(super) count: usize,
@@ -105,6 +110,79 @@ impl SlotStore {
                 *value = None;
             }
         }
+    }
+
+    pub(super) fn rollback_checkpoint(&self) -> SlotStoreRollbackCheckpoint {
+        SlotStoreRollbackCheckpoint {
+            occupied: self.values.iter().map(Option::is_some).collect(),
+        }
+    }
+
+    pub(super) fn rollback_root_carriers(
+        &self,
+        checkpoint: &SlotStoreRollbackCheckpoint,
+    ) -> Result<Vec<(usize, RuntimeValueCarrier)>> {
+        if checkpoint.occupied.len() != self.values.len() {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "transaction environment slot layout changed from {} to {} slots",
+                checkpoint.occupied.len(),
+                self.values.len()
+            )));
+        }
+        Ok(checkpoint
+            .occupied
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, occupied)| {
+                occupied
+                    .then(|| self.values[slot].clone().map(|value| (slot, value)))
+                    .flatten()
+            })
+            .collect())
+    }
+
+    pub(super) fn rebased_for_rollback(
+        &self,
+        checkpoint: &SlotStoreRollbackCheckpoint,
+        roots: &[(usize, RuntimeValueCarrier)],
+    ) -> Result<Self> {
+        if checkpoint.occupied.len() != self.values.len() {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "transaction environment slot layout changed from {} to {} slots",
+                checkpoint.occupied.len(),
+                self.values.len()
+            )));
+        }
+        let mut candidate = self.clone();
+        for (slot, occupied) in checkpoint.occupied.iter().copied().enumerate() {
+            if !occupied {
+                candidate.values[slot] = None;
+            }
+        }
+        for (slot, value) in roots {
+            if *slot >= candidate.values.len() || !checkpoint.occupied[*slot] {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "transaction environment rollback root references non-live slot {slot}"
+                )));
+            }
+            candidate.values[*slot] = Some(value.clone());
+        }
+        Ok(candidate)
+    }
+
+    pub(super) fn detached(&self) -> Self {
+        Self {
+            values: vec![None; self.values.len()],
+            debug_bindings: self.debug_bindings.clone(),
+            self_slot: self.self_slot,
+        }
+    }
+
+    pub(super) fn restore_self(&mut self, value: RuntimeValueCarrier) -> Result<()> {
+        let Some(slot) = self.self_slot else {
+            return Ok(());
+        };
+        self.declare("self", Some(slot), value)
     }
 
     fn required_slot(&self, name: &str, slot: Option<usize>, context: &str) -> Result<usize> {

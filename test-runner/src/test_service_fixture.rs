@@ -67,6 +67,11 @@ pub struct CanonicalTestServiceFixture {
     package_identity_admission_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CanonicalTestServiceRunConfig {
+    layers: ServiceConfigLayers,
+}
+
 impl CanonicalTestServiceFixture {
     #[doc(hidden)]
     pub fn package_identity_admission_count(&self) -> usize {
@@ -90,7 +95,8 @@ pub fn assemble_test_service_fixture(
     target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let scope = test_service_execution_nonce()?;
-    assemble_test_service_fixture_inner(project, cases, base, &scope, None, target_environment)
+    let config = load_test_service_run_config(project, None)?;
+    assemble_test_service_fixture_inner(project, cases, base, &scope, &config, target_environment)
 }
 
 pub fn assemble_test_service_fixture_for_run(
@@ -100,7 +106,15 @@ pub fn assemble_test_service_fixture_for_run(
     run_scope: &str,
     target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, None, target_environment)
+    let config = load_test_service_run_config(project, None)?;
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        run_scope,
+        &config,
+        target_environment,
+    )
 }
 
 pub fn assemble_test_service_fixture_for_run_with_ingress(
@@ -111,14 +125,51 @@ pub fn assemble_test_service_fixture_for_run_with_ingress(
     ingress_url: &str,
     target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    let config = load_test_service_run_config(project, Some(ingress_url))?;
     assemble_test_service_fixture_inner(
         project,
         cases,
         base,
         run_scope,
-        Some(ingress_url),
+        &config,
         target_environment,
     )
+}
+
+pub(crate) fn load_test_service_run_config(
+    project: &CanonicalPackageProject,
+    ingress_url: Option<&str>,
+) -> Result<CanonicalTestServiceRunConfig, CanonicalFixtureError> {
+    let profile = project
+        .test_service_profile
+        .as_ref()
+        .map(|profile| profile.profile_name.as_str())
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(
+                "config snapshot projection requires service.yml kind: test".to_string(),
+            )
+        })?;
+    let mut layers = load_service_config(&project.source_root, profile)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    if let Some(ingress_url) = ingress_url {
+        inject_runner_ingress_config(
+            &mut layers,
+            &project.package.artifact.package_id,
+            ingress_url,
+        )?;
+    }
+    Ok(CanonicalTestServiceRunConfig { layers })
+}
+
+pub(crate) fn assemble_test_service_fixture_for_run_with_config(
+    project: &CanonicalPackageProject,
+    cases: &[TestServiceCase],
+    base: CanonicalBaseAssembly,
+    run_scope: &str,
+    config: &CanonicalTestServiceRunConfig,
+    target_environment: &str,
+) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
+    assemble_test_service_fixture_inner(project, cases, base, run_scope, config, target_environment)
 }
 
 fn assemble_test_service_fixture_inner(
@@ -126,7 +177,7 @@ fn assemble_test_service_fixture_inner(
     cases: &[TestServiceCase],
     base: CanonicalBaseAssembly,
     run_scope: &str,
-    ingress_url: Option<&str>,
+    config: &CanonicalTestServiceRunConfig,
     target_environment: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     if cases.is_empty() {
@@ -279,7 +330,7 @@ fn assemble_test_service_fixture_inner(
         &deployments,
         &deployment_packages,
         &base,
-        ingress_url,
+        config,
         target_environment,
     )?;
     let assembly_deployments = assembly
@@ -328,31 +379,13 @@ fn test_service_config_snapshot(
     deployments: &[ServiceDeployment],
     packages: &[PackageArtifact],
     base: &CanonicalBaseAssembly,
-    ingress_url: Option<&str>,
+    config: &CanonicalTestServiceRunConfig,
     target_environment: &str,
 ) -> Result<skiff_runtime_config_snapshot::RuntimeConfigSnapshot, CanonicalFixtureError> {
     if base.assembly.is_some() != base.config_snapshot.is_some() {
         return Err(CanonicalFixtureError::InvalidInput(
             "base assembly and base config snapshot must form one exact pair".to_string(),
         ));
-    }
-    let profile = project
-        .test_service_profile
-        .as_ref()
-        .map(|profile| profile.profile_name.as_str())
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "config snapshot projection requires service.yml kind: test".to_string(),
-            )
-        })?;
-    let mut config = load_service_config(&project.source_root, profile)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    if let Some(ingress_url) = ingress_url {
-        inject_runner_ingress_config(
-            &mut config,
-            &project.package.artifact.package_id,
-            ingress_url,
-        )?;
     }
     let package_inputs = packages
         .iter()
@@ -367,7 +400,7 @@ fn test_service_config_snapshot(
         .map(|deployment| ConfigSnapshotDeploymentInput {
             deployment: service_deployment_ref(deployment),
             source_path: project.source_root.clone(),
-            config: config.clone(),
+            config: config.layers.clone(),
             packages: package_inputs.clone(),
         })
         .collect();

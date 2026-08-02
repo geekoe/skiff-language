@@ -36,6 +36,7 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_native_contract::native_target_name;
 
 mod lease;
+mod rollback;
 mod transaction;
 mod wait;
 
@@ -158,7 +159,7 @@ impl Interpreter {
 
         let lifecycle =
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
-        let checkpoint = heap.checkpoint();
+        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap, env);
         let result = self
             .eval_program_expr_ref(
                 program_context.clone(),
@@ -173,14 +174,27 @@ impl Interpreter {
         match result {
             Ok(value) => {
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    heap.rollback_to_checkpoint(checkpoint);
+                    let error = rollback::rollback_transaction_live_roots(
+                        &program_context,
+                        heap,
+                        env,
+                        checkpoint,
+                        error,
+                    )?;
                     return Err(error);
                 }
                 Ok(value.into_value())
             }
             Err(error) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
+                let error = abort_transaction_and_rollback(
+                    lifecycle,
+                    &program_context,
+                    heap,
+                    env,
+                    checkpoint,
+                    error,
+                )
+                .await?;
                 Err(error)
             }
         }
@@ -226,7 +240,7 @@ impl Interpreter {
         let store = require_db_store(db_context, "db.transaction")?;
         let lifecycle =
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
-        let checkpoint = heap.checkpoint();
+        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap, env);
         let flow = self
             .exec_program_block(
                 program_context.clone(),
@@ -263,41 +277,82 @@ impl Interpreter {
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
-                        lifecycle.abort(&program_context, heap).await?;
-                        heap.rollback_to_checkpoint(checkpoint);
+                        let error = abort_transaction_and_rollback(
+                            lifecycle,
+                            &program_context,
+                            heap,
+                            env,
+                            checkpoint,
+                            error,
+                        )
+                        .await?;
                         return Err(error);
                     }
                 };
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    heap.rollback_to_checkpoint(checkpoint);
+                    let error = rollback::rollback_transaction_live_roots(
+                        &program_context,
+                        heap,
+                        env,
+                        checkpoint,
+                        error,
+                    )?;
                     return Err(error);
                 }
                 Ok(result)
             }
             Ok(Flow::Return(_)) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
-                Err(RuntimeError::Decode(
-                    "return is not allowed inside db transaction blocks".to_string(),
-                ))
+                let error = abort_transaction_and_rollback(
+                    lifecycle,
+                    &program_context,
+                    heap,
+                    env,
+                    checkpoint,
+                    RuntimeError::Decode(
+                        "return is not allowed inside db transaction blocks".to_string(),
+                    ),
+                )
+                .await?;
+                Err(error)
             }
             Ok(Flow::Parked | Flow::ContinueConsumer) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
-                Err(RuntimeError::Decode(
-                    "control flow is not allowed inside db transaction blocks".to_string(),
-                ))
+                let error = abort_transaction_and_rollback(
+                    lifecycle,
+                    &program_context,
+                    heap,
+                    env,
+                    checkpoint,
+                    RuntimeError::Decode(
+                        "control flow is not allowed inside db transaction blocks".to_string(),
+                    ),
+                )
+                .await?;
+                Err(error)
             }
             Ok(Flow::Break | Flow::LoopContinue) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
-                Err(RuntimeError::Decode(
-                    "db transaction exited with break/continue outside a loop".to_string(),
-                ))
+                let error = abort_transaction_and_rollback(
+                    lifecycle,
+                    &program_context,
+                    heap,
+                    env,
+                    checkpoint,
+                    RuntimeError::Decode(
+                        "db transaction exited with break/continue outside a loop".to_string(),
+                    ),
+                )
+                .await?;
+                Err(error)
             }
             Err(error) => {
-                lifecycle.abort(&program_context, heap).await?;
-                heap.rollback_to_checkpoint(checkpoint);
+                let error = abort_transaction_and_rollback(
+                    lifecycle,
+                    &program_context,
+                    heap,
+                    env,
+                    checkpoint,
+                    error,
+                )
+                .await?;
                 Err(error)
             }
         }
@@ -459,6 +514,21 @@ impl Interpreter {
             None => Ok(RuntimeValue::Null),
         }
     }
+}
+
+async fn abort_transaction_and_rollback(
+    lifecycle: transaction::TransactionLifecycle,
+    program_context: &ProgramExecutionContext<'_>,
+    heap: &mut RequestHeap,
+    env: &mut Env,
+    checkpoint: rollback::TransactionRollbackCheckpoint,
+    original_error: RuntimeError,
+) -> Result<RuntimeError> {
+    let error = match lifecycle.abort(program_context, heap).await {
+        Ok(()) => original_error,
+        Err(abort_error) => abort_error,
+    };
+    rollback::rollback_transaction_live_roots(program_context, heap, env, checkpoint, error)
 }
 
 fn require_db_store(db_context: &DbCapabilityContext, target: &str) -> Result<DbCapabilityStore> {

@@ -49,7 +49,12 @@ import type {
   AssemblyActivationCoordinator
 } from './assemblyActivationCoordinator.js';
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
-import type { RuntimeDispatcher, RuntimeFrameSendCallback, RuntimeFrameSender } from './runtimeDispatcher.js';
+import type {
+  ActiveActorInvocationParent,
+  RuntimeDispatcher,
+  RuntimeFrameSendCallback,
+  RuntimeFrameSender,
+} from './runtimeDispatcher.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
 import type {
   WebSocketGenerationLifecycleControlSender,
@@ -207,7 +212,8 @@ export interface RuntimeActorMethodRouter {
   handleFrame(
     source: WebSocket,
     header: ActorMethodFrameHeader,
-    payloadBytes: Uint8Array
+    payloadBytes: Uint8Array,
+    requestParent?: ActiveActorInvocationParent
   ): void | Promise<void>;
   handleOwnerControlAck?(
     source: WebSocket,
@@ -638,6 +644,10 @@ export class RuntimeEndpoint
       frame.header.type === ACTOR_OWNER_CONTROL_ACK
     ) {
       const acknowledgement = decodeActorOwnerControlAckFrame(data);
+      const runtimeId = this.options.registry.assertRuntimeCapabilityConnection(ws);
+      if (acknowledgement.runtimeId !== runtimeId) {
+        throw new Error('Actor owner control acknowledgement Runtime mismatch');
+      }
       const claimedByGetCreate =
         this.options.actorGetCreateControl?.handleOwnerControlAck(
           ws,
@@ -649,10 +659,6 @@ export class RuntimeEndpoint
       const actorMethods = this.actorMethodsInstance ?? this.options.actorMethods;
       if (actorMethods?.handleOwnerControlAck === undefined) {
         throw new Error('Actor owner control routing is unavailable');
-      }
-      const runtimeId = this.options.registry.assertRuntimeCapabilityConnection(ws);
-      if (acknowledgement.runtimeId !== runtimeId) {
-        throw new Error('Actor owner control acknowledgement Runtime mismatch');
       }
       await actorMethods.handleOwnerControlAck(ws, acknowledgement);
       return;
@@ -680,10 +686,22 @@ export class RuntimeEndpoint
       }
       this.options.registry.assertRuntimeCapabilityConnection(ws);
       const actorFrame = decodeActorMethodFrame(data);
+      const requestParent =
+        actorFrame.header.type === 'actor.method.invoke' &&
+        actorFrame.header.testCaseCapability !== undefined &&
+        actorFrame.header.testCaseParentRequestId !== undefined
+          ? this.dispatcherInstance?.activeTestCaseRequestParent({
+              requestId: actorFrame.header.testCaseParentRequestId,
+              testCaseCapability: actorFrame.header.testCaseCapability,
+              serviceId: actorFrame.header.actorRef.serviceId,
+              ws,
+            })
+          : undefined;
       await actorMethods.handleFrame(
         ws,
         actorFrame.header,
-        actorFrame.payloadBytes
+        actorFrame.payloadBytes,
+        requestParent
       );
       return;
     }
@@ -762,14 +780,37 @@ export class RuntimeEndpoint
       case 'actor.find.request':
       case 'actor.remove.request':
         {
+          const assemblySource =
+            this.options.assemblyRegistry?.actorSpawnRuntimeControlSource(
+              ws,
+              header
+            );
+          const testCapabilityParent =
+            header.type === 'actor.getOrCreate.request' &&
+            header.testCaseCapability !== undefined &&
+            header.testCaseParentRequestId !== undefined
+              ? this.dispatcherInstance?.activeTestCaseParent({
+                  parentRequestId: header.testCaseParentRequestId,
+                  testCaseCapability: header.testCaseCapability,
+                  serviceId: header.actorKey.serviceId,
+                  serviceProtocolIdentity:
+                    assemblySource?.serviceProtocolIdentity ?? '',
+                  ws
+                })
+              : undefined;
           const response = await this.options.registry.handleActorSpawnRuntimeControlFrame(
             ws,
             header,
             frame.payloadBytes,
-            this.options.assemblyRegistry?.actorSpawnRuntimeControlSource(
-              ws,
-              header
-            )
+            assemblySource === undefined
+              ? undefined
+              : {
+                  ...assemblySource,
+                  connection: ws,
+                  ...(testCapabilityParent === undefined
+                    ? {}
+                    : { testCapabilityParent })
+                }
           );
           this.sendFrame(ws, response.header, response.payloadBytes);
         }
@@ -1006,13 +1047,16 @@ export class RuntimeEndpoint
     this.generationLifecycle?.handleRuntimeDisconnect(ws);
     const participantId =
       this.options.registry.runtimeCapabilityIdentityForConnection(ws);
-    const replicaId =
-      this.options.assemblyRegistry?.removeRuntimeConnection(ws);
+    const replicaId = this.options.assemblyRegistry?.replicaIdForConnection(ws);
+    this.coordinator?.handleReplicaDisconnected(
+      ws,
+      participantId ?? replicaId
+    );
+    this.options.assemblyRegistry?.removeRuntimeConnection(ws);
     this.options.registry.removeRuntimeConnection(ws);
     if (actorRuntimeConnection !== undefined) {
       this.handleActorRuntimeDisconnect(actorRuntimeConnection);
     }
-    this.coordinator?.handleReplicaDisconnected(participantId ?? replicaId);
   }
 
   private dispatcher(): RuntimeDispatcher {

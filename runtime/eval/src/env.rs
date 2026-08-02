@@ -29,6 +29,7 @@ pub(crate) use concurrent_scheduler::{
 };
 #[allow(unused_imports)]
 pub(crate) use lane_state::{LaneCompletion, LaneExecutionState};
+use slot_store::SlotStoreRollbackCheckpoint;
 use slot_store::{program_parameter_slot, program_slot_layout, RuntimeSlotLayout};
 pub use slot_store::{SlotDebugBinding, SlotStore};
 
@@ -52,6 +53,11 @@ pub struct Env {
     pub response_stream_sink: Option<EvalTypedStreamSink>,
     pub current_assembly_index: usize,
     pub type_substitutions: TypeSubstitutions,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EnvRollbackCheckpoint {
+    storage: SlotStoreRollbackCheckpoint,
 }
 
 impl Env {
@@ -148,12 +154,50 @@ impl Env {
         self.storage.clear(slots);
     }
 
+    pub(crate) fn rollback_checkpoint(&self) -> EnvRollbackCheckpoint {
+        EnvRollbackCheckpoint {
+            storage: self.storage.rollback_checkpoint(),
+        }
+    }
+
+    pub(crate) fn rollback_root_carriers(
+        &self,
+        checkpoint: &EnvRollbackCheckpoint,
+    ) -> Result<Vec<(usize, RuntimeValueCarrier)>> {
+        self.storage.rollback_root_carriers(&checkpoint.storage)
+    }
+
+    pub(crate) fn rebased_for_rollback(
+        &self,
+        checkpoint: &EnvRollbackCheckpoint,
+        roots: &[(usize, RuntimeValueCarrier)],
+    ) -> Result<Self> {
+        let mut candidate = self.clone();
+        candidate.storage = self
+            .storage
+            .rebased_for_rollback(&checkpoint.storage, roots)?;
+        Ok(candidate)
+    }
+
     pub fn self_value(&self) -> Option<RuntimeValueCarrier> {
         self.storage
             .self_slot
             .and_then(|slot| self.storage.values.get(slot))
             .and_then(Option::as_ref)
             .cloned()
+    }
+
+    /// Copies execution metadata for work that will run against an independent
+    /// request heap. Slot layout/debug metadata remains available, but no value
+    /// from the source heap is retained.
+    pub(crate) fn detached_for_independent_heap(&self) -> Self {
+        let mut detached = self.clone();
+        detached.storage = self.storage.detached();
+        detached
+    }
+
+    pub(crate) fn restore_detached_self(&mut self, value: RuntimeValueCarrier) -> Result<()> {
+        self.storage.restore_self(value)
     }
 
     pub fn declare_program_self(

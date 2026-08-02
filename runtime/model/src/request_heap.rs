@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
@@ -58,6 +58,54 @@ pub struct RequestHeapCheckpoint {
 }
 
 #[derive(Clone, Debug)]
+pub struct PreparedRequestHeapRollback {
+    nodes: Vec<HeapSlot>,
+    stats: RequestHeapStats,
+    rebased_roots: Vec<RuntimeValue>,
+}
+
+#[derive(Debug)]
+pub enum RequestHeapRollbackRebaseError {
+    ResourceLimit(RuntimeError),
+    InvalidSource(RuntimeError),
+}
+
+impl RequestHeapRollbackRebaseError {
+    pub fn is_skippable(&self) -> bool {
+        matches!(self, Self::ResourceLimit(_))
+    }
+
+    pub fn into_runtime_error(self) -> RuntimeError {
+        match self {
+            Self::ResourceLimit(error) | Self::InvalidSource(error) => error,
+        }
+    }
+
+    fn classify(error: RuntimeError) -> Self {
+        match error {
+            error @ RuntimeError::ResourceLimitExceeded { .. } => Self::ResourceLimit(error),
+            error => Self::InvalidSource(error),
+        }
+    }
+}
+
+impl std::fmt::Display for RequestHeapRollbackRebaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ResourceLimit(error) | Self::InvalidSource(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RequestHeapRollbackRebaseError {}
+
+impl PreparedRequestHeapRollback {
+    pub fn rebased_roots(&self) -> &[RuntimeValue] {
+        &self.rebased_roots
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct RequestHeap {
     nodes: Vec<HeapSlot>,
     limits: RequestHeapLimits,
@@ -99,6 +147,39 @@ impl RequestHeap {
     pub fn rollback_to_checkpoint(&mut self, checkpoint: RequestHeapCheckpoint) {
         self.nodes.truncate(checkpoint.len);
         self.stats = checkpoint.stats;
+    }
+
+    /// Prepares a rollback that preserves every pre-checkpoint heap handle while
+    /// retaining post-checkpoint nodes still reachable from the pinned prefix or
+    /// the supplied roots.
+    ///
+    /// Preparation is transactional: the source heap is only read. The returned
+    /// plan can be installed with [`RequestHeap::commit_prepared_rollback_rebase`].
+    pub fn prepare_rollback_rebase(
+        &self,
+        checkpoint: RequestHeapCheckpoint,
+        explicit_roots: &[RuntimeValue],
+    ) -> std::result::Result<PreparedRequestHeapRollback, RequestHeapRollbackRebaseError> {
+        if checkpoint.len > self.nodes.len() {
+            return Err(RequestHeapRollbackRebaseError::InvalidSource(
+                RuntimeError::Decode(format!(
+                    "request heap checkpoint length {} exceeds current heap length {}",
+                    checkpoint.len,
+                    self.nodes.len()
+                )),
+            ));
+        }
+
+        let mut builder = RollbackRebaseBuilder::new(self, checkpoint);
+        builder
+            .discover(explicit_roots)
+            .and_then(|()| builder.prepare(explicit_roots))
+            .map_err(RequestHeapRollbackRebaseError::classify)
+    }
+
+    pub fn commit_prepared_rollback_rebase(&mut self, prepared: PreparedRequestHeapRollback) {
+        self.nodes = prepared.nodes;
+        self.stats = prepared.stats;
     }
 
     pub fn alloc_array(&mut self, items: Vec<RuntimeValue>) -> Result<HeapHandle> {
@@ -1041,10 +1122,14 @@ impl RequestHeap {
                 self.interface_value_contains_reachable(value, target, visiting)?
             }
             HeapNode::Exception(exception) => match exception.cause() {
-                RequestExceptionCause::Local { value } => {
-                    self.value_contains_reachable(value.value(), target, visiting)?
-                }
-                RequestExceptionCause::OpaqueService { .. } => false,
+                RequestExceptionCause::Local { value }
+                | RequestExceptionCause::OpaqueService {
+                    local_value: Some(value),
+                    ..
+                } => self.value_contains_reachable(value.value(), target, visiting)?,
+                RequestExceptionCause::OpaqueService {
+                    local_value: None, ..
+                } => false,
             },
         };
         visiting.remove(&start);
@@ -1178,10 +1263,40 @@ pub fn deep_clone_runtime_value_between_heaps(
     dest: &mut RequestHeap,
     value: &RuntimeValue,
 ) -> Result<RuntimeValue> {
+    let mut cloned =
+        deep_clone_runtime_values_between_heaps(source, dest, std::slice::from_ref(value))?;
+    Ok(cloned
+        .pop()
+        .expect("single-root cross-heap clone must return one value"))
+}
+
+/// Clones a set of roots as one graph from `source` into `dest`.
+///
+/// A single clone context is shared by every root, so aliases between roots
+/// remain aliases in the destination heap. Only nodes reachable from at least
+/// one root are copied.
+pub fn deep_clone_runtime_values_between_heaps(
+    source: &RequestHeap,
+    dest: &mut RequestHeap,
+    values: &[RuntimeValue],
+) -> Result<Vec<RuntimeValue>> {
+    let checkpoint = dest.checkpoint();
     let mut context = CrossHeapCloneContext::default();
-    let cloned = context.clone_value(source, dest, value, 0)?;
-    dest.record_clone_depth(context.max_depth)?;
-    Ok(cloned)
+    let result = values
+        .iter()
+        .map(|value| context.clone_value(source, dest, value, 0))
+        .collect::<Result<Vec<_>>>()
+        .and_then(|cloned| {
+            dest.record_clone_depth(context.max_depth)?;
+            Ok(cloned)
+        });
+    if result.is_err() {
+        // Cross-heap cloning only appends destination nodes. No cloned handle
+        // escapes before this function returns, so rolling the private suffix
+        // back is safe and restores both length and accounting atomically.
+        dest.rollback_to_checkpoint(checkpoint);
+    }
+    result
 }
 
 pub fn deep_clone_runtime_value_carrier_between_heaps(
@@ -1194,6 +1309,307 @@ pub fn deep_clone_runtime_value_carrier_between_heaps(
         value,
         carrier.catch_identity().cloned(),
     ))
+}
+
+/// Clones multiple carrier roots as one graph from `source` into `dest`.
+///
+/// A single cross-heap clone context is shared by every root, so aliases that
+/// cross root boundaries remain aliases in the destination heap. Catch
+/// identities remain attached to their corresponding carrier roots.
+pub fn deep_clone_runtime_value_carriers_between_heaps(
+    source: &RequestHeap,
+    dest: &mut RequestHeap,
+    carriers: &[RuntimeValueCarrier],
+) -> Result<Vec<RuntimeValueCarrier>> {
+    let values = carriers
+        .iter()
+        .map(|carrier| carrier.value().clone())
+        .collect::<Vec<_>>();
+    let cloned = deep_clone_runtime_values_between_heaps(source, dest, &values)?;
+    Ok(cloned
+        .into_iter()
+        .zip(carriers)
+        .map(|(value, carrier)| {
+            RuntimeValueCarrier::from_parts(value, carrier.catch_identity().cloned())
+        })
+        .collect())
+}
+
+struct RollbackRebaseBuilder<'a> {
+    source: &'a RequestHeap,
+    checkpoint: RequestHeapCheckpoint,
+    mapped: HashMap<HeapHandle, HeapHandle>,
+    suffix_sources: Vec<HeapHandle>,
+    scheduled: HashSet<HeapHandle>,
+    queue: VecDeque<(HeapHandle, usize)>,
+    max_depth: usize,
+}
+
+impl<'a> RollbackRebaseBuilder<'a> {
+    fn new(source: &'a RequestHeap, checkpoint: RequestHeapCheckpoint) -> Self {
+        let mapped = source.nodes[..checkpoint.len]
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| {
+                let handle = HeapHandle::new(index as u32, slot.generation);
+                (handle, handle)
+            })
+            .collect();
+        Self {
+            source,
+            checkpoint,
+            mapped,
+            suffix_sources: Vec::new(),
+            scheduled: HashSet::new(),
+            queue: VecDeque::new(),
+            max_depth: 0,
+        }
+    }
+
+    fn discover(&mut self, explicit_roots: &[RuntimeValue]) -> Result<()> {
+        for index in 0..self.checkpoint.len {
+            let slot = &self.source.nodes[index];
+            self.schedule(HeapHandle::new(index as u32, slot.generation), 0)?;
+        }
+        for root in explicit_roots {
+            if let RuntimeValue::Heap(handle) = root {
+                self.schedule(*handle, 0)?;
+            }
+        }
+
+        while let Some((handle, depth)) = self.queue.pop_front() {
+            self.max_depth = self.max_depth.max(depth);
+            let slot = self.source.slot(handle)?;
+            for child in heap_node_child_handles(&slot.node) {
+                self.schedule(child, depth.saturating_add(1))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule(&mut self, handle: HeapHandle, depth: usize) -> Result<()> {
+        self.source.slot(handle)?;
+        if !self.scheduled.insert(handle) {
+            return Ok(());
+        }
+        if depth > self.source.limits.max_clone_depth {
+            return Err(resource_limit_error(
+                "max clone depth",
+                self.source.limits.max_clone_depth,
+                self.max_depth,
+                depth.saturating_sub(self.max_depth),
+            ));
+        }
+
+        if !self.mapped.contains_key(&handle) {
+            let destination_index = self
+                .checkpoint
+                .len
+                .checked_add(self.suffix_sources.len())
+                .ok_or_else(|| {
+                    resource_limit_error(
+                        "heap handle index space",
+                        u32::MAX as usize,
+                        self.checkpoint.len,
+                        self.suffix_sources.len(),
+                    )
+                })?;
+            if destination_index >= self.source.limits.max_nodes {
+                return Err(resource_limit_error(
+                    "max heap nodes",
+                    self.source.limits.max_nodes,
+                    destination_index,
+                    1,
+                ));
+            }
+            if destination_index >= u32::MAX as usize {
+                return Err(resource_limit_error(
+                    "heap handle index space",
+                    u32::MAX as usize,
+                    destination_index,
+                    1,
+                ));
+            }
+            let generation = match self.source.nodes.get(destination_index) {
+                Some(slot) => slot.generation.checked_add(1).ok_or_else(|| {
+                    resource_limit_error(
+                        "heap slot generation space",
+                        u32::MAX as usize,
+                        slot.generation as usize,
+                        1,
+                    )
+                })?,
+                None => INITIAL_GENERATION,
+            };
+            let destination = HeapHandle::new(destination_index as u32, generation);
+            self.mapped.insert(handle, destination);
+            self.suffix_sources.push(handle);
+        }
+        self.queue.push_back((handle, depth));
+        Ok(())
+    }
+
+    fn prepare(self, explicit_roots: &[RuntimeValue]) -> Result<PreparedRequestHeapRollback> {
+        let mut nodes = Vec::with_capacity(
+            self.checkpoint
+                .len
+                .saturating_add(self.suffix_sources.len()),
+        );
+        for slot in &self.source.nodes[..self.checkpoint.len] {
+            nodes.push(rewrite_heap_slot(slot, &self.mapped)?);
+        }
+        for source_handle in &self.suffix_sources {
+            let source_slot = self.source.slot(*source_handle)?;
+            let destination = self.mapped[source_handle];
+            let mut slot = rewrite_heap_slot(source_slot, &self.mapped)?;
+            slot.generation = destination.generation();
+            nodes.push(slot);
+        }
+
+        let estimated_bytes = nodes
+            .iter()
+            .map(|slot| slot.estimated_bytes)
+            .fold(0usize, usize::saturating_add);
+        if estimated_bytes > self.source.limits.max_estimated_bytes {
+            return Err(resource_limit_error(
+                "max estimated heap bytes",
+                self.source.limits.max_estimated_bytes,
+                0,
+                estimated_bytes,
+            ));
+        }
+        let mut stats = self.checkpoint.stats;
+        stats.node_count = nodes.len();
+        stats.estimated_bytes = estimated_bytes;
+        stats.clone_depth = stats.clone_depth.max(self.max_depth);
+
+        let rebased_roots = explicit_roots
+            .iter()
+            .map(|root| rewrite_runtime_value(root, &self.mapped))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(PreparedRequestHeapRollback {
+            nodes,
+            stats,
+            rebased_roots,
+        })
+    }
+}
+
+fn heap_node_child_handles(node: &HeapNode) -> Vec<HeapHandle> {
+    let values: Vec<&RuntimeValue> = match node {
+        HeapNode::Bytes(_) => Vec::new(),
+        HeapNode::Array(items) => items.iter().collect(),
+        HeapNode::Object(object) => object.fields().values().collect(),
+        HeapNode::Map(map) => map.values().collect(),
+        HeapNode::Interface(value) => match value.carrier() {
+            InterfaceCarrier::Local { payload, .. } => vec![payload],
+            InterfaceCarrier::CallbackCapability(_) => Vec::new(),
+        },
+        HeapNode::Exception(exception) => exception
+            .local_value()
+            .map(|value| vec![value.value()])
+            .unwrap_or_default(),
+    };
+    values
+        .into_iter()
+        .filter_map(RuntimeValue::as_heap_handle)
+        .collect()
+}
+
+fn rewrite_heap_slot(
+    source: &HeapSlot,
+    mapped: &HashMap<HeapHandle, HeapHandle>,
+) -> Result<HeapSlot> {
+    let node = rewrite_heap_node(&source.node, mapped)?;
+    Ok(HeapSlot {
+        generation: source.generation,
+        estimated_bytes: estimate_heap_node_bytes(&node),
+        node,
+        carriers: source.carriers.clone(),
+    })
+}
+
+fn rewrite_heap_node(
+    source: &HeapNode,
+    mapped: &HashMap<HeapHandle, HeapHandle>,
+) -> Result<HeapNode> {
+    Ok(match source {
+        HeapNode::Bytes(bytes) => HeapNode::Bytes(bytes.clone()),
+        HeapNode::Array(items) => HeapNode::Array(
+            items
+                .iter()
+                .map(|value| rewrite_runtime_value(value, mapped))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        HeapNode::Object(object) => HeapNode::Object(
+            object.clone_with_fields(
+                object
+                    .fields()
+                    .iter()
+                    .map(|(key, value)| Ok((key.clone(), rewrite_runtime_value(value, mapped)?)))
+                    .collect::<Result<RuntimeObjectFields>>()?,
+            ),
+        ),
+        HeapNode::Map(map) => HeapNode::Map(
+            map.iter()
+                .map(|(key, value)| Ok((key.clone(), rewrite_runtime_value(value, mapped)?)))
+                .collect::<Result<RuntimeMap>>()?,
+        ),
+        HeapNode::Interface(value) => HeapNode::Interface(rewrite_interface_value(value, mapped)?),
+        HeapNode::Exception(exception) => {
+            let exception = match exception.local_value() {
+                Some(local_value) => {
+                    let rewritten = rewrite_runtime_value(local_value.value(), mapped)?;
+                    let identity = local_value.catch_identity().cloned();
+                    exception
+                        .clone()
+                        .map_local_value(|_| RuntimeValueCarrier::from_parts(rewritten, identity))
+                }
+                None => exception.clone(),
+            };
+            HeapNode::Exception(exception)
+        }
+    })
+}
+
+fn rewrite_interface_value(
+    source: &InterfaceValue,
+    mapped: &HashMap<HeapHandle, HeapHandle>,
+) -> Result<InterfaceValue> {
+    let carrier = match source.carrier() {
+        InterfaceCarrier::Local {
+            concrete_type,
+            method_table,
+            payload,
+        } => InterfaceCarrier::Local {
+            concrete_type: concrete_type.clone(),
+            method_table: method_table.clone(),
+            payload: rewrite_runtime_value(payload, mapped)?,
+        },
+        InterfaceCarrier::CallbackCapability(capability) => {
+            InterfaceCarrier::CallbackCapability(capability.clone())
+        }
+    };
+    Ok(InterfaceValue::new(source.interface().to_string(), carrier))
+}
+
+fn rewrite_runtime_value(
+    source: &RuntimeValue,
+    mapped: &HashMap<HeapHandle, HeapHandle>,
+) -> Result<RuntimeValue> {
+    let RuntimeValue::Heap(handle) = source else {
+        return Ok(source.clone());
+    };
+    mapped
+        .get(handle)
+        .copied()
+        .map(RuntimeValue::Heap)
+        .ok_or_else(|| {
+            RuntimeError::Decode(format!(
+                "heap handle {handle} was not discovered during rollback rebase"
+            ))
+        })
 }
 
 #[derive(Default)]
@@ -1277,14 +1693,20 @@ impl CloneContext {
             }
             HeapNode::Exception(exception) => {
                 let cloned = match exception.cause() {
-                    RequestExceptionCause::Local { value } => {
+                    RequestExceptionCause::Local { value }
+                    | RequestExceptionCause::OpaqueService {
+                        local_value: Some(value),
+                        ..
+                    } => {
                         let cloned_value = self.clone_value(heap, value.value(), depth + 1)?;
                         let identity = value.catch_identity().cloned();
                         exception.map_local_value(|_| {
                             RuntimeValueCarrier::from_parts(cloned_value, identity)
                         })
                     }
-                    RequestExceptionCause::OpaqueService { .. } => exception,
+                    RequestExceptionCause::OpaqueService {
+                        local_value: None, ..
+                    } => exception,
                 };
                 HeapNode::Exception(cloned)
             }
@@ -1409,7 +1831,11 @@ impl CrossHeapCloneContext {
             }
             HeapNode::Exception(exception) => {
                 let cloned = match exception.cause() {
-                    RequestExceptionCause::Local { value } => {
+                    RequestExceptionCause::Local { value }
+                    | RequestExceptionCause::OpaqueService {
+                        local_value: Some(value),
+                        ..
+                    } => {
                         let cloned_value =
                             self.clone_value(source, dest, value.value(), depth + 1)?;
                         let identity = value.catch_identity().cloned();
@@ -1417,7 +1843,9 @@ impl CrossHeapCloneContext {
                             RuntimeValueCarrier::from_parts(cloned_value, identity)
                         })
                     }
-                    RequestExceptionCause::OpaqueService { .. } => exception,
+                    RequestExceptionCause::OpaqueService {
+                        local_value: None, ..
+                    } => exception,
                 };
                 HeapNode::Exception(cloned)
             }

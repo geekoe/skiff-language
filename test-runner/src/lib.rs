@@ -1,10 +1,10 @@
 //! Canonical package/service test infrastructure.
 //!
 //! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
-//! All selected cases for that service share the compile, resolved config and dependency
-//! graph, then become roots of one multi-root `RuntimeAssembly` committed by one activation
-//! transaction. The assembly and activation generation are service-run scoped; an individual
-//! case does not own a separate assembly or generation.
+//! All selected cases for that service share the compile, resolved config and dependency graph.
+//! Non-live execution then places them, in discovery order, into bounded multi-root assembly
+//! batches. Each case belongs to exactly one batch-scoped assembly and activation generation; it
+//! does not own a separate assembly or generation.
 //!
 //! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
 //! entry, ingress binding, generated service identity, config snapshot partition, heap, effect

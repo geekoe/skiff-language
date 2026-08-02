@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import type WebSocket from 'ws';
+import WebSocket from 'ws';
 
 import {
   actorLogicalKey,
@@ -14,6 +14,7 @@ import {
 import type { ActorManager } from '../actor/index.js';
 import {
   encodeActorOwnerControlFrame,
+  type ActorOwnerRouteAuthority,
   type ActorOwnerControlAckFrameHeader,
 } from '../protocol/actorOwnerProtocol.js';
 import {
@@ -26,6 +27,14 @@ import {
   type RuntimeErrorPayload,
 } from '../protocol/envelope.js';
 import type { RuntimeDispatchRuntimeIdentity } from './runtimeRegistry.js';
+import type {
+  ActiveActorInvocationParent,
+  RuntimeSpawnParentAuthority,
+} from './runtimeDispatcher.js';
+import type {
+  ActorRuntimeConnectionFence,
+  ActorRuntimeDisconnectController,
+} from './actorRuntimeDisconnectController.js';
 
 const ACTOR_OWNER_CONTROL_TYPE = 'actor.owner.control' as const;
 const ACTOR_OWNER_CONTROL_OPERATION = 'activateInitial' as const;
@@ -38,7 +47,15 @@ export interface ActorGetCreateActivationCoordinatorOptions {
   runtimeDirectory: {
     actorRuntimeCandidates(serviceId: string): RuntimeDispatchRuntimeIdentity[];
     runtimeConnection(runtimeId: string): RuntimeDispatchRuntimeIdentity | undefined;
+    runtimeIdForConnection?(ws: WebSocket): string | undefined;
+    runtimeConnectionFenceForConnection?(
+      ws: WebSocket
+    ): ActorRuntimeConnectionFence | undefined;
   };
+  disconnectController?: Pick<
+    ActorRuntimeDisconnectController,
+    'bindOwner' | 'unbindOwner' | 'ownerFenceBoundToConnection'
+  >;
   send(ws: WebSocket, bytes: Buffer): void;
   now?: () => Date;
   id?: () => string;
@@ -54,14 +71,29 @@ export interface ActorGetCreateActivationResult {
 export interface ActorGetCreateActivationInput {
   header: ActorGetOrCreateRequestFrameHeader;
   payloadBytes: Uint8Array;
+  sourceRuntimeId?: string;
+  sourceConnection?: WebSocket;
+  capabilityParent?: ActiveActorInvocationParent;
 }
 
 interface PendingClaim {
   key: string;
+  lineage: ActorGetCreateLineage;
   promise: Promise<ActorRef>;
   resolve(value: ActorRef): void;
   reject(error: Error): void;
 }
+
+type ActorGetCreateLineage =
+  | { kind: 'ordinary' }
+  | {
+      kind: 'testCapability';
+      parentRequestId: string;
+      capability: string;
+      originRuntimeId: string;
+      originRuntimeConnection: WebSocket;
+      authority: RuntimeSpawnParentAuthority;
+    };
 
 interface PendingActivationAck {
   requestId: string;
@@ -97,35 +129,43 @@ export class ActorGetCreateActivationCoordinator {
   async getOrCreate(
     input: ActorGetCreateActivationInput
   ): Promise<ActorGetCreateActivationResult> {
-    const actorKey = decodeActorKey(input.header.actorKey);
-    const key = actorLogicalKey(actorKey);
-    const claim = this.claim(key);
-    if (!claim.isFirst) {
-      return await this.joinClaim(input.header.rpcId, claim.promise);
-    }
     try {
-      const existing = await this.options.actorManager.registryStore().find(actorKey);
-      if (existing !== undefined && existing.status === 'present') {
-        const ref = actorRefFromKey(existing.actorKey, existing.epoch);
+      const lineage = this.authorizeLineage(input);
+      this.assertLineageConnection(lineage);
+      const actorKey = decodeActorKey(input.header.actorKey);
+      const key = actorLogicalKey(actorKey);
+      const claim = this.claim(key, lineage);
+      if (!claim.isFirst) {
+        return await this.joinClaim(input.header.rpcId, claim.promise, lineage);
+      }
+      try {
+        const existing = await this.options.actorManager.registryStore().find(actorKey);
+        this.assertLineageConnection(lineage);
+        if (existing !== undefined && existing.status === 'present') {
+          const ref = actorRefFromKey(existing.actorKey, existing.epoch);
+          claim.resolve(ref);
+          return getOrCreateSuccess(input.header.rpcId, ref);
+        }
+        const entry = await this.options.actorManager.registryStore().getOrCreate({
+          actorKey,
+          actorAbiIdentity: input.header.actorAbiIdentity,
+          actorImplementationIdentity: input.header.actorImplementationIdentity,
+          bootstrapEncodingVersion: input.header.bootstrapEncodingVersion,
+          encodedBootstrapBytes: new Uint8Array(input.payloadBytes),
+          now: this.now(),
+        });
+        this.assertLineageConnection(lineage);
+        const ref = await this.activateInitial(entry, input.header, lineage);
         claim.resolve(ref);
         return getOrCreateSuccess(input.header.rpcId, ref);
+      } catch (error) {
+        claim.reject(toGetCreateError(error));
+        return getOrCreateFailure(input.header.rpcId, toGetCreateError(error));
+      } finally {
+        this.claims.delete(key);
       }
-      const entry = await this.options.actorManager.registryStore().getOrCreate({
-        actorKey,
-        actorAbiIdentity: input.header.actorAbiIdentity,
-        actorImplementationIdentity: input.header.actorImplementationIdentity,
-        bootstrapEncodingVersion: input.header.bootstrapEncodingVersion,
-        encodedBootstrapBytes: new Uint8Array(input.payloadBytes),
-        now: this.now(),
-      });
-      const ref = await this.activateInitial(entry, input.header);
-      claim.resolve(ref);
-      return getOrCreateSuccess(input.header.rpcId, ref);
     } catch (error) {
-      claim.reject(toGetCreateError(error));
       return getOrCreateFailure(input.header.rpcId, toGetCreateError(error));
-    } finally {
-      this.claims.delete(key);
     }
   }
 
@@ -173,9 +213,19 @@ export class ActorGetCreateActivationCoordinator {
     );
   }
 
-  private claim(key: string): PendingClaim & { isFirst: boolean } {
+  private claim(
+    key: string,
+    lineage: ActorGetCreateLineage
+  ): PendingClaim & { isFirst: boolean } {
     const existing = this.claims.get(key);
     if (existing !== undefined) {
+      if (!sameLineage(existing.lineage, lineage)) {
+        throw new GetCreateError(
+          'ActorCreateLineageConflict',
+          'concurrent actor creation belongs to a different test capability lineage',
+          409
+        );
+      }
       return { ...existing, isFirst: false };
     }
     let resolve!: (value: ActorRef) => void;
@@ -187,17 +237,19 @@ export class ActorGetCreateActivationCoordinator {
     // Mark the claim promise as handled even when the first caller fails and no
     // concurrent get is attached; joiners still observe the rejection.
     void promise.catch(() => undefined);
-    const claim: PendingClaim = { key, promise, resolve, reject };
+    const claim: PendingClaim = { key, lineage, promise, resolve, reject };
     this.claims.set(key, claim);
     return { ...claim, isFirst: true };
   }
 
   private async joinClaim(
     rpcId: string,
-    promise: Promise<ActorRef>
+    promise: Promise<ActorRef>,
+    lineage: ActorGetCreateLineage
   ): Promise<ActorGetCreateActivationResult> {
     try {
       const ref = await promise;
+      this.assertLineageConnection(lineage);
       return getOrCreateSuccess(rpcId, ref);
     } catch (error) {
       return getOrCreateFailure(rpcId, toGetCreateError(error));
@@ -206,9 +258,12 @@ export class ActorGetCreateActivationCoordinator {
 
   private async activateInitial(
     entry: ActorRegistryEntry,
-    header: ActorGetOrCreateRequestFrameHeader
+    header: ActorGetOrCreateRequestFrameHeader,
+    lineage: ActorGetCreateLineage
   ): Promise<ActorRef> {
-    const owner = this.pickOwner(entry.actorKey.serviceId, entry.actorKey.actorIdHash);
+    const owner = lineage.kind === 'testCapability'
+      ? this.options.runtimeDirectory.runtimeConnection(lineage.originRuntimeId)
+      : this.pickOwner(entry.actorKey.serviceId, entry.actorKey.actorIdHash);
     if (owner === undefined) {
       throw new GetCreateError(
         'OwnerUnavailable',
@@ -216,6 +271,7 @@ export class ActorGetCreateActivationCoordinator {
         503
       );
     }
+    this.assertExactConnection(owner.runtimeId, owner.ws, lineage);
     const deadlineMs = this.activationDeadlineMs(header.deadline);
     const deadlineAt = this.now().getTime() + deadlineMs;
     const leaseTtlMs = Math.max(this.ownerLeaseTtlMs, deadlineMs + 1_000);
@@ -236,19 +292,31 @@ export class ActorGetCreateActivationCoordinator {
       );
     }
     const fence = acquired.fence;
-    const requestId = `actor-bootstrap-${this.id()}`;
-    const deadline = {
-      timeoutMs: deadlineMs,
-      expiresAt: new Date(deadlineAt).toISOString(),
-    };
-    this.options.send(
-      owner.ws,
-      encodeActorOwnerControlFrame({
+    let boundConnection: ActorRuntimeConnectionFence | undefined;
+    try {
+      this.assertExactConnection(owner.runtimeId, owner.ws, lineage);
+      boundConnection = this.bindOwnerSession(owner.ws, fence);
+      this.assertBoundExactConnection(
+        owner.runtimeId,
+        owner.ws,
+        fence,
+        boundConnection,
+        lineage
+      );
+      const requestId = `actor-bootstrap-${this.id()}`;
+      const deadline = {
+        timeoutMs: deadlineMs,
+        expiresAt: new Date(deadlineAt).toISOString(),
+      };
+      this.options.send(
+        owner.ws,
+        encodeActorOwnerControlFrame({
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
         type: ACTOR_OWNER_CONTROL_TYPE,
         targetRuntimeId: fence.ownerRuntimeId,
         requestId,
         operation: ACTOR_OWNER_CONTROL_OPERATION,
+        routeAuthority: this.routeAuthorityFor(lineage, header),
         fence: {
           ...actorKeyFrame(fence.actorKey),
           epoch: fence.epoch,
@@ -262,39 +330,79 @@ export class ActorGetCreateActivationCoordinator {
           payloadBase64: Buffer.from(entry.encodedBootstrapBytes).toString('base64'),
         },
         deadline,
-      })
-    );
+        ...(lineage.kind === 'ordinary'
+          ? {}
+          : {
+              testCaseCapability: lineage.capability,
+              testCaseParentRequestId: lineage.parentRequestId,
+            }),
+        })
+      );
 
-    let result: ActivationAckResult;
-    try {
-      result = await this.waitForActivationAck(fence, owner.ws, requestId, deadlineAt);
+      const result = await this.waitForActivationAck(
+        fence,
+        owner.ws,
+        requestId,
+        deadlineAt
+      );
+      this.assertBoundExactConnection(
+        owner.runtimeId,
+        owner.ws,
+        fence,
+        boundConnection,
+        lineage
+      );
+      if (!result.accepted) {
+        const message =
+          result.reason?.message ?? 'actor create failed on the owner Runtime';
+        throw new GetCreateError('ActorCreateFailed', message, 500);
+      }
+      const markedLive = await this.options.actorManager.registryStore().markOwnerLive({
+        actorKey: fence.actorKey,
+        expectedEpoch: fence.epoch,
+        actorImplementationIdentity: fence.implementationIdentity,
+        ownerRuntimeId: fence.ownerRuntimeId,
+        ownerLeaseId: fence.ownerLeaseId,
+        now: this.now(),
+      });
+      this.assertBoundExactConnection(
+        owner.runtimeId,
+        owner.ws,
+        fence,
+        boundConnection,
+        lineage
+      );
+      if (!markedLive) {
+        throw new GetCreateError(
+          'ActorCreateFailed',
+          'actor owner lease could not be marked live after create completed',
+          500
+        );
+      }
+      return actorRefFromKey(entry.actorKey, entry.epoch);
     } catch (error) {
       await this.releaseLease(fence);
+      if (boundConnection !== undefined) {
+        this.options.disconnectController?.unbindOwner(boundConnection, fence);
+      }
       throw error;
     }
-    if (!result.accepted) {
-      await this.releaseLease(fence);
-      const message =
-        result.reason?.message ?? 'actor create failed on the owner Runtime';
-      throw new GetCreateError('ActorCreateFailed', message, 500);
+  }
+
+  private routeAuthorityFor(
+    lineage: ActorGetCreateLineage,
+    header: ActorGetOrCreateRequestFrameHeader
+  ): ActorOwnerRouteAuthority {
+    if (lineage.kind === 'testCapability') {
+      return {
+        assemblyIdentity: lineage.authority.assemblyIdentity,
+        assemblyGeneration: lineage.authority.assemblyGeneration,
+      };
     }
-    const markedLive = await this.options.actorManager.registryStore().markOwnerLive({
-      actorKey: fence.actorKey,
-      expectedEpoch: fence.epoch,
-      actorImplementationIdentity: fence.implementationIdentity,
-      ownerRuntimeId: fence.ownerRuntimeId,
-      ownerLeaseId: fence.ownerLeaseId,
-      now: this.now(),
-    });
-    if (!markedLive) {
-      await this.releaseLease(fence);
-      throw new GetCreateError(
-        'ActorCreateFailed',
-        'actor owner lease could not be marked live after create completed',
-        500
-      );
-    }
-    return actorRefFromKey(entry.actorKey, entry.epoch);
+    return {
+      assemblyIdentity: header.activationIdentity.assemblyIdentity,
+      assemblyGeneration: header.activationIdentity.generation,
+    };
   }
 
   private waitForActivationAck(
@@ -307,7 +415,6 @@ export class ActorGetCreateActivationCoordinator {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(requestId);
         this.rememberLateAck(requestId);
-        void this.releaseLease(fence);
         reject(
           new GetCreateError(
             'ActorCreateTimeout',
@@ -348,6 +455,127 @@ export class ActorGetCreateActivationCoordinator {
       this.lateAcks.clear();
     }
     this.lateAcks.add(requestId);
+  }
+
+  private authorizeLineage(input: ActorGetCreateActivationInput): ActorGetCreateLineage {
+    const capability = input.header.testCaseCapability;
+    const parentRequestId = input.header.testCaseParentRequestId;
+    if ((capability === undefined) !== (parentRequestId === undefined)) {
+      throw new GetCreateError(
+        'TestCapabilityParentRejected',
+        'test capability actor creation metadata must be supplied as a pair',
+        403
+      );
+    }
+    if (capability === undefined || parentRequestId === undefined) {
+      if (input.capabilityParent !== undefined) {
+        throw new GetCreateError(
+          'TestCapabilityParentRejected',
+          'ordinary actor creation cannot inherit a test capability parent',
+          403
+        );
+      }
+      return { kind: 'ordinary' };
+    }
+    const parent = input.capabilityParent;
+    const authority = parent?.authority;
+    if (
+      parent === undefined ||
+      authority === undefined ||
+      input.sourceConnection === undefined ||
+      input.sourceRuntimeId === undefined ||
+      parent.originRuntimeConnection !== input.sourceConnection ||
+      parent.originRuntimeId !== input.sourceRuntimeId ||
+      parent.testCaseCapability !== capability ||
+      authority.testCaseCapability !== capability ||
+      authority.runtimeId !== parent.originRuntimeId ||
+      authority.deployment.serviceId !== input.header.actorKey.serviceId
+    ) {
+      throw new GetCreateError(
+        'TestCapabilityParentRejected',
+        'test capability actor creation parent is not active on its exact origin Runtime connection',
+        403
+      );
+    }
+    return Object.freeze({
+      kind: 'testCapability',
+      parentRequestId,
+      capability,
+      originRuntimeId: parent.originRuntimeId,
+      originRuntimeConnection: parent.originRuntimeConnection,
+      authority
+    });
+  }
+
+  private assertLineageConnection(lineage: ActorGetCreateLineage): void {
+    if (lineage.kind === 'ordinary') return;
+    this.assertExactConnection(
+      lineage.originRuntimeId,
+      lineage.originRuntimeConnection,
+      lineage
+    );
+  }
+
+  private assertExactConnection(
+    runtimeId: string,
+    ws: WebSocket,
+    lineage: ActorGetCreateLineage
+  ): void {
+    const reverse = this.options.runtimeDirectory.runtimeIdForConnection?.(ws);
+    if (
+      ws.readyState !== WebSocket.OPEN ||
+      this.options.runtimeDirectory.runtimeConnection(runtimeId)?.ws !== ws ||
+      (lineage.kind === 'testCapability' && reverse !== runtimeId) ||
+      (reverse !== undefined && reverse !== runtimeId)
+    ) {
+      throw new GetCreateError(
+        'OwnerUnavailable',
+        'actor owner Runtime connection changed during initial activation',
+        503
+      );
+    }
+  }
+
+  private bindOwnerSession(
+    ws: WebSocket,
+    fence: ActorOwnerFence
+  ): ActorRuntimeConnectionFence | undefined {
+    const controller = this.options.disconnectController;
+    if (controller === undefined) return undefined;
+    const connection =
+      this.options.runtimeDirectory.runtimeConnectionFenceForConnection?.(ws);
+    if (connection === undefined || connection.runtimeId !== fence.ownerRuntimeId) {
+      throw new GetCreateError(
+        'OwnerUnavailable',
+        'actor owner Runtime session fence is unavailable',
+        503
+      );
+    }
+    controller.bindOwner(connection, fence);
+    return connection;
+  }
+
+  private assertBoundExactConnection(
+    runtimeId: string,
+    ws: WebSocket,
+    fence: ActorOwnerFence,
+    connection: ActorRuntimeConnectionFence | undefined,
+    lineage: ActorGetCreateLineage
+  ): void {
+    this.assertExactConnection(runtimeId, ws, lineage);
+    if (
+      connection !== undefined &&
+      this.options.disconnectController?.ownerFenceBoundToConnection(
+        connection,
+        fence
+      ) !== true
+    ) {
+      throw new GetCreateError(
+        'OwnerUnavailable',
+        'actor owner Runtime session binding changed during initial activation',
+        503
+      );
+    }
   }
 
   private pickOwner(
@@ -391,6 +619,40 @@ export class GetCreateError extends Error {
     super(message);
     this.name = 'GetCreateError';
   }
+}
+
+function sameLineage(
+  left: ActorGetCreateLineage,
+  right: ActorGetCreateLineage
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'ordinary' || right.kind === 'ordinary') return true;
+  return (
+    left.parentRequestId === right.parentRequestId &&
+    left.capability === right.capability &&
+    left.originRuntimeId === right.originRuntimeId &&
+    left.originRuntimeConnection === right.originRuntimeConnection &&
+    sameAuthority(left.authority, right.authority)
+  );
+}
+
+function sameAuthority(
+  left: RuntimeSpawnParentAuthority,
+  right: RuntimeSpawnParentAuthority
+): boolean {
+  return (
+    left.runtimeId === right.runtimeId &&
+    left.buildId === right.buildId &&
+    left.serviceProtocolIdentity === right.serviceProtocolIdentity &&
+    left.assemblyIdentity === right.assemblyIdentity &&
+    left.assemblyGeneration === right.assemblyGeneration &&
+    left.testCaseCapability === right.testCaseCapability &&
+    left.deployment.serviceId === right.deployment.serviceId &&
+    left.deployment.contractVersion === right.deployment.contractVersion &&
+    left.deployment.deploymentRevision === right.deployment.deploymentRevision &&
+    left.deployment.deploymentArtifactIdentity ===
+      right.deployment.deploymentArtifactIdentity
+  );
 }
 
 function toGetCreateError(error: unknown): GetCreateError {

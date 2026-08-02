@@ -10,6 +10,10 @@ import {
   type ActorIdleEvictionControl,
   type MonotonicClock,
 } from '../src/router/actorOwnerLeaseIdleController.js';
+import {
+  ACTOR_OWNER_LEASE_TTL_MS,
+  SPAWNED_ACTOR_METHOD_DEADLINE_MS,
+} from '../src/router/actorTiming.js';
 
 const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementation = identity('skiff-actor-implementation-v1:sha256', 'b');
@@ -17,6 +21,19 @@ const methodIdentity = identity('skiff-actor-method-v1:sha256', 'c');
 const start = Date.parse('2026-07-25T00:00:00.000Z');
 
 describe('Actor owner lease and idle TTL', () => {
+  it('keeps the owner lease live through the full spawned actor deadline', async () => {
+    const fixture = await liveFixture({ leaseTtlMs: ACTOR_OWNER_LEASE_TTL_MS });
+    await admit(fixture, 'invocation-long-running');
+    fixture.clock.advance(SPAWNED_ACTOR_METHOD_DEADLINE_MS);
+
+    await expect(fixture.controller().sweep()).resolves.toMatchObject({
+      expired: [],
+    });
+    await expect(
+      fixture.manager.registryStore().actorInvocation('invocation-long-running')
+    ).resolves.toMatchObject({ state: 'admitted' });
+  });
+
   it('renews only the exact full owner fence using the injected monotonic clock', async () => {
     const fixture = await liveFixture();
     const controller = fixture.controller();

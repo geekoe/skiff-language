@@ -216,8 +216,14 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
     assert_connect_result_type(type_ref);
     assert_eq!(
         accept_fields.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["businessIdentity", "connectionPolicy", "tag"]
+        [
+            "admissionRank",
+            "businessIdentity",
+            "connectionPolicy",
+            "tag"
+        ]
     );
+    assert_null(accept_full, &accept_fields["admissionRank"]);
     assert_string(accept_full, &accept_fields["tag"], "accept");
     let policy = referenced_expression(accept_full, &accept_fields["connectionPolicy"]);
     let policy_fields = construct_fields(policy);
@@ -230,6 +236,7 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
 
     let accept_defaults = executable(&unit, "acceptDefaults");
     let defaults = construct_fields(return_expression(accept_defaults));
+    assert_null(accept_defaults, &defaults["admissionRank"]);
     assert_null(accept_defaults, &defaults["businessIdentity"]);
     assert_null(accept_defaults, &defaults["connectionPolicy"]);
     assert_string(accept_defaults, &defaults["tag"], "accept");

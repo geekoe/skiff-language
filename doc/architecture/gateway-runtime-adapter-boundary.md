@@ -382,7 +382,12 @@ Connect result：
 
 ```skiff
 type WebSocketConnectResult discriminator "tag" =
-  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+  {
+    tag: "accept",
+    businessIdentity: string?,
+    connectionPolicy: WebSocketConnectionPolicy?,
+    admissionRank: integer?,
+  }
   | { tag: "reject", code: integer, reason: string }
 ```
 
@@ -394,6 +399,7 @@ type WebSocketConnectResponseMetadata =
       result: 'accept';
       businessIdentity?: string;
       connectionPolicy?: WebSocketConnectionPolicy;
+      admissionRank?: number;
     }
   | {
       result: 'reject';
@@ -540,7 +546,12 @@ type WebSocketConnectionPolicy {
 }
 
 type WebSocketConnectResult discriminator "tag" =
-  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+  {
+    tag: "accept",
+    businessIdentity: string?,
+    connectionPolicy: WebSocketConnectionPolicy?,
+    admissionRank: integer?,
+  }
   | { tag: "reject", code: integer, reason: string }
 ```
 
@@ -549,12 +560,48 @@ Connection policy 规则：
 - `connectionPolicy` 只在 `businessIdentity` 存在时合法。
 - policy key 是 `(serviceId, websocketEntryId, businessIdentity)`。
 - `scope` 字段不存在。policy 挂在 connect accept 上，作用域天然是本次业务连接身份。
+- `admissionRank` 是 service 在持久化数据库事务中为该业务身份递增并保存的 fencing token。它必须是正的
+  safe integer；Router 不分配 rank，也不能从 dispatch 或 response 顺序推导 rank。服务重启后必须从同一
+  持久化计数器继续递增，不能从进程内状态重新开始。
+- Ranked admission 只允许精确组合
+  `businessIdentity + { maxConnections: 1, overflow: "close-oldest" } + admissionRank`。
+  rank 缺少 identity/policy、使用其它 limit/overflow，或 rank 非正 safe integer 都是无效 connect result。
 - `overflow = "close-oldest"` 时，gateway 接受新连接，并在新连接进入 business identity fan-out 前同步移除旧连接索引，再关闭旧 socket。
 - `overflow = "reject-new"` 时，gateway 保留现有连接并拒绝新连接。
 - 未返回 `connectionPolicy` 时，多个同一 `businessIdentity` 连接仍可 fan-out。
 - 当 `maxConnections > 1` 且新连接会超过上限时，`close-oldest` 按 verified-at/accepted-at 从旧到新移除足够多的旧 socket，直到包含新 socket 后总数不超过 `maxConnections`；`reject-new` 只拒绝新 socket，不移除任何旧 socket。
 - version 和 build id 不进入 policy key。这样同一 service 的滚动构建或本地 reload 后，新连接仍能替换同一业务身份的旧连接。
 - `websocketEntryId` 进入 key，避免同一 service 将不同 WebSocket entry 的连接互相 fan-out 或互相踢掉。当前只有一个 entry 的服务也必须按这个完整 key 建索引。
+
+Ranked admission 额外维护每个 policy key 的 Router-local high-water。Connect response 到达时，只有严格高于
+high-water 的 rank 可以成为新 winner；它先从索引移除并以 `4009` 关闭所有较低 rank connection，再进入
+fan-out。等于或低于 high-water 的 ranked 晚到 response 不能恢复旧 session：Router 完成 HTTP `101`
+upgrade 后立即以 `4009` 关闭该 socket。某个 key 一旦出现 ranked result，在其 high-water 存续期间，同 key
+缺失 rank 的 response 也按 downgrade fail closed，但不进入 ranked loser 的 post-upgrade close 路径。该规则
+按 rank 而不是 response 顺序决定 winner。
+
+High-water 不是可任意驱逐的 cache：存在 active connection 时必须保留；最后一次 ranked admission 后，
+inactive entry 至少保留一个 connect dispatch timeout。Dispatcher 在 timeout/abort 后隔离 late response，
+因此只有 retention 已过期、且没有 active connection 的 entry 才能 lazy prune。High-water map 有硬容量上限，
+默认与 WebSocket connection limit 相同；容量满且没有安全可回收 entry 时，已有 key 仍可用更高 rank 推进，
+新 ranked key 则完成 `101` 后以 `1013` 关闭，不能通过驱逐未过期 fence 来接纳它。
+
+容量拒绝还必须推进一个全局 new-key quiet-window deadline，窗口从最近一次拒绝起至少覆盖完整 connect
+dispatch timeout。它是单个有界标量，不按被拒 key 累积状态；窗口内任何不在 high-water map 中的 key，
+无论 response ranked 或 unranked 都 fail closed，并且每次这种拒绝都延长窗口。即使原先占用容量的 inactive
+entry 随后被安全 prune，也不能在 quiet window 到期前接纳该 key，否则被容量拒绝的较低 rank late response
+可能恢复旧 session。仍在 high-water map 中的已有 key 不受 new-key window 阻止，可以用严格更高 rank
+推进。Ranked new-key refusal 使用 `101` 后 `1013`；unranked refusal 在 upgrade 前失败。
+
+Ranked candidate 即使因 capacity 或 global new-key quiet window 被拒，也已经证明同 key 的既有 unranked
+session 过时。Router 必须先同步从 fan-out 移除并以 `4009` 关闭该 key 的 existing connection，再拒绝
+candidate；attached socket 正常发送 `4009`，尚未 attach 的 unranked reservation 则 abort upgrade。Candidate
+自身仍完成 `101` 后以 `1013` 关闭并续期 quiet window。Existing connection 与 candidate 的 RPC finalize、
+generation pin release 都各自最多执行一次。
+
+只有 ranked loser 和 ranked high-water capacity refusal 使用“先 `101`、再 WebSocket close”路径。Gateway
+shutdown、普通 policy close、runtime disconnect 等发生在 socket attach 前时，必须中止 connect dispatch、
+销毁原始 upgrade socket，并且 late runtime response 不能再 admit、pin generation 或重复 release。
 
 Downlink fan-out key 与 policy key 相同：
 
@@ -779,6 +826,9 @@ Authoring/deployment manifest readers must fail closed:
 Runtime connect response validation must fail closed:
 
 - `connectionPolicy` without `businessIdentity` is invalid.
+- `admissionRank` 必须是正 safe integer，并且只可与 `businessIdentity` 及精确的
+  `{ maxConnections: 1, overflow: "close-oldest" }` policy 一起出现；任一部分缺失或不同都非法。
+- 已有 ranked high-water 的 key 收到缺失 rank 或不高于 high-water 的 accept 时必须 fail closed。
 - `identity` and `connection.identity` are invalid field names.
 - `scope` inside `WebSocketConnectionPolicy` is invalid.
 - `maxConnections`、`overflow`、`closeCode`、`closeReason` must satisfy the connection policy rules above.
@@ -812,7 +862,8 @@ Router telemetry may log:
 - 平台WebSocket request的method、完成状态、deadline/内部停止原因和pending计数；request id只按平台
   diagnostic策略记录，payload不得记录。
 - presence of `businessIdentity` and a redacted/hash form if needed.
-- connection policy decision。
+- connection policy decision、ranked high-water size/capacity refusal、global new-key quiet-window 状态和不记录
+  原始业务身份的 rank 比较结果。
 - adapter source kind names。
 
 Router telemetry must not log business context fields unless a business service explicitly logs them inside runtime.
@@ -833,6 +884,21 @@ Target-state tests must prove:
 - `businessIdentity` fan-out works.
 - `maxConnections=1, close-oldest` removes old sockets from fan-out before closing them.
 - `maxConnections=1, reject-new` leaves old sockets active and rejects the new socket.
+- Ranked `maxConnections=1, close-oldest` 在 connect responses 乱序时只保留最高 rank；低/等 ranked response
+  完成 `101` 后以 `4009` 关闭，ranked key 上缺失 rank 的 downgrade 则在 upgrade 前 fail closed。旧 socket
+  先移出 fan-out 再关闭。
+- Ranked high-water 在 winner 普通关闭后仍保留，直到 dispatch-timeout retention 已过且 key inactive；容量
+  饱和不能驱逐 live fence，新 key 以 `1013` fail closed，而已有 key 可由更高 rank 推进。测试必须可观测
+  high-water size，并覆盖依次关闭不同 identity 直到容量耗尽以及安全 lazy prune。
+- Capacity refusal 后同一未知 key 的 unranked response 不能立即被接纳；占位 high-water 后续被 prune 时，
+  被拒 key 的 late lower rank 仍必须在 global new-key quiet window 内失败。每次拒绝延长至少一个完整
+  dispatch timeout，窗口到期后才允许安全接纳新 key。
+- Ranked candidate 因 capacity/quiet window 拒绝时，同 key 既有 unranked connection 必须先退出 fan-out；
+  attached connection 收到 `4009`，pre-attach reservation abort upgrade，candidate 收到 `1013`。RPC finalize
+  与 runtime generation pin 对 existing/candidate 分别且仅释放一次。
+- Pending upgrade 在 gateway shutdown 时中止 dispatch 并销毁 raw socket；late response 不得 admit、pin
+  generation 或重复 finalize/release。只有 ranked loser/capacity refusal 可以在 pre-attach 阶段选择
+  `101` 后 WebSocket close。
 - Fan-out 和 policy 按 `(serviceId, websocketEntryId, businessIdentity)` 建 key，并有意忽略 version/build。
 - Matching JSON-RPC response frame resumes exactly one pending call and produces no runtime ingress request.
 - Peer-initiated declared request dispatches exactly one pinned-generation handler and returns the same typed id；

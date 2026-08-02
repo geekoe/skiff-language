@@ -37,6 +37,250 @@ describe('WebSocketConnectionLifecycle', () => {
     expect(finished).toEqual(['first']);
   });
 
+  it('uses ranked high-water when connect responses resolve out of order', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    lifecycle.reserve('lower', 'lower');
+    lifecycle.reserve('higher', 'higher');
+
+    expect(lifecycle.admit('higher', rankedAdmission(2))).toEqual({
+      accepted: true
+    });
+    expect(lifecycle.admit('lower', rankedAdmission(1))).toEqual({
+      accepted: false,
+      close: {
+        code: 4009,
+        reason: 'websocket connection superseded by a higher admission rank'
+      }
+    });
+    expect(lifecycle.connectionsForBusinessKey('business')).toEqual(['higher']);
+  });
+
+  it('closes the lower ranked connection when the higher response is later', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const lower = socket();
+    lifecycle.reserve('lower', 'lower');
+    expect(lifecycle.admit('lower', rankedAdmission(1))).toEqual({ accepted: true });
+    lifecycle.attach('lower', lower.webSocket);
+
+    lifecycle.reserve('higher', 'higher');
+    expect(lifecycle.admit('higher', rankedAdmission(2))).toEqual({ accepted: true });
+
+    expect(lower.closes).toEqual([{
+      code: 4009,
+      reason: 'websocket connection superseded by a higher admission rank'
+    }]);
+    expect(lifecycle.connectionsForBusinessKey('business')).toEqual(['higher']);
+  });
+
+  it('only completes an upgrade before close for a superseded ranked reservation', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const rankedClose = vi.fn();
+    lifecycle.reserve('ranked', 'ranked', undefined, rankedClose);
+    lifecycle.admit('ranked', rankedAdmission(1));
+
+    lifecycle.reserve('ranked-winner', 'ranked-winner');
+    lifecycle.admit('ranked-winner', rankedAdmission(2));
+    expect(rankedClose).toHaveBeenCalledWith({
+      close: {
+        code: 4009,
+        reason: 'websocket connection superseded by a higher admission rank'
+      },
+      disposition: 'close-after-upgrade'
+    });
+
+    const unrankedClose = vi.fn();
+    lifecycle.reserve('unranked', 'unranked', undefined, unrankedClose);
+    lifecycle.admit('unranked', {
+      businessKey: 'unranked-business',
+      policy: { maxConnections: 1, overflow: 'close-oldest' }
+    });
+    lifecycle.reserve('new-ranked', 'new-ranked');
+    lifecycle.admit('new-ranked', rankedAdmission(1, 'unranked-business'));
+    expect(unrankedClose).toHaveBeenCalledWith({
+      close: {
+        code: 4009,
+        reason: 'websocket connection superseded by a higher admission rank'
+      },
+      disposition: 'abort-upgrade'
+    });
+  });
+
+  it('retains ranked high-water after ordinary socket close', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    const higher = socket();
+    lifecycle.reserve('higher', 'higher');
+    lifecycle.admit('higher', rankedAdmission(2));
+    lifecycle.attach('higher', higher.webSocket);
+    higher.emit('close');
+
+    lifecycle.reserve('late-lower', 'late-lower');
+    expect(lifecycle.admit('late-lower', rankedAdmission(1))).toEqual({
+      accepted: false,
+      close: {
+        code: 4009,
+        reason: 'websocket connection superseded by a higher admission rank'
+      }
+    });
+    expect(lifecycle.connectionsForBusinessKey('business')).toEqual([]);
+  });
+
+  it('rejects equal-rank and unranked candidates after ranked high-water', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>();
+    lifecycle.reserve('winner', 'winner');
+    lifecycle.admit('winner', rankedAdmission(7));
+
+    lifecycle.reserve('equal', 'equal');
+    expect(lifecycle.admit('equal', rankedAdmission(7))).toMatchObject({
+      accepted: false,
+      close: { code: 4009 }
+    });
+
+    lifecycle.reserve('unranked', 'unranked');
+    expect(lifecycle.admit('unranked', {
+      businessKey: 'business',
+      policy: { maxConnections: 2, overflow: 'close-oldest' }
+    })).toMatchObject({
+      accepted: false,
+      close: { code: 4009 }
+    });
+    expect(lifecycle.connectionsForBusinessKey('business')).toEqual(['winner']);
+  });
+
+  it('bounds inactive high-water keys without evicting live retention fences', () => {
+    let now = 0;
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>({
+      admissionHighWaterLimit: 2,
+      admissionHighWaterRetentionMs: 100,
+      now: () => now
+    });
+
+    admitRankedAndClose(lifecycle, 'first', 'business-one', 1);
+    now = 50;
+    admitRankedAndClose(lifecycle, 'second', 'business-two', 1);
+    expect(lifecycle.admissionHighWaterSize()).toBe(2);
+
+    lifecycle.reserve('capacity-loser', 'capacity-loser');
+    expect(lifecycle.admit('capacity-loser', rankedAdmission(1, 'business-three')))
+      .toEqual({
+        accepted: false,
+        close: {
+          code: 1013,
+          reason: 'websocket admission high-water capacity exceeded'
+        }
+      });
+    expect(lifecycle.admissionHighWaterSize()).toBe(2);
+
+    admitRankedAndClose(lifecycle, 'existing-key', 'business-one', 2);
+    expect(lifecycle.admissionHighWaterSize()).toBe(2);
+
+    now = 151;
+    admitRankedAndClose(lifecycle, 'after-retention', 'business-three', 2);
+    expect(lifecycle.admissionHighWaterSize()).toBe(1);
+  });
+
+  it('quarantines an unranked unknown key after ranked high-water capacity refusal', () => {
+    let now = 0;
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>({
+      admissionHighWaterLimit: 1,
+      admissionHighWaterRetentionMs: 100,
+      now: () => now
+    });
+    admitRankedAndClose(lifecycle, 'occupied', 'occupied-business', 1);
+
+    now = 10;
+    lifecycle.reserve('ranked-capacity-loser', 'ranked-capacity-loser');
+    expect(lifecycle.admit(
+      'ranked-capacity-loser',
+      rankedAdmission(1, 'unknown-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+
+    lifecycle.reserve('unranked-downgrade', 'unranked-downgrade');
+    expect(lifecycle.admit('unranked-downgrade', {
+      businessKey: 'unknown-business',
+      policy: { maxConnections: 1, overflow: 'close-oldest' }
+    })).toEqual({
+      accepted: false,
+      close: {
+        code: 1013,
+        reason: 'websocket admission high-water capacity exceeded'
+      }
+    });
+    expect(lifecycle.connectionsForBusinessKey('unknown-business')).toEqual([]);
+  });
+
+  it('keeps late lower ranks quarantined after the occupied fence prunes', () => {
+    let now = 0;
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>({
+      admissionHighWaterLimit: 1,
+      admissionHighWaterRetentionMs: 100,
+      now: () => now
+    });
+    admitRankedAndClose(lifecycle, 'occupied', 'occupied-business', 1);
+
+    now = 50;
+    lifecycle.reserve('capacity-loser', 'capacity-loser');
+    expect(lifecycle.admit(
+      'capacity-loser',
+      rankedAdmission(2, 'unknown-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+
+    now = 101;
+    lifecycle.reserve('late-lower', 'late-lower');
+    expect(lifecycle.admit(
+      'late-lower',
+      rankedAdmission(1, 'unknown-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+    expect(lifecycle.admissionHighWaterSize()).toBe(0);
+
+    now = 151;
+    lifecycle.reserve('past-original-window', 'past-original-window');
+    expect(lifecycle.admit(
+      'past-original-window',
+      rankedAdmission(1, 'unknown-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+
+    now = 252;
+    admitRankedAndClose(lifecycle, 'after-quiet-window', 'unknown-business', 3);
+    expect(lifecycle.admissionHighWaterSize()).toBe(1);
+  });
+
+  it('aborts a same-key unranked reservation before rejecting a ranked candidate during quiet window', () => {
+    const lifecycle = new WebSocketConnectionLifecycle<string, string>({
+      admissionHighWaterLimit: 1,
+      admissionHighWaterRetentionMs: 100,
+      now: () => 0
+    });
+    admitRankedAndClose(lifecycle, 'occupied', 'occupied-business', 1);
+
+    const unrankedClose = vi.fn();
+    lifecycle.reserve('unranked-existing', 'unranked-existing', undefined, unrankedClose);
+    expect(lifecycle.admit('unranked-existing', {
+      businessKey: 'target-business',
+      policy: { maxConnections: 1, overflow: 'close-oldest' }
+    })).toEqual({ accepted: true });
+
+    lifecycle.reserve('capacity-trigger', 'capacity-trigger');
+    expect(lifecycle.admit(
+      'capacity-trigger',
+      rankedAdmission(1, 'other-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+
+    lifecycle.reserve('ranked-target', 'ranked-target');
+    expect(lifecycle.admit(
+      'ranked-target',
+      rankedAdmission(1, 'target-business')
+    )).toMatchObject({ accepted: false, close: { code: 1013 } });
+    expect(unrankedClose).toHaveBeenCalledOnce();
+    expect(unrankedClose).toHaveBeenCalledWith({
+      close: {
+        code: 4009,
+        reason: 'websocket connection superseded by a higher admission rank'
+      },
+      disposition: 'abort-upgrade'
+    });
+    expect(lifecycle.connectionsForBusinessKey('target-business')).toEqual([]);
+  });
+
   it('reject-new preserves the existing connection and releases the candidate once', () => {
     const finish = vi.fn();
     const lifecycle = new WebSocketConnectionLifecycle<string, string>({}, finish);
@@ -364,6 +608,31 @@ function admitted(
   lifecycle.admit(id, businessKey === undefined ? {} : { businessKey });
   lifecycle.attach(id, transport.webSocket);
   return transport;
+}
+
+function rankedAdmission(admissionRank: number, businessKey = 'business') {
+  return {
+    businessKey,
+    policy: {
+      maxConnections: 1,
+      overflow: 'close-oldest' as const
+    },
+    admissionRank
+  };
+}
+
+function admitRankedAndClose(
+  lifecycle: WebSocketConnectionLifecycle<string, string>,
+  id: string,
+  businessKey: string,
+  admissionRank: number
+): void {
+  const transport = socket();
+  lifecycle.reserve(id, id);
+  expect(lifecycle.admit(id, rankedAdmission(admissionRank, businessKey)))
+    .toEqual({ accepted: true });
+  lifecycle.attach(id, transport.webSocket);
+  transport.emit('close');
 }
 
 interface TestSocket {

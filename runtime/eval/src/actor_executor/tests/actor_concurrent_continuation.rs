@@ -117,7 +117,27 @@ async fn actor_concurrent_continuation_parent_suspends_once_and_children_are_ind
         RuntimeValue::Number(3.0),
         "the parent synchronous segment must be committed before any child acquires"
     );
-    first.complete(child_heap).unwrap();
+    let sentinel = child_heap
+        .alloc_array(vec![RuntimeValue::from("lane-local")])
+        .unwrap();
+    for index in 0..512 {
+        let leaf = child_heap
+            .alloc_array(vec![RuntimeValue::Number(index as f64)])
+            .unwrap();
+        child_heap
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                "dead".to_string(),
+                RuntimeValue::Heap(leaf),
+            )])))
+            .unwrap();
+    }
+    first.complete(&child_heap).unwrap();
+    assert_eq!(stored_heap_len(&fixture), 0);
+    assert_eq!(
+        child_heap.get(sentinel).unwrap(),
+        &HeapNode::Array(vec![RuntimeValue::from("lane-local")]),
+        "borrowed lane completion must neither clone nor consume the lane heap"
+    );
     second.abandon();
     bridge.resume_parent(&mut heap, &execution).await.unwrap();
     parent.finish(heap).unwrap();
@@ -155,7 +175,7 @@ async fn actor_concurrent_continuation_nested_bridge_composes_both_gates_and_com
         RuntimeValue::Number(2.0)
     );
     write_count(&fixture, nested_first.frame(), &mut nested_first_heap, 3.0);
-    nested_first.complete(nested_first_heap).unwrap();
+    nested_first.complete(&nested_first_heap).unwrap();
 
     let mut nested_second_heap = outer_lane_heap.clone();
     nested_second
@@ -172,7 +192,7 @@ async fn actor_concurrent_continuation_nested_bridge_composes_both_gates_and_com
         &mut nested_second_heap,
         4.0,
     );
-    nested_second.complete(nested_second_heap).unwrap();
+    nested_second.complete(&nested_second_heap).unwrap();
 
     let error = outer_bridge
         .resume_parent(&mut parent_heap, &execution)
@@ -198,7 +218,7 @@ async fn actor_concurrent_continuation_nested_bridge_composes_both_gates_and_com
         .to_string()
         .contains("(1 synchronous segment(s) held)"));
     write_count(&fixture, outer_lane.frame(), &mut outer_lane_heap, 5.0);
-    outer_lane.complete(outer_lane_heap).unwrap();
+    outer_lane.complete(&outer_lane_heap).unwrap();
 
     outer_bridge
         .resume_parent(&mut parent_heap, &execution)
@@ -278,7 +298,7 @@ async fn actor_concurrent_continuation_serializes_segments_but_overlaps_pending_
             .await
             .unwrap()
             .unwrap();
-        second.complete(second_heap).unwrap();
+        second.complete(&second_heap).unwrap();
         output
     });
 
@@ -303,7 +323,7 @@ async fn actor_concurrent_continuation_serializes_segments_but_overlaps_pending_
             .await
             .unwrap()
             .unwrap();
-        first.complete(first_heap).unwrap();
+        first.complete(&first_heap).unwrap();
         output
     });
 
@@ -363,7 +383,7 @@ async fn actor_concurrent_continuation_ready_future_keeps_the_current_segment() 
             .await
             .unwrap();
         acquired_tx.send(()).unwrap();
-        second.complete(second_heap).unwrap();
+        second.complete(&second_heap).unwrap();
     });
     assert!(
         tokio::time::timeout(Duration::from_millis(40), &mut acquired_rx)
@@ -372,7 +392,7 @@ async fn actor_concurrent_continuation_ready_future_keeps_the_current_segment() 
         "a ready future must not commit or release the first child segment"
     );
 
-    first.complete(first_heap).unwrap();
+    first.complete(&first_heap).unwrap();
     acquired_rx.await.unwrap();
     second_task.await.unwrap();
 
@@ -400,7 +420,7 @@ async fn actor_concurrent_continuation_commits_children_in_order_and_preserves_o
     let mut first_heap = parent_heap.clone();
     first.resume(&mut first_heap, &execution).await.unwrap();
     write_count(&fixture, first.frame(), &mut first_heap, 5.0);
-    first.complete(first_heap).unwrap();
+    first.complete(&first_heap).unwrap();
 
     let mut second_heap = parent_heap.clone();
     second.resume(&mut second_heap, &execution).await.unwrap();
@@ -409,7 +429,7 @@ async fn actor_concurrent_continuation_commits_children_in_order_and_preserves_o
         RuntimeValue::Number(5.0)
     );
     write_count(&fixture, second.frame(), &mut second_heap, 7.0);
-    second.complete(second_heap).unwrap();
+    second.complete(&second_heap).unwrap();
 
     bridge
         .resume_parent(&mut parent_heap, &execution)

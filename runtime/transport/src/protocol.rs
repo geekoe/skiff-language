@@ -882,8 +882,8 @@ impl<'de> Deserialize<'de> for ActivationIdentityFrameMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActorGetOrCreateRequestFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
@@ -898,6 +898,61 @@ pub struct ActorGetOrCreateRequestFrameHeader {
     pub declaration_owner: ActorDeclarationOwnerFrameHeader,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<ActorMethodDeadlineFrameHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_case_capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_case_parent_request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawActorGetOrCreateRequestFrameHeader {
+    schema_version: String,
+    #[serde(rename = "type")]
+    envelope_type: String,
+    rpc_id: String,
+    runtime_id: String,
+    activation_identity: ActivationIdentityFrameMetadata,
+    actor_key: ActorKeyFrameMetadata,
+    actor_abi_identity: String,
+    actor_implementation_identity: String,
+    bootstrap_encoding_version: String,
+    declaration_owner: ActorDeclarationOwnerFrameHeader,
+    #[serde(default)]
+    deadline: Option<ActorMethodDeadlineFrameHeader>,
+    #[serde(default)]
+    test_case_capability: Option<String>,
+    #[serde(default)]
+    test_case_parent_request_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ActorGetOrCreateRequestFrameHeader {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawActorGetOrCreateRequestFrameHeader::deserialize(deserializer)?;
+        validate_test_case_authority(
+            raw.test_case_capability.as_deref(),
+            raw.test_case_parent_request_id.as_deref(),
+        )
+        .map_err(de::Error::custom)?;
+        Ok(Self {
+            schema_version: raw.schema_version,
+            envelope_type: raw.envelope_type,
+            rpc_id: raw.rpc_id,
+            runtime_id: raw.runtime_id,
+            activation_identity: raw.activation_identity,
+            actor_key: raw.actor_key,
+            actor_abi_identity: raw.actor_abi_identity,
+            actor_implementation_identity: raw.actor_implementation_identity,
+            bootstrap_encoding_version: raw.bootstrap_encoding_version,
+            declaration_owner: raw.declaration_owner,
+            deadline: raw.deadline,
+            test_case_capability: raw.test_case_capability,
+            test_case_parent_request_id: raw.test_case_parent_request_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1012,6 +1067,36 @@ pub struct SpawnSubmitRequestFrameHeader {
     pub max_queue_wait_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_method: Option<SpawnActorMethodTargetFrameMetadata>,
+}
+
+pub(crate) fn validate_test_case_authority(
+    capability: Option<&str>,
+    parent_request_id: Option<&str>,
+) -> std::result::Result<(), String> {
+    if capability.is_some() != parent_request_id.is_some() {
+        return Err(
+            "testCaseCapability and testCaseParentRequestId must be present together".to_string(),
+        );
+    }
+    if let Some(capability) = capability {
+        validate_canonical_token(capability, "testCaseCapability")?;
+    }
+    if let Some(parent_request_id) = parent_request_id {
+        validate_canonical_token(parent_request_id, "testCaseParentRequestId")?;
+    }
+    Ok(())
+}
+
+fn validate_canonical_token(value: &str, label: &str) -> std::result::Result<(), String> {
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+    {
+        return Err(format!("{label} must be a non-empty canonical token"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

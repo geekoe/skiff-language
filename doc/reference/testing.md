@@ -51,9 +51,9 @@ kind: test
 - test service 的 config profile固定为`skiff-test`，来自`config.skiff-test.yml`；
 - 本机或部署时的私密覆盖使用同profile的`config.skiff-test.secret.yml`，该文件不得提交；
 - 同一个test service在一次runner execution中只编译一次`PackageArtifact`，所有selected cases共享
-  authored config layers和dependency graph，并作为多个root进入一个`RuntimeAssembly`；runner为每个
-  generated deployment构造隔离的snapshot分区，只提交一次activation transaction，所有root观察同一个
-  generation钉住的assembly ref与config snapshot ref；
+  authored config layers和dependency graph。非live runner按发现顺序把case装入有界batch；每个batch的
+  generated deployments作为多个root进入自己的`RuntimeAssembly`，并把各自隔离的snapshot分区写入一个
+  batch-local `RuntimeConfigSnapshot`。一个case只属于一个batch，并观察该batch generation钉住的两个ref；
 - 每个case仍有独立synthetic `ServiceDeployment`、`ServiceContract`、gateway entry/ingress binding、
   系统派生service数据库、heap、effect registry和execution nonce。共享assembly/snapshot record不等于
   共享deployment、ConfigView或mutable state；
@@ -171,10 +171,17 @@ test-only source file 输入：
 - 仓库 canonical Skiff 源码套件为整个 registry plan 创建一套隔离 router / runtime，并在所有
   registry entry 之间复用该进程。
 - runner对同一个普通`kind: test` service只执行一次package compile、config layer读取和dependency
-  graph resolve；全部selected cases的独立synthetic deployments作为roots一次链接成一个
-  multi-root `RuntimeAssembly`，并把所有generated deployment的隔离配置分区写入一个
-  `RuntimeConfigSnapshot`，再由一次activation transaction并列提交两个ref。assembly identity和
-  activation generation属于test service execution scope，单个case不另有assembly或generation。
+  graph resolve。非live case按`relative_path`文件顺序贪心装箱，每个activation batch硬上限16个case：
+  一个不超过上限的文件保持完整，只有单文件超过16个case时才按上限切分。每个batch的独立synthetic
+  deployments作为roots链接成一个multi-root `RuntimeAssembly`，并把对应隔离配置分区写入一个
+  `RuntimeConfigSnapshot`，再由一次activation transaction并列提交两个ref。单个case不另有assembly或
+  generation；live显式文件执行仍使用一个activation，不采用non-live batch上限。
+- authored config layers与runner保留overlay在分批前读取并冻结一次；每个batch从同一份内存snapshot投影
+  ConfigView，执行期间不得重读磁盘config或观察不同authored snapshot。
+- runner在开始任何activation前完成全部batch的assembly/config projection和artifact publication。每个
+  batch使用唯一execution scope，并从调用者提供的同一base assembly/config pair独立投影；后一个batch
+  不得把前一个test batch当成base或累积其generated deployments。activation、readiness和case dispatch
+  随后按batch顺序串行执行，generation从上一个成功commit的精确值安全递增。
 - runner从本次隔离activation的受信target environment写入snapshot顶层；Runtime必须在物化任何case
   `ConfigView`前验证它与activation environment精确相等。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
@@ -182,15 +189,36 @@ test-only source file 输入：
   frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。
 - runner在对应generated deployment的snapshot分区中增加
   `skiff.test.ingressUrl`动态只读overlay；Package不读取ambient environment，authored文件不能覆盖它。
-- runtime进程和assembly activation复用不扩大可变状态生命周期。每个case的数据库identity由
+- runtime进程和batch内assembly activation复用不扩大可变状态生命周期。每个case的数据库identity由
   `(testRunId, generatedTestServiceId)`系统派生，其ConfigView、
   heap、effect registry、execution nonce和synthetic deployment资源仍按runner isolation contract
-  独立finalize；共享assembly artifacts和activation只由该test service execution统一清理。
+  独立finalize；batch artifacts和activation只由该test service execution统一清理。
 
 每次root test dispatch都新建一个不透明`testCaseCapability`。它只标识该case execution的effect与
-生命周期authority，不替代deployment selector，也不从assembly generation派生。root发起的direct
-spawn继承同一个capability；任何后续recursive spawn继续继承该值。spawn不得新建capability，也不得
-借用其它root的capability。另一个case的root dispatch即使属于同一assembly，也必须获得不同值。
+生命周期authority，不替代deployment selector，也不从assembly generation派生。该值只存在于
+Router/Runtime Host的测试传输与注册状态，不是Skiff值、config或用户可见effect API。普通production
+request及其Actor调用不携带该capability。
+
+root发起的direct spawn、任意深度recursive spawn、同步Actor method call与
+`spawn actor.method(...)`都是同一case的派生请求。测试运行时为它们携带父请求的同一
+capability和当前active parent request id；Router只从同一Runtime session上仍active的父请求
+授权派生，capability token本身不足以授权。派生请求不得新建capability、借用其它root的
+capability或在父请求终结后迟到加入。另一个case的root dispatch即使属于同一assembly，也必须
+获得不同值。
+
+携带test capability的Actor method首版必须与active parent属于同一service，并在父请求的精确
+origin Runtime connection上执行，以共享该Runtime内存中的case effect registry。目标Actor属于
+其它service、已归其它Runtime、origin connection已断开或owner在admission期间改变时都必须
+fail closed；测试语义不承诺跨service或Runtime共享test effects。已admit的Actor method一直属于
+该case，直到其terminal execution结束；root finalization必须等待它结束，但拒绝父请求结束后才
+到达的新Actor child。这项test-only约束不改变production Actor语义：不携带test capability的
+跨service Actor spawn仍按普通Actor owner routing合法执行。
+
+activation generation推进不会重绑已active的test Actor execution。它的同步Actor call与Actor spawn继续
+使用进入该execution时已固定的capability、parent chain、assembly/deployment与generation authority。
+该authority仍是current generation时，Actor发起的self-ingress完整继承它；Actor已属于old generation时，
+self-ingress必须在路由前fail closed。runner不为此保留或构造历史gateway route snapshot，也不得把
+old-generation execution重绑到current route。
 
 ### 5.1 HTTP entry tests
 
@@ -222,9 +250,14 @@ ingress URL时，该调用是self-ingress：
 - 在inline effect匹配前识别，因此父调用本身不消费`std.http.request`/`std.http.stream` double；
 - 测试执行适配自动使用当前case唯一service id和contract version，测试代码不能提供或覆盖selector；
 - Router按普通HTTP ingress规则路由，Host不参与选择；
+- Router消费并剥离`x-skiff-test-case-capability`与
+  `x-skiff-test-case-parent-request-id`，再在nested `request.start`中传递严格校验的
+  capability/parent pair；Host只把capability-only frame视为root，携带pair的frame必须从仍active的
+  parent建立derived execution，不得重复创建root case；
 - entry内部的outbound effects继续使用父case同一个inline-effect registry；
-- self-ingress及其direct/recursive spawn继续携带父root的`testCaseCapability`，不得因共享assembly
-  或activation generation附着到另一个case；
+- current-generation test Actor的self-ingress及其direct/recursive spawn、同步Actor method call与
+  Actor method spawn完整继承父root的derived authority，不得因共享assembly或activation generation
+  附着到另一个case；old-generation Actor可继续其immutable direct/spawn chain，但self-ingress fail closed；
 - 同一case第一版禁止两个active self-ingress请求。stream EOF、失败或consumer drop/break才释放
   active状态。
 
@@ -350,9 +383,9 @@ event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal
 - runner 对一个 case 只创建一次执行上下文，并在其中依次执行 setup 和 test body；setup
   产生的 response、error 和 stream event 必须立即按 linked target type plan
   materialize 到该 case 的 effect registry，不能把 heap value 作为跨执行共享对象保存；
-- root dispatch为该执行上下文新建`testCaseCapability`；direct spawn和任意深度的recursive spawn
-  必须继承父请求的同一capability，因此共享该case的registry与finalization owner，但不与同一
-  assembly内其它root共享；
+- root dispatch为该执行上下文新建`testCaseCapability`；direct/recursive spawn、同步Actor method call和
+  Actor method spawn必须由同Runtime session上的active parent派生，并继承父请求的同一
+  capability，因此共享该case的registry与finalization owner，但不与同一assembly内其它root共享；
 - setup 成功后才执行 test body；setup 失败时 body 不执行；
 - case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、
   timeout 或 cancel，都必须检查未消费 double、销毁 registry 并释放 case 资源；

@@ -20,10 +20,10 @@ use crate::{
     },
     error::TransportResult,
     protocol::{
-        encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
-        ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
-        ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
-        RuntimeDeadlineFrameHeader, SpawnActorMethodTargetFrameMetadata,
+        encode_binary_frame, validate_test_case_authority, ActivationIdentityFrameMetadata,
+        ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
+        ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
+        RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, SpawnActorMethodTargetFrameMetadata,
         SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
@@ -78,6 +78,11 @@ pub fn actor_get_or_create_request_frame(
     header: ActorGetOrCreateRequestFrameHeader,
     payload: &[u8],
 ) -> TransportResult<Vec<u8>> {
+    validate_test_case_authority(
+        header.test_case_capability.as_deref(),
+        header.test_case_parent_request_id.as_deref(),
+    )
+    .map_err(crate::TransportError::decode)?;
     encode_control_frame(&header, payload)
 }
 
@@ -131,6 +136,8 @@ fn actor_get_or_create_request_frame_header(
         bootstrap_encoding_version: request.bootstrap_encoding_version,
         declaration_owner: actor_declaration_owner_frame(request.declaration_owner),
         deadline: request.deadline.map(actor_control_deadline_frame),
+        test_case_capability: request.test_case_capability,
+        test_case_parent_request_id: request.test_case_parent_request_id,
     }
 }
 

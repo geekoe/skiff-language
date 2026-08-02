@@ -15,7 +15,7 @@ use skiff_runtime_native::callback_adapter::InProcessCallbackAdapter;
 
 use crate::{
     env::Env,
-    error::{Result, RuntimeError},
+    error::{rematerialize_runtime_error_between_heaps, Result, RuntimeError},
     eval_context::EvalContext,
     program_execution::OwnedProgramExecutionContext,
     Interpreter,
@@ -132,6 +132,9 @@ impl CompletedCallbackInvocation {
         let owner_result = match result {
             Ok(value) => value,
             Err(error) => {
+                let error =
+                    rematerialize_runtime_error_between_heaps(error, &owner_heap, caller_heap)
+                        .unwrap_or_else(|error| error);
                 drop(owner_heap);
                 return Err(error);
             }

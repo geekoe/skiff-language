@@ -43,6 +43,7 @@ pub(crate) struct ActorMethodEvalExecutionInput {
     pub(crate) execution_budget: Arc<ExecutionBudget>,
     pub(crate) request_heap_limits: RequestHeapLimits,
     pub(crate) test_http_entries: concrete::TestHttpEntryRegistry,
+    pub(crate) test_effect_context: Option<concrete::ActorMethodTestEffectContext>,
 }
 
 /// Owned backing for the borrowed eval context consumed by
@@ -68,7 +69,7 @@ pub(crate) struct ActorMethodEvalExecution {
     cancellation: CancellationToken,
     execution_budget: Arc<ExecutionBudget>,
     request_heap_limits: RequestHeapLimits,
-    test_http_entries: concrete::TestHttpEntryRegistry,
+    test_http_admission: Option<concrete::TestHttpAdmittedContext>,
     request: RequestEnvelope,
     operation: RuntimeOperation,
 }
@@ -82,6 +83,23 @@ impl ActorMethodEvalExecution {
         let activation_identity = super::assembly_execution_context::activation_identity_control(
             input.activation.as_ref(),
         );
+        let test_http_admission = input
+            .test_effect_context
+            .as_ref()
+            .map(concrete::ActorMethodTestEffectContext::admitted_context);
+        if test_http_admission
+            .as_ref()
+            .is_some_and(|context| context.router_session() != &input.router_session)
+        {
+            anyhow::bail!("Actor method test authority belongs to another router session");
+        }
+        let interpreter = match input.test_effect_context.as_ref() {
+            Some(context) => Interpreter::for_runtime_assembly_with_test_effect_case_context(
+                context.effects(),
+                runtime_factory(),
+            ),
+            None => Interpreter::for_runtime_assembly(runtime_factory()),
+        };
         let target = "actor.method".to_string();
         let request = RequestEnvelope {
             request_id: input.invocation_id,
@@ -100,7 +118,7 @@ impl ActorMethodEvalExecution {
             ingress_selector: None,
             binary_http: None,
             http_adapter: None,
-            test_effects_enabled: false,
+            test_effects_enabled: test_http_admission.is_some(),
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
             extra: request_extra_with_trace_id(input.trace_id.as_deref()),
@@ -114,8 +132,11 @@ impl ActorMethodEvalExecution {
             service_protocol_identity: None,
             extra: serde_json::Map::new(),
         };
+        // Admission happened synchronously before this Eval object was built. Never retain the
+        // registry here: the admitted Host-private context is the only test authority Eval may use.
+        drop(input.test_http_entries);
         Ok(Self {
-            interpreter: Interpreter::for_runtime_assembly(runtime_factory()),
+            interpreter,
             runtime_id: input.runtime_id,
             activation: input.activation,
             execution_image: input.execution_image,
@@ -135,7 +156,7 @@ impl ActorMethodEvalExecution {
             cancellation: input.cancellation,
             execution_budget: input.execution_budget,
             request_heap_limits: input.request_heap_limits,
-            test_http_entries: input.test_http_entries,
+            test_http_admission,
             request,
             operation,
         })
@@ -163,13 +184,20 @@ impl ActorMethodEvalExecution {
             &self.request.request_id,
         );
         let file = file_source(self.file_source.clone()).context_for_request(db.clone());
-        let effects = effects(effect_dispatch_context_from_request(
-            &self.request,
-            self.http_response_max_bytes,
-            execution.cancellation_token(),
-            self.telemetry_context.clone(),
-            self.http_options.clone(),
-        ));
+        let effects = effects(
+            effect_dispatch_context_from_request(
+                &self.request,
+                self.http_response_max_bytes,
+                execution.cancellation_token(),
+                self.telemetry_context.clone(),
+                self.http_options.clone(),
+            )
+            .with_test_http_self_ingress(
+                self.test_http_admission
+                    .as_ref()
+                    .map(concrete::TestHttpAdmittedContext::self_ingress),
+            ),
+        );
         let service_id = self.activation.identity().deployment.service_id.as_str();
         let websocket_entry_id = self
             .activation
@@ -180,7 +208,10 @@ impl ActorMethodEvalExecution {
             websocket_entry_id,
             self.router_sender.as_ref(),
             Arc::clone(&self.connection_requests),
-            self.router_session.clone(),
+            self.test_http_admission
+                .as_ref()
+                .map(|context| context.router_session().clone())
+                .unwrap_or_else(|| self.router_session.clone()),
         );
         let (actor, request) = actor_from_request(
             self.runtime_id.as_str(),
@@ -196,6 +227,9 @@ impl ActorMethodEvalExecution {
             self.router_sender.as_ref(),
             &self.outbound_requests,
             &self.actor_method_outbound,
+            self.test_http_admission
+                .as_ref()
+                .map(concrete::TestHttpAdmittedContext::capability),
             self.cancellation.clone(),
         );
         let stream_runtime = self.interpreter.stream_runtime.clone();
@@ -242,7 +276,7 @@ impl ActorMethodEvalExecution {
                 connection_requests: Arc::clone(&self.connection_requests),
                 router_session: self.router_session.clone(),
                 http_response_max_bytes: self.http_response_max_bytes,
-                test_http_entries: self.test_http_entries.clone(),
+                test_http_admission: self.test_http_admission.clone(),
                 stream_runtime: context.stream_runtime(),
                 test_effect_doubles: context.test_effect_double_context(),
                 cancellation: context.execution().cancellation_token(),

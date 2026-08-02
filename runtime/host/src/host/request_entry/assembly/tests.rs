@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn websocket_connect_accept_preserves_admission_rank_through_host_wire_encoding() {
+    let message = websocket_connect_result_into_message(
+        "ranked-websocket-connect".to_string(),
+        RuntimeWebSocketConnectResult::Accept {
+            business_identity: Some("ranked-business".to_string()),
+            connection_policy: None,
+            admission_rank: Some(42),
+        },
+    )
+    .expect("ranked websocket connect result should encode");
+    let RouterWriterMessage::Binary(frame) = message else {
+        panic!("websocket connect result must use the binary transport")
+    };
+    let decoded = skiff_runtime_transport::runtime_assembly_request::decode_runtime_assembly_websocket_connect_response_end_frame(
+        &frame,
+    )
+    .expect("Host websocket connect response should decode from the canonical wire");
+
+    assert_eq!(decoded.request_id, "ranked-websocket-connect");
+    assert_eq!(
+        decoded.websocket_connect,
+        RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
+            business_identity: Some("ranked-business".to_string()),
+            connection_policy: None,
+            admission_rank: Some(42),
+        }
+    );
+}
+
+#[test]
 fn stream_terminal_waits_for_root_owner_and_cancel_discards_it() {
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let sink = HostHttpGatewayResponseSink::new(sender, 1024);

@@ -1,4 +1,8 @@
 use std::collections::BTreeSet;
+#[cfg(all(test, debug_assertions))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(debug_assertions)]
+use std::sync::OnceLock;
 
 use serde_json::Value;
 use skiff_artifact_model::{
@@ -29,12 +33,31 @@ pub(super) struct NativeHandlerEntry {
     pub(super) handler: NativeHandler,
 }
 
+#[cfg(debug_assertions)]
+static BUILTIN_HANDLER_VALIDATION: OnceLock<RegistryValidationResult> = OnceLock::new();
+
+#[cfg(all(test, debug_assertions))]
+static BUILTIN_HANDLER_VALIDATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 pub(super) fn handler_entries() -> &'static [NativeHandlerEntry] {
-    debug_assert!(
-        validate_builtin_handlers().is_ok(),
-        "native handler registry table should validate"
-    );
+    #[cfg(debug_assertions)]
+    {
+        let validation = BUILTIN_HANDLER_VALIDATION.get_or_init(|| {
+            #[cfg(test)]
+            BUILTIN_HANDLER_VALIDATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            validate_builtin_handlers()
+        });
+        if let Err(error) = validation {
+            panic!("native handler registry table should validate: {error}");
+        }
+    }
+
     NATIVE_BINDINGS
+}
+
+#[cfg(all(test, debug_assertions))]
+pub(super) fn builtin_handler_validation_count() -> usize {
+    BUILTIN_HANDLER_VALIDATION_COUNT.load(Ordering::Relaxed)
 }
 
 pub(super) fn validate_builtin_handlers() -> RegistryValidationResult {

@@ -58,8 +58,9 @@ pub use telemetry::TelemetryCapabilityContext;
 pub use test_effect_double::TestEffectDouble;
 pub use test_effect_double::TestEffectDoubleContext;
 pub(crate) use test_http_entry::{
-    PreparedTestHttpSelfIngress, TestHttpEntryRegistry, TestHttpSelfIngressContext,
-    TestHttpSelfIngressLease,
+    ActorMethodTestEffectContext, ActorMethodTestEffectExecution, PreparedTestHttpSelfIngress,
+    TestHttpAdmittedContext, TestHttpEntryRegistry, TestHttpSelfIngressContext,
+    TestHttpSelfIngressLease, TestRequestRevoker,
 };
 pub use time::TimeCapabilityContext;
 pub use websocket::WebsocketCapabilityContext;

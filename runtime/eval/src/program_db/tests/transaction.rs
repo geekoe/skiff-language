@@ -1,11 +1,17 @@
-use std::{fmt, pin::pin, task::Poll};
+use std::{fmt, pin::pin, sync::atomic::Ordering, task::Poll};
 
 use serde_json::json;
+use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_capability_context::DbDocument;
 use skiff_runtime_linked_program::{CallIr, DbTransactionIr, ExprRefIr, LinkedExprIr};
 use skiff_runtime_model::{
+    addr::{FileAddr, TypeAddr, UnitAddr},
     request_heap::{RequestHeap, RequestHeapCheckpoint},
     runtime_value::{RuntimeValue, RuntimeValueCarrier},
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, RequestException,
+    },
 };
 
 use super::fixture::{
@@ -14,9 +20,13 @@ use super::fixture::{
 };
 use crate::{
     actor_executor::ActorExecutionFrame,
+    actor_instance::{ActorInstanceExecutionSnapshot, ActorInstanceStoreError},
     env::Env,
-    error::{Result, RuntimeError},
+    error::{runtime_error_request_heap_root, Result, RuntimeError, UserException},
+    runtime_ops::runtime_member_access_carrier,
 };
+
+use super::super::rollback::{rollback_transaction_live_roots, TransactionRollbackCheckpoint};
 
 #[derive(Clone, Copy, Debug)]
 enum TransactionSource {
@@ -817,9 +827,10 @@ async fn tail_call_negative_db_transaction() {
         .competing_acquire()
         .await
         .expect("Pending Abort must release the Actor segment");
-    assert!(
-        competing.heap_mut().len() > initial_heap_len,
-        "the ordinary exact local call must materialize its structured result before Abort"
+    assert_eq!(
+        competing.heap_mut().len(),
+        initial_heap_len,
+        "Pending Abort must publish only persistent Actor fields, not transaction-local results"
     );
     drop(competing);
     abort_gate.release();
@@ -901,6 +912,698 @@ async fn db_actor_transaction_body_error_and_illegal_flow_abort_once() {
         run_body_error_case(source).await;
     }
     run_explicit_illegal_flow_case().await;
+}
+
+#[tokio::test]
+async fn explicit_transaction_rollback_preserves_nested_nominal_throw_for_outer_catch() {
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    state.abort.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let initial_heap_len = heap.len();
+    let mut env = Env::new();
+
+    let exception = fixture
+        .linked
+        .interpreter
+        .eval_program_expr_ref(
+            fixture.context_with_trace(frame.clone(), "trace:transaction-rollback-catch"),
+            &mut heap,
+            &mut env,
+            &fixture.linked.addr,
+            &fixture.linked.file,
+            fixture.linked.executable(),
+            fixture.linked.rollback_catch_exception,
+        )
+        .await
+        .expect("outer catch must expose the preserved request-local exception");
+    let payload = runtime_member_access_carrier(&exception, "error", &heap)
+        .expect("caught exception payload remains readable");
+    let nested = runtime_member_access_carrier(&payload, "nested", &heap)
+        .expect("caught nominal payload retains its nested field");
+    let value = runtime_member_access_carrier(&nested, "message", &heap)
+        .expect("nested nominal payload remains readable after rollback");
+
+    assert_eq!(
+        value.into_value(),
+        RuntimeValue::String("nested-survives-rollback".to_string())
+    );
+    assert_eq!(
+        heap.len(),
+        initial_heap_len + 4,
+        "rollback keeps only the two reachable payload objects plus CatchResult and Exception; \
+         the transaction-local array must be removed"
+    );
+    assert_ne!(
+        heap.checkpoint(),
+        checkpoint,
+        "the outer catch result remains request-local after rollback"
+    );
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Abort, PhaseExpectation::Ready),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+}
+
+#[tokio::test]
+async fn explicit_transaction_abort_resume_failure_rolls_back_and_wins_precedence() {
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    let abort_gate = state.abort.push_pending(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let mut env = Env::new();
+    let mut evaluation = Box::pin(
+        fixture
+            .linked
+            .interpreter
+            .eval_program_explicit_db_transaction(
+                fixture.context_with_trace(frame.clone(), "trace:transaction-abort-resume-failure"),
+                &mut heap,
+                &mut env,
+                &fixture.linked.addr,
+                &fixture.linked.file,
+                fixture.linked.executable(),
+                &fixture.linked.rollback_throw_transaction,
+            ),
+    );
+
+    assert!(
+        matches!(first_poll(evaluation.as_mut()), Poll::Pending),
+        "the scripted Abort must expose a real Actor suspension"
+    );
+    assert!(
+        fixture
+            .actor
+            .store
+            .begin_upgrade_exact(&fixture.actor.handle),
+        "the suspended incarnation must accept the replacement fence"
+    );
+    abort_gate.release();
+    let error = evaluation
+        .as_mut()
+        .await
+        .expect_err("Actor resume failure must replace the original transaction throw");
+    drop(evaluation);
+
+    assert!(
+        matches!(
+            error,
+            RuntimeError::ActorInstance(ActorInstanceStoreError::InstanceReplaced)
+        ),
+        "Abort failure keeps its existing precedence, got {error:?}"
+    );
+    assert_heap_rolled_back(&heap, checkpoint, "Abort resume failure");
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Abort, PhaseExpectation::PendingThenReady),
+        ],
+    );
+    assert!(
+        frame
+            .with_transaction_live_fields(|fields| Ok(fields.is_none()))
+            .expect("missing lease inspection"),
+        "resume failure leaves no lease; rollback must not synthesize one"
+    );
+}
+
+#[tokio::test]
+async fn explicit_transaction_abort_cancelled_resume_keeps_cancelled_precedence_without_lease() {
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    let abort_gate = state.abort.push_pending(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let checkpoint = heap.checkpoint();
+    let mut env = Env::new();
+    let context =
+        fixture.context_with_trace(frame.clone(), "trace:transaction-abort-cancelled-resume");
+    let cancel = context.execution().cancel_flag();
+    let mut evaluation = Box::pin(
+        fixture
+            .linked
+            .interpreter
+            .eval_program_explicit_db_transaction(
+                context,
+                &mut heap,
+                &mut env,
+                &fixture.linked.addr,
+                &fixture.linked.file,
+                fixture.linked.executable(),
+                &fixture.linked.rollback_throw_transaction,
+            ),
+    );
+
+    assert!(
+        matches!(first_poll(evaluation.as_mut()), Poll::Pending),
+        "the scripted Abort must suspend the Actor before cancellation"
+    );
+    cancel.store(true, Ordering::Release);
+    abort_gate.release();
+    let error = evaluation
+        .as_mut()
+        .await
+        .expect_err("cancelled resume must replace the original transaction throw");
+    drop(evaluation);
+
+    assert!(
+        matches!(error, RuntimeError::Cancelled),
+        "cancelled Abort resume keeps its exact terminal precedence, got {error:?}"
+    );
+    assert_heap_rolled_back(&heap, checkpoint, "Abort cancelled resume");
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::Abort, PhaseExpectation::PendingThenReady),
+        ],
+    );
+    assert!(
+        frame
+            .with_transaction_live_fields(|fields| Ok(fields.is_none()))
+            .expect("missing lease inspection"),
+        "cancelled resume leaves no lease; rollback must not synthesize one"
+    );
+}
+
+#[tokio::test]
+async fn transaction_rollback_rebases_error_env_and_two_actor_aliases_after_competing_pending() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Null)
+        .expect("entry-live outer slot");
+    let checkpoint_len = heap.len();
+    let checkpoint = TransactionRollbackCheckpoint::capture(&heap, &env);
+
+    let execution = fixture.context(frame.clone()).execution();
+    let (release, pending) = tokio::sync::oneshot::channel::<()>();
+    let mut suspended = Box::pin(frame.await_if_pending(&mut heap, &execution, async move {
+        pending.await.expect("Pending gate sender")
+    }));
+    assert!(matches!(first_poll(suspended.as_mut()), Poll::Pending));
+
+    let mut competitor = fixture
+        .actor
+        .competing_acquire()
+        .await
+        .expect("actual Pending releases the Actor scheduler");
+    let competitor_heap = competitor.take_heap();
+    {
+        let fields = competitor.fields();
+        let mut fields = fields.lock().expect("competitor fields");
+        for field in fields
+            .iter_mut()
+            .filter(|field| field.name == "count" || field.name == "mirror")
+        {
+            field.value = RuntimeValue::Number(9.0);
+            field.assigned = true;
+        }
+    }
+    let competitor_snapshot = ActorInstanceExecutionSnapshot::new(
+        competitor
+            .fields()
+            .lock()
+            .expect("competitor fields")
+            .clone(),
+        competitor_heap,
+    );
+    fixture
+        .actor
+        .store
+        .commit_execution(&fixture.actor.handle, competitor, competitor_snapshot)
+        .expect("competing method publishes its latest fields");
+    release.send(()).expect("release Pending operation");
+    suspended
+        .as_mut()
+        .await
+        .expect("original continuation resumes after competitor");
+    drop(suspended);
+    assert_eq!(
+        frame.read_field("count").expect("latest count"),
+        RuntimeValue::Number(9.0)
+    );
+    assert_eq!(
+        frame.read_field("mirror").expect("latest mirror"),
+        RuntimeValue::Number(9.0)
+    );
+
+    heap.alloc_bytes(vec![0xde, 0xad])
+        .expect("dead transaction-local node");
+    let nested = heap
+        .alloc_array(vec![RuntimeValue::from("shared")])
+        .expect("shared nested node");
+    let shared = heap
+        .alloc_array(vec![RuntimeValue::Heap(nested)])
+        .expect("four-owner shared root");
+    env.assign_binding("outer", Some(0), RuntimeValue::Heap(shared))
+        .expect("outer slot escapes transaction graph");
+    frame
+        .with_transaction_live_fields(|fields| {
+            let fields = fields.expect("resumed Actor lease");
+            for field in fields
+                .iter_mut()
+                .filter(|field| field.name == "count" || field.name == "mirror")
+            {
+                field.value = RuntimeValue::Heap(shared);
+            }
+            Ok(())
+        })
+        .expect("seed two Actor aliases");
+
+    let identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index: 3,
+            },
+            type_arguments: Vec::new(),
+        },
+    ));
+    let site = InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    };
+    let correlation = ErrorCorrelation {
+        trace_id: "trace:four-root-alias".to_string(),
+        error_id: "trace:four-root-alias:local-error:1".to_string(),
+    };
+    let request = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::Heap(shared), identity.clone()),
+        site.clone(),
+        vec![ExceptionStackFrame::Local { site }],
+        correlation.clone(),
+    )
+    .expect("typed local transaction error");
+    let selected = RuntimeError::UserException(UserException::new(request))
+        .with_source(71, json!({ "source": "transaction" }))
+        .with_diagnostic_frame(json!({ "operation": "db.transaction" }));
+
+    let preserved = rollback_transaction_live_roots(
+        &fixture.context(frame.clone()),
+        &mut heap,
+        &mut env,
+        checkpoint,
+        selected,
+    )
+    .expect("valid live roots rollback");
+
+    let error_root = runtime_error_request_heap_root(&preserved)
+        .expect("preserved typed error root")
+        .value()
+        .clone();
+    let env_root = env.get_slot(0).expect("preserved Env root").into_value();
+    let count_root = frame.read_field("count").expect("preserved count root");
+    let mirror_root = frame.read_field("mirror").expect("preserved mirror root");
+    assert_eq!(error_root, env_root);
+    assert_eq!(env_root, count_root);
+    assert_eq!(count_root, mirror_root, "all four owners retain one alias");
+    assert_ne!(
+        error_root,
+        RuntimeValue::Heap(shared),
+        "suffix root is rebased"
+    );
+    assert_eq!(
+        runtime_error_request_heap_root(&preserved)
+            .expect("typed root")
+            .catch_identity(),
+        Some(&identity)
+    );
+    let RuntimeError::WithDiagnosticFrame { error, .. } = &preserved else {
+        panic!("diagnostic wrapper must remain outermost")
+    };
+    let RuntimeError::WithSource { error, .. } = error.as_ref() else {
+        panic!("source wrapper must remain nested")
+    };
+    let RuntimeError::UserException(exception) = error.as_ref() else {
+        panic!("typed exception leaf")
+    };
+    assert_eq!(exception.request().correlation(), &correlation);
+    assert_eq!(
+        heap.len(),
+        checkpoint_len + 2,
+        "dead transaction node is collected while shared graph survives"
+    );
+    frame.finish(heap).expect("finish Actor frame");
+}
+
+#[tokio::test]
+async fn transaction_rollback_resource_limit_keeps_original_owners_and_actor_lease() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Null)
+        .expect("entry-live outer slot");
+    let checkpoint = TransactionRollbackCheckpoint::capture(&heap, &env);
+
+    let mut root = RuntimeValue::from("limit-root");
+    for _ in 0..=(heap.limits().max_clone_depth + 1) {
+        root = RuntimeValue::Heap(
+            heap.alloc_array(vec![root])
+                .expect("deep candidate graph stays within node limit"),
+        );
+    }
+    env.assign_binding("outer", Some(0), root.clone())
+        .expect("deep Env root");
+    frame
+        .with_transaction_live_fields(|fields| {
+            let fields = fields.expect("active Actor lease");
+            for field in fields
+                .iter_mut()
+                .filter(|field| field.name == "count" || field.name == "mirror")
+            {
+                field.value = root.clone();
+            }
+            Ok(())
+        })
+        .expect("seed deep Actor roots");
+    let before = heap.checkpoint();
+    let selected = RuntimeError::DbDecode {
+        target: "std.db".to_string(),
+        message: "commit-selected".to_string(),
+    };
+
+    let error = rollback_transaction_live_roots(
+        &fixture.context(frame.clone()),
+        &mut heap,
+        &mut env,
+        checkpoint,
+        selected,
+    )
+    .expect("resource-only rollback failure keeps selected error");
+    assert!(matches!(
+        error,
+        RuntimeError::DbDecode { ref message, .. } if message == "commit-selected"
+    ));
+    assert_eq!(heap.checkpoint(), before, "heap owner is unchanged");
+    assert_eq!(
+        env.get_slot(0).expect("Env owner").into_value(),
+        root,
+        "Env owner is unchanged"
+    );
+    assert_eq!(frame.read_field("count").expect("Actor owner"), root);
+    let mut competing = pin!(fixture.actor.competing_acquire());
+    assert!(
+        matches!(first_poll(competing.as_mut()), Poll::Pending),
+        "skipped compaction retains the original Actor lease"
+    );
+    let finish_error = frame
+        .finish(heap)
+        .expect_err("main Actor persistence gate must reject the over-depth field graph");
+    assert!(matches!(
+        finish_error,
+        RuntimeError::ResourceLimitExceeded { ref reason, .. }
+            if reason == "max persistent Actor graph depth"
+    ));
+    drop(competing.await.expect("Actor lease releases after finish"));
+}
+
+#[tokio::test]
+async fn transaction_rollback_invalid_source_overrides_business_error_without_partial_publish() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Null)
+        .expect("entry-live outer slot");
+    let checkpoint = TransactionRollbackCheckpoint::capture(&heap, &env);
+    let corrupt = RuntimeValue::Heap(skiff_runtime_model::runtime_value::HeapHandle::new(
+        u32::MAX - 1,
+        0,
+    ));
+    env.assign_binding("outer", Some(0), corrupt.clone())
+        .expect("corrupt root carrier");
+    let before = heap.checkpoint();
+
+    let error = rollback_transaction_live_roots(
+        &fixture.context(frame.clone()),
+        &mut heap,
+        &mut env,
+        checkpoint,
+        RuntimeError::DbDecode {
+            target: "std.db".to_string(),
+            message: "must-not-win".to_string(),
+        },
+    )
+    .expect_err("invalid source graph is a hard invariant failure");
+    assert!(
+        matches!(error, RuntimeError::Decode(ref message) if message.contains("invalid heap handle")),
+        "invalid source must override the business error, got {error:?}"
+    );
+    assert_eq!(heap.checkpoint(), before, "heap is not partially published");
+    assert_eq!(
+        env.get_slot(0).expect("unchanged Env owner").into_value(),
+        corrupt,
+        "Env is not partially published"
+    );
+    let mut competing = pin!(fixture.actor.competing_acquire());
+    assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
+    frame.finish(heap).expect("finish Actor frame");
+    drop(competing.await.expect("Actor lease releases after finish"));
+}
+
+#[tokio::test]
+async fn transaction_rollback_rejects_same_epoch_replacement_before_publishing_owners() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Null)
+        .expect("entry-live outer slot");
+    let checkpoint = TransactionRollbackCheckpoint::capture(&heap, &env);
+    let shared = heap
+        .alloc_array(vec![RuntimeValue::from("stale-owner")])
+        .expect("stale owner graph");
+    let shared = RuntimeValue::Heap(shared);
+    env.assign_binding("outer", Some(0), shared.clone())
+        .expect("stale Env owner");
+    frame
+        .with_transaction_live_fields(|fields| {
+            let count = fields
+                .expect("active Actor lease")
+                .iter_mut()
+                .find(|field| field.name == "count")
+                .expect("count field");
+            count.value = shared.clone();
+            Ok(())
+        })
+        .expect("seed stale Actor owner");
+    let before_heap = heap.checkpoint();
+    fixture
+        .actor
+        .replace_same_epoch_while_leased(&fixture.linked);
+
+    let error = rollback_transaction_live_roots(
+        &fixture.context(frame.clone()),
+        &mut heap,
+        &mut env,
+        checkpoint,
+        RuntimeError::DbDecode {
+            target: "std.db".to_string(),
+            message: "must-not-publish".to_string(),
+        },
+    )
+    .expect_err("stale same-epoch lease must fail before rollback publication");
+
+    assert!(matches!(
+        error,
+        RuntimeError::ActorInstance(ActorInstanceStoreError::InstanceReplaced)
+    ));
+    assert_eq!(heap.checkpoint(), before_heap, "heap is not published");
+    assert_eq!(
+        env.get_slot(0).expect("unchanged Env owner").into_value(),
+        shared,
+        "Env is not published"
+    );
+    assert_eq!(
+        frame
+            .read_field("count")
+            .expect("unchanged stale Actor owner"),
+        shared,
+        "stale Actor fields are not published"
+    );
+    drop(frame);
+}
+
+#[tokio::test]
+async fn explicit_commit_error_after_actual_pending_preserves_latest_actor_and_env_root() {
+    let state = FakeDbState::new();
+    state.begin.push_ready(Ok(()));
+    state
+        .body_create
+        .push_ready(Ok(body_document("pending-commit-error")));
+    let commit_gate = state
+        .commit
+        .push_pending(Err(db_error("pending-commit-selected")));
+    state.abort.push_ready(Ok(()));
+    let fixture = DbActorFixture::new(state.clone());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let env_handle = heap
+        .alloc_array(vec![RuntimeValue::from("outer-env")])
+        .expect("outer Env graph");
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Heap(env_handle))
+        .expect("entry-live Env root");
+    let mut evaluation = Box::pin(evaluate_transaction(
+        TransactionSource::Explicit,
+        TransactionBody::Create,
+        &fixture,
+        frame.clone(),
+        &mut heap,
+        &mut env,
+    ));
+    assert!(matches!(first_poll(evaluation.as_mut()), Poll::Pending));
+
+    let mut competitor = fixture
+        .actor
+        .competing_acquire()
+        .await
+        .expect("Pending Commit releases Actor scheduler");
+    let competitor_heap = competitor.take_heap();
+    {
+        let fields = competitor.fields();
+        let mut fields = fields.lock().expect("competitor fields");
+        for field in fields
+            .iter_mut()
+            .filter(|field| field.name == "count" || field.name == "mirror")
+        {
+            field.value = RuntimeValue::Number(12.0);
+        }
+    }
+    let competitor_snapshot = ActorInstanceExecutionSnapshot::new(
+        competitor
+            .fields()
+            .lock()
+            .expect("competitor fields")
+            .clone(),
+        competitor_heap,
+    );
+    fixture
+        .actor
+        .store
+        .commit_execution(&fixture.actor.handle, competitor, competitor_snapshot)
+        .expect("competing method publishes latest fields");
+    commit_gate.release();
+    let result = evaluation.as_mut().await;
+    drop(evaluation);
+
+    assert_db_error(result, "pending-commit-selected");
+    assert_eq!(
+        frame.read_field("count").expect("latest count"),
+        RuntimeValue::Number(12.0)
+    );
+    assert_eq!(
+        frame.read_field("mirror").expect("latest mirror"),
+        RuntimeValue::Number(12.0)
+    );
+    let RuntimeValue::Heap(preserved_env) = env.get_slot(0).expect("preserved Env").into_value()
+    else {
+        panic!("Env root must remain heap-backed")
+    };
+    assert_eq!(
+        heap.array_item_carrier(preserved_env, 0)
+            .expect("read Env root")
+            .expect("Env item")
+            .into_value(),
+        RuntimeValue::from("outer-env")
+    );
+    assert_transaction_trace(
+        &state,
+        &[
+            (DbPhase::Begin, PhaseExpectation::Ready),
+            (DbPhase::BodyCreate, PhaseExpectation::Ready),
+            (DbPhase::Commit, PhaseExpectation::PendingThenReady),
+            (DbPhase::Abort, PhaseExpectation::Ready),
+        ],
+    );
+    assert_actor_segment_held_then_finish(&fixture, &frame, heap).await;
+}
+
+#[tokio::test]
+async fn transaction_rollback_keeps_distinct_error_root_out_of_env_actor_alias_class() {
+    let fixture = DbActorFixture::new(FakeDbState::new());
+    let (frame, mut heap) = fixture.actor.execution_frame().await;
+    let mut env = Env::for_program_executable(fixture.linked.executable(), None, 0)
+        .expect("fixture environment");
+    env.declare_binding("outer", Some(0), RuntimeValue::Null)
+        .expect("entry-live outer slot");
+    let checkpoint = TransactionRollbackCheckpoint::capture(&heap, &env);
+    let shared = heap
+        .alloc_array(vec![RuntimeValue::from("env-actor")])
+        .expect("Env/Actor root");
+    let error_only = heap
+        .alloc_array(vec![RuntimeValue::from("error-only")])
+        .expect("distinct error root");
+    env.assign_binding("outer", Some(0), RuntimeValue::Heap(shared))
+        .expect("Env root");
+    frame
+        .with_transaction_live_fields(|fields| {
+            for field in fields
+                .expect("active Actor lease")
+                .iter_mut()
+                .filter(|field| field.name == "count" || field.name == "mirror")
+            {
+                field.value = RuntimeValue::Heap(shared);
+            }
+            Ok(())
+        })
+        .expect("Actor roots");
+    let identity = CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+        LocalExecutionTypeIdentity {
+            addr: TypeAddr {
+                unit: UnitAddr::Service,
+                file: FileAddr::loaded_file(0),
+                type_index: 3,
+            },
+            type_arguments: Vec::new(),
+        },
+    ));
+    let site = InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+    };
+    let request = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::Heap(error_only), identity),
+        site.clone(),
+        vec![ExceptionStackFrame::Local { site }],
+        ErrorCorrelation {
+            trace_id: "trace:distinct-error".to_string(),
+            error_id: "trace:distinct-error:local-error:1".to_string(),
+        },
+    )
+    .expect("typed error");
+
+    let preserved = rollback_transaction_live_roots(
+        &fixture.context(frame.clone()),
+        &mut heap,
+        &mut env,
+        checkpoint,
+        RuntimeError::UserException(UserException::new(request)),
+    )
+    .expect("distinct roots rollback");
+    let error_root = runtime_error_request_heap_root(&preserved)
+        .expect("error root")
+        .value()
+        .clone();
+    let env_root = env.get_slot(0).expect("Env root").into_value();
+    assert_ne!(
+        error_root, env_root,
+        "distinct transaction error must not silently collide with another root"
+    );
+    assert_eq!(frame.read_field("count").expect("Actor root"), env_root);
+    assert_eq!(frame.read_field("mirror").expect("Actor root"), env_root);
+    frame.finish(heap).expect("finish Actor frame");
 }
 
 async fn run_commit_error_case(source: TransactionSource) {

@@ -1,7 +1,20 @@
 use serde_json::json;
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
+    DeploymentRevision, ServiceDeploymentRef,
+};
 
 use super::*;
 use skiff_runtime_transport::{
+    actor_method::{
+        ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
+        ActorMethodDeadlineFrameHeader, ActorMethodInvokeFrameHeader, ActorOwnerFileFrameHeader,
+        ActorOwnerUnitFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
+    },
+    actor_owner::{
+        encode_actor_owner_invoke_frame, ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader,
+        ActorOwnerRouteAuthorityFrameHeader,
+    },
     assembly_activation::{
         decode_assembly_activation_frame, encode_assembly_activation_frame,
         AssemblyActivationFrameDirection,
@@ -65,6 +78,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     assert_eq!(host.connection_requests.active_timer_count(), 0);
 }
 
+mod activation_prepare;
 mod connection_lifecycle;
 mod control_response_lifecycle;
 mod foreign_db_exact_identity;
@@ -116,6 +130,675 @@ fn test_host() -> super::super::RuntimeHost {
         http_egress_proxy: None,
     })
     .expect("runtime host should build")
+}
+
+fn actor_owner_test_deployment() -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: "actor.test.service".to_string(),
+        contract_version: "1.0.0".to_string(),
+        deployment_revision: DeploymentRevision::new("revision-1"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+            "skiff-deployment-artifact-v4:sha256:{}",
+            "a".repeat(64)
+        )),
+    }
+}
+
+fn actor_owner_test_invoke(
+    invocation_id: &str,
+    capability: &str,
+    parent_request_id: &str,
+) -> ActorOwnerInvokeFrameHeader {
+    let declaration_owner = ActorDeclarationOwnerFrameHeader {
+        unit: ActorOwnerUnitFrameHeader::Service,
+        file: ActorOwnerFileFrameHeader::FileIrIdentity("actor-test.skiff".to_string()),
+        actor_symbol: "ActorTest".to_string(),
+    };
+    let actor_abi_identity =
+        ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", "b".repeat(64)));
+    let actor_implementation_identity = ActorImplementationIdentity::new(format!(
+        "skiff-actor-implementation-v1:sha256:{}",
+        "c".repeat(64)
+    ));
+    ActorOwnerInvokeFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "actor.owner.invoke".to_string(),
+        target_runtime_id: "runtime-base".to_string(),
+        owner_fence: ActorOwnerFenceFrameHeader {
+            owner_runtime_id: "runtime-base".to_string(),
+            owner_lease_id: "owner-lease-1".to_string(),
+            epoch: 1,
+            actor_abi_identity: actor_abi_identity.clone(),
+            actor_implementation_identity: actor_implementation_identity.clone(),
+            declaration_owner: declaration_owner.clone(),
+        },
+        route_authority: ActorOwnerRouteAuthorityFrameHeader {
+            assembly_identity: format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64)),
+            assembly_generation: 1,
+        },
+        invoke: ActorMethodInvokeFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.method.invoke".to_string(),
+            invocation_id: invocation_id.to_string(),
+            actor_ref: ActorLogicalRefFrameHeader {
+                service_id: "actor.test.service".to_string(),
+                actor_type_identity: "actor-test-type".to_string(),
+                actor_id_type_identity: "actor-test-id".to_string(),
+                actor_id_encoding_version: "skiff-canonical-v1".to_string(),
+                canonical_actor_id_key_bytes_base64: "MQ==".to_string(),
+                actor_id_hash: format!("sha256:{}", "d".repeat(64)),
+                epoch: 1,
+            },
+            declaration_owner,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity: ActorMethodIdentity::new(format!(
+                "skiff-actor-method-v1:sha256:{}",
+                "e".repeat(64)
+            )),
+            arguments_encoding_version: ACTOR_ARGUMENTS_ENCODING_V1.to_string(),
+            deadline: ActorMethodDeadlineFrameHeader {
+                timeout_ms: 30_000,
+                expires_at: "2099-01-01T00:00:00Z".to_string(),
+            },
+            cancellation_correlation: format!("{invocation_id}:cancel"),
+            trace_id: None,
+            test_case_capability: Some(capability.to_string()),
+            test_case_parent_request_id: Some(parent_request_id.to_string()),
+        },
+        activation_bootstrap: None,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actor_owner_test_admission_is_synchronous_before_detached_first_poll() {
+    let host = test_host();
+    host.open_actor_instance_session("router-session-sync")
+        .unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-sync",
+            "router-session-sync",
+            "root:actor-sync".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let _owner_task = host
+        .spawn_actor_owner_invoke(
+            "router-session-sync".to_string(),
+            actor_owner_test_invoke("actor:sync-child", "case:actor-sync", "root:actor-sync"),
+            Vec::new(),
+            sender,
+        )
+        .unwrap();
+
+    // A current-thread spawn cannot run until this test yields, so these observations prove the
+    // frame handler itself installed both owners.
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request("router-session-sync", "actor:sync-child")
+        .is_some());
+    assert!(host.actor_owner_invocations.contains("actor:sync-child"));
+    assert!(host.actor_owner_invocations.cancel_for_session(
+        "actor:sync-child",
+        "router-session-sync",
+        "actor:sync-child:cancel",
+        super::super::actor_owner_invocations::ActorOwnerCancellationReason::Cancelled,
+    ));
+    let mut finalization = Box::pin(root.finalize());
+    let waker = futures_util::task::noop_waker_ref();
+    let mut context = std::task::Context::from_waker(waker);
+    assert!(std::future::Future::poll(finalization.as_mut(), &mut context).is_pending());
+
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("detached Actor owner must terminate")
+        .expect("Actor owner failure terminal");
+    let skiff_runtime_request::RouterWriterMessage::Binary(terminal) = terminal else {
+        panic!("Actor cancellation terminal must be binary")
+    };
+    let skiff_runtime_transport::actor_method::ActorMethodFrame::Cancel(cancel) =
+        skiff_runtime_transport::actor_method::decode_actor_method_frame(&terminal)
+            .expect("Actor cancellation terminal decodes")
+    else {
+        panic!("pre-first-poll cancellation must settle as Actor cancel")
+    };
+    assert_eq!(
+        cancel.reason,
+        skiff_runtime_transport::actor_method::ActorMethodCancelReason::Cancelled
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), finalization)
+        .await
+        .expect("root finalization must resume after Actor terminal tail")
+        .unwrap();
+    assert!(!host.actor_owner_invocations.contains("actor:sync-child"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actor_owner_partial_admission_rolls_back_and_authority_failures_do_not_execute() {
+    let host = test_host();
+    host.open_actor_instance_session("router-session-sync")
+        .unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-rollback",
+            "router-session-sync",
+            "root:actor-rollback".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let cancellation_correlation = "actor:duplicate:cancel".to_string();
+    let duplicate_registration = host
+        .actor_owner_invocations
+        .register(
+            "actor:duplicate".to_string(),
+            "router-session-sync".to_string(),
+            cancellation_correlation,
+        )
+        .expect("pre-register duplicate invocation");
+    let duplicate_token = duplicate_registration.cancellation();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let duplicate = host
+        .spawn_actor_owner_invoke(
+            "router-session-sync".to_string(),
+            actor_owner_test_invoke(
+                "actor:duplicate",
+                "case:actor-rollback",
+                "root:actor-rollback",
+            ),
+            Vec::new(),
+            sender.clone(),
+        )
+        .expect_err("duplicate invocation must fail in the frame handler");
+    assert!(duplicate
+        .to_string()
+        .contains("duplicate Actor invocation id"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request("router-session-sync", "actor:duplicate")
+        .is_none());
+    assert!(host.actor_owner_invocations.contains("actor:duplicate"));
+    assert!(
+        !duplicate_token.is_cancelled(),
+        "rollback must retain and not cancel the pre-existing registry entry"
+    );
+    assert!(receiver.try_recv().is_err(), "no detached task may execute");
+    assert!(host.actor_owner_invocations.cancel_registered(
+        duplicate_registration.identity(),
+        super::super::actor_owner_invocations::ActorOwnerCancellationReason::Cancelled,
+    ));
+    assert_eq!(
+        host.actor_owner_invocations
+            .finish(duplicate_registration.identity()),
+        Some(super::super::actor_owner_invocations::ActorOwnerCancellationReason::Cancelled),
+        "rollback must leave the exact pre-existing registration finishable"
+    );
+
+    let unknown = host
+        .spawn_actor_owner_invoke(
+            "router-session-sync".to_string(),
+            actor_owner_test_invoke("actor:unknown", "case:missing", "root:missing"),
+            Vec::new(),
+            sender,
+        )
+        .expect_err("unknown capability must fail in the frame handler");
+    assert!(
+        unknown.to_string().contains("parent request is unknown")
+            || unknown.to_string().contains("unknown or finalized")
+    );
+    assert!(!host.actor_owner_invocations.contains("actor:unknown"));
+    root.finalize().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actor_owner_effective_deadline_sends_typed_terminal_and_cleans_real_owners() {
+    let host = test_host();
+    let session = "router-session-deadline";
+    host.open_actor_instance_session(session).unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-deadline",
+            session,
+            "root:actor-deadline".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let mut invoke = actor_owner_test_invoke(
+        "actor:deadline-child",
+        "case:actor-deadline",
+        "root:actor-deadline",
+    );
+    // A zero timeout with a still-future wall-clock expiry exercises the real Host deadline
+    // arbiter deterministically; both deadline and the route lookup may be ready on first poll.
+    invoke.invoke.deadline.timeout_ms = 0;
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let owner_task = host
+        .spawn_actor_owner_invoke(session.to_string(), invoke, Vec::new(), sender)
+        .unwrap();
+
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("deadline terminal must be bounded")
+        .expect("deadline terminal must be sent");
+    let skiff_runtime_request::RouterWriterMessage::Binary(terminal) = terminal else {
+        panic!("deadline terminal must be binary")
+    };
+    let ActorMethodFrame::Cancel(cancel) = decode_actor_method_frame(&terminal).unwrap() else {
+        panic!("deadline must not degrade to actor.owner.failure")
+    };
+    assert_eq!(cancel.invocation_id, "actor:deadline-child");
+    assert_eq!(
+        cancel.cancellation_correlation,
+        "actor:deadline-child:cancel"
+    );
+    assert_eq!(
+        cancel.reason,
+        skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded
+    );
+    owner_task.await.unwrap();
+    root.finalize().await.unwrap();
+    assert!(!host
+        .actor_owner_invocations
+        .contains("actor:deadline-child"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:deadline-child")
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn already_expired_actor_owner_deadline_revokes_parent_and_finishes_before_terminal_handoff()
+{
+    let host = test_host();
+    let session = "router-session-already-expired";
+    host.open_actor_instance_session(session).unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-already-expired",
+            session,
+            "root:actor-already-expired".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let mut invoke = actor_owner_test_invoke(
+        "actor:already-expired",
+        "case:actor-already-expired",
+        "root:actor-already-expired",
+    );
+    invoke.invoke.deadline.timeout_ms = 30_000;
+    invoke.invoke.deadline.expires_at = "2000-01-01T00:00:00Z".to_string();
+    invoke.invoke.trace_id =
+        Some("skiff-test:pause-expired-actor-owner-before-terminal".to_string());
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let owner_task = host
+        .spawn_actor_owner_invoke(session.to_string(), invoke, Vec::new(), sender)
+        .unwrap();
+
+    assert!(host
+        .actor_owner_invocations
+        .contains("actor:already-expired"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:already-expired")
+        .is_some());
+
+    super::super::actor_owner_execution::expired_actor_owner_terminal_barrier()
+        .wait()
+        .await;
+    assert!(
+        !host
+            .actor_owner_invocations
+            .contains("actor:already-expired"),
+        "the exact invocation registration must be finished"
+    );
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:already-expired")
+        .is_none());
+    let before_terminal = host
+        .test_http_entries
+        .begin_actor_method(
+            "case:actor-already-expired",
+            "actor:already-expired",
+            session,
+            "actor:expired-before-terminal".to_string(),
+        )
+        .err()
+        .expect("the expired invocation must not authorize descendants");
+    assert!(before_terminal
+        .to_string()
+        .contains("parent request is unknown"));
+    assert!(
+        receiver.try_recv().is_err(),
+        "the terminal must not be sent until authority revocation and registry finish are visible"
+    );
+    super::super::actor_owner_execution::expired_actor_owner_terminal_barrier()
+        .wait()
+        .await;
+
+    let terminal = receiver
+        .recv()
+        .await
+        .expect("deadline terminal must be sent");
+    let skiff_runtime_request::RouterWriterMessage::Binary(terminal) = terminal else {
+        panic!("deadline terminal must be binary")
+    };
+    let ActorMethodFrame::Cancel(cancel) = decode_actor_method_frame(&terminal).unwrap() else {
+        panic!("expired deadline must not degrade to actor.owner.failure")
+    };
+    assert_eq!(cancel.invocation_id, "actor:already-expired");
+    assert_eq!(
+        cancel.cancellation_correlation,
+        "actor:already-expired:cancel"
+    );
+    assert_eq!(
+        cancel.reason,
+        skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded
+    );
+
+    let after_terminal = host
+        .test_http_entries
+        .begin_actor_method(
+            "case:actor-already-expired",
+            "actor:already-expired",
+            session,
+            "actor:expired-after-terminal".to_string(),
+        )
+        .err()
+        .expect("terminal delivery must not restore expired parent authority");
+    assert!(after_terminal
+        .to_string()
+        .contains("parent request is unknown"));
+    owner_task.await.unwrap();
+    root.finalize().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn aborting_real_actor_owner_task_releases_invocation_and_test_lease_before_first_poll() {
+    let host = test_host();
+    let session = "router-session-abort";
+    host.open_actor_instance_session(session).unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-task-abort",
+            session,
+            "root:actor-task-abort".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let owner_task = host
+        .spawn_actor_owner_invoke(
+            session.to_string(),
+            actor_owner_test_invoke(
+                "actor:task-abort",
+                "case:actor-task-abort",
+                "root:actor-task-abort",
+            ),
+            Vec::new(),
+            sender,
+        )
+        .unwrap();
+    assert!(host.actor_owner_invocations.contains("actor:task-abort"));
+    owner_task.abort();
+    assert!(owner_task.await.unwrap_err().is_cancelled());
+
+    root.finalize().await.unwrap();
+    assert!(!host.actor_owner_invocations.contains("actor:task-abort"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:task-abort")
+        .is_none());
+}
+
+#[tokio::test]
+async fn panicking_real_actor_owner_task_releases_invocation_and_test_lease() {
+    let host = test_host();
+    let session = "router-session-panic";
+    host.open_actor_instance_session(session).unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:actor-task-panic",
+            session,
+            "root:actor-task-panic".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let mut invoke = actor_owner_test_invoke(
+        "actor:task-panic",
+        "case:actor-task-panic",
+        "root:actor-task-panic",
+    );
+    invoke.invoke.trace_id = Some("skiff-test:panic-after-actor-owner-admission".to_string());
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let owner_task = host
+        .spawn_actor_owner_invoke(session.to_string(), invoke, Vec::new(), sender)
+        .unwrap();
+    assert!(owner_task.await.unwrap_err().is_panic());
+
+    root.finalize().await.unwrap();
+    assert!(!host.actor_owner_invocations.contains("actor:task-panic"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:task-panic")
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stale_production_task_drop_cannot_finish_reused_invocation_registration() {
+    let host = test_host();
+    let reused_id = "actor:reused-production-id";
+    let old_session = "router-session-reuse-old";
+    host.open_actor_instance_session(old_session).unwrap();
+    let old_root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:reuse-old",
+            old_session,
+            "root:reuse-old".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let (old_sender, _old_receiver) = mpsc::unbounded_channel();
+    let old_task = host
+        .spawn_actor_owner_invoke(
+            old_session.to_string(),
+            actor_owner_test_invoke(reused_id, "case:reuse-old", "root:reuse-old"),
+            Vec::new(),
+            old_sender,
+        )
+        .unwrap();
+    assert_eq!(host.actor_owner_invocations.cancel_session(old_session), 1);
+    host.test_http_entries
+        .disconnect_session(old_session)
+        .unwrap();
+
+    let new_session = "router-session-reuse-new";
+    let new_root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:reuse-new",
+            new_session,
+            "root:reuse-new".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let new_test_execution = host
+        .test_http_entries
+        .begin_actor_method(
+            "case:reuse-new",
+            "root:reuse-new",
+            new_session,
+            reused_id.to_string(),
+        )
+        .unwrap();
+    let new_registration = host
+        .actor_owner_invocations
+        .register(
+            reused_id.to_string(),
+            new_session.to_string(),
+            format!("{reused_id}:cancel"),
+        )
+        .unwrap();
+
+    old_task.abort();
+    assert!(old_task.await.unwrap_err().is_cancelled());
+    assert!(
+        host.actor_owner_invocations.contains(reused_id),
+        "old generation Drop must not remove the reused registration"
+    );
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(new_session, reused_id)
+        .is_some());
+
+    assert_eq!(
+        host.actor_owner_invocations
+            .finish(new_registration.identity()),
+        None
+    );
+    drop(new_test_execution);
+    old_root.finalize().await.unwrap();
+    new_root.finalize().await.unwrap();
+    assert!(!host.actor_owner_invocations.contains(reused_id));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn closed_writer_does_not_leak_actor_terminal_owners() {
+    let host = test_host();
+    let session = "router-session-writer-closed";
+    host.open_actor_instance_session(session).unwrap();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:writer-closed",
+            session,
+            "root:writer-closed".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let mut invoke = actor_owner_test_invoke(
+        "actor:writer-closed",
+        "case:writer-closed",
+        "root:writer-closed",
+    );
+    invoke.invoke.deadline.timeout_ms = 0;
+    let (sender, receiver) = mpsc::unbounded_channel();
+    drop(receiver);
+    let owner_task = host
+        .spawn_actor_owner_invoke(session.to_string(), invoke, Vec::new(), sender)
+        .unwrap();
+    owner_task.await.unwrap();
+    root.finalize().await.unwrap();
+    assert!(!host.actor_owner_invocations.contains("actor:writer-closed"));
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(session, "actor:writer-closed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn actor_owner_authority_errors_propagate_through_dispatch_and_cross_session_fails_closed() {
+    const SESSION_A: &str = "skiff-router-session-v1:opaque:authority-a";
+    const SESSION_B: &str = "skiff-router-session-v1:opaque:authority-b";
+    let host = test_host();
+    let root = host
+        .test_http_entries
+        .begin_root_case(
+            "case:dispatch-authority",
+            SESSION_A,
+            "root:dispatch-authority".to_string(),
+            "activation-a".to_string(),
+            "http://127.0.0.1:44100/test-case",
+            actor_owner_test_deployment(),
+        )
+        .unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let frame = encode_actor_owner_invoke_frame(
+        &actor_owner_test_invoke(
+            "actor:cross-session",
+            "case:dispatch-authority",
+            "root:dispatch-authority",
+        ),
+        &[],
+    )
+    .unwrap();
+    let mut bootstrap = Some(super::test_connection_bootstrap("cross-session").unwrap());
+    let error = super::dispatch_router_binary_frame_inner(
+        &host,
+        SESSION_B,
+        &frame,
+        &sender,
+        None,
+        &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
+    )
+    .await
+    .expect_err("foreign Router session must not replay a valid parent");
+    assert!(error.to_string().contains("another router session"));
+    assert!(!host.actor_owner_invocations.contains("actor:cross-session"));
+    assert!(receiver.try_recv().is_err());
+
+    let stale_parent = host
+        .test_http_entries
+        .begin_actor_method(
+            "case:dispatch-authority",
+            "root:dispatch-authority",
+            SESSION_A,
+            "actor:stale-parent".to_string(),
+        )
+        .unwrap();
+    drop(stale_parent);
+    let frame = encode_actor_owner_invoke_frame(
+        &actor_owner_test_invoke(
+            "actor:stale-child",
+            "case:dispatch-authority",
+            "actor:stale-parent",
+        ),
+        &[],
+    )
+    .unwrap();
+    let mut bootstrap = Some(super::test_connection_bootstrap("stale-parent").unwrap());
+    let error = super::dispatch_router_binary_frame_inner(
+        &host,
+        SESSION_A,
+        &frame,
+        &sender,
+        None,
+        &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
+    )
+    .await
+    .expect_err("released derived parent must fail in dispatch");
+    assert!(error.to_string().contains("parent request is unknown"));
+    assert!(!host.actor_owner_invocations.contains("actor:stale-child"));
+    assert!(receiver.try_recv().is_err());
+    root.finalize().await.unwrap();
 }
 
 #[tokio::test]
@@ -579,12 +1262,8 @@ async fn binary_router_control_decode_error_propagates() {
     assert!(artifact_fingerprint.is_none());
 }
 
-#[tokio::test]
-async fn binary_assembly_activation_command_uses_router_to_runtime_codec() {
-    let host = test_host();
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut control = None;
-    let mut artifact_fingerprint = None;
+#[test]
+fn binary_assembly_activation_command_uses_router_to_runtime_codec() {
     let activation = assembly_activation_control("prepare");
     let frame = encode_assembly_activation_frame(
         AssemblyActivationFrameDirection::RouterToRuntime,
@@ -592,26 +1271,24 @@ async fn binary_assembly_activation_command_uses_router_to_runtime_codec() {
     )
     .expect("router activation command should encode");
 
-    dispatch_router_binary_frame(
-        &host,
-        &frame,
-        &sender,
-        &mut control,
-        &mut artifact_fingerprint,
-    )
-    .await
-    .expect("missing exact assembly record should produce a typed rejection");
+    assert_eq!(
+        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RouterToRuntime, &frame)
+            .expect("Router activation command should decode"),
+        activation
+    );
+}
 
-    let super::super::RouterWriterMessage::Binary(reply) =
-        receiver.try_recv().expect("rejection should be queued")
-    else {
-        panic!("expected binary rejection");
-    };
-    assert!(matches!(
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &reply)
-            .expect("rejection should decode"),
-        skiff_artifact_model::AssemblyActivationControl::Reject { .. }
-    ));
+#[test]
+fn assembly_activation_frame_type_is_identified_without_applying_production_behavior() {
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &assembly_activation_control("prepare"),
+    )
+    .expect("router activation command should encode");
+    assert_eq!(
+        super::activation::router_binary_frame_type(&frame).unwrap(),
+        skiff_runtime_transport::assembly_activation::ASSEMBLY_ACTIVATION_FRAME_TYPE
+    );
 }
 
 #[tokio::test]
@@ -632,6 +1309,7 @@ async fn assembly_activation_fails_closed_before_connection_bootstrap() {
         &sender,
         None,
         &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect_err("activation before bootstrap must fail");
@@ -698,6 +1376,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         &sender,
         None,
         &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect_err("duplicate bootstrap must fail");
@@ -753,6 +1432,7 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
         &sender,
         None,
         &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect_err("transient serviceDb must fail");
@@ -808,6 +1488,7 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
         &sender,
         None,
         &mut bootstrap,
+        RouterSessionChildTaskDispatch::Detached,
     )
     .await
     .expect_err("foreign activation environment must fail before snapshot resolution");
@@ -819,17 +1500,12 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
 
 #[test]
 fn assembly_activation_reply_uses_runtime_to_router_codec() {
-    let (sender, mut receiver) = mpsc::unbounded_channel();
     let activation = assembly_activation_control("prepared");
-
-    super::super::RuntimeHost::queue_assembly_activation(sender, &activation)
-        .expect("runtime activation reply should queue");
-    let super::super::RouterWriterMessage::Binary(frame) = receiver
-        .try_recv()
-        .expect("runtime activation reply should be present")
-    else {
-        panic!("expected binary assembly activation reply");
-    };
+    let frame = encode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RuntimeToRouter,
+        &activation,
+    )
+    .expect("runtime activation reply should encode");
     let decoded =
         decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &frame)
             .expect("runtime activation reply should decode in runtime-to-router direction");

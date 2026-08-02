@@ -61,6 +61,7 @@ impl AssemblyAdmissionController {
             .write()
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         state.staged = None;
+        state.preparing = None;
         state.candidate = None;
         Ok(())
     }

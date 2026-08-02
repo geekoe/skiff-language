@@ -226,7 +226,7 @@ async fn execute_evaluator_lane<'program>(
 
     if outcome.is_ok() {
         if let Some(actor) = actor_lane.take() {
-            if let Err(error) = actor.complete(state.heap().clone()) {
+            if let Err(error) = actor.complete(state.heap()) {
                 return LaneCompletion::error(state, error);
             }
         }

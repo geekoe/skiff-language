@@ -16,7 +16,7 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_model::{
     request_heap::{
         deep_clone_runtime_value_between_heaps, deep_clone_runtime_value_carrier_between_heaps,
-        RequestHeap,
+        deep_clone_runtime_value_carriers_between_heaps, RequestHeap,
     },
     runtime_value::{RuntimeValue, RuntimeValueCarrier},
     type_plan::RuntimeTypePlan,
@@ -257,21 +257,18 @@ impl Interpreter {
         };
 
         let mut producer_heap = context.request_heap();
-        let producer_self = deep_clone_runtime_value_carrier_between_heaps(
-            heap,
-            &mut producer_heap,
-            &producer_self,
-        )?;
-        let mut cloned_args = Vec::with_capacity(producer_args.len());
-        for arg in &producer_args {
-            cloned_args.push(deep_clone_runtime_value_carrier_between_heaps(
-                heap,
-                &mut producer_heap,
-                arg,
-            )?);
-        }
+        let mut roots = Vec::with_capacity(producer_args.len() + 1);
+        roots.push(producer_self);
+        roots.extend(producer_args);
+        let mut cloned_roots =
+            deep_clone_runtime_value_carriers_between_heaps(heap, &mut producer_heap, &roots)?
+                .into_iter();
+        let producer_self = cloned_roots
+            .next()
+            .expect("producer self root was inserted before cloning");
+        let cloned_args = cloned_roots.collect();
 
-        let mut producer_env = env.clone();
+        let mut producer_env = env.detached_for_independent_heap();
         let stream_runtime = context.stream_runtime();
         let (stream_value, sink) = stream_runtime.channel_stream();
         let cancel_signal = sink.cancel_signal();
@@ -290,7 +287,7 @@ impl Interpreter {
             // The already-evaluated explicit-self path receives a context that
             // already contains the exact required call site.
             producer_site: None,
-            producer_self: Some(producer_self),
+            producer_self: StreamProducerSelf::Explicit(producer_self),
             producer_type_args: producer_type_args.clone(),
             producer_args: cloned_args,
             sink,
@@ -524,6 +521,22 @@ impl Interpreter {
         };
         let mut producer_heap = context.request_heap();
         let mut arg_producers = PreparedStreamProducerArgs::default();
+        let mut caller_roots = Vec::with_capacity(producer.call.args.len() + 1);
+        let producer_self = match receiver {
+            Some(receiver) => {
+                let root = caller_roots.len();
+                caller_roots.push(receiver);
+                PreparedStreamProducerSelf::Explicit(root)
+            }
+            None => match env.self_value() {
+                Some(inherited) => {
+                    let root = caller_roots.len();
+                    caller_roots.push(inherited);
+                    PreparedStreamProducerSelf::Inherited(Some(root))
+                }
+                None => PreparedStreamProducerSelf::Inherited(None),
+            },
+        };
         let mut args = Vec::with_capacity(producer.call.args.len());
         for arg in &producer.call.args {
             let expr = program_expression_ref(_executable, *arg)?;
@@ -562,7 +575,9 @@ impl Interpreter {
                         return Err(error);
                     }
                 };
-                args.push(stream_value.into());
+                args.push(PreparedStreamProducerArg::ProducerLocal(
+                    stream_value.into(),
+                ));
                 arg_producers.push(nested);
             } else {
                 let arg = self
@@ -576,18 +591,22 @@ impl Interpreter {
                         *arg,
                     )
                     .await?;
-                let arg =
-                    deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, &arg)?;
-                args.push(arg);
+                let root = caller_roots.len();
+                caller_roots.push(arg);
+                args.push(PreparedStreamProducerArg::CallerRoot(root));
             }
         }
-        let producer_self = receiver
-            .as_ref()
-            .map(|receiver| {
-                deep_clone_runtime_value_carrier_between_heaps(heap, &mut producer_heap, receiver)
-            })
-            .transpose()?;
-        let mut producer_env = env.clone();
+        let cloned_roots = deep_clone_runtime_value_carriers_between_heaps(
+            heap,
+            &mut producer_heap,
+            &caller_roots,
+        )?;
+        let producer_self = producer_self.materialize(&cloned_roots);
+        let args = args
+            .into_iter()
+            .map(|arg| arg.materialize(&cloned_roots))
+            .collect();
+        let mut producer_env = env.detached_for_independent_heap();
         let stream_runtime = context.stream_runtime();
         let (stream_value, sink) = stream_runtime.channel_stream();
         let cancel_signal = sink.cancel_signal();
@@ -891,10 +910,15 @@ pub struct StreamProducerExecution {
     producer_env: Env,
     producer_addr: ExecutableAddr,
     producer_site: Option<skiff_artifact_model::InstructionSourceSite>,
-    producer_self: Option<RuntimeValueCarrier>,
+    producer_self: StreamProducerSelf,
     producer_type_args: std::collections::BTreeMap<String, LinkedTypeRef>,
     producer_args: Vec<RuntimeValueCarrier>,
     sink: StreamSink,
+}
+
+enum StreamProducerSelf {
+    Inherited(Option<RuntimeValueCarrier>),
+    Explicit(RuntimeValueCarrier),
 }
 
 impl StreamProducerExecution {
@@ -912,6 +936,36 @@ impl StreamProducerExecution {
 #[derive(Default)]
 struct PreparedStreamProducerArgs {
     producers: Vec<StreamProducerExecution>,
+}
+
+enum PreparedStreamProducerArg {
+    CallerRoot(usize),
+    ProducerLocal(RuntimeValueCarrier),
+}
+
+impl PreparedStreamProducerArg {
+    fn materialize(self, cloned_roots: &[RuntimeValueCarrier]) -> RuntimeValueCarrier {
+        match self {
+            Self::CallerRoot(root) => cloned_roots[root].clone(),
+            Self::ProducerLocal(value) => value,
+        }
+    }
+}
+
+enum PreparedStreamProducerSelf {
+    Inherited(Option<usize>),
+    Explicit(usize),
+}
+
+impl PreparedStreamProducerSelf {
+    fn materialize(self, cloned_roots: &[RuntimeValueCarrier]) -> StreamProducerSelf {
+        match self {
+            Self::Inherited(root) => {
+                StreamProducerSelf::Inherited(root.map(|root| cloned_roots[root].clone()))
+            }
+            Self::Explicit(root) => StreamProducerSelf::Explicit(cloned_roots[root].clone()),
+        }
+    }
 }
 
 impl PreparedStreamProducerArgs {
@@ -969,6 +1023,14 @@ impl DeferredStreamProducerRegistry {
             .lock()
             .expect("deferred stream producer registry poisoned")
             .remove(id)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries
+            .lock()
+            .expect("deferred stream producer registry poisoned")
+            .is_empty()
     }
 
     fn attach_response_sink(
@@ -1049,7 +1111,7 @@ async fn run_stream_producer_task(
         _stream_runtime_owner,
         arg_producers,
         mut producer_heap,
-        producer_env,
+        mut producer_env,
         producer_addr,
         producer_site,
         producer_self,
@@ -1082,31 +1144,43 @@ async fn run_stream_producer_task(
         Some(site) => context.with_local_call_site(site),
         None => context,
     };
-    let result = if let Some(producer_self) = producer_self {
-        interpreter
-            .call_program_executable_with_self_direct_carriers(
-                context,
-                &mut producer_heap,
-                &producer_env,
-                caller_addr,
-                &producer_addr,
-                &producer_type_args,
-                producer_self,
-                producer_args,
-            )
-            .await
-    } else {
-        interpreter
-            .call_program_executable_carriers(
-                context,
-                &mut producer_heap,
-                &producer_env,
-                caller_addr,
-                &producer_addr,
-                &producer_type_args,
-                producer_args,
-            )
-            .await
+    let result = match producer_self {
+        StreamProducerSelf::Explicit(producer_self) => {
+            interpreter
+                .call_program_executable_with_self_direct_carriers(
+                    context,
+                    &mut producer_heap,
+                    &producer_env,
+                    caller_addr,
+                    &producer_addr,
+                    &producer_type_args,
+                    producer_self,
+                    producer_args,
+                )
+                .await
+        }
+        StreamProducerSelf::Inherited(producer_self) => {
+            let restore = match producer_self {
+                Some(producer_self) => producer_env.restore_detached_self(producer_self),
+                None => Ok(()),
+            };
+            match restore {
+                Ok(()) => {
+                    interpreter
+                        .call_program_executable_carriers(
+                            context,
+                            &mut producer_heap,
+                            &producer_env,
+                            caller_addr,
+                            &producer_addr,
+                            &producer_type_args,
+                            producer_args,
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        }
     };
     match result {
         Ok(_) => sink.end().await,

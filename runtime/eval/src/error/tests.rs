@@ -196,6 +196,85 @@ fn replace_user_exception_leaves_other_error_classes_unchanged() {
 }
 
 #[test]
+fn cross_heap_error_rematerialization_preserves_wrappers_and_local_payload() {
+    let identity = local_identity(6);
+    let mut source_heap = RequestHeap::default();
+    source_heap.alloc_bytes(vec![0]).expect("source padding");
+    let payload = source_heap
+        .alloc_array(vec![RuntimeValue::from("provider-payload")])
+        .expect("provider payload should allocate");
+    let request = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::Heap(payload), identity.clone()),
+        source_site(),
+        vec![ExceptionStackFrame::Local {
+            site: source_site(),
+        }],
+        ErrorCorrelation {
+            trace_id: "cross-heap-wrapper-trace".to_string(),
+            error_id: "cross-heap-wrapper-error".to_string(),
+        },
+    )
+    .expect("wrapped user exception should be valid");
+    let source_frame = serde_json::json!({ "sourceId": 41 });
+    let diagnostic_frame = serde_json::json!({ "operation": "callback" });
+    let error = RuntimeError::UserException(UserException::new(request))
+        .with_source(41, source_frame.clone())
+        .with_diagnostic_frame(diagnostic_frame.clone());
+    let mut destination = RequestHeap::default();
+    destination
+        .alloc_bytes(vec![1])
+        .expect("destination padding");
+    let collision = destination
+        .alloc_array(vec![RuntimeValue::from("caller-collision")])
+        .expect("destination collision should allocate");
+    assert_eq!(
+        collision, payload,
+        "test requires an exact handle collision"
+    );
+
+    let materialized =
+        rematerialize_runtime_error_between_heaps(error, &source_heap, &mut destination)
+            .expect("wrapped user exception should rematerialize");
+    let RuntimeError::WithDiagnosticFrame { frame, error } = materialized else {
+        panic!("diagnostic wrapper should remain outermost")
+    };
+    assert_eq!(*frame, diagnostic_frame);
+    let RuntimeError::WithSource {
+        source_id,
+        frame,
+        error,
+    } = *error
+    else {
+        panic!("source wrapper should remain nested")
+    };
+    assert_eq!(source_id, 41);
+    assert_eq!(*frame, source_frame);
+    let RuntimeError::UserException(exception) = *error else {
+        panic!("typed user exception should remain the wrapped leaf")
+    };
+    assert_eq!(exception.actual_payload_type(), Some(&identity));
+    let RuntimeValue::Heap(materialized_payload) = exception
+        .request()
+        .local_value()
+        .expect("materialized local payload")
+        .value()
+    else {
+        panic!("materialized local payload should remain heap-backed")
+    };
+    assert_ne!(*materialized_payload, collision);
+    assert!(matches!(
+        destination.get(*materialized_payload),
+        Ok(skiff_runtime_model::runtime_value::HeapNode::Array(items))
+            if items == &[RuntimeValue::from("provider-payload")]
+    ));
+    assert!(matches!(
+        destination.get(collision),
+        Ok(skiff_runtime_model::runtime_value::HeapNode::Array(items))
+            if items == &[RuntimeValue::from("caller-collision")]
+    ));
+}
+
+#[test]
 fn request_heap_owned_stream_error_materializes_the_exact_local_exception() {
     let identity = local_identity(7);
     let item_identity = local_identity(8);
@@ -256,6 +335,104 @@ fn request_heap_owned_stream_error_materializes_the_exact_local_exception() {
             .catch_identity(),
         Some(&item_identity)
     );
+}
+
+#[test]
+fn request_heap_root_rebind_preserves_nested_local_exception_payload_and_diagnostics() {
+    let identity = local_identity(9);
+    let nested_identity = local_identity(10);
+    let source = source_site();
+    let correlation = ErrorCorrelation {
+        trace_id: "trace-rollback".to_string(),
+        error_id: "trace-rollback:local-error:1".to_string(),
+    };
+    let diagnostic_frame = serde_json::json!({ "operation": "db.transaction" });
+    let source_frame = serde_json::json!({ "sourceId": 41, "module": "transaction-body" });
+    let mut heap = RequestHeap::default();
+    heap.alloc_bytes(vec![0]).expect("pre-checkpoint heap node");
+    let checkpoint = heap.checkpoint();
+    heap.alloc_bytes(vec![1])
+        .expect("dead transaction-local node");
+    let nested_handle = heap
+        .alloc_array_carriers(vec![RuntimeValueCarrier::identified(
+            RuntimeValue::from("nested"),
+            nested_identity.clone(),
+        )])
+        .expect("nested exception payload");
+    let payload_handle = heap
+        .alloc_array_carriers(vec![RuntimeValueCarrier::from(RuntimeValue::Heap(
+            nested_handle,
+        ))])
+        .expect("outer exception payload");
+    let request = RequestException::local(
+        RuntimeValueCarrier::identified(RuntimeValue::Heap(payload_handle), identity.clone()),
+        source.clone(),
+        vec![ExceptionStackFrame::Local {
+            site: source.clone(),
+        }],
+        correlation.clone(),
+    )
+    .expect("local transaction exception");
+    let error = RuntimeError::UserException(UserException::new(request))
+        .with_source(41, source_frame.clone())
+        .with_diagnostic_frame(diagnostic_frame.clone());
+
+    let prepared = heap
+        .prepare_rollback_rebase(checkpoint, &[RuntimeValue::Heap(payload_handle)])
+        .expect("rollback graph must be valid");
+    let preserved_root = prepared.rebased_roots()[0].clone();
+    let preserved = rebind_runtime_error_request_heap_root(error, Some(preserved_root))
+        .expect("error root mapping must match");
+    heap.commit_prepared_rollback_rebase(prepared);
+
+    assert_eq!(
+        heap.len(),
+        3,
+        "only the checkpoint and reachable payload remain"
+    );
+    let RuntimeError::WithDiagnosticFrame { frame, error } = preserved else {
+        panic!("diagnostic wrapper should remain outermost")
+    };
+    assert_eq!(*frame, diagnostic_frame);
+    let RuntimeError::WithSource {
+        source_id,
+        frame,
+        error,
+    } = *error
+    else {
+        panic!("source wrapper should remain nested")
+    };
+    assert_eq!(source_id, 41);
+    assert_eq!(*frame, source_frame);
+    let RuntimeError::UserException(exception) = *error else {
+        panic!("user exception should remain the leaf")
+    };
+    assert_eq!(exception.actual_payload_type(), Some(&identity));
+    assert_eq!(exception.request().source(), &source);
+    assert_eq!(exception.request().correlation(), &correlation);
+    let RuntimeValue::Heap(preserved_payload) = exception
+        .request()
+        .local_value()
+        .expect("local exception cause")
+        .value()
+    else {
+        panic!("exception cause must remain a heap payload")
+    };
+    assert_ne!(*preserved_payload, payload_handle);
+    let RuntimeValue::Heap(preserved_nested) = heap
+        .array_item_carrier(*preserved_payload, 0)
+        .expect("outer payload remains readable")
+        .expect("outer payload item")
+        .into_value()
+    else {
+        panic!("outer payload must retain its nested heap value")
+    };
+    let nested = heap
+        .array_item_carrier(preserved_nested, 0)
+        .expect("nested payload remains readable")
+        .expect("nested payload item");
+    assert_eq!(nested.value(), &RuntimeValue::from("nested"));
+    assert_eq!(nested.catch_identity(), Some(&nested_identity));
 }
 
 fn recoverable_boundary_error() -> RecoverableBoundaryError {

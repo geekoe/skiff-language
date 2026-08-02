@@ -45,6 +45,7 @@ pub enum RuntimeWebSocketConnectResult {
     Accept {
         business_identity: Option<String>,
         connection_policy: Option<WebSocketConnectionPolicyControl>,
+        admission_rank: Option<u64>,
     },
     Reject {
         code: u16,
@@ -295,7 +296,12 @@ fn decode_connect_result(
             require_exact_fields(
                 target,
                 fields,
-                &["tag", "businessIdentity", "connectionPolicy"],
+                &[
+                    "tag",
+                    "businessIdentity",
+                    "connectionPolicy",
+                    "admissionRank",
+                ],
             )?;
             let business_identity = optional_string(target, fields, "businessIdentity")?;
             let connection_policy = match fields.get("connectionPolicy") {
@@ -308,9 +314,11 @@ fn decode_connect_result(
                     ))
                 }
             };
+            let admission_rank = optional_positive_safe_integer(target, fields, "admissionRank")?;
             Ok(RuntimeWebSocketConnectResult::Accept {
                 business_identity,
                 connection_policy,
+                admission_rank,
             })
         }
         "reject" => {
@@ -446,6 +454,35 @@ fn optional_u16(
         Some(_) => Err(protocol_error(
             target,
             format!("websocket connect field {name} must be an unsigned u16 or null"),
+        )),
+        None => Err(protocol_error(
+            target,
+            format!("websocket connect result omitted {name}"),
+        )),
+    }
+}
+
+fn optional_positive_safe_integer(
+    target: &impl RuntimeWebSocketConnectExecutionTarget,
+    fields: &Map<String, Value>,
+    name: &str,
+) -> Result<Option<u64>> {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    match fields.get(name) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .filter(|value| (1..=MAX_SAFE_INTEGER).contains(value))
+            .map(Some)
+            .ok_or_else(|| {
+                protocol_error(
+                    target,
+                    format!("websocket connect field {name} must be a positive safe integer"),
+                )
+            }),
+        Some(_) => Err(protocol_error(
+            target,
+            format!("websocket connect field {name} must be an integer or null"),
         )),
         None => Err(protocol_error(
             target,

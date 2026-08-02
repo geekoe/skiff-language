@@ -389,6 +389,7 @@ pub fn canonical_websocket_connect_schema(name: &str) -> Option<GatewayExternalS
             branches: vec![
                 record(
                     BTreeMap::from([
+                        ("admissionRank".to_string(), nullable(integer())),
                         ("businessIdentity".to_string(), nullable(string())),
                         ("connectionPolicy".to_string(), nullable(policy())),
                         ("tag".to_string(), literal("accept")),

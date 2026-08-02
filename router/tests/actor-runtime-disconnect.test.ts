@@ -141,6 +141,196 @@ describe('Actor Runtime disconnect cleanup', () => {
     await expect(manager.registryStore().actorInvocation(invocationTwo.invocationId))
       .resolves.toMatchObject({ state: 'admitted' });
   });
+
+  it('matches a complete owner fence only to its exact Runtime session', async () => {
+    const manager = new ActorManager();
+    const owner = await liveActor(
+      manager,
+      actorKeyInput('exact-session'),
+      'runtime-1',
+      'lease-1'
+    );
+    const controller = new ActorRuntimeDisconnectController(manager, () => baseTime);
+    const firstConnection = { runtimeId: 'runtime-1', sessionId: 'session-1' };
+    const secondConnection = { runtimeId: 'runtime-1', sessionId: 'session-2' };
+    controller.bindOwner(firstConnection, owner.fence);
+
+    expect(
+      controller.ownerFenceBoundToConnection(firstConnection, owner.fence)
+    ).toBe(true);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, owner.fence)
+    ).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(firstConnection, {
+        ...owner.fence,
+        ownerLeaseExpiresAt: new Date(
+          owner.fence.ownerLeaseExpiresAt.getTime() + 1
+        ),
+      })
+    ).toBe(false);
+
+    await expect(
+      controller.handleRuntimeDisconnect(firstConnection)
+    ).resolves.toMatchObject({
+      releasedOwners: [expect.objectContaining({ ownerLeaseId: 'lease-1' })],
+    });
+    const reconnectedOwner = await acquireAndMarkLive(
+      manager,
+      owner.actorKey,
+      owner.fence.epoch,
+      'runtime-1',
+      'lease-2'
+    );
+    controller.bindOwner(secondConnection, reconnectedOwner);
+
+    expect(
+      controller.ownerFenceBoundToConnection(firstConnection, reconnectedOwner)
+    ).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, reconnectedOwner)
+    ).toBe(true);
+    expect(controller.unbindOwner(firstConnection, reconnectedOwner)).toBe(false);
+    expect(
+      controller.unbindOwner(secondConnection, {
+        ...reconnectedOwner,
+        ownerLeaseExpiresAt: new Date(
+          reconnectedOwner.ownerLeaseExpiresAt.getTime() + 1
+        ),
+      })
+    ).toBe(false);
+    expect(controller.unbindOwner(secondConnection, reconnectedOwner)).toBe(true);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, reconnectedOwner)
+    ).toBe(false);
+    controller.bindOwner(secondConnection, reconnectedOwner);
+    await expect(
+      controller.handleRuntimeDisconnect(firstConnection)
+    ).resolves.toEqual({ releasedOwners: [], failedInvocations: [] });
+    await expect(manager.entry(owner.actorKey)).resolves.toMatchObject({
+      lifecycleState: 'live',
+      ownerLeaseId: 'lease-2',
+    });
+  });
+
+  it('replaces a renewed lease binding without leaving a stale session fence', async () => {
+    const manager = new ActorManager();
+    const owner = await liveActor(
+      manager,
+      actorKeyInput('renewed-session'),
+      'runtime-1',
+      'lease-1'
+    );
+    const controller = new ActorRuntimeDisconnectController(manager, () => baseTime);
+    const firstConnection = { runtimeId: 'runtime-1', sessionId: 'session-1' };
+    const secondConnection = { runtimeId: 'runtime-1', sessionId: 'session-2' };
+    controller.bindOwner(firstConnection, owner.fence);
+    const renewed = await manager.registryStore().renewOwnerLease({
+      actorKey: makeActorKey(owner.actorKey),
+      expectedEpoch: owner.fence.epoch,
+      actorImplementationIdentity: owner.fence.implementationIdentity,
+      ownerRuntimeId: owner.fence.ownerRuntimeId,
+      ownerLeaseId: owner.fence.ownerLeaseId,
+      ownerLeaseExpiresAt: new Date(
+        owner.fence.ownerLeaseExpiresAt.getTime() + 60_000
+      ),
+      now: baseTime,
+    });
+    if (!renewed.ok) throw new Error('owner renewal must succeed');
+    controller.bindOwner(secondConnection, renewed.fence);
+    controller.bindOwner(firstConnection, owner.fence);
+
+    expect(
+      controller.ownerFenceBoundToConnection(firstConnection, owner.fence)
+    ).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, owner.fence)
+    ).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, renewed.fence)
+    ).toBe(true);
+    expect(controller.unbindOwner(firstConnection, owner.fence)).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(secondConnection, renewed.fence)
+    ).toBe(true);
+    await expect(
+      controller.handleRuntimeDisconnect(firstConnection)
+    ).resolves.toEqual({ releasedOwners: [], failedInvocations: [] });
+    await expect(manager.entry(owner.actorKey)).resolves.toMatchObject({
+      lifecycleState: 'live',
+      ownerLeaseExpiresAt: renewed.fence.ownerLeaseExpiresAt,
+    });
+    await expect(
+      controller.handleRuntimeDisconnect(secondConnection)
+    ).resolves.toMatchObject({
+      releasedOwners: [
+        expect.objectContaining({
+          ownerLeaseId: 'lease-1',
+          ownerLeaseExpiresAt: renewed.fence.ownerLeaseExpiresAt,
+        }),
+      ],
+    });
+  });
+
+  it('keeps concurrent renewals bound to the same session by lease identity', async () => {
+    const manager = new ActorManager();
+    const owner = await liveActor(
+      manager,
+      actorKeyInput('concurrent-renewal'),
+      'runtime-1',
+      'lease-1'
+    );
+    const controller = new ActorRuntimeDisconnectController(manager, () => baseTime);
+    const connection = { runtimeId: 'runtime-1', sessionId: 'session-1' };
+    const otherConnection = { runtimeId: 'runtime-1', sessionId: 'session-2' };
+    controller.bindOwner(connection, owner.fence);
+    const firstRenewal = {
+      ...owner.fence,
+      ownerLeaseExpiresAt: new Date(
+        owner.fence.ownerLeaseExpiresAt.getTime() + 60_000
+      ),
+    };
+    const secondRenewal = {
+      ...owner.fence,
+      ownerLeaseExpiresAt: new Date(
+        owner.fence.ownerLeaseExpiresAt.getTime() + 120_000
+      ),
+    };
+    controller.bindOwner(connection, firstRenewal);
+    controller.bindOwner(connection, secondRenewal);
+    controller.bindOwner(connection, firstRenewal);
+
+    expect(
+      controller.ownerFenceBoundToConnection(connection, firstRenewal)
+    ).toBe(false);
+    expect(
+      controller.ownerFenceBoundToConnection(connection, secondRenewal)
+    ).toBe(true);
+    expect(
+      controller.ownerLeaseBoundToConnection(connection, firstRenewal)
+    ).toBe(true);
+    expect(
+      controller.ownerLeaseBoundToConnection(connection, secondRenewal)
+    ).toBe(true);
+    expect(
+      controller.ownerLeaseBoundToConnection(otherConnection, secondRenewal)
+    ).toBe(false);
+    expect(
+      controller.ownerLeaseBoundToConnection(connection, {
+        ...secondRenewal,
+        ownerLeaseId: 'other-lease',
+      })
+    ).toBe(false);
+    expect(
+      controller.ownerLeaseBoundToConnection(connection, {
+        ...secondRenewal,
+        actorKey: {
+          ...secondRenewal.actorKey,
+          actorIdEncodingVersion: 'other-encoding',
+        },
+      })
+    ).toBe(false);
+  });
 });
 
 async function liveActor(

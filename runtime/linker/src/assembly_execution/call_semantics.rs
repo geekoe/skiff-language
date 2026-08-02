@@ -310,62 +310,230 @@ fn canonical_package_interface_abi_id(
             symbol: file_index.to_string(),
             expected_kind: "loaded package interface declaration file",
         })?;
-    let mut exports = code
-        .artifact()
-        .package_local_abi
-        .public_symbols
+    let mut owner_declarations = file
+        .declarations
+        .types
         .iter()
-        .filter(|(_, symbol)| {
-            matches!(
-                symbol,
-                PackageLocalAbiSymbol::Type {
+        .filter(|(_, declaration)| declaration.type_index == type_index);
+    let (owner_name, owner_declaration) =
+        owner_declarations
+            .next()
+            .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+                context: context.to_string(),
+                symbol: type_index.to_string(),
+                expected_kind: "canonical implementation interface declaration",
+            })?;
+    if owner_declarations.next().is_some() {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: type_index.to_string(),
+            expected_kind: "unique canonical implementation interface declaration",
+        });
+    }
+    let canonical_source_path = format!("{}.{}", file.module_path, owner_name);
+    if owner_declaration.symbol != canonical_source_path {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: owner_declaration.symbol.clone(),
+            expected_kind: "canonical implementation interface source path",
+        });
+    }
+
+    let exact_owner_coordinate = |export: &skiff_artifact_model::TypeExport| {
+        export.type_index as usize == type_index
+            && export.file.file_ir_identity == file.file_ir_identity
+            && export.file.module_path == file.module_path
+            && export.file.source_ast_hash.as_deref() == Some(file.source_ast_hash.as_str())
+    };
+    let collect_exact_interface_exports =
+        |symbols: &std::collections::BTreeMap<String, PackageLocalAbiSymbol>,
+         surface: &'static str|
+         -> ProgramResult<Vec<(String, skiff_artifact_model::TypeExport)>> {
+            let mut exact = Vec::new();
+            for (symbol_path, symbol) in symbols {
+                let PackageLocalAbiSymbol::Type {
+                    descriptor,
+                    is_alias,
                     is_interface: true,
                     ..
+                } = symbol
+                else {
+                    continue;
+                };
+                let export = code
+                    .artifact()
+                    .implementation_links
+                    .types
+                    .get(symbol_path)
+                    .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+                        context: context.to_string(),
+                        symbol: symbol_path.clone(),
+                        expected_kind: match surface {
+                            "implementation" => "implementation package interface export",
+                            _ => "public package interface export",
+                        },
+                    })?;
+                if !export.is_interface
+                    || *is_alias && surface == "implementation"
+                    || !matches!(
+                        export.descriptor,
+                        Some(skiff_artifact_model::TypeDescriptorIr::Interface)
+                    )
+                    || !matches!(
+                        descriptor,
+                        skiff_artifact_model::TypeDescriptorIr::Interface
+                    )
+                {
+                    return Err(ProgramError::LinkSymbolUnresolved {
+                        context: context.to_string(),
+                        symbol: symbol_path.clone(),
+                        expected_kind: match surface {
+                            "implementation" => "non-alias implementation package interface export",
+                            _ => "public package interface export",
+                        },
+                    });
                 }
-            )
-        })
-        .filter_map(|(symbol_path, _)| {
-            code.artifact()
-                .implementation_links
-                .types
-                .get(symbol_path)
-                .map(|export| (symbol_path, export))
-        })
-        .filter(|(_, export)| {
-            export.type_index as usize == type_index
-                && export.file.file_ir_identity == file.file_ir_identity
-                && export.file.module_path == file.module_path
-                && export
-                    .file
-                    .source_ast_hash
-                    .as_deref()
-                    .is_none_or(|hash| hash == file.source_ast_hash)
-        });
-    let Some((symbol_path, export)) = exports.next() else {
-        // Private interfaces have no package export and therefore cannot cross
-        // the package boundary. Their typed local/publication spelling remains
-        // exact within the package instead of inventing a public ABI identity.
-        return Ok(None);
+                if exact_owner_coordinate(export) {
+                    exact.push((symbol_path.clone(), export.clone()));
+                }
+            }
+            Ok(exact)
+        };
+
+    let implementation_exports = collect_exact_interface_exports(
+        &code.artifact().package_local_abi.implementation_symbols,
+        "implementation",
+    )?;
+    let (implementation_path, implementation_export) = match implementation_exports.as_slice() {
+        [only] => only,
+        [] | [_, _, ..] => {
+            return Err(ProgramError::LinkSymbolUnresolved {
+                context: context.to_string(),
+                symbol: format!(
+                    "{}:{}:{}",
+                    code.artifact().package_id,
+                    file.file_ir_identity,
+                    type_index
+                ),
+                expected_kind:
+                    "unique implementation package interface export at exact owner coordinate",
+            });
+        }
     };
-    if exports.next().is_some() {
+    let unqualified_symbol_has_exact_public_collision = implementation_export.symbol.as_str()
+        == owner_name.as_str()
+        && matches!(
+            code.artifact()
+                .package_local_abi
+                .public_symbols
+                .get(&canonical_source_path),
+            Some(PackageLocalAbiSymbol::Type {
+                local_type_id,
+                descriptor: skiff_artifact_model::TypeDescriptorIr::Interface,
+                is_alias: false,
+                is_interface: true,
+                ..
+            }) if local_type_id == &format!("type:{canonical_source_path}")
+        )
+        && code
+            .artifact()
+            .implementation_links
+            .types
+            .get(&canonical_source_path)
+            .is_some_and(|public_export| {
+                public_export == implementation_export
+                    && public_export.is_interface
+                    && matches!(
+                        public_export.descriptor,
+                        Some(skiff_artifact_model::TypeDescriptorIr::Interface)
+                    )
+                    && exact_owner_coordinate(public_export)
+            });
+    let implementation_symbol_matches_owner = implementation_export.symbol.as_str()
+        == canonical_source_path.as_str()
+        || unqualified_symbol_has_exact_public_collision;
+    if implementation_path != &canonical_source_path || !implementation_symbol_matches_owner {
         return Err(ProgramError::LinkSymbolUnresolved {
             context: context.to_string(),
-            symbol: format!(
-                "{}:{}:{}",
-                code.artifact().package_id,
-                file.file_ir_identity,
-                type_index
-            ),
-            expected_kind: "unique public package interface export at exact owner coordinate",
+            symbol: implementation_export.symbol.clone(),
+            expected_kind: "canonical implementation interface source export",
         });
     }
-    if !export.is_interface {
+    let Some(PackageLocalAbiSymbol::Type {
+        local_type_id,
+        is_alias: false,
+        is_interface: true,
+        ..
+    }) = code
+        .artifact()
+        .package_local_abi
+        .implementation_symbols
+        .get(implementation_path)
+    else {
         return Err(ProgramError::LinkSymbolUnresolved {
             context: context.to_string(),
-            symbol: symbol_path.clone(),
-            expected_kind: "package interface export at exact owner coordinate",
+            symbol: implementation_path.clone(),
+            expected_kind: "canonical implementation interface symbol",
+        });
+    };
+    if local_type_id
+        != &format!(
+            "type:{}:top-level:{}",
+            code.artifact().package_id,
+            canonical_source_path
+        )
+    {
+        return Err(ProgramError::LinkSymbolUnresolved {
+            context: context.to_string(),
+            symbol: local_type_id.clone(),
+            expected_kind: "canonical implementation interface Local ABI identity",
         });
     }
+
+    let public_exports = collect_exact_interface_exports(
+        &code.artifact().package_local_abi.public_symbols,
+        "public",
+    )?;
+    let symbol_path = match public_exports.as_slice() {
+        [(public_path, public_export)] => {
+            if public_export.symbol.as_str() != owner_name.as_str() {
+                return Err(ProgramError::LinkSymbolUnresolved {
+                    context: context.to_string(),
+                    symbol: public_export.symbol.clone(),
+                    expected_kind: "canonical public interface source export",
+                });
+            }
+            let Some(PackageLocalAbiSymbol::Type { local_type_id, .. }) = code
+                .artifact()
+                .package_local_abi
+                .public_symbols
+                .get(public_path)
+            else {
+                unreachable!("the public export collector only returns interface type symbols")
+            };
+            if local_type_id != &format!("type:{public_path}") {
+                return Err(ProgramError::LinkSymbolUnresolved {
+                    context: context.to_string(),
+                    symbol: local_type_id.clone(),
+                    expected_kind: "canonical public interface Local ABI identity",
+                });
+            }
+            public_path
+        }
+        [] => implementation_path,
+        [_, _, ..] => {
+            return Err(ProgramError::LinkSymbolUnresolved {
+                context: context.to_string(),
+                symbol: format!(
+                    "{}:{}:{}",
+                    code.artifact().package_id,
+                    file.file_ir_identity,
+                    type_index
+                ),
+                expected_kind: "unique public package interface export at exact owner coordinate",
+            });
+        }
+    };
     let canonical_type = TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {

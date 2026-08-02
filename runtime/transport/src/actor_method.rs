@@ -63,6 +63,10 @@ pub struct ActorMethodInvokeFrameHeader {
     pub cancellation_correlation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_case_capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_case_parent_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -82,6 +86,10 @@ struct RawActorMethodInvokeFrameHeader {
     cancellation_correlation: String,
     #[serde(default)]
     trace_id: Option<String>,
+    #[serde(default)]
+    test_case_capability: Option<String>,
+    #[serde(default)]
+    test_case_parent_request_id: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
@@ -118,6 +126,19 @@ impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
         {
             return Err(de::Error::custom("traceId must be non-empty when present"));
         }
+        if let Some(test_case_capability) = raw.test_case_capability.as_deref() {
+            validate_token(test_case_capability, "testCaseCapability")
+                .map_err(de::Error::custom)?;
+        }
+        if let Some(parent_request_id) = raw.test_case_parent_request_id.as_deref() {
+            validate_token(parent_request_id, "testCaseParentRequestId")
+                .map_err(de::Error::custom)?;
+        }
+        if raw.test_case_capability.is_some() != raw.test_case_parent_request_id.is_some() {
+            return Err(de::Error::custom(
+                "testCaseCapability and testCaseParentRequestId must be present together",
+            ));
+        }
         Ok(Self {
             schema_version: raw.schema_version,
             envelope_type: raw.envelope_type,
@@ -131,6 +152,8 @@ impl<'de> Deserialize<'de> for ActorMethodInvokeFrameHeader {
             deadline: raw.deadline,
             cancellation_correlation: raw.cancellation_correlation,
             trace_id: raw.trace_id,
+            test_case_capability: raw.test_case_capability,
+            test_case_parent_request_id: raw.test_case_parent_request_id,
         })
     }
 }
@@ -300,6 +323,17 @@ fn validate_invoke(header: &ActorMethodInvokeFrameHeader) -> Result<(), String> 
         .is_some_and(|trace_id| trace_id.trim().is_empty())
     {
         return Err("traceId must be non-empty when present".into());
+    }
+    if let Some(test_case_capability) = header.test_case_capability.as_deref() {
+        validate_token(test_case_capability, "testCaseCapability")?;
+    }
+    if let Some(parent_request_id) = header.test_case_parent_request_id.as_deref() {
+        validate_token(parent_request_id, "testCaseParentRequestId")?;
+    }
+    if header.test_case_capability.is_some() != header.test_case_parent_request_id.is_some() {
+        return Err(
+            "testCaseCapability and testCaseParentRequestId must be present together".into(),
+        );
     }
     Ok(())
 }

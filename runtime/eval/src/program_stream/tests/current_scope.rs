@@ -32,6 +32,7 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::RuntimeValue,
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::*;
@@ -384,7 +385,10 @@ impl ActorFrameFixture {
                 self.store.clone(),
                 self.handle.clone(),
                 lease,
-                Vec::new(),
+                vec![(
+                    "id".to_string(),
+                    RuntimeTypePlan::new("string", None, RuntimeTypeNode::String),
+                )],
                 false,
             ),
             heap,

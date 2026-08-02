@@ -93,6 +93,29 @@ export async function runActorFullChainAcceptance({
         'slow-ok',
       );
 
+      // A regular actor method may synchronously call another method through
+      // `self`. The nested invocation forces the outer continuation to release
+      // the instance, then the outer method must resume on the nested method's
+      // committed field value: 0 + 1 + 4 + 100 = 105.
+      const synchronousSelfCall = entrypoints.get('synchronousSelfCall');
+      const synchronousSelfCount = entrypoints.get('synchronousSelfCount');
+      assert.ok(
+        synchronousSelfCall,
+        'Actor fixture must publish synchronousSelfCall',
+      );
+      assert.ok(
+        synchronousSelfCount,
+        'Actor fixture must publish synchronousSelfCount',
+      );
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, synchronousSelfCall, signal),
+        105,
+      );
+      assert.equal(
+        await invokeUnary(stack.routerHttpUrl, synchronousSelfCount, signal),
+        105,
+      );
+
       // Concurrent gets for one fresh id dedup onto a single activation and
       // both wait for the same create. The isolated acceptance environment
       // starts with an empty router registry, so the fixed id is a new entry.

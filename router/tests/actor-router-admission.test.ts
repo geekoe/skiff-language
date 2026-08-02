@@ -10,6 +10,7 @@ import {
   type ActorMethodInvokeFrameHeader,
 } from '../src/protocol/actorMethodProtocol.js';
 import { RUNTIME_FRAME_SCHEMA_VERSION } from '../src/protocol/envelope.js';
+import type WebSocket from 'ws';
 
 const actorAbi = identity('skiff-actor-abi-v1:sha256', 'a');
 const implementationV1 = identity('skiff-actor-implementation-v1:sha256', 'b');
@@ -221,6 +222,7 @@ describe('Actor Router admission and owner state machine', () => {
           ownerRuntimeId: 'runtime-2',
           ownerLeaseId: 'lease-2',
           ownerLeaseExpiresAt: new Date(baseTime.getTime() + 60_000),
+          ownerConnection: fakeSocket(),
         };
       },
     });
@@ -331,6 +333,7 @@ describe('Actor Router admission and owner state machine', () => {
           ownerRuntimeId: 'runtime-2',
           ownerLeaseId: 'lease-2',
           ownerLeaseExpiresAt: new Date(baseTime.getTime() + 60_000),
+          ownerConnection: fakeSocket(),
         };
       },
     });
@@ -367,6 +370,44 @@ describe('Actor Router admission and owner state machine', () => {
     await expect(manager.entry(actorKey)).resolves.toMatchObject({
       epoch: epoch + 1,
       actorImplementationIdentity: implementationV2,
+    });
+  });
+
+  it('rolls back an upgraded owner lease when its Runtime connection cannot be bound', async () => {
+    const { manager, actorKey, epoch } = await liveActorFixture();
+    const dispatcher = dispatcherFor(manager, {
+      markOwnerUpgrading() {},
+      discardOldInstance() {},
+      activateTarget() {
+        return {
+          ownerRuntimeId: 'runtime-2',
+          ownerLeaseId: 'lease-2',
+          ownerLeaseExpiresAt: new Date(baseTime.getTime() + 60_000),
+          ownerConnection: fakeSocket(),
+        };
+      },
+      bindOwnerConnection() {
+        return undefined;
+      },
+    });
+
+    await expect(
+      dispatcher.dispatch(
+        invokeFrame(actorKey, epoch, {
+          actorImplementationIdentity: implementationV2,
+          deadline: {
+            timeoutMs: 60_000,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        }),
+        new Uint8Array()
+      )
+    ).resolves.toMatchObject({ ok: false, reason: 'Upgrading' });
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      epoch: epoch + 1,
+      lifecycleState: 'inactive',
+      ownerRuntimeId: undefined,
+      ownerLeaseId: undefined,
     });
   });
 });
@@ -421,8 +462,9 @@ function ownerInput(
 
 function dispatcherFor(
   manager: ActorManager,
-  transport: ActorOwnerTransport = { dispatchToOwner() {} }
+  transport: Partial<ActorOwnerTransport> = {}
 ) {
+  const ownerConnections = new Map<string, WebSocket>();
   return new ActorMethodDispatcher(
     manager,
     {
@@ -430,9 +472,38 @@ function dispatcherFor(
         return candidate === methodIdentity;
       },
     },
-    transport,
+    {
+      dispatchToOwner() {},
+      bindOwnerConnection({ ownerFence, requiredOwnerConnection }) {
+        const key = ownerBindingKey(ownerFence.ownerRuntimeId, ownerFence.ownerLeaseId);
+        ownerConnections.set(key, requiredOwnerConnection);
+        return {
+          unbind() {
+            if (ownerConnections.get(key) === requiredOwnerConnection) {
+              ownerConnections.delete(key);
+            }
+          },
+        };
+      },
+      ownerConnectionMatches({ ownerFence, requiredOwnerConnection }) {
+        return (
+          ownerConnections.get(
+            ownerBindingKey(ownerFence.ownerRuntimeId, ownerFence.ownerLeaseId)
+          ) === requiredOwnerConnection
+        );
+      },
+      ...transport,
+    },
     () => new Date(baseTime.getTime() + 2)
   );
+}
+
+function ownerBindingKey(ownerRuntimeId: string, ownerLeaseId: string): string {
+  return `${ownerRuntimeId}:${ownerLeaseId}`;
+}
+
+function fakeSocket(): WebSocket {
+  return { readyState: 1 } as unknown as WebSocket;
 }
 
 function invokeFrame(

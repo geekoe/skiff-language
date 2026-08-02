@@ -8,6 +8,7 @@ import type {
   RuntimeHealthCounters,
   SpawnSubmitRequestFrameHeader
 } from '../protocol/envelope.js';
+import type { ActorOwnerRouteAuthority } from '../protocol/actorOwnerProtocol.js';
 import type {
   RuntimeAssemblyRequestStartFrameHeader,
   RuntimeAssemblyRequestStartFrameWireHeader,
@@ -284,6 +285,26 @@ export class AssemblyRuntimeRegistry {
         deploymentRevision: binding.deploymentRevision,
         deploymentArtifactIdentity: binding.deploymentArtifactIdentity,
       },
+    };
+  }
+
+  actorOwnerRouteAuthority(
+    runtimeId: string,
+    serviceId: string
+  ): ActorOwnerRouteAuthority | undefined {
+    const replica = this.replicas.get(runtimeId);
+    if (
+      replica === undefined ||
+      replica.ws.readyState !== WebSocket.OPEN ||
+      replica.state === 'disconnected' ||
+      !this.replicaCanUseActivation(replica) ||
+      !replica.deploymentBindingsByService.has(serviceId)
+    ) {
+      return undefined;
+    }
+    return {
+      assemblyIdentity: replica.assemblyIdentity,
+      assemblyGeneration: replica.generation,
     };
   }
 

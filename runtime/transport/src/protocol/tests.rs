@@ -206,6 +206,111 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
     }
 }
 
+#[test]
+fn actor_create_test_authority_is_a_strict_canonical_pair() {
+    let activation_identity = json!({
+        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+    });
+    let base = json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "rpcId": "rpc-test-authority",
+        "runtimeId": "runtime-1",
+        "activationIdentity": activation_identity,
+        "testCaseCapability": "test-case:capability_1",
+        "testCaseParentRequestId": "request:parent_1"
+    });
+    let frame = merge_json(
+        &base,
+        json!({
+            "type": "actor.getOrCreate.request",
+            "actorKey": {
+                "serviceId": "example.com/actor",
+                "actorTypeIdentity": "actor.example.Thread",
+                "actorIdTypeIdentity": "type.example.ThreadId",
+                "actorIdEncodingVersion": "json-v1",
+                "canonicalActorIdKeyBytesBase64": "InRocmVhZC0xIg=="
+            },
+            "actorAbiIdentity": "actor-abi:thread",
+            "actorImplementationIdentity": "build:thread:v1",
+            "bootstrapEncodingVersion": "canonical-value-v1",
+            "declarationOwner": {
+                "unit": { "kind": "service" },
+                "file": { "kind": "fileIrIdentity", "value": "file:thread" },
+                "actorSymbol": "Thread"
+            }
+        }),
+    );
+
+    decode_actor_spawn_request(frame.clone()).expect("valid authority pair must decode");
+    for missing in ["testCaseCapability", "testCaseParentRequestId"] {
+        let mut partial = frame.clone();
+        partial
+            .as_object_mut()
+            .expect("frame must be an object")
+            .remove(missing);
+        assert!(
+            decode_actor_spawn_request(partial).is_err(),
+            "actor create accepted authority pair missing {missing}"
+        );
+    }
+
+    for field in ["testCaseCapability", "testCaseParentRequestId"] {
+        for invalid in [
+            String::new(),
+            "contains space".to_string(),
+            "contains/slash".to_string(),
+            "x".repeat(257),
+        ] {
+            let mut malformed = frame.clone();
+            malformed[field] = Value::String(invalid);
+            assert!(
+                decode_actor_spawn_request(malformed).is_err(),
+                "actor create accepted invalid {field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spawn_submit_rejects_test_authority_fields() {
+    let frame = json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "type": "spawn.submit.request",
+        "rpcId": "rpc-spawn",
+        "runtimeId": "runtime-1",
+        "activationIdentity": {
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "generation": 7,
+            "runtimeReplicaId": "runtime-replica-7",
+            "deploymentRevision": "deployment-revision-7"
+        },
+        "targetKind": "function",
+        "serviceId": "example.com/worker",
+        "serviceVersion": "1.0.0",
+        "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
+        "target": "Worker.run",
+        "callerRequestId": "request:parent_1"
+    });
+    decode_actor_spawn_request(frame.clone()).expect("caller-only spawn submit must decode");
+
+    for fields in [
+        json!({ "testCaseCapability": "test-case:capability_1" }),
+        json!({ "testCaseParentRequestId": "request:parent_1" }),
+        json!({
+            "testCaseCapability": "test-case:capability_1",
+            "testCaseParentRequestId": "request:parent_1"
+        }),
+    ] {
+        assert!(
+            decode_actor_spawn_request(merge_json(&frame, fields)).is_err(),
+            "spawn submit accepted redundant test authority"
+        );
+    }
+}
+
 fn merge_json(base: &Value, overlay: Value) -> Value {
     let mut merged = base.clone();
     merged

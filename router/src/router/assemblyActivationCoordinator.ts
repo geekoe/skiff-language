@@ -64,9 +64,21 @@ type RuntimeActivationResponse = Readonly<{
   reason?: string;
 }>;
 
+type RecentlyAbortedActivationTuple = Readonly<{
+  environment: string;
+  activationId: string;
+  expectedGeneration: number;
+  candidateGeneration: number;
+  assemblyIdentity: string;
+  configSnapshotId: string;
+}>;
+
+const MAX_RECENTLY_ABORTED_ACTIVATIONS = 64;
+
 export class AssemblyActivationCoordinator {
   private state: EnvironmentActivationState | undefined;
   private transaction: PendingTransaction | undefined;
+  private readonly recentlyAborted: RecentlyAbortedActivationTuple[] = [];
   private mutation: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: AssemblyActivationCoordinatorOptions) {}
@@ -88,6 +100,7 @@ export class AssemblyActivationCoordinator {
           this.installTransaction(state.pending, candidateSnapshot);
         } catch {
           this.state = await this.options.stateStore.abort(state.environment, state.pending);
+          this.rememberAborted(state.pending);
         }
       }
       return snapshot;
@@ -105,6 +118,13 @@ export class AssemblyActivationCoordinator {
           return this.transaction;
         }
         throw new Error('a different assembly activation is already pending');
+      }
+      if (
+        this.recentlyAborted.some(
+          (tuple) => tuple.activationId === request.activationId
+        )
+      ) {
+        throw new Error('a recently aborted assembly activationId cannot be reused');
       }
       const current = this.state!;
       if (current.committed.generation !== request.expectedGeneration) {
@@ -144,8 +164,33 @@ export class AssemblyActivationCoordinator {
         throw new Error(`runtime must not send assembly activation ${control.type}`);
       }
       const response = control as RuntimeActivationResponse;
+      if (response.environment !== this.options.environment) {
+        throw new Error('runtime activation response environment mismatch');
+      }
+      this.options.participants.assertReplicaConnection(ws, response.replicaId);
+      const transaction = this.transaction;
       if (
-        this.transaction === undefined &&
+        transaction !== undefined &&
+        matchesPendingControl(transaction.pending, response)
+      ) {
+        if (!transaction.pending.participantReplicaIds.includes(response.replicaId)) {
+          throw new Error(`replica ${response.replicaId} is not a frozen activation participant`);
+        }
+        if (response.type === 'reject') {
+          await this.abortTransaction(
+            transaction,
+            new Error(`replica ${response.replicaId} rejected activation during ${response.reason}`)
+          );
+          return;
+        }
+        transaction.preparedReplicaIds.add(response.replicaId);
+        if (this.allParticipantsPrepared(transaction)) {
+          await this.commitTransaction(transaction);
+        }
+        return;
+      }
+      if (
+        transaction === undefined &&
         response.type === 'prepared' &&
         this.matchesCommittedReplay(response)
       ) {
@@ -155,22 +200,10 @@ export class AssemblyActivationCoordinator {
         );
         return;
       }
-      const transaction = this.requireExactTransaction(response);
-      this.options.participants.assertReplicaConnection(ws, response.replicaId);
-      if (!transaction.pending.participantReplicaIds.includes(response.replicaId)) {
-        throw new Error(`replica ${response.replicaId} is not a frozen activation participant`);
-      }
-      if (response.type === 'reject') {
-        await this.abortTransaction(
-          transaction,
-          new Error(`replica ${response.replicaId} rejected activation during ${response.reason}`)
-        );
+      if (this.matchesRecentlyAborted(response)) {
         return;
       }
-      transaction.preparedReplicaIds.add(response.replicaId);
-      if (this.allParticipantsPrepared(transaction)) {
-        await this.commitTransaction(transaction);
-      }
+      throw new Error('runtime activation response does not match durable pending tuple');
     }).catch((error: unknown) => {
       ws.close(1008, error instanceof Error ? error.message : 'invalid activation control');
     });
@@ -196,11 +229,28 @@ export class AssemblyActivationCoordinator {
     });
   }
 
-  handleReplicaDisconnected(replicaId: string | undefined): void {
+  handleReplicaDisconnected(ws: WebSocket, replicaId: string | undefined): void {
     if (replicaId === undefined) {
       return;
     }
+    try {
+      this.options.participants.assertReplicaConnection(ws, replicaId);
+    } catch {
+      // A stale close from a replaced connection must not fence the current replica.
+      return;
+    }
     void this.enqueue(async () => {
+      try {
+        this.options.participants.assertReplicaConnection(ws, replicaId);
+      } catch {
+        // RuntimeEndpoint removes a genuinely closed connection immediately after
+        // scheduling this mutation. A different current socket proves replacement;
+        // no current socket means this is still the disconnect observed above.
+        const current = this.options.participants.connectionForReplica(replicaId);
+        if (current !== undefined && current !== ws) {
+          return;
+        }
+      }
       const transaction = this.transaction;
       if (
         transaction !== undefined &&
@@ -400,6 +450,7 @@ export class AssemblyActivationCoordinator {
       throw new Error('activation abort CAS returned a mismatched durable state');
     }
     this.state = state;
+    this.rememberAborted(transaction.pending);
     transaction.settled = true;
     clearTimeout(transaction.timeout);
     this.transaction = undefined;
@@ -425,17 +476,25 @@ export class AssemblyActivationCoordinator {
     );
   }
 
-  private requireExactTransaction(
-    control: RuntimeActivationResponse
-  ): PendingTransaction {
-    const transaction = this.transaction;
-    if (transaction === undefined || !matchesPendingControl(transaction.pending, control)) {
-      throw new Error('runtime activation response does not match durable pending tuple');
+  private rememberAborted(pending: PendingActivation): void {
+    this.recentlyAborted.push({
+      environment: this.options.environment,
+      activationId: pending.activationId,
+      expectedGeneration: pending.expectedGeneration,
+      candidateGeneration: pending.candidateGeneration,
+      assemblyIdentity: pending.assembly.assemblyIdentity,
+      configSnapshotId: pending.configSnapshot.snapshotId
+    });
+    if (this.recentlyAborted.length > MAX_RECENTLY_ABORTED_ACTIVATIONS) {
+      this.recentlyAborted.splice(
+        0,
+        this.recentlyAborted.length - MAX_RECENTLY_ABORTED_ACTIVATIONS
+      );
     }
-    if (control.environment !== this.options.environment) {
-      throw new Error('runtime activation response environment mismatch');
-    }
-    return transaction;
+  }
+
+  private matchesRecentlyAborted(control: RuntimeActivationResponse): boolean {
+    return this.recentlyAborted.some((tuple) => abortedTupleMatches(tuple, control));
   }
 
   private matchesCommittedReplay(control: RuntimeActivationResponse): boolean {
@@ -570,6 +629,20 @@ function matchesPendingControl(
     pending.candidateGeneration === control.candidateGeneration &&
     pending.assembly.assemblyIdentity === control.assembly.assemblyIdentity &&
     pending.configSnapshot.snapshotId === control.configSnapshot.snapshotId
+  );
+}
+
+function abortedTupleMatches(
+  tuple: RecentlyAbortedActivationTuple,
+  control: RuntimeActivationResponse
+): boolean {
+  return (
+    tuple.environment === control.environment &&
+    tuple.activationId === control.activationId &&
+    tuple.expectedGeneration === control.expectedGeneration &&
+    tuple.candidateGeneration === control.candidateGeneration &&
+    tuple.assemblyIdentity === control.assembly.assemblyIdentity &&
+    tuple.configSnapshotId === control.configSnapshot.snapshotId
   );
 }
 

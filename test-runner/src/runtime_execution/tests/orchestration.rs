@@ -262,8 +262,9 @@ fn shared_executor_generation_overflow_fails_before_activation() {
     assert_eq!(activation_calls.get(), 0);
     assert!(matches!(
         error,
-        CanonicalFixtureError::InvalidInput(ref message)
-            if message == "assembly activation expected generation cannot advance"
+        CanonicalFixtureError::SuiteExecution { source, .. }
+            if matches!(*source, CanonicalFixtureError::InvalidInput(ref message)
+                if message == "assembly activation expected generation cannot advance")
     ));
 }
 
@@ -617,7 +618,7 @@ fn valid_business_success_response() -> String {
     .to_string()
 }
 
-fn test_service_entrypoint() -> CanonicalTestServiceEntrypoint {
+pub(super) fn test_service_entrypoint() -> CanonicalTestServiceEntrypoint {
     let source = "test \"control body\" { assert true }\n";
     CanonicalTestServiceEntrypoint {
         case: TestServiceCase {

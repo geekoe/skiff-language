@@ -7,8 +7,8 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_model::request_heap::RequestHeap;
 
 use super::{
-    eval_error_to_native, OrdinaryRuntimeError, RequestHeapOwnedStreamError, RuntimeError,
-    ScopeTerminalCarrier,
+    eval_error_to_native, rematerialize_runtime_error_between_heaps, OrdinaryRuntimeError,
+    RequestHeapOwnedStreamError, RuntimeError, ScopeTerminalCarrier,
 };
 
 fn site() -> InstructionSourceSite {
@@ -127,4 +127,24 @@ fn scope_terminal_cannot_be_erased_into_native_ordinary_error() {
         native,
         skiff_runtime_native::error::RuntimeError::Cancelled
     ));
+}
+
+#[test]
+fn scope_terminal_cross_heap_rematerialization_is_an_exact_heap_free_passthrough() {
+    let base = Instant::now();
+    let root = ExecutionScope::request(CancellationSource::new().token(), None);
+    let scope = root
+        .derive(base + Duration::from_millis(1), site())
+        .expect("scope");
+    let terminal = scope
+        .terminal_at(base + Duration::from_millis(1))
+        .expect("terminal");
+    let error = RuntimeError::ScopeTerminal(ScopeTerminalCarrier::new(terminal));
+    let source = RequestHeap::default();
+    let mut destination = RequestHeap::default();
+
+    let materialized = rematerialize_runtime_error_between_heaps(error, &source, &mut destination)
+        .expect("scope terminal passthrough cannot materialize a value");
+    assert!(matches!(materialized, RuntimeError::ScopeTerminal(_)));
+    assert!(destination.is_empty());
 }

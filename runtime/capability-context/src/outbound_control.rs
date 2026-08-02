@@ -80,6 +80,8 @@ pub struct ActorGetOrCreateControlRequest {
     pub bootstrap_encoding_version: String,
     pub declaration_owner: ActorInvocationDeclarationOwner,
     pub deadline: Option<ActorControlDeadline>,
+    pub test_case_capability: Option<String>,
+    pub test_case_parent_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

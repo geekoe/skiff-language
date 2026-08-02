@@ -1,6 +1,8 @@
+use std::sync::Mutex;
+
 use skiff_runtime_activation::ActivationContext;
 use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExecutionInput};
-use skiff_runtime_request::{RequestEnvelope, RuntimeOperation};
+use skiff_runtime_request::{RequestEnvelope, RequestError, RequestResult, RuntimeOperation};
 
 use super::*;
 
@@ -36,6 +38,7 @@ pub(super) struct RuntimeAssemblyRequestMetadata {
     pub(super) test_effects_enabled: bool,
     pub(super) test_ingress_url: Option<String>,
     pub(super) test_case_capability: Option<String>,
+    pub(super) test_case_parent_request_id: Option<String>,
 }
 
 pub(super) struct RuntimeAssemblyExecutionContext {
@@ -53,11 +56,13 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     connection_requests: Arc<ConnectionRequestRegistry>,
-    router_session: ConnectionRequestSession,
+    pub(super) router_session: ConnectionRequestSession,
     http_response_max_bytes: usize,
     pub(super) test_http_entries: concrete::TestHttpEntryRegistry,
     pub(super) test_ingress_url: Option<String>,
     pub(super) test_case_capability: Option<String>,
+    pub(super) test_case_parent_request_id: Option<String>,
+    test_http_admission: Mutex<Option<concrete::TestHttpAdmittedContext>>,
     pub(super) request: RequestEnvelope,
     operation: RuntimeOperation,
 }
@@ -130,9 +135,49 @@ impl RuntimeAssemblyExecutionContext {
             test_http_entries: input.test_http_entries,
             test_ingress_url: metadata.test_ingress_url,
             test_case_capability: metadata.test_case_capability,
+            test_case_parent_request_id: metadata.test_case_parent_request_id,
+            test_http_admission: Mutex::new(None),
             request,
             operation,
         })
+    }
+
+    pub(super) fn admit_test_http_context(
+        &self,
+        context: concrete::TestHttpAdmittedContext,
+    ) -> RequestResult<()> {
+        if context.router_session() != &self.router_session {
+            return Err(RequestError::Unsupported(
+                "test HTTP execution authority belongs to another router session".to_string(),
+            ));
+        }
+        if self
+            .test_case_capability
+            .as_deref()
+            .is_some_and(|declared| declared != context.capability())
+        {
+            return Err(RequestError::Unsupported(
+                "test HTTP execution authority does not match the declared capability".to_string(),
+            ));
+        }
+        let mut admitted = self
+            .test_http_admission
+            .lock()
+            .expect("runtime test HTTP admission lock poisoned");
+        if admitted.is_some() {
+            return Err(RequestError::Unsupported(
+                "test HTTP execution authority was already admitted".to_string(),
+            ));
+        }
+        *admitted = Some(context);
+        Ok(())
+    }
+
+    fn test_http_admission(&self) -> Option<concrete::TestHttpAdmittedContext> {
+        self.test_http_admission
+            .lock()
+            .expect("runtime test HTTP admission lock poisoned")
+            .clone()
     }
 
     pub(super) fn program_execution_context<'a>(
@@ -153,6 +198,7 @@ impl RuntimeAssemblyExecutionContext {
             &self.request.request_id,
         );
         let file = file_source(self.file_source.clone()).context_for_request(db.clone());
+        let test_http_admission = self.test_http_admission();
         let effects = effects(
             effect_dispatch_context_from_request(
                 &self.request,
@@ -161,10 +207,9 @@ impl RuntimeAssemblyExecutionContext {
                 self.telemetry_context.clone(),
                 self.http_options.clone(),
             )
-            .with_test_http_self_ingress(
-                self.test_http_entries
-                    .self_ingress_for_request(&self.request.request_id),
-            ),
+            .with_test_http_self_ingress(explicit_test_http_self_ingress(
+                test_http_admission.as_ref(),
+            )),
         );
         let service_id = self.activation.identity().deployment.service_id.as_str();
         let websocket_entry_id = self
@@ -176,7 +221,10 @@ impl RuntimeAssemblyExecutionContext {
             websocket_entry_id,
             self.router_sender.as_ref(),
             Arc::clone(&self.connection_requests),
-            self.router_session.clone(),
+            test_http_admission
+                .as_ref()
+                .map(|context| context.router_session().clone())
+                .unwrap_or_else(|| self.router_session.clone()),
         );
         let (actor, request) = actor_from_request(
             self.runtime_id.as_str(),
@@ -192,6 +240,9 @@ impl RuntimeAssemblyExecutionContext {
             self.router_sender.as_ref(),
             &self.outbound_requests,
             &self.actor_method_outbound,
+            test_http_admission
+                .as_ref()
+                .map(concrete::TestHttpAdmittedContext::capability),
             cancellation.clone(),
         );
         let stream_runtime = interpreter.stream_runtime.clone();
@@ -238,12 +289,61 @@ impl RuntimeAssemblyExecutionContext {
                 connection_requests: Arc::clone(&self.connection_requests),
                 router_session: self.router_session.clone(),
                 http_response_max_bytes: self.http_response_max_bytes,
-                test_http_entries: self.test_http_entries.clone(),
+                test_http_admission,
                 stream_runtime: context.stream_runtime(),
                 test_effect_doubles: context.test_effect_double_context(),
                 cancellation: context.execution().cancellation_token(),
             });
         context.with_activation_execution_context_rebinder(rebinder)
+    }
+}
+
+fn explicit_test_http_self_ingress(
+    admission: Option<&concrete::TestHttpAdmittedContext>,
+) -> Option<concrete::TestHttpSelfIngressContext> {
+    admission.map(concrete::TestHttpAdmittedContext::self_ingress)
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{
+        DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
+    };
+
+    use crate::capability_context::TestHttpEntryRegistry;
+
+    use super::explicit_test_http_self_ingress;
+
+    #[test]
+    fn production_request_id_collision_cannot_create_test_self_ingress_authority() {
+        const ROUTER_SESSION: &str = "skiff-router-session-v1:opaque:collision-test";
+        let colliding_request_id = "request-id-already-present-in-test-registry";
+        let registry = TestHttpEntryRegistry::default();
+        let _root = registry
+            .begin_root_case(
+                "case-with-colliding-request-id",
+                ROUTER_SESSION,
+                colliding_request_id.to_string(),
+                "activation-a".to_string(),
+                "http://127.0.0.1:44100/test-case",
+                ServiceDeploymentRef {
+                    service_id: "test.service".to_string(),
+                    contract_version: "1.0.0".to_string(),
+                    deployment_revision: DeploymentRevision::new("revision-1"),
+                    deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+                        "skiff-deployment-artifact-v4:sha256:{}",
+                        "a".repeat(64)
+                    )),
+                },
+            )
+            .expect("test case should register");
+        assert!(registry
+            .self_ingress_for_request(ROUTER_SESSION, colliding_request_id)
+            .is_some());
+
+        // A production Eval has no admitted context. Its colliding request id alone must not
+        // grant the test self-ingress authority registered above.
+        assert!(explicit_test_http_self_ingress(None).is_none());
     }
 }
 

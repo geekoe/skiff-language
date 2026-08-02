@@ -291,8 +291,12 @@ handler不要求出现在`api.yml`。
 
 connect request包含connection id、url、query、headers、cookies、可选version、websocket entry id和
 gateway entry identity。headers、query和cookies保留重复值。connect result是accept/reject
-discriminator union；accept branch携带可选`businessIdentity`和`connectionPolicy`，reject branch携带
-code与reason。
+discriminator union；accept branch携带可选`businessIdentity`、`connectionPolicy`和`admissionRank`，
+reject branch携带code与reason。`admissionRank`必须是正的安全整数；它由service在持久化连接状态的同一
+事务中分配。对于`maxConnections: 1`且`overflow: "close-oldest"`的business identity，Router把该rank
+作为fencing high-water：只保留已返回的最高rank，较低或相同rank的迟到accept完成WebSocket upgrade后
+以4009关闭，更高rank关闭所有较低rank连接。该high-water不会因普通socket close而回退。Router重启会清空内存high-water；service
+必须持久化单调递增rank，使重启后的新connect仍大于先前已提交的rank。
 
 `std.websocket`不提供raw receive、任意event-name dispatcher或transport id。Peer只能调用
 `websocket.yml.jsonRpc`显式声明的typed unary method；该handler由gateway adapter调用，不是std函数。

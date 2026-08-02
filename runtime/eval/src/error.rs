@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 use skiff_runtime_model::request_heap::{
     deep_clone_runtime_value_carrier_between_heaps, RequestHeap,
 };
+use skiff_runtime_model::runtime_value::RuntimeValueCarrier;
 
 pub use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
@@ -1133,6 +1134,110 @@ pub(crate) fn materialize_request_heap_owned_runtime_error(
         }
         error => Ok(error),
     }
+}
+
+/// Moves any request-local user-exception payload from `source` into
+/// `destination` while preserving the error's diagnostic wrapper structure.
+/// Other errors, including cancellation and scope terminals, do not own heap
+/// handles and pass through unchanged.
+pub(crate) fn rematerialize_runtime_error_between_heaps(
+    error: RuntimeError,
+    source: &RequestHeap,
+    destination: &mut RequestHeap,
+) -> Result<RuntimeError> {
+    let RuntimeError::UserException(exception) = unwrap_diagnostic_source_context(&error) else {
+        return Ok(error);
+    };
+    let request = exception.request().clone();
+    let Some(local_value) = request.local_value().cloned() else {
+        return Ok(error);
+    };
+    let checkpoint = destination.checkpoint();
+    let local_value =
+        match deep_clone_runtime_value_carrier_between_heaps(source, destination, &local_value) {
+            Ok(local_value) => local_value,
+            Err(error) => {
+                destination.rollback_to_checkpoint(checkpoint);
+                return Err(error.into());
+            }
+        };
+    Ok(replace_user_exception_preserving_diagnostics(
+        error,
+        UserException::new(request.map_local_value(|_| local_value)),
+    ))
+}
+
+pub(crate) fn runtime_error_request_heap_root(
+    error: &RuntimeError,
+) -> Option<&RuntimeValueCarrier> {
+    let RuntimeError::UserException(exception) = unwrap_diagnostic_source_context(error) else {
+        return None;
+    };
+    exception.request().local_value()
+}
+
+/// Rebinds only the request-heap carrier embedded in a local exception.
+///
+/// All typed identity, opaque-service metadata, source/diagnostic wrappers,
+/// request-local stack and correlation fields remain on their original owned
+/// values. This is the error-side publish step of transaction heap rollback;
+/// heap graph preparation is deliberately owned by the transaction coordinator.
+pub(crate) fn rebind_runtime_error_request_heap_root(
+    error: RuntimeError,
+    rebased: Option<skiff_runtime_model::runtime_value::RuntimeValue>,
+) -> Result<RuntimeError> {
+    fn rebind(
+        error: RuntimeError,
+        rebased: &mut Option<skiff_runtime_model::runtime_value::RuntimeValue>,
+        found: &mut bool,
+    ) -> RuntimeError {
+        match error {
+            RuntimeError::WithSource {
+                source_id,
+                frame,
+                error,
+            } => RuntimeError::WithSource {
+                source_id,
+                frame,
+                error: Box::new(rebind(*error, rebased, found)),
+            },
+            RuntimeError::WithDiagnosticFrame { frame, error } => {
+                RuntimeError::WithDiagnosticFrame {
+                    frame,
+                    error: Box::new(rebind(*error, rebased, found)),
+                }
+            }
+            RuntimeError::UserException(exception)
+                if exception.request().local_value().is_some() =>
+            {
+                *found = true;
+                let replacement = rebased
+                    .take()
+                    .expect("validated transaction error root must be present");
+                let request = exception
+                    .into_request()
+                    .map_local_value(|carrier| carrier.map_value(|_| replacement));
+                RuntimeError::UserException(UserException::new(request))
+            }
+            error => error,
+        }
+    }
+
+    let expected = runtime_error_request_heap_root(&error).is_some();
+    if expected != rebased.is_some() {
+        return Err(RuntimeError::InvalidArtifact(
+            "transaction error rollback root mapping does not match the selected error".to_string(),
+        ));
+    }
+    let mut rebased = rebased;
+    let mut found = false;
+    let error = rebind(error, &mut rebased, &mut found);
+    if found != expected || rebased.is_some() {
+        return Err(RuntimeError::InvalidArtifact(
+            "transaction error rollback root was not consumed exactly once".to_string(),
+        ));
+    }
+    Ok(error)
 }
 
 impl RuntimeError {

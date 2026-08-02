@@ -183,9 +183,14 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
     assert_eq!(union_tag(full), Some("accept"));
     assert_eq!(
         field_names(full),
-        ["businessIdentity", "connectionPolicy", "tag"]
+        [
+            "admissionRank",
+            "businessIdentity",
+            "connectionPolicy",
+            "tag"
+        ]
     );
-    assert!(synthetic_fields(full).is_empty());
+    assert_eq!(synthetic_fields(full), ["admissionRank"]);
 
     let policy = built.materialization(r#"{ maxConnections: 8, overflow: "close-oldest" }"#);
     assert!(matches!(
@@ -202,11 +207,11 @@ fn websocket_accept_reject_and_recursive_nominal_facts_snapshot() {
     assert_eq!(union_tag(defaults), Some("accept"));
     assert_eq!(
         synthetic_fields(defaults),
-        ["businessIdentity", "connectionPolicy"]
+        ["admissionRank", "businessIdentity", "connectionPolicy"]
     );
     assert_eq!(
         fact_snapshot(defaults),
-        "target=std.websocket.WebSocketConnectResult;kind=union(accept);fields=[businessIdentity:string?=synthetic-null,connectionPolicy:std.websocket.WebSocketConnectionPolicy?=synthetic-null,tag:\"accept\"=provided]"
+        "target=std.websocket.WebSocketConnectResult;kind=union(accept);fields=[admissionRank:integer?=synthetic-null,businessIdentity:string?=synthetic-null,connectionPolicy:std.websocket.WebSocketConnectionPolicy?=synthetic-null,tag:\"accept\"=provided]"
     );
     assert_eq!(
         fact_snapshot(policy),

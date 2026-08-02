@@ -116,6 +116,11 @@ async fn run_compiler_linked_generic_std_json_encode_red() {
         RuntimeValue::String("leftleft".to_string()),
         "a generic package-direct public-instance stream must inject self and complete normally",
     );
+    assert_eq!(
+        linked.execute("leftItemsDeferred").await.unwrap(),
+        RuntimeValue::String("leftleft".to_string()),
+        "an assembly dynamic-self stream must detach from-values before deferred consumption",
+    );
 
     let mut failures = Vec::new();
     for symbol in ["encodeLocal", "encodePackage", "encodeNested"] {
@@ -549,12 +554,28 @@ fn write_consumer_package(root: &Path) {
     .expect("consumer package manifest");
     fs::write(
         root.join("api.yml"),
-        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\nresourceCatch: main.resourceCatch\nleftValue: main.leftValue\nrightValue: main.rightValue\nleftTag: main.leftTag\nleftItems: main.leftItems\n",
+        "encodeLocal: main.encodeLocal\nencodePackage: main.encodePackage\nencodeNested: main.encodeNested\nconcreteEncodeControl: main.concreteEncodeControl\ngenericDecodeControl: main.genericDecodeControl\nresourceCatch: main.resourceCatch\nleftValue: main.leftValue\nrightValue: main.rightValue\nleftTag: main.leftTag\nleftItems: main.leftItems\nleftItemsDeferred: main.leftItemsDeferred\n",
     )
     .expect("consumer package API");
     fs::write(
         root.join("main.skiff"),
         r#"import models
+
+interface LocalStreamSource {
+  function items(self: Self) -> Stream<string>
+}
+
+type LocalStreamValue implements LocalStreamSource {
+  label: string,
+}
+
+impl LocalStreamValue {
+  function items() -> Stream<string> {
+    emit(self.label)
+    emit(self.label)
+    return null
+  }
+}
 
 type LocalPayload {
   label: string,
@@ -614,6 +635,16 @@ function leftTag() -> string {
 function leftItems() -> string {
   let output = ""
   for item in models/left.items() {
+    output = output.concat(item)
+  }
+  return output
+}
+
+function leftItemsDeferred() -> string {
+  const value: any LocalStreamSource = LocalStreamValue { label: "left" } as LocalStreamSource
+  const source: Stream<string> = value.items()
+  let output = ""
+  for item in source {
     output = output.concat(item)
   }
   return output

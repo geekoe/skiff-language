@@ -19,9 +19,11 @@ use skiff_runtime_loader::{
     ServiceContractStore,
 };
 use skiff_runtime_request::{
-    RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
-    RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
+    cancellation::CancellationToken, RuntimeAssemblyHttpGatewayTarget,
+    RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketJsonRpcPhysicalRoute,
+    RuntimeAssemblyWebSocketJsonRpcTarget,
 };
+use skiff_runtime_transport::actor_owner::ActorOwnerRouteAuthorityFrameHeader;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -93,6 +95,10 @@ pub(crate) struct ActiveActorExecutionRoute {
 }
 
 impl ActiveActorExecutionRoute {
+    pub(crate) fn active_assembly(&self) -> &Arc<ActiveAssembly> {
+        &self.active
+    }
+
     pub(crate) fn activation(&self) -> &Arc<ActivationContext> {
         &self.activation
     }
@@ -105,6 +111,16 @@ impl ActiveActorExecutionRoute {
 
     pub(crate) fn context_set(&self) -> &Arc<ActiveAssemblyContextSet> {
         &self.active.contexts
+    }
+
+    pub(crate) fn service_protocol_identity(
+        &self,
+    ) -> anyhow::Result<&skiff_artifact_model::ServiceProtocolIdentity> {
+        self.active
+            .contexts
+            .contract_for_deployment(&self.activation.identity().deployment)
+            .map(|contract| &contract.service_protocol_identity)
+            .ok_or_else(|| anyhow::anyhow!("Actor activation has no exact service contract"))
     }
 
     pub(crate) fn db_source(
@@ -432,6 +448,7 @@ struct AssemblyAdmissionState {
     active: Option<Arc<ActiveAssembly>>,
     committed: Option<CommittedAssembly>,
     staged: Option<StagedAssembly>,
+    preparing: Option<AssemblyTransition>,
     candidate: Option<AssemblyCandidateHealth>,
     last_outcome: Option<AssemblyAdmissionOutcome>,
 }
@@ -658,6 +675,31 @@ impl AssemblyAdmissionController {
         }))
     }
 
+    /// Resolves the exact immutable route authority carried by an Actor owner
+    /// invoke/control frame against the current active assembly only. The Host
+    /// layer additionally consults route holds owned by live Actor executions;
+    /// anything else fails closed so a G1 chain cannot be silently re-executed
+    /// on a newer generation.
+    pub(crate) fn actor_execution_route(
+        &self,
+        authority: &ActorOwnerRouteAuthorityFrameHeader,
+        service_id: &str,
+    ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
+        let Some(active) = state.active.as_ref() else {
+            return Ok(None);
+        };
+        if active.generation() != authority.assembly_generation
+            || active.identity().as_str() != authority.assembly_identity
+        {
+            return Ok(None);
+        }
+        actor_route_from_active(Arc::clone(active), service_id)
+    }
+
     #[cfg(test)]
     fn begin_candidate(&self, identity: AssemblyIdentity) -> anyhow::Result<u64> {
         let mut state = self
@@ -740,6 +782,7 @@ impl AssemblyAdmissionController {
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         ensure_current_candidate(&state, generation, identity)?;
         state.candidate = None;
+        state.preparing = None;
         state.last_outcome = Some(AssemblyAdmissionOutcome {
             generation,
             identity: identity.clone(),
@@ -794,6 +837,7 @@ impl AssemblyAdmissionController {
         // either the complete previous assembly or the complete new generation, never a mix.
         state.active = Some(Arc::clone(&active));
         state.candidate = None;
+        state.preparing = None;
         state.last_outcome = Some(AssemblyAdmissionOutcome {
             generation,
             identity,
@@ -850,6 +894,39 @@ impl RuntimeHost {
             .await
     }
 
+    /// Production activation with a connection-scoped cancellation token for Prepare.
+    ///
+    /// Router Abort and session teardown signal this token before waiting for the
+    /// serialized admission transition. Commit and Abort themselves are never
+    /// cancellable through this path.
+    pub(crate) async fn apply_cancellable_bootstrapped_assembly_activation_control<R, C>(
+        &self,
+        control: AssemblyActivationControl,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        service_db: Option<&AssemblyActivationServiceDb>,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
+        if activation_control_environment(&control) != self.trusted_environment() {
+            anyhow::bail!(
+                "assembly activation environment does not match Runtime trusted environment"
+            );
+        }
+        self.assembly_admission
+            .apply_cancellable_activation_control(
+                control,
+                resolver,
+                config_snapshot_resolver,
+                service_db,
+                cancellation,
+            )
+            .await
+    }
+
     /// Returns only the currently committed whole-assembly registration.
     pub fn active_assembly_registration(
         &self,
@@ -876,33 +953,28 @@ impl RuntimeHost {
         self.assembly_admission.route(key)
     }
 
-    pub(crate) fn active_actor_execution_route(
+    pub(crate) fn actor_execution_route(
         &self,
+        authority: &ActorOwnerRouteAuthorityFrameHeader,
         service_id: &str,
     ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
-        let Some(active) = self.assembly_admission.active()? else {
-            return Ok(None);
-        };
-        let deployments = active
-            .candidate
-            .activations()
-            .filter(|(deployment, _)| deployment.service_id == service_id)
-            .map(|(deployment, _)| deployment.clone())
-            .collect::<Vec<_>>();
-        let Some(deployment) = deployments.first() else {
-            return Ok(None);
-        };
-        if deployments.len() != 1 {
-            anyhow::bail!(
-                "Actor service {service_id} has multiple active deployments; invocation is ambiguous"
-            );
+        if let Some(route) = self
+            .assembly_admission
+            .actor_execution_route(authority, service_id)?
+        {
+            return Ok(Some(route));
         }
-        let activation = active
-            .contexts
-            .activation_for_deployment(deployment)
-            .ok_or_else(|| anyhow::anyhow!("Actor service activation context is missing"))?;
-        drop(deployments);
-        Ok(Some(ActiveActorExecutionRoute { active, activation }))
+        if let Some(active) = self
+            .actor_route_holds
+            .find(&authority.assembly_identity, authority.assembly_generation)
+        {
+            return actor_route_from_active(active, service_id);
+        }
+        anyhow::bail!(
+            "Actor route authority {} generation {} is not retained",
+            authority.assembly_identity,
+            authority.assembly_generation
+        );
     }
 }
 
@@ -992,6 +1064,7 @@ fn publish_committed_locked(
     state.active = Some(Arc::clone(&active));
     state.committed = Some(committed);
     state.staged = None;
+    state.preparing = None;
     state.candidate = None;
     state.last_outcome = Some(AssemblyAdmissionOutcome {
         generation: active.generation(),
@@ -1002,6 +1075,33 @@ fn publish_committed_locked(
         error: None,
     });
     Ok(active)
+}
+
+fn actor_route_from_active(
+    active: Arc<ActiveAssembly>,
+    service_id: &str,
+) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
+    let deployments = active
+        .candidate
+        .activations()
+        .filter(|(deployment, _)| deployment.service_id == service_id)
+        .map(|(deployment, _)| deployment.clone())
+        .collect::<Vec<_>>();
+    let Some(deployment) = deployments.first() else {
+        return Ok(None);
+    };
+    if deployments.len() != 1 {
+        anyhow::bail!(
+            "Actor service {service_id} has multiple deployments in generation {}; invocation is ambiguous",
+            active.generation()
+        );
+    }
+    let activation = active
+        .contexts
+        .activation_for_deployment(deployment)
+        .ok_or_else(|| anyhow::anyhow!("Actor service activation context is missing"))?;
+    drop(deployments);
+    Ok(Some(ActiveActorExecutionRoute { active, activation }))
 }
 
 fn reject_reason_for_stage(stage: AssemblyCandidateStage) -> AssemblyActivationRejectReason {

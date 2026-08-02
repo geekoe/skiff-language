@@ -51,7 +51,7 @@ spawn runThreadDrain(threadId)
 - actor 方法为 target 时，spawned call 不创建新的 service request frame：Router 把它作为该 actor 的一次
   普通方法调用，经 actor admission（含不 live 时按 registry entry 保存的创建输入激活）派发到 owner
   Runtime，在实例的单线程 executor 上与其他调用串行排队执行；调用方只等待“已接收”（Router 已完成
-  admission 并派发到 owner）。spawned actor 方法拥有独立于 caller 的固定 deadline（120s），不继承
+  admission 并派发到 owner）。spawned actor 方法拥有独立于 caller 的固定 deadline（300s），不继承
   caller 的剩余时间。
 - spawned call 的完成或失败只结束该派生 request；失败不回传给已经完成的 `spawn` 语句，也不自动重试。
 - 一次提交至多执行一次；执行失败、超时或 runtime 断连后，平台不自动重试同一次提交。

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -8,19 +9,20 @@ use std::{
 use skiff_runtime_boundary::{
     json::RuntimeBoundaryCodec,
     plan::BoundaryUse,
-    request_heap::RequestHeap,
-    runtime_value::{ActorRef, RuntimeValue},
+    request_heap::{deep_clone_runtime_values_between_heaps, RequestHeap},
+    runtime_value::{ActorRef, HeapNode, InterfaceCarrier, RuntimeValue},
 };
 use skiff_runtime_linked_program::{ExecutableAddr, LinkedTypeRef};
 use skiff_runtime_linked_type_plan::{
-    PlanContext, ProgramTypeView, RuntimeTypePlan, RuntimeTypePlanLinkedExt,
+    PlanContext, ProgramTypeView, RuntimeTypeNode, RuntimeTypePlan, RuntimeTypePlanLinkedExt,
 };
 
 use super::store_error;
 use crate::{
     actor_instance::{
         ActorExecutionToken, ActorExecutorAuthority, ActorFieldValue, ActorInstanceExecutionLease,
-        ActorInstanceHandle, ActorInstanceStore, ActorInstanceStoreError,
+        ActorInstanceExecutionSnapshot, ActorInstanceHandle, ActorInstanceStore,
+        ActorInstanceStoreError,
     },
     error::RuntimeError,
 };
@@ -189,9 +191,103 @@ impl ActorExecutionFrame {
         Ok(())
     }
 
+    /// Runs one transaction rollback projection while retaining the Actor
+    /// continuation lease and field locks in that order. `None` means the
+    /// continuation has already lost its lease (for example because resume
+    /// selected `InstanceReplaced`). The callback receives `None` in that case
+    /// so it can apply the selected terminal-error precedence without moving
+    /// its other rollback owners before the lease state is known.
+    pub(crate) fn with_transaction_live_fields<T>(
+        &self,
+        project: impl FnOnce(Option<&mut Vec<ActorFieldValue>>) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        let lease = self
+            .suspension
+            .lease
+            .lock()
+            .expect("actor suspension lease lock poisoned");
+        let Some(lease) = lease.as_ref() else {
+            return project(None);
+        };
+        self.suspension
+            .shared
+            .store
+            .validate_current_execution_lease(&self.suspension.shared.handle, lease)
+            .map_err(store_error)?;
+        if lease.instance_identity() != self.suspension.shared.fence.instance_identity {
+            return Err(store_error(ActorInstanceStoreError::InstanceReplaced));
+        }
+        let fields = lease.fields();
+        let mut fields = fields.lock().expect("actor execution fields lock poisoned");
+        project(Some(&mut fields))
+    }
+
+    /// Materializes exactly the persistent Actor field roots into a fresh heap.
+    ///
+    /// The evaluator heap also owns invocation arguments, local bindings, and
+    /// every temporary allocated while the method runs. None of those values
+    /// belong to the Actor instance unless an assigned field reaches them.
+    /// Keeping the whole evaluator heap would retain dead invocation state
+    /// across methods and make every suspension clone it again.
+    fn snapshot_persistent_fields(
+        &self,
+        heap: &RequestHeap,
+    ) -> Result<ActorInstanceExecutionSnapshot, RuntimeError> {
+        let (token, field_state) = self.current_access()?;
+        token.ensure_active().map_err(store_error)?;
+        let mut fields = field_state
+            .lock()
+            .expect("actor execution fields lock poisoned")
+            .clone();
+        for field in fields.iter_mut().filter(|field| !field.assigned) {
+            // Partial `create` frames may suspend before every field is
+            // assigned. Keep those roots canonical and heap-independent.
+            field.value = RuntimeValue::Null;
+        }
+        let assigned_indices = fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| field.assigned.then_some(index))
+            .collect::<Vec<_>>();
+        let roots = assigned_indices
+            .iter()
+            .map(|index| {
+                let field = &fields[*index];
+                let (_, plan) = self
+                    .suspension
+                    .shared
+                    .field_plans
+                    .iter()
+                    .find(|(name, _)| name == &field.name)
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(format!(
+                            "Actor continuation field {} has no linked type plan",
+                            field.name
+                        ))
+                    })?;
+                if type_plan_contains_stream(plan) {
+                    return Err(RuntimeError::Decode(format!(
+                        "Actor persistent field {} cannot contain a request-scoped Stream",
+                        field.name
+                    )));
+                }
+                Ok(field.value.clone())
+            })
+            .collect::<Result<Vec<_>, RuntimeError>>()?;
+        reject_request_scoped_actor_field_values(&roots, heap)?;
+        let mut compact_heap = RequestHeap::new(heap.limits().clone());
+        let compact_roots =
+            deep_clone_runtime_values_between_heaps(heap, &mut compact_heap, &roots)?;
+        for (index, value) in assigned_indices.into_iter().zip(compact_roots) {
+            fields[index].value = value;
+        }
+        Ok(ActorInstanceExecutionSnapshot::new(fields, compact_heap))
+    }
+
     /// Commits the current synchronous segment. A child remains open but no
     /// longer owns the instance scheduler while its async operation is pending.
     pub(crate) fn suspend(&self, heap: &RequestHeap) -> Result<(), RuntimeError> {
+        let snapshot = self.snapshot_persistent_fields(heap)?;
         let lease = self
             .suspension
             .lease
@@ -208,7 +304,7 @@ impl ActorExecutionFrame {
             .suspension
             .shared
             .store
-            .commit_execution(&self.suspension.shared.handle, lease, heap.clone())
+            .commit_execution(&self.suspension.shared.handle, lease, snapshot)
             .map_err(store_error);
         if let Some(child) = &self.suspension.child {
             child.segment_released();
@@ -216,8 +312,8 @@ impl ActorExecutionFrame {
         result
     }
 
-    /// Re-enters the exact incarnation scheduler, then imports Actor fields
-    /// through their linked codecs into this continuation's local heap.
+    /// Re-enters the exact incarnation scheduler, then imports all Actor field
+    /// roots as one graph into this continuation's existing local heap.
     pub(crate) async fn resume(
         &self,
         heap: &mut RequestHeap,
@@ -286,32 +382,18 @@ impl ActorExecutionFrame {
             let fields = lease.fields();
             let source_heap = lease.heap_mut();
             let mut fields = fields.lock().expect("actor execution fields lock poisoned");
-            for field in fields.iter_mut() {
-                if !field.assigned {
-                    // `create` may suspend before assigning every non-key
-                    // field; unassigned fields stay continuation-local until
-                    // `create` writes them.
-                    continue;
-                }
-                let (_, plan) = self
-                    .suspension
-                    .shared
-                    .field_plans
-                    .iter()
-                    .find(|(name, _)| name == &field.name)
-                    .ok_or_else(|| {
-                        RuntimeError::InvalidArtifact(format!(
-                            "Actor continuation field {} has no linked type plan",
-                            field.name
-                        ))
-                    })?;
-                let codec = RuntimeBoundaryCodec::new(
-                    plan,
-                    BoundaryUse::NativeArg,
-                    format!("Actor resume field {}", field.name),
-                );
-                let wire = codec.to_wire_json(&field.value, source_heap)?;
-                field.value = codec.from_wire_json(&wire, heap)?;
+            let assigned_indices = fields
+                .iter()
+                .enumerate()
+                .filter_map(|(index, field)| field.assigned.then_some(index))
+                .collect::<Vec<_>>();
+            let roots = assigned_indices
+                .iter()
+                .map(|index| fields[*index].value.clone())
+                .collect::<Vec<_>>();
+            let imported = deep_clone_runtime_values_between_heaps(source_heap, heap, &roots)?;
+            for (index, value) in assigned_indices.into_iter().zip(imported) {
+                fields[index].value = value;
             }
         }
         let mut current = self
@@ -354,7 +436,20 @@ impl ActorExecutionFrame {
     }
 
     pub(crate) fn finish(&self, heap: RequestHeap) -> Result<(), RuntimeError> {
+        self.finish_borrowed(&heap)
+    }
+
+    pub(crate) fn finish_borrowed(&self, heap: &RequestHeap) -> Result<(), RuntimeError> {
         self.ensure_outer_children_released()?;
+        let snapshot = match self.snapshot_persistent_fields(heap) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // A terminal method cannot leave an exclusive scheduler lease
+                // installed after its persistent snapshot has failed.
+                self.abandon_child();
+                return Err(error);
+            }
+        };
         let lease = self
             .suspension
             .lease
@@ -370,7 +465,7 @@ impl ActorExecutionFrame {
             .suspension
             .shared
             .store
-            .commit_execution(&self.suspension.shared.handle, lease, heap)
+            .commit_execution(&self.suspension.shared.handle, lease, snapshot)
             .map_err(store_error);
         if let Some(child) = &self.suspension.child {
             child.finish();
@@ -419,6 +514,88 @@ impl ActorExecutionFrame {
     pub(super) fn shares_execution_slot(&self, other: &Self) -> bool {
         std::ptr::eq(&self.suspension.lease, &other.suspension.lease)
     }
+}
+
+fn type_plan_contains_stream(plan: &RuntimeTypePlan) -> bool {
+    match plan.node() {
+        RuntimeTypeNode::Alias(target)
+        | RuntimeTypeNode::Nullable(target)
+        | RuntimeTypeNode::Representation {
+            payload: target, ..
+        } => type_plan_contains_stream(target),
+        RuntimeTypeNode::Union(types) => types.iter().any(type_plan_contains_stream),
+        RuntimeTypeNode::Stream(_) => true,
+        RuntimeTypeNode::Array(item) => type_plan_contains_stream(item),
+        RuntimeTypeNode::Map { key, value } => {
+            type_plan_contains_stream(key) || type_plan_contains_stream(value)
+        }
+        RuntimeTypeNode::Record { fields, .. } => fields
+            .iter()
+            .any(|field| type_plan_contains_stream(&field.ty)),
+        RuntimeTypeNode::LiteralString(_)
+        | RuntimeTypeNode::Json
+        | RuntimeTypeNode::JsonObject
+        | RuntimeTypeNode::Bytes
+        | RuntimeTypeNode::Date
+        | RuntimeTypeNode::String
+        | RuntimeTypeNode::Bool
+        | RuntimeTypeNode::Number
+        | RuntimeTypeNode::Integer
+        | RuntimeTypeNode::Null
+        | RuntimeTypeNode::Unknown => false,
+    }
+}
+
+fn reject_request_scoped_actor_field_values(
+    roots: &[RuntimeValue],
+    heap: &RequestHeap,
+) -> Result<(), RuntimeError> {
+    let mut visited = HashSet::new();
+    let mut pending = roots.iter().map(|root| (root, 0_usize)).collect::<Vec<_>>();
+    while let Some((value, depth)) = pending.pop() {
+        if depth > heap.limits().max_clone_depth {
+            return Err(RuntimeError::ResourceLimitExceeded {
+                resource: "requestHeap".to_string(),
+                reason: "max persistent Actor graph depth".to_string(),
+                limit: heap.limits().max_clone_depth,
+                current: depth,
+                requested_delta: depth.saturating_sub(heap.limits().max_clone_depth),
+            });
+        }
+        let RuntimeValue::Heap(handle) = value else {
+            continue;
+        };
+        if !visited.insert(*handle) {
+            continue;
+        }
+        match heap.get(*handle)? {
+            HeapNode::Bytes(_) => {}
+            HeapNode::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Object(object) => {
+                pending.extend(object.fields().values().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Map(map) => {
+                pending.extend(map.values().map(|item| (item, depth + 1)));
+            }
+            HeapNode::Interface(interface) => match interface.carrier() {
+                InterfaceCarrier::Local { payload, .. } => pending.push((payload, depth + 1)),
+                InterfaceCarrier::CallbackCapability(_) => {
+                    return Err(RuntimeError::Decode(
+                        "request-scoped callback capability cannot enter persistent Actor state"
+                            .to_string(),
+                    ));
+                }
+            },
+            HeapNode::Exception(_) => {
+                return Err(RuntimeError::Decode(
+                    "request-local exception cannot enter persistent Actor state".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The continuation fence deliberately contains only instance identity.

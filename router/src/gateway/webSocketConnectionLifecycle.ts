@@ -1,6 +1,9 @@
+import { performance } from 'node:perf_hooks';
+
 import WebSocket from 'ws';
 
 const DEFAULT_CONNECTION_LIMIT = 5_000;
+const DEFAULT_ADMISSION_HIGH_WATER_RETENTION_MS = 120_000;
 const DEFAULT_SLOW_CLIENT_BUDGET_BYTES = 16 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -28,7 +31,10 @@ export interface WebSocketLifecyclePeerWriter {
 }
 
 export interface WebSocketConnectionLifecycleOptions {
+  admissionHighWaterLimit?: number;
+  admissionHighWaterRetentionMs?: number;
   connectionLimit?: number;
+  now?: () => number;
   slowClientBudgetBytes?: number;
   shutdownTimeoutMs?: number;
 }
@@ -38,10 +44,19 @@ export type WebSocketPolicyAdmission =
   | { accepted: false; close: WebSocketLifecycleClose };
 
 type LifecycleState = 'reserved' | 'admitted' | 'closed';
+export type WebSocketLifecyclePreAttachCloseDisposition =
+  | 'abort-upgrade'
+  | 'close-after-upgrade';
+
+export interface WebSocketLifecyclePreAttachClose {
+  close: WebSocketLifecycleClose;
+  disposition: WebSocketLifecyclePreAttachCloseDisposition;
+}
 
 interface LifecycleConnection<TConnection, TRuntime> {
+  admissionRank?: number;
   businessKey?: string;
-  closeBeforeAttach?: (close: WebSocketLifecycleClose) => void;
+  closeBeforeAttach?: (input: WebSocketLifecyclePreAttachClose) => void;
   id: string;
   observedWriteBytes: number;
   observedWrites: Set<ObservedWrite>;
@@ -65,6 +80,9 @@ export class WebSocketConnectionLimitExceededError extends Error {
 
 export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
   private readonly connectionLimit: number;
+  private readonly admissionHighWaterLimit: number;
+  private readonly admissionHighWaterRetentionMs: number;
+  private readonly now: () => number;
   private readonly slowClientBudgetBytes: number;
   private readonly shutdownTimeoutMs: number;
   private readonly connectionsById = new Map<string, LifecycleConnection<TConnection, TRuntime>>();
@@ -76,6 +94,11 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     TRuntime,
     Set<LifecycleConnection<TConnection, TRuntime>>
   >();
+  private readonly admissionHighWaterByBusinessKey = new Map<
+    string,
+    { rank: number; retainUntilMs: number }
+  >();
+  private newBusinessKeyQuarantineUntilMs: number | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
   private readonly pendingFinalizations = new Set<Promise<void>>();
@@ -92,6 +115,15 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
       options.connectionLimit ?? DEFAULT_CONNECTION_LIMIT,
       'connectionLimit'
     );
+    this.admissionHighWaterLimit = positiveInteger(
+      options.admissionHighWaterLimit ?? this.connectionLimit,
+      'admissionHighWaterLimit'
+    );
+    this.admissionHighWaterRetentionMs = positiveInteger(
+      options.admissionHighWaterRetentionMs ?? DEFAULT_ADMISSION_HIGH_WATER_RETENTION_MS,
+      'admissionHighWaterRetentionMs'
+    );
+    this.now = options.now ?? (() => Math.floor(performance.now()));
     this.slowClientBudgetBytes = nonNegativeInteger(
       options.slowClientBudgetBytes ?? DEFAULT_SLOW_CLIENT_BUDGET_BYTES,
       'slowClientBudgetBytes'
@@ -106,7 +138,7 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     id: string,
     value: TConnection,
     runtime?: TRuntime,
-    closeBeforeAttach?: (close: WebSocketLifecycleClose) => void
+    closeBeforeAttach?: (input: WebSocketLifecyclePreAttachClose) => void
   ): void {
     if (this.shuttingDown) {
       throw new Error('websocket connection lifecycle is shutting down');
@@ -143,7 +175,11 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
 
   admit(
     id: string,
-    input: { businessKey?: string; policy?: WebSocketConnectionPolicy }
+    input: {
+      businessKey?: string;
+      policy?: WebSocketConnectionPolicy;
+      admissionRank?: number;
+    }
   ): WebSocketPolicyAdmission {
     const connection = this.requireConnection(id);
     if (connection.state !== 'reserved') {
@@ -152,11 +188,79 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     if (input.policy !== undefined && input.businessKey === undefined) {
       throw new Error('websocket connection policy requires a business key');
     }
+    if (
+      input.admissionRank !== undefined &&
+      (!Number.isSafeInteger(input.admissionRank) || input.admissionRank <= 0)
+    ) {
+      throw new Error('websocket admission rank must be a positive safe integer');
+    }
+    if (input.admissionRank !== undefined && input.businessKey === undefined) {
+      throw new Error('websocket admission rank requires a business key');
+    }
+    if (
+      input.admissionRank !== undefined &&
+      (input.policy?.overflow !== 'close-oldest' ||
+        input.policy.maxConnections !== 1)
+    ) {
+      throw new Error(
+        'websocket admission rank requires a single-connection close-oldest policy'
+      );
+    }
 
     const existing =
       input.businessKey === undefined
         ? []
         : Array.from(this.connectionsByBusinessKey.get(input.businessKey) ?? []);
+    const now = this.monotonicNow();
+    this.pruneAdmissionHighWater(now);
+    const highWater =
+      input.businessKey === undefined
+        ? undefined
+        : this.admissionHighWaterByBusinessKey.get(input.businessKey);
+    if (
+      highWater !== undefined &&
+      (input.admissionRank === undefined || input.admissionRank <= highWater.rank)
+    ) {
+      const close = admissionSupersededClose();
+      this.finishConnection(connection, undefined, false);
+      return { accepted: false, close };
+    }
+    if (
+      input.businessKey !== undefined &&
+      highWater === undefined &&
+      this.isNewBusinessKeyQuarantined(now)
+    ) {
+      return this.rejectForAdmissionHighWaterCapacity(
+        connection,
+        now,
+        input.admissionRank === undefined ? [] : existing
+      );
+    }
+    if (input.admissionRank !== undefined) {
+      if (
+        highWater === undefined &&
+        this.admissionHighWaterByBusinessKey.size >= this.admissionHighWaterLimit
+      ) {
+        return this.rejectForAdmissionHighWaterCapacity(
+          connection,
+          now,
+          existing
+        );
+      }
+      this.admissionHighWaterByBusinessKey.set(
+        input.businessKey!,
+        {
+          rank: input.admissionRank,
+          // An earlier lower-rank dispatch is quarantined by its timeout before
+          // this fence may be reclaimed. Active keys remain fenced separately.
+          retainUntilMs: safeRetentionDeadline(
+            now,
+            this.admissionHighWaterRetentionMs
+          )
+        }
+      );
+      this.finishSupersededConnections(existing);
+    }
     if (
       input.policy?.overflow === 'reject-new' &&
       existing.length >= input.policy.maxConnections
@@ -174,6 +278,9 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
 
     connection.state = 'admitted';
+    if (input.admissionRank !== undefined) {
+      connection.admissionRank = input.admissionRank;
+    }
     if (input.businessKey !== undefined) {
       connection.businessKey = input.businessKey;
       addToIndex(this.connectionsByBusinessKey, input.businessKey, connection);
@@ -296,6 +403,10 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     return this.connectionsById.size;
   }
 
+  admissionHighWaterSize(): number {
+    return this.admissionHighWaterByBusinessKey.size;
+  }
+
   observedWriteCount(): number {
     let count = 0;
     for (const connection of this.connectionsById.values()) {
@@ -348,6 +459,67 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
       throw new Error(`unknown websocket connection id ${id}`);
     }
     return connection;
+  }
+
+  private monotonicNow(): number {
+    const value = this.now();
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('websocket lifecycle clock must return a non-negative safe integer');
+    }
+    return value;
+  }
+
+  private pruneAdmissionHighWater(now: number): void {
+    for (const [businessKey, highWater] of this.admissionHighWaterByBusinessKey) {
+      if (
+        // Never evict an unexpired or active fence merely to admit a new key.
+        highWater.retainUntilMs < now &&
+        (this.connectionsByBusinessKey.get(businessKey)?.size ?? 0) === 0
+      ) {
+        this.admissionHighWaterByBusinessKey.delete(businessKey);
+      }
+    }
+  }
+
+  private isNewBusinessKeyQuarantined(now: number): boolean {
+    return (
+      this.newBusinessKeyQuarantineUntilMs !== undefined &&
+      now <= this.newBusinessKeyQuarantineUntilMs
+    );
+  }
+
+  private rejectForAdmissionHighWaterCapacity(
+    connection: LifecycleConnection<TConnection, TRuntime>,
+    now: number,
+    supersededConnections: readonly LifecycleConnection<TConnection, TRuntime>[]
+  ): WebSocketPolicyAdmission {
+    this.finishSupersededConnections(supersededConnections);
+    const nextDeadline = safeRetentionDeadline(
+      now,
+      this.admissionHighWaterRetentionMs
+    );
+    this.newBusinessKeyQuarantineUntilMs = Math.max(
+      this.newBusinessKeyQuarantineUntilMs ?? 0,
+      nextDeadline
+    );
+    const close = admissionHighWaterCapacityClose();
+    this.finishConnection(connection, undefined, false);
+    return { accepted: false, close };
+  }
+
+  private finishSupersededConnections(
+    connections: readonly LifecycleConnection<TConnection, TRuntime>[]
+  ): void {
+    for (const superseded of connections) {
+      this.finishConnection(
+        superseded,
+        admissionSupersededClose(),
+        true,
+        superseded.admissionRank === undefined
+          ? 'abort-upgrade'
+          : 'close-after-upgrade'
+      );
+    }
   }
 
   private send(
@@ -489,7 +661,9 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
   private finishConnection(
     connection: LifecycleConnection<TConnection, TRuntime>,
     close: WebSocketLifecycleClose | undefined,
-    closeTransport: boolean
+    closeTransport: boolean,
+    preAttachDisposition: WebSocketLifecyclePreAttachCloseDisposition =
+      'abort-upgrade'
   ): void {
     if (connection.state === 'closed') {
       return;
@@ -516,7 +690,10 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
         closeSocket(connection.socket, close);
       } else {
         try {
-          connection.closeBeforeAttach?.(close);
+          connection.closeBeforeAttach?.({
+            close,
+            disposition: preAttachDisposition
+          });
         } catch {
           // The lifecycle is already deindexed; a transport cleanup failure cannot restore it.
         }
@@ -578,6 +755,28 @@ function policyOverflowClose(policy: WebSocketConnectionPolicy): WebSocketLifecy
     code: policy.closeCode ?? 1008,
     reason: policy.closeReason ?? 'websocket connection limit exceeded'
   };
+}
+
+function admissionSupersededClose(): WebSocketLifecycleClose {
+  return {
+    code: 4009,
+    reason: 'websocket connection superseded by a higher admission rank'
+  };
+}
+
+function admissionHighWaterCapacityClose(): WebSocketLifecycleClose {
+  return {
+    code: 1013,
+    reason: 'websocket admission high-water capacity exceeded'
+  };
+}
+
+function safeRetentionDeadline(now: number, retentionMs: number): number {
+  const deadline = now + retentionMs;
+  if (!Number.isSafeInteger(deadline)) {
+    throw new Error('websocket admission high-water retention deadline overflowed');
+  }
+  return deadline;
 }
 
 function closeSocket(socket: WebSocket, close: WebSocketLifecycleClose): void {

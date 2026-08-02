@@ -25,6 +25,7 @@ import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationC
 import { ActorGetCreateActivationCoordinator } from '../src/router/actorGetCreateActivationCoordinator.js';
 import { ActorSpawnRuntimeControl } from '../src/router/actorSpawnRuntimeControl.js';
 import { ActorManager } from '../src/actor/index.js';
+import { ActorRuntimeDisconnectController } from '../src/router/actorRuntimeDisconnectController.js';
 import {
   initialActivationState,
   MemoryAssemblyActivationStateStore
@@ -311,6 +312,284 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await until(
       () => fixture.dispatcher.pendingLifecycleCounters().pendingUnary === 0
     );
+  });
+
+  it('authenticates root capability actor getOrCreate and forwards it to initial creation', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rootResponse = postControlJson(
+      `${fixture.controlUrl}/__skiff/test-dispatch`,
+      testDispatchBody()
+    );
+    const root = await nextRuntimeFrame(ws, 'request.start');
+    const rootValidation = validateRuntimeAssemblyRequestStartFrameHeader(root.header);
+    if (!rootValidation.ok) throw new Error(rootValidation.error);
+    const capability = rootValidation.envelope.testCaseCapability;
+    if (capability === undefined) throw new Error('test root capability is required');
+
+    const activationMessage = nextBinaryMessage(ws);
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'actor-capability-create',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey(),
+      testCaseCapability: capability,
+      testCaseParentRequestId: rootValidation.envelope.requestId
+    }, new Uint8Array([1, 2, 3])));
+    const initialActivation = decodeBinaryFrame(await activationMessage);
+    expect(initialActivation.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activateInitial',
+      targetRuntimeId: RUNTIME_ID,
+      testCaseCapability: capability,
+      testCaseParentRequestId: rootValidation.envelope.requestId
+    });
+    expect(initialActivation.header.routeAuthority).toEqual({
+      assemblyIdentity: rootValidation.envelope.routing.assemblyIdentity,
+      assemblyGeneration: rootValidation.envelope.routing.assemblyGeneration
+    });
+    const created = nextRuntimeFrame(ws, 'actor.getOrCreate.response');
+    ws.send(encodeBinaryFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'actor.owner.control.ack',
+      runtimeId: RUNTIME_ID,
+      requestId: initialActivation.header.requestId,
+      operation: 'activateInitial',
+      accepted: true
+    }, new Uint8Array()));
+    await expect(created).resolves.toMatchObject({
+      header: {
+        rpcId: 'actor-capability-create',
+        actorRef: { serviceId: SERVICE_ID, epoch: 1 }
+      }
+    });
+
+    sendRootResponseEnd(ws, rootValidation.envelope.requestId);
+    await expect(rootResponse).resolves.toMatchObject({ status: 200 });
+  });
+
+  it('cleans up a pending ActivateInitial create on Runtime disconnect and retries the same fence', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true,
+      activationTimeoutMs: 60
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(
+      () => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1
+    );
+
+    const activationMessage = nextBinaryMessage(ws);
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'actor-disconnect-create',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey(),
+    }, new Uint8Array([1, 2, 3])));
+    const initialActivation = decodeBinaryFrame(await activationMessage);
+    expect(initialActivation.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activateInitial',
+      targetRuntimeId: RUNTIME_ID,
+    });
+    expect(initialActivation.header.routeAuthority).toEqual({
+      assemblyIdentity: ASSEMBLY_A,
+      assemblyGeneration: 1,
+    });
+
+    const entryKey = {
+      serviceId: actorKey().serviceId,
+      actorTypeIdentity: actorKey().actorTypeIdentity,
+      actorIdTypeIdentity: actorKey().actorIdTypeIdentity,
+      actorIdEncodingVersion: actorKey().actorIdEncodingVersion,
+      canonicalActorIdKeyBytes: Buffer.from(
+        actorKey().canonicalActorIdKeyBytesBase64,
+        'base64'
+      ),
+    };
+    type ActorEntry = Awaited<ReturnType<ActorManager['entry']>>;
+    async function untilEntry(
+      predicate: (entry: ActorEntry) => boolean
+    ): Promise<void> {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const entry = await fixture.runtimeRegistry.actorManager().entry(entryKey);
+        if (predicate(entry)) return;
+        await nextTurn();
+      }
+      throw new Error('actor entry condition was not reached');
+    }
+    await untilEntry((entry) => entry?.lifecycleState === 'activating');
+
+    ws.close();
+    await untilEntry(
+      (entry) =>
+        entry?.status === 'present' &&
+        entry.lifecycleState === 'inactive' &&
+        entry.ownerLeaseId === undefined
+    );
+    const retained = await fixture.runtimeRegistry.actorManager().entry(entryKey);
+    expect(retained).toMatchObject({
+      status: 'present',
+      epoch: 1,
+      lifecycleState: 'inactive',
+      encodedBootstrapBytes: new Uint8Array([1, 2, 3]),
+    });
+    // The disconnect releases the lease immediately, but the first getOrCreate
+    // claim stays pending until its activation deadline. Let it settle so the
+    // retry does not join the failed claim.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const second = await openSocket(fixture.url);
+    sendCapabilities(second, RUNTIME_ID);
+    sendActivation(second, registration(1, ASSEMBLY_A));
+    await until(
+      () => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1
+    );
+    const retryResponse = nextRuntimeFrame(second, 'actor.getOrCreate.response');
+    second.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'actor-disconnect-retry',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey(),
+    }, new Uint8Array([1, 2, 3])));
+    await expect(retryResponse).resolves.toMatchObject({
+      header: {
+        rpcId: 'actor-disconnect-retry',
+        actorRef: { serviceId: SERVICE_ID, epoch: 1 },
+      },
+    });
+    second.close();
+  });
+
+  it('keeps other socket frames flowing while an ActivateInitial admission awaits its ack', async () => {
+    const fixture = await createFixture({
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A,
+      testGateway: true,
+      activationTimeoutMs: 1_000,
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(
+      () => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1
+    );
+
+    const firstControlMessage = nextBinaryMessage(ws);
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'pending-create-first',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey(),
+    }, new Uint8Array([1])));
+    const firstControl = decodeBinaryFrame(await firstControlMessage);
+    expect(firstControl.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activateInitial',
+    });
+
+    // The pending create admission must not serialize the whole socket:
+    // health and a second independent create are still processed.
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['runtime.health'],
+      runtimeId: RUNTIME_ID,
+    }));
+    await until(
+      () => fixture.assemblyRegistry.snapshot()[0]?.lastHealthAt !== undefined
+    );
+
+    const secondKey = {
+      ...actorKey(),
+      canonicalActorIdKeyBytesBase64:
+        Buffer.from('"thread-2"').toString('base64'),
+    };
+    const secondControlMessage = nextBinaryMessage(ws);
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'pending-create-second',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: secondKey,
+    }, new Uint8Array([2])));
+    const secondControl = decodeBinaryFrame(await secondControlMessage);
+    expect(secondControl.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activateInitial',
+    });
+
+    const responses = nextBinaryMessages(ws, 2);
+    for (const requestId of [
+      firstControl.header.requestId,
+      secondControl.header.requestId,
+    ]) {
+      ws.send(encodeBinaryFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'actor.owner.control.ack',
+        runtimeId: RUNTIME_ID,
+        requestId,
+        operation: 'activateInitial',
+        accepted: true,
+      }, new Uint8Array()));
+    }
+    const settled = await responses;
+    expect(
+      settled
+        .map((frame) => decodeRuntimeFrame(frame).header.rpcId)
+        .sort()
+    ).toEqual(['pending-create-first', 'pending-create-second']);
+    ws.close();
+  });
+
+  it('rejects a self-authorized getOrCreate capability before owner activation', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const rejected = nextRuntimeFrame(ws, 'actor.getOrCreate.error');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'actor-capability-forged',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: activation(ASSEMBLY_A, 1),
+      actorKey: actorKey(),
+      testCaseCapability: 'case:forged',
+      testCaseParentRequestId: 'missing-parent'
+    }, new Uint8Array([1])));
+    await expect(rejected).resolves.toMatchObject({
+      header: {
+        rpcId: 'actor-capability-forged',
+        error: { code: 'TestCapabilityParentRejected', status: 403 }
+      }
+    });
+    await expect(
+      fixture.runtimeRegistry.actorManager().entry({
+        serviceId: actorKey().serviceId,
+        actorTypeIdentity: actorKey().actorTypeIdentity,
+        actorIdTypeIdentity: actorKey().actorIdTypeIdentity,
+        actorIdEncodingVersion: actorKey().actorIdEncodingVersion,
+        canonicalActorIdKeyBytes: Buffer.from(
+          actorKey().canonicalActorIdKeyBytesBase64,
+          'base64'
+        )
+      })
+    ).resolves.toBeUndefined();
   });
 
   it('inherits spawn authority from a pinned parent after the current registry advances', async () => {
@@ -1549,6 +1828,7 @@ async function createFixture(
     testGateway?: boolean;
     sharedTestDeployments?: boolean;
     maxConcurrency?: number;
+    activationTimeoutMs?: number;
   } = { generation: 1, assemblyIdentity: ASSEMBLY_A }
 ): Promise<CompositeEndpointFixture> {
   const testGateway = initial.testGateway ?? false;
@@ -1556,6 +1836,8 @@ async function createFixture(
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const actorManager = new ActorManager();
   const actorSpawnControl = new ActorSpawnRuntimeControl({ actorManager });
+  const actorDisconnect = new ActorRuntimeDisconnectController(actorManager);
+  let runtimeRegistry!: RuntimeRegistry;
   const actorGetCreateControl = new ActorGetCreateActivationCoordinator({
     actorManager,
     runtimeDirectory: {
@@ -1565,15 +1847,23 @@ async function createFixture(
         const ws = assemblyRegistry.connectionForReplica(runtimeId);
         return ws === undefined ? undefined : { runtimeId, ws };
       },
+      runtimeIdForConnection: (ws) => assemblyRegistry.replicaIdForConnection(ws),
+      runtimeConnectionFenceForConnection: (ws) =>
+        runtimeRegistry.runtimeConnectionFenceForConnection(ws),
     },
+    disconnectController: actorDisconnect,
     send: (ws, bytes) => ws.send(bytes),
+    ...(initial.activationTimeoutMs === undefined
+      ? {}
+      : { activationTimeoutMs: initial.activationTimeoutMs }),
   });
-  const runtimeRegistry = new RuntimeRegistry({
+  runtimeRegistry = new RuntimeRegistry({
     actorSpawnControl,
     actorGetCreateControl,
   });
   const endpoint = new RuntimeEndpoint({
     registry: runtimeRegistry,
+    actorRuntimeDisconnect: actorDisconnect,
     actorGetCreateControl,
     assemblyRegistry,
     bootstrap: {

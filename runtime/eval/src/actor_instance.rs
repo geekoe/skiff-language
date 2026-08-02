@@ -134,6 +134,118 @@ pub struct ActorActivationRequest<'a> {
     pub program: ProgramTypeView<'a>,
 }
 
+pub(crate) enum ActorActivation {
+    Existing(ActorInstanceHandle),
+    Materialized(ActorMaterialization),
+}
+
+pub(crate) enum ActorMaterialization {
+    Store(MaterializedActorActivation),
+    Session(SessionMaterializedActorActivation),
+}
+
+impl ActorMaterialization {
+    pub(crate) fn handle(&self) -> &ActorInstanceHandle {
+        match self {
+            Self::Store(activation) => activation.handle(),
+            Self::Session(activation) => activation.handle(),
+        }
+    }
+
+    pub(crate) fn admit(
+        self,
+        authority: &ActorExecutorAuthority,
+    ) -> Result<ActorInstanceHandle, ActorInstanceStoreError> {
+        match self {
+            Self::Store(activation) => activation.admit(authority),
+            Self::Session(activation) => activation.admit(authority),
+        }
+    }
+}
+
+/// The only production result that can expose a newly inserted, unadmitted
+/// instance. Dropping it removes that exact Arc and wakes admission observers.
+pub(crate) struct MaterializedActorActivation {
+    store: ActorInstanceStore,
+    handle: Option<ActorInstanceHandle>,
+}
+
+impl MaterializedActorActivation {
+    pub(crate) fn handle(&self) -> &ActorInstanceHandle {
+        self.handle
+            .as_ref()
+            .expect("materialized Actor activation handle is present until admission")
+    }
+
+    pub(crate) fn admit(
+        mut self,
+        authority: &ActorExecutorAuthority,
+    ) -> Result<ActorInstanceHandle, ActorInstanceStoreError> {
+        let handle = self
+            .handle
+            .as_ref()
+            .expect("materialized Actor activation handle is present until admission");
+        self.store.mark_admitted(authority, handle)?;
+        Ok(self
+            .handle
+            .take()
+            .expect("successful Actor admission consumes the guarded handle"))
+    }
+
+    fn take_for_session(mut self) -> ActorInstanceHandle {
+        self.handle
+            .take()
+            .expect("session claim consumes the guarded store handle")
+    }
+}
+
+impl Drop for MaterializedActorActivation {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.store.discard_exact(&handle);
+        }
+    }
+}
+
+pub(crate) struct SessionMaterializedActorActivation {
+    tracker: Arc<ActorInstanceSessionTracker>,
+    session: ActorInstanceSessionLease,
+    handle: Option<ActorInstanceHandle>,
+}
+
+impl SessionMaterializedActorActivation {
+    fn handle(&self) -> &ActorInstanceHandle {
+        self.handle
+            .as_ref()
+            .expect("session Actor materialization is present until admission")
+    }
+
+    fn admit(
+        mut self,
+        authority: &ActorExecutorAuthority,
+    ) -> Result<ActorInstanceHandle, ActorInstanceStoreError> {
+        let handle = self
+            .handle
+            .as_ref()
+            .expect("session Actor materialization is present until admission");
+        self.tracker
+            .commit_session_activation(&self.session, authority, handle)?;
+        Ok(self
+            .handle
+            .take()
+            .expect("successful session Actor admission consumes the guarded handle"))
+    }
+}
+
+impl Drop for SessionMaterializedActorActivation {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.tracker
+                .discard_provisional_exact(&self.session, &handle);
+        }
+    }
+}
+
 /// Opaque executor-facing identity. It intentionally exposes no field values.
 #[derive(Debug, Clone)]
 pub struct ActorInstanceHandle {
@@ -144,6 +256,10 @@ pub struct ActorInstanceHandle {
 impl ActorInstanceHandle {
     pub fn fence(&self) -> &ActorInstanceFence {
         &self.fence
+    }
+
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.instance, &other.instance)
     }
 }
 
@@ -156,6 +272,15 @@ struct ActorInstance {
     upgrading: AtomicBool,
     admitted: AtomicBool,
     admission_notify: tokio::sync::Notify,
+    #[cfg(test)]
+    admission_wait_before_poll_action: Mutex<Option<AdmissionWaitBeforePollTestAction>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum AdmissionWaitBeforePollTestAction {
+    Admit,
+    Discard,
 }
 
 #[derive(Debug)]
@@ -214,6 +339,22 @@ pub(crate) struct ActorInstanceExecutionLease {
     token: Arc<ActorExecutionToken>,
     fields: Arc<Mutex<Vec<ActorFieldValue>>>,
     heap: Option<RequestHeap>,
+}
+
+/// A fully detached Actor state image ready for atomic publication.
+///
+/// The executor constructs this from the persistent field roots in a fresh
+/// heap. Keeping the fields and heap inseparable prevents publishing handles
+/// that belong to a different request heap.
+pub(crate) struct ActorInstanceExecutionSnapshot {
+    fields: Vec<ActorFieldValue>,
+    heap: RequestHeap,
+}
+
+impl ActorInstanceExecutionSnapshot {
+    pub(crate) fn new(fields: Vec<ActorFieldValue>, heap: RequestHeap) -> Self {
+        Self { fields, heap }
+    }
 }
 
 pub(crate) struct ActorExecutionToken {
@@ -283,8 +424,66 @@ pub struct ActorInstanceSessionTracker {
 
 #[derive(Debug, Default)]
 struct ActorInstanceSessionTrackerState {
+    open_sessions: HashMap<String, Arc<ActorInstanceSessionState>>,
     by_session: HashMap<String, Vec<ActorInstanceHandle>>,
-    handle_owners: HashMap<usize, (String, Weak<ActorInstance>)>,
+    handle_owners: HashMap<usize, ActorInstanceOwner>,
+}
+
+#[derive(Debug)]
+struct ActorInstanceOwner {
+    session_id: String,
+    session: Weak<ActorInstanceSessionState>,
+    instance: Weak<ActorInstance>,
+}
+
+impl ActorInstanceOwner {
+    fn matches(
+        &self,
+        session_id: &str,
+        session: &Arc<ActorInstanceSessionState>,
+        instance: &Arc<ActorInstance>,
+    ) -> bool {
+        self.session_id == session_id
+            && self
+                .session
+                .upgrade()
+                .is_some_and(|owner_session| Arc::ptr_eq(&owner_session, session))
+            && self
+                .instance
+                .upgrade()
+                .is_some_and(|owner_instance| Arc::ptr_eq(&owner_instance, instance))
+    }
+}
+
+#[derive(Debug)]
+struct ActorInstanceSessionState {
+    open: AtomicBool,
+    closed: tokio::sync::Notify,
+}
+
+/// Opaque capability for one exact Router connection generation.
+#[derive(Debug, Clone)]
+pub struct ActorInstanceSessionLease {
+    router_session_id: String,
+    state: Arc<ActorInstanceSessionState>,
+}
+
+impl ActorInstanceSessionLease {
+    pub fn router_session_id(&self) -> &str {
+        &self.router_session_id
+    }
+
+    pub async fn wait_closed(&self) {
+        loop {
+            let notified = self.state.closed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.state.open.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 impl ActorInstanceSessionTracker {
@@ -299,8 +498,222 @@ impl ActorInstanceSessionTracker {
         &self.store
     }
 
+    /// Opens the ownership scope for one Router connection.
+    ///
+    /// Router session ids are generated once per WebSocket connection. The open-session set is
+    /// intentionally independent from tracked handles: evicting the last Actor must not close the
+    /// connection, while absence means an unknown or already-closed connection cannot publish a
+    /// late Actor instance.
+    pub fn open_session(
+        &self,
+        router_session_id: &str,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        if router_session_id.is_empty() {
+            return Err(ActorInstanceSessionTrackError::EmptySessionId);
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if state.open_sessions.contains_key(router_session_id) {
+            return Err(ActorInstanceSessionTrackError::SessionAlreadyOpen {
+                router_session_id: router_session_id.to_string(),
+            });
+        }
+        state.open_sessions.insert(
+            router_session_id.to_string(),
+            Arc::new(ActorInstanceSessionState {
+                open: AtomicBool::new(true),
+                closed: tokio::sync::Notify::new(),
+            }),
+        );
+        Ok(())
+    }
+
+    pub fn session_lease(
+        &self,
+        router_session_id: &str,
+    ) -> Result<ActorInstanceSessionLease, ActorInstanceSessionTrackError> {
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        let session = state.open_sessions.get(router_session_id).ok_or_else(|| {
+            ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            }
+        })?;
+        Ok(ActorInstanceSessionLease {
+            router_session_id: router_session_id.to_string(),
+            state: Arc::clone(session),
+        })
+    }
+
+    pub(crate) fn begin_activation(
+        self: &Arc<Self>,
+        session: &ActorInstanceSessionLease,
+        request: ActorActivationRequest<'_>,
+    ) -> Result<ActorActivation, ActorInstanceSessionTrackError> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        let router_session_id = session.router_session_id();
+        let Some(current_session) = state.open_sessions.get(router_session_id).cloned() else {
+            return Err(ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            });
+        };
+        if !Arc::ptr_eq(&current_session, &session.state)
+            || !session.state.open.load(Ordering::Acquire)
+        {
+            return Err(ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            });
+        }
+        let activation = self.store.begin_activation(request).map_err(|error| {
+            ActorInstanceSessionTrackError::ActivationFailed {
+                message: error.to_string(),
+            }
+        })?;
+        let handle = match &activation {
+            ActorActivation::Existing(handle) => handle,
+            ActorActivation::Materialized(materialized) => materialized.handle(),
+        };
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        if let Some(owner) = state.handle_owners.get(&identity) {
+            if owner
+                .instance
+                .upgrade()
+                .is_some_and(|tracked| Arc::ptr_eq(&tracked, &handle.instance))
+            {
+                if owner.matches(router_session_id, &current_session, &handle.instance) {
+                    return Ok(activation);
+                }
+                return Err(ActorInstanceSessionTrackError::AlreadyTracked {
+                    owner_session_id: owner.session_id.clone(),
+                });
+            }
+        }
+        if matches!(&activation, ActorActivation::Existing(_)) {
+            return Err(ActorInstanceSessionTrackError::NotPublishable {
+                message: "existing Actor instance has no session owner".to_string(),
+            });
+        }
+        state.handle_owners.insert(
+            identity,
+            ActorInstanceOwner {
+                session_id: router_session_id.to_string(),
+                session: Arc::downgrade(&current_session),
+                instance: Arc::downgrade(&handle.instance),
+            },
+        );
+        state
+            .by_session
+            .entry(router_session_id.to_string())
+            .or_default()
+            .push(handle.clone());
+        let ActorActivation::Materialized(ActorMaterialization::Store(store_activation)) =
+            activation
+        else {
+            unreachable!("new session activation must hold the store materialization guard")
+        };
+        let handle = Some(store_activation.take_for_session());
+        Ok(ActorActivation::Materialized(
+            ActorMaterialization::Session(SessionMaterializedActorActivation {
+                tracker: Arc::clone(self),
+                session: session.clone(),
+                handle,
+            }),
+        ))
+    }
+
+    fn commit_session_activation(
+        &self,
+        session: &ActorInstanceSessionLease,
+        authority: &ActorExecutorAuthority,
+        handle: &ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceStoreError> {
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        let current_session = state
+            .open_sessions
+            .get(session.router_session_id())
+            .filter(|current| Arc::ptr_eq(current, &session.state))
+            .ok_or(ActorInstanceStoreError::InstanceReplaced)?;
+        if !current_session.open.load(Ordering::Acquire) {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let owned = state.handle_owners.get(&identity).is_some_and(|owner| {
+            owner.matches(
+                session.router_session_id(),
+                current_session,
+                &handle.instance,
+            )
+        });
+        if !owned {
+            return Err(ActorInstanceStoreError::InstanceReplaced);
+        }
+        self.store.mark_admitted(authority, handle)
+    }
+
+    fn discard_provisional_exact(
+        &self,
+        session: &ActorInstanceSessionLease,
+        handle: &ActorInstanceHandle,
+    ) -> bool {
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        let owned = state.handle_owners.get(&identity).is_some_and(|owner| {
+            owner.session.upgrade().is_some_and(|owner_session| {
+                owner.matches(
+                    session.router_session_id(),
+                    &owner_session,
+                    &handle.instance,
+                ) && Arc::ptr_eq(&owner_session, &session.state)
+            })
+        });
+        if !owned {
+            return false;
+        }
+        let discarded = self.store.discard_exact(handle);
+        if let Some(handles) = state.by_session.get_mut(session.router_session_id()) {
+            handles.retain(|candidate| !Arc::ptr_eq(&candidate.instance, &handle.instance));
+            if handles.is_empty() {
+                state.by_session.remove(session.router_session_id());
+            }
+        }
+        state.handle_owners.remove(&identity);
+        discarded
+    }
+
+    pub fn is_session_open(&self, router_session_id: &str) -> bool {
+        self.state
+            .lock()
+            .expect("actor instance session tracker lock poisoned")
+            .open_sessions
+            .contains_key(router_session_id)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn tracked_owner_count_for_test(&self) -> usize {
+        self.state
+            .lock()
+            .expect("actor instance session tracker lock poisoned")
+            .handle_owners
+            .len()
+    }
+
     /// A materialized handle has exactly one Router-session owner.
-    pub fn track(
+    #[cfg(test)]
+    pub(crate) fn track(
         &self,
         router_session_id: &str,
         handle: ActorInstanceHandle,
@@ -313,22 +726,36 @@ impl ActorInstanceSessionTracker {
             .state
             .lock()
             .expect("actor instance session tracker lock poisoned");
-        if let Some((owner, tracked)) = state.handle_owners.get(&identity) {
-            if tracked
+        let current_session = state
+            .open_sessions
+            .get(router_session_id)
+            .cloned()
+            .ok_or_else(|| ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            })?;
+        self.store
+            .validate_publishable_exact(&handle)
+            .map_err(|error| ActorInstanceSessionTrackError::NotPublishable {
+                message: error.to_string(),
+            })?;
+        if let Some(owner) = state.handle_owners.get(&identity) {
+            if owner
+                .instance
                 .upgrade()
                 .is_some_and(|tracked| Arc::ptr_eq(&tracked, &handle.instance))
             {
                 return Err(ActorInstanceSessionTrackError::AlreadyTracked {
-                    owner_session_id: owner.clone(),
+                    owner_session_id: owner.session_id.clone(),
                 });
             }
         }
         state.handle_owners.insert(
             identity,
-            (
-                router_session_id.to_string(),
-                Arc::downgrade(&handle.instance),
-            ),
+            ActorInstanceOwner {
+                session_id: router_session_id.to_string(),
+                session: Arc::downgrade(&current_session),
+                instance: Arc::downgrade(&handle.instance),
+            },
         );
         state
             .by_session
@@ -336,6 +763,83 @@ impl ActorInstanceSessionTracker {
             .or_default()
             .push(handle);
         Ok(())
+    }
+
+    /// Publishes only for the exact connection generation that admitted the
+    /// detached activation task.
+    pub fn track_with_lease(
+        &self,
+        lease: &ActorInstanceSessionLease,
+        handle: ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        let router_session_id = lease.router_session_id();
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        let Some(current_session) = state.open_sessions.get(router_session_id).cloned() else {
+            return Err(ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            });
+        };
+        if !Arc::ptr_eq(&current_session, &lease.state) || !lease.state.open.load(Ordering::Acquire)
+        {
+            return Err(ActorInstanceSessionTrackError::SessionNotOpen {
+                router_session_id: router_session_id.to_string(),
+            });
+        }
+        self.store
+            .validate_publishable_exact(&handle)
+            .map_err(|error| ActorInstanceSessionTrackError::NotPublishable {
+                message: error.to_string(),
+            })?;
+        if let Some(owner) = state.handle_owners.get(&identity) {
+            if owner
+                .instance
+                .upgrade()
+                .is_some_and(|tracked| Arc::ptr_eq(&tracked, &handle.instance))
+            {
+                return Err(ActorInstanceSessionTrackError::AlreadyTracked {
+                    owner_session_id: owner.session_id.clone(),
+                });
+            }
+        }
+        state.handle_owners.insert(
+            identity,
+            ActorInstanceOwner {
+                session_id: router_session_id.to_string(),
+                session: Arc::downgrade(&current_session),
+                instance: Arc::downgrade(&handle.instance),
+            },
+        );
+        state
+            .by_session
+            .entry(router_session_id.to_string())
+            .or_default()
+            .push(handle);
+        Ok(())
+    }
+
+    /// Discards an activation which could not be published because its Router session closed.
+    ///
+    /// Holding the ownership lock across the exact store discard prevents a concurrent successful
+    /// `track` from turning this cleanup into removal of a newly owned instance.
+    pub fn discard_if_untracked(&self, handle: &ActorInstanceHandle) -> bool {
+        let identity = Arc::as_ptr(&handle.instance) as usize;
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if state.handle_owners.get(&identity).is_some_and(|owner| {
+            owner
+                .instance
+                .upgrade()
+                .is_some_and(|tracked| Arc::ptr_eq(&tracked, &handle.instance))
+        }) {
+            return false;
+        }
+        self.store.discard_exact(handle)
     }
 
     /// Applies the Runtime-side upgrade fence only to the exact instance owned
@@ -398,33 +902,43 @@ impl ActorInstanceSessionTracker {
 
     /// Takes a session before discarding, so repeated/stale cleanup is inert.
     pub fn discard_session(&self, router_session_id: &str) -> usize {
-        let handles = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("actor instance session tracker lock poisoned");
-            let handles = state
-                .by_session
-                .remove(router_session_id)
-                .unwrap_or_default();
-            handles
-        };
-        self.store.discard_exact_batch(&handles)
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        if let Some(session) = state.open_sessions.remove(router_session_id) {
+            session.open.store(false, Ordering::Release);
+            session.closed.notify_waiters();
+        }
+        let handles = state
+            .by_session
+            .remove(router_session_id)
+            .unwrap_or_default();
+        for handle in &handles {
+            state
+                .handle_owners
+                .remove(&(Arc::as_ptr(&handle.instance) as usize));
+        }
+        let discarded = self.store.discard_exact_batch(&handles);
+        discarded
     }
 
     /// Runtime shutdown discards all volatile state, never registry bootstrap.
     pub fn discard_all(&self) -> usize {
-        let handles = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("actor instance session tracker lock poisoned");
-            state
-                .by_session
-                .drain()
-                .flat_map(|(_, handles)| handles)
-                .collect::<Vec<_>>()
-        };
+        let mut state = self
+            .state
+            .lock()
+            .expect("actor instance session tracker lock poisoned");
+        for (_, session) in state.open_sessions.drain() {
+            session.open.store(false, Ordering::Release);
+            session.closed.notify_waiters();
+        }
+        state.handle_owners.clear();
+        let handles = state
+            .by_session
+            .drain()
+            .flat_map(|(_, handles)| handles)
+            .collect::<Vec<_>>();
         self.store.discard_exact_batch(&handles)
     }
 
@@ -448,8 +962,16 @@ impl ActorInstanceSessionTracker {
 pub enum ActorInstanceSessionTrackError {
     #[error("router session id must be non-empty")]
     EmptySessionId,
+    #[error("Router session {router_session_id} is already open")]
+    SessionAlreadyOpen { router_session_id: String },
+    #[error("Router session {router_session_id} is not open")]
+    SessionNotOpen { router_session_id: String },
     #[error("Actor instance handle is already tracked by Router session {owner_session_id}")]
     AlreadyTracked { owner_session_id: String },
+    #[error("Actor instance handle is not publishable: {message}")]
+    NotPublishable { message: String },
+    #[error("Actor activation failed: {message}")]
+    ActivationFailed { message: String },
 }
 
 impl ActorInstanceStore {
@@ -462,6 +984,7 @@ impl ActorInstanceStore {
     /// Decoding runs while the store mutex is held. Activation is intentionally
     /// uncommon, and this makes publication atomic: concurrent callers can
     /// never observe or duplicate a partially initialized instance.
+    #[cfg(test)]
     pub fn activate(
         &self,
         request: ActorActivationRequest<'_>,
@@ -473,7 +996,32 @@ impl ActorInstanceStore {
     /// [`Self::activate`] plus whether this call materialized a new instance
     /// (as opposed to reusing an existing incarnation). Only the materializer
     /// may run `create` and mark the instance admitted.
+    #[cfg(test)]
     pub fn activate_with_created(
+        &self,
+        request: ActorActivationRequest<'_>,
+    ) -> Result<(ActorInstanceHandle, bool), ActorInstanceStoreError> {
+        self.activate_with_created_raw(request)
+    }
+
+    pub(crate) fn begin_activation(
+        &self,
+        request: ActorActivationRequest<'_>,
+    ) -> Result<ActorActivation, ActorInstanceStoreError> {
+        let (handle, materialized) = self.activate_with_created_raw(request)?;
+        if materialized {
+            Ok(ActorActivation::Materialized(ActorMaterialization::Store(
+                MaterializedActorActivation {
+                    store: self.clone(),
+                    handle: Some(handle),
+                },
+            )))
+        } else {
+            Ok(ActorActivation::Existing(handle))
+        }
+    }
+
+    fn activate_with_created_raw(
         &self,
         request: ActorActivationRequest<'_>,
     ) -> Result<(ActorInstanceHandle, bool), ActorInstanceStoreError> {
@@ -763,45 +1311,123 @@ impl ActorInstanceStore {
             }
             let notified = instance.admission_notify.notified();
             tokio::pin!(notified);
+            notified.as_mut().enable();
             let instance = self.resolve_active_instance(handle)?;
             if instance.admitted.load(Ordering::Acquire) {
                 return Ok(instance);
             }
+            #[cfg(test)]
+            self.run_admission_wait_before_poll_test_action(handle);
             notified.await;
         }
+    }
+
+    #[cfg(test)]
+    fn install_admission_wait_before_poll_test_action(
+        &self,
+        handle: &ActorInstanceHandle,
+        action: AdmissionWaitBeforePollTestAction,
+    ) {
+        let mut pending = handle
+            .instance
+            .admission_wait_before_poll_action
+            .lock()
+            .expect("Actor admission wait test action lock poisoned");
+        assert!(pending.replace(action).is_none());
+    }
+
+    #[cfg(test)]
+    fn run_admission_wait_before_poll_test_action(&self, handle: &ActorInstanceHandle) {
+        let action = handle
+            .instance
+            .admission_wait_before_poll_action
+            .lock()
+            .expect("Actor admission wait test action lock poisoned")
+            .take();
+        match action {
+            Some(AdmissionWaitBeforePollTestAction::Admit) => self
+                .mark_admitted(&ActorExecutorAuthority::new(), handle)
+                .expect("test admission action must target the exact Actor instance"),
+            Some(AdmissionWaitBeforePollTestAction::Discard) => {
+                assert!(self.discard_exact(handle));
+            }
+            None => {}
+        }
+    }
+
+    /// Waits until this exact materialization is admitted. Exact discard wakes
+    /// the waiter and is observed as `InstanceNotFound`/`InstanceReplaced`.
+    pub(crate) async fn await_admission(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceStoreError> {
+        self.wait_until_admitted(handle).await.map(drop)
+    }
+
+    /// Publication fence used by Router-session tracking. The tracker holds its
+    /// ownership mutex while this check runs, so a disconnect and a late track
+    /// cannot register a stale or half-created handle.
+    fn validate_publishable_exact(
+        &self,
+        handle: &ActorInstanceHandle,
+    ) -> Result<(), ActorInstanceStoreError> {
+        let instance = self.resolve_active_instance(handle)?;
+        if !instance.admitted.load(Ordering::Acquire) {
+            return Err(ActorInstanceStoreError::InstanceNotAdmitted);
+        }
+        Ok(())
     }
 
     pub(crate) fn commit_execution(
         &self,
         handle: &ActorInstanceHandle,
         lease: ActorInstanceExecutionLease,
-        heap: RequestHeap,
+        snapshot: ActorInstanceExecutionSnapshot,
     ) -> Result<(), ActorInstanceStoreError> {
+        let current = self.current_instance_for_execution_lease(handle, &lease)?;
+        let mut state = current
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        state.fields = snapshot.fields;
+        state.heap = snapshot.heap;
+        lease.token.active.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Revalidates that an installed execution lease still belongs to the
+    /// exact instance currently published under `handle`.
+    ///
+    /// Token liveness alone is insufficient: same-epoch discard and
+    /// re-materialization can leave the old lease active while the store points
+    /// at a different `Arc<ActorInstance>`.
+    pub(crate) fn validate_current_execution_lease(
+        &self,
+        handle: &ActorInstanceHandle,
+        lease: &ActorInstanceExecutionLease,
+    ) -> Result<(), ActorInstanceStoreError> {
+        self.current_instance_for_execution_lease(handle, lease)
+            .map(|_| ())
+    }
+
+    fn current_instance_for_execution_lease(
+        &self,
+        handle: &ActorInstanceHandle,
+        lease: &ActorInstanceExecutionLease,
+    ) -> Result<Arc<ActorInstance>, ActorInstanceStoreError> {
         lease.token.ensure_active()?;
         let current = self.resolve_current_instance(handle)?;
         if !Arc::ptr_eq(&current, &lease.instance) {
             return Err(ActorInstanceStoreError::InstanceReplaced);
         }
-        let fields = lease
-            .fields
-            .lock()
-            .expect("actor execution fields lock poisoned")
-            .clone();
-        let mut state = current
-            .state
-            .lock()
-            .expect("actor instance state lock poisoned");
         // The nonce is private and monotonically issued by this instance. This
-        // check also makes accidental cross-instance frame reuse fail closed.
+        // also makes accidental cross-instance frame reuse fail closed.
         if lease.token.nonce == 0
             || lease.token.nonce >= current.next_execution_token.load(Ordering::Acquire)
         {
             return Err(ActorInstanceStoreError::ExecutionTokenInvalid);
         }
-        state.fields = fields;
-        state.heap = heap;
-        lease.token.active.store(false, Ordering::Release);
-        Ok(())
+        Ok(current)
     }
 
     fn resolve_current_instance(
@@ -963,6 +1589,8 @@ fn materialize_instance(
             upgrading: AtomicBool::new(false),
             admitted: AtomicBool::new(false),
             admission_notify: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            admission_wait_before_poll_action: Mutex::new(None),
         },
         heap,
     })
@@ -1070,6 +1698,8 @@ pub enum ActorInstanceStoreError {
     InstanceNotFound,
     #[error("Actor instance handle was replaced")]
     InstanceReplaced,
+    #[error("Actor instance is not admitted")]
+    InstanceNotAdmitted,
     #[error("Actor execution token is expired")]
     ExecutionTokenExpired,
     #[error("Actor execution token is invalid for this instance")]

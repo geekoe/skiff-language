@@ -38,6 +38,22 @@ flakyGet:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+synchronousSelfCall:
+  method: POST
+  path: /synchronous-self-call
+  kind: typedJson
+  handler: main.synchronousSelfCall
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+synchronousSelfCount:
+  method: POST
+  path: /synchronous-self-count
+  kind: typedJson
+  handler: main.synchronousSelfCount
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
 spawnExternal:
   method: POST
   path: /spawn-external
@@ -142,3 +158,27 @@ spawnThrow:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+actorTestEffectSpawnedFirst:
+  method: POST
+  path: /actor-test-effect/spawned-first
+  kind: rawHttp
+  handler: main.__test.actorTestEffectIngress
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+actorTestEffectSpawnedRecursive:
+  method: POST
+  path: /actor-test-effect/spawned-recursive
+  kind: rawHttp
+  handler: main.__test.actorTestEffectIngress
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+actorTestEffectDirectSync:
+  method: POST
+  path: /actor-test-effect/direct-sync
+  kind: rawHttp
+  handler: main.__test.actorTestEffectIngress
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

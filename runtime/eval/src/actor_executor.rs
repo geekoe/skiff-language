@@ -1,3 +1,14 @@
+use std::{future::Future, time::Instant};
+
+#[cfg(any(test, feature = "test-support"))]
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+};
+
 use serde_json::Value;
 use skiff_artifact_model::ActorMethodIdentity;
 use skiff_canonical_json::canonical_json_bytes;
@@ -16,11 +27,13 @@ use thiserror::Error;
 
 use crate::{
     actor_instance::{
-        resolve_actor_declaration, validate_declaration_fence, ActorExecutorAuthority,
-        ActorInstanceHandle, ActorInstanceStore, ActorInstanceStoreError,
+        resolve_actor_declaration, validate_declaration_fence, ActorActivation,
+        ActorExecutorAuthority, ActorInstanceExecutionLease, ActorInstanceHandle,
+        ActorInstanceSessionLease, ActorInstanceSessionTrackError, ActorInstanceSessionTracker,
+        ActorInstanceStore, ActorInstanceStoreError,
     },
-    error::{extract_actor_instance_store_error, RuntimeError},
-    program_execution::ProgramExecutionContext,
+    error::{extract_actor_instance_store_error, RuntimeError, ScopeTerminalCarrier},
+    program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind, ProgramExecutionContext},
     Interpreter,
 };
 
@@ -43,6 +56,8 @@ pub struct ActorMethodExecutionRequest<'a> {
 pub enum ActorMethodExecutorError {
     #[error(transparent)]
     Store(#[from] ActorInstanceStoreError),
+    #[error(transparent)]
+    Session(#[from] ActorInstanceSessionTrackError),
     #[error("Actor method identity is not declared")]
     MethodMissing,
     #[error("Actor method identity is ambiguous")]
@@ -74,8 +89,53 @@ impl<'a> ActorMethodExecutor<'a> {
         }
     }
 
-    pub async fn activate(
+    #[cfg(test)]
+    pub(crate) async fn activate(
         &self,
+        interpreter: &Interpreter,
+        context: &ProgramExecutionContext<'_>,
+        fence: crate::actor_instance::ActorInstanceFence,
+        bootstrap_encoding_version: &str,
+        bootstrap_payload: &[u8],
+    ) -> Result<ActorInstanceHandle, ActorMethodExecutorError> {
+        self.activate_inner(
+            None,
+            interpreter,
+            context,
+            fence,
+            bootstrap_encoding_version,
+            bootstrap_payload,
+        )
+        .await
+    }
+
+    pub async fn activate_for_session(
+        &self,
+        tracker: &std::sync::Arc<ActorInstanceSessionTracker>,
+        session: &ActorInstanceSessionLease,
+        interpreter: &Interpreter,
+        context: &ProgramExecutionContext<'_>,
+        fence: crate::actor_instance::ActorInstanceFence,
+        bootstrap_encoding_version: &str,
+        bootstrap_payload: &[u8],
+    ) -> Result<ActorInstanceHandle, ActorMethodExecutorError> {
+        self.activate_inner(
+            Some((tracker, session)),
+            interpreter,
+            context,
+            fence,
+            bootstrap_encoding_version,
+            bootstrap_payload,
+        )
+        .await
+    }
+
+    async fn activate_inner(
+        &self,
+        session: Option<(
+            &std::sync::Arc<ActorInstanceSessionTracker>,
+            &ActorInstanceSessionLease,
+        )>,
         interpreter: &Interpreter,
         context: &ProgramExecutionContext<'_>,
         fence: crate::actor_instance::ActorInstanceFence,
@@ -89,37 +149,51 @@ impl<'a> ActorMethodExecutor<'a> {
             legacy_program = interpreter.program_projection()?;
             legacy_program.type_view()
         };
-        let (handle, materialized) =
-            self.store
-                .activate_with_created(crate::actor_instance::ActorActivationRequest {
-                    fence,
-                    bootstrap_encoding_version,
-                    bootstrap_payload,
-                    program,
-                })?;
-        if !materialized {
-            return Ok(handle);
-        }
+        let request = crate::actor_instance::ActorActivationRequest {
+            fence,
+            bootstrap_encoding_version,
+            bootstrap_payload,
+            program,
+        };
+        let activation = match session {
+            Some((tracker, session)) => tracker.begin_activation(session, request)?,
+            None => self.store.begin_activation(request)?,
+        };
+        let admission = match activation {
+            ActorActivation::Existing(handle) => {
+                let scope = context.execution_scope()?;
+                await_store_operation_in_scope(scope, self.store.await_admission(&handle)).await?;
+                return Ok(handle);
+            }
+            ActorActivation::Materialized(admission) => admission,
+        };
+        let handle = admission.handle().clone();
         let declaration = resolve_actor_declaration(program, &handle.fence().declaration_owner)?;
         validate_declaration_fence(declaration, handle.fence())?;
         if let Some(create) = declaration.create.as_ref() {
-            if let Err(error) = self
-                .execute_create(
+            let scope = context.execution_scope()?;
+            await_actor_operation_in_scope(
+                scope,
+                self.execute_create(
                     interpreter,
                     context,
                     &handle,
                     create,
                     bootstrap_payload,
                     program,
-                )
-                .await
-            {
-                self.store.discard_exact(&handle);
-                return Err(error);
-            }
+                ),
+            )
+            .await?;
         }
-        self.store.mark_admitted(&self.authority, &handle)?;
-        Ok(handle)
+        // A create-less materialization has no evaluator body in which to observe execution
+        // control. Cross a zero-unit checkpoint while the exact admission guard is still owned.
+        context
+            .checkpoint(ExecutionCheckpoint::new(
+                ExecutionCheckpointKind::GeneratedChunk,
+                0,
+            ))
+            .map_err(ActorMethodExecutorError::Execution)?;
+        admission.admit(&self.authority).map_err(Into::into)
     }
 
     pub async fn execute(
@@ -143,10 +217,13 @@ impl<'a> ActorMethodExecutor<'a> {
         )?;
         let executable_addr = method_executable_addr(request.instance, &method.implementation);
 
-        let mut lease = self
-            .store
-            .acquire_execution(&self.authority, request.instance)
-            .await?;
+        let scope = request.context.execution_scope()?;
+        let mut lease = acquire_execution_in_scope(
+            scope,
+            self.store
+                .acquire_execution(&self.authority, request.instance),
+        )
+        .await?;
         let mut heap = lease.take_heap();
         let args = decode_arguments(
             request.arguments_payload,
@@ -167,14 +244,16 @@ impl<'a> ActorMethodExecutor<'a> {
             .context
             .clone()
             .with_actor_execution_frame(frame.clone());
+        let self_value = RuntimeValue::ActorRef(frame.current_actor_ref()?);
         let value = interpreter
-            .call_program_executable(
+            .call_program_executable_with_self_direct(
                 context,
                 &mut heap,
                 &crate::env::Env::new(),
                 &executable_addr,
                 &executable_addr,
                 &Default::default(),
+                self_value,
                 args,
             )
             .await
@@ -217,14 +296,18 @@ impl<'a> ActorMethodExecutor<'a> {
         let frame =
             ActorExecutionFrame::new(self.store.clone(), handle.clone(), lease, field_plans, true);
         let context = context.clone().with_actor_execution_frame(frame.clone());
+        let self_value = RuntimeValue::ActorRef(frame.current_actor_ref()?);
+        #[cfg(any(test, feature = "test-support"))]
+        await_actor_create_test_gate(handle).await;
         interpreter
-            .call_program_executable(
+            .call_program_executable_with_self_direct(
                 context,
                 &mut heap,
                 &crate::env::Env::new(),
                 &executable_addr,
                 &executable_addr,
                 &Default::default(),
+                self_value,
                 args,
             )
             .await
@@ -232,6 +315,205 @@ impl<'a> ActorMethodExecutor<'a> {
         frame.finish(heap)?;
         Ok(())
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+struct ActorCreateTestGateState {
+    entered: AtomicBool,
+    released: AtomicBool,
+    panic_after_enter: bool,
+    entered_notify: tokio::sync::Notify,
+    release_notify: tokio::sync::Notify,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub struct InstalledActorCreateTestGate {
+    actor_id_hash: String,
+    state: Arc<ActorCreateTestGateState>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl InstalledActorCreateTestGate {
+    pub async fn wait_entered(&self) {
+        loop {
+            let notified = self.state.entered_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.state.entered.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn release(&self) {
+        self.state.released.store(true, Ordering::Release);
+        self.state.release_notify.notify_waiters();
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for InstalledActorCreateTestGate {
+    fn drop(&mut self) {
+        let mut gates = actor_create_test_gates()
+            .lock()
+            .expect("Actor create test gate lock poisoned");
+        if gates
+            .get(&self.actor_id_hash)
+            .is_some_and(|candidate| Arc::ptr_eq(candidate, &self.state))
+        {
+            gates.remove(&self.actor_id_hash);
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn install_actor_create_test_gate(
+    actor_id_hash: impl Into<String>,
+    panic_after_enter: bool,
+) -> InstalledActorCreateTestGate {
+    let actor_id_hash = actor_id_hash.into();
+    let state = Arc::new(ActorCreateTestGateState {
+        entered: AtomicBool::new(false),
+        released: AtomicBool::new(false),
+        panic_after_enter,
+        entered_notify: tokio::sync::Notify::new(),
+        release_notify: tokio::sync::Notify::new(),
+    });
+    let previous = actor_create_test_gates()
+        .lock()
+        .expect("Actor create test gate lock poisoned")
+        .insert(actor_id_hash.clone(), Arc::clone(&state));
+    assert!(previous.is_none(), "duplicate Actor create test gate");
+    InstalledActorCreateTestGate {
+        actor_id_hash,
+        state,
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn actor_create_test_gates() -> &'static Mutex<HashMap<String, Arc<ActorCreateTestGateState>>> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<ActorCreateTestGateState>>>> = OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+async fn await_actor_create_test_gate(handle: &ActorInstanceHandle) {
+    let gate = actor_create_test_gates()
+        .lock()
+        .expect("Actor create test gate lock poisoned")
+        .remove(&handle.fence().incarnation.logical_key.actor_id_hash);
+    let Some(gate) = gate else {
+        return;
+    };
+    gate.entered.store(true, Ordering::Release);
+    gate.entered_notify.notify_waiters();
+    if gate.panic_after_enter {
+        panic!("skiff-test:panic-in-actor-create");
+    }
+    loop {
+        let notified = gate.release_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if gate.released.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+async fn acquire_execution_in_scope<F>(
+    scope: skiff_runtime_capability_context::ExecutionScope,
+    acquire: F,
+) -> Result<ActorInstanceExecutionLease, ActorMethodExecutorError>
+where
+    F: Future<Output = Result<ActorInstanceExecutionLease, ActorInstanceStoreError>>,
+{
+    await_store_operation_in_scope(scope, acquire).await
+}
+
+async fn await_store_operation_in_scope<F, T>(
+    scope: skiff_runtime_capability_context::ExecutionScope,
+    operation: F,
+) -> Result<T, ActorMethodExecutorError>
+where
+    F: Future<Output = Result<T, ActorInstanceStoreError>>,
+{
+    if let Some(terminal) = scope.terminal_at(Instant::now()) {
+        return Err(ActorMethodExecutorError::Execution(
+            ScopeTerminalCarrier::runtime_error(terminal),
+        ));
+    }
+
+    let cancellation = scope.cancellation_signals();
+    let deadline = scope.effective_deadline().map(|deadline| deadline.at());
+    let deadline_wait = async move {
+        match deadline {
+            Some(deadline) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(operation);
+    tokio::pin!(deadline_wait);
+    tokio::select! {
+        biased;
+        _ = cancellation.wait_cancelled() => Err(current_scope_terminal(&scope)),
+        _ = &mut deadline_wait => Err(current_scope_terminal(&scope)),
+        result = &mut operation => result.map_err(ActorMethodExecutorError::Store),
+    }
+}
+
+async fn await_actor_operation_in_scope<F, T>(
+    scope: skiff_runtime_capability_context::ExecutionScope,
+    operation: F,
+) -> Result<T, ActorMethodExecutorError>
+where
+    F: Future<Output = Result<T, ActorMethodExecutorError>>,
+{
+    if let Some(terminal) = scope.terminal_at(Instant::now()) {
+        return Err(ActorMethodExecutorError::Execution(
+            ScopeTerminalCarrier::runtime_error(terminal),
+        ));
+    }
+
+    let cancellation = scope.cancellation_signals();
+    let deadline = scope.effective_deadline().map(|deadline| deadline.at());
+    let deadline_wait = async move {
+        match deadline {
+            Some(deadline) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(operation);
+    tokio::pin!(deadline_wait);
+    tokio::select! {
+        biased;
+        _ = cancellation.wait_cancelled() => Err(current_scope_terminal(&scope)),
+        _ = &mut deadline_wait => Err(current_scope_terminal(&scope)),
+        result = &mut operation => result,
+    }
+}
+
+fn current_scope_terminal(
+    scope: &skiff_runtime_capability_context::ExecutionScope,
+) -> ActorMethodExecutorError {
+    ActorMethodExecutorError::Execution(
+        scope
+            .terminal_at(Instant::now())
+            .map(ScopeTerminalCarrier::runtime_error)
+            .unwrap_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "Actor scheduler wait woke without an execution scope terminal".to_string(),
+                )
+            }),
+    )
 }
 
 fn actor_field_plans(

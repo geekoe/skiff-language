@@ -259,6 +259,14 @@ async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
     assert_eq!(request.target_kind, "function");
     assert_eq!(request.target, format!("function:{TARGET_SYMBOL}"));
     assert_eq!(request.activation_identity, fixture.activation_identity);
+    assert_eq!(
+        request.caller_request_id.as_deref(),
+        Some("request:canonical-spawn")
+    );
+    assert_eq!(
+        request.service_protocol_identity,
+        "protocol:canonical-spawn"
+    );
     assert_eq!(&payload[..4], b"SKRE");
     drop(submissions);
     let receipts = fixture

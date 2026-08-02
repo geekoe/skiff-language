@@ -15,6 +15,7 @@ mod strict_json;
 use lexical::{
     deserialize_assembly_identity, deserialize_dispatch_mode, deserialize_gateway_caller_kind,
     deserialize_gateway_entry_identity, deserialize_optional_test_case_capability,
+    deserialize_optional_test_case_parent_request_id,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
     deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
     deserialize_runtime_assembly_websocket_jsonrpc_connection_id,
@@ -63,6 +64,12 @@ pub struct RuntimeAssemblyRequestStartFrameHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub test_case_capability: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_test_case_parent_request_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub test_case_parent_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -558,7 +565,18 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(_) => {}
+        RuntimeAssemblyRequestStartFrameWireHeader::Http(http) => {
+            if http.test_effects_enabled != http.test_case_capability.is_some() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly HTTP request.start frame: testEffectsEnabled must match testCaseCapability presence",
+                ));
+            }
+            if http.test_case_parent_request_id.is_some() && http.test_case_capability.is_none() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly HTTP request.start frame: testCaseParentRequestId requires testCaseCapability",
+                ));
+            }
+        }
     }
     Ok((header, payload))
 }
@@ -574,6 +592,12 @@ pub enum RuntimeAssemblyWebSocketConnectResponseFrameHeader {
             skip_serializing_if = "Option::is_none"
         )]
         business_identity: Option<String>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_positive_safe_admission_rank",
+            skip_serializing_if = "Option::is_none"
+        )]
+        admission_rank: Option<u64>,
         #[serde(
             default,
             deserialize_with = "deserialize_present_option",
@@ -609,6 +633,23 @@ pub struct RuntimeAssemblyWebSocketConnectionPolicyFrameHeader {
 pub enum RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader {
     CloseOldest,
     RejectNew,
+}
+
+fn deserialize_optional_positive_safe_admission_rank<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    let value = u64::deserialize(deserializer)?;
+    if (1..=MAX_SAFE_INTEGER).contains(&value) {
+        Ok(Some(value))
+    } else {
+        Err(de::Error::custom(
+            "websocketConnect.admissionRank must be a positive safe integer",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

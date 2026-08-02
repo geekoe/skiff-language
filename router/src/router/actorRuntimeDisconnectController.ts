@@ -22,6 +22,7 @@ export class ActorRuntimeDisconnectController {
     string,
     Map<string, ActorOwnerFence>
   >();
+  private readonly connectionByOwner = new Map<string, string>();
 
   constructor(
     private readonly actorManager: ActorManager,
@@ -36,11 +37,85 @@ export class ActorRuntimeDisconnectController {
       throw new Error('actor owner fence Runtime does not match the connection');
     }
     const connectionKey = runtimeConnectionKey(connection);
+    const fenceKey = ownerFenceKey(fence);
+    const previousConnectionKey = this.connectionByOwner.get(fenceKey);
+    const previousFence = previousConnectionKey === undefined
+      ? undefined
+      : this.ownersByConnection.get(previousConnectionKey)?.get(fenceKey);
+    if (
+      previousFence !== undefined &&
+      previousFence.ownerLeaseExpiresAt.getTime() >
+        fence.ownerLeaseExpiresAt.getTime()
+    ) {
+      return;
+    }
+    if (
+      previousConnectionKey !== undefined &&
+      previousConnectionKey !== connectionKey
+    ) {
+      const previousOwners = this.ownersByConnection.get(previousConnectionKey);
+      previousOwners?.delete(fenceKey);
+      if (previousOwners?.size === 0) {
+        this.ownersByConnection.delete(previousConnectionKey);
+      }
+    }
     const owners =
       this.ownersByConnection.get(connectionKey) ??
       new Map<string, ActorOwnerFence>();
-    owners.set(ownerFenceKey(fence), cloneOwnerFence(fence));
+    owners.set(fenceKey, cloneOwnerFence(fence));
     this.ownersByConnection.set(connectionKey, owners);
+    this.connectionByOwner.set(fenceKey, connectionKey);
+  }
+
+  ownerFenceBoundToConnection(
+    connection: ActorRuntimeConnectionFence,
+    fence: ActorOwnerFence
+  ): boolean {
+    if (!this.ownerLeaseBoundToConnection(connection, fence)) {
+      return false;
+    }
+    const boundFence = this.ownersByConnection
+      .get(runtimeConnectionKey(connection))
+      ?.get(ownerFenceKey(fence));
+    return (
+      boundFence !== undefined &&
+      boundFence.ownerLeaseExpiresAt.getTime() ===
+        fence.ownerLeaseExpiresAt.getTime()
+    );
+  }
+
+  ownerLeaseBoundToConnection(
+    connection: ActorRuntimeConnectionFence,
+    fence: ActorOwnerFence
+  ): boolean {
+    if (connection.runtimeId !== fence.ownerRuntimeId) {
+      return false;
+    }
+    const connectionKey = runtimeConnectionKey(connection);
+    const fenceKey = ownerFenceKey(fence);
+    if (this.connectionByOwner.get(fenceKey) !== connectionKey) {
+      return false;
+    }
+    const boundFence = this.ownersByConnection.get(connectionKey)?.get(fenceKey);
+    return boundFence !== undefined && sameOwnerLeaseFence(boundFence, fence);
+  }
+
+  unbindOwner(
+    connection: ActorRuntimeConnectionFence,
+    fence: ActorOwnerFence
+  ): boolean {
+    if (!this.ownerFenceBoundToConnection(connection, fence)) {
+      return false;
+    }
+    const connectionKey = runtimeConnectionKey(connection);
+    const fenceKey = ownerFenceKey(fence);
+    const owners = this.ownersByConnection.get(connectionKey)!;
+    owners.delete(fenceKey);
+    if (owners.size === 0) {
+      this.ownersByConnection.delete(connectionKey);
+    }
+    this.connectionByOwner.delete(fenceKey);
+    return true;
   }
 
   async handleRuntimeDisconnect(
@@ -56,7 +131,11 @@ export class ActorRuntimeDisconnectController {
     const releasedOwners: ActorOwnerFence[] = [];
     const failedInvocations: ActorInvocationLedger[] = [];
     const now = this.now();
-    for (const fence of owners.values()) {
+    for (const [fenceKey, fence] of owners) {
+      if (this.connectionByOwner.get(fenceKey) !== connectionKey) {
+        continue;
+      }
+      this.connectionByOwner.delete(fenceKey);
       if (fence.ownerRuntimeId !== connection.runtimeId) {
         continue;
       }
@@ -72,6 +151,33 @@ export class ActorRuntimeDisconnectController {
     }
     return { releasedOwners, failedInvocations };
   }
+}
+
+function sameOwnerLeaseFence(
+  left: ActorOwnerFence,
+  right: ActorOwnerFence
+): boolean {
+  return (
+    ownerFenceKey(left) === ownerFenceKey(right) &&
+    left.actorKey.actorIdTypeIdentity === right.actorKey.actorIdTypeIdentity &&
+    left.actorKey.actorIdEncodingVersion === right.actorKey.actorIdEncodingVersion &&
+    bytesEqual(
+      left.actorKey.canonicalActorIdKeyBytes,
+      right.actorKey.canonicalActorIdKeyBytes
+    )
+  );
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function runtimeConnectionKey(connection: ActorRuntimeConnectionFence): string {

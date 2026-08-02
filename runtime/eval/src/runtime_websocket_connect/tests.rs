@@ -57,7 +57,8 @@ fn websocket_connect_result_decodes_accept_with_optional_identity_and_policy() {
                     "overflow": "close-oldest",
                     "closeCode": 4001,
                     "closeReason": "replaced"
-                }
+                },
+                "admissionRank": 42
             })
         )
         .unwrap(),
@@ -69,6 +70,7 @@ fn websocket_connect_result_decodes_accept_with_optional_identity_and_policy() {
                 close_code: Some(4001),
                 close_reason: Some("replaced".to_string()),
             }),
+            admission_rank: Some(42),
         }
     );
     assert_eq!(
@@ -77,13 +79,15 @@ fn websocket_connect_result_decodes_accept_with_optional_identity_and_policy() {
             json!({
                 "tag": "accept",
                 "businessIdentity": null,
-                "connectionPolicy": null
+                "connectionPolicy": null,
+                "admissionRank": null
             })
         )
         .unwrap(),
         RuntimeWebSocketConnectResult::Accept {
             business_identity: None,
             connection_policy: None,
+            admission_rank: None,
         }
     );
 }
@@ -113,7 +117,20 @@ fn websocket_connect_result_decodes_reject_and_refuses_noncanonical_shapes() {
                 "overflow": "close-oldest",
                 "closeCode": null,
                 "closeReason": null
-            }
+            },
+            "admissionRank": 1
+        }),
+        json!({
+            "tag": "accept",
+            "businessIdentity": null,
+            "connectionPolicy": null,
+            "admissionRank": 0
+        }),
+        json!({
+            "tag": "accept",
+            "businessIdentity": null,
+            "connectionPolicy": null,
+            "admissionRank": 9_007_199_254_740_992_u64
         }),
         json!({"tag": "reject", "code": 65536, "reason": "policy"}),
         json!({"tag": "reject", "code": 1008, "reason": "policy", "legacy": true}),

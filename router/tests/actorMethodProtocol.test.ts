@@ -57,6 +57,36 @@ test('all required invocation coordinates fail closed', () => {
   }
 });
 
+test('test Actor invocation metadata is an exact paired token authority', () => {
+  const invoke = corpus.find((candidate) => candidate.name === 'invoke')!;
+  const accepted = structuredClone(invoke.header);
+  accepted.testCaseCapability = 'case:opaque_1.capability';
+  accepted.testCaseParentRequestId = 'request:parent_1';
+  expect(
+    decodeActorMethodFrame(
+      encodeBinaryFrame(accepted, Buffer.from(invoke.payloadBase64, 'base64'))
+    ).header
+  ).toEqual(accepted);
+
+  for (const [capability, parentRequestId] of [
+    [undefined, 'request:parent_1'],
+    ['case:opaque_1.capability', undefined],
+    ['', 'request:parent_1'],
+    ['contains/slash', 'request:parent_1'],
+    ['case:opaque_1.capability', 'contains space'],
+    ['a'.repeat(257), 'request:parent_1'],
+  ] as const) {
+    const rejected = structuredClone(invoke.header);
+    if (capability !== undefined) rejected.testCaseCapability = capability;
+    if (parentRequestId !== undefined) {
+      rejected.testCaseParentRequestId = parentRequestId;
+    }
+    expect(() =>
+      decodeActorMethodFrame(encodeBinaryFrame(rejected, new Uint8Array()))
+    ).toThrow();
+  }
+});
+
 test('all three actor errors retain typed context', () => {
   const actorRef = (corpus.find((candidate) => candidate.name === 'invoke')!.header.actorRef);
   const implementation = 'skiff-actor-implementation-v1:sha256:' + 'd'.repeat(64);

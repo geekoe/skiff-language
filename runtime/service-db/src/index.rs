@@ -1,6 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+};
 
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use mongodb::{
     bson::{Bson, Document},
     options::{Collation, IndexOptions},
@@ -16,6 +19,11 @@ use crate::{
 const MANAGED_INDEX_PREFIX: &str = "skiff_midx_v1_";
 const UNIQUE_PROVISION_FAILURE: &str =
     "service database unique index cannot be provisioned because existing records violate the declared constraint";
+/// Bounds Mongo catalog/index work during assembly activation. A database is the concurrency
+/// unit: collections within one database remain strictly ordered, while independent databases
+/// can make progress together. Eight is a conservative bound compatible with the Mongo driver's
+/// current ten-connection default, leaving two connections available for unrelated work.
+const DATABASE_RECONCILIATION_CONCURRENCY: usize = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ManagedIndexSpec {
@@ -129,27 +137,74 @@ impl ServiceDbIndexProvisionPlan {
     }
 
     pub(crate) async fn reconcile(&self) -> Result<()> {
-        for database in self.databases.values() {
-            let client_cell = crate::service_db_client_cell(&database.mongo_url);
-            let client = client_cell
-                .get_or_try_init(|| async {
-                    let options = crate::service_db_client_options(&database.mongo_url).await?;
-                    mongodb::Client::with_options(options)
-                })
-                .await
-                .cloned()
-                .map_err(ServiceDbError::from)?;
-            let mongo_database = client.database(&database.database_name);
-            for collection in database.collections.values() {
-                reconcile_collection(
-                    mongo_database.collection::<Document>(&collection.physical_collection),
-                    collection,
-                )
-                .await?;
-            }
-        }
-        Ok(())
+        reconcile_databases_bounded(
+            self.databases.values(),
+            DATABASE_RECONCILIATION_CONCURRENCY,
+            reconcile_database,
+        )
+        .await
     }
+}
+
+async fn reconcile_database(database: &DatabaseIndexPlan) -> Result<()> {
+    let client_cell = crate::service_db_client_cell(&database.mongo_url);
+    let client = client_cell
+        .get_or_try_init(|| async {
+            let options = crate::service_db_client_options(&database.mongo_url).await?;
+            mongodb::Client::with_options(options)
+        })
+        .await
+        .cloned()
+        .map_err(ServiceDbError::from)?;
+    let mongo_database = client.database(&database.database_name);
+    reconcile_collections_in_order(database.collections.values(), |collection| {
+        reconcile_collection(
+            mongo_database.collection::<Document>(&collection.physical_collection),
+            collection,
+        )
+    })
+    .await
+}
+
+/// Runs independent database units with a fixed in-task bound. Success means every database has
+/// completed. The first observed failure returns immediately and drops the remaining futures,
+/// preserving fail-fast activation when a peer database is slow or permanently pending. No task
+/// is spawned per database: `buffer_unordered` owns at most `concurrency_limit` live futures.
+async fn reconcile_databases_bounded<Input, Error, Reconcile, ReconcileFuture>(
+    databases: impl IntoIterator<Item = Input>,
+    concurrency_limit: usize,
+    reconcile: Reconcile,
+) -> std::result::Result<(), Error>
+where
+    Reconcile: Fn(Input) -> ReconcileFuture,
+    ReconcileFuture: Future<Output = std::result::Result<(), Error>>,
+{
+    assert!(
+        concurrency_limit > 0,
+        "database reconciliation concurrency must be non-zero"
+    );
+    let mut pending =
+        stream::iter(databases.into_iter().map(reconcile)).buffer_unordered(concurrency_limit);
+    while let Some(result) = pending.next().await {
+        result?;
+    }
+    Ok(())
+}
+
+/// Preserves the existing per-database contract: collections are reconciled in plan order and the
+/// first collection failure stops that database before a later collection can begin.
+async fn reconcile_collections_in_order<Input, Error, Reconcile, ReconcileFuture>(
+    collections: impl IntoIterator<Item = Input>,
+    reconcile: Reconcile,
+) -> std::result::Result<(), Error>
+where
+    Reconcile: Fn(Input) -> ReconcileFuture,
+    ReconcileFuture: Future<Output = std::result::Result<(), Error>>,
+{
+    for collection in collections {
+        reconcile(collection).await?;
+    }
+    Ok(())
 }
 
 fn collection_index_plan(
@@ -415,5 +470,7 @@ fn canonical_managed_index_spec(
     })
 }
 
+#[cfg(test)]
+mod concurrency_tests;
 #[cfg(test)]
 mod tests;

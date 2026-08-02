@@ -9,22 +9,12 @@ pub struct NativeRegistry;
 
 impl NativeRegistry {
     pub fn is_registered(&self, target_or_callee: &str) -> bool {
-        debug_assert!(
-            Self::validate_builtin_handlers().is_ok(),
-            "native handler registry table should validate"
-        );
-
         handler_entries()
             .iter()
             .any(|binding| binding.matches(target_or_callee))
     }
 
     pub fn dispatch(&self, target_or_callee: &str, args: &[Value]) -> Result<Option<Value>> {
-        debug_assert!(
-            Self::validate_builtin_handlers().is_ok(),
-            "native handler registry table should validate"
-        );
-
         let Some(binding) = handler_entries()
             .iter()
             .find(|binding| binding.matches(target_or_callee))
@@ -39,6 +29,7 @@ impl NativeRegistry {
         RuntimeError::Unsupported(format!("unsupported native target {target_or_callee}"))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn validate_builtin_handlers() -> table::RegistryValidationResult {
         validate_handler_table()
     }

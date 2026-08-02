@@ -1,4 +1,9 @@
-use std::{env, path::PathBuf, process};
+use std::{
+    env,
+    path::PathBuf,
+    process,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::json;
 use skiff_artifact_identity::{runtime_assembly_ref, PackageArtifactRecordPath};
@@ -13,9 +18,12 @@ use skiff_runtime_config_snapshot::{
 };
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
-    canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
+    canonical_package::compile_package_project_for_test,
+    canonical_std_seed::seed_canonical_std,
     package_service_host_fixture::prepare_package_service_host_fixture,
-    test_service_fixture::assemble_test_service_fixture,
+    test_service_fixture::{
+        assemble_test_service_fixture, assemble_test_service_fixture_for_run_with_ingress,
+    },
 };
 
 const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
@@ -209,14 +217,31 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     if cases.is_empty() {
         anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
     }
-    let fixture =
-        assemble_test_service_fixture(&project, &cases, Default::default(), &args.environment)?;
-    let [case] = fixture.cases.as_slice() else {
-        anyhow::bail!(
-            "smoke fixture requires exactly one test case, found {}",
-            fixture.cases.len()
-        );
+    let run_scope = format!(
+        "package-service-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock after Unix epoch")
+            .as_nanos()
+    );
+    let fixture = match env::var("SKIFF_TEST_INGRESS_URL").ok() {
+        Some(ingress_url) => assemble_test_service_fixture_for_run_with_ingress(
+            &project,
+            &cases,
+            Default::default(),
+            &run_scope,
+            &ingress_url,
+            &args.environment,
+        )?,
+        None => {
+            assemble_test_service_fixture(&project, &cases, Default::default(), &args.environment)?
+        }
     };
+    let case = fixture
+        .cases
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("smoke fixture requires at least one test case"))?;
     fixture.publish(&args.artifact_root, &args.artifact_root)?;
 
     let store = CanonicalArtifactStore::open(&args.artifact_root)?;

@@ -7,28 +7,30 @@ enum ActorReply {
 }
 
 #[derive(Clone)]
-struct RecordingActor {
+pub(super) struct RecordingActor {
     state: Arc<RecordingActorState>,
 }
 
 struct RecordingActorState {
     reply: Mutex<Option<ActorReply>>,
+    requests: Mutex<Vec<ActorInvocationRequest>>,
     starts: AtomicUsize,
     drops_before_completion: AtomicUsize,
 }
 
 impl RecordingActor {
-    fn ready(outcome: CapabilityResult<ActorInvocationOutcome>) -> Self {
+    pub(super) fn ready(outcome: CapabilityResult<ActorInvocationOutcome>) -> Self {
         Self {
             state: Arc::new(RecordingActorState {
                 reply: Mutex::new(Some(ActorReply::Ready(outcome))),
+                requests: Mutex::new(Vec::new()),
                 starts: AtomicUsize::new(0),
                 drops_before_completion: AtomicUsize::new(0),
             }),
         }
     }
 
-    fn pending() -> (
+    pub(super) fn pending() -> (
         Self,
         oneshot::Sender<CapabilityResult<ActorInvocationOutcome>>,
     ) {
@@ -37,6 +39,7 @@ impl RecordingActor {
             Self {
                 state: Arc::new(RecordingActorState {
                     reply: Mutex::new(Some(ActorReply::Pending(receiver))),
+                    requests: Mutex::new(Vec::new()),
                     starts: AtomicUsize::new(0),
                     drops_before_completion: AtomicUsize::new(0),
                 }),
@@ -45,8 +48,16 @@ impl RecordingActor {
         )
     }
 
-    fn starts(&self) -> usize {
+    pub(super) fn starts(&self) -> usize {
         self.state.starts.load(Ordering::Acquire)
+    }
+
+    pub(super) fn requests(&self) -> Vec<ActorInvocationRequest> {
+        self.state
+            .requests
+            .lock()
+            .expect("Actor request lock")
+            .clone()
     }
 }
 
@@ -110,9 +121,14 @@ impl ActorCapabilityApi for RecordingActor {
 
     fn invoke_actor<'a>(
         &'a self,
-        _request: ActorInvocationRequest,
+        request: ActorInvocationRequest,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ActorInvocationOutcome> {
+        self.state
+            .requests
+            .lock()
+            .expect("Actor request lock")
+            .push(request);
         self.state.starts.fetch_add(1, Ordering::AcqRel);
         let reply = self
             .state
@@ -271,7 +287,19 @@ fn actor_dispatch_env(fixture: &EvaluatorFixture) -> Env {
     env
 }
 
-fn actor_return(value: i64) -> ActorInvocationOutcome {
+fn bad_actor_dispatch_env(fixture: &EvaluatorFixture) -> Env {
+    let mut env = Env::for_program_executable(
+        fixture.executable(),
+        Some(fixture.file.module_path.clone()),
+        0,
+    )
+    .expect("bad Actor dispatch env");
+    env.declare_binding("receiver", Some(0), RuntimeValue::Null)
+        .expect("bad Actor receiver binding");
+    env
+}
+
+pub(super) fn actor_return(value: i64) -> ActorInvocationOutcome {
     ActorInvocationOutcome::Returned(
         canonical_json_bytes(&json!(value)).expect("Actor return payload"),
     )
@@ -336,4 +364,33 @@ async fn f445h_e4r_spine_actor_dispatch_pending_reacquires_before_finalize() {
         "Actor completion must reacquire before return decode/finalize"
     );
     frame.finish(heap).expect("finish Actor Pending frame");
+}
+
+#[tokio::test]
+async fn actor_dispatch_non_actor_receiver_remains_fail_closed() {
+    let actor = RecordingActor::ready(Ok(actor_return(11)));
+    let fixture = actor_dispatch_fixture();
+    let (frame, mut heap) = fixture.actor_frame().await;
+    let mut env = bad_actor_dispatch_env(&fixture);
+    let addr = executable_addr();
+    let context = program_context_with(
+        &fixture.interpreter,
+        ActorCapabilityContext::new(actor.clone()),
+        test_runtime::request_context(),
+        test_runtime::file_context(),
+        DbCapabilityContext::unavailable(),
+    );
+
+    let error = fixture
+        .eval_context_with(context, frame.clone(), &mut heap, &mut env, &addr)
+        .exec_program_executable()
+        .await
+        .expect_err("non-Actor receiver must fail closed");
+
+    assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
+    assert!(error
+        .to_string()
+        .contains("Actor method receiver is not an Actor reference"));
+    assert_eq!(actor.starts(), 0, "bad receiver must not reach capability");
+    frame.finish(heap).expect("finish bad receiver frame");
 }

@@ -42,7 +42,9 @@ import type {
 import {
   WebSocketConnectionLifecycle,
   WebSocketConnectionLimitExceededError,
-  type WebSocketConnectionPolicy
+  type WebSocketConnectionPolicy,
+  type WebSocketLifecycleClose,
+  type WebSocketLifecyclePreAttachClose
 } from './webSocketConnectionLifecycle.js';
 import {
   attachWebSocketRpcConnection,
@@ -131,6 +133,7 @@ export interface AssemblyWebSocketGatewayOptions {
     sender: WebSocket,
     serviceId: string
   ): WebSocketRuntimeOwner | undefined;
+  admissionHighWaterLimit?: number;
   connectionLimit?: number;
   slowClientBudgetBytes?: number;
   shutdownTimeoutMs?: number;
@@ -149,9 +152,13 @@ interface Connection extends WebSocketRpcIngressCapture {
 
 interface PreparedUpgrade {
   connection: Connection;
+  pendingTransport: {
+    close?: WebSocketLifecycleClose;
+  };
 }
 
 interface ConnectAccept {
+  admissionRank?: number;
   businessIdentity?: string;
   connectionPolicy?: WebSocketConnectionPolicy;
 }
@@ -181,6 +188,10 @@ export class AssemblyWebSocketGateway {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.lifecycle = new WebSocketConnectionLifecycle(
       {
+        ...(options.admissionHighWaterLimit === undefined
+          ? {}
+          : { admissionHighWaterLimit: options.admissionHighWaterLimit }),
+        admissionHighWaterRetentionMs: this.requestTimeoutMs,
         ...(options.connectionLimit === undefined
           ? {}
           : { connectionLimit: options.connectionLimit }),
@@ -267,6 +278,10 @@ export class AssemblyWebSocketGateway {
     return this.lifecycle.connectionCount();
   }
 
+  admissionHighWaterSize(): number {
+    return this.lifecycle.admissionHighWaterSize();
+  }
+
   private readonly handleUpgrade = (
     request: IncomingMessage,
     socket: Socket,
@@ -286,6 +301,7 @@ export class AssemblyWebSocketGateway {
   ): Promise<void> {
     const selection = selectWebSocketIngress(this.options.snapshots.get(), request);
     const clientDisconnect = upgradeClientDisconnectSignal(request, socket);
+    const pendingTransport: PreparedUpgrade['pendingTransport'] = {};
     let prepared: PreparedUpgrade;
     try {
       prepared = await this.prepareUpgrade(
@@ -294,9 +310,14 @@ export class AssemblyWebSocketGateway {
         request,
         selection.url,
         clientDisconnect.signal,
-        () => {
-          clientDisconnect.abort();
-          socket.destroy();
+        pendingTransport,
+        (input) => {
+          if (input.disposition === 'close-after-upgrade') {
+            pendingTransport.close = input.close;
+          } else {
+            clientDisconnect.abort();
+            socket.destroy();
+          }
         }
       );
     } finally {
@@ -305,7 +326,12 @@ export class AssemblyWebSocketGateway {
 
     try {
       this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-        this.attachSocket(prepared.connection, webSocket);
+        const close = prepared.pendingTransport.close;
+        if (close === undefined) {
+          this.attachSocket(prepared.connection, webSocket);
+        } else {
+          webSocket.close(close.code, boundedCloseReason(close.reason));
+        }
       });
     } catch (error) {
       this.lifecycle.release(prepared.connection.id);
@@ -319,7 +345,8 @@ export class AssemblyWebSocketGateway {
     request: IncomingMessage,
     url: URL,
     signal: AbortSignal,
-    closeBeforeAttach: () => void
+    pendingTransport: PreparedUpgrade['pendingTransport'],
+    closeBeforeAttach: (input: WebSocketLifecyclePreAttachClose) => void
   ): Promise<PreparedUpgrade> {
     const connection = this.createConnection(
       snapshot,
@@ -349,15 +376,22 @@ export class AssemblyWebSocketGateway {
         ...(businessKey === null ? {} : { businessKey }),
         ...(accepted.connectionPolicy === undefined
           ? {}
-          : { policy: accepted.connectionPolicy })
+          : { policy: accepted.connectionPolicy }),
+        ...(accepted.admissionRank === undefined
+          ? {}
+          : { admissionRank: accepted.admissionRank })
       });
       if (!admission.accepted) {
-        throw new WebSocketCloseError(
-          admission.close.code,
-          admission.close.reason
-        );
+        if (accepted.admissionRank !== undefined) {
+          pendingTransport.close = admission.close;
+        } else {
+          throw new WebSocketCloseError(
+            admission.close.code,
+            admission.close.reason
+          );
+        }
       }
-      return { connection };
+      return { connection, pendingTransport };
     } catch (error) {
       this.lifecycle.release(connection.id);
       throw error;
@@ -367,7 +401,7 @@ export class AssemblyWebSocketGateway {
   private createConnection(
     snapshot: RouterActiveAssemblySnapshot,
     binding: RuntimeAssemblyIngressBinding,
-    closeBeforeAttach: () => void
+    closeBeforeAttach: (input: WebSocketLifecyclePreAttachClose) => void
   ): Connection {
     const connection: Connection = {
       id: randomUUID(),
@@ -378,7 +412,7 @@ export class AssemblyWebSocketGateway {
         connection.id,
         connection,
         undefined,
-        () => closeBeforeAttach()
+        closeBeforeAttach
       );
     } catch (error) {
       if (error instanceof WebSocketConnectionLimitExceededError) {
@@ -815,10 +849,34 @@ function decodeWebSocketConnectResponse(
     metadata.connectionPolicy,
     businessIdentity
   );
+  const admissionRank = validateAdmissionRank(metadata.admissionRank);
+  if (
+    admissionRank !== undefined &&
+    (businessIdentity === undefined ||
+      connectionPolicy?.overflow !== 'close-oldest' ||
+      connectionPolicy.maxConnections !== 1)
+  ) {
+    throw invalidConnectResult(
+      'connect returned admissionRank without businessIdentity and a single-connection close-oldest policy'
+    );
+  }
   return {
     ...(businessIdentity === undefined ? {} : { businessIdentity }),
-    ...(connectionPolicy === undefined ? {} : { connectionPolicy })
+    ...(connectionPolicy === undefined ? {} : { connectionPolicy }),
+    ...(admissionRank === undefined ? {} : { admissionRank })
   };
+}
+
+function validateAdmissionRank(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw invalidConnectResult(
+      'connect returned invalid admissionRank; expected a positive safe integer'
+    );
+  }
+  return Number(value);
 }
 
 function validateBusinessIdentity(value: unknown): string | undefined {

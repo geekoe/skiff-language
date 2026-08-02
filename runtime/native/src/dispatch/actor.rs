@@ -98,6 +98,8 @@ impl ActorNativeDispatch {
                             bootstrap_encoding_version: ACTOR_VALUE_ENCODING_VERSION.to_string(),
                             declaration_owner,
                             deadline: None,
+                            test_case_capability: None,
+                            test_case_parent_request_id: None,
                         },
                         create_args_payload,
                     )

@@ -10,7 +10,7 @@ use crate::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 const MAX_RUNTIME_ASSEMBLY_REQUEST_ID_BYTES: usize = 1024;
 const MAX_WEBSOCKET_JSONRPC_METHOD_BYTES: usize = 256;
 const MAX_WEBSOCKET_JSONRPC_BUSINESS_IDENTITY_BYTES: usize = 1024;
-const MAX_TEST_CASE_CAPABILITY_BYTES: usize = 1024;
+const MAX_TEST_CASE_CORRELATION_TOKEN_BYTES: usize = 256;
 
 pub(super) fn deserialize_runtime_frame_schema_version<'de, D>(
     deserializer: D,
@@ -115,12 +115,38 @@ pub(super) fn deserialize_optional_test_case_capability<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_canonical_string(
-        deserializer,
-        MAX_TEST_CASE_CAPABILITY_BYTES,
-        "runtimeAssembly spawn testCaseCapability",
-    )
-    .map(Some)
+    deserialize_test_case_correlation_token(deserializer, "runtimeAssembly testCaseCapability")
+        .map(Some)
+}
+
+pub(super) fn deserialize_optional_test_case_parent_request_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_test_case_correlation_token(deserializer, "runtimeAssembly testCaseParentRequestId")
+        .map(Some)
+}
+
+fn deserialize_test_case_correlation_token<'de, D>(
+    deserializer: D,
+    label: &'static str,
+) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value =
+        deserialize_bounded_string(deserializer, MAX_TEST_CASE_CORRELATION_TOKEN_BYTES, label)?;
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+    {
+        return Err(de::Error::custom(format!(
+            "{label} must be a test correlation token"
+        )));
+    }
+    Ok(value)
 }
 
 pub(super) fn deserialize_websocket_jsonrpc_unary_dispatch_mode<'de, D>(

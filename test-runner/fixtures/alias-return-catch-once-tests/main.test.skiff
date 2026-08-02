@@ -1,5 +1,30 @@
 import subjectImpl
 
+type HostHttpBarrierObserver implements subjectImpl/main.HostHttpDispatchObserver {
+  observed: Array<string>,
+}
+
+impl HostHttpBarrierObserver {
+  function afterAuthorized(
+    self: HostHttpBarrierObserver,
+    routeTag: string,
+    hostConnectionGenerationHash: string
+  ) -> void {
+    self.observed.push(routeTag.concat(":").concat(hostConnectionGenerationHash))
+  }
+}
+
+test "private interface receiver converges across top-level alias" {
+  const observed = Array.empty<string>()
+  const observer = HostHttpBarrierObserver { observed: observed }
+  assert subjectImpl/main.dispatchObserved(
+    "host-ping",
+    "generation-7",
+    observer as subjectImpl/main.HostHttpDispatchObserver
+  ) == "observed"
+  assert observed.length() == 1
+}
+
 test "package receiver method" {
   const box = subjectImpl/main.makeBox("ok")
   assert box.read() == "ok"

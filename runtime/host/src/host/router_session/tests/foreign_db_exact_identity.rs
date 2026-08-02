@@ -672,6 +672,7 @@ fn test_case_header(
         },
         test_effects_enabled: true,
         test_case_capability: Some(capability.to_string()),
+        test_case_parent_request_id: None,
     }
 }
 

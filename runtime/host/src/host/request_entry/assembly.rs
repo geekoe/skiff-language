@@ -285,6 +285,7 @@ impl RuntimeHost {
                     RuntimeWebSocketConnectResult::Accept {
                         business_identity: None,
                         connection_policy: None,
+                        admission_rank: None,
                     },
                 ) {
                     Ok(message) => {
@@ -1051,6 +1052,7 @@ fn websocket_connect_result_into_message(
         RuntimeWebSocketConnectResult::Accept {
             business_identity,
             connection_policy,
+            admission_rank,
         } => RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
             business_identity,
             connection_policy: connection_policy.map(|policy| {
@@ -1068,6 +1070,7 @@ fn websocket_connect_result_into_message(
                     close_reason: policy.close_reason,
                 }
             }),
+            admission_rank,
         },
         RuntimeWebSocketConnectResult::Reject { code, reason } => {
             RuntimeAssemblyWebSocketConnectResponseFrameHeader::Reject { code, reason }

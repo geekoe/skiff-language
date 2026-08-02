@@ -1289,6 +1289,126 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
       pendingStream: 0
     });
   });
+
+  it('pins capability self-ingress to its active request parent and strips correlation headers', async () => {
+    const fixture = await createFixture();
+    const capability = 'case:self_ingress.request-1';
+    const productionRoot = canonicalHeader(fixture.snapshot, 'self-root-request');
+    const rootHeader = assemblyTestHttpRequestHeader({
+      snapshot: fixture.snapshot,
+      binding: fixture.binding,
+      requestId: productionRoot.requestId,
+      timeoutMs: 1000,
+      routing: productionRoot.routing,
+      mode: productionRoot.mode,
+      httpRequest: productionRoot.httpRequest!,
+      testCaseCapability: capability
+    });
+    const root = fixture.dispatcher.dispatchAssemblyTestBinary(
+      { header: rootHeader, payloadBytes: new Uint8Array() },
+      1000
+    );
+    await nextBinaryMessage(fixture.runtime);
+
+    const response = sendHttp(
+      fixture.httpUrl,
+      Buffer.from('nested'),
+      '',
+      undefined,
+      {
+        'x-skiff-test-case-capability': capability,
+        'x-skiff-test-case-parent-request-id': rootHeader.requestId,
+        'x-visible-header': 'visible'
+      }
+    );
+    const nestedFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    expect(nestedFrame.header).toMatchObject({
+      type: 'request.start',
+      testEffectsEnabled: true,
+      testCaseCapability: capability,
+      testCaseParentRequestId: rootHeader.requestId
+    });
+    const nestedValidation =
+      validateRuntimeAssemblyRequestStartFrameHeader(nestedFrame.header);
+    if (!nestedValidation.ok) throw new Error(nestedValidation.error);
+    expect(nestedValidation.envelope.httpRequest?.headers).toContainEqual({
+      name: 'x-visible-header',
+      value: 'visible'
+    });
+    expect(nestedValidation.envelope.httpRequest?.headers).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'x-skiff-test-case-capability' }),
+        expect.objectContaining({ name: 'x-skiff-test-case-parent-request-id' })
+      ])
+    );
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: String(nestedFrame.header.requestId),
+      payloadPresent: true,
+      httpResponse: { status: 200, headers: [] }
+    }, Buffer.from('ok')));
+    await expect(response).resolves.toMatchObject({ status: 200, body: Buffer.from('ok') });
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: rootHeader.requestId,
+      payloadPresent: false,
+      httpResponse: { status: 204, headers: [] }
+    }));
+    await root;
+  });
+
+  it.each([
+    {
+      name: 'missing pair member',
+      headers: { 'x-skiff-test-case-capability': 'case:one' },
+      status: 400
+    },
+    {
+      name: 'invalid token',
+      headers: {
+        'x-skiff-test-case-capability': 'case one',
+        'x-skiff-test-case-parent-request-id': 'root:one'
+      },
+      status: 400
+    },
+    {
+      name: 'duplicate capability',
+      headers: {
+        'x-skiff-test-case-capability': ['case:one', 'case:one'],
+        'x-skiff-test-case-parent-request-id': 'root:one'
+      },
+      status: 400
+    },
+    {
+      name: 'forged parent',
+      headers: {
+        'x-skiff-test-case-capability': 'case:one',
+        'x-skiff-test-case-parent-request-id': 'missing:root'
+      },
+      status: 403
+    }
+  ])('rejects $name correlation headers without ordinary dispatch', async ({ headers, status }) => {
+    const fixture = await createFixture();
+    let runtimeFrames = 0;
+    fixture.runtime.on('message', () => runtimeFrames += 1);
+    const response = await sendHttp(
+      fixture.httpUrl,
+      new Uint8Array(),
+      '',
+      undefined,
+      headers
+    );
+    await nextTurn();
+    expect(response.status).toBe(status);
+    expect(runtimeFrames).toBe(0);
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
 });
 
 interface UnaryFixture {
@@ -1481,9 +1601,10 @@ async function sendHttp(
     path: string;
     serviceId?: string;
     contractVersion?: string;
-  } = { method: 'POST', path: PATH }
+  } = { method: 'POST', path: PATH },
+  extraHeaders: Record<string, string | string[]> = {}
 ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
-  return await startHttp(baseUrl, body, query, selector).response;
+  return await startHttp(baseUrl, body, query, selector, extraHeaders).response;
 }
 
 function startHttp(
@@ -1495,7 +1616,8 @@ function startHttp(
     path: string;
     serviceId?: string;
     contractVersion?: string;
-  } = { method: 'POST', path: PATH }
+  } = { method: 'POST', path: PATH },
+  extraHeaders: Record<string, string | string[]> = {}
 ): {
   request: ReturnType<typeof httpRequest>;
   response: Promise<{
@@ -1522,7 +1644,8 @@ function startHttp(
           selector.serviceId ?? BINDING.deployment.serviceId,
         'x-skiff-version':
           selector.contractVersion ?? BINDING.deployment.contractVersion,
-        'content-length': String(body.byteLength)
+        'content-length': String(body.byteLength),
+        ...extraHeaders
       }
     }, (response) => {
       const chunks: Buffer[] = [];

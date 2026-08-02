@@ -20,6 +20,7 @@ use crate::{
 
 use super::{
     actor_owner_invocations::ActorOwnerInvocationRegistry,
+    actor_route_holds::ActorRouteHoldRegistry,
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
@@ -76,6 +77,7 @@ pub struct RuntimeHost {
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
     pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
+    pub(crate) actor_route_holds: Arc<ActorRouteHoldRegistry>,
     pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
     pub(crate) test_http_entries: TestHttpEntryRegistry,
 }
@@ -135,6 +137,7 @@ impl RuntimeHost {
             connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
             actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
+            actor_route_holds: Arc::new(ActorRouteHoldRegistry::default()),
             actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
             test_http_entries: TestHttpEntryRegistry::default(),
         })
@@ -144,12 +147,37 @@ impl RuntimeHost {
         &self.environment
     }
 
-    pub(crate) fn track_actor_instance(
+    pub(crate) fn actor_instance_session_lease(
         &self,
         router_session_id: &str,
+    ) -> Result<
+        skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
+        ActorInstanceSessionTrackError,
+    > {
+        self.actor_instances.session_lease(router_session_id)
+    }
+
+    pub(crate) fn track_actor_instance_with_lease(
+        &self,
+        session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
         handle: ActorInstanceHandle,
     ) -> Result<(), ActorInstanceSessionTrackError> {
-        self.actor_instances.track(router_session_id, handle)
+        let cleanup_handle = handle.clone();
+        let result = self.actor_instances.track_with_lease(session, handle);
+        if matches!(
+            result,
+            Err(ActorInstanceSessionTrackError::SessionNotOpen { .. })
+        ) {
+            self.actor_instances.discard_if_untracked(&cleanup_handle);
+        }
+        result
+    }
+
+    pub(crate) fn open_actor_instance_session(
+        &self,
+        router_session_id: &str,
+    ) -> Result<(), ActorInstanceSessionTrackError> {
+        self.actor_instances.open_session(router_session_id)
     }
 
     pub(crate) fn discard_actor_instances_for_session(&self, router_session_id: &str) -> usize {

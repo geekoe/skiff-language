@@ -25,7 +25,7 @@ pub(crate) struct RuntimeActivationExecutionContextRebinderInput {
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) router_session: ConnectionRequestSession,
     pub(crate) http_response_max_bytes: usize,
-    pub(crate) test_http_entries: concrete::TestHttpEntryRegistry,
+    pub(crate) test_http_admission: Option<concrete::TestHttpAdmittedContext>,
     pub(crate) stream_runtime: eval_capabilities::StreamRuntime,
     pub(crate) test_effect_doubles: eval_capabilities::TestEffectDoubleContext,
     pub(crate) cancellation: CancellationToken,
@@ -239,7 +239,11 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
                 .map(|entry| entry.as_str()),
             self.input.router_sender.as_ref(),
             Arc::clone(&self.input.connection_requests),
-            self.input.router_session.clone(),
+            self.input
+                .test_http_admission
+                .as_ref()
+                .map(|context| context.router_session().clone())
+                .unwrap_or_else(|| self.input.router_session.clone()),
         )
         .owned();
         let request = self.provider_request(&facts);
@@ -256,6 +260,10 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
             self.input.router_sender.as_ref(),
             &self.input.outbound_requests,
             &self.input.actor_method_outbound,
+            self.input
+                .test_http_admission
+                .as_ref()
+                .map(concrete::TestHttpAdmittedContext::capability),
             self.input.cancellation.clone(),
         );
         let effects = effects(
@@ -268,8 +276,9 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
             )
             .with_test_http_self_ingress(
                 self.input
-                    .test_http_entries
-                    .self_ingress_for_request(&request.request_id),
+                    .test_http_admission
+                    .as_ref()
+                    .map(concrete::TestHttpAdmittedContext::self_ingress),
             ),
         );
         let http_client = effects.http_client_context(

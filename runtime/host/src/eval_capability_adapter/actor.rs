@@ -12,6 +12,7 @@ pub(super) struct RuntimeOwnedRequestParts {
     pub(super) operation_service_protocol_identity: Option<String>,
     pub(super) activation_identity: Option<ActivationIdentityControl>,
     pub(super) trace_id: Option<String>,
+    pub(super) test_case_capability: Option<String>,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(super) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
@@ -70,6 +71,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         bootstrap_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        let request = actor_get_or_create_with_test_authority(request, &self.owned);
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
@@ -199,6 +201,7 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
+        let request = spawn_submit_with_caller_request(request, &self.owned);
         Box::pin(submit_spawn(
             self.request_context.clone(),
             request,
@@ -231,6 +234,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedRequestCapabilityCo
         bootstrap_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        let request = actor_get_or_create_with_test_authority(request, &self.0);
         Box::pin(async move {
             let scope = actor_execution_scope(&execution_control)?;
             root_result_into_capability(
@@ -363,6 +367,7 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
+        let request = spawn_submit_with_caller_request(request, &self.0);
         Box::pin(submit_spawn(
             concrete_request_context_from_owned(&self.0),
             request,
@@ -370,6 +375,26 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
             execution_control,
         ))
     }
+}
+
+fn actor_get_or_create_with_test_authority(
+    mut request: ActorGetOrCreateControlRequest,
+    parts: &RuntimeOwnedRequestParts,
+) -> ActorGetOrCreateControlRequest {
+    request.test_case_capability = parts.test_case_capability.clone();
+    request.test_case_parent_request_id = parts
+        .test_case_capability
+        .as_ref()
+        .map(|_| parts.request_id.clone());
+    request
+}
+
+fn spawn_submit_with_caller_request(
+    mut request: SpawnSubmitControlRequest,
+    parts: &RuntimeOwnedRequestParts,
+) -> SpawnSubmitControlRequest {
+    request.caller_request_id = Some(parts.request_id.clone());
+    request
 }
 
 async fn invoke_actor_method(
@@ -488,6 +513,11 @@ async fn invoke_actor_method(
             },
             cancellation_correlation: cancellation_correlation.clone(),
             trace_id: parts.trace_id.clone(),
+            test_case_capability: parts.test_case_capability.clone(),
+            test_case_parent_request_id: parts
+                .test_case_capability
+                .as_ref()
+                .map(|_| parts.request_id.clone()),
         },
         request.arguments_payload,
     );

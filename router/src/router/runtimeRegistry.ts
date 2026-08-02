@@ -173,6 +173,9 @@ interface RegisteredRuntime extends RuntimeRegistryRuntime {
 }
 
 interface RuntimeCapabilityRegistration {
+  // Assembly Hosts do not send legacy runtime.register, so the capability
+  // connection itself owns the exact session fence used by Actor cleanup.
+  sessionId: string;
   runtimeId: string;
   capabilities: RuntimeCapabilitiesMetadata;
   registeredAt: Date;
@@ -238,6 +241,10 @@ export class RuntimeRegistry {
           actorRuntimeCandidates: (serviceId) =>
             this.actorRuntimeCandidates(serviceId),
           runtimeConnection: (runtimeId) => this.runtimeConnection(runtimeId),
+          runtimeIdForConnection: (ws) =>
+            this.runtimeConnectionFenceForConnection(ws)?.runtimeId,
+          runtimeConnectionFenceForConnection: (ws) =>
+            this.runtimeConnectionFenceForConnection(ws),
         },
         send: (ws, bytes) => ws.send(bytes),
         ...actorGetCreateCoordinatorOptions(controlOptions),
@@ -353,7 +360,8 @@ export class RuntimeRegistry {
     }
 
     const runtime: RegisteredRuntime = {
-      sessionId: this.nextRuntimeSessionId(envelope.runtimeId),
+      sessionId:
+        capability?.sessionId ?? this.nextRuntimeSessionId(envelope.runtimeId),
       runtimeId: envelope.runtimeId,
       serviceId: envelope.serviceId,
       ...(envelope.version !== undefined ? { version: envelope.version } : {}),
@@ -418,6 +426,8 @@ export class RuntimeRegistry {
       }
     }
     this.runtimeCapabilitiesByConnection.set(ws, {
+      sessionId:
+        existing?.sessionId ?? this.nextRuntimeSessionId(envelope.runtimeId),
       runtimeId: envelope.runtimeId,
       capabilities: envelope.capabilities,
       registeredAt: existing?.registeredAt ?? new Date(),
@@ -443,6 +453,13 @@ export class RuntimeRegistry {
   runtimeConnectionFenceForConnection(
     ws: WebSocket
   ): RuntimeConnectionFence | undefined {
+    const capability = this.runtimeCapabilitiesByConnection.get(ws);
+    if (capability !== undefined) {
+      return {
+        runtimeId: capability.runtimeId,
+        sessionId: capability.sessionId,
+      };
+    }
     for (const runtime of this.runtimes.values()) {
       if (runtime.ws === ws) {
         return {

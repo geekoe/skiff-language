@@ -199,7 +199,19 @@ impl CycleFixture {
         helper.package_local_abi.public_symbols.insert(
             "Reader".to_string(),
             PackageLocalAbiSymbol::Type {
-                local_type_id: "type:example.helper:top-level:Reader".to_string(),
+                local_type_id: "type:Reader".to_string(),
+                descriptor: TypeDescriptorIr::Interface,
+                is_alias: false,
+                is_interface: true,
+                type_params: Vec::new(),
+                interface_methods: helper_interface_methods.clone(),
+                actor: None,
+            },
+        );
+        helper.package_local_abi.implementation_symbols.insert(
+            "helper.main.Reader".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:example.helper:top-level:helper.main.Reader".to_string(),
                 descriptor: TypeDescriptorIr::Interface,
                 is_alias: false,
                 is_interface: true,
@@ -213,11 +225,24 @@ impl CycleFixture {
             TypeExport {
                 file: file_ref(&helper_file),
                 type_index: helper_interface_index,
+                symbol: "Reader".to_string(),
+                is_interface: true,
+                descriptor: Some(TypeDescriptorIr::Interface),
+                type_params: Vec::new(),
+                interface_methods: helper_interface_methods.clone(),
+                actor: None,
+            },
+        );
+        helper.implementation_links.types.insert(
+            "helper.main.Reader".to_string(),
+            TypeExport {
+                file: file_ref(&helper_file),
+                type_index: helper_interface_index,
                 symbol: "helper.main.Reader".to_string(),
                 is_interface: true,
                 descriptor: Some(TypeDescriptorIr::Interface),
                 type_params: Vec::new(),
-                interface_methods: helper_interface_methods,
+                interface_methods: helper_interface_methods.clone(),
                 actor: None,
             },
         );
@@ -737,6 +762,59 @@ impl CycleFixture {
             if executable.file.file_ir_identity == old_file_identity {
                 executable.file = new_file_ref.clone();
             }
+        }
+        for export in package.implementation_links.types.values_mut() {
+            if export.file.file_ir_identity == old_file_identity {
+                export.file = new_file_ref.clone();
+            }
+        }
+        for (name, interface) in &file.declarations.interfaces {
+            let declaration = file
+                .declarations
+                .types
+                .get(name)
+                .expect("fixture interface must have an exact type declaration");
+            let source_path = format!("{}.{}", file.module_path, name);
+            assert_eq!(declaration.symbol, source_path);
+            let interface_methods = interface
+                .operations
+                .iter()
+                .map(|operation| InterfaceMethodSignature {
+                    name: operation.name.clone(),
+                    type_params: operation.type_params.clone(),
+                    params: operation.params.clone(),
+                    return_type: operation.return_type.clone(),
+                    is_native: operation.is_native,
+                    is_provider: operation.is_provider,
+                    is_static: operation.is_static,
+                    implicit_self: operation.implicit_self.clone(),
+                })
+                .collect::<Vec<_>>();
+            package.package_local_abi.implementation_symbols.insert(
+                source_path.clone(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: format!("type:{}:top-level:{source_path}", package.package_id),
+                    descriptor: TypeDescriptorIr::Interface,
+                    is_alias: false,
+                    is_interface: true,
+                    type_params: interface.type_params.clone(),
+                    interface_methods: interface_methods.clone(),
+                    actor: None,
+                },
+            );
+            package.implementation_links.types.insert(
+                source_path.clone(),
+                TypeExport {
+                    file: new_file_ref.clone(),
+                    type_index: declaration.type_index,
+                    symbol: source_path,
+                    is_interface: true,
+                    descriptor: Some(TypeDescriptorIr::Interface),
+                    type_params: interface.type_params.clone(),
+                    interface_methods,
+                    actor: None,
+                },
+            );
         }
         let new_file_identity = file.file_ir_identity.clone();
         self.replace_shared_package(

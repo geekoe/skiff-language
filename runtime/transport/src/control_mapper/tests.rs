@@ -4,10 +4,10 @@ use super::{
     request_cancel_frame, spawn_submit_request_frame,
 };
 use crate::protocol::{
-    decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
-    ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
-    ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
-    SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    decode_binary_frame, decode_typed_binary_frame, ActivationIdentityFrameMetadata,
+    ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
+    ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
+    RequestCancelFrameHeader, SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_request_contract::{
@@ -53,17 +53,45 @@ fn actor_control_request_frames_map_headers_and_opaque_payloads() {
         bootstrap_encoding_version: "canonical-value-v1".to_string(),
         declaration_owner: declaration_owner_frame(),
         deadline: Some(actor_method_deadline_frame()),
+        test_case_capability: Some("test-case:capability_1".to_string()),
+        test_case_parent_request_id: Some("request:parent_1".to_string()),
     };
     let bootstrap_payload = b"canonical actor bootstrap".to_vec();
 
     let get_or_create_frame =
         actor_get_or_create_request_frame(get_or_create_header.clone(), &bootstrap_payload)
             .expect("getOrCreate frame encodes");
+    let get_or_create_wire = decode_binary_frame(&get_or_create_frame).expect("wire decodes");
+    assert_eq!(
+        get_or_create_wire.header["testCaseCapability"],
+        "test-case:capability_1"
+    );
+    assert_eq!(
+        get_or_create_wire.header["testCaseParentRequestId"],
+        "request:parent_1"
+    );
+    assert!(get_or_create_wire
+        .header
+        .get("test_case_capability")
+        .is_none());
+    assert!(get_or_create_wire
+        .header
+        .get("test_case_parent_request_id")
+        .is_none());
     let (decoded_get_or_create, decoded_bootstrap): (ActorGetOrCreateRequestFrameHeader, Vec<u8>) =
         decode_typed_binary_frame(&get_or_create_frame).expect("getOrCreate frame decodes");
 
     assert_eq!(decoded_get_or_create, get_or_create_header);
     assert_eq!(decoded_bootstrap, bootstrap_payload);
+
+    let mut get_or_create_without_authority = get_or_create_header.clone();
+    get_or_create_without_authority.test_case_capability = None;
+    get_or_create_without_authority.test_case_parent_request_id = None;
+    let frame = actor_get_or_create_request_frame(get_or_create_without_authority, &[])
+        .expect("getOrCreate without test authority encodes");
+    let wire = decode_binary_frame(&frame).expect("wire decodes");
+    assert!(wire.header.get("testCaseCapability").is_none());
+    assert!(wire.header.get("testCaseParentRequestId").is_none());
 
     let replace_header = ActorReplaceRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -144,6 +172,10 @@ fn spawn_submit_request_frame_maps_header_and_opaque_payload() {
     let payload = b"opaque spawn args".to_vec();
 
     let frame = spawn_submit_request_frame(header.clone(), &payload).expect("spawn frame encodes");
+    let wire = decode_binary_frame(&frame).expect("wire decodes");
+    assert_eq!(wire.header["callerRequestId"], "request-1");
+    assert!(wire.header.get("testCaseCapability").is_none());
+    assert!(wire.header.get("testCaseParentRequestId").is_none());
     let (decoded, decoded_payload): (SpawnSubmitRequestFrameHeader, Vec<u8>) =
         decode_typed_binary_frame(&frame).expect("spawn frame decodes");
 
@@ -187,6 +219,7 @@ fn outbound_spawn_submit_accepts_existing_and_generated_service_ids() {
             decode_typed_binary_frame(&frame).expect("spawn.submit.request should decode");
 
         assert_eq!(header.service_id, service_id);
+        assert_eq!(header.caller_request_id.as_deref(), Some("request-1"));
         assert_eq!(payload, b"opaque spawn args");
     }
 }
@@ -281,10 +314,17 @@ fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() 
             bootstrap_encoding_version: "canonical-value-v1".to_string(),
             declaration_owner: declaration_owner(),
             deadline: Some(actor_control_deadline()),
+            test_case_capability: Some("test-case:capability_1".to_string()),
+            test_case_parent_request_id: Some("request:parent_1".to_string()),
         },
         payload: payload.clone(),
     })
     .expect("outbound actor getOrCreate encodes");
+    let wire = decode_binary_frame(&frame).expect("actor getOrCreate wire decodes");
+    assert_eq!(wire.header["testCaseCapability"], "test-case:capability_1");
+    assert_eq!(wire.header["testCaseParentRequestId"], "request:parent_1");
+    assert!(wire.header.get("test_case_capability").is_none());
+    assert!(wire.header.get("test_case_parent_request_id").is_none());
     let (decoded, decoded_payload): (ActorGetOrCreateRequestFrameHeader, Vec<u8>) =
         decode_typed_binary_frame(&frame).expect("actor.getOrCreate.request decodes");
 
@@ -295,6 +335,14 @@ fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() 
     assert_eq!(decoded.actor_key, actor_key());
     assert_eq!(decoded.actor_abi_identity, "actor-abi:1");
     assert_eq!(decoded.bootstrap_encoding_version, "canonical-value-v1");
+    assert_eq!(
+        decoded.test_case_capability.as_deref(),
+        Some("test-case:capability_1")
+    );
+    assert_eq!(
+        decoded.test_case_parent_request_id.as_deref(),
+        Some("request:parent_1")
+    );
     assert_eq!(decoded_payload, payload);
 
     let replace_frame = encode_outbound_control_message(OutboundControlMessage::ActorReplace {
@@ -316,6 +364,74 @@ fn outbound_actor_get_or_create_and_replace_controls_have_distinct_wire_types() 
         decode_typed_binary_frame(&replace_frame).expect("actor.replace.request decodes");
     assert_eq!(decoded_replace.envelope_type, "actor.replace.request");
     assert_eq!(decoded_replace_payload, payload);
+}
+
+#[test]
+fn outbound_actor_create_rejects_partial_or_invalid_test_authority() {
+    let payload = b"opaque payload".to_vec();
+
+    let valid_get_or_create = ActorGetOrCreateControlRequest {
+        rpc_id: "rpc-get-or-create-1".to_string(),
+        runtime_id: "runtime-1".to_string(),
+        activation_identity: activation_identity_control(),
+        actor_key: actor_key_control(),
+        actor_abi_identity: "actor-abi:1".to_string(),
+        actor_implementation_identity: "build:1".to_string(),
+        bootstrap_encoding_version: "canonical-value-v1".to_string(),
+        declaration_owner: declaration_owner(),
+        deadline: Some(actor_control_deadline()),
+        test_case_capability: Some("test-case:capability_1".to_string()),
+        test_case_parent_request_id: Some("request:parent_1".to_string()),
+    };
+    for capability in [None, Some("not canonical"), Some("contains/slash")] {
+        let mut get_or_create = valid_get_or_create.clone();
+        get_or_create.test_case_capability = capability.map(str::to_string);
+        assert!(
+            encode_outbound_control_message(OutboundControlMessage::ActorGetOrCreate {
+                request: get_or_create,
+                payload: payload.clone(),
+            })
+            .is_err()
+        );
+    }
+
+    for parent_request_id in [None, Some("not canonical"), Some("contains/slash")] {
+        let mut get_or_create = valid_get_or_create.clone();
+        get_or_create.test_case_parent_request_id = parent_request_id.map(str::to_string);
+        assert!(
+            encode_outbound_control_message(OutboundControlMessage::ActorGetOrCreate {
+                request: get_or_create,
+                payload: payload.clone(),
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn direct_actor_create_frame_encoder_rejects_malformed_test_authority() {
+    let get_or_create_frame =
+        encode_outbound_control_message(OutboundControlMessage::ActorGetOrCreate {
+            request: ActorGetOrCreateControlRequest {
+                rpc_id: "rpc-get-or-create-1".to_string(),
+                runtime_id: "runtime-1".to_string(),
+                activation_identity: activation_identity_control(),
+                actor_key: actor_key_control(),
+                actor_abi_identity: "actor-abi:1".to_string(),
+                actor_implementation_identity: "build:1".to_string(),
+                bootstrap_encoding_version: "canonical-value-v1".to_string(),
+                declaration_owner: declaration_owner(),
+                deadline: None,
+                test_case_capability: Some("test-case:capability_1".to_string()),
+                test_case_parent_request_id: Some("request:parent_1".to_string()),
+            },
+            payload: Vec::new(),
+        })
+        .expect("valid actor create encodes");
+    let (mut get_or_create, _): (ActorGetOrCreateRequestFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&get_or_create_frame).expect("valid actor create decodes");
+    get_or_create.test_case_parent_request_id = None;
+    assert!(actor_get_or_create_request_frame(get_or_create, &[]).is_err());
 }
 
 fn actor_key() -> ActorKeyFrameMetadata {

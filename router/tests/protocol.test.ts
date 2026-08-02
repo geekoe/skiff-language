@@ -362,11 +362,11 @@ const observabilityFixture = JSON.parse(
 };
 
 describe('runtime protocol fixtures and schemas', () => {
-  it('registers disjoint legacy, HTTP, websocketConnect, websocketJsonRpc, and spawn request.start branches', () => {
+  it('registers disjoint legacy, production/root/derived HTTP, websocketConnect, websocketJsonRpc, and spawn request.start branches', () => {
     const schema = runtimeFrameHeaderSchemas['request.start'];
     expect('oneOf' in schema).toBe(true);
     if (!('oneOf' in schema)) throw new Error('request.start schema must be oneOf');
-    expect(schema.oneOf).toHaveLength(5);
+    expect(schema.oneOf).toHaveLength(7);
     expect(runtimeAssemblyRequestCorpus.requestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeAssemblyRequestCorpus.legacyRequestStartHeaders.length).toBeGreaterThan(0);
     expect(runtimeWebSocketConnectWireCorpus.requestCases).toHaveLength(3);
@@ -515,13 +515,45 @@ describe('runtime protocol fixtures and schemas', () => {
       error:
         'invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability'
     });
-    expect(
-      validateRouterToRuntimeFrameHeader({
-        ...productionHttp,
+    const rootTestHttp = {
+      ...productionHttp,
+      testEffectsEnabled: true,
+      testCaseCapability: 'http-test-capability'
+    };
+    expect(validateRouterToRuntimeFrameHeader(rootTestHttp)).toMatchObject({
+      ok: true
+    });
+    expect(matchesProtocolEnvelopeSchema(schema, rootTestHttp)).toBe(true);
+    const derivedHttp = {
+      ...productionHttp,
+      testEffectsEnabled: true,
+      testCaseCapability: 'http-test-capability',
+      testCaseParentRequestId: 'parent-request:1'
+    };
+    expect(validateRouterToRuntimeFrameHeader(derivedHttp)).toEqual({
+      ok: true,
+      envelope: derivedHttp
+    });
+    expect(matchesProtocolEnvelopeSchema(schema, derivedHttp)).toBe(true);
+    for (const { invalid, schemaMatches } of [
+      {
+        invalid: { testCaseParentRequestId: 'parent-request:1' },
+        schemaMatches: false
+      },
+      { invalid: {
         testEffectsEnabled: true,
-        testCaseCapability: 'http-test-capability'
-      })
-    ).toMatchObject({ ok: true });
+        testCaseCapability: 'http-test-capability',
+        testCaseParentRequestId: 'contains/slash'
+      }, schemaMatches: false },
+      { invalid: {
+        testEffectsEnabled: true,
+        testCaseCapability: 'z'.repeat(257)
+      }, schemaMatches: false }
+    ]) {
+      const invalidHttp = { ...productionHttp, ...invalid };
+      expect(validateRouterToRuntimeFrameHeader(invalidHttp).ok).toBe(false);
+      expect(matchesProtocolEnvelopeSchema(schema, invalidHttp)).toBe(schemaMatches);
+    }
 
     const staleHttpRouting = structuredClone(
       runtimeAssemblyRequestCorpus.requestStartHeaders[0]!
@@ -868,6 +900,65 @@ describe('runtime protocol fixtures and schemas', () => {
         type: 'actor.put.request'
       })
     ).toMatchObject({ ok: false });
+  });
+
+  it('requires a strict capability-parent token pair on actor getOrCreate only', () => {
+    const base = runtimeFrameHeaderFixtures['actor.getOrCreate.request'];
+    const schema = runtimeFrameHeaderSchemas['actor.getOrCreate.request'];
+    const validTokens = ['a', 'case:opaque_1.parent-2', 'z'.repeat(256)];
+    for (const token of validTokens) {
+      const header = {
+        ...base,
+        testCaseCapability: token,
+        testCaseParentRequestId: token
+      };
+      expect(validateRuntimeToRouterFrameHeader(header)).toEqual({
+        ok: true,
+        envelope: header
+      });
+      expect(matchesProtocolEnvelopeSchema(schema, header)).toBe(true);
+    }
+
+    const invalidTokens: unknown[] = [
+      '',
+      'z'.repeat(257),
+      'contains/slash',
+      'contains space',
+      'contains~tilde',
+      '非ascii',
+      1
+    ];
+    for (const token of invalidTokens) {
+      for (const field of [
+        'testCaseCapability',
+        'testCaseParentRequestId'
+      ] as const) {
+        const header = {
+          ...base,
+          testCaseCapability: 'case-capability',
+          testCaseParentRequestId: 'parent-request',
+          [field]: token
+        };
+        expect(validateRuntimeToRouterFrameHeader(header).ok).toBe(false);
+        expect(matchesProtocolEnvelopeSchema(schema, header)).toBe(false);
+      }
+    }
+
+    for (const halfPair of [
+      { testCaseCapability: 'case-capability' },
+      { testCaseParentRequestId: 'parent-request' }
+    ]) {
+      const header = { ...base, ...halfPair };
+      expect(validateRuntimeToRouterFrameHeader(header).ok).toBe(false);
+      expect(matchesProtocolEnvelopeSchema(schema, header)).toBe(false);
+    }
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['actor.replace.request'],
+        testCaseCapability: 'case-capability',
+        testCaseParentRequestId: 'parent-request'
+      }).ok
+    ).toBe(false);
   });
 
   it('accepts and rejects service-independent runtime capability frames', () => {
@@ -1740,23 +1831,27 @@ describe('runtime binary frame foundations', () => {
         ok: true,
         envelope: header
       });
-      expect(runtimeFrameHeaderSchemas[type].required).toContain('activationIdentity');
-      expect(runtimeFrameHeaderSchemas[type].properties.activationIdentity).toEqual({
-        type: 'object',
-        required: [
-          'assemblyIdentity',
-          'generation',
-          'runtimeReplicaId',
-          'deploymentRevision'
-        ],
-        properties: {
-          assemblyIdentity: { type: 'string' },
-          generation: { type: 'integer' },
-          runtimeReplicaId: { type: 'string' },
-          deploymentRevision: { type: 'string' }
-        },
-        additionalProperties: false
-      });
+      for (const branch of protocolEnvelopeSchemaBranches(
+        runtimeFrameHeaderSchemas[type]
+      )) {
+        expect(branch.required).toContain('activationIdentity');
+        expect(branch.properties.activationIdentity).toEqual({
+          type: 'object',
+          required: [
+            'assemblyIdentity',
+            'generation',
+            'runtimeReplicaId',
+            'deploymentRevision'
+          ],
+          properties: {
+            assemblyIdentity: { type: 'string' },
+            generation: { type: 'integer' },
+            runtimeReplicaId: { type: 'string' },
+            deploymentRevision: { type: 'string' }
+          },
+          additionalProperties: false
+        });
+      }
 
       const { activationIdentity: _activationIdentity, ...missingActivation } = header;
       expect(validateRuntimeToRouterFrameHeader(missingActivation).ok).toBe(false);
@@ -2122,6 +2217,34 @@ describe('runtime binary frame foundations', () => {
       error:
         'invalid response.end envelope: websocketConnect.connectionPolicy.maxConnections must be an unsigned non-zero 32-bit integer'
     });
+  });
+
+  it('accepts only positive safe websocket admission ranks', () => {
+    const frame = {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: 'websocket-admission-rank',
+      payloadPresent: false,
+      websocketConnect: {
+        result: 'accept',
+        businessIdentity: 'user-1',
+        admissionRank: Number.MAX_SAFE_INTEGER
+      }
+    };
+
+    expect(validateRuntimeToRouterFrameHeader(frame)).toMatchObject({ ok: true });
+    for (const admissionRank of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...frame,
+          websocketConnect: { ...frame.websocketConnect, admissionRank }
+        })
+      ).toEqual({
+        ok: false,
+        error:
+          'invalid response.end envelope: websocketConnect.admissionRank must be a positive safe integer'
+      });
+    }
   });
 
   it('rejects malformed businessIdentity targets in connection.send frame headers', () => {

@@ -220,10 +220,302 @@ describe('active RuntimeAssembly activation transaction', () => {
       assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 4);
+    fixture.coordinator.handleReplicaDisconnected(runtimeB, 'replica-b');
     fixture.registry.removeRuntimeConnection(runtimeB);
-    fixture.coordinator.handleReplicaDisconnected('replica-b');
     await expect(disconnected).rejects.toThrow(/disconnected/);
     expect(fixture.coordinator.activationState().committed).toEqual(before);
+  });
+
+  it('ignores an exact late terminal from a recently aborted participant but rejects mismatches', async () => {
+    const fixture = await coordinatorFixture();
+    const runtimeA = fakeSocket();
+    const runtimeB = fakeSocket();
+    register(fixture.registry, runtimeA, 'replica-a', 1, ASSEMBLY_A);
+    register(fixture.registry, runtimeB, 'replica-b', 1, ASSEMBLY_A);
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v2',
+      environment: 'test',
+      activationId: 'activation-late-after-abort',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      configSnapshot: configSnapshot(ASSEMBLY_B)
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 2);
+    fixture.coordinator.handleRuntimeControl(
+      runtimeA,
+      responseControl(
+        'reject',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-late-after-abort'
+      )
+    );
+    await expect(activation).rejects.toThrow(/rejected activation/);
+
+    await expect(
+      fixture.coordinator.activate({
+        schemaVersion: 'skiff-assembly-activation-request-v2',
+        environment: 'test',
+        activationId: 'activation-late-after-abort',
+        expectedGeneration: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: configSnapshot(ASSEMBLY_B)
+      })
+    ).rejects.toThrow(/recently aborted.*cannot be reused/);
+
+    fixture.coordinator.handleRuntimeControl(
+      runtimeB,
+      responseControl(
+        'prepared',
+        'replica-b',
+        ASSEMBLY_B,
+        1,
+        'activation-late-after-abort'
+      )
+    );
+    await nextTurn();
+    expect(runtimeB.close).not.toHaveBeenCalled();
+
+    fixture.coordinator.handleRuntimeControl(
+      runtimeB,
+      responseControl(
+        'reject',
+        'replica-b',
+        ASSEMBLY_B,
+        1,
+        'activation-late-after-abort'
+      )
+    );
+    await nextTurn();
+    expect(runtimeB.close).not.toHaveBeenCalled();
+
+    const nextActivation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v2',
+      environment: 'test',
+      activationId: 'activation-after-late-terminal',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_C },
+      configSnapshot: configSnapshot(ASSEMBLY_C)
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 4);
+    fixture.coordinator.handleRuntimeControl(
+      runtimeB,
+      responseControl(
+        'prepared',
+        'replica-b',
+        ASSEMBLY_B,
+        1,
+        'activation-late-after-abort'
+      )
+    );
+    await nextTurn();
+    expect(runtimeB.close).not.toHaveBeenCalled();
+    fixture.coordinator.handleRuntimeControl(
+      runtimeA,
+      responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_C,
+        1,
+        'activation-after-late-terminal'
+      )
+    );
+    fixture.coordinator.handleRuntimeControl(
+      runtimeB,
+      responseControl(
+        'prepared',
+        'replica-b',
+        ASSEMBLY_C,
+        1,
+        'activation-after-late-terminal'
+      )
+    );
+    await expect(nextActivation).resolves.toMatchObject({
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_C } }
+    });
+
+    fixture.coordinator.handleRuntimeControl(runtimeB, {
+      ...responseControl(
+        'prepared',
+        'replica-b',
+        ASSEMBLY_B,
+        1,
+        'activation-late-after-abort'
+      ),
+      configSnapshot: configSnapshot(ASSEMBLY_C)
+    });
+    await until(() => vi.mocked(runtimeB.close).mock.calls.length === 1);
+    expect(runtimeB.close).toHaveBeenCalledWith(
+      1008,
+      'runtime activation response does not match durable pending tuple'
+    );
+  });
+
+  it('bounds recently-aborted exact tuple tombstones and evicts the oldest tuple', async () => {
+    const fixture = await coordinatorFixture();
+    const runtime = fakeSocket();
+    register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+
+    for (let index = 0; index < 65; index += 1) {
+      const activationId = `activation-tombstone-${index}`;
+      const activation = fixture.coordinator.activate({
+        schemaVersion: 'skiff-assembly-activation-request-v2',
+        environment: 'test',
+        activationId,
+        expectedGeneration: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_B },
+        configSnapshot: configSnapshot(ASSEMBLY_B)
+      });
+      await until(() => controlsOfType(fixture.controls, 'prepare').length === index + 1);
+      fixture.coordinator.handleRuntimeControl(
+        runtime,
+        responseControl('reject', 'replica-a', ASSEMBLY_B, 1, activationId)
+      );
+      await expect(activation).rejects.toThrow(/rejected activation/);
+    }
+
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl('prepared', 'replica-a', ASSEMBLY_B, 1, 'activation-tombstone-64')
+    );
+    await nextTurn();
+    expect(runtime.close).not.toHaveBeenCalled();
+
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl('prepared', 'replica-a', ASSEMBLY_B, 1, 'activation-tombstone-0')
+    );
+    await until(() => vi.mocked(runtime.close).mock.calls.length === 1);
+    expect(runtime.close).toHaveBeenCalledWith(
+      1008,
+      'runtime activation response does not match durable pending tuple'
+    );
+  });
+
+  it('keeps one tombstone for an aborted transaction with more than 64 participants', async () => {
+    const fixture = await coordinatorFixture();
+    const runtimes = Array.from({ length: 65 }, (_, index) => {
+      const runtime = fakeSocket();
+      register(fixture.registry, runtime, `replica-${index}`, 1, ASSEMBLY_A);
+      return runtime;
+    });
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v2',
+      environment: 'test',
+      activationId: 'activation-many-participants',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      configSnapshot: configSnapshot(ASSEMBLY_B)
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 65);
+    fixture.coordinator.handleRuntimeControl(
+      runtimes[0]!,
+      responseControl(
+        'reject',
+        'replica-0',
+        ASSEMBLY_B,
+        1,
+        'activation-many-participants'
+      )
+    );
+    await expect(activation).rejects.toThrow(/rejected activation/);
+
+    for (let index = 0; index < runtimes.length; index += 1) {
+      fixture.coordinator.handleRuntimeControl(
+        runtimes[index]!,
+        responseControl(
+          'prepared',
+          `replica-${index}`,
+          ASSEMBLY_B,
+          1,
+          'activation-many-participants'
+        )
+      );
+    }
+    await nextTurn();
+    expect(runtimes.every((runtime) => !vi.mocked(runtime.close).mock.calls.length)).toBe(true);
+  });
+
+  it('ignores a stale replaced connection close without aborting the new replica transaction', async () => {
+    const fixture = await coordinatorFixture();
+    const oldRuntime = fakeSocket();
+    const currentRuntime = fakeSocket();
+    register(fixture.registry, oldRuntime, 'replica-a', 1, ASSEMBLY_A);
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v2',
+      environment: 'test',
+      activationId: 'activation-after-reconnect',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      configSnapshot: configSnapshot(ASSEMBLY_B)
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
+
+    let releaseMutation!: () => void;
+    const blockedMutation = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    (
+      fixture.coordinator as unknown as { mutation: Promise<void> }
+    ).mutation = blockedMutation;
+
+    fixture.coordinator.handleReplicaDisconnected(oldRuntime, 'replica-a');
+    register(fixture.registry, currentRuntime, 'replica-a', 1, ASSEMBLY_A);
+    releaseMutation();
+    await nextTurn();
+    expect(fixture.coordinator.activationState().pending).not.toBeNull();
+    fixture.coordinator.handleReplicaDisconnected(oldRuntime, 'replica-a');
+    await nextTurn();
+    expect(fixture.coordinator.activationState().pending).not.toBeNull();
+    fixture.coordinator.handleRuntimeControl(
+      currentRuntime,
+      responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-after-reconnect'
+      )
+    );
+    await expect(activation).resolves.toMatchObject({ committed: { generation: 2 } });
+  });
+
+  it('remembers a pending transaction aborted during initialization recovery', async () => {
+    const missingAssembly = identity('d');
+    const stateStore = new MemoryAssemblyActivationStateStore({
+      schemaVersion: 'skiff-environment-activation-state-v2',
+      environment: 'test',
+      committed: {
+        generation: 1,
+        assembly: { assemblyIdentity: ASSEMBLY_A },
+        configSnapshot: configSnapshot(ASSEMBLY_A)
+      },
+      pending: {
+        activationId: 'activation-recovery-abort',
+        expectedGeneration: 1,
+        candidateGeneration: 2,
+        assembly: { assemblyIdentity: missingAssembly },
+        configSnapshot: configSnapshot(missingAssembly),
+        participantReplicaIds: ['replica-a']
+      }
+    });
+    const fixture = await coordinatorFixture(stateStore);
+    expect((await stateStore.read('test')).pending).toBeNull();
+    const runtime = fakeSocket();
+    register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl(
+        'prepared',
+        'replica-a',
+        missingAssembly,
+        1,
+        'activation-recovery-abort'
+      )
+    );
+    await nextTurn();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it('replays an exact durable pending transaction on startup and rebuilds from committed only', async () => {
@@ -299,6 +591,13 @@ describe('active RuntimeAssembly activation transaction', () => {
       assembly: { assemblyIdentity: ASSEMBLY_B }, configSnapshot: configSnapshot(ASSEMBLY_B),
     });
     const stagedRuntime = fakeSocket();
+    register(
+      committedFixture.registry,
+      stagedRuntime,
+      'replica-after-crash',
+      2,
+      ASSEMBLY_B
+    );
     committedFixture.coordinator.handleRuntimeControl(
       stagedRuntime,
       responseControl('prepared', 'replica-after-crash', ASSEMBLY_B, 1, 'activation-before-crash')

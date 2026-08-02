@@ -202,6 +202,12 @@ pub(crate) struct CanonicalPublishSession {
     owned_package_publications: BTreeMap<(PathBuf, PackageArtifactRef), PublishedPackageArtifact>,
 }
 
+impl CanonicalPublishSession {
+    pub(crate) fn owned_package_publication_count(&self) -> usize {
+        self.owned_package_publications.len()
+    }
+}
+
 fn copy_package(
     source: &CanonicalArtifactStore,
     target: &CanonicalArtifactStore,

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import type WebSocket from 'ws';
+
 import {
   ActorManager,
   type ActorKeyInput,
@@ -18,6 +20,7 @@ import {
 import {
   ActorGetCreateActivationCoordinator,
 } from './actorGetCreateActivationCoordinator.js';
+import type { ActiveActorInvocationParent } from './runtimeDispatcher.js';
 
 const DEFAULT_ACTOR_OWNER_LEASE_TTL_MS = 30_000;
 
@@ -37,6 +40,8 @@ export interface RuntimeControlSource {
   serviceProtocolIdentity: string;
   timeoutMs?: number;
   activationIdentity: ActivationIdentityFrameMetadata;
+  connection?: WebSocket;
+  testCapabilityParent?: ActiveActorInvocationParent;
 }
 
 export interface ActorSpawnRuntimeControlResult {
@@ -103,9 +108,19 @@ export class ActorSpawnRuntimeControl {
               503
             );
           }
+          assertRuntime(header.runtimeId, source);
+          assertActorService(header.actorKey, source);
+          assertTestCapabilityParent(header, source);
           return await this.getCreateCoordinator.getOrCreate({
             header,
             payloadBytes,
+            sourceRuntimeId: source.runtimeId,
+            ...(source.connection === undefined
+              ? {}
+              : { sourceConnection: source.connection }),
+            ...(source.testCapabilityParent === undefined
+              ? {}
+              : { capabilityParent: source.testCapabilityParent }),
           });
         }
         case 'actor.replace.request':
@@ -237,6 +252,61 @@ function assertActorService(
     throw new RuntimeControlProtocolError(
       'RuntimeServiceMismatch',
       `actor service ${actorKey.serviceId} does not match registered runtime service ${source.serviceId}`,
+      403
+    );
+  }
+}
+
+function assertTestCapabilityParent(
+  header: Extract<
+    ActorRuntimeRequestFrameHeader,
+    { type: 'actor.getOrCreate.request' }
+  >,
+  source: RuntimeControlSource
+): void {
+  const capability = header.testCaseCapability;
+  const parentRequestId = header.testCaseParentRequestId;
+  if ((capability === undefined) !== (parentRequestId === undefined)) {
+    throw new RuntimeControlProtocolError(
+      'TestCapabilityParentRejected',
+      'test capability actor creation metadata must be supplied as a pair',
+      403
+    );
+  }
+  if (capability === undefined) {
+    if (source.testCapabilityParent !== undefined) {
+      throw new RuntimeControlProtocolError(
+        'TestCapabilityParentRejected',
+        'ordinary actor creation cannot inherit a test capability parent',
+        403
+      );
+    }
+    return;
+  }
+  const parent = source.testCapabilityParent;
+  const authority = parent?.authority;
+  if (
+    parentRequestId === undefined ||
+    source.connection === undefined ||
+    parent === undefined ||
+    authority === undefined ||
+    parent.originRuntimeConnection !== source.connection ||
+    parent.originRuntimeId !== source.runtimeId ||
+    parent.testCaseCapability !== capability ||
+    authority.testCaseCapability !== capability ||
+    authority.runtimeId !== source.runtimeId ||
+    authority.buildId !== source.buildId ||
+    authority.serviceProtocolIdentity !== source.serviceProtocolIdentity ||
+    authority.assemblyIdentity !== source.activationIdentity.assemblyIdentity ||
+    authority.assemblyGeneration !== source.activationIdentity.generation ||
+    authority.deployment.serviceId !== source.serviceId ||
+    authority.deployment.serviceId !== header.actorKey.serviceId ||
+    authority.deployment.deploymentRevision !==
+      source.activationIdentity.deploymentRevision
+  ) {
+    throw new RuntimeControlProtocolError(
+      'TestCapabilityParentRejected',
+      'test capability actor creation parent does not match its immutable RuntimeAssembly authority',
       403
     );
   }

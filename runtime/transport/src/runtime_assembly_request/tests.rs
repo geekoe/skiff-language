@@ -272,6 +272,87 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
 }
 
 #[test]
+fn runtime_assembly_http_request_round_trips_router_test_parent_authority() {
+    let mut value = corpus().request_start_headers[0].clone();
+    value["testEffectsEnabled"] = json!(true);
+    value["testCaseCapability"] = json!("test-case:capability_1");
+    value["testCaseParentRequestId"] = json!("request:parent_1");
+
+    let frame = encode_binary_frame(&value, br#"{"nested":true}"#).unwrap();
+    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
+    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+        panic!("Router HTTP request must decode through the HTTP wire branch")
+    };
+    assert!(decoded.test_effects_enabled);
+    assert_eq!(
+        decoded.test_case_capability.as_deref(),
+        Some("test-case:capability_1")
+    );
+    assert_eq!(
+        decoded.test_case_parent_request_id.as_deref(),
+        Some("request:parent_1")
+    );
+    assert_eq!(payload, br#"{"nested":true}"#);
+
+    let serialized = serde_json::to_value(decoded).unwrap();
+    assert_eq!(
+        serialized["testCaseParentRequestId"],
+        json!("request:parent_1")
+    );
+    assert!(serialized.get("test_case_parent_request_id").is_none());
+}
+
+#[test]
+fn runtime_assembly_http_request_enforces_test_authority_shape_and_tokens() {
+    let baseline = corpus().request_start_headers[0].clone();
+    let mut cases = Vec::new();
+
+    let mut enabled_without_capability = baseline.clone();
+    enabled_without_capability["testEffectsEnabled"] = json!(true);
+    enabled_without_capability
+        .as_object_mut()
+        .unwrap()
+        .remove("testCaseCapability");
+    cases.push(("enabled without capability", enabled_without_capability));
+
+    let mut production_with_capability = baseline.clone();
+    production_with_capability["testEffectsEnabled"] = json!(false);
+    production_with_capability["testCaseCapability"] = json!("test-case:capability_1");
+    cases.push(("production with capability", production_with_capability));
+
+    let mut parent_without_capability = baseline.clone();
+    parent_without_capability["testEffectsEnabled"] = json!(false);
+    parent_without_capability
+        .as_object_mut()
+        .unwrap()
+        .remove("testCaseCapability");
+    parent_without_capability["testCaseParentRequestId"] = json!("request:parent_1");
+    cases.push(("parent without capability", parent_without_capability));
+
+    for invalid_parent in ["", "contains whitespace", "slash/not-allowed"] {
+        let mut invalid = baseline.clone();
+        invalid["testEffectsEnabled"] = json!(true);
+        invalid["testCaseCapability"] = json!("test-case:capability_1");
+        invalid["testCaseParentRequestId"] = json!(invalid_parent);
+        cases.push(("invalid parent token", invalid));
+    }
+
+    let mut overlong_parent = baseline;
+    overlong_parent["testEffectsEnabled"] = json!(true);
+    overlong_parent["testCaseCapability"] = json!("test-case:capability_1");
+    overlong_parent["testCaseParentRequestId"] = json!("p".repeat(257));
+    cases.push(("overlong parent token", overlong_parent));
+
+    for (name, value) in cases {
+        let frame = encode_binary_frame(&value, &[]).unwrap();
+        assert!(
+            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn runtime_assembly_request_start_preserves_opaque_http_payload_boundaries() {
     let corpus = corpus();
     for payload_case in corpus.request_start_payload_cases {

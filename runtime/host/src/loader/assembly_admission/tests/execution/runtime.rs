@@ -37,7 +37,6 @@ pub(super) struct TypedExecutionRuntime {
     actor_method_outbound:
         Arc<crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry>,
     connection_requests: Arc<skiff_runtime_capability_context::ConnectionRequestRegistry>,
-    test_http_entries: crate::capability_context::TestHttpEntryRegistry,
 }
 
 impl TypedExecutionRuntime {
@@ -101,7 +100,6 @@ impl TypedExecutionRuntime {
             connection_requests: Arc::new(
                 skiff_runtime_capability_context::ConnectionRequestRegistry::new(4),
             ),
-            test_http_entries: crate::capability_context::TestHttpEntryRegistry::default(),
         }
     }
 
@@ -210,7 +208,7 @@ impl TypedExecutionRuntime {
                 )
                 .expect("test router session"),
                 http_response_max_bytes: 1_048_576,
-                test_http_entries: self.test_http_entries.clone(),
+                test_http_admission: None,
                 stream_runtime: context.stream_runtime(),
                 test_effect_doubles: context.test_effect_double_context(),
                 cancellation: context.execution().cancellation_token(),

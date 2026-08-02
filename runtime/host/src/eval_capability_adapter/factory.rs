@@ -109,6 +109,7 @@ pub(crate) fn actor_from_request<'a>(
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
     actor_method_outbound: &'a Arc<ActorMethodOutboundRegistry>,
+    test_case_capability: Option<&str>,
     cancellation: CancellationToken,
 ) -> (
     eval_capabilities::ActorCapabilityContext<'a>,
@@ -150,6 +151,7 @@ pub(crate) fn actor_from_request<'a>(
             .map(str::to_string),
         activation_identity: request_context.activation_identity().cloned(),
         trace_id: request_context.trace_id().map(str::to_string),
+        test_case_capability: test_case_capability.map(str::to_string),
         router_sender: router_sender.cloned(),
         outbound_requests: outbound_requests.clone(),
         actor_method_outbound: actor_method_outbound.clone(),
@@ -197,6 +199,7 @@ impl TestActorCapabilityFactory {
             router_sender,
             outbound_requests,
             &self.actor_method_outbound,
+            None,
             cancellation,
         )
     }

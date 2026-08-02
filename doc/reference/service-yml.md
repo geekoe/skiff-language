@@ -135,6 +135,9 @@ jsonRpc:
 - `path`必填；文件可以只声明path，供Skiff主动send/request使用。
 - `connect`可省略。存在时handler返回`std.websocket.WebSocketConnectResult`；可用source只有
   `websocket.connectRequest`与`websocket.connectionId`。
+- Connect accept可返回由service事务分配的正安全整数`admissionRank`。它与单连接
+  `close-oldest` policy配合时是Router的business-identity fencing token；service应在提交业务连接状态的
+  同一事务中递增并持久化该rank。
 - `jsonRpc`可省略或为空mapping。每个mapping key是稳定`GatewayEntryKey`，`method`是external selector；
   两者在各自namespace内必须唯一。
 - 业务method必须是非空string，不能以平台保留前缀`$/`开头。

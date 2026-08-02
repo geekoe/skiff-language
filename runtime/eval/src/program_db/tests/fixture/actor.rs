@@ -72,6 +72,8 @@ impl ActorFixture {
             .with_fields_for_executor(&ActorExecutorAuthority::new(), &handle, |fields, _| {
                 fields[1].value = RuntimeValue::Number(1.0);
                 fields[1].assigned = true;
+                fields[2].value = RuntimeValue::Number(1.0);
+                fields[2].assigned = true;
             })
             .unwrap();
         store
@@ -116,6 +118,7 @@ impl ActorFixture {
                 vec![
                     ("id".to_string(), self.id_field_plan.clone()),
                     ("count".to_string(), self.field_plan.clone()),
+                    ("mirror".to_string(), self.field_plan.clone()),
                 ],
                 false,
             ),
@@ -138,6 +141,29 @@ impl ActorFixture {
             let authority = ActorExecutorAuthority::new();
             store.acquire_execution(&authority, &handle).await
         }
+    }
+
+    pub(in crate::program_db::tests) fn replace_same_epoch_while_leased(
+        &self,
+        linked: &LinkedDbActorFixture,
+    ) -> ActorInstanceHandle {
+        assert!(
+            self.store.discard_exact(&self.handle),
+            "fixture must discard the exact leased instance"
+        );
+        let replacement = self
+            .store
+            .activate(ActorActivationRequest {
+                fence: self.handle.fence().clone(),
+                bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
+                bootstrap_payload: br#"[]"#,
+                program: linked.program.projection().type_view(),
+            })
+            .expect("same-epoch fixture replacement");
+        self.store
+            .mark_admitted(&ActorExecutorAuthority::new(), &replacement)
+            .expect("same-epoch replacement admission");
+        replacement
     }
 }
 
@@ -165,10 +191,25 @@ impl DbActorFixture {
         &self,
         frame: ActorExecutionFrame,
     ) -> ProgramExecutionContext<'static> {
+        self.context_with_request(frame, test_runtime::request_context())
+    }
+
+    pub(in crate::program_db::tests) fn context_with_trace(
+        &self,
+        frame: ActorExecutionFrame,
+        trace_id: &'static str,
+    ) -> ProgramExecutionContext<'static> {
+        self.context_with_request(frame, test_runtime::request_context_with_trace(trace_id))
+    }
+
+    fn context_with_request(
+        &self,
+        frame: ActorExecutionFrame,
+        request: skiff_runtime_capability_context::RequestCapabilityContext<'static>,
+    ) -> ProgramExecutionContext<'static> {
         let execution = test_runtime::execution_control();
         let effects = test_runtime::effects_context();
         let actor = test_runtime::actor_context();
-        let request = test_runtime::request_context();
         ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
             config: test_runtime::config_context(),

@@ -27,6 +27,14 @@ pub(crate) struct RuntimeHttpGatewayEvalAdapterInput {
 pub(crate) fn http_gateway_eval_adapter(
     input: RuntimeHttpGatewayEvalAdapterInput,
 ) -> anyhow::Result<Arc<dyn RuntimeHttpGatewayEvalAdapter>> {
+    if input.header.test_effects_enabled != input.header.test_case_capability.is_some() {
+        anyhow::bail!("runtime HTTP testEffectsEnabled must match testCaseCapability presence");
+    }
+    if input.header.test_case_parent_request_id.is_some()
+        && input.header.test_case_capability.is_none()
+    {
+        anyhow::bail!("runtime HTTP testCaseParentRequestId requires testCaseCapability");
+    }
     let metadata = request_metadata(
         input.header.request_id,
         input.header.mode,
@@ -40,6 +48,7 @@ pub(crate) fn http_gateway_eval_adapter(
             .test_effects_enabled
             .then_some(input.header.http_request.url),
         input.header.test_case_capability,
+        input.header.test_case_parent_request_id,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -65,6 +74,7 @@ pub(crate) fn websocket_connect_eval_adapter(
         input.header.test_effects_enabled,
         None,
         None,
+        None,
     )?;
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -88,6 +98,7 @@ pub(crate) fn websocket_jsonrpc_eval_adapter(
         input.header.deadline.as_ref(),
         &input.header.trace,
         input.header.test_effects_enabled,
+        None,
         None,
         None,
     )?;
@@ -120,6 +131,7 @@ pub(crate) fn spawn_eval_adapter(
         test_effects_enabled: input.header.test_effects_enabled,
         test_ingress_url: None,
         test_case_capability: input.header.test_case_capability,
+        test_case_parent_request_id: None,
     };
     Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
         input.context,
@@ -137,6 +149,7 @@ fn request_metadata(
     test_effects_enabled: bool,
     test_ingress_url: Option<String>,
     test_case_capability: Option<String>,
+    test_case_parent_request_id: Option<String>,
 ) -> anyhow::Result<RuntimeAssemblyRequestMetadata> {
     Ok(RuntimeAssemblyRequestMetadata {
         request_id,
@@ -148,6 +161,7 @@ fn request_metadata(
         test_effects_enabled,
         test_ingress_url,
         test_case_capability,
+        test_case_parent_request_id,
     })
 }
 
@@ -166,8 +180,13 @@ impl RuntimeSpawnEvalAdapter for RuntimeAssemblyExecutionContext {
         };
         let lease = self
             .test_http_entries
-            .begin_derived(capability, self.request.request_id.clone())
+            .begin_derived(
+                capability,
+                self.router_session.as_str(),
+                self.request.request_id.clone(),
+            )
             .map_err(|error| skiff_runtime_request::RequestError::Unsupported(error.to_string()))?;
+        self.admit_test_http_context(lease.admitted_context())?;
         Ok(Some(
             skiff_runtime_request::RuntimeSpawnTestEffectExecution::new(lease.effects(), lease),
         ))
@@ -215,6 +234,26 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
                         .to_string(),
                 ));
             }
+            if let Some(parent_request_id) = self.test_case_parent_request_id.as_deref() {
+                let lease = self
+                    .test_http_entries
+                    .begin_derived_from_parent(
+                        capability,
+                        parent_request_id,
+                        self.router_session.as_str(),
+                        self.request.request_id.clone(),
+                    )
+                    .map_err(|error| {
+                        skiff_runtime_request::RequestError::Unsupported(error.to_string())
+                    })?;
+                self.admit_test_http_context(lease.admitted_context())?;
+                return Ok(Some(
+                    skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::nested(
+                        lease.effects(),
+                        lease,
+                    ),
+                ));
+            }
             let ingress_url = self.test_ingress_url.as_deref().ok_or_else(|| {
                 skiff_runtime_request::RequestError::Unsupported(
                     "test HTTP ingress is missing its trusted ingress URL".to_string(),
@@ -224,6 +263,7 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
                 .test_http_entries
                 .begin_root_case(
                     capability,
+                    self.router_session.as_str(),
                     self.request.request_id.clone(),
                     activation_id.to_string(),
                     ingress_url,
@@ -232,6 +272,7 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
                 .map_err(|error| {
                     skiff_runtime_request::RequestError::Unsupported(error.to_string())
                 })?;
+            self.admit_test_http_context(lease.admitted_context())?;
             let effects = lease.effects();
             return Ok(Some(
                 skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::root(
@@ -245,16 +286,7 @@ impl RuntimeHttpGatewayEvalAdapter for RuntimeAssemblyExecutionContext {
                 "test HTTP ingress is missing its opaque test case capability".to_string(),
             ));
         }
-        let execution = self
-            .test_http_entries
-            .begin_nested_http(activation_id, self.request.request_id.clone())
-            .map_err(|error| skiff_runtime_request::RequestError::Unsupported(error.to_string()))?;
-        Ok(execution.map(|lease| {
-            skiff_runtime_request::RuntimeHttpGatewayTestEffectExecution::nested(
-                lease.effects(),
-                lease,
-            )
-        }))
+        Ok(None)
     }
 
     fn execution_context<'a>(

@@ -318,11 +318,16 @@ async fn execution_frame_rejects_wrong_field_type_and_expires_with_lease() {
         &PlanContext::from_type_view(fixture.view(), &ExecutableAddr::service(0, 0)),
     )
     .unwrap();
+    let id_plan = RuntimeTypePlan::from_linked(
+        &builtin("string"),
+        &PlanContext::from_type_view(fixture.view(), &ExecutableAddr::service(0, 0)),
+    )
+    .unwrap();
     let frame = ActorExecutionFrame::new(
         store.clone(),
         handle,
         lease,
-        vec![("count".to_string(), plan)],
+        vec![("id".to_string(), id_plan), ("count".to_string(), plan)],
         false,
     );
     assert!(frame
@@ -532,9 +537,11 @@ async fn upgrade_fence_allows_owned_sync_segment_to_commit_but_blocks_next_acqui
     let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
     lease.fields().lock().unwrap()[0].value = RuntimeValue::Number(12.0);
     let heap = lease.take_heap();
+    let snapshot =
+        ActorInstanceExecutionSnapshot::new(lease.fields().lock().unwrap().clone(), heap);
 
     assert!(store.begin_upgrade_exact(&handle));
-    store.commit_execution(&handle, lease, heap).unwrap();
+    store.commit_execution(&handle, lease, snapshot).unwrap();
     assert!(matches!(
         store.acquire_execution(&authority, &handle).await,
         Err(ActorInstanceStoreError::InstanceReplaced)
@@ -559,7 +566,9 @@ async fn suspended_continuation_cannot_resume_after_upgrade_fence() {
     let authority = ActorExecutorAuthority::new();
     let mut lease = store.acquire_execution(&authority, &handle).await.unwrap();
     let heap = lease.take_heap();
-    store.commit_execution(&handle, lease, heap).unwrap();
+    let snapshot =
+        ActorInstanceExecutionSnapshot::new(lease.fields().lock().unwrap().clone(), heap);
+    store.commit_execution(&handle, lease, snapshot).unwrap();
 
     assert!(store.begin_upgrade_exact(&handle));
     assert!(matches!(
@@ -646,20 +655,22 @@ fn stale_session_cleanup_cannot_remove_same_epoch_rematerialization() {
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
     let delayed_old_handle = old.clone();
+    admitted(&store, &old);
+    tracker.open_session("old-session").unwrap();
     tracker.track("old-session", old).unwrap();
 
     assert_eq!(tracker.discard_session("old-session"), 1);
-    assert_eq!(
+    tracker.open_session("new-session").unwrap();
+    assert!(matches!(
         tracker
             .track("new-session", delayed_old_handle)
             .unwrap_err(),
-        ActorInstanceSessionTrackError::AlreadyTracked {
-            owner_session_id: "old-session".to_string()
-        }
-    );
+        ActorInstanceSessionTrackError::NotPublishable { .. }
+    ));
     let current = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &current);
     tracker.track("new-session", current.clone()).unwrap();
 
     assert_eq!(tracker.discard_session("old-session"), 0);
@@ -679,6 +690,9 @@ fn session_tracker_rejects_duplicate_ownership_and_shutdown_discards_all() {
     let first = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &first);
+    tracker.open_session("session-a").unwrap();
+    tracker.open_session("session-b").unwrap();
     tracker.track("session-a", first.clone()).unwrap();
     assert_eq!(
         tracker.track("session-b", first).unwrap_err(),
@@ -690,6 +704,7 @@ fn session_tracker_rejects_duplicate_ownership_and_shutdown_discards_all() {
     let second = store
         .activate(request(fixture.view(), fence(2), &bytes))
         .unwrap();
+    admitted(&store, &second);
     tracker.track("session-b", second).unwrap();
     assert_eq!(tracker.discard_all(), 2);
     assert_eq!(tracker.discard_all(), 0);
@@ -705,6 +720,8 @@ fn session_upgrade_control_is_exact_and_stale_notifications_are_inert() {
     let handle = store
         .activate(request(fixture.view(), fence(1), &bytes))
         .unwrap();
+    admitted(&store, &handle);
+    tracker.open_session("owner-session").unwrap();
     tracker.track("owner-session", handle.clone()).unwrap();
 
     let mut wrong_epoch = handle.fence().clone();
@@ -725,9 +742,229 @@ fn session_upgrade_control_is_exact_and_stale_notifications_are_inert() {
     let replacement = store
         .activate(request(fixture.view(), fence(2), &bytes))
         .unwrap();
+    admitted(&store, &replacement);
+    tracker.open_session("replacement-session").unwrap();
     tracker
         .track("replacement-session", replacement)
         .expect("upgrade discard releases old tracker ownership");
+}
+
+#[test]
+fn closed_session_rejects_late_activation_and_discards_only_the_untracked_orphan() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+    tracker.open_session("closing-session").unwrap();
+
+    let late = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    assert_eq!(tracker.discard_session("closing-session"), 0);
+    assert_eq!(
+        tracker.track("closing-session", late.clone()).unwrap_err(),
+        ActorInstanceSessionTrackError::SessionNotOpen {
+            router_session_id: "closing-session".to_string(),
+        }
+    );
+    assert!(tracker.discard_if_untracked(&late));
+    assert!(store.is_empty());
+}
+
+#[test]
+fn closed_session_cleanup_never_discards_a_handle_owned_by_a_live_session() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+    tracker.open_session("live-owner").unwrap();
+    let shared = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    admitted(&store, &shared);
+    tracker.track("live-owner", shared.clone()).unwrap();
+
+    assert_eq!(
+        tracker.track("already-closed", shared.clone()).unwrap_err(),
+        ActorInstanceSessionTrackError::SessionNotOpen {
+            router_session_id: "already-closed".to_string(),
+        }
+    );
+    assert!(!tracker.discard_if_untracked(&shared));
+    assert_eq!(store.len(), 1);
+}
+
+#[test]
+fn evicting_last_actor_does_not_close_the_live_session() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = ActorInstanceSessionTracker::new(Arc::clone(&store));
+    tracker.open_session("live-session").unwrap();
+
+    let first = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    admitted(&store, &first);
+    tracker.track("live-session", first.clone()).unwrap();
+    assert!(tracker.discard_exact("live-session", first.fence()));
+
+    let second = store
+        .activate(request(fixture.view(), fence(2), &bytes))
+        .unwrap();
+    admitted(&store, &second);
+    tracker
+        .track("live-session", second)
+        .expect("evicting the last Actor must leave its Router session open");
+}
+
+#[tokio::test]
+async fn session_close_before_wait_poll_is_observed_without_lost_wake() {
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = ActorInstanceSessionTracker::new(store);
+    tracker.open_session("close-before-poll").unwrap();
+    let lease = tracker.session_lease("close-before-poll").unwrap();
+    tracker.discard_session("close-before-poll");
+    tokio::time::timeout(std::time::Duration::from_secs(1), lease.wait_closed())
+        .await
+        .expect("a close before first wait poll must remain observable");
+}
+
+#[tokio::test]
+async fn admission_before_first_notified_poll_is_observed_without_lost_wake() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = ActorInstanceStore::new();
+    let handle = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    store.install_admission_wait_before_poll_test_action(
+        &handle,
+        AdmissionWaitBeforePollTestAction::Admit,
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        store.await_admission(&handle),
+    )
+    .await
+    .expect("admission after the exact recheck but before the first await poll must wake")
+    .expect("the exact Actor instance was admitted");
+}
+
+#[tokio::test]
+async fn discard_before_first_notified_poll_is_observed_without_lost_wake() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = ActorInstanceStore::new();
+    let handle = store
+        .activate(request(fixture.view(), fence(1), &bytes))
+        .unwrap();
+    store.install_admission_wait_before_poll_test_action(
+        &handle,
+        AdmissionWaitBeforePollTestAction::Discard,
+    );
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        store.await_admission(&handle),
+    )
+    .await
+    .expect("discard after the exact recheck but before the first await poll must wake");
+    assert_eq!(result, Err(ActorInstanceStoreError::InstanceNotFound));
+}
+
+#[test]
+fn provisional_session_owner_blocks_cross_session_adoption_and_stale_guard_cleanup() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = Arc::new(ActorInstanceSessionTracker::new(Arc::clone(&store)));
+    tracker.open_session("session-one").unwrap();
+    tracker.open_session("session-two").unwrap();
+    let first_lease = tracker.session_lease("session-one").unwrap();
+    let second_lease = tracker.session_lease("session-two").unwrap();
+
+    let first = tracker
+        .begin_activation(&first_lease, request(fixture.view(), fence(1), &bytes))
+        .expect("first session materializes with provisional ownership");
+    assert!(matches!(first, ActorActivation::Materialized(_)));
+    assert_eq!(store.len(), 1);
+    let cross_session =
+        tracker.begin_activation(&second_lease, request(fixture.view(), fence(1), &bytes));
+    assert!(matches!(
+        cross_session,
+        Err(ActorInstanceSessionTrackError::AlreadyTracked { .. })
+    ));
+
+    assert_eq!(tracker.discard_session("session-one"), 1);
+    assert!(store.is_empty());
+    let second = tracker
+        .begin_activation(&second_lease, request(fixture.view(), fence(1), &bytes))
+        .expect("second session rematerializes only after exact first-session cleanup");
+    drop(first);
+    assert_eq!(
+        store.len(),
+        1,
+        "stale first guard cannot remove replacement"
+    );
+    let ActorActivation::Materialized(second) = second else {
+        panic!("second session must own a fresh materialization")
+    };
+    second
+        .admit(&ActorExecutorAuthority::new())
+        .expect("fresh second-session materialization admits");
+    assert_eq!(store.len(), 1);
+    assert!(tracker.state.lock().unwrap().handle_owners.len() == 1);
+}
+
+#[test]
+fn same_id_reconnect_rejects_stale_session_generation_and_preserves_new_handle() {
+    let fixture = fixture();
+    let bytes = payload();
+    let store = Arc::new(ActorInstanceStore::new());
+    let tracker = Arc::new(ActorInstanceSessionTracker::new(Arc::clone(&store)));
+    let session_id = "reused-session-id";
+
+    tracker.open_session(session_id).unwrap();
+    let stale_lease = tracker.session_lease(session_id).unwrap();
+    let stale_activation = tracker
+        .begin_activation(&stale_lease, request(fixture.view(), fence(1), &bytes))
+        .expect("old generation materializes with exact provisional ownership");
+
+    assert_eq!(tracker.discard_session(session_id), 1);
+    tracker.open_session(session_id).unwrap();
+    let current_lease = tracker.session_lease(session_id).unwrap();
+    let ActorActivation::Materialized(current_activation) = tracker
+        .begin_activation(&current_lease, request(fixture.view(), fence(1), &bytes))
+        .expect("new same-id generation rematerializes")
+    else {
+        panic!("new same-id generation must own a fresh materialization")
+    };
+    let current = current_activation
+        .admit(&ActorExecutorAuthority::new())
+        .expect("new generation admits its exact provisional handle");
+
+    assert_eq!(
+        tracker
+            .track_with_lease(&stale_lease, current.clone())
+            .unwrap_err(),
+        ActorInstanceSessionTrackError::SessionNotOpen {
+            router_session_id: session_id.to_string(),
+        },
+        "the old connection generation cannot publish through a reused string id"
+    );
+    assert!(matches!(
+        tracker.begin_activation(&stale_lease, request(fixture.view(), fence(1), &bytes)),
+        Err(ActorInstanceSessionTrackError::SessionNotOpen { .. })
+    ));
+
+    drop(stale_activation);
+    assert_eq!(store.len(), 1, "stale cleanup cannot remove the new Arc");
+    assert!(store
+        .with_fields_for_executor(&ActorExecutorAuthority::new(), &current, |fields, _| fields
+            .len())
+        .is_ok());
 }
 
 #[test]

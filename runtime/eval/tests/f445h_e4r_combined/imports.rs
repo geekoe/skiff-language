@@ -57,7 +57,8 @@ pub(super) use skiff_runtime_eval::{
     actor_executor::{ActorMethodExecutionRequest, ActorMethodExecutor},
     actor_instance::{
         ActorActivationRequest, ActorIncarnationKey, ActorInstanceFence, ActorInstanceHandle,
-        ActorInstanceStore, ActorLogicalKey, ACTOR_BOOTSTRAP_ENCODING_V1,
+        ActorInstanceSessionTracker, ActorInstanceStore, ActorLogicalKey,
+        ACTOR_BOOTSTRAP_ENCODING_V1,
     },
     capabilities::{
         EffectDispatchApi, EffectDispatchContext, EvalCapabilityFuture, EvalRuntimeFactory,

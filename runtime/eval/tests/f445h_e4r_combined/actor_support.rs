@@ -264,6 +264,7 @@ pub(super) struct ActorHarness {
     pub(super) interpreter: Arc<Interpreter>,
     pub(super) store: ActorInstanceStore,
     pub(super) handle: ActorInstanceHandle,
+    _session_tracker: Arc<ActorInstanceSessionTracker>,
 }
 
 impl ActorHarness {
@@ -297,8 +298,17 @@ impl ActorHarness {
             link_overlay: LinkOverlay::default(),
             types: RuntimeTypeContext::default(),
         };
+        let session_tracker = Arc::new(ActorInstanceSessionTracker::new(Arc::new(store.clone())));
+        session_tracker
+            .open_session("combined-actor-harness")
+            .expect("combined Actor session opens");
+        let session = session_tracker
+            .session_lease("combined-actor-harness")
+            .expect("combined Actor session lease");
         let handle = ActorMethodExecutor::new(&store)
-            .activate(
+            .activate_for_session(
+                &session_tracker,
+                &session,
                 &interpreter,
                 &execution_context(
                     &interpreter,
@@ -315,6 +325,7 @@ impl ActorHarness {
             interpreter,
             store,
             handle,
+            _session_tracker: session_tracker,
         }
     }
 

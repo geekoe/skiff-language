@@ -241,6 +241,10 @@ impl TestSnapshotResolver {
     pub(crate) fn new(snapshot: RuntimeConfigSnapshot) -> Self {
         Self { snapshot }
     }
+
+    pub(crate) fn snapshot(&self) -> &RuntimeConfigSnapshot {
+        &self.snapshot
+    }
 }
 
 #[cfg(test)]

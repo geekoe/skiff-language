@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+
+#[cfg(test)]
+use std::sync::OnceLock;
 
 use base64::Engine as _;
 use skiff_runtime_eval::{
@@ -37,6 +43,7 @@ use super::{
     actor_method_handoff::{
         AdmittedActorBootstrap, AdmittedActorMethodInput, AdmittedActorOwnerFence,
     },
+    actor_route_holds::ActorRouteHoldGuard,
     RuntimeHost,
 };
 
@@ -45,18 +52,89 @@ pub(super) enum ActorOwnerControlAcceptance {
     Rejected(Option<ActorOwnerFailureReasonFrameHeader>),
 }
 
+#[cfg(test)]
+pub(super) fn expired_actor_owner_terminal_barrier() -> &'static tokio::sync::Barrier {
+    static BARRIER: OnceLock<tokio::sync::Barrier> = OnceLock::new();
+    BARRIER.get_or_init(|| tokio::sync::Barrier::new(2))
+}
+
+#[cfg(test)]
+pub(super) fn pending_actor_owner_after_admission_barrier() -> &'static tokio::sync::Barrier {
+    static BARRIER: OnceLock<tokio::sync::Barrier> = OnceLock::new();
+    BARRIER.get_or_init(|| tokio::sync::Barrier::new(2))
+}
+
+struct ActorOwnerInvocationTaskLease {
+    registry: Arc<super::actor_owner_invocations::ActorOwnerInvocationRegistry>,
+    identity: super::actor_owner_invocations::ActorOwnerInvocationIdentity,
+    finished: bool,
+}
+
+impl ActorOwnerInvocationTaskLease {
+    fn new(
+        registry: Arc<super::actor_owner_invocations::ActorOwnerInvocationRegistry>,
+        identity: super::actor_owner_invocations::ActorOwnerInvocationIdentity,
+    ) -> Self {
+        Self {
+            registry,
+            identity,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) -> Option<ActorOwnerCancellationReason> {
+        if self.finished {
+            return None;
+        }
+        self.finished = true;
+        self.registry.finish(&self.identity)
+    }
+}
+
+impl Drop for ActorOwnerInvocationTaskLease {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.registry
+                .cancel_registered(&self.identity, ActorOwnerCancellationReason::Cancelled);
+        }
+        let _ = self.finish();
+    }
+}
+
 impl RuntimeHost {
+    fn finish_actor_owner_activation(
+        &self,
+        session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
+        handle: skiff_runtime_eval::actor_instance::ActorInstanceHandle,
+    ) -> ActorOwnerControlAcceptance {
+        match self.track_actor_instance_with_lease(session, handle) {
+            Ok(()) => ActorOwnerControlAcceptance::Accepted,
+            Err(
+                skiff_runtime_eval::actor_instance::ActorInstanceSessionTrackError::AlreadyTracked {
+                    owner_session_id,
+                },
+            ) if owner_session_id == session.router_session_id() => {
+                ActorOwnerControlAcceptance::Accepted
+            }
+            Err(error) => ActorOwnerControlAcceptance::Rejected(Some(control_reason(
+                "ActorCreateFailed",
+                &error.to_string(),
+            ))),
+        }
+    }
+
     pub(super) async fn activate_actor_owner_control(
         &self,
-        router_session_id: &str,
+        session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
         control: &ActorOwnerControlFrameHeader,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> bool {
+        let router_session_id = session.router_session_id();
         let Some(transition) = control.transition.as_ref() else {
             return false;
         };
-        let Some(execution) =
-            build_owner_control_execution(self, router_session_id, control, sender, None)
+        let Some((execution, _route_hold)) =
+            build_owner_control_execution(self, router_session_id, control, sender, None, None)
         else {
             return false;
         };
@@ -70,7 +148,9 @@ impl RuntimeHost {
         };
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
         let Ok(handle) = executor
-            .activate(
+            .activate_for_session(
+                &self.actor_instances,
+                session,
                 execution.interpreter(),
                 &context,
                 match control_instance_fence(control) {
@@ -84,18 +164,25 @@ impl RuntimeHost {
         else {
             return false;
         };
-        match self.track_actor_instance(router_session_id, handle) {
+        match self.track_actor_instance_with_lease(session, handle) {
             Ok(()) => true,
-            Err(error) => error.to_string().contains("already tracked"),
+            Err(
+                skiff_runtime_eval::actor_instance::ActorInstanceSessionTrackError::AlreadyTracked {
+                    owner_session_id,
+                },
+            ) => owner_session_id == router_session_id,
+            Err(_) => false,
         }
     }
 
     pub(super) async fn activate_actor_owner_initial(
         &self,
-        router_session_id: &str,
+        session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
         control: &ActorOwnerControlFrameHeader,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+        test_effect_context: Option<crate::capability_context::ActorMethodTestEffectContext>,
     ) -> ActorOwnerControlAcceptance {
+        let router_session_id = session.router_session_id();
         let Some(bootstrap) = control.bootstrap.as_ref() else {
             return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
                 "ActorCreateFailed",
@@ -114,12 +201,13 @@ impl RuntimeHost {
                 "actor create deadline has already expired",
             )));
         };
-        let Some(execution) = build_owner_control_execution(
+        let Some((execution, _route_hold)) = build_owner_control_execution(
             self,
             router_session_id,
             control,
             sender,
             Some(Instant::now() + duration),
+            test_effect_context,
         ) else {
             return ActorOwnerControlAcceptance::Rejected(Some(control_reason(
                 "ActorCreateFailed",
@@ -149,7 +237,9 @@ impl RuntimeHost {
         };
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
         let handle = match executor
-            .activate(
+            .activate_for_session(
+                &self.actor_instances,
+                session,
                 execution.interpreter(),
                 &context,
                 fence,
@@ -166,27 +256,66 @@ impl RuntimeHost {
                 )))
             }
         };
-        match self.track_actor_instance(router_session_id, handle) {
-            Ok(()) => ActorOwnerControlAcceptance::Accepted,
-            Err(error) if error.to_string().contains("already tracked") => {
-                ActorOwnerControlAcceptance::Accepted
-            }
-            Err(error) => ActorOwnerControlAcceptance::Rejected(Some(control_reason(
-                "ActorCreateFailed",
-                &error.to_string(),
-            ))),
-        }
+        self.finish_actor_owner_activation(session, handle)
     }
 
-    pub(super) fn spawn_actor_owner_invoke(
+    pub(super) fn begin_actor_owner_invoke(
         &self,
         router_session_id: String,
         header: ActorOwnerInvokeFrameHeader,
         arguments_payload: Vec<u8>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
+    ) -> crate::error::Result<
+        std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+    > {
+        // Admission must complete in the synchronous Router frame handler. A later cancel,
+        // disconnect, or root finalization is then guaranteed to observe this invocation even if
+        // the session-owned future has not received its first poll yet.
+        let test_effect_execution = match (
+            header.invoke.test_case_capability.as_deref(),
+            header.invoke.test_case_parent_request_id.as_deref(),
+        ) {
+            (Some(capability), Some(parent_request_id)) => {
+                Some(self.test_http_entries.begin_actor_method(
+                    capability,
+                    parent_request_id,
+                    &router_session_id,
+                    header.invoke.invocation_id.clone(),
+                )?)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(crate::error::RuntimeError::Decode(
+                    "Actor test capability and parent request id must be present together"
+                        .to_string(),
+                ))
+            }
+        };
+        let test_request_revoker = test_effect_execution
+            .as_ref()
+            .map(crate::capability_context::ActorMethodTestEffectExecution::revoker);
+        let actor_session = self
+            .actor_instance_session_lease(&router_session_id)
+            .map_err(|error| crate::error::RuntimeError::Decode(error.to_string()))?;
+        let registration = self
+            .actor_owner_invocations
+            .register_with_test_revoker(
+                header.invoke.invocation_id.clone(),
+                router_session_id.clone(),
+                header.invoke.cancellation_correlation.clone(),
+                test_request_revoker.clone(),
+            )
+            .ok_or_else(|| {
+                crate::error::RuntimeError::Decode("duplicate Actor invocation id".to_string())
+            })?;
+        let invocation_lease = ActorOwnerInvocationTaskLease::new(
+            Arc::clone(&self.actor_owner_invocations),
+            registration.identity().clone(),
+        );
+        let cancellation = registration.cancellation();
         let host = self.clone();
-        tokio::spawn(async move {
+        let task = Box::pin(async move {
+            let mut invocation_lease = invocation_lease;
             let invocation_id = header.invoke.invocation_id.clone();
             let trace_id = header
                 .invoke
@@ -199,8 +328,28 @@ impl RuntimeHost {
             let epoch = header.owner_fence.epoch;
             let actor_implementation_identity =
                 header.owner_fence.actor_implementation_identity.clone();
+            #[cfg(test)]
+            if trace_id == "skiff-test:panic-after-actor-owner-admission" {
+                panic!("injected Actor owner task panic after synchronous admission");
+            }
+            #[cfg(test)]
+            if trace_id == "skiff-test:pending-after-actor-owner-admission" {
+                pending_actor_owner_after_admission_barrier().wait().await;
+                std::future::pending::<()>().await;
+            }
             if let Err(failure) = host
-                .execute_actor_owner_invoke(&router_session_id, header, arguments_payload, &sender)
+                .execute_actor_owner_invoke(
+                    &actor_session,
+                    header,
+                    arguments_payload,
+                    &sender,
+                    cancellation,
+                    &mut invocation_lease,
+                    test_request_revoker.as_ref(),
+                    test_effect_execution
+                        .as_ref()
+                        .map(crate::capability_context::ActorMethodTestEffectExecution::context),
+                )
                 .await
             {
                 error!(
@@ -230,53 +379,114 @@ impl RuntimeHost {
                     let _ = sender.send(RouterWriterMessage::Binary(bytes));
                 }
             }
+            // Keep the Host-private test execution owner alive through terminal encode/send and
+            // failure logging, not merely through Eval's last poll.
+            drop(test_effect_execution);
         });
+        Ok(task)
+    }
+
+    #[cfg(test)]
+    pub(super) fn spawn_actor_owner_invoke(
+        &self,
+        router_session_id: String,
+        header: ActorOwnerInvokeFrameHeader,
+        arguments_payload: Vec<u8>,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> crate::error::Result<tokio::task::JoinHandle<()>> {
+        Ok(tokio::spawn(self.begin_actor_owner_invoke(
+            router_session_id,
+            header,
+            arguments_payload,
+            sender,
+        )?))
     }
 
     async fn execute_actor_owner_invoke(
         &self,
-        router_session_id: &str,
+        actor_session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
         header: ActorOwnerInvokeFrameHeader,
         arguments_payload: Vec<u8>,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+        cancellation: skiff_runtime_capability_context::CancellationToken,
+        invocation_lease: &mut ActorOwnerInvocationTaskLease,
+        test_request_revoker: Option<&crate::capability_context::TestRequestRevoker>,
+        test_effect_context: Option<crate::capability_context::ActorMethodTestEffectContext>,
     ) -> Result<(), ActorOwnerExecutionFailure> {
+        let route_hold_cell = Arc::new(Mutex::new(None::<ActorRouteHoldGuard>));
         let invocation_id = header.invoke.invocation_id.clone();
         let cancellation_correlation = header.invoke.cancellation_correlation.clone();
-        let cancellation = self
-            .actor_owner_invocations
-            .register(invocation_id.clone(), cancellation_correlation.clone())
-            .ok_or_else(|| ActorOwnerExecutionFailure::new("duplicate Actor invocation id"))?;
-
-        let timeout = effective_deadline(&header.invoke.deadline).ok_or_else(|| {
-            ActorOwnerExecutionFailure::cancelled(
-                &invocation_id,
-                &cancellation_correlation,
-                ActorMethodCancelReason::DeadlineExceeded,
-            )
-        })?;
-        let deadline_registry = Arc::clone(&self.actor_owner_invocations);
-        let deadline_invocation = invocation_id.clone();
-        let deadline_correlation = cancellation_correlation.clone();
-        let deadline_task = tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
-            deadline_registry.cancel(
-                &deadline_invocation,
-                &deadline_correlation,
-                ActorOwnerCancellationReason::DeadlineExceeded,
-            );
-        });
-
-        let result = self
-            .execute_actor_owner_invoke_inner(
-                router_session_id,
+        let effective_deadline = effective_deadline(&header.invoke.deadline);
+        let (result, terminal_fallback, deadline_at) = if let Some(timeout) = effective_deadline {
+            let deadline_at = Instant::now() + timeout;
+            let mut deadline = Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                deadline_at,
+            )));
+            let mut execution = Box::pin(self.execute_actor_owner_invoke_inner(
+                actor_session,
                 &header,
                 arguments_payload,
                 sender,
-                cancellation,
+                cancellation.clone(),
+                test_effect_context,
+                Arc::clone(&route_hold_cell),
+            ));
+            let (result, terminal_fallback) = tokio::select! {
+                biased;
+                _ = cancellation.wait_cancelled() => {
+                    (None, Some(ActorOwnerCancellationReason::Cancelled))
+                }
+                _ = &mut deadline => {
+                    self.actor_owner_invocations.cancel_registered(
+                        &invocation_lease.identity,
+                        ActorOwnerCancellationReason::DeadlineExceeded,
+                    );
+                    (None, Some(ActorOwnerCancellationReason::DeadlineExceeded))
+                }
+                result = &mut execution => (Some(result), None),
+            };
+            (result, terminal_fallback, Some(deadline_at))
+        } else {
+            // An already-expired or unparseable expiresAt is a deadline terminal, not an early
+            // validation return. Record the winner while this exact registration is active, then
+            // converge through the same authority revocation and lease finish path below.
+            self.actor_owner_invocations.cancel_registered(
+                &invocation_lease.identity,
+                ActorOwnerCancellationReason::DeadlineExceeded,
+            );
+            (
+                None,
+                Some(ActorOwnerCancellationReason::DeadlineExceeded),
+                None,
             )
-            .await;
-        deadline_task.abort();
-        let cancellation_reason = self.actor_owner_invocations.finish(&invocation_id);
+        };
+        // Eval's own execution budget can observe the same deadline before Tokio polls the
+        // deadline branch above. Record the deadline while this exact registration is still
+        // active so the terminal remains typed instead of degrading to owner.failure.
+        if terminal_fallback.is_none()
+            && deadline_at.is_some_and(|deadline_at| Instant::now() >= deadline_at)
+        {
+            self.actor_owner_invocations.cancel_registered(
+                &invocation_lease.identity,
+                ActorOwnerCancellationReason::DeadlineExceeded,
+            );
+        }
+        // Once execution has a terminal winner, the invocation is no longer a valid parent for
+        // recursive Actor/spawn work. Its ownership lease remains alive through terminal send.
+        if let Some(revoker) = test_request_revoker {
+            revoker.revoke();
+        }
+        let cancellation_reason = invocation_lease.finish().or(terminal_fallback);
+        #[cfg(test)]
+        if deadline_at.is_none()
+            && header.invoke.trace_id.as_deref()
+                == Some("skiff-test:pause-expired-actor-owner-before-terminal")
+        {
+            // Let the regression test observe the authority/registry state after the terminal
+            // winner has converged but before the outer task can encode or send the terminal.
+            expired_actor_owner_terminal_barrier().wait().await;
+            expired_actor_owner_terminal_barrier().wait().await;
+        }
         if let Some(reason) = cancellation_reason {
             return Err(ActorOwnerExecutionFailure::cancelled(
                 &invocation_id,
@@ -289,7 +499,8 @@ impl RuntimeHost {
                 },
             ));
         }
-        let payload = result?;
+        let payload =
+            result.expect("Actor owner execution result must exist without cancellation")?;
         let frame = ActorMethodFrame::Return(
             ActorMethodReturnFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.into(),
@@ -308,16 +519,23 @@ impl RuntimeHost {
 
     async fn execute_actor_owner_invoke_inner(
         &self,
-        router_session_id: &str,
+        actor_session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
         header: &ActorOwnerInvokeFrameHeader,
         arguments_payload: Vec<u8>,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
         cancellation: skiff_runtime_capability_context::CancellationToken,
+        test_effect_context: Option<crate::capability_context::ActorMethodTestEffectContext>,
+        route_hold_cell: Arc<Mutex<Option<ActorRouteHoldGuard>>>,
     ) -> Result<Vec<u8>, ActorOwnerExecutionFailure> {
+        let router_session_id = actor_session.router_session_id();
         let route = self
-            .active_actor_execution_route(&header.invoke.actor_ref.service_id)
+            .actor_execution_route(&header.route_authority, &header.invoke.actor_ref.service_id)
             .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?
             .ok_or_else(|| ActorOwnerExecutionFailure::new("Actor service is not active"))?;
+        *route_hold_cell
+            .lock()
+            .expect("Actor owner route hold cell lock poisoned") =
+            Some(self.actor_route_holds.acquire(route.active_assembly()));
         let budget = Arc::new(ExecutionBudget::new(
             skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),
             effective_deadline(&header.invoke.deadline).map(|duration| Instant::now() + duration),
@@ -326,7 +544,11 @@ impl RuntimeHost {
             runtime_id: self.base_runtime_id.clone(),
             invocation_id: header.invoke.invocation_id.clone(),
             trace_id: header.invoke.trace_id.clone(),
-            service_protocol_identity: header.invoke.actor_abi_identity.as_str().to_string(),
+            service_protocol_identity: route
+                .service_protocol_identity()
+                .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?
+                .as_str()
+                .to_string(),
             activation: Arc::clone(route.activation()),
             execution_image: Arc::clone(route.execution_image()),
             contexts: Arc::clone(route.context_set()),
@@ -352,6 +574,7 @@ impl RuntimeHost {
             execution_budget: budget,
             request_heap_limits: self.request_heap_limits(),
             test_http_entries: self.test_http_entries.clone(),
+            test_effect_context,
         })
         .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?;
         let context = execution
@@ -362,7 +585,9 @@ impl RuntimeHost {
         let bootstrap = input.activation_bootstrap.as_ref();
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
         let handle = executor
-            .activate(
+            .activate_for_session(
+                &self.actor_instances,
+                actor_session,
                 execution.interpreter(),
                 &context,
                 fence,
@@ -381,15 +606,10 @@ impl RuntimeHost {
                     error,
                 )
             })?;
-        self.track_actor_instance(router_session_id, handle.clone())
-            .or_else(|error| {
-                if error.to_string().contains("already tracked") {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            })
-            .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?;
+        // Session-aware activation provisionally claims this exact Actor Arc before create can
+        // suspend and atomically commits that ownership with admission. Re-publishing by the
+        // string session id here would let a stale same-id connection generation cross the lease
+        // fence after reconnect.
         executor
             .execute(
                 execution.interpreter(),
@@ -425,7 +645,7 @@ fn bounded_failure_message(message: &str) -> String {
     message[..end].to_string()
 }
 
-fn control_reason(code: &str, message: &str) -> ActorOwnerFailureReasonFrameHeader {
+pub(super) fn control_reason(code: &str, message: &str) -> ActorOwnerFailureReasonFrameHeader {
     ActorOwnerFailureReasonFrameHeader {
         code: code.to_string(),
         message: bounded_failure_message(message),
@@ -438,20 +658,22 @@ fn build_owner_control_execution(
     control: &ActorOwnerControlFrameHeader,
     sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     budget_deadline: Option<Instant>,
-) -> Option<ActorMethodEvalExecution> {
+    test_effect_context: Option<crate::capability_context::ActorMethodTestEffectContext>,
+) -> Option<(ActorMethodEvalExecution, ActorRouteHoldGuard)> {
     let route = host
-        .active_actor_execution_route(&control.fence.service_id)
+        .actor_execution_route(&control.route_authority, &control.fence.service_id)
         .ok()??;
+    let route_hold = host.actor_route_holds.acquire(route.active_assembly());
     let cancellation = skiff_runtime_capability_context::CancellationToken::new();
     let budget = Arc::new(ExecutionBudget::new(
         skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),
         budget_deadline,
     ));
-    ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
+    let execution = ActorMethodEvalExecution::new(ActorMethodEvalExecutionInput {
         runtime_id: host.base_runtime_id.clone(),
         invocation_id: control.request_id.clone(),
         trace_id: None,
-        service_protocol_identity: control.fence.actor_abi_identity.as_str().to_string(),
+        service_protocol_identity: route.service_protocol_identity().ok()?.as_str().to_string(),
         activation: Arc::clone(route.activation()),
         execution_image: Arc::clone(route.execution_image()),
         contexts: Arc::clone(route.context_set()),
@@ -473,8 +695,10 @@ fn build_owner_control_execution(
         execution_budget: budget,
         request_heap_limits: host.request_heap_limits(),
         test_http_entries: host.test_http_entries.clone(),
+        test_effect_context,
     })
-    .ok()
+    .ok()?;
+    Some((execution, route_hold))
 }
 
 pub(super) fn control_instance_fence(

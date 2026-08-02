@@ -398,6 +398,8 @@ fn get_or_create_request() -> ActorGetOrCreateControlRequest {
         bootstrap_encoding_version: "skiff-actor-bootstrap-v1".to_string(),
         declaration_owner: declaration_owner(),
         deadline: None,
+        test_case_capability: None,
+        test_case_parent_request_id: None,
     }
 }
 

@@ -13,6 +13,7 @@ import {
   runCanonicalSkiffSourceTests,
   packageServiceHostFixturePaths,
   packageServiceHostFixturePrepareCargoArgs,
+  readSkiffSourceActiveGeneration,
   readPackageServiceHostFixtureReceipt,
   skiffSourceArtifactBootstrapCargoArgs,
   skiffSourceTestRunnerCargoArgs,
@@ -81,6 +82,10 @@ test('canonical registry contains the checked-in source test roots', () => {
       root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
       subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
     },
+    {
+      id: 'actor-test-effect-capability',
+      root: 'test-runner/fixtures/actor-full-chain-acceptance',
+    },
   ]);
   assert.deepEqual(
     createCanonicalSkiffSourceTestPlan({ skiffRoot: '/checkout/skiff' }),
@@ -107,6 +112,12 @@ test('canonical registry contains the checked-in source test roots', () => {
         subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
         absoluteSubjectRoot:
           '/checkout/skiff/test-runner/fixtures/actor-cross-package-provider',
+      },
+      {
+        id: 'actor-test-effect-capability',
+        root: 'test-runner/fixtures/actor-full-chain-acceptance',
+        absoluteRoot:
+          '/checkout/skiff/test-runner/fixtures/actor-full-chain-acceptance',
       },
     ],
   );
@@ -138,13 +149,17 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   const logs = [];
   const environment = {
     SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/tmp/isolated/runtime-artifacts',
+    SKIFF_TEST_ACTIVATION_URL: 'http://127.0.0.1:46101/__skiff/activate-assembly',
     SKIFF_TEST_ENVIRONMENT: 'skiff-test',
+    SKIFF_TEST_EXPECTED_GENERATION: '0',
   };
   const signal = new AbortController().signal;
   const registry = [
     { id: 'first', root: 'fixtures/first' },
     { id: 'second', root: 'fixtures/second' },
   ];
+  const healthReads = [];
+  const observedGenerations = [4, 9, 12];
 
   const plan = await runCanonicalSkiffSourceTests({
     skiffRoot: '/checkout/skiff',
@@ -163,6 +178,10 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       assert.equal(path, '/tmp/isolated/package-service-host-receipt.json');
       assert.equal(expectedEnvironment, 'skiff-test');
       return hostFixtureReceipt();
+    },
+    readActiveGeneration: async (options) => {
+      healthReads.push(options);
+      return observedGenerations[healthReads.length - 1];
     },
     log: (message) => logs.push(message),
   });
@@ -199,7 +218,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     assert.equal(command.options.cwd, '/checkout/skiff');
     assert.deepEqual(command.options.env, {
       ...environment,
-      SKIFF_TEST_EXPECTED_GENERATION: String(index),
+      SKIFF_TEST_EXPECTED_GENERATION: String([0, 4][index]),
     });
     assert.equal(command.options.signal, signal);
     assert.equal(command.args.includes('--deny-skips'), true);
@@ -238,8 +257,21 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   assert.equal(commands[4].args.includes('--base-config-snapshot'), true);
   assert.deepEqual(commands[4].options.env, {
     ...environment,
-    SKIFF_TEST_EXPECTED_GENERATION: '2',
+    SKIFF_TEST_EXPECTED_GENERATION: '9',
   });
+  assert.equal(healthReads.length, 3);
+  assert.deepEqual(
+    healthReads.map(({ activationUrl, environment: target, signal: childSignal }) => ({
+      activationUrl,
+      environment: target,
+      signal: childSignal,
+    })),
+    Array.from({ length: 3 }, () => ({
+      activationUrl: environment.SKIFF_TEST_ACTIVATION_URL,
+      environment: 'skiff-test',
+      signal,
+    })),
+  );
   assert.deepEqual(logs, [
     '[skiff-tests] phase startup: isolated-runtime',
     '[skiff-tests] bootstrapping source artifacts: /tmp/isolated/source-artifacts',
@@ -289,7 +321,12 @@ test('runner failure stops later entries while the isolated runtime owner retain
         actions.push('runtime-start');
         try {
           await runTest(
-            { SKIFF_TEST_ENVIRONMENT: 'skiff-test' },
+            {
+              SKIFF_TEST_ACTIVATION_URL:
+                'http://127.0.0.1:46101/__skiff/activate-assembly',
+              SKIFF_TEST_ENVIRONMENT: 'skiff-test',
+              SKIFF_TEST_EXPECTED_GENERATION: '0',
+            },
             new AbortController().signal,
             {
               sourceArtifactRoot: '/tmp/isolated/source-artifacts',
@@ -310,6 +347,7 @@ test('runner failure stops later entries while the isolated runtime owner retain
           throw new Error('runner failed');
         }
       },
+      readActiveGeneration: async () => 1,
       log: () => {},
     }),
     /runner failed/,
@@ -321,6 +359,100 @@ test('runner failure stops later entries while the isolated runtime owner retain
     '/checkout/skiff/fixtures/failing',
     'runtime-cleanup',
   ]);
+});
+
+test('non-advancing health generation stops before the next source-test child', async () => {
+  const actions = [];
+  await assert.rejects(
+    runCanonicalSkiffSourceTests({
+      skiffRoot: '/checkout/skiff',
+      registry: [
+        { id: 'first', root: 'fixtures/first' },
+        { id: 'never', root: 'fixtures/never' },
+      ],
+      runtimeOwner: async ({ runTest }) => {
+        actions.push('runtime-start');
+        try {
+          await runTest(
+            {
+              SKIFF_TEST_ACTIVATION_URL:
+                'http://127.0.0.1:46101/__skiff/activate-assembly',
+              SKIFF_TEST_ENVIRONMENT: 'skiff-test',
+              SKIFF_TEST_EXPECTED_GENERATION: '7',
+            },
+            new AbortController().signal,
+            { sourceArtifactRoot: '/tmp/isolated/source-artifacts' },
+          );
+        } finally {
+          actions.push('runtime-cleanup');
+        }
+      },
+      runCommand: async (_command, args) => {
+        actions.push(args.includes('--bootstrap-only') ? 'source-bootstrap' : args.at(7));
+      },
+      readActiveGeneration: async () => {
+        actions.push('health');
+        return 7;
+      },
+      log: () => {},
+    }),
+    /did not advance the active generation beyond 7/,
+  );
+  assert.deepEqual(actions, [
+    'runtime-start',
+    'source-bootstrap',
+    '/checkout/skiff/fixtures/first',
+    'health',
+    'runtime-cleanup',
+  ]);
+});
+
+test('active generation reader requires settled exact health for the target environment', async () => {
+  const signal = new AbortController().signal;
+  const requests = [];
+  const generation = await readSkiffSourceActiveGeneration({
+    activationUrl: 'http://127.0.0.1:46101/__skiff/activate-assembly',
+    environment: 'skiff-test',
+    signal,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return response({
+        ok: true,
+        pendingActivation: null,
+        activeAssembly: {
+          environment: 'skiff-test',
+          generation: 23,
+        },
+      });
+    },
+  });
+
+  assert.equal(generation, 23);
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:46101/__router/health',
+    options: {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal,
+    },
+  }]);
+
+  for (const health of [
+    { ok: true, pendingActivation: {}, activeAssembly: { environment: 'skiff-test', generation: 24 } },
+    { ok: true, pendingActivation: null, activeAssembly: { environment: 'other', generation: 24 } },
+    { ok: true, pendingActivation: null, activeAssembly: { environment: 'skiff-test', generation: -1 } },
+    { ok: true, pendingActivation: null, activeAssembly: { environment: 'skiff-test', generation: 1.5 } },
+  ]) {
+    await assert.rejects(
+      readSkiffSourceActiveGeneration({
+        activationUrl: 'http://127.0.0.1:46101/__skiff/activate-assembly',
+        environment: 'skiff-test',
+        signal,
+        fetchImpl: async () => response(health),
+      }),
+      /exact settled active generation/,
+    );
+  }
 });
 
 test('runner command selects the canonical binary from the multi-binary production crate', async () => {
@@ -505,5 +637,15 @@ function deploymentRef(name) {
     contractVersion: '1.0.0',
     deploymentRevision: `${name}-r1`,
     deploymentArtifactIdentity: `deployment-${name}`,
+  };
+}
+
+function response(body, { status = 200 } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() {
+      return JSON.stringify(body);
+    },
   };
 }

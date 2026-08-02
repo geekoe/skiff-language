@@ -1,3 +1,142 @@
-test "Actor source compiles through the ordinary test service" {
-  assert true
+import std
+
+type TestEffectActor {
+  id: string,
+}
+
+actor TestEffectActor {
+  key(id)
+  create()
+}
+
+function actorTestSelfIngressUrl(path: string) -> string {
+  return config.require<string>("skiff.test.ingressUrl").concat(path)
+}
+
+function actorTestExternalEffectUrl(path: string) -> string {
+  if path == "/actor-test-effect/spawned-first" {
+    return "https://example.test/actor-effect/spawned-first"
+  }
+  if path == "/actor-test-effect/spawned-recursive" {
+    return "https://example.test/actor-effect/spawned-recursive"
+  }
+  if path == "/actor-test-effect/direct-sync" {
+    return "https://example.test/actor-effect/direct-sync"
+  }
+  throw std.service.ProtocolError {
+    target: "actor-test-effect-ingress",
+    message: "unknown actor test-effect self-ingress path",
+  }
+}
+
+function actorTestEffectIngress(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "POST",
+    url: actorTestExternalEffectUrl(request.path),
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: null,
+    timeoutMs: null,
+  })
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: response.body,
+  }
+}
+
+function consumeActorTestEffect(path: string) -> string {
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "POST",
+    url: actorTestSelfIngressUrl(path),
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: null,
+    timeoutMs: null,
+  })
+  return response.body.toUtf8String()
+}
+
+function requireActorTestEffect(path: string, expected: string) -> void {
+  const actual = consumeActorTestEffect(path)
+  if actual != expected {
+    throw std.service.ProtocolError {
+      target: "actor-test-effect",
+      message: "actor consumed the wrong inline test effect",
+    }
+  }
+}
+
+impl TestEffectActor {
+  function create() -> void {}
+
+  function consume(path: string) -> string {
+    return consumeActorTestEffect(path)
+  }
+
+  function consumeExpected(path: string, expected: string) -> void {
+    requireActorTestEffect(path, expected)
+  }
+
+  function consumeThenSpawn(
+    firstPath: string,
+    firstExpected: string,
+    secondPath: string,
+    secondExpected: string
+  ) -> void {
+    requireActorTestEffect(firstPath, firstExpected)
+    spawn self.consumeExpected(secondPath, secondExpected)
+  }
+}
+
+test "root finalization waits for spawned and recursively spawned actor effects" effects {
+  std/http.request {
+    sequence: [
+      {
+        expect: {
+          method: "POST",
+          url: "https://example.test/actor-effect/spawned-first",
+        },
+        respond: std.http.HttpClientResponse {
+          status: 200,
+          headers: Array.empty<std.http.HttpHeader>(),
+          body: bytes.fromUtf8("spawned-first-body"),
+        },
+      },
+      {
+        expect: {
+          method: "POST",
+          url: "https://example.test/actor-effect/spawned-recursive",
+        },
+        respond: std.http.HttpClientResponse {
+          status: 200,
+          headers: Array.empty<std.http.HttpHeader>(),
+          body: bytes.fromUtf8("spawned-recursive-body"),
+        },
+      },
+    ],
+  }
+} {
+  const actor = std.actor.get<TestEffectActor>("spawned-effect-case")
+  spawn actor.consumeThenSpawn(
+    "/actor-test-effect/spawned-first",
+    "spawned-first-body",
+    "/actor-test-effect/spawned-recursive",
+    "spawned-recursive-body"
+  )
+}
+
+test "direct synchronous actor call inherits only its case effect capability" effects {
+  std/http.request {
+    expect: {
+      method: "POST",
+      url: "https://example.test/actor-effect/direct-sync",
+    },
+    respond: std.http.HttpClientResponse {
+      status: 200,
+      headers: Array.empty<std.http.HttpHeader>(),
+      body: bytes.fromUtf8("direct-sync-body"),
+    },
+  }
+} {
+  const actor = std.actor.get<TestEffectActor>("direct-sync-effect-case")
+  assert actor.consume("/actor-test-effect/direct-sync") == "direct-sync-body"
 }

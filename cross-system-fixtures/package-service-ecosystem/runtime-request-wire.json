@@ -63,7 +63,9 @@
           }
         ]
       },
-      "testEffectsEnabled": true
+      "testEffectsEnabled": true,
+      "testCaseCapability": "test-case:shared-http_1",
+      "testCaseParentRequestId": "request:shared-parent_1"
     },
     {
       "schemaVersion": "skiff-runtime-frame-v3",

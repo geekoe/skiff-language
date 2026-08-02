@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
+import { makeActorKey } from '../src/actor/index.js';
 import { ActorRuntimeDisconnectController } from '../src/router/actorRuntimeDisconnectController.js';
+import type { ActorOwnerTransport } from '../src/router/actorMethodDispatcher.js';
 import { ProductionActorMethodRouter } from '../src/router/productionActorMethodRouter.js';
 import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
@@ -48,6 +50,14 @@ describe('production Actor WebSocket routing', () => {
     };
     const actorMethods = new ProductionActorMethodRouter({
       registry,
+      actorOwnerRouteAuthority: ({ serviceId }) =>
+        serviceId === 'example.com/actor'
+          ? {
+              assemblyIdentity:
+                'skiff-runtime-assembly-v3:sha256:' + 'a'.repeat(64),
+              assemblyGeneration: 1,
+            }
+          : undefined,
       disconnectController: disconnect,
       catalog: {
         hasMethod: () => true,
@@ -208,6 +218,114 @@ describe('production Actor WebSocket routing', () => {
       terminalReason: 'ExecutionFailed: ordinary executor failure',
     });
   });
+
+  it('rejects an activate acknowledgement from W1 after the Runtime mapping moves to W2', async () => {
+    const registry = new RuntimeRegistry();
+    const disconnect = new ActorRuntimeDisconnectController(registry.actorManager());
+    const endpoint = new RuntimeEndpoint({
+      registry,
+      actorRuntimeDisconnect: disconnect,
+    });
+    endpoints.push(endpoint);
+    const actorMethods = new ProductionActorMethodRouter({
+      registry,
+      actorOwnerRouteAuthority: ({ serviceId }) =>
+        serviceId === 'example.com/actor'
+          ? {
+              assemblyIdentity:
+                'skiff-runtime-assembly-v3:sha256:' + 'a'.repeat(64),
+              assemblyGeneration: 1,
+            }
+          : undefined,
+      disconnectController: disconnect,
+      catalog: {
+        hasMethod: () => true,
+        declarationOwnerFor: () => ({
+          unit: { kind: 'service' },
+          file: { kind: 'loadedFileIndex', value: 0 },
+          actorSymbol: 'example.Counter',
+        }),
+      },
+      send: (ws, bytes) => ws.send(bytes),
+      id: () => 'session-fenced-activate',
+    });
+    endpoint.setActorMethods(actorMethods);
+    const listening = await endpoint.listen({ port: 0 });
+    const first = await runtime(listening.url, 'runtime-a');
+    const firstServerConnection = registry.runtimeConnection('runtime-a')!.ws;
+    const actorKey = makeActorKey({
+      serviceId: 'example.com/actor',
+      actorTypeIdentity: 'actor.example.Counter',
+      actorIdTypeIdentity: 'type.example.CounterId',
+      actorIdEncodingVersion: 'skiff-canonical-v1',
+      canonicalActorIdKeyBytes: new Uint8Array([9]),
+    });
+    const actor = await registry.actorManager().getOrCreate({
+      actorKey,
+      actorAbiIdentity: identity('skiff-actor-abi-v1:sha256', 'a'),
+      actorImplementationIdentity: identity(
+        'skiff-actor-implementation-v1:sha256',
+        'b'
+      ),
+      bootstrapEncodingVersion: 'skiff-canonical-v1',
+      encodedBootstrapBytes: Buffer.from('{}'),
+    });
+    const transport = (
+      actorMethods as unknown as { transport(): ActorOwnerTransport }
+    ).transport();
+    if (transport.activateTarget === undefined) {
+      throw new Error('production activateTarget transport is missing');
+    }
+
+    const firstControlMessage = nextBinary(first);
+    const activation = Promise.resolve(transport.activateTarget({
+      transition: {
+        actorKey,
+        oldEpoch: actor.epoch!,
+        newEpoch: actor.epoch! + 1,
+        actorAbiIdentity: identity('skiff-actor-abi-v1:sha256', 'a'),
+        targetImplementationIdentity: identity(
+          'skiff-actor-implementation-v1:sha256',
+          'c'
+        ),
+        bootstrapEncodingVersion: 'skiff-canonical-v1',
+        encodedBootstrapBytes: Buffer.from('{}'),
+      },
+      header: invocation(actor, 'activate-session-fence'),
+    }));
+    const control = decodeBinaryFrame(await firstControlMessage);
+    expect(control.header).toMatchObject({
+      type: 'actor.owner.control',
+      operation: 'activate',
+      targetRuntimeId: 'runtime-a',
+    });
+    if (control.header.type !== 'actor.owner.control') {
+      throw new Error('expected Actor owner activate control');
+    }
+    const requestId = control.header.requestId;
+    if (typeof requestId !== 'string') {
+      throw new Error('expected Actor owner activate requestId');
+    }
+
+    void activation.catch(() => undefined);
+    registry.removeRuntimeConnection(firstServerConnection);
+    const second = await runtime(listening.url, 'runtime-a');
+    expect(registry.runtimeConnection('runtime-a')?.ws).not.toBe(
+      firstServerConnection
+    );
+    await expectNoBinary(second);
+
+    expect(() => actorMethods.handleOwnerControlAck(firstServerConnection, {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'actor.owner.control.ack',
+      runtimeId: 'runtime-a',
+      requestId,
+      operation: 'activate',
+      accepted: true,
+    })).toThrow('Actor owner control acknowledgement is not correlated');
+    await expect(activation).rejects.toThrow('Actor owner rejected activate');
+    await expectNoBinary(second);
+  });
 });
 
 async function runtime(url: string, runtimeId: string): Promise<WebSocket> {
@@ -286,6 +404,28 @@ function nextBinary(socket: WebSocket): Promise<Buffer> {
       else resolve(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
     });
     socket.once('error', reject);
+  });
+}
+
+async function expectNoBinary(socket: WebSocket): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off('message', onMessage);
+      socket.off('error', onError);
+      resolve();
+    }, 25);
+    const onMessage = (_data: WebSocket.RawData, binary: boolean) => {
+      clearTimeout(timer);
+      socket.off('error', onError);
+      reject(new Error(binary ? 'unexpected binary frame' : 'unexpected text frame'));
+    };
+    const onError = (error: Error) => {
+      clearTimeout(timer);
+      socket.off('message', onMessage);
+      reject(error);
+    };
+    socket.once('message', onMessage);
+    socket.once('error', onError);
   });
 }
 

@@ -1,6 +1,9 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
+use skiff_artifact_model::{
+    validate_activation_generation, validate_runtime_assembly_identity, ActorAbiIdentity,
+    ActorImplementationIdentity,
+};
 
 use crate::{
     actor_method::{
@@ -26,6 +29,13 @@ pub struct ActorOwnerFenceFrameHeader {
     pub actor_abi_identity: ActorAbiIdentity,
     pub actor_implementation_identity: ActorImplementationIdentity,
     pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorOwnerRouteAuthorityFrameHeader {
+    pub assembly_identity: String,
+    pub assembly_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +73,7 @@ pub struct ActorOwnerInvokeFrameHeader {
     pub target_runtime_id: String,
     pub owner_fence: ActorOwnerFenceFrameHeader,
     pub invoke: ActorMethodInvokeFrameHeader,
+    pub route_authority: ActorOwnerRouteAuthorityFrameHeader,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_bootstrap: Option<ActorActivationBootstrapFrameHeader>,
 }
@@ -127,12 +138,17 @@ pub struct ActorOwnerControlFrameHeader {
     pub request_id: String,
     pub operation: ActorOwnerControlOperation,
     pub fence: ActorOwnerControlFenceFrameHeader,
+    pub route_authority: ActorOwnerRouteAuthorityFrameHeader,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<ActorOwnerActivationTransitionFrameHeader>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<ActorActivationBootstrapFrameHeader>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<ActorMethodDeadlineFrameHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_case_capability: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_case_parent_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +328,7 @@ fn validate_invoke(header: &ActorOwnerInvokeFrameHeader) -> Result<(), BinaryFra
             "actor.owner.invoke does not match its admitted owner fence",
         ));
     }
+    validate_route_authority(&header.route_authority)?;
     if let Some(bootstrap) = &header.activation_bootstrap {
         bootstrap.decode_payload()?;
     }
@@ -349,8 +366,20 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
         "skiff-actor-implementation-v1:sha256",
         "fence.actorImplementationIdentity",
     )?;
+    validate_route_authority(&header.route_authority)?;
     if header.fence.epoch == 0 {
         return Err(TransportError::decode("fence.epoch must be positive"));
+    }
+    if let Some(capability) = header.test_case_capability.as_deref() {
+        validate_token(capability, "testCaseCapability")?;
+    }
+    if let Some(parent_request_id) = header.test_case_parent_request_id.as_deref() {
+        validate_token(parent_request_id, "testCaseParentRequestId")?;
+    }
+    if header.test_case_capability.is_some() != header.test_case_parent_request_id.is_some() {
+        return Err(TransportError::decode(
+            "testCaseCapability and testCaseParentRequestId must be present together",
+        ));
     }
     match header.operation {
         ActorOwnerControlOperation::Activate => {
@@ -361,6 +390,7 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
             if header.fence.eviction_request_id.is_some()
                 || header.bootstrap.is_some()
                 || header.deadline.is_some()
+                || header.test_case_capability.is_some()
                 || transition.new_epoch != header.fence.epoch
                 || transition.old_epoch >= transition.new_epoch
                 || transition.actor_abi_identity != header.fence.actor_abi_identity
@@ -386,6 +416,11 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
             if header.bootstrap.is_some() || header.deadline.is_some() {
                 return Err(TransportError::decode(
                     "idleEvict control must not contain bootstrap or deadline",
+                ));
+            }
+            if header.test_case_capability.is_some() {
+                return Err(TransportError::decode(
+                    "idleEvict control must not contain test case authority",
                 ));
             }
             validate_token(
@@ -415,6 +450,7 @@ fn validate_control(header: &ActorOwnerControlFrameHeader) -> Result<(), BinaryF
                 || header.fence.eviction_request_id.is_some()
                 || header.bootstrap.is_some()
                 || header.deadline.is_some()
+                || header.test_case_capability.is_some()
             {
                 return Err(TransportError::decode(
                     "control operation contains unsupported optional fields",
@@ -515,6 +551,24 @@ fn validate_activation_deadline(
     if deadline.expires_at.is_empty() {
         return Err(TransportError::decode(
             "activation deadline expiresAt must be non-empty",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_route_authority(
+    authority: &ActorOwnerRouteAuthorityFrameHeader,
+) -> Result<(), BinaryFrameError> {
+    validate_runtime_assembly_identity(&authority.assembly_identity)
+        .map_err(|error| TransportError::decode(format!("routeAuthority: {error}")))?;
+    validate_activation_generation(
+        authority.assembly_generation,
+        "routeAuthority.assemblyGeneration",
+    )
+    .map_err(|error| TransportError::decode(format!("routeAuthority: {error}")))?;
+    if authority.assembly_generation == 0 {
+        return Err(TransportError::decode(
+            "routeAuthority.assemblyGeneration must be positive",
         ));
     }
     Ok(())

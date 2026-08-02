@@ -99,6 +99,52 @@ function flakyGet(body: null) -> string {
   return flaky.ping()
 }
 
+// A synchronous self-call must use the currently executing Actor reference as
+// the receiver. The nested call waits for the same instance, so the outer
+// continuation releases the scheduler and then resumes with the nested
+// method's committed field state.
+type SelfCalling {
+  id: string,
+  count: number,
+}
+
+actor SelfCalling {
+  key(id)
+  create()
+}
+
+impl SelfCalling {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function add(value: number) -> number {
+    self.count = self.count + value
+    return self.count
+  }
+
+  function addViaSelf(value: number) -> number {
+    self.count = self.count + 1
+    const nested = self.add(value)
+    self.count = self.count + 100
+    return self.count
+  }
+
+  function count() -> number {
+    return self.count
+  }
+}
+
+function synchronousSelfCall(body: null) -> number {
+  const target = std.actor.get<SelfCalling>("synchronous-self")
+  return target.addViaSelf(4)
+}
+
+function synchronousSelfCount(body: null) -> number {
+  const target = std.actor.get<SelfCalling>("synchronous-self")
+  return target.count()
+}
+
 type Spawned {
   id: string,
   count: number,

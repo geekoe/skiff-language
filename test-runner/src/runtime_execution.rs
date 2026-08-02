@@ -1,7 +1,10 @@
 use std::{
     net::SocketAddr,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::SystemTime,
     time::{Duration, Instant},
 };
@@ -12,15 +15,17 @@ use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSna
 use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::{read_root_package_manifest, CanonicalPackageProject},
-    canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
+    canonical_store::{CanonicalBaseAssembly, CanonicalPublishSession, CanonicalTestRecords},
     inline_effects,
     test_discovery::TestServiceCase,
     test_service_fixture::{
-        assemble_test_service_fixture_for_run_with_ingress, CanonicalTestServiceEntrypoint,
+        assemble_test_service_fixture_for_run_with_config, load_test_service_run_config,
+        CanonicalTestServiceEntrypoint,
     },
     SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
 
+mod batching;
 mod http;
 mod readiness;
 mod wire;
@@ -57,47 +62,69 @@ pub fn run_package_cases(
         )
     })?;
     let ingress_url = ingress_url.strip_suffix('/').unwrap_or(ingress_url);
-    let fixture = assemble_test_service_fixture_for_run_with_ingress(
-        &project,
-        &cases,
-        base,
-        &run_scope,
-        ingress_url,
-        &options.target_environment,
+    let run_config = load_test_service_run_config(&project, Some(ingress_url))?;
+    let case_batches = batching::partition_cases(cases, options.live);
+    let mut publish_session = CanonicalPublishSession::default();
+    let execution_batches = prepare_execution_batches_with(
+        case_batches,
+        |batch_index, cases| {
+            let batch_scope = if options.live {
+                run_scope.clone()
+            } else {
+                batching::batch_execution_scope(&run_scope, batch_index)
+            };
+            let fixture = assemble_test_service_fixture_for_run_with_config(
+                &project,
+                &cases,
+                base.clone(),
+                &batch_scope,
+                &run_config,
+                &options.target_environment,
+            )?;
+            Ok(ExecutionBatch {
+                context: fixture.records.clone(),
+                entrypoints: fixture
+                    .cases
+                    .into_iter()
+                    .map(|case| case.entrypoint)
+                    .collect(),
+            })
+        },
+        |batch| {
+            batch.context.publish_with_session(
+                source_artifact_root,
+                runtime_artifact_root,
+                &mut publish_session,
+            )?;
+            Ok(())
+        },
     )?;
-    fixture.publish(source_artifact_root, runtime_artifact_root)?;
-    let shared_records = fixture.records.clone();
-    let entrypoints = fixture
-        .cases
-        .into_iter()
-        .map(|case| case.entrypoint)
-        .collect();
-    execute_shared_assembly(
-        &shared_records,
-        entrypoints,
-        activation_url,
-        ingress_url,
-        options,
-    )
+    if publish_session.owned_package_publication_count() != 1 {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "test-service batches must share one owned Package publication, observed {}",
+            publish_session.owned_package_publication_count()
+        )));
+    }
+
+    execute_assembly_batches(execution_batches, activation_url, ingress_url, options)
 }
 
-fn execute_shared_assembly(
-    records: &CanonicalTestRecords,
-    entrypoints: Vec<CanonicalTestServiceEntrypoint>,
+fn execute_assembly_batches(
+    batches: Vec<ExecutionBatch<Arc<CanonicalTestRecords>>>,
     activation_url: &str,
     ingress_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
-    let assembly_ref = runtime_assembly_ref(&records.assembly)
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let config_snapshot_ref = records.config_snapshot.snapshot_ref().clone();
-    let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
-    execute_shared_assembly_with(
-        entrypoints,
+    execute_batches_with(
+        batches,
         options.expected_generation,
-        |expected_generation, candidate_generation| {
+        |records, expected_generation, candidate_generation| {
+            let assembly_ref = runtime_assembly_ref(&records.assembly)
+                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+            let config_snapshot_ref = records.config_snapshot.snapshot_ref().clone();
+            let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
             let activation_id = format!(
-                "test-service-{}-{}",
+                "test-service-{}-{candidate_generation}-{}",
                 std::process::id(),
                 requested_identity.rsplit(':').next().unwrap_or("assembly")
             );
@@ -174,6 +201,28 @@ fn execute_shared_assembly(
 }
 
 #[derive(Debug)]
+struct ExecutionBatch<Context> {
+    context: Context,
+    entrypoints: Vec<CanonicalTestServiceEntrypoint>,
+}
+
+fn prepare_execution_batches_with<Input, Context>(
+    inputs: Vec<Input>,
+    mut assemble: impl FnMut(usize, Input) -> Result<ExecutionBatch<Context>, CanonicalFixtureError>,
+    mut publish: impl FnMut(&ExecutionBatch<Context>) -> Result<(), CanonicalFixtureError>,
+) -> Result<Vec<ExecutionBatch<Context>>, CanonicalFixtureError> {
+    let batches = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(batch_index, input)| assemble(batch_index, input))
+        .collect::<Result<Vec<_>, _>>()?;
+    for batch in &batches {
+        publish(batch)?;
+    }
+    Ok(batches)
+}
+
+#[derive(Debug)]
 struct ActivatedAssembly<Readiness> {
     assembly: RuntimeAssemblyRef,
     generation: u64,
@@ -187,6 +236,7 @@ struct HttpReadiness {
     authority: String,
 }
 
+#[cfg(test)]
 fn execute_shared_assembly_with<Readiness>(
     entrypoints: Vec<CanonicalTestServiceEntrypoint>,
     expected_generation: u64,
@@ -197,24 +247,116 @@ fn execute_shared_assembly_with<Readiness>(
         &CanonicalTestServiceEntrypoint,
     ) -> Result<DispatchOutcome, CanonicalFixtureError>,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
-    let first = entrypoints.first().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "shared test-service execution requires at least one entrypoint".to_string(),
+    let mut activate = Some(activate);
+    let mut await_readiness = Some(await_readiness);
+    execute_batches_with(
+        vec![ExecutionBatch {
+            context: (),
+            entrypoints,
+        }],
+        expected_generation,
+        |(), expected_generation, candidate_generation| {
+            activate
+                .take()
+                .expect("one execution batch activates exactly once")(
+                expected_generation,
+                candidate_generation,
+            )
+        },
+        |active| {
+            await_readiness
+                .take()
+                .expect("one execution batch checks readiness exactly once")(active)
+        },
+        |active, entrypoint| dispatch(active, entrypoint),
+    )
+}
+
+fn execute_batches_with<Context, Readiness>(
+    batches: Vec<ExecutionBatch<Context>>,
+    mut expected_generation: u64,
+    mut activate: impl FnMut(
+        &Context,
+        u64,
+        u64,
+    ) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
+    mut await_readiness: impl FnMut(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
+    mut dispatch: impl FnMut(
+        &ActivatedAssembly<Readiness>,
+        &CanonicalTestServiceEntrypoint,
+    ) -> Result<DispatchOutcome, CanonicalFixtureError>,
+) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    let mut results = Vec::new();
+    for batch in batches {
+        let first = batch.entrypoints.first().ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(
+                "test-service activation batch requires at least one entrypoint".to_string(),
+            )
+        })?;
+        let first_case = (first.case.module_path.clone(), first.case.name.clone());
+        let candidate_generation = expected_generation.checked_add(1).ok_or_else(|| {
+            suite_execution_error(
+                results.clone(),
+                &first_case.0,
+                &first_case.1,
+                CanonicalFixtureError::InvalidInput(
+                    "assembly activation expected generation cannot advance".to_string(),
+                ),
+            )
+        })?;
+        skiff_artifact_model::validate_transition_generations(
+            expected_generation,
+            candidate_generation,
         )
-    })?;
-    let first_case = (first.case.module_path.clone(), first.case.name.clone());
-    let candidate_generation = expected_generation.checked_add(1).ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(
-            "assembly activation expected generation cannot advance".to_string(),
-        )
-    })?;
-    let active = activate(expected_generation, candidate_generation).map_err(|source| {
-        suite_execution_error(Vec::new(), &first_case.0, &first_case.1, source)
-    })?;
-    await_readiness(&active).map_err(|source| {
-        suite_execution_error(Vec::new(), &first_case.0, &first_case.1, source)
-    })?;
-    execute_entrypoints_with(entrypoints, |entrypoint| dispatch(&active, entrypoint))
+        .map_err(|message| {
+            suite_execution_error(
+                results.clone(),
+                &first_case.0,
+                &first_case.1,
+                CanonicalFixtureError::InvalidInput(message),
+            )
+        })?;
+        let active = activate(&batch.context, expected_generation, candidate_generation).map_err(
+            |source| suite_execution_error(results.clone(), &first_case.0, &first_case.1, source),
+        )?;
+        if active.generation != candidate_generation {
+            return Err(suite_execution_error(
+                results,
+                &first_case.0,
+                &first_case.1,
+                CanonicalFixtureError::InvalidInput(format!(
+                    "assembly activation returned generation {}, expected {candidate_generation}",
+                    active.generation
+                )),
+            ));
+        }
+        await_readiness(&active).map_err(|source| {
+            suite_execution_error(results.clone(), &first_case.0, &first_case.1, source)
+        })?;
+        for entrypoint in batch.entrypoints {
+            let outcome = dispatch(&active, &entrypoint).map_err(|source| {
+                suite_execution_error(
+                    results.clone(),
+                    &entrypoint.case.module_path,
+                    &entrypoint.case.name,
+                    source,
+                )
+            })?;
+            let (passed, message) = match outcome {
+                DispatchOutcome::Passed => (true, None),
+                DispatchOutcome::Failed(message) => (false, Some(message)),
+            };
+            results.push(SkiffTestResult {
+                module_path: entrypoint.case.module_path,
+                name: entrypoint.case.name,
+                passed,
+                skipped: false,
+                message,
+            });
+        }
+        expected_generation = active.generation;
+    }
+    Ok(summary_from_results(results))
 }
 
 fn activation_request_body(
@@ -254,6 +396,7 @@ enum DispatchOutcome {
     Failed(String),
 }
 
+#[cfg(test)]
 fn execute_entrypoints_with(
     entrypoints: Vec<CanonicalTestServiceEntrypoint>,
     mut dispatch: impl FnMut(
@@ -282,14 +425,18 @@ fn execute_entrypoints_with(
             message,
         });
     }
+    Ok(summary_from_results(results))
+}
+
+fn summary_from_results(results: Vec<SkiffTestResult>) -> SkiffTestSummary {
     let passed = results.iter().filter(|result| result.passed).count();
     let failed = results.len() - passed;
-    Ok(SkiffTestSummary {
+    SkiffTestSummary {
         passed,
         skipped: 0,
         failed,
         results,
-    })
+    }
 }
 
 fn suite_execution_error(
@@ -414,3 +561,7 @@ mod test_support;
 #[cfg(test)]
 #[path = "runtime_execution/tests/orchestration.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "runtime_execution/tests/batching.rs"]
+mod batching_tests;

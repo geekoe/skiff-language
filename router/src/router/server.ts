@@ -23,6 +23,7 @@ import { ActorOwnerLeaseIdleController } from './actorOwnerLeaseIdleController.j
 import { ActorManager } from '../actor/index.js';
 import { ActorSpawnRuntimeControl } from './actorSpawnRuntimeControl.js';
 import { ActorGetCreateActivationCoordinator } from './actorGetCreateActivationCoordinator.js';
+import { ACTOR_OWNER_LEASE_TTL_MS } from './actorTiming.js';
 import { AssemblyWebSocketGateway } from '../gateway/webSocketGateway.js';
 import { WebSocketRpcBridge } from '../gateway/webSocketRpcBridge.js';
 
@@ -92,8 +93,10 @@ const registry = new AssemblyRuntimeRegistry(snapshots);
 const actorManager = new ActorManager();
 const actorSpawnControl = new ActorSpawnRuntimeControl({
   actorManager,
-  actorOwnerLeaseTtlMs: 120_000,
+  actorOwnerLeaseTtlMs: ACTOR_OWNER_LEASE_TTL_MS,
 });
+const actorDisconnect = new ActorRuntimeDisconnectController(actorManager);
+let runtimeRegistry!: RuntimeRegistry;
 const actorGetCreateControl = new ActorGetCreateActivationCoordinator({
   actorManager,
   runtimeDirectory: {
@@ -102,17 +105,18 @@ const actorGetCreateControl = new ActorGetCreateActivationCoordinator({
       const ws = registry.connectionForReplica(runtimeId);
       return ws === undefined ? undefined : { runtimeId, ws };
     },
+    runtimeIdForConnection: (ws) => registry.replicaIdForConnection(ws),
+    runtimeConnectionFenceForConnection: (ws) =>
+      runtimeRegistry.runtimeConnectionFenceForConnection(ws),
   },
+  disconnectController: actorDisconnect,
   send: (ws, bytes) => ws.send(bytes),
-  ownerLeaseTtlMs: 120_000,
+  ownerLeaseTtlMs: ACTOR_OWNER_LEASE_TTL_MS,
 });
-const runtimeRegistry = new RuntimeRegistry({
+runtimeRegistry = new RuntimeRegistry({
   actorSpawnControl,
   actorGetCreateControl,
 });
-const actorDisconnect = new ActorRuntimeDisconnectController(
-  runtimeRegistry.actorManager()
-);
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
   actorGetCreateControl,
@@ -131,6 +135,8 @@ const runtimeEndpoint = new RuntimeEndpoint({
 const actorCatalog = new RuntimeAssemblyActorMethodCatalog(snapshots);
 const actorMethods = new ProductionActorMethodRouter({
     registry: runtimeRegistry,
+    actorOwnerRouteAuthority: ({ runtimeId, serviceId }) =>
+      registry.actorOwnerRouteAuthority(runtimeId, serviceId),
     actorGetCreateControl,
     runtimeDirectory: {
       actorRuntimeCandidates: (serviceId) =>
@@ -139,11 +145,12 @@ const actorMethods = new ProductionActorMethodRouter({
         const ws = registry.connectionForReplica(runtimeId);
         return ws === undefined ? undefined : { runtimeId, ws };
       },
+      runtimeIdForConnection: (ws) => registry.replicaIdForConnection(ws),
     },
     disconnectController: actorDisconnect,
     catalog: actorCatalog,
     send: (ws, bytes) => ws.send(bytes),
-    ownerLeaseTtlMs: 120_000,
+    ownerLeaseTtlMs: ACTOR_OWNER_LEASE_TTL_MS,
 });
 runtimeEndpoint.setActorMethods(actorMethods);
 let actorIdle: ActorOwnerLeaseIdleController;

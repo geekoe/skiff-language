@@ -461,6 +461,7 @@ export interface WebSocketConnectionPolicyFrameMetadata {
 
 export interface WebSocketConnectResponseFrameMetadata {
   result: 'accept' | 'reject';
+  admissionRank?: number;
   businessIdentity?: string;
   connectionPolicy?: WebSocketConnectionPolicyFrameMetadata;
   contextCodec?: WebSocketContextCodecFrameMetadata;
@@ -474,6 +475,7 @@ export type RuntimeAssemblyWebSocketConnectResponseFrameMetadata =
       result: 'accept';
       businessIdentity?: string;
       connectionPolicy?: WebSocketConnectionPolicyFrameMetadata;
+      admissionRank?: number;
     }
   | {
       result: 'reject';
@@ -740,7 +742,10 @@ export interface ActorBootstrapRequestFrameHeader<
 }
 
 export type ActorGetOrCreateRequestFrameHeader =
-  ActorBootstrapRequestFrameHeader<'actor.getOrCreate.request'>;
+  ActorBootstrapRequestFrameHeader<'actor.getOrCreate.request'> & {
+    testCaseCapability?: string;
+    testCaseParentRequestId?: string;
+  };
 export type ActorReplaceRequestFrameHeader =
   ActorBootstrapRequestFrameHeader<'actor.replace.request'>;
 

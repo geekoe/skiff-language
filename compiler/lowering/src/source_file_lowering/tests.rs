@@ -1374,6 +1374,42 @@ fn create_explicit_return_before_assignment_stays_rejected() {
 }
 
 #[test]
+fn actor_create_self_method_dispatch_stays_rejected() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                  const current = self
+                  current.increment()
+                }
+
+                function increment(self: Counter) -> number {
+                  self.count = self.count + 1
+                  return self.count
+                }
+              }
+            "#,
+    )
+    .expect_err("create must not synchronously dispatch another method on itself")
+    .to_string();
+    assert!(
+        error.contains("actor Counter create cannot call other methods of the same instance"),
+        "unexpected create self-call error: {error}"
+    );
+}
+
+#[test]
 fn actor_self_field_access_keeps_while_body_call_targets_aligned() {
     let units = lowered_units(vec![
         (

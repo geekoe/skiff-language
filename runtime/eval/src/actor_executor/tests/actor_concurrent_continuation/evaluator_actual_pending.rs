@@ -38,6 +38,8 @@ use super::*;
 use crate::{env::Env, eval_context::EvalContext, program_execution::ProgramExecutionInput};
 #[path = "evaluator_actual_pending/actor_dispatch.rs"]
 mod actor_dispatch;
+#[path = "evaluator_actual_pending/actor_executor_self_dispatch.rs"]
+mod actor_executor_self_dispatch;
 #[path = "evaluator_actual_pending/callback_matrix.rs"]
 mod callback_matrix;
 #[path = "evaluator_actual_pending/canonical_emit_matrix.rs"]

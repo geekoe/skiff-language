@@ -15,6 +15,10 @@ export const canonicalSkiffSourceTestRegistry = Object.freeze([
     root: 'test-runner/fixtures/actor-cross-package-consumer-tests',
     subjectRoot: 'test-runner/fixtures/actor-cross-package-provider',
   }),
+  Object.freeze({
+    id: 'actor-test-effect-capability',
+    root: 'test-runner/fixtures/actor-full-chain-acceptance',
+  }),
 ]);
 
 export function createCanonicalSkiffSourceTestPlan({

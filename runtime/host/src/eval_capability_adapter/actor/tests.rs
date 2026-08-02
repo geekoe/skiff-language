@@ -1,17 +1,104 @@
 use super::*;
-use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
+    DeploymentRevision,
+};
 use skiff_runtime_capability_context::{
     ActorInvocationCancellation, ActorInvocationDeadline, ActorInvocationDeclarationOwner,
     ActorInvocationIdentity, ActorInvocationOutcome, ActorInvocationOwnerFile,
-    ActorInvocationOwnerUnit, ActorInvocationRequest,
+    ActorInvocationOwnerUnit, ActorInvocationRequest, ActorKeyControlMetadata,
+    OutboundControlMessage, RouterWriterMessage,
 };
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
+};
+use skiff_runtime_transport::{
+    control_mapper::encode_outbound_control_message, protocol::decode_binary_frame,
 };
 use tokio::time::{timeout, Duration};
 
 const BUILD_ID: &str =
         "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+#[tokio::test]
+async fn test_aware_spawn_submit_encodes_only_caller_request_id() {
+    let (mut parts, _, mut router_receiver, _) = actor_invocation_fixture(
+        30_000,
+        CancellationToken::new(),
+        "actor-control-test-authority",
+    );
+    parts.activation_identity = Some(test_activation_identity());
+    parts.test_case_capability = Some("case:opaque-authority".to_string());
+    let borrowed = parts.clone();
+    let context = RuntimeActorCapabilityContext {
+        actor_context: concrete_actor_context_from_owned(&borrowed),
+        request_context: concrete_request_context_from_owned(&borrowed),
+        owned: parts,
+    };
+
+    let spawn = capture_spawn_submit(&context, &mut router_receiver).await;
+    assert_eq!(spawn.caller_request_id.as_deref(), Some("request-test"));
+    assert_spawn_submit_wire_omits_test_authority(spawn);
+
+    let get_or_create = capture_actor_get_or_create(&context, &mut router_receiver).await;
+    assert_eq!(
+        get_or_create.test_case_capability.as_deref(),
+        Some("case:opaque-authority")
+    );
+    assert_eq!(
+        get_or_create.test_case_parent_request_id.as_deref(),
+        Some("request-test")
+    );
+}
+
+#[tokio::test]
+async fn ordinary_spawn_submit_encodes_only_caller_request_id() {
+    let (mut parts, _, mut router_receiver, _) =
+        actor_invocation_fixture(30_000, CancellationToken::new(), "actor-control-production");
+    parts.activation_identity = Some(test_activation_identity());
+    let context = RuntimeOwnedRequestCapabilityContext(parts);
+
+    let spawn = capture_spawn_submit(&context, &mut router_receiver).await;
+    assert_eq!(spawn.caller_request_id.as_deref(), Some("request-test"));
+    assert_spawn_submit_wire_omits_test_authority(spawn);
+
+    let get_or_create = capture_actor_get_or_create(&context, &mut router_receiver).await;
+    assert_eq!(get_or_create.test_case_capability, None);
+    assert_eq!(get_or_create.test_case_parent_request_id, None);
+}
+
+#[tokio::test]
+async fn direct_actor_invoke_carries_exact_test_parent_authority() {
+    let (mut parts, request, mut router_receiver, _outbound) = actor_invocation_fixture(
+        30_000,
+        CancellationToken::new(),
+        "actor-invoke-test-authority",
+    );
+    parts.test_case_capability = Some("case:opaque-authority".to_string());
+    let invocation = invoke_actor_method(parts, request, test_execution_control());
+    tokio::pin!(invocation);
+
+    let message = tokio::select! {
+        result = &mut invocation => panic!("actor invocation completed before frame: {result:?}"),
+        message = router_receiver.recv() => message.expect("actor invoke frame"),
+    };
+    let concrete::RouterWriterMessage::Binary(frame) = message else {
+        panic!("actor invocation must use binary transport")
+    };
+    let ActorMethodFrame::Invoke(header, _) =
+        decode_actor_method_frame(&frame).expect("actor invoke frame decodes")
+    else {
+        panic!("expected Actor invoke frame")
+    };
+    assert_eq!(
+        header.test_case_capability.as_deref(),
+        Some("case:opaque-authority")
+    );
+    assert_eq!(
+        header.test_case_parent_request_id.as_deref(),
+        Some("request-test")
+    );
+}
 
 #[tokio::test]
 async fn f445h_i6_actor_scope_method_request_cancel_releases_lease() {
@@ -246,6 +333,146 @@ async fn f445h_i6_actor_scope_method_outer_deadline_keeps_post_await_owner() {
     );
 }
 
+async fn capture_spawn_submit<C>(
+    context: &C,
+    router_receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+) -> SpawnSubmitControlRequest
+where
+    C: capability_contract::RequestCapabilityApi + ?Sized,
+{
+    let submit = capability_contract::RequestCapabilityApi::submit_spawn(
+        context,
+        spawn_submit_request_with_untrusted_caller(),
+        Vec::new(),
+        test_execution_control(),
+    );
+    tokio::pin!(submit);
+    loop {
+        tokio::select! {
+            result = &mut submit => panic!("spawn submit completed before control dispatch: {result:?}"),
+            message = router_receiver.recv() => match message {
+                Some(RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit { request, .. })) => {
+                    break request;
+                }
+                Some(RouterWriterMessage::Control(OutboundControlMessage::RequestCancel { .. })) => {
+                    continue;
+                }
+                Some(message) => panic!("unexpected control before spawn submit: {message:?}"),
+                None => panic!("router writer closed before spawn submit control dispatch"),
+            }
+        }
+    }
+}
+
+fn assert_spawn_submit_wire_omits_test_authority(request: SpawnSubmitControlRequest) {
+    let frame = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
+        request,
+        payload: Vec::new(),
+    })
+    .expect("spawn submit control must encode");
+    let wire = decode_binary_frame(&frame).expect("spawn submit wire must decode");
+    assert_eq!(wire.header["callerRequestId"], "request-test");
+    assert!(wire.header.get("testCaseCapability").is_none());
+    assert!(wire.header.get("testCaseParentRequestId").is_none());
+}
+
+async fn capture_actor_get_or_create<C>(
+    context: &C,
+    router_receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+) -> ActorGetOrCreateControlRequest
+where
+    C: capability_contract::ActorCapabilityApi + ?Sized,
+{
+    let get_or_create = capability_contract::ActorCapabilityApi::get_or_create_actor(
+        context,
+        actor_get_or_create_request_with_untrusted_authority(),
+        Vec::new(),
+        test_execution_control(),
+    );
+    tokio::pin!(get_or_create);
+    loop {
+        tokio::select! {
+            result = &mut get_or_create => {
+                panic!("Actor get-or-create completed before control dispatch: {result:?}")
+            }
+            message = router_receiver.recv() => match message {
+                Some(RouterWriterMessage::Control(OutboundControlMessage::ActorGetOrCreate { request, .. })) => {
+                    break request;
+                }
+                Some(RouterWriterMessage::Control(OutboundControlMessage::RequestCancel { .. })) => {
+                    continue;
+                }
+                Some(message) => {
+                    panic!("unexpected control before Actor get-or-create: {message:?}")
+                }
+                None => panic!("router writer closed before Actor get-or-create control dispatch"),
+            }
+        }
+    }
+}
+
+fn spawn_submit_request_with_untrusted_caller() -> SpawnSubmitControlRequest {
+    SpawnSubmitControlRequest {
+        rpc_id: "caller-rpc".to_string(),
+        runtime_id: "caller-runtime".to_string(),
+        target_kind: "function".to_string(),
+        service_id: "example.com/worker".to_string(),
+        service_version: "v1".to_string(),
+        service_protocol_identity: "protocol-test".to_string(),
+        target: "function:program.test".to_string(),
+        spawn_id: None,
+        build_id: Some(BUILD_ID.to_string()),
+        activation_identity: test_activation_identity(),
+        caller_request_id: Some("request:caller-must-not-authorize".to_string()),
+        trace_id: None,
+        caller_target: Some("program.test".to_string()),
+        max_queue_wait_ms: None,
+        actor_method: None,
+    }
+}
+
+fn actor_get_or_create_request_with_untrusted_authority() -> ActorGetOrCreateControlRequest {
+    ActorGetOrCreateControlRequest {
+        rpc_id: "caller-rpc".to_string(),
+        runtime_id: "caller-runtime".to_string(),
+        activation_identity: test_activation_identity(),
+        actor_key: ActorKeyControlMetadata {
+            service_id: "service-test".to_string(),
+            actor_type_identity: "actor-type-test".to_string(),
+            actor_id_type_identity: "actor-id-type-test".to_string(),
+            actor_id_encoding_version: "skiff-actor-id-v1".to_string(),
+            canonical_actor_id_key_bytes_base64: "AQ==".to_string(),
+            actor_id_hash: Some(format!("sha256:{}", "d".repeat(64))),
+        },
+        actor_abi_identity: format!("skiff-actor-abi-v1:sha256:{}", "a".repeat(64)),
+        actor_implementation_identity: format!(
+            "skiff-actor-implementation-v1:sha256:{}",
+            "b".repeat(64)
+        ),
+        bootstrap_encoding_version: "skiff-actor-bootstrap-v1".to_string(),
+        declaration_owner: ActorInvocationDeclarationOwner {
+            unit: ActorInvocationOwnerUnit::Service,
+            file: ActorInvocationOwnerFile::LoadedFileIndex(0),
+            actor_symbol: "TestActor".to_string(),
+        },
+        deadline: None,
+        test_case_capability: Some("case:caller-must-not-authorize".to_string()),
+        test_case_parent_request_id: Some("request:caller-must-not-authorize".to_string()),
+    }
+}
+
+fn test_activation_identity() -> ActivationIdentityControl {
+    ActivationIdentityControl {
+        assembly_identity: AssemblyIdentity::new(format!(
+            "skiff-runtime-assembly-v3:sha256:{}",
+            "e".repeat(64)
+        )),
+        generation: 7,
+        runtime_replica_id: "runtime-replica-test".to_string(),
+        deployment_revision: DeploymentRevision::new("deployment-revision-test"),
+    }
+}
+
 fn actor_invocation_fixture(
     timeout_ms: u64,
     cancellation: CancellationToken,
@@ -273,6 +500,7 @@ fn actor_invocation_fixture(
         operation_service_protocol_identity: Some("protocol-test".to_string()),
         activation_identity: None,
         trace_id: Some("trace:actor-invoke".to_string()),
+        test_case_capability: None,
         router_sender: Some(router_sender),
         outbound_requests: Arc::new(OutboundRequestRegistry::default()),
         actor_method_outbound: actor_method_outbound.clone(),

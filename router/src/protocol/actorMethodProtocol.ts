@@ -45,6 +45,8 @@ export interface ActorMethodInvokeFrameHeader {
   deadline: ActorMethodDeadlineFrameHeader;
   cancellationCorrelation: string;
   traceId?: string;
+  testCaseCapability?: string;
+  testCaseParentRequestId?: string;
 }
 
 export interface ActorMethodReturnFrameHeader {
@@ -114,7 +116,7 @@ export function validateActorMethodFrame(header: unknown, payloadBytes: Uint8Arr
         'schemaVersion', 'type', 'invocationId', 'actorRef', 'declarationOwner',
         'actorAbiIdentity', 'actorImplementationIdentity', 'methodIdentity',
         'argumentsEncodingVersion', 'deadline', 'cancellationCorrelation'
-      ], ['traceId']);
+      ], ['traceId', 'testCaseCapability', 'testCaseParentRequestId']);
       token(header.invocationId, 'invocationId');
       actorRef(header.actorRef);
       owner(header.declarationOwner);
@@ -127,6 +129,20 @@ export function validateActorMethodFrame(header: unknown, payloadBytes: Uint8Arr
       nonempty(header.deadline.expiresAt, 'deadline.expiresAt');
       token(header.cancellationCorrelation, 'cancellationCorrelation');
       if (header.traceId !== undefined) nonempty(header.traceId, 'traceId');
+      if (header.testCaseCapability !== undefined) {
+        token(header.testCaseCapability, 'testCaseCapability');
+      }
+      if (header.testCaseParentRequestId !== undefined) {
+        token(header.testCaseParentRequestId, 'testCaseParentRequestId');
+      }
+      if (
+        (header.testCaseCapability === undefined) !==
+        (header.testCaseParentRequestId === undefined)
+      ) {
+        fail(
+          'testCaseCapability and testCaseParentRequestId must be provided together'
+        );
+      }
       return;
     case 'actor.method.return':
       exact(header, 'actor.method.return', ['schemaVersion', 'type', 'invocationId', 'returnEncodingVersion']);

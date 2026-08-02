@@ -110,6 +110,7 @@ export interface RuntimeAssemblyRequestStartFrameHeader
   routing: RuntimeAssemblyHttpRequestRoutingFrameHeader;
   httpRequest: HttpRequestFrameMetadata;
   testCaseCapability?: string;
+  testCaseParentRequestId?: string;
 }
 
 export interface RuntimeAssemblyWebSocketConnectRequestFrameMetadata {
@@ -200,6 +201,7 @@ const httpHeaderFields = new Set([
   ...commonHeaderFields,
   "httpRequest",
   "testCaseCapability",
+  "testCaseParentRequestId",
 ]);
 const websocketConnectHeaderFields = new Set([
   ...commonHeaderFields,
@@ -331,16 +333,47 @@ function validateTestCapability(
     envelope,
     "testCaseCapability",
   );
+  const hasParentRequestId = Object.prototype.hasOwnProperty.call(
+    envelope,
+    "testCaseParentRequestId",
+  );
   const testEffectsEnabled = envelope.testEffectsEnabled ?? false;
   if (wireKind === "websocketConnect" || wireKind === "websocketJsonRpc") {
     return testEffectsEnabled === false
       ? null
       : `invalid request.start runtimeAssembly envelope: ${wireKind} testEffectsEnabled must be false`;
   }
-  if (testEffectsEnabled === hasCapability) return null;
-  return testEffectsEnabled === true
-    ? "invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability"
-    : "invalid request.start runtimeAssembly envelope: testCaseCapability requires testEffectsEnabled true";
+  if (testEffectsEnabled !== hasCapability) {
+    return testEffectsEnabled === true
+      ? "invalid request.start runtimeAssembly envelope: testEffectsEnabled true requires testCaseCapability"
+      : "invalid request.start runtimeAssembly envelope: testCaseCapability requires testEffectsEnabled true";
+  }
+  if (
+    hasCapability &&
+    !isTestCaseCorrelationToken(envelope.testCaseCapability)
+  ) {
+    return "invalid request.start runtimeAssembly envelope: testCaseCapability must be a 1..256 byte test correlation token";
+  }
+  if (hasParentRequestId && wireKind !== "http") {
+    return `invalid request.start runtimeAssembly envelope: ${wireKind} testCaseParentRequestId is not supported`;
+  }
+  if (hasParentRequestId && !hasCapability) {
+    return "invalid request.start runtimeAssembly envelope: testCaseParentRequestId requires testCaseCapability";
+  }
+  if (
+    hasParentRequestId &&
+    !isTestCaseCorrelationToken(envelope.testCaseParentRequestId)
+  ) {
+    return "invalid request.start runtimeAssembly envelope: testCaseParentRequestId must be a 1..256 byte test correlation token";
+  }
+  return null;
+}
+
+function isTestCaseCorrelationToken(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9_.:-]{1,256}$/.test(value)
+  );
 }
 
 export function validateRuntimeAssemblyRequestRouting(

@@ -36,6 +36,11 @@ export interface ActorOwnerControlReasonFrameHeader {
   message: string;
 }
 
+export interface ActorOwnerRouteAuthority {
+  assemblyIdentity: string;
+  assemblyGeneration: number;
+}
+
 export interface ActorOwnerControlFrameHeader {
   schemaVersion: 'skiff-runtime-frame-v3';
   type: typeof ACTOR_OWNER_CONTROL;
@@ -43,9 +48,12 @@ export interface ActorOwnerControlFrameHeader {
   requestId: string;
   operation: ActorOwnerControlOperation;
   fence: Record<string, unknown>;
+  routeAuthority: ActorOwnerRouteAuthority;
   transition?: Record<string, unknown>;
   bootstrap?: ActorOwnerActivationBootstrapFrameHeader;
   deadline?: ActorOwnerActivationDeadlineFrameHeader;
+  testCaseCapability?: string;
+  testCaseParentRequestId?: string;
 }
 
 export interface ActorOwnerControlAckFrameHeader {
@@ -182,6 +190,7 @@ function validateActorOwnerControlFrame(
   const present = new Set([
     'fence',
     'operation',
+    'routeAuthority',
     'requestId',
     'schemaVersion',
     'targetRuntimeId',
@@ -189,6 +198,10 @@ function validateActorOwnerControlFrame(
     ...(header.transition === undefined ? [] : ['transition']),
     ...(header.bootstrap === undefined ? [] : ['bootstrap']),
     ...(header.deadline === undefined ? [] : ['deadline']),
+    ...(header.testCaseCapability === undefined ? [] : ['testCaseCapability']),
+    ...(header.testCaseParentRequestId === undefined
+      ? []
+      : ['testCaseParentRequestId']),
   ]);
   const expected = [...present].sort().join(',');
   if (
@@ -200,9 +213,16 @@ function validateActorOwnerControlFrame(
     !controlOperation(header.operation) ||
     typeof header.fence !== 'object' ||
     header.fence === null ||
+    !validRouteAuthority(header.routeAuthority) ||
     (header.operation === 'activate') !== (header.transition !== undefined) ||
     (header.operation === 'activateInitial') !== (header.bootstrap !== undefined) ||
     (header.operation === 'activateInitial') !== (header.deadline !== undefined) ||
+    (header.testCaseCapability === undefined) !==
+      (header.testCaseParentRequestId === undefined) ||
+    (header.testCaseCapability !== undefined &&
+      (header.operation !== 'activateInitial' ||
+        !canonicalToken(header.testCaseCapability) ||
+        !canonicalToken(header.testCaseParentRequestId))) ||
     ((header.operation !== 'activate' && header.transition !== undefined) ||
       (header.operation !== 'activateInitial' &&
         (header.bootstrap !== undefined || header.deadline !== undefined))) ||
@@ -299,6 +319,20 @@ function validActivationBootstrap(value: unknown): boolean {
   );
 }
 
+function validRouteAuthority(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const authority = value as Record<string, unknown>;
+  return (
+    Object.keys(authority).sort().join(',') === 'assemblyGeneration,assemblyIdentity' &&
+    typeof authority.assemblyIdentity === 'string' &&
+    /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/.test(
+      authority.assemblyIdentity
+    ) &&
+    Number.isSafeInteger(authority.assemblyGeneration) &&
+    (authority.assemblyGeneration as number) > 0
+  );
+}
+
 function validActivationDeadline(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const deadline = value as Record<string, unknown>;
@@ -329,6 +363,7 @@ export interface ActorOwnerInvokeFrameHeader {
   targetRuntimeId: string;
   ownerFence: ActorOwnerFenceFrameHeader;
   invoke: ActorMethodInvokeFrameHeader;
+  routeAuthority: ActorOwnerRouteAuthority;
   activationBootstrap?: {
     encodingVersion: string;
     payloadBase64: string;
@@ -368,6 +403,7 @@ export function validateActorOwnerInvokeFrame(
     'targetRuntimeId',
     'ownerFence',
     'invoke',
+    'routeAuthority',
     'activationBootstrap',
   ]);
   if (Object.keys(header).some((key) => !allowed.has(key))) {
@@ -376,7 +412,8 @@ export function validateActorOwnerInvokeFrame(
   if (
     header.schemaVersion !== 'skiff-runtime-frame-v3' ||
     header.type !== ACTOR_OWNER_INVOKE ||
-    !canonicalToken(header.targetRuntimeId)
+    !canonicalToken(header.targetRuntimeId) ||
+    !validRouteAuthority(header.routeAuthority)
   ) {
     throw new Error('invalid actor owner invoke frame header');
   }

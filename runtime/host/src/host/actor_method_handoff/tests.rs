@@ -49,6 +49,8 @@ fn invoke() -> ActorMethodInvokeFrameHeader {
         },
         cancellation_correlation: "cancel:1".into(),
         trace_id: None,
+        test_case_capability: None,
+        test_case_parent_request_id: None,
     }
 }
 

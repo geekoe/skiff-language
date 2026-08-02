@@ -1,6 +1,10 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 
 use skiff_artifact_model::{
@@ -8,9 +12,10 @@ use skiff_artifact_model::{
     RuntimeConfigSnapshotRef,
 };
 use skiff_runtime_capability_context::{
-    DbCapabilityError, DbCapabilityFuture, DbCapabilityResult, DbCapabilitySource,
-    DbProviderBuildInput, DbProviderFactory, DbProviderSource,
+    CancellationSource, DbCapabilityError, DbCapabilityFuture, DbCapabilityResult,
+    DbCapabilitySource, DbProviderBuildInput, DbProviderFactory, DbProviderSource,
 };
+use tokio::sync::Notify;
 
 use super::*;
 
@@ -42,6 +47,40 @@ impl DbProviderFactory for AdmissionGateDbProvider {
                 Some(message) => Err(DbCapabilityError::decode(message)),
                 None => Ok(()),
             }
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct BlockingProvisionProvider {
+    blocking: Arc<AtomicBool>,
+    started: Arc<Notify>,
+    dropped: Arc<Notify>,
+}
+
+impl DbProviderFactory for BlockingProvisionProvider {
+    fn build(&self, _input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource> {
+        Ok(DbCapabilitySource::unavailable())
+    }
+
+    fn provision<'a>(&'a self, _inputs: Vec<DbProviderBuildInput>) -> DbCapabilityFuture<'a, ()> {
+        let blocking = Arc::clone(&self.blocking);
+        let started = Arc::clone(&self.started);
+        let dropped = Arc::clone(&self.dropped);
+        Box::pin(async move {
+            if !blocking.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            struct DropNotification(Arc<Notify>);
+            impl Drop for DropNotification {
+                fn drop(&mut self) {
+                    self.0.notify_one();
+                }
+            }
+            let _drop_notification = DropNotification(dropped);
+            started.notify_one();
+            std::future::pending::<()>().await;
+            Ok(())
         })
     }
 }
@@ -119,6 +158,108 @@ async fn whole_candidate_db_provisioning_completes_before_prepared_ack() {
         controller.active().unwrap().is_none(),
         "prepare must stage only; commit remains the publication point"
     );
+}
+
+#[tokio::test]
+async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_generation() {
+    let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
+    let provider = BlockingProvisionProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-index-cancel",
+        DbProviderSource::new(provider.clone()),
+    );
+    let active = controller
+        .recover_committed(
+            "fixture",
+            1,
+            &reference,
+            &config_snapshot,
+            &fixture.resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect("baseline committed generation should recover");
+    provider.blocking.store(true, Ordering::Release);
+
+    let cancellation = CancellationSource::new();
+    let cancellation_token = cancellation.token();
+    let service_db = mapping_service_db();
+    let prepare_control = prepare_control(
+        "index-cancel",
+        1,
+        2,
+        reference.clone(),
+        config_snapshot.clone(),
+        "runtime-index-cancel",
+    );
+    let prepare = controller.apply_cancellable_activation_control(
+        prepare_control.clone(),
+        &fixture.resolver,
+        &config_resolver,
+        Some(&service_db),
+        &cancellation_token,
+    );
+    tokio::pin!(prepare);
+    tokio::select! {
+        () = provider.started.notified() => {}
+        result = &mut prepare => panic!("blocking provision completed before cancellation: {result:?}"),
+    }
+
+    cancellation.cancel();
+    let reply = tokio::time::timeout(Duration::from_millis(100), &mut prepare)
+        .await
+        .expect("cancelled prepare must finish within 100ms")
+        .expect("cancelled prepare must cleanly complete");
+    assert!(
+        reply.is_none(),
+        "cancelled prepare must not emit Prepared or Reject"
+    );
+    tokio::time::timeout(Duration::from_millis(100), provider.dropped.notified())
+        .await
+        .expect("cancellation must drop the pending provider future");
+
+    let health = controller.health().expect("admission health");
+    assert!(health.candidate.is_none());
+    assert!(health.last_outcome.is_none());
+    let current = controller.active().unwrap().unwrap();
+    assert!(Arc::ptr_eq(&active, &current));
+    assert_eq!(current.generation(), 1);
+
+    let abort = match prepare_control {
+        AssemblyActivationControl::Prepare {
+            environment,
+            activation_id,
+            expected_generation,
+            candidate_generation,
+            assembly,
+            config_snapshot,
+            replica_id,
+            ..
+        } => AssemblyActivationControl::Abort {
+            environment,
+            activation_id,
+            expected_generation,
+            candidate_generation,
+            assembly,
+            config_snapshot,
+            replica_id,
+        },
+        _ => unreachable!(),
+    };
+    assert!(controller
+        .apply_activation_control(
+            abort,
+            &fixture.resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect("durable abort after prepare cancellation must be idempotent")
+        .is_none());
 }
 
 #[tokio::test]

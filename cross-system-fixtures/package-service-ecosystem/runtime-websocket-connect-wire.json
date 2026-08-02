@@ -367,8 +367,9 @@
         "websocketConnect": {
           "result": "accept",
           "businessIdentity": "tenant-1",
+          "admissionRank": 42,
           "connectionPolicy": {
-            "maxConnections": 2,
+            "maxConnections": 1,
             "overflow": "close-oldest",
             "closeCode": 4009,
             "closeReason": "connection replaced"
@@ -376,7 +377,7 @@
         }
       },
       "payloadHex": "",
-      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v3\",\"type\":\"response.end\",\"requestId\":\"response-websocket-accept-full\",\"payloadPresent\":false,\"websocketConnect\":{\"result\":\"accept\",\"businessIdentity\":\"tenant-1\",\"connectionPolicy\":{\"maxConnections\":2,\"overflow\":\"close-oldest\",\"closeCode\":4009,\"closeReason\":\"connection replaced\"}}}"
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v3\",\"type\":\"response.end\",\"requestId\":\"response-websocket-accept-full\",\"payloadPresent\":false,\"websocketConnect\":{\"result\":\"accept\",\"businessIdentity\":\"tenant-1\",\"admissionRank\":42,\"connectionPolicy\":{\"maxConnections\":1,\"overflow\":\"close-oldest\",\"closeCode\":4009,\"closeReason\":\"connection replaced\"}}}"
     },
     {
       "name": "websocketConnect reject",
@@ -480,6 +481,24 @@
       "baseIndex": 0,
       "setPath": "websocketConnect.messageResponse",
       "value": {}
+    },
+    {
+      "name": "admission rank zero",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.admissionRank",
+      "value": 0
+    },
+    {
+      "name": "admission rank above safe integer",
+      "baseIndex": 1,
+      "setPath": "websocketConnect.admissionRank",
+      "value": 9007199254740992
+    },
+    {
+      "name": "reject carries admission rank",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.admissionRank",
+      "value": 1
     },
     {
       "name": "reject carries business identity",

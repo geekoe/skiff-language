@@ -11,6 +11,8 @@ use crate::{
     handlers::{array_empty, map_empty},
 };
 
+#[cfg(debug_assertions)]
+use super::table::{builtin_handler_validation_count, handler_entries};
 use super::{
     table::{
         native_route_matches_required_context, validate_handler_entries,
@@ -65,6 +67,27 @@ fn assert_decode_target_projection(
 fn native_handler_registry_builtin_table_validates_against_signature_contract() {
     NativeRegistry::validate_builtin_handlers()
         .expect("native handler registry table should validate");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn native_handler_registry_validates_once_across_repeated_route_lookups() {
+    let registry = NativeRegistry;
+
+    assert!(registry.is_registered("core.array.empty"));
+    assert_eq!(
+        builtin_handler_validation_count(),
+        1,
+        "first route lookup should complete the single debug validation"
+    );
+
+    assert!(registry.is_registered("core.map.empty"));
+    assert!(!handler_entries().is_empty());
+    assert_eq!(
+        builtin_handler_validation_count(),
+        1,
+        "subsequent registry lookups must reuse the first validation"
+    );
 }
 
 #[test]

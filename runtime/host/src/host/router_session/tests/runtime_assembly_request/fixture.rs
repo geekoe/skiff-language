@@ -39,6 +39,7 @@ static FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PATH_ONLY_FIXTURE: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_A: OnceLock<CompiledGatewayFixture> = OnceLock::new();
 static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new();
+static CURRENT_SCOPE_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 static PACKAGE_DIRECT_STREAM_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 static STREAM_ARGUMENT_FIXTURE: OnceLock<StreamArgumentCompiledFixture> = OnceLock::new();
 static SPAWN_SUBMIT_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
@@ -66,7 +67,23 @@ pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, Act
     (host, routes)
 }
 
-pub(super) async fn admitted_current_scope_gateway_host(
+pub(in crate::host::router_session::tests) fn blocking_activation_fixture() -> (
+    Arc<RuntimeAssembly>,
+    PathBuf,
+    skiff_runtime_config_snapshot::RuntimeConfigSnapshot,
+) {
+    let fixture = pinned_route_fixture(false);
+    let resolver = fixture.resolver();
+    let (_, snapshot_resolver) =
+        crate::loader::config_snapshot::snapshot_for_assembly("test", &fixture.assembly, &resolver);
+    (
+        Arc::clone(&fixture.assembly),
+        fixture.artifact_root.clone(),
+        snapshot_resolver.snapshot().clone(),
+    )
+}
+
+pub(crate) async fn admitted_current_scope_gateway_host(
 ) -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = compile_current_scope_fixture();
     let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
@@ -89,6 +106,67 @@ pub(super) async fn admitted_current_scope_gateway_host(
         })
         .collect();
     (host, routes)
+}
+
+pub(crate) async fn reloaded_current_scope_gateway_host(
+) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
+    let fixture = compile_current_scope_fixture();
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("current-scope filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("current-scope generation one should admit");
+    let keys = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .map(|binding| binding.service_ingress_key())
+        .collect::<Vec<_>>();
+    let key = keys
+        .iter()
+        .find(|key| key.deployment.service_id == "example.com/current-scope-consumer")
+        .expect("current-scope consumer ingress key")
+        .clone();
+    let pinned = host
+        .lookup_active_assembly_request_route(&key)
+        .expect("generation one current-scope route");
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("current-scope generation two should admit");
+    let current = host
+        .lookup_active_assembly_request_route(&key)
+        .expect("generation two current-scope route");
+    (host, pinned, current)
+}
+
+pub(crate) async fn current_scope_gateway_host_for_reload() -> (
+    RuntimeHost,
+    ActiveAssemblyRoute,
+    Arc<RuntimeAssembly>,
+    FilesystemRuntimeAssemblyContentResolver,
+) {
+    let fixture = compile_current_scope_fixture();
+    let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        .expect("current-scope filesystem resolver");
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(Arc::clone(&fixture.assembly), &resolver)
+        .await
+        .expect("current-scope generation one should admit");
+    let key = fixture
+        .assembly
+        .gateway_ingress
+        .iter()
+        .map(|binding| binding.service_ingress_key())
+        .find(|key| key.deployment.service_id == "example.com/current-scope-consumer")
+        .expect("current-scope consumer ingress key");
+    let route = host
+        .lookup_active_assembly_request_route(&key)
+        .expect("generation one current-scope route");
+    (host, route, fixture.assembly, resolver)
 }
 
 pub(super) async fn admitted_package_direct_stream_gateway_host(
@@ -174,7 +252,7 @@ fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
     CurrentScopeCompiledFixture {
         assembly,
         artifact_root: runtime_artifacts,
-        _temp: temp,
+        _temp: Arc::new(temp),
     }
 }
 
@@ -510,7 +588,17 @@ struct CompiledGatewayFixture {
 struct CurrentScopeCompiledFixture {
     assembly: Arc<RuntimeAssembly>,
     artifact_root: PathBuf,
-    _temp: TempFixture,
+    _temp: Arc<TempFixture>,
+}
+
+impl Clone for CurrentScopeCompiledFixture {
+    fn clone(&self) -> Self {
+        Self {
+            assembly: Arc::clone(&self.assembly),
+            artifact_root: self.artifact_root.clone(),
+            _temp: Arc::clone(&self._temp),
+        }
+    }
 }
 
 struct StreamArgumentCompiledFixture {
@@ -532,6 +620,12 @@ fn fixture() -> &'static CompiledGatewayFixture {
 }
 
 fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
+    CURRENT_SCOPE_FIXTURE
+        .get_or_init(compile_current_scope_fixture_once)
+        .clone()
+}
+
+fn compile_current_scope_fixture_once() -> CurrentScopeCompiledFixture {
     let temp = TempFixture::new("host-current-scope-source-artifact");
     let artifact_root = temp.child("artifacts");
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -555,23 +649,23 @@ fn compile_current_scope_fixture() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:7b098c127886a56f6761a4ee97a241ba410b326dce96f7a8591a25ed438e08f0"
+        "skiff-runtime-assembly-v3:sha256:8f1e82bd445ce9810886de4ac382757754b217dc12d14eccded50d6b3f16c364"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
-        "skiff-package-build-v10:sha256:821f7564721b43c749552e63cdc84e7c1bb81785e738247dd1adb2ce3a993a3a"
+        "skiff-package-build-v10:sha256:8dd9c176e9f98ae1e32243eb0e4d6f7c3f47a3bf6bc04dbd46f59f26380b12eb"
     );
     assert_eq!(
         receipt
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:16504b24063707eec68b395945cddacbc9c6533577c04f5df30083382eae311c"
+        "skiff-deployment-artifact-v4:sha256:824fd83a14fd6914f8015da8622d6ec83073d395a4a25767b6108a3cfd30909b"
     );
     CurrentScopeCompiledFixture {
         assembly,
         artifact_root,
-        _temp: temp,
+        _temp: Arc::new(temp),
     }
 }
 
@@ -604,7 +698,7 @@ fn compile_package_service_fixture(
     CurrentScopeCompiledFixture {
         assembly,
         artifact_root,
-        _temp: temp,
+        _temp: Arc::new(temp),
     }
 }
 
@@ -683,17 +777,18 @@ fn pinned_route_fixture(replacement: bool) -> &'static CompiledGatewayFixture {
 }
 
 fn compile_fixture(with_jsonrpc_method: bool) -> CompiledGatewayFixture {
-    compile_fixture_variant(with_jsonrpc_method, false, false)
+    compile_fixture_variant(with_jsonrpc_method, false, false, None)
 }
 
 fn compile_pinned_route_fixture(replacement: bool) -> CompiledGatewayFixture {
-    compile_fixture_variant(true, true, replacement)
+    compile_fixture_variant(true, true, replacement, Some(42))
 }
 
 fn compile_fixture_variant(
     with_jsonrpc_method: bool,
     with_database: bool,
     replacement: bool,
+    websocket_connect_admission_rank: Option<u64>,
 ) -> CompiledGatewayFixture {
     let temp = TempFixture::new(if with_jsonrpc_method {
         if with_database {
@@ -711,6 +806,7 @@ fn compile_fixture_variant(
         with_jsonrpc_method,
         with_database,
         replacement,
+        websocket_connect_admission_rank,
     );
     let platform = repository_platform_sources();
     seed_canonical_std(&platform, &artifact_root).expect("canonical std seed");
@@ -770,6 +866,10 @@ fn compile_fixture_variant(
     store
         .write_runtime_assembly(&assembly)
         .expect("gateway RuntimeAssembly record");
+    skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        artifact_root.join("runtime-config"),
+    )
+    .expect("gateway runtime config snapshot store");
     let assembly = Arc::new(assembly);
     CompiledGatewayFixture {
         assembly,
@@ -783,6 +883,7 @@ fn write_service_fixture(
     with_jsonrpc_method: bool,
     with_database: bool,
     replacement: bool,
+    websocket_connect_admission_rank: Option<u64>,
 ) {
     fs::create_dir_all(root).expect("gateway fixture directory");
     fs::write(
@@ -842,9 +943,18 @@ slow:
         ),
     )
     .expect("gateway HTTP manifest");
+    let websocket_connect_manifest =
+        websocket_connect_admission_rank.map_or_else(String::new, |_| {
+            r#"connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+"#
+            .to_string()
+        });
     let websocket = if with_jsonrpc_method {
-        r#"path: /socket
-jsonRpc:
+        let json_rpc = r#"jsonRpc:
   status:
     method: status.get
     handler: main.websocketStatus
@@ -897,9 +1007,10 @@ jsonRpc:
         source: { kind: websocket.connectionId }
       - param: businessIdentity
         source: { kind: websocket.businessIdentity }
-"#
+"#;
+        format!("path: /socket\n{websocket_connect_manifest}{json_rpc}")
     } else {
-        "path: /socket\n"
+        format!("path: /socket\n{websocket_connect_manifest}")
     };
     fs::write(root.join("websocket.yml"), websocket).expect("gateway WebSocket manifest");
     fs::write(root.join("config.dev.yml"), "{}\n").expect("gateway config");
@@ -918,10 +1029,27 @@ jsonRpc:
     } else {
         "\nfunction websocketGenerationResult() -> string {\n  return \"old\"\n}\n"
     };
+    let websocket_connect_source =
+        websocket_connect_admission_rank.map_or_else(String::new, |rank| {
+            format!(
+                r#"
+function websocketConnect(
+  request: std.websocket.WebSocketConnectRequest
+) -> std.websocket.WebSocketConnectResult {{
+  return {{
+    tag: "accept",
+    businessIdentity: request.url,
+    connectionPolicy: null,
+    admissionRank: {rank},
+  }}
+}}
+"#
+            )
+        });
     fs::write(
         root.join("main.skiff"),
         format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
             r#"import std
 
 function health() -> string {
@@ -1007,6 +1135,7 @@ function slow(body: string) -> string {
 }
 "#,
             websocket_generation_source,
+            websocket_connect_source,
             database_source,
             replacement_source,
         ),

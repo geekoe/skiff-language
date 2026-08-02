@@ -17,6 +17,50 @@ impl AssemblyAdmissionController {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
+        self.apply_activation_control_inner(
+            control,
+            resolver,
+            config_snapshot_resolver,
+            bootstrap_service_db,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn apply_cancellable_activation_control<R, C>(
+        &self,
+        control: AssemblyActivationControl,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        bootstrap_service_db: Option<&AssemblyActivationServiceDb>,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
+        self.apply_activation_control_inner(
+            control,
+            resolver,
+            config_snapshot_resolver,
+            bootstrap_service_db,
+            Some(cancellation),
+        )
+        .await
+    }
+
+    async fn apply_activation_control_inner<R, C>(
+        &self,
+        control: AssemblyActivationControl,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        bootstrap_service_db: Option<&AssemblyActivationServiceDb>,
+        cancellation: Option<&CancellationToken>,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
         control.validate().map_err(anyhow::Error::msg)?;
         match control {
             AssemblyActivationControl::Prepare {
@@ -49,10 +93,14 @@ impl AssemblyAdmissionController {
                         resolver,
                         config_snapshot_resolver,
                         bootstrap_service_db,
+                        cancellation,
                     )
                     .await
                 {
-                    Ok(()) => transition.prepared_control(replica_id),
+                    Ok(PrepareTransitionOutcome::Prepared) => {
+                        Some(transition.prepared_control(replica_id))
+                    }
+                    Ok(PrepareTransitionOutcome::Cancelled) => None,
                     Err((reason, error)) => {
                         warn!(
                             event = "runtime.assembly_prepare_rejected",
@@ -61,10 +109,10 @@ impl AssemblyAdmissionController {
                             reason = ?reason,
                             error = %format_args!("{error:#}")
                         );
-                        transition.reject_control(replica_id, reason)
+                        Some(transition.reject_control(replica_id, reason))
                     }
                 };
-                Ok(Some(reply))
+                Ok(reply)
             }
             AssemblyActivationControl::Commit {
                 environment,
@@ -165,7 +213,8 @@ impl AssemblyAdmissionController {
         resolver: &R,
         config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
-    ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<PrepareTransitionOutcome, (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
@@ -182,7 +231,7 @@ impl AssemblyAdmissionController {
                 .is_some_and(|staged| staged.transition == *transition)
                 || committed_matches_transition(state.committed.as_ref(), transition)
             {
-                return Ok(());
+                return Ok(PrepareTransitionOutcome::Prepared);
             }
             if state.staged.is_some() {
                 return Err(admission_reject(
@@ -205,25 +254,41 @@ impl AssemblyAdmissionController {
         }
 
         let identity = transition.assembly.assembly_identity.clone();
-        self.begin_online_candidate(transition.candidate_generation, identity.clone())
+        self.begin_online_transition(transition)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
         info!(
             event = "runtime.assembly_candidate_started",
             assembly_identity = %identity,
             generation = transition.candidate_generation
         );
-        let prepared = self
-            .resolve_started_exact_candidate(
-                transition.candidate_generation,
-                &transition.assembly,
-                &transition.config_snapshot,
-                resolver,
-                config_snapshot_resolver,
-                "exact RuntimeAssembly record resolution failed",
-                service_db,
-                &transition.environment,
-            )
-            .await?;
+        let prepare = self.resolve_started_exact_candidate(
+            transition.candidate_generation,
+            &transition.assembly,
+            &transition.config_snapshot,
+            resolver,
+            config_snapshot_resolver,
+            "exact RuntimeAssembly record resolution failed",
+            service_db,
+            &transition.environment,
+        );
+        let prepared = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                () = cancellation.wait_cancelled() => {
+                    self.cancel_preparing_transition(transition)
+                        .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
+                    return Ok(PrepareTransitionOutcome::Cancelled);
+                }
+                result = prepare => result,
+            }
+        } else {
+            prepare.await
+        };
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            self.cancel_preparing_transition(transition)
+                .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
+            return Ok(PrepareTransitionOutcome::Cancelled);
+        }
+        let prepared = prepared?;
         self.stage_prepared(transition.clone(), prepared)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
         info!(
@@ -231,7 +296,7 @@ impl AssemblyAdmissionController {
             assembly_identity = %identity,
             generation = transition.candidate_generation
         );
-        Ok(())
+        Ok(PrepareTransitionOutcome::Prepared)
     }
 
     async fn commit_transition<R, C>(
@@ -301,8 +366,7 @@ impl AssemblyAdmissionController {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
-        let identity = transition.assembly.assembly_identity.clone();
-        self.begin_online_candidate(transition.candidate_generation, identity)
+        self.begin_online_transition(transition)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
         let prepared = self
             .resolve_started_exact_candidate(
@@ -329,6 +393,7 @@ impl AssemblyAdmissionController {
         match state.staged.as_ref() {
             Some(staged) if staged.transition.same_tuple(transition) => {
                 state.staged = None;
+                state.last_outcome = None;
                 info!(
                     event = "runtime.assembly_staging_aborted",
                     assembly_identity = %transition.assembly.assembly_identity,
@@ -337,8 +402,56 @@ impl AssemblyAdmissionController {
                 Ok(())
             }
             Some(_) => anyhow::bail!("abort tuple does not match the staged assembly activation"),
-            None => Ok(()),
+            None => match state.preparing.as_ref() {
+                Some(preparing) if preparing.same_tuple(transition) => {
+                    state.preparing = None;
+                    state.candidate = None;
+                    state.last_outcome = None;
+                    info!(
+                        event = "runtime.assembly_preparing_aborted",
+                        assembly_identity = %transition.assembly.assembly_identity,
+                        generation = transition.candidate_generation
+                    );
+                    Ok(())
+                }
+                Some(_) => {
+                    anyhow::bail!("abort tuple does not match the preparing assembly activation")
+                }
+                None => Ok(()),
+            },
         }
+    }
+
+    fn cancel_preparing_transition(&self, transition: &AssemblyTransition) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
+        match state.preparing.as_ref() {
+            Some(preparing) if preparing.same_tuple(transition) => {}
+            Some(_) => {
+                anyhow::bail!("cancel tuple does not match the preparing assembly activation")
+            }
+            None if state.candidate.is_none() && state.staged.is_none() => {
+                // The candidate may have failed at the same instant cancellation won the
+                // session race. The serialized transition still owns this state, so erase the
+                // superseded diagnostic outcome and converge to the same clean Abort result.
+                state.last_outcome = None;
+                return Ok(());
+            }
+            None => {
+                anyhow::bail!("cancelled assembly activation has no exact preparing transition")
+            }
+        }
+        state.preparing = None;
+        state.candidate = None;
+        state.last_outcome = None;
+        info!(
+            event = "runtime.assembly_prepare_cancelled",
+            assembly_identity = %transition.assembly.assembly_identity,
+            generation = transition.candidate_generation
+        );
+        Ok(())
     }
 
     fn ensure_replica(&self, replica_id: &str) -> anyhow::Result<()> {
@@ -372,10 +485,14 @@ impl AssemblyAdmissionController {
             .write()
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         ensure_current_candidate(&state, prepared.generation, &identity)?;
+        if state.preparing.as_ref() != Some(&transition) {
+            anyhow::bail!("prepared assembly does not match the preparing activation tuple");
+        }
         if state.staged.is_some() {
             anyhow::bail!("an assembly activation is already staged");
         }
         state.candidate = None;
+        state.preparing = None;
         state.last_outcome = Some(AssemblyAdmissionOutcome {
             generation: prepared.generation,
             identity,
@@ -424,6 +541,12 @@ impl AssemblyAdmissionController {
         );
         Ok(active)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrepareTransitionOutcome {
+    Prepared,
+    Cancelled,
 }
 
 impl AssemblyTransition {

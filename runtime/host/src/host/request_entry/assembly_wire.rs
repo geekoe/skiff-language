@@ -495,6 +495,11 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
                 .to_string(),
         ));
     }
+    if header.test_case_parent_request_id.is_some() && header.test_case_capability.is_none() {
+        return Err(RuntimeError::Decode(
+            "canonical HTTP testCaseParentRequestId requires testCaseCapability".to_string(),
+        ));
+    }
     let ingress = &header.routing.ingress;
     let request = &header.http_request;
     if request.method != ingress.method || request.path != ingress.path {

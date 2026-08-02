@@ -19,7 +19,7 @@ type WebSocketConnectionPolicy {
 }
 
 type WebSocketConnectResult discriminator "tag" =
-  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+  { tag: "accept", businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy?, admissionRank: integer? }
   | { tag: "reject", code: integer, reason: string }
 
 type WebSocketRequestError discriminator "kind" =

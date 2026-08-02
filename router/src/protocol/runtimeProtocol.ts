@@ -46,6 +46,7 @@ export interface ProtocolSchemaProperty {
   type: string | readonly string[];
   enum?: readonly (string | number | boolean | null)[];
   minLength?: number;
+  maxLength?: number;
   pattern?: string;
   minimum?: number;
   maximum?: number;
@@ -625,6 +626,46 @@ const runtimeControlErrorProperties = {
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
+const actorGetOrCreateRequiredProperties = [
+  'schemaVersion',
+  'type',
+  'rpcId',
+  'runtimeId',
+  'activationIdentity',
+  'actorKey',
+  'actorAbiIdentity',
+  'actorImplementationIdentity',
+  'bootstrapEncodingVersion',
+  'declarationOwner'
+] as const;
+
+const actorGetOrCreateBaseProperties = {
+  schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+  type: { type: 'string', enum: ['actor.getOrCreate.request'] },
+  ...runtimeRpcRequestBaseProperties,
+  actorKey: actorKeySchema,
+  actorAbiIdentity: { type: 'string' },
+  actorImplementationIdentity: { type: 'string' },
+  bootstrapEncodingVersion: { type: 'string' },
+  declarationOwner: actorDeclarationOwnerSchema,
+  deadline: actorMethodDeadlineSchema
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const actorGetOrCreateTestCapabilityProperties = {
+  testCaseCapability: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 256,
+    pattern: '^[A-Za-z0-9_.:-]{1,256}$'
+  },
+  testCaseParentRequestId: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 256,
+    pattern: '^[A-Za-z0-9_.:-]{1,256}$'
+  }
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
 const requestStartFrameProperties = {
   type: { type: 'string', enum: ['request.start'] },
   requestId: { type: 'string' },
@@ -850,6 +891,112 @@ const requestStartFrameProperties = {
   }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
+const runtimeAssemblyHttpRequestRequiredProperties = [
+  'schemaVersion',
+  'type',
+  'requestId',
+  'mode',
+  'caller',
+  'routing',
+  'trace',
+  'httpRequest'
+] as const;
+
+const runtimeAssemblyHttpRequestBaseProperties = {
+  schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+  type: { type: 'string', enum: ['request.start'] },
+  requestId: { type: 'string' },
+  mode: { type: 'string', enum: ['unary', 'serverStream'] },
+  caller: {
+    type: 'object',
+    required: ['kind'],
+    properties: {
+      kind: { type: 'string', enum: ['gateway'] }
+    },
+    additionalProperties: false
+  },
+  routing: requestStartFrameProperties.routing,
+  clientSession: requestStartFrameProperties.clientSession,
+  deadline: requestStartFrameProperties.deadline,
+  trace: requestStartFrameProperties.trace,
+  httpRequest: {
+    type: 'object',
+    required: ['method', 'url', 'path', 'query', 'headers'],
+    properties: {
+      method: { type: 'string' },
+      url: { type: 'string' },
+      path: { type: 'string' },
+      query: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['name', 'value'],
+          properties: {
+            name: { type: 'string' },
+            value: { type: 'string' }
+          },
+          additionalProperties: false
+        }
+      },
+      headers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['name', 'value'],
+          properties: {
+            name: { type: 'string' },
+            value: { type: 'string' }
+          },
+          additionalProperties: false
+        }
+      }
+    },
+    additionalProperties: false
+  }
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const runtimeAssemblyProductionHttpRequestSchema = {
+  type: 'object',
+  required: runtimeAssemblyHttpRequestRequiredProperties,
+  properties: {
+    ...runtimeAssemblyHttpRequestBaseProperties,
+    testEffectsEnabled: { type: 'boolean', enum: [false] }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolEnvelopeObjectSchema;
+
+const runtimeAssemblyRootTestHttpRequestSchema = {
+  type: 'object',
+  required: [
+    ...runtimeAssemblyHttpRequestRequiredProperties,
+    'testEffectsEnabled',
+    'testCaseCapability'
+  ],
+  properties: {
+    ...runtimeAssemblyHttpRequestBaseProperties,
+    testEffectsEnabled: { type: 'boolean', enum: [true] },
+    testCaseCapability:
+      actorGetOrCreateTestCapabilityProperties.testCaseCapability
+  },
+  additionalProperties: false
+} as const satisfies ProtocolEnvelopeObjectSchema;
+
+const runtimeAssemblyDerivedTestHttpRequestSchema = {
+  type: 'object',
+  required: [
+    ...runtimeAssemblyHttpRequestRequiredProperties,
+    'testEffectsEnabled',
+    'testCaseCapability',
+    'testCaseParentRequestId'
+  ],
+  properties: {
+    ...runtimeAssemblyHttpRequestBaseProperties,
+    testEffectsEnabled: { type: 'boolean', enum: [true] },
+    ...actorGetOrCreateTestCapabilityProperties
+  },
+  additionalProperties: false
+} as const satisfies ProtocolEnvelopeObjectSchema;
+
 const packageTestStartFrameProperties = {
   type: { type: 'string', enum: ['package-test.start'] },
   requestId: { type: 'string' },
@@ -1035,31 +1182,27 @@ export const runtimeFrameHeaderSchemas = {
     additionalProperties: false
   },
   'actor.getOrCreate.request': {
-    type: 'object',
-    required: [
-      'schemaVersion',
-      'type',
-      'rpcId',
-      'runtimeId',
-      'activationIdentity',
-      'actorKey',
-      'actorAbiIdentity',
-      'actorImplementationIdentity',
-      'bootstrapEncodingVersion',
-      'declarationOwner'
-    ],
-    properties: {
-      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['actor.getOrCreate.request'] },
-      ...runtimeRpcRequestBaseProperties,
-      actorKey: actorKeySchema,
-      actorAbiIdentity: { type: 'string' },
-      actorImplementationIdentity: { type: 'string' },
-      bootstrapEncodingVersion: { type: 'string' },
-      declarationOwner: actorDeclarationOwnerSchema,
-      deadline: actorMethodDeadlineSchema
-    },
-    additionalProperties: false
+    oneOf: [
+      {
+        type: 'object',
+        required: actorGetOrCreateRequiredProperties,
+        properties: actorGetOrCreateBaseProperties,
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        required: [
+          ...actorGetOrCreateRequiredProperties,
+          'testCaseCapability',
+          'testCaseParentRequestId'
+        ],
+        properties: {
+          ...actorGetOrCreateBaseProperties,
+          ...actorGetOrCreateTestCapabilityProperties
+        },
+        additionalProperties: false
+      }
+    ]
   },
   'actor.getOrCreate.response': {
     type: 'object',
@@ -1396,74 +1539,9 @@ export const runtimeFrameHeaderSchemas = {
         },
         additionalProperties: false
       },
-      {
-        type: 'object',
-        required: [
-          'schemaVersion',
-          'type',
-          'requestId',
-          'mode',
-          'caller',
-          'routing',
-          'trace',
-          'httpRequest'
-        ],
-        properties: {
-          schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-          type: { type: 'string', enum: ['request.start'] },
-          requestId: { type: 'string' },
-          mode: { type: 'string', enum: ['unary', 'serverStream'] },
-          caller: {
-            type: 'object',
-            required: ['kind'],
-            properties: {
-              kind: { type: 'string', enum: ['gateway'] }
-            },
-            additionalProperties: false
-          },
-          routing: requestStartFrameProperties.routing,
-          clientSession: requestStartFrameProperties.clientSession,
-          deadline: requestStartFrameProperties.deadline,
-          trace: requestStartFrameProperties.trace,
-          httpRequest: {
-            type: 'object',
-            required: ['method', 'url', 'path', 'query', 'headers'],
-            properties: {
-              method: { type: 'string' },
-              url: { type: 'string' },
-              path: { type: 'string' },
-              query: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  required: ['name', 'value'],
-                  properties: {
-                    name: { type: 'string' },
-                    value: { type: 'string' }
-                  },
-                  additionalProperties: false
-                }
-              },
-              headers: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  required: ['name', 'value'],
-                  properties: {
-                    name: { type: 'string' },
-                    value: { type: 'string' }
-                  },
-                  additionalProperties: false
-                }
-              }
-            },
-            additionalProperties: false
-          },
-          testEffectsEnabled: { type: 'boolean' },
-          testCaseCapability: { type: 'string' }
-        },
-        additionalProperties: false
-      },
+      runtimeAssemblyProductionHttpRequestSchema,
+      runtimeAssemblyRootTestHttpRequestSchema,
+      runtimeAssemblyDerivedTestHttpRequestSchema,
       {
         type: 'object',
         required: [
@@ -1896,6 +1974,11 @@ export const runtimeFrameHeaderSchemas = {
             properties: {
               result: { type: 'string', enum: ['accept'] },
               businessIdentity: { type: 'string' },
+              admissionRank: {
+                type: 'integer',
+                minimum: 1,
+                maximum: Number.MAX_SAFE_INTEGER
+              },
               connectionPolicy: {
                 type: 'object',
                 required: ['maxConnections', 'overflow'],
@@ -3236,8 +3319,37 @@ function validateActorBootstrapRequest(
     requireString(envelope, type, 'actorImplementationIdentity') ??
     requireString(envelope, type, 'bootstrapEncodingVersion') ??
     validateActorDeclarationOwner(envelope, type) ??
-    validateDeadline(envelope, type)
+    validateDeadline(envelope, type) ??
+    (type === 'actor.getOrCreate.request'
+      ? validateTestCaseCapabilityPair(envelope, type)
+      : null)
   );
+}
+
+function validateTestCaseCapabilityPair(
+  envelope: Record<string, unknown>,
+  envelopeType: string
+): string | null {
+  const capability = envelope.testCaseCapability;
+  const parentRequestId = envelope.testCaseParentRequestId;
+  if ((capability === undefined) !== (parentRequestId === undefined)) {
+    return `invalid ${envelopeType} envelope: testCaseCapability and testCaseParentRequestId must be provided together`;
+  }
+  for (const [field, value] of [
+    ['testCaseCapability', capability],
+    ['testCaseParentRequestId', parentRequestId]
+  ] as const) {
+    if (
+      value !== undefined &&
+      (typeof value !== 'string' ||
+        value.length === 0 ||
+        value.length > 256 ||
+        !/^[A-Za-z0-9_.:-]+$/.test(value))
+    ) {
+      return `invalid ${envelopeType} envelope: ${field} must be a canonical token`;
+    }
+  }
+  return null;
 }
 
 function validateActorDeclarationOwner(
@@ -4515,9 +4627,15 @@ function validateWebSocketConnectResponseFrameMetadata(
       rejectUnsupportedObjectFields(metadata, 'response.end', 'websocketConnect accept', [
         'result',
         'businessIdentity',
-        'connectionPolicy'
+        'connectionPolicy',
+        'admissionRank'
       ]) ??
       optionalString(envelope, 'response.end', 'websocketConnect.businessIdentity') ??
+      optionalPositiveSafeInteger(
+        envelope,
+        'response.end',
+        'websocketConnect.admissionRank'
+      ) ??
       validateWebSocketConnectionPolicy(metadata.connectionPolicy);
     if (acceptError) {
       return acceptError;
@@ -5507,6 +5625,17 @@ function optionalPositiveInteger(
   return value === undefined || (Number.isInteger(value) && Number(value) > 0)
     ? null
     : `invalid ${envelopeType} envelope: ${field} must be a positive integer`;
+}
+
+function optionalPositiveSafeInteger(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const value = getPathValue(envelope, field);
+  return value === undefined || (Number.isSafeInteger(value) && Number(value) > 0)
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be a positive safe integer`;
 }
 
 function requireEnum<const TValue extends string>(

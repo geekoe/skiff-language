@@ -93,6 +93,13 @@ fn fence() -> ActorOwnerControlFenceFrameHeader {
     }
 }
 
+fn route_authority() -> ActorOwnerRouteAuthorityFrameHeader {
+    ActorOwnerRouteAuthorityFrameHeader {
+        assembly_identity: format!("skiff-runtime-assembly-v3:sha256:{}", "c".repeat(64)),
+        assembly_generation: 3,
+    }
+}
+
 #[test]
 fn activate_initial_control_round_trips_with_bootstrap_and_deadline() {
     let header = ActorOwnerControlFrameHeader {
@@ -102,6 +109,7 @@ fn activate_initial_control_round_trips_with_bootstrap_and_deadline() {
         request_id: "actor-bootstrap-1".to_string(),
         operation: ActorOwnerControlOperation::ActivateInitial,
         fence: fence(),
+        route_authority: route_authority(),
         transition: None,
         bootstrap: Some(ActorActivationBootstrapFrameHeader {
             encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1.to_string(),
@@ -111,9 +119,25 @@ fn activate_initial_control_round_trips_with_bootstrap_and_deadline() {
             timeout_ms: 30_000,
             expires_at: "2099-01-01T00:00:00.000Z".to_string(),
         }),
+        test_case_capability: Some("test-case:create_1".to_string()),
+        test_case_parent_request_id: Some("request:parent_1".to_string()),
     };
 
     let wire = encode_actor_owner_control_frame(&header).unwrap();
+    let decoded_wire = crate::protocol::decode_binary_frame(&wire).unwrap();
+    assert_eq!(
+        decoded_wire.header.get("testCaseCapability"),
+        Some(&serde_json::json!("test-case:create_1"))
+    );
+    assert_eq!(
+        decoded_wire.header.get("testCaseParentRequestId"),
+        Some(&serde_json::json!("request:parent_1"))
+    );
+    assert!(decoded_wire.header.get("test_case_capability").is_none());
+    assert!(decoded_wire
+        .header
+        .get("test_case_parent_request_id")
+        .is_none());
     assert_eq!(decode_actor_owner_control_frame(&wire).unwrap(), header);
 }
 
@@ -126,9 +150,12 @@ fn activate_initial_control_rejects_missing_bootstrap_or_deadline() {
         request_id: "actor-bootstrap-1".to_string(),
         operation: ActorOwnerControlOperation::ActivateInitial,
         fence: fence(),
+        route_authority: route_authority(),
         transition: None,
         bootstrap: None,
         deadline: None,
+        test_case_capability: None,
+        test_case_parent_request_id: None,
     };
     assert!(encode_actor_owner_control_frame(&header).is_err());
     header.bootstrap = Some(ActorActivationBootstrapFrameHeader {
@@ -140,7 +167,87 @@ fn activate_initial_control_rejects_missing_bootstrap_or_deadline() {
         timeout_ms: 30_000,
         expires_at: "2099-01-01T00:00:00.000Z".to_string(),
     });
-    assert!(encode_actor_owner_control_frame(&header).is_ok());
+    let wire = encode_actor_owner_control_frame(&header).unwrap();
+    let decoded_wire = crate::protocol::decode_binary_frame(&wire).unwrap();
+    assert!(decoded_wire.header.get("testCaseCapability").is_none());
+    assert!(decoded_wire.header.get("testCaseParentRequestId").is_none());
+}
+
+#[test]
+fn activate_initial_control_requires_test_case_authority_pair() {
+    let mut header = ActorOwnerControlFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.into(),
+        envelope_type: ACTOR_OWNER_CONTROL_FRAME_TYPE.into(),
+        target_runtime_id: "runtime-1".to_string(),
+        request_id: "actor-bootstrap-1".to_string(),
+        operation: ActorOwnerControlOperation::ActivateInitial,
+        fence: fence(),
+        route_authority: route_authority(),
+        transition: None,
+        bootstrap: Some(ActorActivationBootstrapFrameHeader {
+            encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1.to_string(),
+            payload_base64: base64::engine::general_purpose::STANDARD.encode([1u8]),
+        }),
+        deadline: Some(ActorMethodDeadlineFrameHeader {
+            timeout_ms: 30_000,
+            expires_at: "2099-01-01T00:00:00.000Z".to_string(),
+        }),
+        test_case_capability: Some("test-case:create_1".to_string()),
+        test_case_parent_request_id: None,
+    };
+    assert!(encode_actor_owner_control_frame(&header).is_err());
+
+    header.test_case_capability = None;
+    header.test_case_parent_request_id = Some("request:parent_1".to_string());
+    assert!(encode_actor_owner_control_frame(&header).is_err());
+}
+
+#[test]
+fn activate_initial_control_rejects_invalid_test_case_authority_tokens() {
+    let mut header = ActorOwnerControlFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.into(),
+        envelope_type: ACTOR_OWNER_CONTROL_FRAME_TYPE.into(),
+        target_runtime_id: "runtime-1".to_string(),
+        request_id: "actor-bootstrap-1".to_string(),
+        operation: ActorOwnerControlOperation::ActivateInitial,
+        fence: fence(),
+        route_authority: route_authority(),
+        transition: None,
+        bootstrap: Some(ActorActivationBootstrapFrameHeader {
+            encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1.to_string(),
+            payload_base64: base64::engine::general_purpose::STANDARD.encode([1u8]),
+        }),
+        deadline: Some(ActorMethodDeadlineFrameHeader {
+            timeout_ms: 30_000,
+            expires_at: "2099-01-01T00:00:00.000Z".to_string(),
+        }),
+        test_case_capability: Some("not canonical".to_string()),
+        test_case_parent_request_id: Some("request:parent_1".to_string()),
+    };
+    assert!(encode_actor_owner_control_frame(&header).is_err());
+
+    header.test_case_capability = Some("test-case:create_1".to_string());
+    header.test_case_parent_request_id = Some("not canonical".to_string());
+    assert!(encode_actor_owner_control_frame(&header).is_err());
+}
+
+#[test]
+fn non_initial_control_rejects_test_case_authority() {
+    let header = ActorOwnerControlFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.into(),
+        envelope_type: ACTOR_OWNER_CONTROL_FRAME_TYPE.into(),
+        target_runtime_id: "runtime-1".to_string(),
+        request_id: "actor-control-1".to_string(),
+        operation: ActorOwnerControlOperation::MarkUpgrading,
+        fence: fence(),
+        route_authority: route_authority(),
+        transition: None,
+        bootstrap: None,
+        deadline: None,
+        test_case_capability: Some("test-case:create_1".to_string()),
+        test_case_parent_request_id: Some("request:parent_1".to_string()),
+    };
+    assert!(encode_actor_owner_control_frame(&header).is_err());
 }
 
 #[test]

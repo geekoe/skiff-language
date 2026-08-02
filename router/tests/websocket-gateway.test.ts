@@ -162,6 +162,226 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     expect(fixture.generation.releaseCount).toBe(1);
   });
 
+  it('completes the upgrade then closes a lower ranked late response with 4009', async () => {
+    const fixture = await createFixture({ handler: 'package-callable-connect' });
+    const responses = [
+      deferred<RuntimeAssemblyWebSocketConnectResponseFrameMetadata>(),
+      deferred<RuntimeAssemblyWebSocketConnectResponseFrameMetadata>()
+    ];
+    fixture.dispatcher.respond = () =>
+      responses[fixture.dispatcher.requests.length - 1]!.promise;
+
+    const lower = fixture.connectClosed();
+    await until(() => fixture.dispatcher.requests.length === 1);
+    const higher = fixture.connect();
+    await until(() => fixture.dispatcher.requests.length === 2);
+
+    responses[1]!.resolve(rankedAccept(2));
+    const higherClient = await higher;
+    responses[0]!.resolve(rankedAccept(1));
+
+    expect(await lower).toEqual({
+      opened: true,
+      close: [
+        4009,
+        'websocket connection superseded by a higher admission rank'
+      ]
+    });
+    await until(() => fixture.generation.releaseCount === 1);
+    expect(fixture.gateway.connectionCount()).toBe(1);
+    expect(fixture.rpcBridge.connections).toHaveLength(1);
+    expect(fixture.generation.requireCount).toBe(2);
+    expect(fixture.generation.releaseCount).toBe(1);
+
+    higherClient.close();
+    await waitForClose(higherClient);
+    await until(() => fixture.generation.releaseCount === 2);
+  });
+
+  it('closes and finalizes an attached lower rank when a higher rank arrives', async () => {
+    const fixture = await createFixture({ handler: 'package-callable-connect' });
+    const ranks = [1, 2];
+    fixture.dispatcher.respond = () => rankedAccept(ranks.shift()!);
+
+    const lower = await fixture.connect();
+    const lowerClose = waitForClose(lower);
+    const higher = await fixture.connect();
+
+    expect(await lowerClose).toEqual([
+      4009,
+      'websocket connection superseded by a higher admission rank'
+    ]);
+    await until(() => fixture.generation.releaseCount === 1);
+    expect(fixture.gateway.connectionCount()).toBe(1);
+    expect(fixture.rpcBridge.connections).toHaveLength(2);
+    expect(fixture.rpcBridge.finalizeCount).toBe(1);
+    expect(fixture.generation.releaseCount).toBe(1);
+
+    higher.close();
+    await waitForClose(higher);
+    await until(() => fixture.generation.releaseCount === 2);
+    expect(fixture.rpcBridge.finalizeCount).toBe(2);
+  });
+
+  it('fails closed for a new ranked identity when retained high-water capacity is full', async () => {
+    const fixture = await createFixture({
+      handler: 'package-callable-connect',
+      admissionHighWaterLimit: 2
+    });
+    const accepts = [
+      rankedAccept(1, 'tenant-one'),
+      rankedAccept(1, 'tenant-two'),
+      rankedAccept(1, 'tenant-three'),
+      {
+        result: 'accept' as const,
+        businessIdentity: 'tenant-three',
+        connectionPolicy: { maxConnections: 1, overflow: 'close-oldest' as const }
+      }
+    ];
+    fixture.dispatcher.respond = () => accepts.shift()!;
+
+    for (let index = 0; index < 2; index += 1) {
+      const client = await fixture.connect();
+      client.close();
+      await waitForClose(client);
+    }
+    await until(() => fixture.gateway.connectionCount() === 0);
+    expect(fixture.gateway.admissionHighWaterSize()).toBe(2);
+
+    expect(await fixture.connectClosed()).toEqual({
+      opened: true,
+      close: [1013, 'websocket admission high-water capacity exceeded']
+    });
+    expect(fixture.gateway.admissionHighWaterSize()).toBe(2);
+    expect(fixture.gateway.connectionCount()).toBe(0);
+
+    expect(await fixture.rejectedStatus()).toBe(403);
+    expect(fixture.gateway.admissionHighWaterSize()).toBe(2);
+    expect(fixture.gateway.connectionCount()).toBe(0);
+  });
+
+  it('rejects an unranked downgrade before upgrade while ranked high-water is retained', async () => {
+    const fixture = await createFixture({ handler: 'package-callable-connect' });
+    const responses: RuntimeAssemblyWebSocketConnectResponseFrameMetadata[] = [
+      rankedAccept(1),
+      {
+        result: 'accept',
+        businessIdentity: 'tenant',
+        connectionPolicy: { maxConnections: 1, overflow: 'close-oldest' }
+      }
+    ];
+    fixture.dispatcher.respond = () => responses.shift()!;
+
+    const winner = await fixture.connect();
+    winner.close();
+    await waitForClose(winner);
+    await until(() => fixture.gateway.connectionCount() === 0);
+
+    expect(await fixture.rejectedStatus()).toBe(403);
+    expect(fixture.gateway.admissionHighWaterSize()).toBe(1);
+    expect(fixture.gateway.connectionCount()).toBe(0);
+  });
+
+  it('deindexes and finalizes a same-key unranked socket before ranked capacity refusal', async () => {
+    const fixture = await createFixture({
+      handler: 'package-callable-connect',
+      admissionHighWaterLimit: 1
+    });
+    const responses: RuntimeAssemblyWebSocketConnectResponseFrameMetadata[] = [
+      rankedAccept(1, 'occupied-business'),
+      {
+        result: 'accept',
+        businessIdentity: 'target-business',
+        connectionPolicy: { maxConnections: 1, overflow: 'close-oldest' }
+      },
+      rankedAccept(1, 'target-business')
+    ];
+    fixture.dispatcher.respond = () => responses.shift()!;
+
+    const occupied = await fixture.connect();
+    const unrankedExisting = await fixture.connect();
+    const unrankedClose = waitForClose(unrankedExisting);
+    expect(fixture.send.emit(
+      {
+        type: 'connection.send',
+        serviceId: SERVICE_ID,
+        websocketEntryId: ENTRY_ID,
+        businessIdentity: 'target-business',
+        payloadKind: 'text',
+        payloadBytes: Buffer.from('before-ranked-refusal')
+      },
+      fixture.runtime
+    )).toEqual({ kind: 'delivered', deliveries: 1 });
+
+    expect(await fixture.connectClosed()).toEqual({
+      opened: true,
+      close: [1013, 'websocket admission high-water capacity exceeded']
+    });
+    expect(await unrankedClose).toEqual([
+      4009,
+      'websocket connection superseded by a higher admission rank'
+    ]);
+    await until(() => fixture.generation.releaseCount === 2);
+
+    expect(fixture.send.emit(
+      {
+        type: 'connection.send',
+        serviceId: SERVICE_ID,
+        websocketEntryId: ENTRY_ID,
+        businessIdentity: 'target-business',
+        payloadKind: 'text',
+        payloadBytes: Buffer.from('after-ranked-refusal')
+      },
+      fixture.runtime
+    )).toEqual({ kind: 'delivered', deliveries: 0 });
+    expect(fixture.gateway.connectionCount()).toBe(1);
+    expect(fixture.rpcBridge.connections).toHaveLength(2);
+    expect(fixture.rpcBridge.finalizeCount).toBe(1);
+    expect(fixture.generation.requireCount).toBe(3);
+    expect(fixture.generation.releaseCount).toBe(2);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.rpcBridge.finalizeCount).toBe(1);
+    expect(fixture.generation.releaseCount).toBe(2);
+
+    occupied.close();
+    await waitForClose(occupied);
+    await until(() => fixture.generation.releaseCount === 3);
+    expect(fixture.rpcBridge.finalizeCount).toBe(2);
+  });
+
+  it('fails closed when admissionRank lacks its exact single-connection identity policy', async () => {
+    const fixture = await createFixture({ handler: 'package-callable-connect' });
+    const invalid: RuntimeAssemblyWebSocketConnectResponseFrameMetadata[] = [
+      {
+        result: 'accept',
+        admissionRank: 1,
+        connectionPolicy: { maxConnections: 1, overflow: 'close-oldest' }
+      },
+      { result: 'accept', businessIdentity: 'tenant', admissionRank: 2 },
+      {
+        result: 'accept',
+        businessIdentity: 'tenant',
+        admissionRank: 3,
+        connectionPolicy: { maxConnections: 2, overflow: 'close-oldest' }
+      },
+      {
+        result: 'accept',
+        businessIdentity: 'tenant',
+        admissionRank: 4,
+        connectionPolicy: { maxConnections: 1, overflow: 'reject-new' }
+      }
+    ];
+
+    for (const response of invalid) {
+      fixture.dispatcher.respond = () => response;
+      expect(await fixture.rejectedStatus()).toBe(502);
+    }
+    await until(() => fixture.generation.releaseCount === invalid.length);
+    expect(fixture.gateway.connectionCount()).toBe(0);
+    expect(fixture.rpcBridge.connections).toHaveLength(0);
+  });
+
   it('rejects before admission without requiring a generation pin', async () => {
     const fixture = await createFixture({ handler: 'package-callable-connect' });
     fixture.dispatcher.respond = () => ({
@@ -175,6 +395,31 @@ describe('current RuntimeAssembly WebSocket gateway', () => {
     await until(() => fixture.generation.releaseCount === 1);
     expect(fixture.gateway.connectionCount()).toBe(0);
     expect(fixture.rpcBridge.connections).toHaveLength(0);
+    expect(fixture.generation.requireCount).toBe(0);
+    expect(fixture.generation.releaseCount).toBe(1);
+  });
+
+  it('aborts a pending upgrade dispatch during shutdown and quarantines its late response', async () => {
+    const fixture = await createFixture({ handler: 'package-callable-connect' });
+    const response = deferred<RuntimeAssemblyWebSocketConnectResponseFrameMetadata>();
+    fixture.dispatcher.respond = () => response.promise;
+    const attempt = fixture.connect().then(
+      () => 'opened' as const,
+      () => 'aborted' as const
+    );
+    await until(() => fixture.dispatcher.requests.length === 1);
+
+    await fixture.gateway.close();
+    expect(await attempt).toBe('aborted');
+    expect(fixture.gateway.connectionCount()).toBe(0);
+    expect(fixture.rpcBridge.connections).toHaveLength(0);
+    expect(fixture.generation.expectCount).toBe(1);
+    expect(fixture.generation.requireCount).toBe(0);
+    expect(fixture.generation.releaseCount).toBe(1);
+
+    response.resolve(rankedAccept(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.gateway.connectionCount()).toBe(0);
     expect(fixture.generation.requireCount).toBe(0);
     expect(fixture.generation.releaseCount).toBe(1);
   });
@@ -379,6 +624,10 @@ interface GatewayFixture {
   runtime: WebSocket;
   otherRuntime: WebSocket;
   connect(): Promise<WebSocket>;
+  connectClosed(): Promise<{
+    opened: boolean;
+    close: [number, string];
+  }>;
   rejectedStatus(headers?: Record<string, string>): Promise<number>;
   setCurrentOwner(owner: WebSocketRuntimeOwner): void;
   close(): Promise<void>;
@@ -388,6 +637,7 @@ async function createFixture(input: {
   handler?: string;
   rpcMethod?: string;
   bridgeAttachError?: boolean;
+  admissionHighWaterLimit?: number;
 }): Promise<GatewayFixture> {
   const server = createServer((_request, response) => {
     response.statusCode = 404;
@@ -440,6 +690,9 @@ async function createFixture(input: {
       serviceId === undefined || serviceId === SERVICE_ID
         ? owners.get(sender)
         : undefined,
+    ...(input.admissionHighWaterLimit === undefined
+      ? {}
+      : { admissionHighWaterLimit: input.admissionHighWaterLimit }),
     requestTimeoutMs: 2_000
   });
   gateway.listen();
@@ -469,6 +722,31 @@ async function createFixture(input: {
         client.once('error', reject);
       });
       return client;
+    },
+    connectClosed: async () => {
+      const client = new WebSocket(url, {
+        headers: {
+          'x-skiff-service': SERVICE_ID,
+          'x-skiff-version': '1.0.0'
+        }
+      });
+      clients.add(client);
+      let opened = false;
+      return await new Promise((resolve, reject) => {
+        client.once('open', () => {
+          opened = true;
+        });
+        client.once('close', (code, reason) => {
+          resolve({
+            opened,
+            close: [code, reason.toString('utf8')]
+          });
+        });
+        client.once('unexpected-response', () => {
+          reject(new Error('ranked loser received an HTTP rejection before upgrade'));
+        });
+        client.once('error', reject);
+      });
     },
     rejectedStatus: async (headers = {
       'x-skiff-service': SERVICE_ID,
@@ -512,7 +790,8 @@ class FakeDispatcher implements AssemblyWebSocketRuntimeDispatcher {
   readonly requests: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader[] = [];
   respond: (
     header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader
-  ) => RuntimeAssemblyWebSocketConnectResponseFrameMetadata =
+  ) => RuntimeAssemblyWebSocketConnectResponseFrameMetadata |
+    Promise<RuntimeAssemblyWebSocketConnectResponseFrameMetadata> =
     () => ({ result: 'accept', businessIdentity: 'tenant' });
   private readonly senderByReceipt =
     new WeakMap<RuntimeDispatchConnectionReceipt, WebSocket>();
@@ -527,14 +806,18 @@ class FakeDispatcher implements AssemblyWebSocketRuntimeDispatcher {
       header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader;
       payloadBytes: Uint8Array;
     },
-    _timeoutMs: number
+    _timeoutMs: number,
+    options?: { signal?: AbortSignal }
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     this.requests.push(request.header);
     const receipt = Object.freeze({
       runtimeId: 'runtime-one'
     }) as RuntimeDispatchConnectionReceipt;
     this.senderByReceipt.set(receipt, this.runtime);
-    const response = this.respond(request.header);
+    const response = await abortable(
+      Promise.resolve(this.respond(request.header)),
+      options?.signal
+    );
     if (response.result === 'accept') {
       this.generation.acquire(
         request.header.websocketConnect.connectionId,
@@ -767,6 +1050,21 @@ function directMessage(
   };
 }
 
+function rankedAccept(
+  admissionRank: number,
+  businessIdentity = 'tenant'
+): RuntimeAssemblyWebSocketConnectResponseFrameMetadata {
+  return {
+    result: 'accept',
+    businessIdentity,
+    admissionRank,
+    connectionPolicy: {
+      maxConnections: 1,
+      overflow: 'close-oldest'
+    }
+  };
+}
+
 function nextMessage(
   client: WebSocket
 ): Promise<[WebSocket.RawData, boolean]> {
@@ -794,4 +1092,31 @@ async function until(predicate: () => boolean): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(new Error('dispatch aborted'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error('dispatch aborted'));
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', abort);
+    });
+  });
 }

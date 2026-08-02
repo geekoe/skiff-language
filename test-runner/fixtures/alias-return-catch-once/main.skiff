@@ -1,5 +1,25 @@
 import std
 
+interface HostHttpDispatchObserver {
+  function afterAuthorized(
+    self: Self,
+    routeTag: string,
+    hostConnectionGenerationHash: string
+  ) -> void
+}
+
+function dispatchObserved(
+  routeTag: string,
+  hostConnectionGenerationHash: string,
+  observer: any HostHttpDispatchObserver?
+) -> string {
+  if observer != null {
+    observer.afterAuthorized(routeTag, hostConnectionGenerationHash)
+    return "observed"
+  }
+  return "unobserved"
+}
+
 type Box {
   value: string
 }

@@ -40,6 +40,8 @@ fn invoke() -> ActorMethodInvokeFrameHeader {
         },
         cancellation_correlation: "cancel:1".into(),
         trace_id: None,
+        test_case_capability: None,
+        test_case_parent_request_id: None,
     }
 }
 
@@ -59,6 +61,95 @@ fn invocation_round_trips_optional_trace_id() {
     let wire = encode_actor_method_frame(&expected).unwrap();
     assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
     assert_eq!(header["traceId"], "trace:spawn:1");
+}
+
+#[test]
+fn invocation_round_trips_optional_test_case_capability_with_exact_wire_name() {
+    let mut with_capability = invoke();
+    with_capability.test_case_capability = Some("test-case:spawn_1.capability".to_string());
+    with_capability.test_case_parent_request_id = Some("request:parent_1".to_string());
+    let header = serde_json::to_value(&with_capability).unwrap();
+    let expected = ActorMethodFrame::Invoke(with_capability, vec![1, 2, 3]);
+    let wire = encode_actor_method_frame(&expected).unwrap();
+
+    assert_eq!(header["testCaseCapability"], "test-case:spawn_1.capability");
+    assert_eq!(header["testCaseParentRequestId"], "request:parent_1");
+    assert!(header.get("test_case_capability").is_none());
+    assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
+
+    let without_capability = serde_json::to_value(invoke()).unwrap();
+    assert!(without_capability.get("testCaseCapability").is_none());
+}
+
+#[test]
+fn invocation_rejects_invalid_test_case_capability_when_present() {
+    for invalid_capability in ["", "  ", "contains/slash", "contains space"] {
+        let mut invalid = invoke();
+        invalid.test_case_capability = Some(invalid_capability.to_string());
+        invalid.test_case_parent_request_id = Some("request:parent_1".to_string());
+        assert!(
+            encode_actor_method_frame(&ActorMethodFrame::Invoke(invalid, vec![])).is_err(),
+            "encode accepted {invalid_capability:?}"
+        );
+
+        let mut header = serde_json::to_value(invoke()).unwrap();
+        header["testCaseCapability"] = Value::String(invalid_capability.to_string());
+        header["testCaseParentRequestId"] = Value::String("request:parent_1".to_string());
+        let wire = encode_binary_frame(&header, &[]).unwrap();
+        assert!(
+            decode_actor_method_frame(&wire).is_err(),
+            "decode accepted {invalid_capability:?}"
+        );
+    }
+
+    let overlong = "a".repeat(257);
+    let mut invalid = invoke();
+    invalid.test_case_capability = Some(overlong.clone());
+    invalid.test_case_parent_request_id = Some("request:parent_1".to_string());
+    assert!(encode_actor_method_frame(&ActorMethodFrame::Invoke(invalid, vec![])).is_err());
+
+    let mut header = serde_json::to_value(invoke()).unwrap();
+    header["testCaseCapability"] = Value::String(overlong);
+    header["testCaseParentRequestId"] = Value::String("request:parent_1".to_string());
+    let wire = encode_binary_frame(&header, &[]).unwrap();
+    assert!(decode_actor_method_frame(&wire).is_err());
+}
+
+#[test]
+fn invocation_requires_test_case_capability_and_parent_request_id_together() {
+    let mut capability_only = invoke();
+    capability_only.test_case_capability = Some("test-case:capability".to_string());
+    assert!(encode_actor_method_frame(&ActorMethodFrame::Invoke(capability_only, vec![])).is_err());
+
+    let mut parent_only = invoke();
+    parent_only.test_case_parent_request_id = Some("request:parent".to_string());
+    assert!(encode_actor_method_frame(&ActorMethodFrame::Invoke(parent_only, vec![])).is_err());
+
+    let mut capability_only = serde_json::to_value(invoke()).unwrap();
+    capability_only["testCaseCapability"] = Value::String("test-case:capability".to_string());
+    let wire = encode_binary_frame(&capability_only, &[]).unwrap();
+    assert!(decode_actor_method_frame(&wire).is_err());
+
+    let mut parent_only = serde_json::to_value(invoke()).unwrap();
+    parent_only["testCaseParentRequestId"] = Value::String("request:parent".to_string());
+    let wire = encode_binary_frame(&parent_only, &[]).unwrap();
+    assert!(decode_actor_method_frame(&wire).is_err());
+}
+
+#[test]
+fn invocation_rejects_invalid_test_case_parent_request_id() {
+    for invalid_parent in ["", "  ", "contains/slash", "contains space"] {
+        let mut invalid = invoke();
+        invalid.test_case_capability = Some("test-case:capability".to_string());
+        invalid.test_case_parent_request_id = Some(invalid_parent.to_string());
+        assert!(encode_actor_method_frame(&ActorMethodFrame::Invoke(invalid, vec![])).is_err());
+
+        let mut header = serde_json::to_value(invoke()).unwrap();
+        header["testCaseCapability"] = Value::String("test-case:capability".to_string());
+        header["testCaseParentRequestId"] = Value::String(invalid_parent.to_string());
+        let wire = encode_binary_frame(&header, &[]).unwrap();
+        assert!(decode_actor_method_frame(&wire).is_err());
+    }
 }
 
 #[test]

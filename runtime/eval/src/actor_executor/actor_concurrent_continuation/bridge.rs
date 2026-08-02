@@ -130,8 +130,8 @@ impl ActorConcurrentContinuationLane {
         self.frame.resume(heap, execution).await
     }
 
-    pub(crate) fn complete(self, heap: RequestHeap) -> Result<(), RuntimeError> {
-        self.frame.finish(heap)
+    pub(crate) fn complete(self, heap: &RequestHeap) -> Result<(), RuntimeError> {
+        self.frame.finish_borrowed(heap)
     }
 
     pub(crate) fn abandon(self) {}

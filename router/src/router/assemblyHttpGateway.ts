@@ -20,7 +20,11 @@ import {
   requestCancelReasonForSituation
 } from '../protocol/cancelReason.js';
 import { GatewayError, toGatewayError } from './errors.js';
-import type { RuntimeDispatcher } from './runtimeDispatcher.js';
+import type {
+  RuntimeBinaryStreamHandlers,
+  RuntimeDispatcher,
+  RuntimeSelfIngressTestCorrelation
+} from './runtimeDispatcher.js';
 import {
   DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS,
   HttpStreamResponseWriter,
@@ -45,6 +49,14 @@ import { readServiceDeploymentSelector } from './serviceDeploymentSelection.js';
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 120_000;
 const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
 const MAX_NODE_TIMEOUT_MS = 2_147_483_647;
+const TEST_CASE_CAPABILITY_HEADER = 'x-skiff-test-case-capability';
+const TEST_CASE_PARENT_REQUEST_ID_HEADER =
+  'x-skiff-test-case-parent-request-id';
+const TEST_CASE_CORRELATION_TOKEN = /^[A-Za-z0-9_.:-]{1,256}$/;
+const RESERVED_TEST_CASE_HEADERS = new Set([
+  TEST_CASE_CAPABILITY_HEADER,
+  TEST_CASE_PARENT_REQUEST_ID_HEADER
+]);
 
 export interface AssemblyHttpGatewayOptions {
   snapshots: RouterActiveAssemblySnapshotStore;
@@ -126,10 +138,18 @@ export class AssemblyHttpGateway {
     response: ServerResponse
   ): Promise<void> {
     const snapshot = this.options.snapshots.get();
+    const testCorrelationHeaders = readTestCaseCorrelationHeaders(request);
     const serviceManagesCors = hasExplicitOptionsIngress(snapshot, request);
     if (!serviceManagesCors) {
       writeAutomaticCorsHeaders(request, response);
       if (isCorsPreflightRequest(request)) {
+        if (testCorrelationHeaders !== undefined) {
+          throw new GatewayError(
+            400,
+            'InvalidTestCaseCorrelation',
+            'test case capability self-ingress cannot use automatic CORS preflight'
+          );
+        }
         assertHttpIngressPathExists(
           snapshot,
           readHttpIngressTarget(request),
@@ -146,13 +166,34 @@ export class AssemblyHttpGateway {
     const body = await readRequestBody(request, this.options.maxRequestBytes);
     const requestId = randomUUID();
     const clientDisconnect = clientDisconnectSignal(request, response);
-    const header = assemblyHttpRequestHeader({
+    const httpRequest = buildHttpRequestMetadata(request, selection.url);
+    const productionHeader = assemblyHttpRequestHeader({
       snapshot,
       binding: selection.binding,
       requestId,
       timeoutMs,
-      httpRequest: buildHttpRequestMetadata(request, selection.url)
+      httpRequest
     });
+    const header = testCorrelationHeaders === undefined
+      ? productionHeader
+      : assemblyTestHttpRequestHeader({
+          snapshot,
+          binding: selection.binding,
+          requestId,
+          timeoutMs,
+          routing: productionHeader.routing,
+          mode: productionHeader.mode,
+          httpRequest,
+          testCaseCapability: testCorrelationHeaders.testCaseCapability,
+          testCaseParentRequestId: testCorrelationHeaders.parentRequestId
+        });
+    const testCorrelation = testCorrelationHeaders === undefined
+      ? undefined
+      : selfIngressTestCorrelation(
+          snapshot,
+          selection.binding,
+          testCorrelationHeaders
+        );
     try {
       if (header.mode === 'serverStream') {
         const writer = new HttpStreamResponseWriter({
@@ -165,48 +206,64 @@ export class AssemblyHttpGateway {
           maxResponseBytes: this.options.maxResponseBytes,
           writeHeaders: writeResponseHeaders
         });
+        const handlers: RuntimeBinaryStreamHandlers = {
+          onStart: (runtimeResponse, terminal) =>
+            writer.enqueueStart(runtimeResponse, terminal),
+          onChunk: (runtimeResponse, terminal) =>
+            writer.enqueueChunk(runtimeResponse, terminal),
+          onEnd: (runtimeResponse, terminal) => {
+            writer.enqueueEnd(runtimeResponse, terminal);
+            writer.markEndReceived();
+          },
+          closeFromPendingTerminal: (terminal) =>
+            writer.closeFromPendingTerminal(terminal)
+        };
+        const dispatchOptions = {
+          signal: clientDisconnect.signal,
+          cancelReason: requestCancelReasonForSituation(
+            REQUEST_CANCEL_SITUATION.clientDisconnect
+          )
+        };
         try {
-          await this.options.dispatcher.dispatchBinaryStream(
-            { header, payloadBytes: body },
-            timeoutMs,
-            {
-              onStart: (runtimeResponse, terminal) =>
-                writer.enqueueStart(runtimeResponse, terminal),
-              onChunk: (runtimeResponse, terminal) =>
-                writer.enqueueChunk(runtimeResponse, terminal),
-              onEnd: (runtimeResponse, terminal) => {
-                writer.enqueueEnd(runtimeResponse, terminal);
-                writer.markEndReceived();
-              },
-              closeFromPendingTerminal: (terminal) =>
-                writer.closeFromPendingTerminal(terminal)
-            },
-            {
-              signal: clientDisconnect.signal,
-              cancelReason: requestCancelReasonForSituation(
-                REQUEST_CANCEL_SITUATION.clientDisconnect
+          await (testCorrelation === undefined
+            ? this.options.dispatcher.dispatchBinaryStream(
+                { header, payloadBytes: body },
+                timeoutMs,
+                handlers,
+                dispatchOptions
               )
-            }
-          );
+            : this.options.dispatcher.dispatchPinnedTestBinaryStream(
+                { header, payloadBytes: body },
+                timeoutMs,
+                handlers,
+                dispatchOptions,
+                testCorrelation
+              ));
         } finally {
           writer.dispose();
         }
         if (!response.writableEnded) response.end();
         return;
       }
-      const runtimeResponse = await this.options.dispatcher.dispatchBinary(
-        {
-          header,
-          payloadBytes: body
-        },
-        timeoutMs,
-        {
-          signal: clientDisconnect.signal,
-          cancelReason: requestCancelReasonForSituation(
-            REQUEST_CANCEL_SITUATION.clientDisconnect
+      const dispatchInput = { header, payloadBytes: body };
+      const dispatchOptions = {
+        signal: clientDisconnect.signal,
+        cancelReason: requestCancelReasonForSituation(
+          REQUEST_CANCEL_SITUATION.clientDisconnect
+        )
+      };
+      const runtimeResponse = await (testCorrelation === undefined
+        ? this.options.dispatcher.dispatchBinary(
+            dispatchInput,
+            timeoutMs,
+            dispatchOptions
           )
-        }
-      );
+        : this.options.dispatcher.dispatchPinnedTestBinary(
+            dispatchInput,
+            timeoutMs,
+            testCorrelation,
+            dispatchOptions
+          ));
       if (runtimeResponse.payloadBytes.byteLength > this.options.maxResponseBytes) {
         throw new GatewayError(
           502,
@@ -300,6 +357,7 @@ export function assemblyTestHttpRequestHeader(input: {
   mode: RuntimeAssemblyRequestStartFrameHeader['mode'];
   httpRequest: HttpRequestFrameMetadata;
   testCaseCapability: string;
+  testCaseParentRequestId?: string;
 }): RuntimeAssemblyRequestStartFrameHeader {
   const productionHeader = assemblyHttpRequestHeader({
     snapshot: input.snapshot,
@@ -322,7 +380,10 @@ export function assemblyTestHttpRequestHeader(input: {
     routing: input.routing,
     httpRequest: input.httpRequest,
     testEffectsEnabled: true,
-    testCaseCapability: input.testCaseCapability
+    testCaseCapability: input.testCaseCapability,
+    ...(input.testCaseParentRequestId === undefined
+      ? {}
+      : { testCaseParentRequestId: input.testCaseParentRequestId })
   };
   const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
   if (!validation.ok) {
@@ -509,13 +570,96 @@ function buildHttpRequestMetadata(
     query: Array.from(url.searchParams.entries()).map(([name, value]) => ({ name, value })),
     headers: request.rawHeaders.reduce<Array<{ name: string; value: string }>>(
       (headers, value, index, rawHeaders) => {
-        if (index % 2 === 0 && rawHeaders[index + 1] !== undefined) {
-          headers.push({ name: value.toLowerCase(), value: rawHeaders[index + 1]! });
+        const name = value.toLowerCase();
+        if (
+          index % 2 === 0 &&
+          rawHeaders[index + 1] !== undefined &&
+          !RESERVED_TEST_CASE_HEADERS.has(name)
+        ) {
+          headers.push({ name, value: rawHeaders[index + 1]! });
         }
         return headers;
       },
       []
     )
+  };
+}
+
+interface TestCaseCorrelationHeaders {
+  testCaseCapability: string;
+  parentRequestId: string;
+}
+
+function readTestCaseCorrelationHeaders(
+  request: IncomingMessage
+): TestCaseCorrelationHeaders | undefined {
+  const capabilityValues = rawHeaderValues(
+    request,
+    TEST_CASE_CAPABILITY_HEADER
+  );
+  const parentValues = rawHeaderValues(
+    request,
+    TEST_CASE_PARENT_REQUEST_ID_HEADER
+  );
+  if (capabilityValues.length === 0 && parentValues.length === 0) {
+    return undefined;
+  }
+  if (
+    capabilityValues.length !== 1 ||
+    parentValues.length !== 1 ||
+    !TEST_CASE_CORRELATION_TOKEN.test(capabilityValues[0]!) ||
+    !TEST_CASE_CORRELATION_TOKEN.test(parentValues[0]!)
+  ) {
+    throw new GatewayError(
+      400,
+      'InvalidTestCaseCorrelation',
+      'test case capability and parent request headers must be a singular valid pair'
+    );
+  }
+  return {
+    testCaseCapability: capabilityValues[0]!,
+    parentRequestId: parentValues[0]!
+  };
+}
+
+function rawHeaderValues(
+  request: IncomingMessage,
+  expectedName: string
+): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === expectedName) {
+      const value = request.rawHeaders[index + 1];
+      if (value !== undefined) values.push(value);
+    }
+  }
+  return values;
+}
+
+function selfIngressTestCorrelation(
+  snapshot: RouterActiveAssemblySnapshot,
+  binding: RuntimeAssemblyIngressBinding,
+  headers: TestCaseCorrelationHeaders
+): RuntimeSelfIngressTestCorrelation {
+  const contract = snapshot.resolvedContracts?.find((candidate) =>
+    candidate.serviceId === binding.deployment.serviceId &&
+    candidate.contractVersion === binding.deployment.contractVersion
+  );
+  const runtimeBinding = snapshot.deploymentRuntimeBindings?.find((candidate) =>
+    sameDeployment(candidate.deployment, binding.deployment)
+  );
+  if (contract === undefined || runtimeBinding === undefined) {
+    throw new GatewayError(
+      500,
+      'InvalidAssemblyIngress',
+      'active HTTP ingress is missing its exact Runtime build or service protocol authority'
+    );
+  }
+  return {
+    parentRequestId: headers.parentRequestId,
+    testCaseCapability: headers.testCaseCapability,
+    buildId: runtimeBinding.packageBuildId,
+    serviceProtocolIdentity: contract.serviceProtocolIdentity
   };
 }
 

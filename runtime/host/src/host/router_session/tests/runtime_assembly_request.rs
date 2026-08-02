@@ -4,7 +4,10 @@ use serde_json::json;
 use skiff_artifact_model::{
     AssemblyIdentity, GatewayDispatchMode, GatewayProtocolSurface, IngressProtocol,
 };
-use skiff_runtime_request::{OutboundControlMessage, RouterWriterMessage};
+use skiff_runtime_capability_context::ConnectionRequestSession;
+use skiff_runtime_request::{
+    OutboundControlMessage, RouterWriterMessage, RuntimeHttpGatewayEvalAdapter,
+};
 use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
@@ -14,10 +17,11 @@ use skiff_runtime_transport::{
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
-        RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-        RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-        RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
-        RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
+        decode_runtime_assembly_request_start_frame, RuntimeAssemblyHttpRequestFrameHeader,
+        RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestDeadlineFrameHeader,
+        RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
+        RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
+        RuntimeAssemblyRequestStartFrameWireHeader, RuntimeAssemblyRequestTraceFrameHeader,
         RuntimeAssemblySpawnInvocationFrameHeader, RuntimeAssemblySpawnRequestCallerFrameHeader,
         RuntimeAssemblySpawnRequestRoutingFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
     },
@@ -126,7 +130,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let unary = &routes["/current-scope/unary"];
     assert_eq!(
         unary.assembly_identity().as_str(),
-        "skiff-runtime-assembly-v3:sha256:7b098c127886a56f6761a4ee97a241ba410b326dce96f7a8591a25ed438e08f0"
+        "skiff-runtime-assembly-v3:sha256:8f1e82bd445ce9810886de4ac382757754b217dc12d14eccded50d6b3f16c364"
     );
     assert_eq!(
         unary.gateway_entry_identity().as_str(),
@@ -806,6 +810,206 @@ async fn host_http_gateway_websocket_and_legacy_request_bridges_fail_before_host
     }
 }
 
+#[tokio::test]
+async fn router_self_ingress_wire_admits_only_live_same_session_parent() {
+    const SESSION: &str = "skiff-router-session-v1:opaque:test-session";
+    const OTHER_SESSION: &str = "skiff-router-session-v1:opaque:other-session";
+    const CAPABILITY: &str = "test-case:shared-http_1";
+    const PARENT: &str = "request:shared-parent_1";
+
+    let (host, routes) = fixture::admitted_gateway_host().await;
+    let route = &routes["/typed"];
+    let (sender, _receiver) = mpsc::unbounded_channel();
+
+    let mut root = canonical_header(route, PARENT);
+    root.test_effects_enabled = true;
+    root.test_case_capability = Some(CAPABILITY.to_string());
+    let root = decode_router_http_header(&root);
+    let root = http_adapter_for_test(&host, route, root, &sender, SESSION);
+    let root_execution = root
+        .begin_test_effect_execution()
+        .expect("capability-only root must admit")
+        .expect("root test execution");
+
+    let ordinary = decode_router_http_header(&canonical_header(route, "request:ordinary_1"));
+    let ordinary = http_adapter_for_test(&host, route, ordinary, &sender, SESSION);
+    assert!(ordinary
+        .begin_test_effect_execution()
+        .expect("ordinary HTTP admission")
+        .is_none());
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(SESSION, "request:ordinary_1")
+        .is_none());
+
+    let nested = decode_shared_router_http_header(route, "request:nested_1");
+    let adapter = http_adapter_for_test(&host, route, nested.clone(), &sender, SESSION);
+    let execution = adapter
+        .begin_test_effect_execution()
+        .expect("live same-session parent must admit")
+        .expect("nested test execution");
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(SESSION, "request:nested_1")
+        .is_some());
+
+    let duplicate = http_adapter_for_test(&host, route, nested, &sender, SESSION);
+    assert!(duplicate.begin_test_effect_execution().is_err());
+
+    let cross_session = decode_router_http_header(&router_self_ingress_header(
+        route,
+        "request:cross-session_1",
+        CAPABILITY,
+        PARENT,
+    ));
+    let cross_session = http_adapter_for_test(&host, route, cross_session, &sender, OTHER_SESSION);
+    assert!(cross_session.begin_test_effect_execution().is_err());
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(OTHER_SESSION, "request:cross-session_1")
+        .is_none());
+
+    let other_case = host
+        .test_http_entries
+        .begin_root_case(
+            "test-case:other_1",
+            SESSION,
+            "request:other-root_1".to_string(),
+            route.activation().activation_id().as_str().to_string(),
+            "http://api.example.test/typed",
+            route.deployment().clone(),
+        )
+        .expect("second isolated root test authority");
+    let cross_case = decode_router_http_header(&router_self_ingress_header(
+        route,
+        "request:cross-case_1",
+        CAPABILITY,
+        "request:other-root_1",
+    ));
+    let cross_case = http_adapter_for_test(&host, route, cross_case, &sender, SESSION);
+    assert!(cross_case.begin_test_effect_execution().is_err());
+
+    assert!(host.test_http_entries.revoke_request(SESSION, PARENT));
+    let stale_parent = decode_router_http_header(&router_self_ingress_header(
+        route,
+        "request:stale-parent_1",
+        CAPABILITY,
+        PARENT,
+    ));
+    let stale_parent = http_adapter_for_test(&host, route, stale_parent, &sender, SESSION);
+    assert!(stale_parent.begin_test_effect_execution().is_err());
+
+    drop(execution);
+    assert!(host
+        .test_http_entries
+        .self_ingress_for_request(SESSION, "request:nested_1")
+        .is_none());
+    drop(other_case);
+    drop(root_execution);
+}
+
+fn router_self_ingress_header(
+    route: &ActiveAssemblyRoute,
+    request_id: &str,
+    capability: &str,
+    parent_request_id: &str,
+) -> RuntimeAssemblyRequestStartFrameHeader {
+    let mut header = canonical_header(route, request_id);
+    header.test_effects_enabled = true;
+    header.test_case_capability = Some(capability.to_string());
+    header.test_case_parent_request_id = Some(parent_request_id.to_string());
+    header
+}
+
+fn decode_router_http_header(
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+) -> RuntimeAssemblyRequestStartFrameHeader {
+    let wire = serde_json::to_value(header).expect("Router-produced HTTP wire header");
+    assert_eq!(
+        wire["testCaseParentRequestId"],
+        json!(header.test_case_parent_request_id)
+    );
+    let frame = encode_binary_frame(&wire, b"null").expect("Router HTTP request frame");
+    let (decoded, payload) =
+        decode_runtime_assembly_request_start_frame(&frame).expect("Host transport decode");
+    assert_eq!(payload, b"null");
+    let RuntimeAssemblyRequestStartFrameWireHeader::Http(header) = decoded else {
+        panic!("Router HTTP header must select the HTTP wire branch")
+    };
+    header
+}
+
+fn decode_shared_router_http_header(
+    route: &ActiveAssemblyRoute,
+    request_id: &str,
+) -> RuntimeAssemblyRequestStartFrameHeader {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json"
+    ))
+    .expect("shared Router/Host runtime request corpus");
+    let authority = corpus["requestStartHeaders"]
+        .as_array()
+        .and_then(|headers| {
+            headers.iter().find(|header| {
+                header.get("testCaseParentRequestId").is_some()
+                    && header.get("testCaseCapability").is_some()
+            })
+        })
+        .expect("shared derived HTTP test authority header");
+    let mut wire = serde_json::to_value(canonical_header(route, request_id))
+        .expect("active route HTTP wire header");
+    for field in [
+        "testEffectsEnabled",
+        "testCaseCapability",
+        "testCaseParentRequestId",
+    ] {
+        wire[field] = authority[field].clone();
+    }
+    let frame = encode_binary_frame(&wire, b"null").expect("shared Router HTTP request frame");
+    let (decoded, payload) =
+        decode_runtime_assembly_request_start_frame(&frame).expect("Host transport decode");
+    assert_eq!(payload, b"null");
+    let RuntimeAssemblyRequestStartFrameWireHeader::Http(header) = decoded else {
+        panic!("shared Router HTTP header must select the HTTP wire branch")
+    };
+    header
+}
+
+fn http_adapter_for_test(
+    host: &RuntimeHost,
+    route: &ActiveAssemblyRoute,
+    header: RuntimeAssemblyRequestStartFrameHeader,
+    sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    router_session_id: &str,
+) -> Arc<dyn RuntimeHttpGatewayEvalAdapter> {
+    let context = crate::eval_capability_adapter::RuntimeAssemblyEvalAdapterContextInput {
+        runtime_id: host.base_runtime_id.clone(),
+        activation: Arc::clone(route.activation()),
+        execution_image: Arc::clone(route.execution_image()),
+        contexts: Arc::clone(route.context_set()),
+        config_views: route.config_views().expect("route config views"),
+        execution_target: route.gateway_entry_key().as_str().to_string(),
+        service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
+        ingress_selector: Some(route.selector().clone()),
+        db_source: route.db_source().expect("route DB source"),
+        file_source: crate::capability_context::FileCapabilitySource::new(host.file_runtime()),
+        http_options: host.http_runtime_options.clone(),
+        outbound_requests: Arc::clone(&host.outbound_requests),
+        actor_method_outbound: Arc::clone(&host.actor_method_outbound),
+        telemetry_context: None,
+        router_sender: Some(sender.clone()),
+        connection_requests: Arc::clone(&host.connection_requests),
+        router_session: ConnectionRequestSession::new(router_session_id.to_string())
+            .expect("router session"),
+        http_response_max_bytes: 1024,
+        test_http_entries: host.test_http_entries.clone(),
+    };
+    crate::eval_capability_adapter::http_gateway_eval_adapter(
+        crate::eval_capability_adapter::RuntimeHttpGatewayEvalAdapterInput { context, header },
+    )
+    .expect("HTTP eval adapter")
+}
+
 fn canonical_header(
     route: &ActiveAssemblyRoute,
     request_id: &str,
@@ -857,6 +1061,7 @@ fn canonical_header(
         },
         test_effects_enabled: false,
         test_case_capability: None,
+        test_case_parent_request_id: None,
     }
 }
 

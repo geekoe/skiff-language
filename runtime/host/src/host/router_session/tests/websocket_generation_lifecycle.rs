@@ -306,6 +306,7 @@ mod websocket_jsonrpc_target {
             RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
                 business_identity: None,
                 connection_policy: None,
+                admission_rank: None,
             }
         ));
         assert_eq!(host.websocket_generations.pin_count().unwrap(), 1);

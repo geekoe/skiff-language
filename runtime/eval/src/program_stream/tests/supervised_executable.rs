@@ -11,21 +11,24 @@ use skiff_runtime_capability_context::{
     StreamRuntimeError, SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, ExecutableKind, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
-    LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit, LinkedTypeDescriptor,
-    LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext, ServiceMeta, SlotIr,
-    SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr, UnitAddr,
+    ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, FileDeclarations, FileLinkTargets,
+    LinkOverlay, LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit,
+    LinkedTypeDescriptor, LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext,
+    ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr, UnitAddr,
 };
 use skiff_runtime_model::service_error::{
     CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::RuntimeValue,
+    runtime_value::{HeapNode, RuntimeValue},
     type_plan::RuntimeTypePlan,
 };
 
-use super::{PreparedNativeStreamProducer, StreamProducerCall};
+use super::{
+    materialize_runtime_stream_item, PreparedNativeStreamProducer, StreamProducerCall,
+    StreamProducerSelf,
+};
 use crate::error::{unwrap_diagnostic_source_context, RuntimeError};
 use crate::{
     actor_executor_test_runtime as test_runtime, capabilities::TimeCapabilityContext,
@@ -282,6 +285,7 @@ async fn deferred_stream_drive_natural_end_completes_without_leak() {
 
     assert_eq!(values, 2);
     assert_stream_closed(&stream_runtime, &stream_value).await;
+    assert!(fixture.interpreter.deferred_stream_producers.is_empty());
 }
 
 #[tokio::test]
@@ -301,6 +305,7 @@ async fn deferred_stream_drive_cancellation_closes_without_leak() {
 
     assert!(matches!(result, Err(RuntimeError::Cancelled)));
     assert_stream_closed(&stream_runtime, &stream_value).await;
+    assert!(fixture.interpreter.deferred_stream_producers.is_empty());
 }
 
 #[tokio::test]
@@ -326,6 +331,367 @@ async fn deferred_stream_drive_preserves_consumed_producer_error() {
         "consumed producer terminal must not trigger a second registry read: {error}"
     );
     assert_stream_closed(&stream_runtime, &stream_value).await;
+    assert!(fixture.interpreter.deferred_stream_producers.is_empty());
+}
+
+#[tokio::test]
+async fn legacy_inline_producer_detaches_inherited_self_before_handle_collision() {
+    assert_eq!(execute_legacy_inherited_self_collision(false).await, "self");
+}
+
+#[tokio::test]
+async fn legacy_deferred_producer_detaches_inherited_self_before_handle_collision() {
+    assert_eq!(execute_legacy_inherited_self_collision(true).await, "self");
+}
+
+#[tokio::test]
+async fn legacy_from_values_preserves_self_argument_alias_without_caller_storage() {
+    let producer_executable = inherited_self_collision_producer();
+    let (interpreter, file) = interpreter_with_executables(vec![
+        inherited_self_collision_caller(),
+        producer_executable.clone(),
+    ]);
+    let context = execution_context(&interpreter);
+    let caller_addr = ExecutableAddr::service(0, 0);
+    let producer_addr = ExecutableAddr::service(0, 1);
+    let mut heap = RequestHeap::default();
+    heap.alloc_array(vec![RuntimeValue::from("caller-only")])
+        .expect("caller-only collision seed");
+    let shared = heap
+        .alloc_array(vec![RuntimeValue::from("shared")])
+        .expect("shared self/arg graph");
+    let mut env = Env::for_program_executable(&file.executables[0], None, 0).expect("caller env");
+    env.declare_program_self(&file.executables[0], RuntimeValue::Heap(shared))
+        .expect("caller self");
+    env.declare_binding("other", Some(1), RuntimeValue::Heap(shared))
+        .expect("caller arg");
+
+    let stream = interpreter
+        .prepare_deferred_stream_producer_from_values(
+            RuntimeExecutionProjection::for_context(&interpreter, &context)
+                .expect("legacy projection"),
+            context,
+            &mut heap,
+            &env,
+            &caller_addr,
+            &producer_addr,
+            &producer_executable,
+            &BTreeMap::new(),
+            RuntimeValue::Heap(shared).into(),
+            vec![RuntimeValue::Heap(shared).into()],
+        )
+        .await
+        .expect("prepare from values")
+        .expect("emit executable must defer");
+    let stream = runtime_to_wire(&stream, &heap).expect("deferred stream wire value");
+    let id = stream_id(&stream).expect("deferred stream id");
+    let prepared = interpreter
+        .deferred_stream_producers
+        .take(id)
+        .expect("parked producer");
+
+    assert!(prepared.producer_env.self_value().is_none());
+    let StreamProducerSelf::Explicit(ref producer_self) = prepared.producer_self else {
+        panic!("from-values producer must retain explicit self");
+    };
+    assert_eq!(
+        producer_self.value().as_heap_handle(),
+        prepared.producer_args[0].value().as_heap_handle(),
+        "self and arg must share one cloned destination handle"
+    );
+    assert_ne!(
+        producer_self.value().as_heap_handle(),
+        Some(shared),
+        "producer must not retain the caller heap handle"
+    );
+    assert!(interpreter.deferred_stream_producers.is_empty());
+    prepared.cancel();
+}
+
+#[tokio::test]
+async fn legacy_ordinary_inherited_self_and_arg_share_one_cloned_graph() {
+    let caller = inherited_self_collision_caller();
+    let producer_executable = inherited_self_collision_producer();
+    let (interpreter, file) =
+        interpreter_with_executables(vec![caller.clone(), producer_executable]);
+    let context = execution_context(&interpreter);
+    let caller_addr = ExecutableAddr::service(0, 0);
+    let producer_addr = ExecutableAddr::service(0, 1);
+    let mut heap = RequestHeap::default();
+    heap.alloc_array(vec![RuntimeValue::from("caller-only")])
+        .expect("caller-only seed");
+    let shared = heap
+        .alloc_array(vec![RuntimeValue::from("shared")])
+        .expect("shared caller graph");
+    let mut env = Env::for_program_executable(&caller, None, 0).expect("caller env");
+    env.declare_program_self(&caller, RuntimeValue::Heap(shared))
+        .expect("caller self");
+    env.declare_binding("other", Some(1), RuntimeValue::Heap(shared))
+        .expect("caller arg");
+    let producer = StreamProducerCall {
+        addr: producer_addr.clone(),
+        receiver_const: None,
+        producer_self: None,
+        call: skiff_runtime_linked_program::CallIr {
+            target: LinkedCallTarget::Executable {
+                addr: producer_addr,
+            },
+            site: site(),
+            args: vec![ExprRefIr { expression: 0 }],
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        },
+        item_type: array_of_string_plan(),
+    };
+
+    let prepared = interpreter
+        .prepare_stream_producer(
+            RuntimeExecutionProjection::for_context(&interpreter, &context)
+                .expect("legacy projection"),
+            context,
+            &mut heap,
+            &mut env,
+            &caller_addr,
+            &file,
+            &caller,
+            producer,
+        )
+        .await
+        .expect("ordinary producer preparation");
+
+    assert!(prepared.producer_env.self_value().is_none());
+    let StreamProducerSelf::Inherited(Some(ref producer_self)) = prepared.producer_self else {
+        panic!("ordinary producer must retain inherited self separately");
+    };
+    assert_eq!(
+        producer_self.value().as_heap_handle(),
+        prepared.producer_args[0].value().as_heap_handle(),
+        "ordinary inherited self and arg must retain their cross-root alias"
+    );
+    assert_ne!(producer_self.value().as_heap_handle(), Some(shared));
+    prepared.cancel();
+}
+
+#[tokio::test]
+async fn from_values_clone_limit_failure_leaves_no_deferred_registry_entry() {
+    let producer_executable = inherited_self_collision_producer();
+    let (interpreter, _) = interpreter_with_executables(vec![
+        inherited_self_collision_caller(),
+        producer_executable.clone(),
+    ]);
+    let context = execution_context_with_heap_limits(
+        &interpreter,
+        RequestHeapLimits {
+            max_nodes: 0,
+            ..RequestHeapLimits::default()
+        },
+    );
+    let caller_addr = ExecutableAddr::service(0, 0);
+    let producer_addr = ExecutableAddr::service(0, 1);
+    let mut heap = RequestHeap::default();
+    let value = heap
+        .alloc_array(vec![RuntimeValue::from("limit")])
+        .expect("caller graph");
+
+    let error = interpreter
+        .prepare_deferred_stream_producer_from_values(
+            RuntimeExecutionProjection::for_context(&interpreter, &context)
+                .expect("legacy projection"),
+            context,
+            &mut heap,
+            &Env::new(),
+            &caller_addr,
+            &producer_addr,
+            &producer_executable,
+            &BTreeMap::new(),
+            RuntimeValue::Heap(value).into(),
+            vec![RuntimeValue::Heap(value).into()],
+        )
+        .await
+        .expect_err("producer heap node limit must fail preparation");
+
+    assert!(
+        error.to_string().contains("max heap nodes"),
+        "unexpected clone limit error: {error:?}"
+    );
+    assert!(interpreter.deferred_stream_producers.is_empty());
+}
+
+async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
+    let caller = inherited_self_collision_caller();
+    let producer_executable = inherited_self_collision_producer();
+    let (interpreter, file) =
+        interpreter_with_executables(vec![caller.clone(), producer_executable]);
+    let context = execution_context(&interpreter);
+    let stream_runtime = context.stream_runtime();
+    let caller_addr = ExecutableAddr::service(0, 0);
+    let producer_addr = ExecutableAddr::service(0, 1);
+    let mut heap = RequestHeap::default();
+    let self_handle = heap
+        .alloc_array(vec![RuntimeValue::from("self")])
+        .expect("caller self graph");
+    let arg_handle = heap
+        .alloc_array(vec![RuntimeValue::from("arg")])
+        .expect("caller arg graph");
+    assert_eq!(self_handle.index(), 0, "collision fixture source self");
+    let mut env = Env::for_program_executable(&caller, None, 0).expect("caller env");
+    env.declare_program_self(&caller, RuntimeValue::Heap(self_handle))
+        .expect("caller self");
+    env.declare_binding("other", Some(1), RuntimeValue::Heap(arg_handle))
+        .expect("caller arg");
+    let item_type = array_of_string_plan();
+    let producer = StreamProducerCall {
+        addr: producer_addr.clone(),
+        receiver_const: None,
+        producer_self: None,
+        call: skiff_runtime_linked_program::CallIr {
+            target: LinkedCallTarget::Executable {
+                addr: producer_addr,
+            },
+            site: site(),
+            args: vec![ExprRefIr { expression: 0 }],
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        },
+        item_type: item_type.clone(),
+    };
+
+    let poll = if deferred {
+        let stream = interpreter
+            .prepare_deferred_stream_producer(
+                RuntimeExecutionProjection::for_context(&interpreter, &context)
+                    .expect("legacy projection"),
+                context.clone(),
+                &mut heap,
+                &mut env,
+                &caller_addr,
+                &file,
+                &caller,
+                producer,
+            )
+            .await
+            .expect("deferred producer");
+        let stream = runtime_to_wire(&stream, &heap).expect("stream wire value");
+        let consumed = stream.clone();
+        let poll = interpreter
+            .drive_deferred_stream_producer(context, &caller_addr, &stream, |_| {
+                let stream_runtime = stream_runtime.clone();
+                async move {
+                    stream_runtime
+                        .next(&consumed)
+                        .await
+                        .map_err(RuntimeError::from)
+                }
+            })
+            .await
+            .expect("deferred first item");
+        assert!(interpreter.deferred_stream_producers.is_empty());
+        poll
+    } else {
+        let prepared = interpreter
+            .prepare_native_stream_producer_arg(
+                RuntimeExecutionProjection::for_context(&interpreter, &context)
+                    .expect("legacy projection"),
+                context.clone(),
+                &mut heap,
+                &mut env,
+                &caller_addr,
+                &file,
+                &caller,
+                producer,
+            )
+            .await
+            .expect("inline producer");
+        let stream = prepared.stream_value().clone();
+        interpreter
+            .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async {
+                stream_runtime
+                    .next(&stream)
+                    .await
+                    .map_err(RuntimeError::from)
+            })
+            .await
+            .expect("inline first item")
+    };
+
+    let carrier = materialize_runtime_stream_item(poll, Some(&item_type), &mut heap)
+        .expect("materialize producer item")
+        .expect("first producer item");
+    let handle = carrier
+        .value()
+        .as_heap_handle()
+        .expect("emitted self remains heap-backed");
+    let HeapNode::Array(items) = heap.get(handle).expect("emitted self array") else {
+        panic!("emitted self must be an array");
+    };
+    let RuntimeValue::String(marker) = &items[0] else {
+        panic!("self marker must be a string");
+    };
+    marker.clone()
+}
+
+fn inherited_self_collision_caller() -> LinkedExecutable {
+    let mut caller = executable(
+        "caller",
+        Vec::new(),
+        SlotLayoutIr {
+            slots: vec![slot(0, "self", "selfValue"), slot(1, "other", "local")],
+            frame_size: 2,
+        },
+        json!({
+            "blocks": [{ "label": "entry", "statements": [] }],
+            "statements": [],
+            "expressions": [{ "kind": "loadSlot", "slot": 1 }]
+        }),
+    );
+    caller.kind = ExecutableKind::ImplMethod;
+    caller.self_type = Some(array_of_string_type());
+    caller
+}
+
+fn inherited_self_collision_producer() -> LinkedExecutable {
+    let mut producer = executable(
+        "produceFromSelf",
+        vec![ParamIr {
+            name: "other".to_string(),
+            slot: 1,
+            ty: array_of_string_type(),
+        }],
+        SlotLayoutIr {
+            slots: vec![slot(0, "self", "selfValue"), slot(1, "other", "param")],
+            frame_size: 2,
+        },
+        json!({
+            "blocks": [{ "label": "entry", "statements": [{ "statement": 0 }] }],
+            "statements": [{
+                "kind": "emit",
+                "operation": "emit",
+                "value": { "expression": 0 }
+            }],
+            "expressions": [{ "kind": "loadSlot", "slot": 0 }]
+        }),
+    );
+    producer.kind = ExecutableKind::ImplMethod;
+    producer.self_type = Some(array_of_string_type());
+    producer.return_type = Some(stream_type(array_of_string_type()));
+    producer
+}
+
+fn array_of_string_type() -> LinkedTypeRef {
+    LinkedTypeRef::Native {
+        name: "Array".to_string(),
+        args: vec![string_type()],
+    }
+}
+
+fn array_of_string_plan() -> RuntimeTypePlan {
+    RuntimeTypePlan::from_descriptor(&json!({
+        "kind": "array",
+        "args": [{ "kind": "builtin", "name": "string", "args": [] }]
+    }))
+    .expect("array<string> plan")
 }
 
 async fn consume_deferred_stream(
@@ -595,6 +961,13 @@ async fn assert_stream_closed(stream_runtime: &StreamRuntime, stream_value: &ser
 }
 
 fn execution_context(interpreter: &Interpreter) -> ProgramExecutionContext<'static> {
+    execution_context_with_heap_limits(interpreter, RequestHeapLimits::default())
+}
+
+fn execution_context_with_heap_limits(
+    interpreter: &Interpreter,
+    request_heap_limits: RequestHeapLimits,
+) -> ProgramExecutionContext<'static> {
     let execution = test_runtime::execution_control();
     let effects = test_runtime::effects_context();
     let actor = test_runtime::actor_context_with_trace("trace:stream-supervision");
@@ -618,7 +991,7 @@ fn execution_context(interpreter: &Interpreter) -> ProgramExecutionContext<'stat
         test_effect_doubles: interpreter.test_effect_double_context(),
         actor: actor.clone(),
         request,
-        request_heap_limits: RequestHeapLimits::default(),
+        request_heap_limits,
     })
 }
 

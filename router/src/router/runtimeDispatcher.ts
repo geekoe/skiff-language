@@ -124,6 +124,7 @@ export interface RuntimeSpawnParentAuthority {
   readonly serviceProtocolIdentity: string;
   readonly assemblyIdentity: string;
   readonly assemblyGeneration: number;
+  readonly testCaseCapability?: string;
   readonly deployment: Readonly<{
     serviceId: string;
     contractVersion: string;
@@ -257,6 +258,19 @@ export interface RuntimeBinaryDispatchOptions {
   connectionReceipt?: RuntimeDispatchConnectionReceipt;
 }
 
+export interface RuntimeSelfIngressTestCorrelation {
+  readonly parentRequestId: string;
+  readonly testCaseCapability: string;
+  /** Authority selected from the active ingress snapshot, never from HTTP input. */
+  readonly buildId: string;
+  readonly serviceProtocolIdentity: string;
+}
+
+export type RuntimePinnedTestDispatchOptions = Pick<
+  RuntimeBinaryDispatchOptions,
+  'signal' | 'cancelReason'
+>;
+
 export type RuntimeStreamRequestTerminal = (terminal: PendingTerminal) => void;
 
 export interface RuntimeBinaryStreamHandlers {
@@ -278,16 +292,38 @@ export interface ActorMethodSpawnSubmitResult {
   requestId: string;
 }
 
+export interface ActiveActorInvocationParent {
+  readonly originRuntimeId: string;
+  readonly originRuntimeConnection: WebSocket;
+  readonly testCaseCapability?: string;
+  /** Required and runtime-validated whenever testCaseCapability is present. */
+  readonly authority?: RuntimeSpawnParentAuthority;
+}
+
+export interface ActorMethodSpawnContext {
+  readonly originRuntimeId: string;
+  readonly originRuntimeConnection: WebSocket;
+  readonly testCaseCapability?: string;
+  /** Required and runtime-validated whenever testCaseCapability is present. */
+  readonly authority?: RuntimeSpawnParentAuthority;
+}
+
 export interface ActorMethodSpawnControl {
-  hasActiveActorInvocation(input: {
+  activeActorInvocationParent(input: {
     invocationId: string;
     ws: WebSocket;
     serviceId: string;
     serviceProtocolIdentity: string;
-  }): boolean;
+  }): ActiveActorInvocationParent | undefined;
+  activeTestCaseActorInvocationParent(input: {
+    invocationId: string;
+    testCaseCapability: string;
+    serviceId: string;
+  }): ActiveActorInvocationParent | undefined;
   submitSpawn(
     header: SpawnSubmitRequestFrameHeader,
-    payloadBytes: Uint8Array
+    payloadBytes: Uint8Array,
+    context: ActorMethodSpawnContext
   ): Promise<ActorMethodSpawnSubmitResult>;
 }
 
@@ -296,10 +332,12 @@ type SpawnSubmitParent =
       kind: 'request';
       request: RuntimeAssemblyRequestStartFrameWireHeader;
       authority: RuntimeSpawnParentAuthority;
+      originRuntimeConnection: WebSocket;
     }
   | {
       kind: 'actorMethod';
       authority: RuntimeSpawnParentAuthority;
+      parent: ActiveActorInvocationParent;
     };
 
 export type RuntimeSpawnSubmitResult =
@@ -332,6 +370,12 @@ export type RuntimeDispatchRegistry = Pick<
     ws: WebSocket,
     header: SpawnSubmitRequestFrameHeader
   ): RuntimeSpawnParentAuthority | undefined;
+  runtimeConnection?(
+    runtimeId: string
+  ): RuntimeDispatchRuntimeIdentity | undefined;
+  connectionForReplica?(runtimeId: string): WebSocket | undefined;
+  runtimeCapabilityIdentityForConnection?(ws: WebSocket): string | undefined;
+  replicaIdForConnection?(ws: WebSocket): string | undefined;
 };
 
 export interface RuntimeDispatcherPendingCounters {
@@ -375,6 +419,162 @@ export class RuntimeDispatcher {
     );
   }
 
+  activeTestCaseRequestParent(input: {
+    requestId: string;
+    testCaseCapability: string;
+    serviceId: string;
+    ws: WebSocket;
+  }): ActiveActorInvocationParent | undefined {
+    const pending = this.pending.get(input.requestId);
+    const authority = pending?.spawnAuthority;
+    if (
+      pending === undefined ||
+      pending.ws !== input.ws ||
+      !isRuntimeAssemblyRequestDispatchHeader(pending.request) ||
+      !('testCaseCapability' in pending.request) ||
+      pending.request.testCaseCapability !== input.testCaseCapability ||
+      pending.request.routing.deployment.serviceId !== input.serviceId ||
+      authority === undefined ||
+      authority.runtimeId !== pending.runtimeId ||
+      authority.testCaseCapability !== input.testCaseCapability ||
+      authority.deployment.serviceId !== input.serviceId ||
+      authority.deployment.serviceId !==
+        pending.request.routing.deployment.serviceId ||
+      !this.isExactOpenRuntimeConnection(
+        authority.runtimeId,
+        pending.ws
+      )
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      originRuntimeId: authority.runtimeId,
+      originRuntimeConnection: pending.ws,
+      testCaseCapability: input.testCaseCapability,
+      authority
+    });
+  }
+
+  activeTestCaseParent(input: {
+    parentRequestId: string;
+    testCaseCapability: string;
+    serviceId: string;
+    serviceProtocolIdentity: string;
+    ws: WebSocket;
+  }): ActiveActorInvocationParent | undefined {
+    const requestParent = this.activeTestCaseRequestParent({
+      requestId: input.parentRequestId,
+      testCaseCapability: input.testCaseCapability,
+      serviceId: input.serviceId,
+      ws: input.ws
+    });
+    const actorParent =
+      this.options.actorMethodSpawn?.activeActorInvocationParent({
+        invocationId: input.parentRequestId,
+        ws: input.ws,
+        serviceId: input.serviceId,
+        serviceProtocolIdentity: input.serviceProtocolIdentity
+      });
+    if ((requestParent === undefined) === (actorParent === undefined)) {
+      return undefined;
+    }
+    const parent = requestParent ?? actorParent;
+    const authority = parent?.authority;
+    if (
+      parent === undefined ||
+      authority === undefined ||
+      parent.originRuntimeConnection !== input.ws ||
+      parent.testCaseCapability !== input.testCaseCapability ||
+      authority.testCaseCapability !== input.testCaseCapability ||
+      authority.runtimeId !== parent.originRuntimeId ||
+      authority.deployment.serviceId !== input.serviceId ||
+      authority.serviceProtocolIdentity !== input.serviceProtocolIdentity ||
+      !this.isExactOpenRuntimeConnection(parent.originRuntimeId, input.ws)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      originRuntimeId: parent.originRuntimeId,
+      originRuntimeConnection: input.ws,
+      testCaseCapability: input.testCaseCapability,
+      authority
+    });
+  }
+
+  private resolveSelfIngressTestParent(
+    request: RuntimeAssemblyRequestStartFrameHeader,
+    correlation: RuntimeSelfIngressTestCorrelation
+  ): ActiveActorInvocationParent {
+    const serviceId = request.routing.deployment.serviceId;
+    if (
+      request.testEffectsEnabled !== true ||
+      request.testCaseCapability !== correlation.testCaseCapability ||
+      request.testCaseParentRequestId !== correlation.parentRequestId
+    ) {
+      throw selfIngressCapabilityRejected();
+    }
+
+    const requestPending = this.pending.get(correlation.parentRequestId);
+    const requestParent = requestPending === undefined
+      ? undefined
+      : this.activeTestCaseRequestParent({
+          requestId: correlation.parentRequestId,
+          testCaseCapability: correlation.testCaseCapability,
+          serviceId,
+          ws: requestPending.ws
+        });
+    const actorParent =
+      this.options.actorMethodSpawn?.activeTestCaseActorInvocationParent({
+        invocationId: correlation.parentRequestId,
+        testCaseCapability: correlation.testCaseCapability,
+        serviceId
+      });
+    if ((requestParent === undefined) === (actorParent === undefined)) {
+      throw selfIngressCapabilityRejected();
+    }
+    const parent = requestParent ?? actorParent!;
+
+    const authority = parent?.authority;
+    // HTTP ingress bindings are only catalogued for the active snapshot. Do
+    // not splice a current gateway binding into an older root authority: an
+    // active old-generation parent may continue direct Actor/spawn work, but
+    // HTTP self-ingress fails closed once its exact routing generation drifts.
+    if (
+      parent === undefined ||
+      authority === undefined ||
+      parent.testCaseCapability !== correlation.testCaseCapability ||
+      authority.testCaseCapability !== correlation.testCaseCapability ||
+      parent.originRuntimeId !== authority.runtimeId ||
+      authority.buildId !== correlation.buildId ||
+      authority.serviceProtocolIdentity !== correlation.serviceProtocolIdentity ||
+      !sameRuntimeAssemblyAuthorityRouting(authority, request) ||
+      !this.isExactOpenRuntimeConnection(
+        authority.runtimeId,
+        parent.originRuntimeConnection
+      )
+    ) {
+      throw selfIngressCapabilityRejected();
+    }
+    return Object.freeze({
+      originRuntimeId: parent.originRuntimeId,
+      originRuntimeConnection: parent.originRuntimeConnection,
+      testCaseCapability: correlation.testCaseCapability,
+      authority: freezeRuntimeSpawnParentAuthority(authority)
+    });
+  }
+
+  private isExactOpenRuntimeConnection(
+    runtimeId: string,
+    ws: WebSocket
+  ): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    const forward = this.options.registry.runtimeConnection?.(runtimeId)?.ws ??
+      this.options.registry.connectionForReplica?.(runtimeId);
+    const reverse = this.options.registry.runtimeCapabilityIdentityForConnection?.(ws) ??
+      this.options.registry.replicaIdForConnection?.(ws);
+    return forward === ws && reverse === runtimeId;
+  }
+
   async handleSpawnSubmit(
     ws: WebSocket,
     submit: SpawnSubmitRequestFrameHeader,
@@ -388,9 +588,26 @@ export class RuntimeDispatcher {
             'actor method spawn routing is not configured'
           );
         }
+        const context: ActorMethodSpawnContext = parent.kind === 'request'
+          ? {
+              originRuntimeId: parent.authority.runtimeId,
+              originRuntimeConnection: parent.originRuntimeConnection,
+              authority: parent.authority,
+              ...(parent.authority.testCaseCapability === undefined
+                ? {}
+                : {
+                    testCaseCapability:
+                      parent.authority.testCaseCapability
+                  })
+            }
+          : {
+              ...parent.parent,
+              authority: parent.authority
+            };
         const result = await this.options.actorMethodSpawn.submitSpawn(
           submit,
-          payloadBytes
+          payloadBytes,
+          context
         );
         return {
           header: {
@@ -452,62 +669,156 @@ export class RuntimeDispatcher {
     submit: SpawnSubmitRequestFrameHeader
   ): SpawnSubmitParent {
     const pending = this.pending.get(submit.callerRequestId);
-    if (
+    const requestParent =
       pending !== undefined &&
       pending.ws === ws &&
       isRuntimeAssemblyRequestDispatchHeader(pending.request)
+        ? { pending, request: pending.request }
+        : undefined;
+    const actorParent = this.options.actorMethodSpawn?.activeActorInvocationParent({
+      invocationId: submit.callerRequestId,
+      ws,
+      serviceId: submit.serviceId,
+      serviceProtocolIdentity: submit.serviceProtocolIdentity
+    });
+    const requestResolution = requestParent === undefined
+      ? {}
+      : this.resolveSpawnParentCandidate(() =>
+          this.resolveSpawnRequestParent(requestParent, submit)
+        );
+    const actorResolution = actorParent === undefined
+      ? {}
+      : this.resolveSpawnParentCandidate(() =>
+          this.resolveSpawnActorParent(ws, submit, actorParent)
+        );
+    if (
+      requestResolution.parent !== undefined &&
+      actorResolution.parent !== undefined
     ) {
-      const authority = pending.spawnAuthority;
-      if (authority === undefined) {
-        throw new ServiceProtocolBoundaryError(
-          'spawn parent request is missing its immutable RuntimeAssembly authority'
-        );
-      }
-      validateSpawnSubmitAgainstAuthority(submit, authority);
-      if (
-        authority.assemblyIdentity !== pending.request.routing.assemblyIdentity ||
-        authority.assemblyGeneration !== pending.request.routing.assemblyGeneration ||
-        authority.deployment.serviceId !== pending.request.routing.deployment.serviceId ||
-        authority.deployment.contractVersion !==
-          pending.request.routing.deployment.contractVersion ||
-        authority.deployment.deploymentRevision !==
-          pending.request.routing.deployment.deploymentRevision ||
-        authority.deployment.deploymentArtifactIdentity !==
-          pending.request.routing.deployment.deploymentArtifactIdentity ||
-        pending.runtimeId !== authority.runtimeId
-      ) {
-        throw new ServiceProtocolBoundaryError(
-          'spawn parent request authority does not match its dispatch routing'
-        );
-      }
-      return {
-        kind: 'request',
-        request: pending.request as RuntimeAssemblyRequestStartFrameWireHeader,
-        authority
-      };
+      throw new ServiceProtocolBoundaryError(
+        'spawn callerRequestId is ambiguous across active request and actor invocation parents'
+      );
     }
-    const actorParent =
-      this.options.actorMethodSpawn !== undefined &&
-      this.options.actorMethodSpawn.hasActiveActorInvocation({
-        invocationId: submit.callerRequestId,
-        ws,
-        serviceId: submit.serviceId,
-        serviceProtocolIdentity: submit.serviceProtocolIdentity
-      });
-    if (actorParent) {
-      const authority =
-        this.options.registry.spawnSubmitParentAuthority?.(ws, submit);
-      if (authority === undefined) {
-        throw new ServiceProtocolBoundaryError(
-          'spawn submit actor parent authority is unavailable'
-        );
-      }
-      validateSpawnSubmitAgainstAuthority(submit, authority, false);
-      return { kind: 'actorMethod', authority };
+    if (requestResolution.parent !== undefined) {
+      return requestResolution.parent;
+    }
+    if (actorResolution.parent !== undefined) {
+      return actorResolution.parent;
+    }
+    if (requestResolution.rejection !== undefined) {
+      throw requestResolution.rejection;
+    }
+    if (actorResolution.rejection !== undefined) {
+      throw actorResolution.rejection;
     }
     throw new ServiceProtocolBoundaryError(
       'spawn callerRequestId must identify an active request or actor invocation on the same runtime connection'
     );
+  }
+
+  private resolveSpawnParentCandidate(
+    resolve: () => SpawnSubmitParent
+  ): { parent?: SpawnSubmitParent; rejection?: ServiceProtocolBoundaryError } {
+    try {
+      return { parent: resolve() };
+    } catch (error) {
+      if (error instanceof ServiceProtocolBoundaryError) {
+        return { rejection: error };
+      }
+      throw error;
+    }
+  }
+
+  private resolveSpawnRequestParent(
+    candidate: {
+      pending: RuntimeInvocation;
+      request: RuntimeAssemblyRequestStartFrameWireHeader;
+    },
+    submit: SpawnSubmitRequestFrameHeader
+  ): SpawnSubmitParent {
+    const authority = candidate.pending.spawnAuthority;
+    if (authority === undefined) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn parent request is missing its immutable RuntimeAssembly authority'
+      );
+    }
+    const requestCapability = 'testCaseCapability' in candidate.request
+      ? candidate.request.testCaseCapability
+      : undefined;
+    if (authority.testCaseCapability !== requestCapability) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn parent request capability does not match its immutable RuntimeAssembly authority'
+      );
+    }
+    validateSpawnSubmitAgainstAuthority(submit, authority);
+    if (requestCapability !== undefined) {
+      assertCapabilityActorTargetService(submit, authority);
+    }
+    const routing = candidate.request.routing;
+    if (
+      authority.assemblyIdentity !== routing.assemblyIdentity ||
+      authority.assemblyGeneration !== routing.assemblyGeneration ||
+      authority.deployment.serviceId !== routing.deployment.serviceId ||
+      authority.deployment.contractVersion !== routing.deployment.contractVersion ||
+      authority.deployment.deploymentRevision !==
+        routing.deployment.deploymentRevision ||
+      authority.deployment.deploymentArtifactIdentity !==
+        routing.deployment.deploymentArtifactIdentity ||
+      candidate.pending.runtimeId !== authority.runtimeId
+    ) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn parent request authority does not match its dispatch routing'
+      );
+    }
+    return {
+      kind: 'request',
+      request: candidate.request,
+      authority,
+      originRuntimeConnection: candidate.pending.ws
+    };
+  }
+
+  private resolveSpawnActorParent(
+    ws: WebSocket,
+    submit: SpawnSubmitRequestFrameHeader,
+    actorParent: ActiveActorInvocationParent
+  ): SpawnSubmitParent {
+    const capability = actorParent.testCaseCapability;
+    const authority = capability === undefined
+      ? this.options.registry.spawnSubmitParentAuthority?.(ws, submit)
+      : actorParent.authority;
+    if (authority === undefined) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn submit actor parent authority is unavailable'
+      );
+    }
+    if (
+      capability !== undefined &&
+      (authority.testCaseCapability !== capability ||
+        authority.runtimeId !== actorParent.originRuntimeId ||
+        authority.deployment.serviceId !== submit.serviceId)
+    ) {
+      throw new ServiceProtocolBoundaryError(
+        'test capability actor parent lineage does not match its root authority'
+      );
+    }
+    if (capability !== undefined) {
+      assertCapabilityActorTargetService(submit, authority);
+    }
+    validateSpawnSubmitAgainstAuthority(
+      submit,
+      authority,
+      capability === undefined
+    );
+    if (
+      authority.runtimeId !== actorParent.originRuntimeId ||
+      ws !== actorParent.originRuntimeConnection
+    ) {
+      throw new ServiceProtocolBoundaryError(
+        'spawn submit actor parent origin does not match its authenticated Runtime'
+      );
+    }
+    return { kind: 'actorMethod', authority, parent: actorParent };
   }
 
   private dispatchDerivedSpawn(
@@ -611,6 +922,28 @@ export class RuntimeDispatcher {
       timeoutMs,
       options,
       connection
+    );
+  }
+
+  dispatchPinnedTestBinary(
+    request: RuntimeBinaryDispatchInput<RuntimeAssemblyRequestStartFrameHeader>,
+    timeoutMs: number,
+    correlation: RuntimeSelfIngressTestCorrelation,
+    options: RuntimePinnedTestDispatchOptions = {}
+  ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
+    let resolved: ActiveActorInvocationParent;
+    try {
+      resolved = this.resolveSelfIngressTestParent(request.header, correlation);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const authority = resolved.authority!;
+    return this.dispatchBinaryWithConnection(
+      request,
+      timeoutMs,
+      options,
+      runtimeConnectionForAuthority(authority, resolved.originRuntimeConnection),
+      authority
     );
   }
 
@@ -849,7 +1182,8 @@ export class RuntimeDispatcher {
     request: RuntimeUnaryDispatchWireInput,
     timeoutMs: number,
     options: RuntimeBinaryDispatchOptions,
-    connection: RuntimeDispatchConnection | GatewayError | null | undefined
+    connection: RuntimeDispatchConnection | GatewayError | null | undefined,
+    trustedSpawnAuthority?: RuntimeSpawnParentAuthority
   ): Promise<RuntimeBinaryDispatchResponseWithReceipt> {
     if (connection instanceof GatewayError) {
       return Promise.reject(connection);
@@ -860,16 +1194,23 @@ export class RuntimeDispatcher {
     if (connection.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new ProviderUnavailableError('Pinned runtime disconnected'));
     }
+    if (
+      trustedSpawnAuthority !== undefined &&
+      !this.isExactOpenRuntimeConnection(
+        trustedSpawnAuthority.runtimeId,
+        connection.ws
+      )
+    ) {
+      return Promise.reject(selfIngressCapabilityRejected());
+    }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
     let spawnAuthority: RuntimeSpawnParentAuthority | undefined;
     let timerMs: number;
     try {
       this.assertRequestIdAvailable(dispatchHeader.requestId);
       this.assertConnectionAdmission(connection.ws);
-      spawnAuthority = captureRuntimeSpawnParentAuthority(
-        dispatchHeader,
-        connection
-      );
+      spawnAuthority = trustedSpawnAuthority ??
+        captureRuntimeSpawnParentAuthority(dispatchHeader, connection);
       timerMs = runtimeDispatchTimerMs(dispatchHeader, timeoutMs);
     } catch (error) {
       return Promise.reject(error);
@@ -878,6 +1219,16 @@ export class RuntimeDispatcher {
       options.connectionReceipt ?? this.issueConnectionReceipt(connection);
 
     return new Promise<RuntimeBinaryDispatchResponseWithReceipt>((resolve, reject) => {
+      if (
+        trustedSpawnAuthority !== undefined &&
+        !this.isExactOpenRuntimeConnection(
+          trustedSpawnAuthority.runtimeId,
+          connection.ws
+        )
+      ) {
+        reject(selfIngressCapabilityRejected());
+        return;
+      }
       const timeout = setTimeout(() => {
         const pending = this.pending.get(dispatchHeader.requestId);
         this.finishPending(dispatchHeader.requestId, pending, {
@@ -1043,11 +1394,61 @@ export class RuntimeDispatcher {
     options: RuntimeBinaryDispatchOptions = {}
   ): Promise<RuntimeBinaryDispatchResponse> {
     const connection = this.options.registry.pickDispatchConnection(request.header);
+    return this.dispatchBinaryStreamWithConnection(
+      request,
+      timeoutMs,
+      handlers,
+      options,
+      connection
+    );
+  }
+
+  dispatchPinnedTestBinaryStream(
+    request: RuntimeBinaryDispatchInput<RuntimeAssemblyRequestStartFrameHeader>,
+    timeoutMs: number,
+    handlers: RuntimeBinaryStreamHandlers,
+    options: RuntimePinnedTestDispatchOptions,
+    correlation: RuntimeSelfIngressTestCorrelation
+  ): Promise<RuntimeBinaryDispatchResponse> {
+    let resolved: ActiveActorInvocationParent;
+    try {
+      resolved = this.resolveSelfIngressTestParent(request.header, correlation);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const authority = resolved.authority!;
+    return this.dispatchBinaryStreamWithConnection(
+      request,
+      timeoutMs,
+      handlers,
+      options,
+      runtimeConnectionForAuthority(authority, resolved.originRuntimeConnection),
+      authority
+    );
+  }
+
+  private dispatchBinaryStreamWithConnection(
+    request: RuntimeBinaryDispatchInput<RuntimeUnaryDispatchFrameHeader>,
+    timeoutMs: number,
+    handlers: RuntimeBinaryStreamHandlers,
+    options: RuntimeBinaryDispatchOptions,
+    connection: RuntimeDispatchConnection | GatewayError | null | undefined,
+    trustedSpawnAuthority?: RuntimeSpawnParentAuthority
+  ): Promise<RuntimeBinaryDispatchResponse> {
     if (connection instanceof GatewayError) {
       return Promise.reject(connection);
     }
     if (!connection) {
       return Promise.reject(new ProviderUnavailableError());
+    }
+    if (
+      trustedSpawnAuthority !== undefined &&
+      !this.isExactOpenRuntimeConnection(
+        trustedSpawnAuthority.runtimeId,
+        connection.ws
+      )
+    ) {
+      return Promise.reject(selfIngressCapabilityRejected());
     }
 
     if (request.header.mode !== 'serverStream') {
@@ -1064,16 +1465,24 @@ export class RuntimeDispatcher {
     try {
       this.assertRequestIdAvailable(dispatchHeader.requestId);
       this.assertConnectionAdmission(connection.ws);
-      spawnAuthority = captureRuntimeSpawnParentAuthority(
-        dispatchHeader,
-        connection
-      );
+      spawnAuthority = trustedSpawnAuthority ??
+        captureRuntimeSpawnParentAuthority(dispatchHeader, connection);
       timerMs = runtimeDispatchTimerMs(dispatchHeader, timeoutMs);
     } catch (error) {
       return Promise.reject(error);
     }
 
     return new Promise<RuntimeBinaryDispatchResponse>((resolve, reject) => {
+      if (
+        trustedSpawnAuthority !== undefined &&
+        !this.isExactOpenRuntimeConnection(
+          trustedSpawnAuthority.runtimeId,
+          connection.ws
+        )
+      ) {
+        reject(selfIngressCapabilityRejected());
+        return;
+      }
       const timeout = setTimeout(() => {
         const pending = this.pending.get(dispatchHeader.requestId);
         this.finishPending(dispatchHeader.requestId, pending, {
@@ -1973,14 +2382,78 @@ function captureRuntimeSpawnParentAuthority(
       'RuntimeAssembly dispatch selection authority does not match request routing'
     );
   }
+  const testCaseCapability =
+    'testCaseCapability' in request
+      ? request.testCaseCapability
+      : undefined;
   return Object.freeze({
     runtimeId: connection.runtimeId,
     buildId: selected.buildId,
     serviceProtocolIdentity: selected.serviceProtocolIdentity,
     assemblyIdentity: selected.assemblyIdentity,
     assemblyGeneration: selected.assemblyGeneration,
+    ...(testCaseCapability === undefined
+      ? {}
+      : { testCaseCapability }),
     deployment: Object.freeze({ ...selected.deployment })
   });
+}
+
+function runtimeConnectionForAuthority(
+  authority: RuntimeSpawnParentAuthority,
+  ws: WebSocket
+): RuntimeDispatchConnection {
+  return {
+    runtimeId: authority.runtimeId,
+    ws,
+    runtimeAssemblyAuthority: {
+      assemblyIdentity: authority.assemblyIdentity,
+      assemblyGeneration: authority.assemblyGeneration,
+      deployment: { ...authority.deployment },
+      buildId: authority.buildId,
+      serviceProtocolIdentity: authority.serviceProtocolIdentity
+    }
+  };
+}
+
+function freezeRuntimeSpawnParentAuthority(
+  authority: RuntimeSpawnParentAuthority
+): RuntimeSpawnParentAuthority {
+  return Object.freeze({
+    runtimeId: authority.runtimeId,
+    buildId: authority.buildId,
+    serviceProtocolIdentity: authority.serviceProtocolIdentity,
+    assemblyIdentity: authority.assemblyIdentity,
+    assemblyGeneration: authority.assemblyGeneration,
+    ...(authority.testCaseCapability === undefined
+      ? {}
+      : { testCaseCapability: authority.testCaseCapability }),
+    deployment: Object.freeze({ ...authority.deployment })
+  });
+}
+
+function sameRuntimeAssemblyAuthorityRouting(
+  authority: RuntimeSpawnParentAuthority,
+  request: RuntimeAssemblyRequestStartFrameHeader
+): boolean {
+  const deployment = request.routing.deployment;
+  return (
+    request.routing.assemblyIdentity === authority.assemblyIdentity &&
+    request.routing.assemblyGeneration === authority.assemblyGeneration &&
+    deployment.serviceId === authority.deployment.serviceId &&
+    deployment.contractVersion === authority.deployment.contractVersion &&
+    deployment.deploymentRevision === authority.deployment.deploymentRevision &&
+    deployment.deploymentArtifactIdentity ===
+      authority.deployment.deploymentArtifactIdentity
+  );
+}
+
+function selfIngressCapabilityRejected(): GatewayError {
+  return new GatewayError(
+    403,
+    'TestCaseCapabilityRejected',
+    'test capability self-ingress parent is not active on its exact Runtime connection'
+  );
 }
 
 function derivedSpawnDeadline(
@@ -2089,6 +2562,20 @@ function validateSpawnSubmitAgainstAuthority(
   ) {
     throw new ServiceProtocolBoundaryError(
       'spawn submit owner facts must exactly match its authenticated parent'
+    );
+  }
+}
+
+function assertCapabilityActorTargetService(
+  submit: SpawnSubmitRequestFrameHeader,
+  authority: RuntimeSpawnParentAuthority
+): void {
+  if (
+    submit.targetKind === 'actorMethod' &&
+    submit.actorMethod?.actorRef.serviceId !== authority.deployment.serviceId
+  ) {
+    throw new ServiceProtocolBoundaryError(
+      'test capability actor spawn target must remain in its root service'
     );
   }
 }
