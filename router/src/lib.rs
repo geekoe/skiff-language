@@ -3,10 +3,15 @@
 
 pub mod activation;
 pub mod artifact;
+pub mod bootstrap;
 pub mod config;
 pub mod listener;
 pub mod session;
 
+pub use bootstrap::{
+    ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
+    BootstrapStrictLoader, CommittedActivationBootstrapReader, RoutingEpoch,
+};
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
     FileBackendOssConfig, RouterConfig, RouterConfigError, RouterRewriteRule, ServiceDbConfig,
