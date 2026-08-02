@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -145,7 +146,7 @@ async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit
     let result = interpreter
         .call_program_executable(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &Env::new(),
             &route_addr,
             &route_addr,
@@ -163,17 +164,21 @@ async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit
 
     let stream_runtime = interpreter.stream_runtime.clone();
     let consumed_stream_value = stream_value.clone();
+    let mut access = HeapAccess::Exclusive(&mut heap);
+    let access_ref = &mut access;
     let values = interpreter
         .drive_deferred_stream_producer(
             execution_context(&interpreter),
             &route_addr,
             &stream_value,
             |supervision| {
-                consume_deferred_stream(
-                    stream_runtime.clone(),
-                    consumed_stream_value.clone(),
-                    supervision,
-                )
+                let stream_runtime = stream_runtime.clone();
+                let consumed = consumed_stream_value.clone();
+                async move {
+                    let result =
+                        consume_deferred_stream(stream_runtime, consumed, supervision).await;
+                    (result, &mut *access_ref)
+                }
             },
         )
         .await
@@ -226,9 +231,13 @@ async fn prepared_stream_outer_cancellation_removes_registry_before_return() {
         stream_runtime,
         stream_value,
     } = prepared_fixture().await;
+    let mut scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let access_ref = &mut access;
     let result = interpreter
-        .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async {
-            Err::<RuntimeValue, _>(RuntimeError::Cancelled)
+        .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async move {
+            let result = Err::<RuntimeValue, _>(RuntimeError::Cancelled);
+            (result, &mut *access_ref)
         })
         .await;
 
@@ -250,7 +259,10 @@ async fn prepared_stream_outer_drop_cleans_registry_without_late_result() {
         context,
         &caller_addr,
         prepared,
-        std::future::pending::<crate::error::Result<RuntimeValue>>(),
+        std::future::pending::<(
+            crate::error::Result<RuntimeValue>,
+            &'static mut HeapAccess<'static>,
+        )>(),
     ));
 
     tokio::select! {
@@ -270,6 +282,9 @@ async fn deferred_stream_drive_natural_end_completes_without_leak() {
     let fixture = deferred_fixture(emit_then_end_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
+    let mut scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let access_ref = &mut access;
     let values = fixture
         .interpreter
         .drive_deferred_stream_producer(
@@ -277,7 +292,13 @@ async fn deferred_stream_drive_natural_end_completes_without_leak() {
             &fixture.caller_addr,
             &fixture.stream_value,
             |supervision| {
-                consume_deferred_stream(stream_runtime.clone(), stream_value.clone(), supervision)
+                let stream_runtime = stream_runtime.clone();
+                let consumed = stream_value.clone();
+                async move {
+                    let result =
+                        consume_deferred_stream(stream_runtime, consumed, supervision).await;
+                    (result, &mut *access_ref)
+                }
             },
         )
         .await
@@ -293,13 +314,19 @@ async fn deferred_stream_drive_cancellation_closes_without_leak() {
     let fixture = deferred_fixture(emit_then_end_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
+    let mut scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let access_ref = &mut access;
     let result = fixture
         .interpreter
         .drive_deferred_stream_producer(
             fixture.context,
             &fixture.caller_addr,
             &fixture.stream_value,
-            |_| async { Err::<(), _>(RuntimeError::Cancelled) },
+            |_| async move {
+                let result = Err::<(), _>(RuntimeError::Cancelled);
+                (result, &mut *access_ref)
+            },
         )
         .await;
 
@@ -313,6 +340,9 @@ async fn deferred_stream_drive_preserves_consumed_producer_error() {
     let fixture = deferred_fixture(emit_then_fail_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
+    let mut scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let access_ref = &mut access;
     let error = fixture
         .interpreter
         .drive_deferred_stream_producer(
@@ -320,7 +350,13 @@ async fn deferred_stream_drive_preserves_consumed_producer_error() {
             &fixture.caller_addr,
             &fixture.stream_value,
             |supervision| {
-                consume_deferred_stream(stream_runtime.clone(), stream_value.clone(), supervision)
+                let stream_runtime = stream_runtime.clone();
+                let consumed = stream_value.clone();
+                async move {
+                    let result =
+                        consume_deferred_stream(stream_runtime, consumed, supervision).await;
+                    (result, &mut *access_ref)
+                }
             },
         )
         .await
@@ -371,7 +407,7 @@ async fn legacy_from_values_preserves_self_argument_alias_without_caller_storage
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &env,
             &caller_addr,
             &producer_addr,
@@ -450,7 +486,7 @@ async fn legacy_ordinary_inherited_self_and_arg_share_one_cloned_graph() {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &caller_addr,
             &file,
@@ -499,7 +535,7 @@ async fn from_values_clone_limit_failure_leaves_no_deferred_registry_entry() {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &Env::new(),
             &caller_addr,
             &producer_addr,
@@ -564,7 +600,7 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
                 RuntimeExecutionProjection::for_context(&interpreter, &context)
                     .expect("legacy projection"),
                 context.clone(),
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &caller_addr,
                 &file,
@@ -575,14 +611,17 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             .expect("deferred producer");
         let stream = runtime_to_wire(&stream, &heap).expect("stream wire value");
         let consumed = stream.clone();
+        let mut access = HeapAccess::Exclusive(&mut heap);
+        let access_ref = &mut access;
         let poll = interpreter
             .drive_deferred_stream_producer(context, &caller_addr, &stream, |_| {
                 let stream_runtime = stream_runtime.clone();
                 async move {
-                    stream_runtime
+                    let result = stream_runtime
                         .next(&consumed)
                         .await
-                        .map_err(RuntimeError::from)
+                        .map_err(RuntimeError::from);
+                    (result, &mut *access_ref)
                 }
             })
             .await
@@ -595,7 +634,7 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
                 RuntimeExecutionProjection::for_context(&interpreter, &context)
                     .expect("legacy projection"),
                 context.clone(),
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &caller_addr,
                 &file,
@@ -605,12 +644,15 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             .await
             .expect("inline producer");
         let stream = prepared.stream_value().clone();
+        let mut access = HeapAccess::Exclusive(&mut heap);
+        let access_ref = &mut access;
         interpreter
-            .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async {
-                stream_runtime
+            .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async move {
+                let result = stream_runtime
                     .next(&stream)
                     .await
-                    .map_err(RuntimeError::from)
+                    .map_err(RuntimeError::from);
+                (result, &mut *access_ref)
             })
             .await
             .expect("inline first item")
@@ -735,7 +777,7 @@ async fn execute_program_at_depth(
     interpreter
         .call_program_executable(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &Env::new(),
             &route_addr,
             &route_addr,
@@ -859,7 +901,7 @@ async fn prepared_fixture_with(producer: LinkedExecutable) -> PreparedFixture {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy execution projection"),
             context.clone(),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &caller_addr,
             &file,
@@ -926,7 +968,7 @@ async fn deferred_fixture(producer_executable: LinkedExecutable) -> DeferredFixt
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy execution projection"),
             context.clone(),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &caller_addr,
             &file,

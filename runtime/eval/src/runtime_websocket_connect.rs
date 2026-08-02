@@ -17,6 +17,7 @@ use skiff_runtime_model::{
 
 use crate::{
     error::{Result, RuntimeError},
+    heap_access::HeapAccess,
     program_execution::ProgramExecutionContext,
     runtime_ops::{runtime_from_wire_required_plan, runtime_to_wire_required_plan},
     Interpreter, RuntimeAssemblyEvalTarget,
@@ -82,8 +83,9 @@ impl Interpreter {
         let mut heap = context.request_heap();
         let handler = target.handler();
         let args = handler_args(request, target, handler, &mut heap)?;
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = self
-            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
             .await?;
         let return_plan = callable_return_plan(target, handler)?;
         let wire = runtime_to_wire_required_plan(

@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::sync::Arc;
 
 use skiff_runtime_linked_program::{
@@ -106,7 +107,7 @@ impl LinkedCheckpointFixture {
             .interpreter
             .exec_program_executable(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &self.addr,
                 &self.file,

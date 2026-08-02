@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -107,11 +108,12 @@ async fn prepared_provider_unary_wait_does_not_borrow_caller_heap_or_env() {
         .expect("linked caller executable");
     let context = fixture.execution_context(&interpreter, receiver_target);
     let mut caller_heap = RequestHeap::default();
+    let mut caller_access = HeapAccess::Exclusive(&mut caller_heap);
     let mut caller_env = Env::new();
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut caller_heap,
+        &mut caller_access,
         &mut caller_env,
         &caller.addr,
         caller.file.as_ref(),
@@ -163,10 +165,11 @@ async fn provider_user_error_stays_owned_until_finalize_and_exports_once() {
         .alloc_array(vec![RuntimeValue::String("caller".to_string())])
         .expect("caller sentinel");
     let mut caller_env = Env::new();
+    let mut caller_access = HeapAccess::Exclusive(&mut caller_heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut caller_heap,
+        &mut caller_access,
         &mut caller_env,
         &caller.addr,
         caller.file.as_ref(),
@@ -228,11 +231,12 @@ fn provider_normal_and_fixed_outcomes_are_deferred_to_finalize() {
         .expect("linked caller executable");
     let normal_context = normal_fixture.execution_context(&normal_interpreter, normal_receiver);
     let mut normal_heap = RequestHeap::default();
+    let mut normal_access = HeapAccess::Exclusive(&mut normal_heap);
     let mut normal_env = Env::new();
     let mut normal_eval = EvalContext::new(
         &normal_interpreter,
         normal_context,
-        &mut normal_heap,
+        &mut normal_access,
         &mut normal_env,
         &normal_caller.addr,
         normal_caller.file.as_ref(),
@@ -266,11 +270,12 @@ fn provider_normal_and_fixed_outcomes_are_deferred_to_finalize() {
         .expect("linked caller executable");
     let fixed_context = fixed_fixture.execution_context(&fixed_interpreter, fixed_receiver);
     let mut fixed_heap = RequestHeap::default();
+    let mut fixed_access = HeapAccess::Exclusive(&mut fixed_heap);
     let mut fixed_env = Env::new();
     let mut fixed_eval = EvalContext::new(
         &fixed_interpreter,
         fixed_context,
-        &mut fixed_heap,
+        &mut fixed_access,
         &mut fixed_env,
         &fixed_caller.addr,
         fixed_caller.file.as_ref(),
@@ -314,11 +319,12 @@ fn dropping_unpolled_provider_wait_cancels_the_provider_request() {
         .expect("linked caller executable");
     let context = fixture.execution_context(&interpreter, receiver_target);
     let mut caller_heap = RequestHeap::default();
+    let mut caller_access = HeapAccess::Exclusive(&mut caller_heap);
     let mut caller_env = Env::new();
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut caller_heap,
+        &mut caller_access,
         &mut caller_env,
         &caller.addr,
         caller.file.as_ref(),

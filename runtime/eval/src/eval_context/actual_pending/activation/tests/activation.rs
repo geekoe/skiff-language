@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     sync::Arc,
     task::{Poll, Wake, Waker},
@@ -1031,10 +1032,11 @@ async fn f445h_e4r_stream_activation_unary_ready_keeps_actor_segment() {
     let context = fixture
         .execution_context(&interpreter, fixture.caller_eval_target())
         .with_actor_execution_frame(frame.clone());
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1095,10 +1097,11 @@ async fn f445h_e4r_stream_activation_public_instance_receiver_executes_after_syn
     let mut env = Env::new();
     let context = server_stream_fixture::execution_context(&interpreter, fixture.target)
         .with_actor_execution_frame(frame.clone());
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1215,10 +1218,11 @@ async fn inline_service_effect_stream_uses_the_current_context_runtime() {
     );
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1278,10 +1282,11 @@ async fn f445h_e4r_stream_activation_unary_pending_releases_then_reacquires_befo
     let context = fixture
         .execution_context(&interpreter, caller_target)
         .with_actor_execution_frame(frame.clone());
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),
@@ -1329,10 +1334,11 @@ async fn f445h_e4r_stream_activation_unary_actual_evaluator_imports_provider_fai
     let mut heap = RequestHeap::default();
     let mut env = Env::new();
     let context = fixture.execution_context(&interpreter, fixture.caller_eval_target());
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),

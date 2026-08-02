@@ -58,9 +58,10 @@ mod tests {
         let mut heap = RequestHeap::default();
         let mut env = Env::new();
         let stream_value = stream_value("f445h-e4r-combined-pending-stream");
+        let mut access = skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap);
         let mut execution = Box::pin(interpreter.exec_program_stream_for_in(
             context,
-            &mut heap,
+            &mut access,
             &mut env,
             &addr,
             &file,

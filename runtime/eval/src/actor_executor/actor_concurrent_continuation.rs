@@ -25,6 +25,7 @@ use crate::{
         ActorInstanceStoreError,
     },
     error::RuntimeError,
+    heap_access::HeapAccess,
 };
 
 #[derive(Clone)]
@@ -339,10 +340,11 @@ impl ActorExecutionFrame {
     }
 
     /// Polls once before introducing a cut point. Buffered operations stay in
-    /// the current segment; only an observed `Pending` commits and releases it.
+    /// the current segment; only an observed `Pending` commits it, releases the
+    /// shared arena guard, and reacquires after wake (Exclusive no-ops).
     pub(crate) async fn await_if_pending<F>(
         &self,
-        heap: &mut RequestHeap,
+        access: &mut HeapAccess<'_>,
         execution: &crate::capabilities::ExecutionControl<'_>,
         future: F,
     ) -> Result<F::Output, RuntimeError>
@@ -353,9 +355,11 @@ impl ActorExecutionFrame {
         if let Some(output) = poll_once_without_yield(future.as_mut()).await {
             return Ok(output);
         }
-        self.suspend(heap)?;
+        self.suspend(access.heap_mut())?;
+        access.release();
         let output = future.await;
-        self.resume(heap, execution).await?;
+        access.reacquire().await;
+        self.resume(access.heap_mut(), execution).await?;
         Ok(output)
     }
 

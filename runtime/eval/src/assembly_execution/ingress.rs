@@ -23,6 +23,7 @@ use crate::{
     env::Env,
     error::{Result, RuntimeError},
     eval_context::EvalContext,
+    heap_access::HeapAccess,
     program_execution::ProgramExecutionContext,
     program_invocation::executable_request_payload_plan,
     program_ir::executable_has_explicit_self_binding,
@@ -63,10 +64,11 @@ pub async fn dispatch_ingress_via_in_process_boundary(
         },
     };
     let value = {
+        let mut access = HeapAccess::Exclusive(&mut *heap);
         let mut eval_context = EvalContext::new(
             interpreter,
             context,
-            heap,
+            &mut access,
             &mut env,
             &canonical_addr,
             resolved.file,

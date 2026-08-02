@@ -55,7 +55,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -110,7 +110,7 @@ async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fi
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -183,7 +183,7 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
         let result = interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut heap,
+                &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
                 &fixture.consumer_executable_addr(0),
                 Vec::new(),
             )
@@ -250,7 +250,7 @@ async fn typed_execution_service_stream_preserves_two_items_and_generic_substitu
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -280,7 +280,7 @@ async fn typed_execution_package_direct_stream_installs_exact_producer_context_f
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(1),
             Vec::new(),
         )
@@ -310,7 +310,7 @@ async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -375,7 +375,7 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
     let stream = cancelled_interpreter
         .execute_runtime_assembly_addr(
             cancelled_context,
-            &mut cancelled_heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut cancelled_heap),
             &cancelled_fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -402,7 +402,7 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
     let peer_result = cancelled_interpreter
         .execute_runtime_assembly_addr(
             peer_context,
-            &mut peer_heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut peer_heap),
             &peer_fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -443,7 +443,7 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
     let stream = interpreter
         .execute_runtime_assembly_addr(
             context.clone(),
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -538,7 +538,7 @@ async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -585,7 +585,7 @@ async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_brea
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -633,7 +633,7 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_mapping
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -680,7 +680,7 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_b
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )

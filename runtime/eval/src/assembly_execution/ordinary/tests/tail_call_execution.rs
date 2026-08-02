@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ExecutableAddr, FileAddr, LinkedCallTarget, LinkedExprIr, UnitAddr,
 };
@@ -76,7 +77,12 @@ impl CanonicalTailCallFixture {
             .with_program_call_depth_for_test(initial_depth);
         let mut heap = heap;
         let value = interpreter
-            .execute_runtime_assembly_addr(context, &mut heap, &self.entry_addr, args)
+            .execute_runtime_assembly_addr(
+                context,
+                &mut HeapAccess::Exclusive(&mut heap),
+                &self.entry_addr,
+                args,
+            )
             .await?;
         Ok((value, heap))
     }
@@ -338,7 +344,7 @@ async fn assembly_tail_call_package_direct_target_remains_excluded_and_depth_che
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )

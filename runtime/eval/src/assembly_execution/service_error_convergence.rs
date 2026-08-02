@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::sync::Arc;
 
 use skiff_artifact_model::{
@@ -53,10 +54,11 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
     start_restricted_service_diagnostic_probe_for_test(ordinary_generation);
     let ordinary_context = fixture.execution_context(&interpreter, ordinary_target);
     let mut ordinary_heap = RequestHeap::default();
+    let mut ordinary_access = HeapAccess::Exclusive(&mut ordinary_heap);
     let ordinary_result = interpreter
         .execute_runtime_assembly_addr(
             ordinary_context,
-            &mut ordinary_heap,
+            &mut ordinary_access,
             fixture.caller_addr(),
             Vec::new(),
         )
@@ -114,11 +116,12 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
     let remote_operation_id = async_target.descriptor().operation_id.as_str().to_string();
     let context = fixture.execution_context(&interpreter, caller_target);
     let mut async_heap = RequestHeap::default();
+    let mut async_access = HeapAccess::Exclusive(&mut async_heap);
     let mut env = Env::new();
     let mut eval_context = EvalContext::new(
         &interpreter,
         context,
-        &mut async_heap,
+        &mut async_access,
         &mut env,
         &caller.addr,
         caller.file.as_ref(),

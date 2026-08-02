@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -14,9 +15,12 @@ use skiff_runtime_capability_context::{
     ExecutionDeadlineSource, ExecutionScope, ExecutionScopeTerminal, StreamCancelSignalApi,
     StreamPoll, StreamRuntime,
 };
-use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr};
+use skiff_runtime_linked_program::{
+    ExecutableKind, LinkedCallTarget, LinkedExecutable, LinkedExprIr, SlotIr, SlotLayoutIr,
+};
 use skiff_runtime_model::{
-    runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields},
+    request_heap::{RequestHeap, RequestHeapLimits},
+    runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
     type_plan::RuntimeTypeNode,
 };
 
@@ -38,6 +42,7 @@ use crate::{
     Interpreter,
 };
 
+use super::prepared_unary::detached_provider_invocation_env;
 use super::*;
 
 #[derive(Debug)]
@@ -109,6 +114,100 @@ fn assert_provider_stream_depth_borrow_sites() {
     assert!(
         !unary.contains("borrow_for_scheduled_task"),
         "the unary continuation must not reset active program-call depth"
+    );
+}
+
+fn assert_provider_stream_env_is_detach_only() {
+    let source = include_str!("../async_stream_cancel.rs");
+    let start = source
+        .split_once("fn start_provider_stream")
+        .expect("provider stream start remains present")
+        .1;
+    let boundary = start
+        .split_once("struct ProviderStreamTask {")
+        .expect("provider stream plan owner remains present")
+        .0;
+    assert!(
+        !boundary.contains("context.env.clone()"),
+        "provider-stream task must not clone the caller env verbatim"
+    );
+    assert!(
+        boundary.contains("provider_stream_producer_env("),
+        "provider-stream task must use the shared detach-only env construction"
+    );
+    assert!(
+        boundary.contains("detached_provider_invocation_env("),
+        "provider-stream task must reuse the unary detach-only env construction"
+    );
+}
+
+#[test]
+fn provider_stream_env_construction_is_detach_only() {
+    assert_provider_stream_env_is_detach_only();
+}
+
+/// A shared-arena handle placed in caller slots must never reach the
+/// provider-stream task env: the task env is built by the detach-only
+/// construction (owned capabilities plus type substitutions only), never by
+/// cloning the caller env verbatim.
+#[test]
+fn provider_stream_env_carries_no_shared_arena_handle() {
+    let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
+        RequestHeap::new(RequestHeapLimits::default()),
+    ));
+    let mut guard = arena
+        .clone()
+        .try_lock_owned()
+        .expect("fresh arena must be acquirable");
+    let handle = guard
+        .alloc_local_carrier_cell(RuntimeValue::Null.into())
+        .expect("allocate shared-arena handle");
+    drop(guard);
+
+    let caller_executable = LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "provider.env.boundary".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "shared".to_string(),
+                kind: "temp".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: Default::default(),
+    };
+    let mut caller = Env::for_program_executable(&caller_executable, None, 0)
+        .expect("caller env with a slot layout");
+    caller
+        .declare_binding("shared", Some(0), RuntimeValue::Heap(handle))
+        .expect("caller slot binding");
+    assert!(
+        caller.get_slot(0).is_ok(),
+        "caller fixture must hold the shared-arena handle"
+    );
+
+    let provider_env = detached_provider_invocation_env(&caller);
+
+    assert!(
+        provider_env.get_slot(0).is_err(),
+        "caller slot with a shared-arena handle must not reach the provider env"
+    );
+    assert!(
+        provider_env.self_value().is_none(),
+        "caller self (heap handles) must not reach the provider env"
+    );
+    assert!(
+        provider_env.stream_sink.is_none()
+            && provider_env.current_stream_item_type.is_none()
+            && provider_env.response_stream_sink.is_none()
+            && provider_env.type_substitutions.is_empty(),
+        "detach-only env must stay empty when the caller has no owned capabilities"
     );
 }
 

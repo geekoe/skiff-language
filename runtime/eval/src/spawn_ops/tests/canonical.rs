@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -245,7 +246,12 @@ async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
     let mut heap = RequestHeap::default();
 
     interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
         .await
         .expect("canonical spawn should submit from the admitted in-memory execution image");
 
@@ -299,7 +305,7 @@ async fn canonical_spawn_missing_metadata_fails_before_actor_capability() {
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &fixture.caller_addr,
             Vec::new(),
         )
@@ -325,7 +331,7 @@ async fn canonical_spawn_missing_execution_projection_fails_before_actor_capabil
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut RequestHeap::default(),
+            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
             &fixture.caller_addr,
             Vec::new(),
         )

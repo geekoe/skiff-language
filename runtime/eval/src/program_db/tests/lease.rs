@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     future::Future,
     pin::{pin, Pin},
@@ -181,9 +182,10 @@ async fn db_actor_lease_claim_pending_uses_one_actor_segment() {
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
     let value = {
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = pin!(fixture.linked.interpreter.eval_program_expr_ref(
             context,
-            &mut heap,
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -247,7 +249,7 @@ async fn db_actor_lease_claim_none_ready_has_no_binding_or_terminal_phases() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -289,7 +291,7 @@ async fn db_actor_lease_claim_success_ready_imports_binding_once() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -328,9 +330,10 @@ async fn db_actor_lease_claim_success_pending_imports_only_after_same_future_res
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
     assert_no_lease_binding(&env);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -402,9 +405,10 @@ async fn db_actor_lease_body_pending_cleanup_stops_renew_before_terminals() {
         claim.body = BODY_CREATE_BLOCK_LABEL.to_string();
         let mut env = lease_env(&fixture);
         assert_no_lease_binding(&env);
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -510,7 +514,7 @@ async fn db_actor_lease_illegal_flow_still_runs_lost_and_release() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -559,7 +563,7 @@ async fn tail_call_negative_db_lease() {
         .interpreter
         .eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -612,7 +616,7 @@ async fn tail_call_negative_db_lease() {
             fixture
                 .context(frame.clone())
                 .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -689,9 +693,10 @@ async fn db_actor_lease_lost_and_release_error_priority_matrix() {
             claim.body = ILLEGAL_FLOW_BLOCK_LABEL.to_string();
         }
         let mut env = lease_env(&fixture);
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut access,
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -769,9 +774,10 @@ async fn db_actor_lease_body_pending_drop_aborts_real_renew_future() {
     let mut claim = fixture.linked.claim.clone();
     claim.body = BODY_CREATE_BLOCK_LABEL.to_string();
     let mut env = lease_env(&fixture);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -840,9 +846,10 @@ async fn db_actor_lease_release_pending_drop_has_no_late_terminal() {
     let fixture = DbActorFixture::new(state.clone());
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_claim(
         fixture.context(frame.clone()),
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -914,7 +921,7 @@ async fn db_actor_lease_read_ready_none_and_store_error_matrix() {
             .interpreter
             .eval_program_db_lease_read(
                 fixture.context(frame.clone()),
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &fixture.linked.addr,
                 &fixture.linked.file,
@@ -968,9 +975,10 @@ async fn db_actor_lease_read_pending_resumes_same_future_and_materializes_after_
     let fixture = DbActorFixture::new(state.clone());
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_read(
         fixture.context(frame.clone()),
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -1029,7 +1037,7 @@ async fn db_actor_lease_read_limited_heap_rejects_object_and_array_decode() {
             .interpreter
             .eval_program_db_lease_read(
                 fixture.context(frame.clone()),
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &mut env,
                 &fixture.linked.addr,
                 &fixture.linked.file,
@@ -1065,9 +1073,10 @@ async fn db_actor_lease_read_pending_drop_does_not_rebuild_or_materialize() {
     let fixture = DbActorFixture::new(state.clone());
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let mut env = lease_env(&fixture);
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut evaluation = Box::pin(fixture.linked.interpreter.eval_program_db_lease_read(
         fixture.context(frame.clone()),
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,

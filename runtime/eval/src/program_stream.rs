@@ -29,6 +29,7 @@ use super::{
         TypedStreamSink,
     },
     env::{Env, Flow},
+    heap_access::HeapAccess,
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
     runtime_ops::{
@@ -57,7 +58,7 @@ impl Interpreter {
     pub async fn exec_program_stream_for_in(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -95,18 +96,21 @@ impl Interpreter {
                         }
                     }
                     return Err(materialize_consumed_stream_error(
-                        self, &context, error, heap,
+                        self,
+                        &context,
+                        error,
+                        heap.heap_mut(),
                     )?);
                 }
             };
-            let item_value = match materialize_runtime_stream_item(item, item_type.as_ref(), heap)?
-            {
-                Some(item) => item,
-                None => {
-                    cleanup.reached_end();
-                    return Ok(Flow::Continue);
-                }
-            };
+            let item_value =
+                match materialize_runtime_stream_item(item, item_type.as_ref(), heap.heap_mut())? {
+                    Some(item) => item,
+                    None => {
+                        cleanup.reached_end();
+                        return Ok(Flow::Continue);
+                    }
+                };
             let flow = self
                 .exec_program_for_in_body_carrier(
                     context.clone(),
@@ -139,7 +143,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -196,7 +200,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -211,7 +215,7 @@ impl Interpreter {
         let id = deferred_stream_id(&prepared)?;
         // Hand the consumer a stream value backed by the parked producer's
         // channel, expressed in the caller's heap.
-        let stream_value = match runtime_from_wire(&prepared.stream_value, heap) {
+        let stream_value = match runtime_from_wire(&prepared.stream_value, heap.heap_mut()) {
             Ok(value) => value,
             Err(error) => {
                 prepared.cancel();
@@ -231,7 +235,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &Env,
         caller_addr: &ExecutableAddr,
         producer_addr: &ExecutableAddr,
@@ -260,9 +264,12 @@ impl Interpreter {
         let mut roots = Vec::with_capacity(producer_args.len() + 1);
         roots.push(producer_self);
         roots.extend(producer_args);
-        let mut cloned_roots =
-            deep_clone_runtime_value_carriers_between_heaps(heap, &mut producer_heap, &roots)?
-                .into_iter();
+        let mut cloned_roots = deep_clone_runtime_value_carriers_between_heaps(
+            heap.heap_mut(),
+            &mut producer_heap,
+            &roots,
+        )?
+        .into_iter();
         let producer_self = cloned_roots
             .next()
             .expect("producer self root was inserted before cloning");
@@ -294,7 +301,7 @@ impl Interpreter {
         };
 
         let id = deferred_stream_id(&prepared)?;
-        let stream_value = match runtime_from_wire(&prepared.stream_value, heap) {
+        let stream_value = match runtime_from_wire(&prepared.stream_value, heap.heap_mut()) {
             Ok(value) => value,
             Err(error) => {
                 prepared.cancel();
@@ -309,7 +316,7 @@ impl Interpreter {
     /// runs it concurrently with `consumer`, mirroring how
     /// `exec_program_stream_producer_for_in` co-drives an inline producer. When
     /// no producer is parked for the stream this simply awaits the consumer.
-    pub async fn drive_deferred_stream_producer<T, Factory, Fut>(
+    pub async fn drive_deferred_stream_producer<'x, 'h, T, Factory, Fut>(
         &self,
         context: ProgramExecutionContext<'_>,
         addr: &ExecutableAddr,
@@ -318,12 +325,14 @@ impl Interpreter {
     ) -> Result<T>
     where
         Factory: FnOnce(Option<SupervisedStreamConsumptionChild>) -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
+        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess<'h>)>,
+        'h: 'x,
     {
         let Some(prepared) =
             stream_id(stream_value).and_then(|id| self.deferred_stream_producers.take(id))
         else {
-            return consumer(None).await;
+            let (result, _) = consumer(None).await;
+            return result;
         };
         // The producer now runs on its own spawned task rather than being
         // co-driven with the consumer, so the consumer future no longer compounds
@@ -364,7 +373,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -379,7 +388,7 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn exec_prepared_native_stream_producer_arg<T, Fut>(
+    pub async fn exec_prepared_native_stream_producer_arg<'x, 'h, T, Fut>(
         &self,
         context: ProgramExecutionContext<'_>,
         addr: &ExecutableAddr,
@@ -387,7 +396,8 @@ impl Interpreter {
         consumer: Fut,
     ) -> Result<T>
     where
-        Fut: std::future::Future<Output = Result<T>>,
+        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess<'h>)>,
+        'h: 'x,
     {
         let PreparedNativeStreamProducer {
             producer,
@@ -400,7 +410,7 @@ impl Interpreter {
         spawn_stream_producer(self, owned_context, addr.clone(), producer);
 
         tokio::pin!(consumer);
-        let consumer_result = consumer.await;
+        let (consumer_result, heap) = consumer.await;
         match consumer_result {
             Ok(value) => {
                 if consumption.status().stream_mismatch() {
@@ -434,6 +444,7 @@ impl Interpreter {
                 let drain_result = self
                     .drain_stream_producer_output(
                         context,
+                        &mut *heap,
                         &stream_runtime,
                         &stream_value,
                         &cancel_signal,
@@ -460,14 +471,16 @@ impl Interpreter {
     async fn drain_stream_producer_output(
         &self,
         context: ProgramExecutionContext<'_>,
+        heap: &mut HeapAccess<'_>,
         stream_runtime: &StreamRuntime,
         stream_value: &Value,
         cancel_signal: &StreamCancelSignal,
         consumption: &SupervisedStreamConsumptionLease,
     ) -> StreamRuntimeResult<()> {
         loop {
-            let item = current_scope::next(
+            let item = current_scope::next_with_actor(
                 &context,
+                heap,
                 stream_runtime,
                 stream_value,
                 std::slice::from_ref(cancel_signal),
@@ -497,7 +510,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'async_recursion>,
         context: ProgramExecutionContext<'async_recursion>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         _file: &LinkedFileUnit,
@@ -543,7 +556,7 @@ impl Interpreter {
             let arg_producer = self.resolve_stream_producer_call(
                 program.clone(),
                 addr,
-                heap,
+                heap.heap_mut(),
                 env,
                 _executable,
                 expr,
@@ -597,7 +610,7 @@ impl Interpreter {
             }
         }
         let cloned_roots = deep_clone_runtime_value_carriers_between_heaps(
-            heap,
+            heap.heap_mut(),
             &mut producer_heap,
             &caller_roots,
         )?;
@@ -1144,12 +1157,13 @@ async fn run_stream_producer_task(
         Some(site) => context.with_local_call_site(site),
         None => context,
     };
+    let mut producer_access = HeapAccess::Exclusive(&mut producer_heap);
     let result = match producer_self {
         StreamProducerSelf::Explicit(producer_self) => {
             interpreter
                 .call_program_executable_with_self_direct_carriers(
                     context,
-                    &mut producer_heap,
+                    &mut producer_access,
                     &producer_env,
                     caller_addr,
                     &producer_addr,
@@ -1169,7 +1183,7 @@ async fn run_stream_producer_task(
                     interpreter
                         .call_program_executable_carriers(
                             context,
-                            &mut producer_heap,
+                            &mut producer_access,
                             &producer_env,
                             caller_addr,
                             &producer_addr,

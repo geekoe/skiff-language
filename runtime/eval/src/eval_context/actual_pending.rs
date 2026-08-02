@@ -8,7 +8,9 @@ use skiff_runtime_native::dispatch::PreparedNativeCall;
 
 use super::*;
 use crate::{
-    actor_executor::ActorExecutionFrame, capabilities::ExecutionControl,
+    actor_executor::ActorExecutionFrame,
+    capabilities::ExecutionControl,
+    heap_access::{await_shared_with_release, HeapAccess},
     program_execution::ProgramExecutionContext,
 };
 
@@ -20,7 +22,7 @@ pub(super) mod tests;
 pub(super) async fn await_operation<F>(
     context: &ProgramExecutionContext<'_>,
     frame: Option<ActorExecutionFrame>,
-    heap: &mut RequestHeap,
+    heap: &mut HeapAccess<'_>,
     execution: &ExecutionControl<'_>,
     future: F,
 ) -> Result<F::Output>
@@ -30,14 +32,15 @@ where
     super::checkpoint::actual_pending_checkpoint(context)?;
     let output = match frame {
         Some(frame) => frame.await_if_pending(heap, execution, future).await?,
+        None if heap.is_shared() => await_shared_with_release(heap, future).await,
         None => future.await,
     };
     super::checkpoint::actual_pending_checkpoint(context)?;
     Ok(output)
 }
 
-impl EvalContext<'_> {
-    pub(super) async fn await_actual_pending<F>(&mut self, future: F) -> Result<F::Output>
+impl EvalContext<'_, '_> {
+    pub(crate) async fn await_actual_pending<F>(&mut self, future: F) -> Result<F::Output>
     where
         F: Future,
     {
@@ -57,7 +60,9 @@ impl EvalContext<'_> {
             })?
             .clone();
         let cancellation = self.execution.cancellation_token();
-        if let Some(item) = sink.project_runtime_item(value.value().clone(), self.heap)? {
+        if let Some(item) =
+            sink.project_runtime_item(value.value().clone(), self.heap.heap_mut())?
+        {
             self.await_actual_pending(sink.send_internal_with_cancellation(
                 item,
                 &[],
@@ -68,8 +73,11 @@ impl EvalContext<'_> {
         }
         if !super::super::assembly_execution::is_canonical_boundary_stream_sink(&sink) {
             let mut item_heap = self.context.request_heap();
-            let value =
-                deep_clone_runtime_value_carrier_between_heaps(self.heap, &mut item_heap, &value)?;
+            let value = deep_clone_runtime_value_carrier_between_heaps(
+                self.heap.heap_mut(),
+                &mut item_heap,
+                &value,
+            )?;
             let cell = item_heap.alloc_local_carrier_cell(value)?;
             let item = StreamInternalItem::new(RuntimeValue::Heap(cell), item_heap);
             self.await_actual_pending(sink.send_internal_with_cancellation(
@@ -84,7 +92,7 @@ impl EvalContext<'_> {
             &value,
             self.env.current_stream_item_type.as_ref(),
             "stream emit item",
-            self.heap,
+            self.heap.heap_mut(),
         )?;
         self.await_actual_pending(sink.send_with_cancellation(value, &[], [cancellation]))
             .await??;
@@ -114,7 +122,7 @@ impl EvalContext<'_> {
         let interpreter = self.interpreter.clone_for_stream_producer();
         let wait = Box::pin(prepared.wait(&interpreter));
         let completed = self.await_actual_pending(wait).await?;
-        completed.finalize(self.heap).map(Into::into)
+        completed.finalize(self.heap.heap_mut()).map(Into::into)
     }
 
     pub(super) async fn eval_actor_dispatch(
@@ -124,7 +132,7 @@ impl EvalContext<'_> {
     ) -> Result<RuntimeValueCarrier> {
         let prepared = crate::actor_dispatch::prepare_actor_method(self, plan, values)?;
         let completed = self.await_actual_pending(prepared.into_wait()).await?;
-        completed.finalize(self.heap)
+        completed.finalize(self.heap.heap_mut())
     }
 
     pub(super) async fn eval_native_prepared_call(
@@ -157,7 +165,7 @@ impl EvalContext<'_> {
                     .into_iter()
                     .map(RuntimeValueCarrier::into_value)
                     .collect(),
-                self.heap,
+                self.heap.heap_mut(),
             )
             .map_err(RuntimeError::from)?;
         let value = match prepared {
@@ -166,11 +174,11 @@ impl EvalContext<'_> {
                 let (wait, finalize) = operation.into_parts();
                 let outcome = self.await_actual_pending(wait).await??;
                 finalize
-                    .finalize(outcome, self.heap)
+                    .finalize(outcome, self.heap.heap_mut())
                     .map_err(RuntimeError::from)?
             }
         };
-        materialize_prepared_native_return(value, return_plan.as_ref(), self.heap)
+        materialize_prepared_native_return(value, return_plan.as_ref(), self.heap.heap_mut())
     }
 }
 

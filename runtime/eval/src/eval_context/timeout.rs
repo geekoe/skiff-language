@@ -6,7 +6,7 @@ use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 use super::*;
 use crate::program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind};
 
-impl EvalContext<'_> {
+impl EvalContext<'_, '_> {
     pub(super) async fn exec_timeout_statement(
         &mut self,
         duration_ms: u64,
@@ -109,7 +109,7 @@ impl EvalContext<'_> {
                 "owned timeout scope terminal is missing deadline details".to_string(),
             )
         })?;
-        let value = runtime_from_wire(&details, self.heap)?;
+        let value = runtime_from_wire(&details, self.heap.heap_mut())?;
         let value = RuntimeValueCarrier::identified(
             value,
             PlatformBuiltinErrorIdentity::Timeout.catch_identity(),

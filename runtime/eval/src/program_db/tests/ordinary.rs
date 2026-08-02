@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{pin::pin, task::Poll};
 
 use serde_json::json;
@@ -69,7 +70,7 @@ async fn db_actor_ordinary_query_ready_keeps_segment_and_does_not_touch_store() 
         .interpreter
         .eval_program_db_query_value(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -99,7 +100,7 @@ async fn db_actor_ordinary_raw_create_ready_once_keeps_segment() {
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -128,9 +129,10 @@ async fn db_actor_ordinary_raw_create_pending_releases_and_reacquires_segment() 
     assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -171,7 +173,7 @@ async fn db_actor_ordinary_raw_create_ready_error_is_not_rebuilt() {
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -196,9 +198,10 @@ async fn db_actor_ordinary_raw_create_pending_error_is_not_rebuilt() {
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -228,9 +231,10 @@ async fn db_actor_ordinary_raw_create_pending_drop_drops_only_same_future() {
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -259,7 +263,7 @@ async fn db_actor_ordinary_prepared_create_ready_wait_and_finalizer_once() {
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -289,9 +293,10 @@ async fn db_actor_ordinary_prepared_create_pending_finalizes_only_after_resume()
     assert!(matches!(first_poll(competing.as_mut()), Poll::Pending));
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -334,7 +339,7 @@ async fn db_actor_ordinary_prepared_wait_ready_error_is_not_replayed() {
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -363,9 +368,10 @@ async fn db_actor_ordinary_prepared_wait_pending_error_is_not_replayed() {
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,
@@ -402,7 +408,7 @@ async fn db_actor_ordinary_prepared_finalizer_error_is_not_replayed() {
         .interpreter
         .eval_program_db_operation(
             fixture.context(frame.clone()),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -428,9 +434,10 @@ async fn db_actor_ordinary_prepared_pending_drop_does_not_finalize_or_rebuild() 
     let (frame, mut heap) = fixture.actor.execution_frame().await;
     let context = fixture.context(frame.clone());
     let mut env = Env::new();
+    let mut access = HeapAccess::Exclusive(&mut heap);
     let mut eval = Box::pin(fixture.linked.interpreter.eval_program_db_operation(
         context,
-        &mut heap,
+        &mut access,
         &mut env,
         &fixture.linked.addr,
         &fixture.linked.file,

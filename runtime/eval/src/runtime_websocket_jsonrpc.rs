@@ -15,6 +15,7 @@ use skiff_runtime_model::{
 
 use crate::{
     error::{is_deadline_budget_terminal, RuntimeError},
+    heap_access::HeapAccess,
     program_execution::ProgramExecutionContext,
     runtime_ops::{runtime_from_wire_required_plan, runtime_to_wire_required_plan},
     Interpreter, RuntimeAssemblyEvalTarget,
@@ -173,8 +174,9 @@ impl Interpreter {
                 return RuntimeWebSocketJsonRpcExecutionTerminal::internal_error()
             }
         };
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = match self
-            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
             .await
         {
             Ok(value) => value,

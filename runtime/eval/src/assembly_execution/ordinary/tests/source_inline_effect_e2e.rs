@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -278,7 +279,12 @@ async fn execute_linked_effect(
         execution_context_with_trace(&interpreter, target, LINKED_SERVICE_EFFECT_TRACE_ID);
     let mut heap = RequestHeap::default();
     let result = interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &addr, Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &addr,
+            Vec::new(),
+        )
         .await;
     let diagnostics = take_restricted_service_diagnostics_for_test(generation);
     LinkedEffectExecution {
@@ -1197,7 +1203,12 @@ async fn execute_hydrated_test_service_case(
     let mut heap = RequestHeap::default();
 
     interpreter
-        .execute_runtime_assembly_addr(context, &mut heap, &caller_addr, Vec::new())
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &caller_addr,
+            Vec::new(),
+        )
         .await
         .expect("the first typed throw must be caught and the second response must be returned");
     interpreter

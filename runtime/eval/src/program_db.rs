@@ -28,6 +28,7 @@ use super::{
     Interpreter,
 };
 use crate::error::{Result, RuntimeError};
+use crate::heap_access::HeapAccess;
 use skiff_runtime_linked_program::{
     CallIr, DbLeaseClaimIr, DbLeaseReadIr, DbOperationIr, DbProjectionIr, DbQueryIr, DbTargetIr,
     DbTransactionIr, DbTransactionModeIr, ExecutableAddr, LinkedCallTarget, LinkedExecutable,
@@ -79,7 +80,7 @@ impl Interpreter {
     pub async fn eval_program_db_operation(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -105,7 +106,7 @@ impl Interpreter {
         &self,
         program_context: ProgramExecutionContext<'_>,
         db_context: &DbCapabilityContext,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -140,7 +141,7 @@ impl Interpreter {
         &self,
         db_context: &DbCapabilityContext,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -159,7 +160,7 @@ impl Interpreter {
 
         let lifecycle =
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
-        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap, env);
+        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap.heap_mut(), env);
         let result = self
             .eval_program_expr_ref(
                 program_context.clone(),
@@ -174,8 +175,12 @@ impl Interpreter {
         match result {
             Ok(value) => {
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error =
-                        rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)?;
+                    let error = rollback::rollback_transaction_live_roots(
+                        heap.heap_mut(),
+                        env,
+                        checkpoint,
+                        error,
+                    )?;
                     return Err(error);
                 }
                 Ok(value.into_value())
@@ -199,7 +204,7 @@ impl Interpreter {
     pub async fn eval_program_explicit_db_transaction(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -225,7 +230,7 @@ impl Interpreter {
         &self,
         program_context: ProgramExecutionContext<'_>,
         db_context: &DbCapabilityContext,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -235,7 +240,7 @@ impl Interpreter {
         let store = require_db_store(db_context, "db.transaction")?;
         let lifecycle =
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
-        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap, env);
+        let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap.heap_mut(), env);
         let flow = self
             .exec_program_block(
                 program_context.clone(),
@@ -285,8 +290,12 @@ impl Interpreter {
                     }
                 };
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error =
-                        rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)?;
+                    let error = rollback::rollback_transaction_live_roots(
+                        heap.heap_mut(),
+                        env,
+                        checkpoint,
+                        error,
+                    )?;
                     return Err(error);
                 }
                 Ok(result)
@@ -352,7 +361,7 @@ impl Interpreter {
     pub async fn eval_program_db_query_value(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -370,7 +379,7 @@ impl Interpreter {
     pub async fn eval_program_db_lease_claim(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -389,7 +398,7 @@ impl Interpreter {
                 claim.key,
             )
             .await?;
-        let key = DbKey::new(runtime_to_wire(&key, heap)?);
+        let key = DbKey::new(runtime_to_wire(&key, heap.heap_mut())?);
         let claim_store = store.clone();
         let type_name = super::db_eval::db_capability_target(&claim.target)
             .lookup_key()
@@ -411,7 +420,7 @@ impl Interpreter {
             lease::LeaseRenewOwner::start(renew_store, renew_hold, renew_period, request_cancelled);
 
         let binding = claim.binding_slot.map_or(Ok(()), |binding_slot| {
-            let value = runtime_from_wire(handle.value.as_value(), heap)?;
+            let value = runtime_from_wire(handle.value.as_value(), heap.heap_mut())?;
             env.declare_binding("db lease binding", Some(binding_slot as usize), value)
         });
         let flow = match binding {
@@ -470,7 +479,7 @@ impl Interpreter {
     pub async fn eval_program_db_lease_read(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess<'_>,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -500,7 +509,7 @@ impl Interpreter {
         })
         .await??
         {
-            Some(value) => runtime_from_wire(&value, heap),
+            Some(value) => runtime_from_wire(&value, heap.heap_mut()),
             None => Ok(RuntimeValue::Null),
         }
     }
@@ -509,7 +518,7 @@ impl Interpreter {
 async fn abort_transaction_and_rollback(
     lifecycle: transaction::TransactionLifecycle,
     program_context: &ProgramExecutionContext<'_>,
-    heap: &mut RequestHeap,
+    heap: &mut HeapAccess<'_>,
     env: &mut Env,
     checkpoint: rollback::TransactionRollbackCheckpoint,
     original_error: RuntimeError,
@@ -518,7 +527,7 @@ async fn abort_transaction_and_rollback(
         Ok(()) => original_error,
         Err(abort_error) => abort_error,
     };
-    rollback::rollback_transaction_live_roots(heap, env, checkpoint, error)
+    rollback::rollback_transaction_live_roots(heap.heap_mut(), env, checkpoint, error)
 }
 
 fn require_db_store(db_context: &DbCapabilityContext, target: &str) -> Result<DbCapabilityStore> {
@@ -529,7 +538,7 @@ async fn execute_db_command(
     store: &DbCapabilityStore,
     program: RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
-    heap: &mut RequestHeap,
+    heap: &mut HeapAccess<'_>,
     command: DbCommand,
 ) -> Result<RuntimeValue> {
     match command {
@@ -542,13 +551,13 @@ async fn execute_db_command(
                     command.query,
                     command.options,
                     command.projection,
-                    heap,
+                    heap.heap_mut(),
                     context,
                 )?;
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                let values = finalizer.finalize(heap)?;
-                return Ok(RuntimeValue::Heap(heap.alloc_array(values)?));
+                let values = finalizer.finalize(heap.heap_mut())?;
+                return Ok(RuntimeValue::Heap(heap.heap_mut().alloc_array(values)?));
             }
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
@@ -572,7 +581,7 @@ async fn execute_db_command(
                 ),
                 &command.result_plan,
                 "db find many result",
-                heap,
+                heap.heap_mut(),
             )
         }
         DbCommand::FindOne(command) => {
@@ -584,16 +593,25 @@ async fn execute_db_command(
                     db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
                 let operation = match command.selector {
                     DbOneCommandSelector::Key { key } => store.prepare_find_one_by_key_runtime(
-                        &type_name, key, projection, heap, context,
+                        &type_name,
+                        key,
+                        projection,
+                        heap.heap_mut(),
+                        context,
                     )?,
                     DbOneCommandSelector::Query { query, order } => store
                         .prepare_find_one_by_query_runtime(
-                            &type_name, query, order, projection, heap, context,
+                            &type_name,
+                            query,
+                            order,
+                            projection,
+                            heap.heap_mut(),
+                            context,
                         )?,
                 };
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                let found = finalizer.finalize(heap)?;
+                let found = finalizer.finalize(heap.heap_mut())?;
                 return match found {
                     Some(value) => Ok(value),
                     None if command.required => Err(RuntimeError::Decode(format!(
@@ -629,7 +647,7 @@ async fn execute_db_command(
                     value.as_value(),
                     &command.result_plan,
                     "db find one result",
-                    heap,
+                    heap.heap_mut(),
                 ),
                 None if command.required => Err(RuntimeError::Decode(format!(
                     "db require could not find {display_type_name}"
@@ -649,7 +667,7 @@ async fn execute_db_command(
                     result.as_value(),
                     &command.result_plan,
                     "db insert one result",
-                    heap,
+                    heap.heap_mut(),
                 )
             }
             DbCommandValue::Runtime {
@@ -661,12 +679,12 @@ async fn execute_db_command(
                 let operation = store.prepare_create_runtime(
                     command.target.lookup_key(),
                     &value,
-                    heap,
+                    heap.heap_mut(),
                     context,
                 )?;
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                Ok(finalizer.finalize(heap)?)
+                Ok(finalizer.finalize(heap.heap_mut())?)
             }
         },
         DbCommand::InsertMany(command) => {
@@ -682,7 +700,7 @@ async fn execute_db_command(
                 result.as_value(),
                 &command.result_plan,
                 "db insert many result",
-                heap,
+                heap.heap_mut(),
             )
         }
         DbCommand::UpdateOne(command) => match command.change {
@@ -700,7 +718,7 @@ async fn execute_db_command(
                             value.as_value(),
                             &command.result_plan,
                             "db update one result",
-                            heap,
+                            heap.heap_mut(),
                         )
                     })
                     .transpose()
@@ -716,12 +734,14 @@ async fn execute_db_command(
                     command.target.lookup_key(),
                     service_db_selector(command.selector),
                     change,
-                    heap,
+                    heap.heap_mut(),
                     context,
                 )?;
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                Ok(finalizer.finalize(heap)?.unwrap_or(RuntimeValue::Null))
+                Ok(finalizer
+                    .finalize(heap.heap_mut())?
+                    .unwrap_or(RuntimeValue::Null))
             }
         },
         DbCommand::UpdateMany(command) => {
@@ -737,7 +757,7 @@ async fn execute_db_command(
                 result.as_value(),
                 &command.result_plan,
                 "db update many result",
-                heap,
+                heap.heap_mut(),
             )
         }
         DbCommand::UpsertKey(command) => {
@@ -753,7 +773,7 @@ async fn execute_db_command(
                 result.as_value(),
                 &command.result_plan,
                 "db upsert result",
-                heap,
+                heap.heap_mut(),
             )
         }
         DbCommand::ReplaceOne(command) => match command.value {
@@ -771,7 +791,7 @@ async fn execute_db_command(
                             value.as_value(),
                             &command.result_plan,
                             "db replace one result",
-                            heap,
+                            heap.heap_mut(),
                         )
                     })
                     .transpose()
@@ -787,12 +807,14 @@ async fn execute_db_command(
                     command.target.lookup_key(),
                     service_db_selector(command.selector),
                     &value,
-                    heap,
+                    heap.heap_mut(),
                     context,
                 )?;
                 let finalizer =
                     wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                Ok(finalizer.finalize(heap)?.unwrap_or(RuntimeValue::Null))
+                Ok(finalizer
+                    .finalize(heap.heap_mut())?
+                    .unwrap_or(RuntimeValue::Null))
             }
         },
         DbCommand::DeleteOne(command) => {

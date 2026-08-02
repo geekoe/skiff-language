@@ -1,3 +1,5 @@
+use crate::heap_access::HeapAccess;
+
 mod actor;
 mod program;
 mod state;
@@ -144,7 +146,7 @@ async fn db_actor_fixture_checkpoint() {
         .interpreter
         .eval_program_db_operation(
             context.clone(),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,
@@ -160,7 +162,7 @@ async fn db_actor_fixture_checkpoint() {
         .interpreter
         .eval_program_db_operation(
             context,
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut Env::new(),
             &fixture.linked.addr,
             &fixture.linked.file,

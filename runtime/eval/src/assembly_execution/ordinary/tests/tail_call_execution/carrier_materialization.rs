@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use skiff_runtime_linked_program::TypeAddr;
 use skiff_runtime_model::{
     runtime_value::RuntimeValueCarrier,
@@ -30,7 +31,7 @@ impl CanonicalTailCallFixture {
         let value = interpreter
             .call_program_executable_carriers(
                 context,
-                &mut heap,
+                &mut HeapAccess::Exclusive(&mut heap),
                 &Env::new(),
                 &entry_addr,
                 &entry_addr,

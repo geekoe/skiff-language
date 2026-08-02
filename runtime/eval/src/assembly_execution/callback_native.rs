@@ -153,7 +153,7 @@ pub(crate) use prepared::{
 };
 
 pub(crate) async fn execute_interface_call(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     carrier: &CallbackCapabilityCarrier,
     method_abi_id: &str,

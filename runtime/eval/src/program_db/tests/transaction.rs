@@ -1,3 +1,4 @@
+use crate::heap_access::HeapAccess;
 use std::fmt;
 
 use serde_json::json;
@@ -87,7 +88,7 @@ async fn evaluate_transaction(
                 .eval_program_db_transaction(
                     &db_context,
                     context,
-                    heap,
+                    &mut HeapAccess::Exclusive(&mut *heap),
                     env,
                     &fixture.linked.addr,
                     &fixture.linked.file,
@@ -101,7 +102,7 @@ async fn evaluate_transaction(
             .interpreter
             .eval_program_explicit_db_transaction(
                 context,
-                heap,
+                &mut HeapAccess::Exclusive(&mut *heap),
                 env,
                 &fixture.linked.addr,
                 &fixture.linked.file,
@@ -224,9 +225,14 @@ async fn ordinary_transaction_ready_success_matrix() {
         let checkpoint = heap.checkpoint();
         let mut env = Env::new();
 
-        let result = evaluate_transaction(source, &fixture, &mut heap, &mut env)
-            .await
-            .expect("Ready transaction must succeed");
+        let result = evaluate_transaction(
+            source,
+            &fixture,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &mut env,
+        )
+        .await
+        .expect("Ready transaction must succeed");
 
         assert_success_value(source, result);
         assert_heap_retained_body(&heap, checkpoint, "Ready success");
@@ -250,7 +256,13 @@ async fn ordinary_transaction_body_error_aborts_once_and_rolls_back() {
         let checkpoint = heap.checkpoint();
         let mut env = Env::new();
 
-        let result = evaluate_transaction(source, &fixture, &mut heap, &mut env).await;
+        let result = evaluate_transaction(
+            source,
+            &fixture,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &mut env,
+        )
+        .await;
 
         assert_db_error(result, &error_message);
         assert_heap_rolled_back(&heap, checkpoint, "Body error");
@@ -277,7 +289,13 @@ async fn ordinary_transaction_commit_error_aborts_once_and_rolls_back() {
         let checkpoint = heap.checkpoint();
         let mut env = Env::new();
 
-        let result = evaluate_transaction(source, &fixture, &mut heap, &mut env).await;
+        let result = evaluate_transaction(
+            source,
+            &fixture,
+            &mut HeapAccess::Exclusive(&mut heap),
+            &mut env,
+        )
+        .await;
 
         assert_db_error(result, &error_message);
         assert_heap_rolled_back(&heap, checkpoint, "Commit error");
@@ -309,7 +327,7 @@ async fn ordinary_transaction_rollback_preserves_nested_nominal_throw_for_outer_
         .interpreter
         .eval_program_expr_ref(
             fixture.ordinary_context_with_trace("trace:transaction-rollback-catch"),
-            &mut heap,
+            &mut HeapAccess::Exclusive(&mut heap),
             &mut env,
             &fixture.linked.addr,
             &fixture.linked.file,

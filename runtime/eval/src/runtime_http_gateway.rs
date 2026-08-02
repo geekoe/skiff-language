@@ -21,6 +21,7 @@ use crate::{
         linked_http_response_stream_item_type,
     },
     error::{Result, RuntimeError},
+    heap_access::HeapAccess,
     program_execution::ProgramExecutionContext,
     runtime_ops::runtime_to_wire_required_plan,
     stream_callback::EvalStreamExecutionError,
@@ -79,8 +80,9 @@ impl Interpreter {
             .await?;
         let handler = target.handler();
         let args = handler_args(&request, target, handler, pre_context.as_ref(), &mut heap)?;
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = self
-            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
             .await?;
         match http.adapter_kind {
             GatewayAdapterKind::TypedJson => {
@@ -180,10 +182,11 @@ impl Interpreter {
         );
         let response_plan = RuntimeTypePlan::from_linked(return_type, &plan_context)?;
         let item_plan = RuntimeTypePlan::from_linked_nested_ref(item_type, &plan_context)?;
+        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = self
             .execute_runtime_assembly_addr_with_stream_defer(
                 context.clone(),
-                &mut heap,
+                &mut access,
                 handler.addr,
                 args,
             )
@@ -200,24 +203,28 @@ impl Interpreter {
             context.stream_runtime().request_scope_generation(),
         )?;
         let consumer_stream_value = stream_value.clone();
+        let mut access = HeapAccess::Exclusive(&mut heap);
+        let access_ref = &mut access;
         self.drive_deferred_stream_producer(
             context.clone(),
             handler.addr,
             &stream_value,
             |supervision| async move {
-                self.consume_in_process_binary_http_response_stream(
-                    &context,
-                    &consumer_stream_value,
-                    &item_plan,
-                    &[],
-                    supervision,
-                    &mut on_event,
-                )
-                .await
-                .map_err(|error| match error {
-                    EvalStreamExecutionError::Eval(error)
-                    | EvalStreamExecutionError::Callback(error) => error,
-                })
+                let result = self
+                    .consume_in_process_binary_http_response_stream(
+                        &context,
+                        &consumer_stream_value,
+                        &item_plan,
+                        &[],
+                        supervision,
+                        &mut on_event,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        EvalStreamExecutionError::Eval(error)
+                        | EvalStreamExecutionError::Callback(error) => error,
+                    });
+                (result, &mut *access_ref)
             },
         )
         .await
@@ -246,7 +253,12 @@ impl Interpreter {
             heap,
         )?;
         let result = self
-            .execute_runtime_assembly_addr(context.clone(), heap, guard.addr, vec![value])
+            .execute_runtime_assembly_addr(
+                context.clone(),
+                &mut HeapAccess::Exclusive(&mut *heap),
+                guard.addr,
+                vec![value],
+            )
             .await?;
         if result == RuntimeValue::Null {
             return Ok(None);
@@ -289,9 +301,14 @@ impl Interpreter {
             request.require_binary_http()?,
             heap,
         )?;
-        self.execute_runtime_assembly_addr(context.clone(), heap, pre.addr, vec![value])
-            .await
-            .map(Some)
+        self.execute_runtime_assembly_addr(
+            context.clone(),
+            &mut HeapAccess::Exclusive(&mut *heap),
+            pre.addr,
+            vec![value],
+        )
+        .await
+        .map(Some)
     }
 }
 

@@ -33,7 +33,7 @@ pub use ingress::{dispatch_ingress_via_in_process_boundary, InProcessBoundaryIng
 pub(crate) use projection::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
 
 pub(crate) async fn dispatch_package_direct(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: &LinkedPackageDirectCall,
     args: Vec<RuntimeValueCarrier>,
@@ -46,7 +46,7 @@ pub(crate) async fn dispatch_package_direct(
 }
 
 pub(crate) async fn dispatch_service_call(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     instruction: &ActivationRelativeServiceCall,
     args: Vec<RuntimeValue>,
@@ -70,7 +70,7 @@ pub(crate) async fn dispatch_service_call(
 /// Caller adaptation and target lookup happen before this symbol. All contract lane selection,
 /// provider activation switching and detached materialization remain behind this one owner.
 async fn dispatch_in_process_boundary(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -102,7 +102,7 @@ async fn dispatch_in_process_boundary(
                 ServiceErrorImportContext {
                     execution_image: caller_target.execution_image().as_ref(),
                     type_view: caller_target.execution_projection().type_view(),
-                    caller_heap: context.heap,
+                    caller_heap: context.heap.heap_mut(),
                     caller_package_build_id: caller_target
                         .activation_context()
                         .implementation_package_build_id(),
@@ -246,7 +246,7 @@ pub(crate) fn take_in_process_boundary_failure_import_records_for_test(
 pub(crate) use async_stream_cancel::provider_stream_tasks_active_for_test;
 
 pub(crate) async fn dispatch_callback_capability(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     carrier: &CallbackCapabilityCarrier,
     method_abi_id: &str,

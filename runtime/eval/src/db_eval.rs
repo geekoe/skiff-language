@@ -7,7 +7,6 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeRecoverableExpectedTypePlanLinkedExt};
 use skiff_runtime_model::{
     recoverable::{RuntimeRecoverableExpectedTypeNode, RuntimeRecoverableExpectedTypePlan},
-    request_heap::RequestHeap,
     runtime_value::{RuntimeObject, RuntimeObjectFields, RuntimeValue},
     type_plan::RuntimeTypePlan,
 };
@@ -28,6 +27,7 @@ use super::{
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
+    heap_access::HeapAccess,
 };
 use skiff_runtime_linked_program::{
     DbBodyIr, DbChangeIr, DbChangeOpIr, DbIndexDirectionIr, DbOpKindIr, DbOperationIr, DbOrderIr,
@@ -35,21 +35,21 @@ use skiff_runtime_linked_program::{
     ExecutableAddr, ExprRefIr, FieldPathIr, LinkedExecutable, LinkedFileUnit, LinkedTypeRef,
 };
 
-pub struct DbIrEvaluator<'a> {
+pub struct DbIrEvaluator<'a, 'h> {
     interpreter: &'a Interpreter,
     program_context: ProgramExecutionContext<'a>,
-    heap: &'a mut RequestHeap,
+    heap: &'a mut HeapAccess<'h>,
     env: &'a mut Env,
     addr: &'a ExecutableAddr,
     file: &'a LinkedFileUnit,
     executable: &'a LinkedExecutable,
 }
 
-impl<'a> DbIrEvaluator<'a> {
+impl<'a, 'h> DbIrEvaluator<'a, 'h> {
     pub fn new(
         interpreter: &'a Interpreter,
         program_context: ProgramExecutionContext<'a>,
-        heap: &'a mut RequestHeap,
+        heap: &'a mut HeapAccess<'h>,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -436,7 +436,7 @@ impl<'a> DbIrEvaluator<'a> {
             "after": after,
             "projection": projection,
         });
-        runtime_from_wire(&value, self.heap)
+        runtime_from_wire(&value, self.heap.heap_mut())
     }
 
     async fn eval_query(&mut self, query: Option<&DbQueryIr>) -> Result<DbQuery> {
@@ -510,7 +510,7 @@ impl<'a> DbIrEvaluator<'a> {
                 predicate,
             } => {
                 let condition = self.eval_program_expr_ref(*condition).await?;
-                if runtime_truthy(&condition, self.heap)? {
+                if runtime_truthy(&condition, self.heap.heap_mut())? {
                     self.eval_predicate(predicate).await
                 } else {
                     Ok(None)
@@ -562,7 +562,9 @@ impl<'a> DbIrEvaluator<'a> {
                     object.insert(field.clone(), self.eval_program_expr_ref(*value).await?);
                 }
                 Ok(RuntimeValue::Heap(
-                    self.heap.alloc_object(RuntimeObject::unshaped(object))?,
+                    self.heap
+                        .heap_mut()
+                        .alloc_object(RuntimeObject::unshaped(object))?,
                 ))
             }
             DbBodyIr::Values { value } => self.eval_program_expr_ref(*value).await,
@@ -748,7 +750,7 @@ impl<'a> DbIrEvaluator<'a> {
 
     async fn eval_expr_wire(&mut self, expr_ref: ExprRefIr) -> Result<Value> {
         let value = self.eval_program_expr_ref(expr_ref).await?;
-        runtime_to_wire(&value, self.heap)
+        runtime_to_wire(&value, self.heap.heap_mut())
     }
 
     async fn eval_program_expr_ref(&mut self, expr_ref: ExprRefIr) -> Result<RuntimeValue> {

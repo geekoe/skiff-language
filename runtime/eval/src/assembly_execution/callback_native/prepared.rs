@@ -17,6 +17,7 @@ use crate::{
     env::Env,
     error::{rematerialize_runtime_error_between_heaps, Result, RuntimeError},
     eval_context::EvalContext,
+    heap_access::HeapAccess,
     program_execution::OwnedProgramExecutionContext,
     Interpreter,
 };
@@ -96,10 +97,11 @@ impl PreparedCallbackInvocation {
                 "owned callback execution captured the caller Actor frame".to_string(),
             ))
         } else {
+            let mut owner_access = HeapAccess::Exclusive(&mut owner_heap);
             interpreter
                 .call_program_executable_with_self(
                     context,
-                    &mut owner_heap,
+                    &mut owner_access,
                     &owner_call_env,
                     &caller_addr,
                     &executable,
@@ -153,7 +155,7 @@ impl CompletedCallbackInvocation {
 }
 
 pub(crate) fn prepare_interface_call(
-    context: &mut EvalContext<'_>,
+    context: &mut EvalContext<'_, '_>,
     call: &CallIr,
     carrier: &CallbackCapabilityCarrier,
     method_abi_id: &str,

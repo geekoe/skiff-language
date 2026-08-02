@@ -20,6 +20,7 @@ pub mod error;
 pub mod eval_context;
 pub mod exceptions;
 pub mod flow_completion;
+pub mod heap_access;
 pub mod http_adapter;
 pub mod invocation;
 pub mod invocation_builder;
