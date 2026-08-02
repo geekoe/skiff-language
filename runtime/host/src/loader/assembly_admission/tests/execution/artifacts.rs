@@ -409,6 +409,7 @@ pub(super) struct ProjectedFixture {
     pub(super) provider_callable: PackageCallableId,
     pub(super) consumer_package: PackageArtifactRef,
     pub(super) consumer_file_ir_identity: String,
+    pub(super) callback_interface_id: String,
 }
 
 impl ProjectedFixture {
@@ -454,6 +455,7 @@ impl ProjectedFixture {
             provider_may_suspend,
             callback_owner_may_suspend,
             ImplementationRole::Provider(provider_behavior),
+            None,
         );
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -465,8 +467,13 @@ impl ProjectedFixture {
             &provider_schema_records,
             None,
             None,
+            None,
         );
         let provider_package_ref = package_ref(&provider_package);
+        let provider_abi = provider_package
+            .package_local_abi
+            .local_abi_identity
+            .to_string();
 
         let service_requirement_slot = 0;
         let service_call = ServiceCallRef {
@@ -489,8 +496,9 @@ impl ProjectedFixture {
             ImplementationRole::Consumer {
                 service_call: service_call.clone(),
                 package_call: ("providerPackage".to_string(), provider_callable.clone()),
-                behavior: consumer_behavior,
+                behavior: consumer_behavior.clone(),
             },
+            Some(&provider_abi),
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
@@ -505,8 +513,22 @@ impl ProjectedFixture {
             &consumer_schema_records,
             Some((provider_requirement, service_call)),
             Some(("providerPackage".to_string(), provider_package_ref.clone())),
+            Some(&provider_abi),
         );
         let consumer_package_ref = package_ref(&consumer_package);
+        let consumer_abi = consumer_package
+            .package_local_abi
+            .local_abi_identity
+            .to_string();
+        let callback_interface_id = if matches!(
+            consumer_behavior,
+            ConsumerBehavior::InvokeCallback | ConsumerBehavior::ConsumeCallbackStream { .. }
+        ) {
+            canonical_callback_interface_ref(&provider_abi).interface_abi_id
+        } else {
+            canonical_callback_interface_ref_for("example.phase-four-consumer", &consumer_abi)
+                .interface_abi_id
+        };
 
         let provider_deployment_artifact = project_service_deployment(
             deployment_input(
@@ -622,6 +644,7 @@ impl ProjectedFixture {
             provider_callable,
             consumer_package: consumer_package_ref,
             consumer_file_ir_identity,
+            callback_interface_id,
         }
     }
 }
@@ -709,9 +732,22 @@ fn implementation_file(
     may_suspend: bool,
     callback_owner_may_suspend: bool,
     role: ImplementationRole,
+    provider_abi: Option<&str>,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
-    let signature = executable_signature_from_operation(operation_contract, may_suspend);
+    let callback_ref = match (provider_abi, &role) {
+        (Some(provider_abi), ImplementationRole::Consumer { behavior, .. })
+            if matches!(
+                behavior,
+                ConsumerBehavior::InvokeCallback | ConsumerBehavior::ConsumeCallbackStream { .. }
+            ) =>
+        {
+            provider_callback_interface_ref(provider_abi)
+        }
+        _ => callback_interface_ref(),
+    };
+    let signature =
+        executable_signature_from_operation(operation_contract, may_suspend, &callback_ref);
     let mut entry = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: symbol.to_string(),
@@ -730,7 +766,7 @@ fn implementation_file(
     };
     match role {
         ImplementationRole::Provider(behavior) => {
-            configure_provider_entry(&mut file, &mut entry, module_path, behavior);
+            configure_provider_entry(&mut file, &mut entry, module_path, behavior, &callback_ref);
             file.executables.push(entry);
             install_provider_support(
                 &mut file,
@@ -738,6 +774,7 @@ fn implementation_file(
                 symbol,
                 behavior,
                 callback_owner_may_suspend,
+                &callback_ref,
             );
         }
         ImplementationRole::Consumer {
@@ -745,7 +782,7 @@ fn implementation_file(
             package_call,
             behavior,
         } => {
-            configure_consumer_entry(&mut file, &mut entry, service_call, behavior);
+            configure_consumer_entry(&mut file, &mut entry, service_call, behavior, &callback_ref);
             file.executables.push(entry);
             install_consumer_support(
                 &mut file,
@@ -754,6 +791,7 @@ fn implementation_file(
                 package_call,
                 behavior,
                 callback_owner_may_suspend,
+                &callback_ref,
             );
         }
     }
@@ -765,6 +803,7 @@ fn implementation_file(
 fn executable_signature_from_operation(
     operation: &BoundaryOperationContract,
     may_suspend: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) -> ExecutableSignatureIr {
     ExecutableSignatureIr {
         params: operation
@@ -774,10 +813,10 @@ fn executable_signature_from_operation(
             .map(|(index, parameter)| ParamIr {
                 name: parameter.name.clone(),
                 slot: u32::try_from(index).expect("fixture parameter count must fit u32"),
-                ty: file_type_from_contract(&parameter.ty),
+                ty: file_type_from_contract(&parameter.ty, callback_ref),
             })
             .collect(),
-        return_type: operation_return_file_type(operation),
+        return_type: operation_return_file_type(operation, callback_ref),
         self_type: None,
         may_suspend,
     }
@@ -800,12 +839,17 @@ fn parameter_slots(operation: &BoundaryOperationContract) -> SlotLayout {
     }
 }
 
-fn operation_return_file_type(operation: &BoundaryOperationContract) -> TypeRefIr {
+fn operation_return_file_type(
+    operation: &BoundaryOperationContract,
+    callback_ref: &InterfaceInstantiationRef,
+) -> TypeRefIr {
     match &operation.stream {
-        BoundaryStreamContract::Unary => file_type_from_contract(&operation.return_value.ty),
+        BoundaryStreamContract::Unary => {
+            file_type_from_contract(&operation.return_value.ty, callback_ref)
+        }
         BoundaryStreamContract::ServerStream { item_type, .. } => TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![file_type_from_contract(item_type)],
+            args: vec![file_type_from_contract(item_type, callback_ref)],
         },
         BoundaryStreamContract::Unsupported { .. } => {
             panic!("available fixture operation cannot contain an unsupported stream")
@@ -813,11 +857,17 @@ fn operation_return_file_type(operation: &BoundaryOperationContract) -> TypeRefI
     }
 }
 
-fn file_type_from_contract(ty: &ContractTypeRef) -> TypeRefIr {
+fn file_type_from_contract(
+    ty: &ContractTypeRef,
+    callback_ref: &InterfaceInstantiationRef,
+) -> TypeRefIr {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
             name: name.clone(),
-            args: arguments.iter().map(file_type_from_contract).collect(),
+            args: arguments
+                .iter()
+                .map(|ty| file_type_from_contract(ty, callback_ref))
+                .collect(),
         },
         ContractTypeRef::PackageSchema {
             package_id,
@@ -838,21 +888,24 @@ fn file_type_from_contract(ty: &ContractTypeRef) -> TypeRefIr {
                 "callback fixture requires an exact non-generic any-interface contract"
             );
             TypeRefIr::AnyInterface {
-                interface: callback_interface_ref(),
+                interface: callback_ref.clone(),
             }
         }
         ContractTypeRef::TypeParam { name } => TypeRefIr::TypeParam { name: name.clone() },
         ContractTypeRef::Record { fields } => TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), file_type_from_contract(ty)))
+                .map(|(name, ty)| (name.clone(), file_type_from_contract(ty, callback_ref)))
                 .collect(),
         },
         ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
-            items: variants.iter().map(file_type_from_contract).collect(),
+            items: variants
+                .iter()
+                .map(|ty| file_type_from_contract(ty, callback_ref))
+                .collect(),
         },
         ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(file_type_from_contract(inner)),
+            inner: Box::new(file_type_from_contract(inner, callback_ref)),
         },
         ContractTypeRef::Literal { value } => TypeRefIr::Literal {
             value: match value {
@@ -869,6 +922,7 @@ fn configure_provider_entry(
     entry: &mut ExecutableIr,
     module_path: &str,
     behavior: ProviderBehavior,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
     match behavior {
         ProviderBehavior::ReturnTrue => configure_return_true_entry(entry),
@@ -876,10 +930,12 @@ fn configure_provider_entry(
         ProviderBehavior::ThrowTypedError => {
             configure_async_typed_error_provider_entry(file, entry, module_path);
         }
-        ProviderBehavior::InvokeCallback => configure_callback_provider_entry(entry),
-        ProviderBehavior::EmitCallbackStream => {
-            configure_callback_stream_provider_entry(entry, CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX)
-        }
+        ProviderBehavior::InvokeCallback => configure_callback_provider_entry(entry, callback_ref),
+        ProviderBehavior::EmitCallbackStream => configure_callback_stream_provider_entry(
+            entry,
+            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
+            callback_ref,
+        ),
         ProviderBehavior::EmitBooleanSequence => {
             configure_boolean_stream_provider_entry(file, entry, module_path, false);
         }
@@ -894,10 +950,11 @@ fn configure_consumer_entry(
     entry: &mut ExecutableIr,
     service_call: ServiceCallRef,
     behavior: ConsumerBehavior,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
     file.external_refs.service_call_refs.push(service_call);
     let call_args = match behavior {
-        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry),
+        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry, callback_ref),
         ConsumerBehavior::ReturnCall
         | ConsumerBehavior::ReturnGenericBooleanStream
         | ConsumerBehavior::ConsumeCallbackStream { .. }
@@ -939,7 +996,12 @@ fn configure_consumer_entry(
             });
         }
         ConsumerBehavior::ConsumeCallbackStream { break_after_item } => {
-            configure_callback_stream_consumer_entry(entry, call_expression, break_after_item);
+            configure_callback_stream_consumer_entry(
+                entry,
+                call_expression,
+                break_after_item,
+                callback_ref,
+            );
         }
         ConsumerBehavior::ConsumeBooleanSequence => {
             configure_boolean_stream_consumer_entry(entry, call_expression);
@@ -953,6 +1015,7 @@ fn install_provider_support(
     symbol: &str,
     behavior: ProviderBehavior,
     callback_owner_may_suspend: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
     match behavior {
         ProviderBehavior::InvokeCallback => {
@@ -963,6 +1026,7 @@ fn install_provider_support(
                 false,
                 CALLBACK_OWNER_EXECUTABLE_INDEX,
                 callback_owner_may_suspend,
+                callback_ref,
             );
         }
         ProviderBehavior::EmitCallbackStream => {
@@ -973,6 +1037,7 @@ fn install_provider_support(
                 true,
                 CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
                 callback_owner_may_suspend,
+                callback_ref,
             );
             configure_return_true_entry(
                 file.executables
@@ -991,6 +1056,7 @@ fn install_consumer_support(
     package_call: (String, PackageCallableId),
     behavior: ConsumerBehavior,
     callback_owner_may_suspend: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
     let (dependency_ref, package_callable_id) = package_call;
     let package_ref = PackageRefIr::Dependency { dependency_ref };
@@ -1029,6 +1095,7 @@ fn install_consumer_support(
         matches!(behavior, ConsumerBehavior::InvokeCallback),
         CALLBACK_OWNER_EXECUTABLE_INDEX,
         callback_owner_may_suspend,
+        callback_ref,
     );
 }
 
@@ -1268,15 +1335,19 @@ fn configure_async_typed_error_provider_entry(
     };
 }
 
-fn configure_callback_stream_provider_entry(entry: &mut ExecutableIr, owner_executable_index: u32) {
-    let callback_interface = callback_interface_ref();
+fn configure_callback_stream_provider_entry(
+    entry: &mut ExecutableIr,
+    owner_executable_index: u32,
+    callback_ref: &InterfaceInstantiationRef,
+) {
+    let callback_interface = callback_ref.clone();
     entry.return_type = TypeRefIr::Builtin {
         name: "Stream".to_string(),
         args: vec![TypeRefIr::AnyInterface {
             interface: callback_interface,
         }],
     };
-    let callback = append_callback_preimage_at(entry, owner_executable_index);
+    let callback = append_callback_preimage_at(entry, owner_executable_index, callback_ref);
     entry.body.statements.push(StmtIr::Emit {
         operation: "provide".to_string(),
         value: callback[0],
@@ -1291,8 +1362,9 @@ fn configure_callback_stream_consumer_entry(
     entry: &mut ExecutableIr,
     stream_expression: u32,
     break_after_item: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
-    let callback_interface = callback_interface_ref();
+    let callback_interface = callback_ref.clone();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1365,8 +1437,11 @@ fn configure_callback_stream_consumer_entry(
     ]);
 }
 
-fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
-    let callback_interface = callback_interface_ref();
+fn configure_callback_provider_entry(
+    entry: &mut ExecutableIr,
+    callback_ref: &InterfaceInstantiationRef,
+) {
+    let callback_interface = callback_ref.clone();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1409,15 +1484,19 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
     };
 }
 
-fn append_callback_preimage(entry: &mut ExecutableIr) -> Vec<ExprRefIr> {
-    append_callback_preimage_at(entry, CALLBACK_OWNER_EXECUTABLE_INDEX)
+fn append_callback_preimage(
+    entry: &mut ExecutableIr,
+    callback_ref: &InterfaceInstantiationRef,
+) -> Vec<ExprRefIr> {
+    append_callback_preimage_at(entry, CALLBACK_OWNER_EXECUTABLE_INDEX, callback_ref)
 }
 
 fn append_callback_preimage_at(
     entry: &mut ExecutableIr,
     owner_executable_index: u32,
+    callback_ref: &InterfaceInstantiationRef,
 ) -> Vec<ExprRefIr> {
-    let callback_interface = callback_interface_ref();
+    let callback_interface = callback_ref.clone();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1466,8 +1545,9 @@ fn install_callback_interface_fixture(
     include_owner_method: bool,
     owner_executable_index: u32,
     owner_may_suspend: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) {
-    let callback_interface = callback_interface_ref();
+    let callback_interface = callback_ref.clone();
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
         CALLBACK_INTERFACE_METHOD,
@@ -1669,6 +1749,40 @@ pub(super) fn callback_interface_ref() -> InterfaceInstantiationRef {
     )
 }
 
+fn provider_callback_interface_ref(provider_abi: &str) -> InterfaceInstantiationRef {
+    skiff_artifact_identity::interface_instantiation_ref(
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "providerPackage".to_string(),
+                },
+                symbol_path: format!("{IMPLEMENTATION_MODULE_PATH}.{CALLBACK_INTERFACE_SYMBOL}"),
+                abi_expectation: Some(provider_abi.to_string()),
+            },
+        },
+        Vec::new(),
+    )
+}
+
+fn canonical_callback_interface_ref_for(package_id: &str, abi: &str) -> InterfaceInstantiationRef {
+    skiff_artifact_identity::interface_instantiation_ref(
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: format!("{IMPLEMENTATION_MODULE_PATH}.{CALLBACK_INTERFACE_SYMBOL}"),
+                abi_expectation: Some(abi.to_string()),
+            },
+        },
+        Vec::new(),
+    )
+}
+
+pub(super) fn canonical_callback_interface_ref(provider_abi: &str) -> InterfaceInstantiationRef {
+    canonical_callback_interface_ref_for(PROVIDER_PACKAGE_ID, provider_abi)
+}
+
 fn implementation_package(
     package_id: &str,
     public_path: &str,
@@ -1678,6 +1792,7 @@ fn implementation_package(
     schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
     package_dependency: Option<(String, PackageArtifactRef)>,
+    provider_abi: Option<&str>,
 ) -> PackageArtifact {
     let file_ref = file_ref(file);
     let entry = file
@@ -1685,8 +1800,18 @@ fn implementation_package(
         .first()
         .expect("fixture implementation must expose its entry executable");
     let may_suspend = entry.may_suspend;
-    let package_signature =
-        package_signature_from_operation(&operation_contract, &entry.type_params, may_suspend);
+    let callback_ref = match (provider_abi, &operation_contract.callbacks) {
+        (Some(provider_abi), BoundaryCallbackContract::RequestScoped { .. }) => {
+            provider_callback_interface_ref(provider_abi)
+        }
+        _ => callback_interface_ref(),
+    };
+    let package_signature = package_signature_from_operation(
+        &operation_contract,
+        &entry.type_params,
+        may_suspend,
+        &callback_ref,
+    );
     let effects = no_effects(may_suspend);
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: Vec::new(),
@@ -1773,6 +1898,69 @@ fn implementation_package(
             )
         })
         .collect();
+    let mut implementation_symbols = BTreeMap::new();
+    let mut implementation_type_links: BTreeMap<String, TypeExport> = schema_type_links;
+    for (name, declaration) in &file.declarations.types {
+        let ty = file
+            .type_table
+            .get(declaration.type_index as usize)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture implementation type {}.{} must target an exact type table entry",
+                    file.module_path, name
+                )
+            });
+        let source_path = format!("{}.{}", file.module_path, name);
+        let interface = file.declarations.interfaces.get(name);
+        let interface_methods: Vec<InterfaceMethodSignature> = interface
+            .map(|interface| {
+                interface
+                    .operations
+                    .iter()
+                    .map(|operation| InterfaceMethodSignature {
+                        name: operation.name.clone(),
+                        type_params: operation.type_params.clone(),
+                        params: operation.params.clone(),
+                        return_type: operation.return_type.clone(),
+                        is_native: operation.is_native,
+                        is_provider: operation.is_provider,
+                        is_static: operation.is_static,
+                        implicit_self: operation.implicit_self.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if implementation_symbols
+            .insert(
+                source_path.clone(),
+                PackageLocalAbiSymbol::Type {
+                    local_type_id: format!("type:{package_id}:top-level:{source_path}"),
+                    descriptor: ty.descriptor.clone(),
+                    is_alias: false,
+                    is_interface: interface.is_some(),
+                    type_params: ty.type_params.clone(),
+                    interface_methods: interface_methods.clone(),
+                    actor: None,
+                },
+            )
+            .is_some()
+        {
+            panic!("fixture implementation package has duplicate type source path {source_path}");
+        }
+        implementation_type_links.insert(
+            source_path.clone(),
+            TypeExport {
+                file: file_ref.clone(),
+                type_index: declaration.type_index,
+                symbol: declaration.symbol.clone(),
+                is_interface: interface.is_some(),
+                descriptor: Some(ty.descriptor.clone()),
+                type_params: ty.type_params.clone(),
+                interface_methods,
+                actor: None,
+            },
+        );
+    }
     let mut package = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
@@ -1789,7 +1977,7 @@ fn implementation_package(
                     signature: package_signature,
                 },
             )]),
-            implementation_symbols: BTreeMap::new(),
+            implementation_symbols,
         },
         package_schema_index: PackageSchemaIndexRef {
             package_id: package_id.to_string(),
@@ -1812,7 +2000,7 @@ fn implementation_package(
             })
             .collect(),
         implementation_links: PackageImplementationLinks {
-            types: schema_type_links,
+            types: implementation_type_links,
             functions: BTreeMap::from([(
                 public_path.to_string(),
                 ExecutableExport {
@@ -1879,6 +2067,7 @@ fn package_signature_from_operation(
     operation: &BoundaryOperationContract,
     type_params: &[String],
     may_suspend: bool,
+    callback_ref: &InterfaceInstantiationRef,
 ) -> PackageCallableSignature {
     PackageCallableSignature {
         type_params: type_params.to_vec(),
@@ -1887,14 +2076,16 @@ fn package_signature_from_operation(
             .iter()
             .map(|parameter| PackageCallableParameter {
                 name: parameter.name.clone(),
-                ty: package_type_from_contract(&parameter.ty),
+                ty: package_type_from_contract(&parameter.ty, callback_ref),
             })
             .collect(),
         return_type: match &operation.stream {
-            BoundaryStreamContract::Unary => package_type_from_contract(&operation.return_value.ty),
+            BoundaryStreamContract::Unary => {
+                package_type_from_contract(&operation.return_value.ty, callback_ref)
+            }
             BoundaryStreamContract::ServerStream { item_type, .. } => PackageTypeRef::Container {
                 name: "Stream".to_string(),
-                arguments: vec![package_type_from_contract(item_type)],
+                arguments: vec![package_type_from_contract(item_type, callback_ref)],
             },
             BoundaryStreamContract::Unsupported { .. } => {
                 panic!("available fixture operation cannot contain an unsupported stream")
@@ -1904,11 +2095,17 @@ fn package_signature_from_operation(
     }
 }
 
-fn package_type_from_contract(ty: &ContractTypeRef) -> PackageTypeRef {
+fn package_type_from_contract(
+    ty: &ContractTypeRef,
+    callback_ref: &InterfaceInstantiationRef,
+) -> PackageTypeRef {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => PackageTypeRef::Container {
             name: name.clone(),
-            arguments: arguments.iter().map(package_type_from_contract).collect(),
+            arguments: arguments
+                .iter()
+                .map(|ty| package_type_from_contract(ty, callback_ref))
+                .collect(),
         },
         ContractTypeRef::PackageSchema {
             package_id,
@@ -1923,17 +2120,20 @@ fn package_type_from_contract(ty: &ContractTypeRef) -> PackageTypeRef {
             interface,
             arguments,
         } => PackageTypeRef::AnyInterface {
-            interface: Box::new(package_type_from_contract(interface)),
-            arguments: arguments.iter().map(package_type_from_contract).collect(),
+            interface: Box::new(package_type_from_contract(interface, callback_ref)),
+            arguments: arguments
+                .iter()
+                .map(|ty| package_type_from_contract(ty, callback_ref))
+                .collect(),
         },
         ContractTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
-            inner: Box::new(package_type_from_contract(inner)),
+            inner: Box::new(package_type_from_contract(inner, callback_ref)),
         },
         ContractTypeRef::TypeParam { .. }
         | ContractTypeRef::Record { .. }
         | ContractTypeRef::StructuralUnion { .. }
         | ContractTypeRef::Literal { .. } => PackageTypeRef::Local {
-            local_type: file_type_from_contract(ty),
+            local_type: file_type_from_contract(ty, callback_ref),
         },
     }
 }

@@ -20,7 +20,7 @@ use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
 use super::super::super::{ActiveAssembly, AssemblyAdmissionController};
 use super::{
-    artifacts::{callback_interface_ref, ProjectedFixture, TypedExecutionContract},
+    artifacts::{ProjectedFixture, TypedExecutionContract},
     runtime::TypedExecutionRuntime,
 };
 
@@ -32,6 +32,7 @@ pub(super) struct TypedExecutionFixture {
     pub(super) provider_deployment: ServiceDeploymentRef,
     pub(super) provider_operation: ContractOperationId,
     pub(super) consumer_file_ir_identity: String,
+    pub(super) callback_interface_id: String,
 }
 
 impl TypedExecutionFixture {
@@ -87,6 +88,7 @@ impl TypedExecutionFixture {
             provider_deployment: projected.provider_deployment,
             provider_operation: projected.provider_operation,
             consumer_file_ir_identity: projected.consumer_file_ir_identity,
+            callback_interface_id: projected.callback_interface_id,
         }
     }
 
@@ -153,9 +155,8 @@ impl TypedExecutionFixture {
             "package executable must propagate the same-heap provider result"
         );
 
-        let callback_interface = callback_interface_ref();
         let linked_interface = LinkedInterfaceInstantiationRef {
-            interface_abi_id: callback_interface.interface_abi_id.clone(),
+            interface_abi_id: self.callback_interface_id.clone(),
             canonical_type_args: Vec::new(),
         };
         let interface_id =
