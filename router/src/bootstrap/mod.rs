@@ -9,12 +9,16 @@
 //! loader consumes the A3 artifact stores; the epoch source is wired into the
 //! W-session `SessionLayer` seam.
 
+mod assembly;
 mod epoch;
 mod loader;
 mod reader;
 mod runner;
 mod strict_loader;
 
+pub use assembly::{
+    BootstrapAssemblyError, RouterBootstrapAssembly, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+};
 pub use epoch::{ActiveRoutingEpochStore, EpochStoreHealth, RoutingEpoch, RoutingEpochHealth};
 pub use loader::{
     BlockingLoader, BlockingLoaderError, BlockingLoaderHealth, BlockingLoaderOptions,

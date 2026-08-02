@@ -1,0 +1,101 @@
+name: Router Rust Integration
+
+# E-bootstrap gate CI (plan §8): every pull request and workflow_dispatch run
+# the cheap change classifier first. There is deliberately no workflow-level
+# `paths` filter: the required managed job stays present for every PR and
+# explicitly succeeds when the change is unrelated, so the required check can
+# never be missing.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: router-rust-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  change-classifier:
+    name: Router Rust change classifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      related: ${{ steps.classify.outputs.related }}
+    steps:
+      - name: Classify related changes
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "related=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FILES="$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[].filename' 2>/dev/null || true)"
+          if [ -z "$FILES" ]; then
+            echo "related=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s\n' "$FILES" | grep -qE '^(router/(src|tests)/|Cargo\.(toml|lock)|scripts/check-router-bootstrap-live\.mjs|scripts/lib/verify-live-(registry|plan|catalog)\.mjs|\.github/workflows/router-rust-integration\.yml|deployment/|artifact-model/|artifact-identity/|canonical-json/|runtime-config-snapshot/|runtime/transport/)'; then
+            echo "related=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "related=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Stable required-check name: `Router Rust Bootstrap (managed)`. When this
+  # gate is mature, add that exact job name to the branch protection required
+  # checks; the job always exists and always succeeds (explicit skip for
+  # unrelated PRs), so the required check is never missing.
+  router-rust-bootstrap-managed:
+    name: Router Rust Bootstrap (managed)
+    needs: change-classifier
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Skip unrelated change
+        if: needs.change-classifier.outputs.related == 'false'
+        run: echo "Unrelated change; router-live:bootstrap managed gate skipped (required check succeeds)"
+
+      - name: Set up Node.js
+        if: needs.change-classifier.outputs.related == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up Rust
+        if: needs.change-classifier.outputs.related == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install MongoDB server and shell
+        if: needs.change-classifier.outputs.related == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg lsb-release
+          CODENAME="$(lsb_release -cs)"
+          case "$CODENAME" in
+            jammy|noble) ;;
+            *) CODENAME=jammy ;;
+          esac
+          curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+          echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $CODENAME/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          sudo apt-get update
+          sudo apt-get install -y mongodb-org-server mongodb-mongosh
+
+      - name: Run router-live:bootstrap managed gate
+        if: needs.change-classifier.outputs.related == 'true'
+        run: node scripts/check-router-bootstrap-live.mjs
