@@ -132,8 +132,14 @@ SessionRecord {
 ### 5.3 队列与容量
 
 - per-session outbound queue：frame 上限 256 帧 + 字节上限 4 MiB（默认）；
-  inbound 同 session：frame 上限 64 帧 + 字节上限 1 MiB（默认）；均为进程级
+  inbound 同 session：frame 上限 4096 帧 + 字节上限 1 MiB（默认）；均为进程级
   默认常量，可经 FakeClock/FakeSocket 注入测试。
+- 默认值修正记录（2026-08-03，迁移驱动，root 授权）：inbound frame 默认从
+  64 提高到 4096。64 帧累计预算会在长活业务 session 上过早触发
+  `IngressBudgetExceeded`：Runtime 每秒 health + 业务请求/actor/spawn
+  帧合计可轻易超过 64（E-actor-rust two-replica full-chain 单 session
+  需数百帧）。4096 仍是有界 fail-closed；饱和/预算语义测试必须显式注入
+  低预算（见 `session_budget_probe`），不得依赖进程默认值。
 - writer queue 同时受 frame/byte permit 限制；owner 只 non-blocking
   reserve/`try_send`；outbound permit reserve 后随 queued item 转移给 writer；
   completion/drop 恰好释放一次；disconnect 只 close+drain。
@@ -213,4 +219,3 @@ SessionRecord {
   directory 与全部 consumer pending 归零；再以同 replica 新连接注册，断言
   replacement 后 old 删除不影响 new。该 probe 由 W-session/E-session 执行，
   成为 `router-rust-session-live` 的一部分。
-

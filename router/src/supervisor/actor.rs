@@ -2,8 +2,11 @@
 //! the outbound control ports wired through the session outbound registry,
 //! and the A3 catalog captured into the routing epoch view.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use base64::Engine;
 use skiff_runtime_transport::actor_owner::{
@@ -22,9 +25,13 @@ use crate::actor::{
     ActorMethodSpawnExecutionSink, ActorOwnerControlBroker, ActorOwnershipRegistry,
     ActorSpawnParentResolver, ControlBrokerOptions, FunctionSpawnParentResolver,
     IdleEvictControlPort, LeaseSchedulerOptions, RelaySpawnParentLookup, SpawnParentLookup,
-    SpawnParentSnapshot, SpawnSubmitAcceptance, SpawnSubmitRouter, DEFAULT_ACTOR_PENDING_BUDGET,
+    SpawnParentSnapshot, SpawnSubmitAcceptance, SpawnSubmitRouter, SpawnWireStore,
+    DEFAULT_ACTOR_PENDING_BUDGET,
 };
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
+use crate::dispatch::RequestDispatcher;
+use crate::session::consumer::{ConsumerKind, SessionConsumer};
+use crate::session::identity::RuntimeSessionEpoch;
 
 use super::session_ports::{LeaseIdMint, SessionHandle};
 
@@ -39,8 +46,90 @@ pub struct ActorComponents {
     pub lease_scheduler: Arc<ActorLeaseExpiryScheduler>,
     pub catalog_view: Arc<ActorMethodCatalogView>,
     pub spawn_router: Arc<SpawnSubmitRouter>,
-    pub execution_sink: Arc<dyn ActorMethodSpawnExecutionSink>,
+    pub execution_sink: Arc<DeferredActorMethodSpawnExecutionSink>,
     pub actor_lane_spawn_control: Arc<ActorLaneSpawnControl>,
+    /// Raw wire correlation for accepted actor-method spawns
+    /// (E-actor-rust; M-spawn-repair `SpawnSubmitAcceptance` data surface).
+    pub spawn_wire_store: Arc<SpawnWireStore>,
+    /// `eviction_request_id -> actor key` registered by the idle-evict port
+    /// and consumed by the actor frame sink on the ACK.
+    pub idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
+    /// Deferred dispatcher reference (assembled after the actor lane; the
+    /// function-spawn parent lookup answers through it).
+    pub deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
+}
+
+/// Execution sink installed before the `ActorFrameSink` exists. The
+/// composition sets the real sink once the session/actor sink is assembled;
+/// accepts before then fail closed (no silently dropped spawn).
+#[derive(Debug, Default)]
+pub struct DeferredActorMethodSpawnExecutionSink {
+    inner: Mutex<Option<Arc<dyn ActorMethodSpawnExecutionSink>>>,
+    uninstalled_accepts: AtomicU64,
+}
+
+impl DeferredActorMethodSpawnExecutionSink {
+    pub fn set(&self, sink: Arc<dyn ActorMethodSpawnExecutionSink>) {
+        *self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
+    }
+
+    pub fn uninstalled_accepts(&self) -> u64 {
+        self.uninstalled_accepts.load(Ordering::Relaxed)
+    }
+}
+
+impl ActorMethodSpawnExecutionSink for DeferredActorMethodSpawnExecutionSink {
+    fn on_accept(&self, acceptance: &SpawnSubmitAcceptance) {
+        match self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            Some(sink) => sink.on_accept(acceptance),
+            None => {
+                self.uninstalled_accepts.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// `callerKind=request` parent lookup backed by the `RequestDispatcher`
+/// pending (C-dispatch §5.1). The dispatcher owns request pending truth; this
+/// adapter only reads its public fenced snapshot ports.
+#[derive(Debug, Clone)]
+pub struct DispatcherSpawnParentLookup {
+    dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
+}
+
+impl DispatcherSpawnParentLookup {
+    pub fn new(dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>) -> Self {
+        Self { dispatcher }
+    }
+}
+
+impl SpawnParentLookup for DispatcherSpawnParentLookup {
+    fn find_parent(&self, caller_request_id: &str) -> Option<SpawnParentSnapshot> {
+        let dispatcher = self
+            .dispatcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()?;
+        let epoch = dispatcher.pending_epoch(caller_request_id)?;
+        let lease = dispatcher.pending_lease(caller_request_id)?;
+        let session = lease.session_epoch;
+        Some(SpawnParentSnapshot {
+            runtime_id: session.replica_id.clone(),
+            connection: format!("{}#{}", session.replica_id, session.connection_generation),
+            assembly_generation: epoch.assembly_generation(),
+            test_case_capability: None,
+            active: true,
+            replaced: false,
+        })
+    }
 }
 
 /// Assembles the actor lane against one captured routing epoch and the
@@ -56,19 +145,24 @@ pub fn assemble_actor_components(
     ));
     let control_broker = Arc::new(ActorOwnerControlBroker::new(ControlBrokerOptions::default()));
     let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch)));
+    let spawn_wire_store = Arc::new(SpawnWireStore::new());
+    let idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
+        Arc::new(Mutex::new(None));
+    let execution_sink = Arc::new(DeferredActorMethodSpawnExecutionSink::default());
     let lease_scheduler = Arc::new(ActorLeaseExpiryScheduler::new(
         Arc::clone(&registry),
-        Arc::new(ActorIdleEvictControlPort::new(
+        Arc::new(ActorIdleEvictControlPort::with_idle_evictions(
             session.clone(),
             Arc::clone(&epoch_store),
+            Arc::clone(&idle_evictions),
         )),
         LeaseSchedulerOptions::default(),
     ));
-    let execution_sink: Arc<dyn ActorMethodSpawnExecutionSink> =
-        Arc::new(RecordingActorMethodSpawnExecutionSink::default());
     let spawn_router = Arc::new(SpawnSubmitRouter::new(
         Arc::new(FunctionSpawnParentResolver::new(Arc::new(
-            UnavailableSpawnParentLookup,
+            DispatcherSpawnParentLookup::new(Arc::clone(&deferred_dispatcher)),
         ))),
         Arc::new(ActorSpawnParentResolver::new(Arc::new(
             RelaySpawnParentLookup::new(Arc::clone(&relay)),
@@ -78,7 +172,7 @@ pub fn assemble_actor_components(
     let actor_lane_spawn_control = Arc::new(ActorLaneSpawnControl::new(
         Arc::clone(&relay),
         Arc::clone(&spawn_router),
-        Arc::clone(&execution_sink),
+        Arc::clone(&execution_sink) as Arc<dyn ActorMethodSpawnExecutionSink>,
     ));
     let activation_broker = Arc::new(ActorActivationRequestBroker::new(
         Arc::clone(&registry),
@@ -98,6 +192,9 @@ pub fn assemble_actor_components(
         spawn_router,
         execution_sink,
         actor_lane_spawn_control,
+        spawn_wire_store,
+        idle_evictions,
+        deferred_dispatcher,
     }))
 }
 
@@ -197,13 +294,25 @@ impl ActivationControlPort for ActorActivationControlPort {
 pub struct ActorIdleEvictControlPort {
     session: SessionHandle,
     epoch_store: Arc<ActiveRoutingEpochStore>,
+    idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
 }
 
 impl ActorIdleEvictControlPort {
     pub fn new(session: SessionHandle, epoch_store: Arc<ActiveRoutingEpochStore>) -> Self {
+        Self::with_idle_evictions(session, epoch_store, Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    /// E-actor-rust: registers every sent idle-eviction so the actor frame
+    /// sink can correlate the ACK to the exact actor key.
+    pub fn with_idle_evictions(
+        session: SessionHandle,
+        epoch_store: Arc<ActiveRoutingEpochStore>,
+        idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
+    ) -> Self {
         Self {
             session,
             epoch_store,
+            idle_evictions,
         }
     }
 }
@@ -251,6 +360,10 @@ impl IdleEvictControlPort for ActorIdleEvictControlPort {
             test_case_capability: None,
             test_case_parent_request_id: None,
         };
+        self.idle_evictions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(eviction_request_id.to_string(), key.clone());
         let bytes = encode_actor_owner_control_frame(&header)
             .map_err(|error| format!("idleEvict encode failed: {error}"))?;
         let layer = self
@@ -269,33 +382,116 @@ impl IdleEvictControlPort for ActorIdleEvictControlPort {
     }
 }
 
-/// Spawn execution sink placeholder: records accepted actor-method spawns.
-/// The real execution owner is wired by E-actor-rust; the acceptance is
-/// already separated from the parent lifecycle (C-spawn §3.3).
-#[derive(Debug, Default)]
-pub struct RecordingActorMethodSpawnExecutionSink {
-    accepted: AtomicU64,
+/// Session-keyed actor lane cleanup (C-session §5.1 `ActorSessionOwner`):
+/// runtime disconnect/replacement resolves every actor owner pending and
+/// releases exact owner fences so invocation/control/lease/timer occupancy
+/// returns to zero (E-actor-rust).
+#[derive(Debug, Clone)]
+pub struct ActorSessionOwnerConsumer {
+    components: Arc<ActorComponents>,
+    sink: Arc<Mutex<Option<Arc<super::actor_sink::ActorFrameSink>>>>,
 }
 
-impl RecordingActorMethodSpawnExecutionSink {
-    pub fn accepted(&self) -> u64 {
-        self.accepted.load(Ordering::Relaxed)
+impl ActorSessionOwnerConsumer {
+    pub fn new(components: Arc<ActorComponents>) -> Self {
+        Self {
+            components,
+            sink: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn set_sink(&self, sink: Arc<super::actor_sink::ActorFrameSink>) {
+        *self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
     }
 }
 
-impl ActorMethodSpawnExecutionSink for RecordingActorMethodSpawnExecutionSink {
-    fn on_accept(&self, _acceptance: &SpawnSubmitAcceptance) {
-        self.accepted.fetch_add(1, Ordering::Relaxed);
+impl SessionConsumer for ActorSessionOwnerConsumer {
+    fn kind(&self) -> ConsumerKind {
+        ConsumerKind::ActorSessionOwner
+    }
+
+    fn on_session_closed(&self, session: &RuntimeSessionEpoch) -> Result<(), String> {
+        let connection = format!("{}#{}", session.replica_id, session.connection_generation);
+        if let Some(sink) = self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            sink.on_runtime_session_closed(session);
+        }
+        // Caller-side invocation cancel/terminal (exact connection).
+        let _ = self.components.relay.on_caller_disconnect(&connection);
+        // Owner-side invocation/control/activation terminal.
+        let _ = self
+            .components
+            .relay
+            .on_owner_disconnect(&session.replica_id, &connection);
+        let _ = self
+            .components
+            .control_broker
+            .on_owner_disconnect(&session.replica_id, &connection);
+        self.components
+            .activation_broker
+            .on_owner_disconnect(&session.replica_id, &connection);
+        // Exact owner fence release + scheduler bookkeeping.
+        let keys = self.components.registry.owned_keys();
+        for key in keys {
+            let Some(fence) = self.components.registry.current_owner(&key) else {
+                continue;
+            };
+            // The registry fence does not retain the claim-time connection
+            // token; a closed session releases every fence of its replica so
+            // a replacement connection re-activates through the normal claim
+            // path (fail closed, never a stale owner).
+            if fence.owner_runtime_id == session.replica_id
+                && self
+                    .components
+                    .registry
+                    .release(&key, &fence, crate::actor::OwnerReleaseReason::Disconnected)
+                    .is_ok()
+            {
+                self.components.lease_scheduler.forget(&key);
+            }
+        }
+        Ok(())
     }
 }
 
-/// Function-spawn parent lookup is fail-closed until E-actor-rust wires the
-/// dispatcher pending view into `SpawnParentLookup`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnavailableSpawnParentLookup;
+/// E-actor-rust timer pump: one tokio task owning the actor lane deadline
+/// sweeps (C-actor §6/§8). Every tick expires activation claims, owner-control
+/// ACK deadlines and invocation deadlines, and sweeps lease/idle evictions.
+/// Outcome frame writes (waiter errors / owner cancels) go through the sink.
+pub fn spawn_actor_lane_timer_pump(
+    components: Arc<ActorComponents>,
+    sink: Arc<super::actor_sink::ActorFrameSink>,
+    interval: Duration,
+    now: impl Fn() -> u64 + Send + Sync + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            actor_lane_timer_tick(&components, &sink, now());
+        }
+    })
+}
 
-impl SpawnParentLookup for UnavailableSpawnParentLookup {
-    fn find_parent(&self, _caller_request_id: &str) -> Option<SpawnParentSnapshot> {
-        None
+fn actor_lane_timer_tick(
+    components: &Arc<ActorComponents>,
+    sink: &Arc<super::actor_sink::ActorFrameSink>,
+    now_ms: u64,
+) {
+    components.lease_scheduler.sweep(now_ms);
+    let _ = components.control_broker.expire_deadlines(now_ms);
+    for outcome in components.activation_broker.expire_deadlines(now_ms) {
+        sink.resolve_activation_timeout(&outcome);
+    }
+    for (cancel, _terminal) in components.relay.expire_deadlines(now_ms) {
+        sink.on_relay_deadline(&cancel.invocation_id, &cancel.correlation);
     }
 }

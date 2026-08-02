@@ -23,6 +23,7 @@ use crate::activation::{
     EpochStorePublishPort, MongoActivationStateRepository, MongoActivationStateRepositoryOptions,
     NoopHealthSink, RoutingCandidateQueryPortAdapter, SystemClock,
 };
+use crate::actor::ActorMethodSpawnExecutionSink;
 use crate::bootstrap::{
     ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
 };
@@ -48,8 +49,8 @@ use crate::ws::{
     NoopNotificationObserver, WebSocketLane, WebSocketLaneOptions, WebSocketRequestBrokerOptions,
 };
 
-use self::actor::{assemble_actor_components, ActorComponents};
-use self::actor_sink::ActorFrameSink;
+use self::actor::{assemble_actor_components, ActorComponents, ActorSessionOwnerConsumer};
+use self::actor_sink::{ActorFrameSink, ActorSpawnFrameSink};
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
@@ -168,6 +169,7 @@ impl RouterComponents {
             session_handle.clone(),
         )
         .map_err(SupervisorError::Actor)?;
+        let actor_session_owner = Arc::new(ActorSessionOwnerConsumer::new(Arc::clone(&actor)));
 
         let dispatcher = Arc::new(
             RequestDispatcher::new(
@@ -176,7 +178,10 @@ impl RouterComponents {
                     Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
                     Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
-                    Arc::new(SessionRuntimePeer::new(session_handle.clone())),
+                    Arc::new(
+                        SessionRuntimePeer::new(session_handle.clone())
+                            .with_spawn_wire_store(Arc::clone(&actor.spawn_wire_store)),
+                    ),
                     Arc::new(LayerSessionAbort::new(session_handle.clone())),
                     Arc::clone(&actor.actor_lane_spawn_control) as Arc<dyn ActorMethodSpawnControl>,
                 )
@@ -184,6 +189,12 @@ impl RouterComponents {
             )
             .map_err(SupervisorError::Dispatcher)?,
         );
+        // The request-parent spawn lookup answers through the dispatcher
+        // pending (assembled after the actor lane).
+        *actor
+            .deferred_dispatcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&dispatcher));
 
         let session_writer: Arc<dyn WsSessionWriter> =
             Arc::new(LayerWsSessionWriter::new(session_handle.clone()));
@@ -254,6 +265,7 @@ impl RouterComponents {
                         ConsumerKind::RequestDispatcher,
                         ConsumerKind::RuntimeGenerationPinLedger,
                         ConsumerKind::WebSocketRequestBroker,
+                        ConsumerKind::ActorSessionOwner,
                         ConsumerKind::ActivationCoordinator,
                     ]),
                     consumers: {
@@ -268,6 +280,7 @@ impl RouterComponents {
                                 Arc::clone(&ws_store),
                                 Arc::clone(&ws_lane.broker) as Arc<dyn SessionConsumer>,
                             )) as Arc<dyn SessionConsumer>,
+                            Arc::clone(&actor_session_owner) as Arc<dyn SessionConsumer>,
                             Arc::new(coordinator.clone()) as Arc<dyn SessionConsumer>,
                         ];
                         consumers
@@ -300,19 +313,45 @@ impl RouterComponents {
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
         ));
-        let sinks =
-            InboundSinkSet {
-                request: Some(
-                    Arc::clone(&request_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
-                ),
-                connection: Some(Arc::clone(&connection_sink)
-                    as Arc<dyn crate::session::demux::InboundFrameSink>),
-                activation_transaction: Some(Arc::clone(&activation_sink)
-                    as Arc<dyn crate::session::demux::InboundFrameSink>),
-                actor: Some(actor_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
-                spawn: None,
-            };
+        let spawn_sink = Arc::new(ActorSpawnFrameSink::new(
+            Arc::clone(&actor),
+            Arc::clone(&dispatcher),
+            Arc::clone(&epoch_store),
+            Arc::clone(&session_writer),
+            Arc::new(WsSystemClock),
+            config.request_timeout_ms,
+        ));
+        // E-actor-rust: the real spawn execution owner is the actor frame
+        // sink (correlation + owner forward share one surface).
+        actor
+            .execution_sink
+            .set(Arc::clone(&actor_sink) as Arc<dyn ActorMethodSpawnExecutionSink>);
+        actor_session_owner.set_sink(Arc::clone(&actor_sink));
+        let sinks = InboundSinkSet {
+            request: Some(
+                Arc::clone(&request_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
+            ),
+            connection: Some(
+                Arc::clone(&connection_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
+            ),
+            activation_transaction: Some(
+                Arc::clone(&activation_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
+            ),
+            actor: Some(Arc::clone(&actor_sink) as Arc<dyn crate::session::demux::InboundFrameSink>),
+            spawn: Some(spawn_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
+        };
         session.install_inbound_sinks(Arc::new(sinks));
+        crate::supervisor::actor::spawn_actor_lane_timer_pump(
+            Arc::clone(&actor),
+            Arc::clone(&actor_sink),
+            Duration::from_millis(1_000),
+            || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            },
+        );
 
         let http_dispatcher = Arc::new(DispatcherHttpPort::new(
             Arc::clone(&dispatcher),

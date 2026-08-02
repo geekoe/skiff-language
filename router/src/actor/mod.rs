@@ -32,6 +32,7 @@ mod invocation;
 mod lease;
 mod ownership;
 mod spawn;
+mod spawn_sink;
 mod types;
 
 pub use activation::{
@@ -62,6 +63,7 @@ pub use spawn::{
     SpawnErrorCode, SpawnParentAuthority, SpawnParentLookup, SpawnParentResolution,
     SpawnParentSnapshot, SpawnSubmitAcceptance, SpawnSubmitError, SpawnSubmitRouter,
 };
+pub use spawn_sink::{spawn_error_code, PendingSpawnWire, SpawnWireHealth, SpawnWireStore};
 pub use types::{
     ActorClaimId, ActorClaimToken, ActorEntryFacts, ActorIncarnationFence, ActorLineage,
     ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, ActorRef, CommitFenceFacts,
