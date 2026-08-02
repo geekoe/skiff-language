@@ -286,6 +286,28 @@ root 裁决：两项差异为"已解释、已留证、双侧 fail-closed、HTTP 
 （可复现、有证据）经 root 裁决接受并记录，gate 按 accepted-with-recorded-
 differences 交付。
 
+### 自验收记录修正（2026-08-03 追加，root 反馈后）
+
+此前叶子"自验收"只跑了聚焦测试（actor_activation_broker /
+actor_ownership_registry / actor_live_lane / composition_components /
+gates_wiring_actor / lib），未覆盖全量；b10 集成探针的完整
+`cargo test -p skiff-router --no-fail-fast` 发现
+`router/tests/actor_invocation_relay.rs::parent_snapshot_is_exact_and_inactive_after_settle`
+因 33f5d4db 的 `ActorInvocationRelay::parent_snapshot` 语义改动（ordinary
+invocation 返回 owner connection/runtime，C-spawn §4.2）而失败（旧断言
+caller conn-c，生产返回 owner conn-b）。
+
+修正（production 零改动，仅测试同步 + 新增用例）：
+
+- `parent_snapshot_is_exact_and_inactive_after_settle` 更名为
+  `parent_snapshot_uses_owner_connection_and_inactive_after_settle`，
+  断言 ordinary invocation snapshot.connection == owner（conn-b）、
+  runtime_id == owner（runtime-b），settle 后 inactive 语义不变。
+- 新增 `parent_snapshot_keeps_caller_origin_for_test_capability_lineage`：
+  test-case-capability 用例断言 snapshot 保持 caller origin
+  （conn-c/conn-c）且携带 capability，与本叶子双语义记录一致。
+- 完整 `cargo test -p skiff-router --no-fail-fast` 全绿后重新交接。
+
 ## 交接
 
 完成后提交到 `feat/router-rust-e-actor-parity`（不 push），直接向
