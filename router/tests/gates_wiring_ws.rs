@@ -345,9 +345,10 @@ mod tests {
         };
         assert_eq!(jsonrpc.websocket_json_rpc.connection_id, "wsconn-1");
         // Business params stay lexical-opaque: the broker hands the raw
-        // `params` member slice (including the member key) to the dispatcher.
-        assert!(payload.starts_with(br#""params":"#), "{payload:?}");
-        assert!(payload.ends_with(br#"{"message":"hi"}"#), "{payload:?}");
+        // `params` value slice (TS `losslessJsonSlice` parity; the runtime
+        // codec requires the plain JSON value, not the member including the
+        // key). Synced with the E-ws broker span fix.
+        assert_eq!(payload, br#"{"message":"hi"}"#);
         assert_eq!(store.pending_inbound_count(), 1);
 
         store.on_inbound_response(

@@ -406,7 +406,10 @@ pub fn load_http_surface_view(
             )
         })?;
         for (key, entry) in &record.gateway_entries {
-            if !matches!(entry.protocol_surface.protocol, GatewayProtocolSurface::Http(_)) {
+            if !matches!(
+                entry.protocol_surface.protocol,
+                GatewayProtocolSurface::Http(_)
+            ) {
                 continue;
             }
             if entries.insert(key.clone(), entry.clone()).is_some() {

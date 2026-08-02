@@ -56,8 +56,7 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONCURRENCY: u64 = 4;
 const BIG_REQUESTS: usize = 96;
 
-const ID_CORPUS_PATH: &str =
-    "../../runtime/transport/testdata/client-ws/jsonrpc-ids.json";
+const ID_CORPUS: &str = include_str!("../../runtime/transport/testdata/client-ws/jsonrpc-ids.json");
 
 struct LiveEnvironment {
     mongo_url: String,
@@ -127,12 +126,6 @@ impl LiveEnvironment {
         format!("127.0.0.1:{}", self.http_port)
             .parse()
             .expect("public http addr")
-    }
-
-    fn deployment_ref(&self) -> Option<skiff_artifact_model::ServiceDeploymentRef> {
-        std::env::var("SKIFF_ROUTER_WS_LIVE_DEPLOYMENT_REF")
-            .ok()
-            .map(|raw| serde_json::from_str(&raw).expect("deployment ref env"))
     }
 }
 
@@ -232,17 +225,6 @@ fn spawn_router(config_path: &Path) -> Child {
         .stderr(stderr)
         .spawn()
         .expect("spawn skiff-router")
-}
-
-fn dump_process_logs(live: &LiveEnvironment, label: &str) {
-    for name in ["router-ws.stdout.log", "router-ws.stderr.log", "runtime-ws.stdout.log", "runtime-ws.stderr.log"] {
-        let path = live.temp_dir.join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !content.trim().is_empty() {
-                eprintln!("--- {label} {name} ---\n{content}\n---");
-            }
-        }
-    }
 }
 
 fn spawn_runtime(live: &LiveEnvironment, config_path: &Path) -> Child {
@@ -346,62 +328,31 @@ fn materialize_projection(live: &LiveEnvironment) {
     .expect("write projection record");
 }
 
-fn debug_deployment_entries(live: &LiveEnvironment) {
-    let Some(reference) = live.deployment_ref() else {
-        return;
-    };
-    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&live.artifact_root)
-        .expect("open artifact store for debug");
-    let record = store
-        .read_service_deployment(&reference)
-        .expect("read deployment record for debug");
-    for (key, entry) in &record.gateway_entries {
-        eprintln!(
-            "router-live:ws probe: deployment entry {} protocol {:?}",
-            key.as_str(),
-            match &entry.protocol_surface.protocol {
-                skiff_artifact_model::GatewayProtocolSurface::Http(_) => "http",
-                skiff_artifact_model::GatewayProtocolSurface::WebSocketConnect(_) => {
-                    "websocketConnect"
-                }
-                skiff_artifact_model::GatewayProtocolSurface::WebSocketJsonRpc(_) => {
-                    "websocketJsonRpc"
-                }
-            }
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Real client WebSocket helpers (against the real Router public HTTP port).
 // ---------------------------------------------------------------------------
 
-type ClientSocket =
-    WebSocketStream<tokio_tungstenite::MaybeTlsStream<TokioTcpStream>>;
+type ClientSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TokioTcpStream>>;
 
 fn client_request(live: &LiveEnvironment) -> Request<()> {
-    let mut request = format!(
-        "ws://127.0.0.1:{}{WS_PATH}?x=1",
-        live.http_port
-    )
-    .into_client_request()
-    .expect("client request");
-    request.headers_mut().insert(
-        "x-skiff-service",
-        HeaderValue::from_static(SERVICE_ID),
-    );
-    request.headers_mut().insert(
-        "x-skiff-version",
-        HeaderValue::from_static(SERVICE_VERSION),
-    );
+    let mut request = format!("ws://127.0.0.1:{}{WS_PATH}?x=1", live.http_port)
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert("x-skiff-service", HeaderValue::from_static(SERVICE_ID));
+    request
+        .headers_mut()
+        .insert("x-skiff-version", HeaderValue::from_static(SERVICE_VERSION));
     request
 }
 
-async fn try_connect_client(
-    live: &LiveEnvironment,
-) -> Option<ClientSocket> {
-    match timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(client_request(live)))
-        .await
+async fn try_connect_client(live: &LiveEnvironment) -> Option<ClientSocket> {
+    match timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(client_request(live)),
+    )
+    .await
     {
         Ok(Ok((socket, response))) if response.status() == 101 => Some(socket),
         Ok(Ok((_socket, response))) => {
@@ -429,9 +380,7 @@ async fn connect_client(live: &LiveEnvironment) -> ClientSocket {
             return socket;
         }
         if tokio::time::Instant::now() > deadline {
-            let temp = std::env::var("SKIFF_ROUTER_WS_LIVE_TEMP_DIR").unwrap();
-            dump_process_logs(&LiveEnvironment::from_env(), "connect-timeout");
-            panic!("real client WS connect did not succeed within 30s (temp {temp})");
+            panic!("real client WS connect did not succeed within 30s");
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -475,6 +424,30 @@ async fn recv_close(socket: &mut ClientSocket) -> (u16, String) {
     }
 }
 
+async fn recv_close_after_slow_client(socket: &mut ClientSocket) -> (u16, String) {
+    let mut text_frames = 0usize;
+    loop {
+        let message = timeout(Duration::from_secs(30), socket.next())
+            .await
+            .expect("slow-client close timed out")
+            .expect("stream ended without close");
+        match message {
+            Ok(Message::Close(Some(frame))) => {
+                eprintln!(
+                    "router-live:ws probe: slow-client phase read {text_frames} text frames before close"
+                );
+                return (frame.code.into(), frame.reason.to_string());
+            }
+            Ok(Message::Close(None)) => return (1005, String::new()),
+            Ok(Message::Text(_)) => {
+                text_frames += 1;
+            }
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+            other => panic!("unexpected message while waiting for slow-client close: {other:?}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Frozen JSON-RPC id lexeme corpus (same fixture as contracts-ws).
 // ---------------------------------------------------------------------------
@@ -490,28 +463,30 @@ struct IdCase {
     kind: String,
     frame: String,
     #[serde(default)]
+    #[serde(rename = "idKind")]
     id_kind: Option<String>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
+    #[serde(rename = "errorKind")]
     error_kind: Option<String>,
 }
 
-async fn run_id_corpus(socket: &mut ClientSocket) {
-    let corpus_source =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(ID_CORPUS_PATH))
-            .expect("read jsonrpc id corpus");
-    let corpus: IdCorpus =
-        serde_json::from_str(&corpus_source).expect("parse jsonrpc id corpus");
+async fn run_id_corpus(live: &LiveEnvironment) {
+    let corpus: IdCorpus = serde_json::from_str(ID_CORPUS).expect("parse jsonrpc id corpus");
     let mut exercised = 0usize;
     for case in &corpus.cases {
         match case.kind.as_str() {
             "request" => {
-                send_text(socket, &case.frame).await;
-                let response = recv_text(socket).await;
+                let mut socket = connect_client(live).await;
+                send_text(&mut socket, &case.frame).await;
+                let response = recv_text(&mut socket).await;
                 let value: serde_json::Value =
                     serde_json::from_str(&response).unwrap_or_else(|error| {
-                        panic!("corpus {}: undecodable response {response:?}: {error}", case.name)
+                        panic!(
+                            "corpus {}: undecodable response {response:?}: {error}",
+                            case.name
+                        )
                     });
                 assert!(
                     value.get("result").is_some(),
@@ -523,14 +498,16 @@ async fn run_id_corpus(socket: &mut ClientSocket) {
                     Some("safeInteger") => {
                         let expected: i64 = id.parse().expect("corpus integer id");
                         assert_eq!(
-                            value["id"], json!(expected),
+                            value["id"],
+                            json!(expected),
                             "corpus {}: canonical numeric id",
                             case.name
                         );
                     }
                     Some("string") => {
                         assert_eq!(
-                            value["id"], json!(id),
+                            value["id"],
+                            json!(id),
                             "corpus {}: string id preserved",
                             case.name
                         );
@@ -538,20 +515,24 @@ async fn run_id_corpus(socket: &mut ClientSocket) {
                     other => panic!("corpus {}: unknown id kind {other:?}", case.name),
                 }
                 assert_eq!(
-                    value["result"]["accepted"], json!(true),
+                    value["result"]["accepted"],
+                    json!(true),
                     "corpus {}: real runtime result",
                     case.name
                 );
                 assert_eq!(
-                    value["result"]["businessIdentity"], json!(BUSINESS_IDENTITY),
+                    value["result"]["businessIdentity"],
+                    json!(BUSINESS_IDENTITY),
                     "corpus {}: business identity flowed through the real chain",
                     case.name
                 );
+                let _ = socket.close(None).await;
                 exercised += 1;
             }
             "platformError" => {
-                send_text(socket, &case.frame).await;
-                let response = recv_text(socket).await;
+                let mut socket = connect_client(live).await;
+                send_text(&mut socket, &case.frame).await;
+                let response = recv_text(&mut socket).await;
                 let value: serde_json::Value =
                     serde_json::from_str(&response).unwrap_or_else(|error| {
                         panic!(
@@ -565,10 +546,12 @@ async fn run_id_corpus(socket: &mut ClientSocket) {
                     other => panic!("corpus {}: unknown error kind {other:?}", case.name),
                 };
                 assert_eq!(
-                    value["error"]["code"], json!(expected_code),
+                    value["error"]["code"],
+                    json!(expected_code),
                     "corpus {}: platform error code",
                     case.name
                 );
+                let _ = socket.close(None).await;
                 exercised += 1;
             }
             // notification/response/close cases are covered by the
@@ -585,9 +568,7 @@ async fn run_id_corpus(socket: &mut ClientSocket) {
 }
 
 async fn status_roundtrip(socket: &mut ClientSocket, id: &str) -> serde_json::Value {
-    let frame = format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"status.get","params":[]}}"#
-    );
+    let frame = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"status.get","params":[]}}"#);
     send_text(socket, &frame).await;
     let response = recv_text(socket).await;
     serde_json::from_str(&response)
@@ -605,10 +586,15 @@ async fn replacement_and_disconnect_race(live: &LiveEnvironment) -> ClientSocket
     assert_eq!(value["result"]["accepted"], json!(true));
 
     // WS#3 with the same business identity replaces WS#2 (close-oldest,
-    // socket generation 2), and the old generation receives 4009.
+    // socket generation 2); TS parity: non-ranked close-oldest overflow
+    // closes the old generation with 1008 (`policyOverflowClose`), while
+    // 4009 is reserved for ranked supersession.
     let mut third = connect_client(live).await;
     let (code, reason) = recv_close(&mut second).await;
-    assert_eq!(code, 4009, "superseded close (reason={reason})");
+    assert_eq!(
+        code, 1008,
+        "close-oldest replacement close (reason={reason})"
+    );
     let value = status_roundtrip(&mut third, "2").await;
     assert_eq!(value["result"]["accepted"], json!(true));
 
@@ -632,12 +618,12 @@ async fn slow_client_saturation(mut socket: ClientSocket) {
     for index in 0..BIG_REQUESTS {
         let frame = format!(
             r#"{{"jsonrpc":"2.0","id":{},"method":"chat.big","params":[]}}"#,
-            index + 1
+            index + 1000
         );
         send_text(&mut socket, &frame).await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let (code, reason) = recv_close(&mut socket).await;
+    let (code, reason) = recv_close_after_slow_client(&mut socket).await;
     assert_eq!(code, 1011, "slow-client close (reason={reason})");
     eprintln!(
         "router-live:ws probe: slow-client close after {} big responses",
@@ -691,7 +677,6 @@ mod tests {
 
         let router_config_path = write_router_config(&live);
         let mut router = spawn_router(&router_config_path);
-        debug_deployment_entries(&live);
         wait_for_listeners(&live, &mut router);
 
         let runtime_config_path = write_runtime_config(&live);
@@ -702,7 +687,7 @@ mod tests {
         let mut first = connect_client(&live).await;
 
         // 2. Frozen id lexeme corpus through the real chain.
-        run_id_corpus(&mut first).await;
+        run_id_corpus(&live).await;
 
         // 3. Clean close; the next connection takes the business slot.
         let _ = first.close(None).await;
@@ -755,10 +740,7 @@ mod tests {
             .args(["-INT", &runtime_pid.to_string()])
             .status()
             .expect("deliver SIGINT to runtime");
-        assert!(
-            runtime_signaled.success(),
-            "kill -INT runtime must succeed"
-        );
+        assert!(runtime_signaled.success(), "kill -INT runtime must succeed");
         let (runtime_status, runtime_stderr) =
             wait_for_exit(&mut runtime, Duration::from_secs(30), "runtime");
         assert!(

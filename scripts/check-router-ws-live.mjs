@@ -75,6 +75,25 @@ try {
       '',
     ].join('\n'),
   );
+  // The gate artifact also declares one HTTP raw unary entry. The merged
+  // runtime capability derivation (E-dispatch gate 88abfa20) advertises
+  // dispatch modes from HTTP gateway entries only, so a WS-only deployment
+  // cannot be selected by the frozen candidate query yet; the WS-only
+  // residual is tracked in the leaf for the runtime owner.
+  await writeFile(
+    join(sourceRoot, 'http.yml'),
+    [
+      'ping:',
+      '  method: GET',
+      '  path: /ping',
+      '  kind: rawHttp',
+      '  handler: main.ping',
+      '  adapterArgs:',
+      '    - param: request',
+      '      source: { kind: http.request }',
+      '',
+    ].join('\n'),
+  );
   await writeFile(
     join(sourceRoot, 'websocket.yml'),
     [
@@ -120,6 +139,10 @@ try {
       '}',
       '',
       'type StatusParams = Array<string>',
+      '',
+      'function ping(request: std.http.HttpRequest) -> std.http.HttpResponse {',
+      '  return std.http.noContent()',
+      '}',
       '',
       'function onConnect(',
       '  request: std.websocket.WebSocketConnectRequest,',
@@ -300,7 +323,6 @@ try {
         SKIFF_ROUTER_WS_LIVE_ENVIRONMENT: ENVIRONMENT,
         SKIFF_ROUTER_WS_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_WS_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
-        SKIFF_ROUTER_WS_LIVE_DEPLOYMENT_REF: JSON.stringify(deployment),
         SKIFF_ROUTER_WS_LIVE_GENERATION: String(GENERATION),
         SKIFF_ROUTER_WS_LIVE_HTTP_PORT: String(httpPort),
         SKIFF_ROUTER_WS_LIVE_RUNTIME_PORT: String(runtimePort),

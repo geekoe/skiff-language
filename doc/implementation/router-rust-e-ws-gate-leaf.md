@@ -135,16 +135,49 @@ Agent：`/root/dev_e_ws_gate`
   stream 执行）；或等价地放宽/对齐候选筛选（需改 C-routing-query 契约语义，
   改动更大）。
 
-## 执行状态（提交前，截至 Gap 4）
+### Gap 4 后续（E-dispatch gate 修复 + 本 gate 处理）
 
-- Gap 1/2/3 修复 + 测试全绿（`ws_live_ledger_admission` 8、
-  `ws_live_surface` 2、`gates_wiring_ws` 6、全 crate 368）。
-- registry +1、CI job append、workflow 解析通过。
-- harness 真实链路推进到：std/package/assembly/config authoring → 临时
-  Mongo → 真实 Router+Runtime → Runtime 注册 → client WS 连接；被 Gap 4
-  阻塞（503）。
-- probe 内留有临时诊断（deployment entry 枚举、connect 失败原因、
-  process log dump），最终提交前精简。
+- `/root/dev_e_dispatch_gate` 已合入 88abfa20：runtime 从已 admit assembly 的
+  gateway entries 派生 `dispatch_modes`。但**只统计 HTTP 条目**：WS-only
+  deployment 仍广告空 modes → E-ws 真实链路仍 503。
+- 本 gate 处理：harness 服务 artifact 额外声明一个 HTTP raw unary 条目
+  （`http.yml` `ping`，handler `main.ping`），使 runtime 诚实广告 unary，
+  WS 全链在真实 Router+Runtime 上运行；**WS-only 残余缺口**（
+  `dispatch_modes_from_gateway_entries` 未覆盖 WebSocketConnect /
+  WebSocketJsonRpc 的 unary 表面）记录给 runtime owner（E-dispatch gate /
+  集成）后续扩展，不改 runtime 本节点。
+
+### 执行中发现并修复的 ws lane 小修（本节点授权范围内）
+
+1. **broker params span bug**（`router/src/ws/broker.rs`）：私有
+   `top_level_members` 把 span 记为 `key_start..index`（整个 member 含键），
+   `profile.rs` 的正确实现是 `value_start..index`（仅值）。导致 Router 把
+   `"params":{...}`（含键）作为 payload 发给 Runtime → runtime 每次回
+   invalidParams（-32602）。已修为 value span；新增
+   `broker_forwards_params_value_slice_not_member_with_key` 回归测试；同步
+   `gates_wiring_ws.rs` 一处断言（原断言编码了错误行为，注释已更新为 TS
+   `losslessJsonSlice` parity）。
+2. **broker peer key 未按 generation 隔离**（`router/src/ws/broker.rs`）：
+   TS `webSocketRequestBroker.ts::peerKey` 包含 generation uid；Rust 只用
+   `canonical_key()`，跨连接相同 JSON-RPC id 会在 active/tombstone 中误判
+   duplicate（1002）。已加 `generation_peer_key(uid, peer_id)` 用于 outbound/
+   inbound/predispatch/response 四条路径（TS parity）。
+
+## 执行状态（提交前，最终）
+
+- Gap 1/2/3 + 上述两个 broker 小修全部完成；测试全绿：
+  `ws_live_ledger_admission` 9、`ws_live_surface` 2、`ws_live_probe`（ignored，
+  harness 驱动）、`gates_wiring_ws` 6、全 crate 387 passed / 0 failed。
+- harness 真实运行 PASS：real client WS → real Router → real Runtime，
+  id 词法 corpus 18 例、business replacement（close-oldest 1008，TS parity；
+  4009 仅 ranked）、disconnect race、slow-client 1011、frame budget 1009、
+  binary 1003、Router/Runtime 优雅退出归零。
+- registry +1（`router-live:ws` / `live:router-rust-ws`）、CI
+  `router-rust-ws-managed` job append、classifier 覆盖；workflow YAML 解析
+  通过；`verify-live-registry.test.mjs` 20/20。
+- 与集成分支（E-dispatch fb60fb86、E-activation cfbd5d3a）合并完成，
+  共享文件冲突已机械解决（dispatch/activation/ws 条目与 job 并存）。
+- probe 已精简：直接 Runtime 连接（无 relay）、无临时诊断。
 
 ## 执行状态（提交前）
 
