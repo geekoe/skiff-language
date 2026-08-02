@@ -119,17 +119,17 @@ terminal 不可达。differential 场景不比较 backpressure outcome；如需�
 
 ### WS-only routing 状态
 
-baseline `edc111f8` 仍存在残余缺口：runtime
+基线 `edc111f8` 的残余缺口（runtime
 `control_plane.rs::dispatch_modes_from_gateway_entries` 只统计 HTTP
-gateway 表面，WS-only deployment 广告空 dispatch_modes → E-ws gate 曾用
-额外 HTTP ping 条目规避（`scripts/check-router-ws-live.mjs` 注释）。
-Batch 10 WS-only-routing 节点（`feat/router-rust-ws-only-routing`，
-worktree `/Users/geek/workspace/wt-ws-only-routing`）已有未提交修改把
-WebSocketConnect/JsonRpc 表面计入 dispatch_modes 并移除该兜底；尚未提交/
-合入。本节点所有 `differential_ext_ws_*` 场景的 `ext-ws` fixture 继续带
-HTTP ping 条目（与 E-ws gate 相同规避），**WS-only routing 状态记为未收敛
-（修复在途）**；待 WS-only-routing 节点合入后应把本段改为已收敛，并可选
-移除 fixture 的 ping 兜底。
+gateway 表面，WS-only deployment 广告空 dispatch_modes，E-ws gate 曾用
+额外 HTTP ping 条目规避）已由 Batch 10 WS-only-routing 节点关闭：
+`feat/router-rust-ws-only-routing`（commit `735e590d`，经集成分支 merge
+`5e185c05` 合入）把 WebSocketConnect/WebSocketJsonRpc 表面计入
+dispatch_modes，并移除 `scripts/check-router-ws-live.mjs` 的 HTTP 兜底
+条目；该 harness 在真实 WS-only artifact 全链上 PASS。**WS-only routing
+状态已收敛**。本节点 `differential_ext_ws_*` 场景的 `ext-ws` fixture 保留
+HTTP ping 条目仅作为跨实现基线冗余，不再构成路由依赖；后续如需去除由
+scripts 侧 owner 处理（本节点写边界外）。
 
 ### 附加观察（记录，不比较）
 
