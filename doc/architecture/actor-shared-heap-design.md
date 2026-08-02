@@ -270,7 +270,7 @@ v4 决策（用户确认）：
 
 ## 12. 第一批切片定义（multi-agent-development.md 执行依据）
 
-### Slice 1（前置片）：concurrent / serial 暂缓
+### Slice 1（已完成并合入）：concurrent / serial 暂缓
 
 - 目标：`concurrent` 语句、`concurrent value` 表达式、`serial` 编译期拒绝；删除运行时 concurrent
   机制与 E3 bridge 及关联测试；`ActorExecutionFrame` 本体保留（Slice 2 重写）。
@@ -278,22 +278,109 @@ v4 决策（用户确认）：
   测试）、`doc/reference/runtime.md` §6 标注。
 - 验收：编译拒绝正例/负例测试；`skiff-runtime-eval` 与 `skiff-compiler-source`（及相关 crate）聚焦
   测试通过；`rg` 证明无残留 concurrent 运行时引用（test-only 允许的除外）。
-- 依赖：无（基线为 v4 设计提交后的 main）。
 
-### Slice 2（第一片原型）：`HeapAccess` 双模式 + actor 单路径 Shared
+### 批次 DAG（接口冻结后并行，见 §13）
 
-- 目标：引入 `HeapAccess::Exclusive/Shared`（Shared 携带 `Arc<Mutex<RequestHeap>>`）；
-  `EvalContext.heap` 改为 `HeapAccess`，`heap_mut()` 在 `HeapAccess` 上；actor 单路径
-  （get → create/method → 真实挂起 → resume）走 Shared 模式，删除 snapshot/import/wire 往返；
-  普通 request 保持 Exclusive 语义不变。
-- 依赖：Slice 1 已集成（E3 不存在，避免双语义并存）。
-- 写范围：runtime/model（如需）、runtime/eval（eval_context、漏斗、actor_executor、
-  actor_instance、actor_concurrent_continuation 本体、相关测试）。
-- 验收：actor 单路径真实挂起零复制（测试断言无 arena clone）；guard 不跨 Pending；普通 request
-  聚焦测试不回归；失败段部分写入新语义测试；provider-stream 边界回归测试。
+- **F1（在途）**：`db transaction` 同包禁令（compiler execution_semantics + 本地 helper 可达性）+ 
+  移除 runtime actor 事务回滚路径（`with_transaction_live_fields`、rollback actor 分支）+ 
+  删除 actor 事务测试、补普通 request 事务回归测试。
+- **Wave 1（并行）**：
+  - **F2（求值器核心）**：`HeapAccess` 双模式（§13.1）+ `EvalContext.heap` 改造 + 漏斗
+    release/reacquire（§13.3）+ `Interpreter` 入口签名（§13.4）+ provider-stream 边界修复 +
+    关联测试；
+  - **F5（router，独立）**：`inMemoryRegistryStore` idle 逐出与 upgrade 互卡竞态修复 + 回归测试。
+- **Wave 2（F1 + F2 合流后）**：
+  - **F3（actor 层 + model）**：共享 arena store / frame / executor 重写（§13.5）+ arena epoch
+    （§13.6）+ active/suspended 计数 + per-instance limits + quiescence 压缩 + 失败段部分写入
+    语义测试。基线包含 F1（事务路径已移除）与 F2（HeapAccess API 已存在）。
+- **批末**：集成 Agent 将 `integration/actor-shared-heap` 合入 `main` 一次。
 
-### 后续片（不在本批）
+## 13. 并行实现接口契约（冻结）
 
-- Slice 3：实例级 active/suspended 计数 + quiescence 压缩 + arena epoch；
-- Slice 4：router `inMemoryRegistryStore` 逐出/升级竞态修复（可与 3 并行）；
-- Slice 5：`db transaction` 同包禁令的编译器实现（actor 方法 + 本地 helper 可达性）。
+本契约在 Wave 1 前冻结。F2/F5 立即并行；F3 在 F1+F2 合流后启动，按本节接口编码，
+不依赖 F2 的内部实现细节。
+
+### 13.1 `HeapAccess`（新文件 `runtime/eval/src/heap_access.rs`，F2 拥有）
+
+```rust
+pub(crate) enum HeapAccess<'a> {
+    Exclusive(&'a mut RequestHeap),
+    Shared {
+        arena: Arc<tokio::sync::Mutex<RequestHeap>>,
+        guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
+    },
+}
+
+impl HeapAccess<'_> {
+    pub fn heap_mut(&mut self) -> &mut RequestHeap;   // Shared: guard 必须 Some，否则 invariant 错误
+    pub fn release(&mut self);                        // Shared: guard.take() 并 drop；Exclusive: no-op
+    pub async fn reacquire(&mut self);                // Shared: guard = Some(arena.lock_owned().await)；Exclusive: no-op
+    pub fn is_shared(&self) -> bool;
+}
+impl Deref / DerefMut for HeapAccess（Shared 经 guard；Exclusive 直接）
+```
+
+- 普通 request / 未共享路径 = `Exclusive`，语义与现状完全一致，release/reacquire 为 no-op；
+- actor 实例 arena = `Shared`；guard 不得跨 `Pending` 存活；release/reacquire 只发生在漏斗内。
+
+### 13.2 `EvalContext`（F2）
+
+- `heap: &'a mut RequestHeap` 改为 `heap: HeapAccess<'a>`；
+- 所有内部 heap 访问改 `self.heap.heap_mut()`；`heap_mut()` 定义在 `HeapAccess` 上，不在
+  `EvalContext` 上（避免同语句借用 `self.env` / `self.context`）；
+- 共享模式下，任何能返回 `Pending` 的路径不得持有 guard。
+
+### 13.3 漏斗契约（F2 实现；F3 只经 `ActorExecutionFrame` 使用，不直接依赖漏斗签名）
+
+- `actual_pending::await_operation`、`program_db::wait::await_operation`、
+  `program_stream::current_scope::next_with_actor`、`callback_native::prepared` 的 wait：
+  对 `Shared` 执行 poll-once（`Ready` 不释放；`Pending` → `release()` → await → `reacquire().await`），
+  对 `Exclusive` 保持现状直接 await；
+- `ActorExecutionFrame::await_if_pending` 语义（F3）：poll-once；`Pending` →
+  `access.release()` → await future → `access.reacquire().await` → 校验 instance fence / arena epoch；
+  F3 通过 `HeapAccess` 的公开方法实现，不依赖 F2 漏斗内部。
+
+### 13.4 `Interpreter` 入口（F2）
+
+- `call_program_executable*` 系列的 heap 参数由 `&mut RequestHeap` 改为 `&mut HeapAccess`（或等效）；
+- 普通 request 调用点传 `Exclusive`；actor 调用点传 `Shared`；
+- 同步函数（deep clone、codec、materialize、error promote）继续收 `&mut RequestHeap`。
+
+### 13.5 Actor store 契约（F3）
+
+- `ActorInstanceState { fields: Vec<ActorFieldValue>, arena: SharedArena }`，字段根指向 arena 节点；
+- `acquire_segment(handle) -> SegmentLease`（含 guard + fence/epoch 快照）；release/commit 无复制；
+- active / suspended 续体计数（create、段、恢复中、放弃、提交）；升级 / 逐出要求计数 == 0；
+- per-instance arena limits；`compact_if_quiescent()`（计数 == 0 且无 upgrade/discard 时触发）；
+- 失败段不保证字段原子性（§3.4）。
+
+### 13.6 Arena epoch（runtime/model，F3）
+
+- `RequestHeap` 增加 epoch（默认 0；`new_with_epoch(u32)`；`epoch()`）；
+- `HeapHandle` 增加 epoch；`slot()` / `slot_mut()` 校验 handle.epoch == heap.epoch；
+- `alloc_*` 以当前 heap epoch 盖章；压缩创建新 arena 时 epoch + 1；
+- `runtime_values_equal` 的 handle 相等快路径因 epoch 入 handle 而安全。
+
+### 13.7 Router（F5，独立）
+
+- `router/src/actor/inMemoryRegistryStore.ts`：进入 `upgrading` 时取消/清理 pending idle eviction；
+  upgrade 完成容忍 owner 丢失；补 router 回归测试。无跨模块接口依赖。
+
+### 13.8 文件所有权（并行写集，互不重叠）
+
+- F2：`heap_access.rs`（新）、`eval_context.rs`、`eval_context/actual_pending.rs`、
+  `eval_context/timeout.rs`、`program_db/wait.rs`、`program_stream/current_scope.rs`、
+  `program_stream.rs`（如需）、`callback_native/prepared.rs`、`program_execution.rs`、
+  `db_eval.rs`（如需）、`spawn_ops.rs`（如需）、`async_stream_cancel.rs` +
+  `prepared_unary.rs`（provider 边界）及关联测试；
+- F3：`runtime/model/src/value.rs`、`runtime/model/src/request_heap.rs` 及测试；
+  `actor_instance.rs`、`actor_executor.rs`、`actor_concurrent_continuation.rs` 及关联测试
+  （基线含 F1，事务路径已移除）；
+- F5：`router/src/actor/inMemoryRegistryStore.ts` 及 router 相关测试；
+- F1（在途）：compiler execution_semantics、`program_db/rollback.rs`、`program_db/tests/transaction.rs`。
+
+### 13.9 集成与验收
+
+- 集成 Agent 串行合入 F1/F2/F5/F3 到 `integration/actor-shared-heap`；
+- F2 与 F3 各自合入后必须先通过合并 HEAD 的 `cargo check`（F2+F3 交叉接口）；
+- 全部合流后冻结候选，跑验收矩阵（§10）；最后合入 `main` 一次。
