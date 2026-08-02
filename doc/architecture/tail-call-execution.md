@@ -192,6 +192,14 @@ non-tail普通调用仍以nested `#[async_recursion]` future在worker原生栈�
 承载128层（release实测下限≈34 MiB），因此小栈证明只以release形态的40 MiB测试
 呈现（仍远低于生产64 MiB），debug形态用提升后的worker栈证明guard边界可达。
 
+router session loop（`run_forever` → `run_connected_session_with_bootstrap`）会在
+driver线程上内联轮询session-owned child work（`actor.owner.invoke`/`actor.owner.control`
+等），这些路径上的non-tail链同样受`MAX_PROGRAM_CALL_DEPTH = 128`保护。driver线程
+必须使用与tokio worker相同的`RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES`栈预算，而不是
+进程main线程的OS默认栈（约8 MiB）：debug unoptimized帧在到达guard前就可能击穿小栈，
+导致整个runtime进程abort。`runtime/driver/main.rs`以该常量创建driver线程并在其上
+`block_on`整个runtime驱动future。
+
 ## Exception and call-site contract
 
 Tail chain的诊断空间必须常量有界：

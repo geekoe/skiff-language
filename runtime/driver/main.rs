@@ -28,7 +28,19 @@ fn main() -> anyhow::Result<()> {
         .thread_stack_size(RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES)
         .build()?;
 
-    runtime.block_on(run())
+    // The router session loop polls session-owned child work (actor owner invoke/control,
+    // request leases) inline on the driver thread. Deep non-tail program chains can consume
+    // far more than the OS default main-thread stack before the program-call depth guard is
+    // reached (debug evaluator frames are ~1 MiB per layer), so the driver must run on a
+    // thread with the same stack budget as tokio workers instead of the process main thread.
+    let driver = std::thread::Builder::new()
+        .name("skiff-runtime-driver".to_string())
+        .stack_size(RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES)
+        .spawn(move || runtime.block_on(run()))?;
+    let result = driver
+        .join()
+        .map_err(|panic| anyhow::anyhow!("runtime driver thread panicked: {panic:?}"))?;
+    result
 }
 
 async fn run() -> anyhow::Result<()> {
