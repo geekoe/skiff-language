@@ -2402,10 +2402,13 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "regex",
+ "serde_json",
  "skiff-runtime-request-contract",
  "skiff-runtime-transport",
  "tokio",
  "tokio-tungstenite",
+ "unsafe-libyaml",
 ]
 
 [[package]]
