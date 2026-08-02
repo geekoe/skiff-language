@@ -12,17 +12,22 @@ name = "skiff-router"
 path = "src/main.rs"
 
 [dependencies]
+skiff-deployment = { path = "../deployment" }
 skiff-runtime-request-contract = { path = "../runtime/request-contract" }
 skiff-runtime-transport = { path = "../runtime/transport" }
 
 # Final listener mechanism (C-net) and strict YAML parsing (C-config): production
 # dependencies consumed by the Router binary. Every version is already pinned in
 # the workspace Cargo.lock; no new crate or version is introduced.
+async-trait = "0.1"
 bytes = "1"
 futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+mongodb = "3.2"
+serde_json = "1.0"
+thiserror = "2.0"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.26"
 unsafe-libyaml = "0.2"
@@ -31,3 +36,4 @@ unsafe-libyaml = "0.2"
 # Golden corpus consumer tests and process-listener probes.
 regex = "1"
 serde_json = "1"
+skiff-artifact-model = { path = "../artifact-model" }

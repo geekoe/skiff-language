@@ -2397,15 +2397,20 @@ dependencies = [
 name = "skiff-router"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "mongodb",
  "regex",
  "serde_json",
+ "skiff-artifact-model",
+ "skiff-deployment",
  "skiff-runtime-request-contract",
  "skiff-runtime-transport",
+ "thiserror",
  "tokio",
  "tokio-tungstenite",
  "unsafe-libyaml",

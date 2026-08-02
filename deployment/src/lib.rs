@@ -5,6 +5,7 @@
 //! until their respective checkpoint tasks implement them.
 
 pub mod assembly;
+pub mod activation_state;
 pub mod error;
 pub mod fixtures;
 pub mod projection;
