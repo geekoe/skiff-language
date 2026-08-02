@@ -50,6 +50,13 @@ pub use listener::{
     run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
     RouterListeners,
 };
+pub use activation::{
+    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
+    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationParticipantBinding,
+    ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort, CandidateEpochRefs,
+    CoordinatorError, EnqueueResult, PublishCommittedEpochPort, RecoveryTransaction,
+    RuntimeCandidateQueryPort, SessionEnqueuePort,
+};
 pub use routing::{
     CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
     DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
