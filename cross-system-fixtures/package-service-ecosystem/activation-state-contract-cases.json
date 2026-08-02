@@ -1,0 +1,258 @@
+{
+  "schemaVersion": "skiff-activation-state-contract-corpus-v1",
+  "cases": [
+    {
+      "name": "prepare-idempotent-retry-and-conflict",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "prepare",
+          "activationId": "activation-8x",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a"],
+          "expected": "casMismatch"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 7,
+          "expectedPendingActivationId": "activation-8",
+          "expectedParticipants": ["runtime-a", "runtime-b"]
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    },
+    {
+      "name": "prepare-stale-generation-rejected",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 6,
+          "candidateGeneration": 7,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a"],
+          "expected": "casMismatch"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 7,
+          "expectedPendingActivationId": null,
+          "expectedParticipants": null
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    },
+    {
+      "name": "abort-commit-cycle-with-retry",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "abort",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "expected": "ok"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 7,
+          "expectedPendingActivationId": null,
+          "expectedParticipants": null
+        },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "commit",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "commit",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 8,
+          "expectedPendingActivationId": null,
+          "expectedParticipants": null
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    },
+    {
+      "name": "commit-requires-exact-ack-sets",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "commit",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a"],
+          "expected": "casMismatch"
+        },
+        {
+          "op": "commit",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "connected": ["runtime-a"],
+          "prepared": ["runtime-a", "runtime-b"],
+          "expected": "casMismatch"
+        },
+        {
+          "op": "commit",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 8,
+          "expectedPendingActivationId": null,
+          "expectedParticipants": null
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    },
+    {
+      "name": "missing-candidate-assembly-fails-prepare",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "missing",
+          "config": "b",
+          "participants": ["runtime-a"],
+          "expected": "invalid"
+        },
+        {
+          "op": "read",
+          "expectedGeneration": 7,
+          "expectedPendingActivationId": null,
+          "expectedParticipants": null
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    },
+    {
+      "name": "recovery-actions-corpus",
+      "steps": [
+        { "op": "initialize", "committedGeneration": 7, "assembly": "committed", "config": "a" },
+        {
+          "op": "prepare",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "candidateGeneration": 8,
+          "assembly": "candidate",
+          "config": "b",
+          "participants": ["runtime-a", "runtime-b"],
+          "expected": "ok"
+        },
+        {
+          "op": "recover",
+          "connected": [],
+          "prepared": [],
+          "expectedAction": "abortPending",
+          "expectedReplicaIds": null
+        },
+        {
+          "op": "recover",
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a"],
+          "expectedAction": "replayPrepare",
+          "expectedReplicaIds": ["runtime-b"]
+        },
+        {
+          "op": "recover",
+          "connected": ["runtime-a", "runtime-b"],
+          "prepared": ["runtime-a", "runtime-b"],
+          "expectedAction": "commitPending",
+          "expectedReplicaIds": null
+        },
+        {
+          "op": "abort",
+          "activationId": "activation-8",
+          "expectedGeneration": 7,
+          "expected": "ok"
+        },
+        {
+          "op": "recover",
+          "connected": [],
+          "prepared": [],
+          "expectedAction": "stableCommitted",
+          "expectedReplicaIds": null
+        }
+      ],
+      "expected": { "terminal": "ok" }
+    }
+  ]
+}
