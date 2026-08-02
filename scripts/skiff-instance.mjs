@@ -83,7 +83,7 @@ const usage = `usage:
   skiff instance status <config> [--json]
   skiff instance doctor <config>
   skiff instance repair <config>
-  skiff instance build <config>
+  skiff instance build <config> [--only router]
   skiff instance refresh-binaries <config>
   skiff instance up <config> [--repair-owned-conflicts]
   skiff instance restart <config> [component]
@@ -236,29 +236,34 @@ async function doctorInstance(rawArgs, configPath) {
 }
 
 async function buildInstance(rawArgs, configPath) {
-  const args = parseFlags(rawArgs, { flags: new Set() });
+  const args = parseFlags(rawArgs, { values: new Set(['--only']) });
   if (args.positionals.length !== 0) {
     throw new Error(`unexpected argument ${args.positionals[0]}`);
   }
   const config = await loadInstance(configPath);
+  const only = args.values.get('--only');
   await ensureInstanceDirs(config.paths);
-  await buildComponentBinaries(config);
+  await buildComponentBinaries(config, { only });
   const status = await instanceStatus(config);
   const staleProcesses = status.processes
     .filter((processStatus) => processStatus.category === 'stale-binary')
     .map(({ name, pid }) => ({ name, pid }));
-  console.log(JSON.stringify({
-    runtime: {
-      path: config.paths.runtimeBinary,
-    },
-    ecosystemStoreCli: {
-      path: config.paths.ecosystemStoreCli,
-    },
+  const output = {
     staleProcesses,
     recovery: staleProcesses.length === 0
       ? null
       : `node scripts/skiff.mjs instance refresh-binaries ${config.paths.configPath}`,
-  }, null, 2));
+  };
+  if (only === 'router') {
+    output.router = { path: config.routerProcessSpec.rust_binary_path };
+  } else {
+    output.runtime = { path: config.paths.runtimeBinary };
+    output.ecosystemStoreCli = { path: config.paths.ecosystemStoreCli };
+    if (config.routerProcessSpec.implementation === 'rust') {
+      output.router = { path: config.routerProcessSpec.rust_binary_path };
+    }
+  }
+  console.log(JSON.stringify(output, null, 2));
 }
 
 async function refreshInstanceBinaries(rawArgs, configPath) {
@@ -552,26 +557,34 @@ function telemetryConfigText(config) {
   });
 }
 
-async function buildComponentBinaries(config) {
-  await buildRustBinary({
-    manifest: join(skiffRoot, 'runtime', 'Cargo.toml'),
-    bin: 'runtime',
-    source: join(config.paths.cargoTargetDir, 'debug', process.platform === 'win32' ? 'runtime.exe' : 'runtime'),
-    destination: config.paths.runtimeBinary,
-    config,
-  });
+async function buildComponentBinaries(config, { only } = {}) {
+  if (only !== undefined && only !== 'router') {
+    throw new Error(`instance build --only supports exactly "router", got ${JSON.stringify(only)}`);
+  }
+  if (only === 'router' && config.routerProcessSpec.implementation !== 'rust') {
+    throw new Error('instance build --only router requires router.implementation: rust');
+  }
+  if (only !== 'router') {
+    await buildRustBinary({
+      manifest: join(skiffRoot, 'runtime', 'Cargo.toml'),
+      bin: 'runtime',
+      source: join(config.paths.cargoTargetDir, 'debug', process.platform === 'win32' ? 'runtime.exe' : 'runtime'),
+      destination: config.paths.runtimeBinary,
+      config,
+    });
 
-  await buildRustBinary({
-    manifest: join(skiffRoot, 'compiler', 'Cargo.toml'),
-    bin: 'skiff-compiler',
-    source: join(
-      config.paths.cargoTargetDir,
-      'debug',
-      process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
-    ),
-    destination: config.paths.ecosystemStoreCli,
-    config,
-  });
+    await buildRustBinary({
+      manifest: join(skiffRoot, 'compiler', 'Cargo.toml'),
+      bin: 'skiff-compiler',
+      source: join(
+        config.paths.cargoTargetDir,
+        'debug',
+        process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+      ),
+      destination: config.paths.ecosystemStoreCli,
+      config,
+    });
+  }
 
   if (config.routerProcessSpec.implementation === 'rust') {
     await buildRustBinary({
@@ -668,9 +681,7 @@ function routerManagedProcessSpec(config) {
     command: invocation.command,
     args: invocation.args,
     cwd: skiffRoot,
-    ports: spec.implementation === 'ts'
-      ? [config.ports.routerHttp, config.ports.routerControl]
-      : [],
+    ports: [config.ports.routerHttp, config.ports.routerControl],
     ...(spec.implementation === 'rust'
       ? { managedBinary: spec.rust_binary_path }
       : {}),

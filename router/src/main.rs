@@ -1,15 +1,21 @@
-//! Empty `skiff-router` skeleton (Router Rust Migration PR 0a).
+//! `skiff-router` binary (Router Rust Migration PR 0b).
 //!
-//! This binary intentionally binds no listener and implements no business
-//! protocol. It only supports direct process identity/lifecycle smoke:
+//! Supports direct process identity/lifecycle smoke (unchanged from PR 0a):
 //!
 //! - `skiff-router --identity` prints `skiff-router <sha256-of-self>` and
 //!   exits 0.
-//! - `skiff-router` prints a no-listener marker on stderr and exits 0.
+//! - `skiff-router` (no config path) prints a no-listener marker on stderr
+//!   and exits 0 (frozen router-rust-process-smoke behavior).
+//! - `skiff-router <config>` parses the frozen Router config, starts the
+//!   public/runtime/control listeners (C-net mechanism), and shuts them down
+//!   gracefully on SIGINT/SIGTERM.
 
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
+use std::process::ExitCode;
+
+use skiff_router::{load_router_config, run_router};
 
 const SHA256_ROUND_CONSTANTS: [u32; 64] = [
     0x428a_2f98,
@@ -89,14 +95,41 @@ const INITIAL_HASH: [u32; 8] = [
     0x5be0_cd19,
 ];
 
-fn main() {
-    let executable = std::env::current_exe().expect("resolve current executable path");
-    let digest = sha256_hex(&read_binary(&executable).expect("read current executable"));
-    if std::env::args().nth(1).as_deref() == Some("--identity") {
-        println!("skiff-router {digest}");
-        return;
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|argument| argument == "--identity") {
+        println!("skiff-router {}", self_sha256());
+        return ExitCode::SUCCESS;
     }
-    eprintln!("skiff-router: empty skeleton (sha256 {digest}); no listener bound");
+    let Some(config_path) = args.first() else {
+        eprintln!("skiff-router: no config path provided; no listener bound");
+        return ExitCode::SUCCESS;
+    };
+    if args.len() != 1 || config_path.starts_with('-') {
+        eprintln!("skiff-router: usage: skiff-router <router.yml> | skiff-router --identity");
+        eprintln!("skiff-router: no listener bound");
+        return ExitCode::FAILURE;
+    }
+    let config = match load_router_config(config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("skiff-router: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match run_router(config).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("skiff-router: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn self_sha256() -> String {
+    let executable = std::env::current_exe().expect("resolve current executable path");
+    sha256_hex(&read_binary(&executable).expect("read current executable"))
 }
 
 fn read_binary(path: &Path) -> io::Result<Vec<u8>> {
