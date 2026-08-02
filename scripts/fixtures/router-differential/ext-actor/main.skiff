@@ -1,0 +1,63 @@
+import std
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function increment() -> string {
+    if self.count == 0 {
+      self.count = 1
+      return "actor-count-1"
+    }
+    self.count = self.count + 1
+    return "actor-count-next"
+  }
+}
+
+type Slow {
+  id: string,
+  count: number,
+}
+
+actor Slow {
+  key(id)
+  create()
+}
+
+impl Slow {
+  function create() -> void {
+    std.time.sleep(300)
+    self.count = 0
+  }
+
+  function increment() -> string {
+    self.count = self.count + 1
+    return "slow-ok"
+  }
+}
+
+function marker(body: null) -> string {
+  const counter = std.actor.get<Counter>("shared")
+  return counter.increment()
+}
+
+function slowGetOnly(body: null) -> string {
+  const slow = std.actor.get<Slow>("slow")
+  return "slow-get-ok"
+}
+
+function slowIncrement(body: null) -> string {
+  const slow = std.actor.get<Slow>("slow")
+  return slow.increment()
+}

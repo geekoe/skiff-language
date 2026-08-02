@@ -111,3 +111,33 @@ owner。`loop-risk-health.test.ts` 在 batch-1 已按 shared owner 改造并保�
 3. 若属于 black-box replacement，确认对应 differential scenario
    （`scenario-inventory.json`）已声明该可观察面并真实跑通；
 4. 不得仅以"类型系统/编译通过"代替 observable test 记录。
+
+## Batch 10 同步段（2026-08-03，differential 扩展节点）
+
+Baseline：`origin/main@edc111f8`。本段由
+`doc/implementation/router-rust-migration-batch-10-differential-ext-leaf.md`
+维护，协议与上表延续。
+
+### edc111f8 审计（d228b613 → edc111f8）
+
+- `git diff --name-status d228b613 edc111f8 -- 'router/tests/*.test.ts'`
+  显示 **0 个 TS test 文件删除**；batch 9 各 gate（E-http/E-ws/E-actor-rust
+  等）只修改既有 TS test 或新增 Rust probe test，未删除 TS observable。
+- 新增 1 个 TS test 文件：`router/tests/actor-routing-projection-reader.test.ts`
+  （A2 canonical projection reader，shared owner 保留）。
+- 上表 66 个 retained 行在 edc111f8 全部仍然存在，处置不变。
+
+### 本节点删除记录
+
+本节点（differential 扩展）未删除任何 router TS test。新增的可观察覆盖
+（HTTP unary/stream/error/CORS、WS generation/replacement/id 词法、actor
+call/control）全部以 `differential_ext_*` differential scenario 形式
+**新增**，不替代任何既有 TS test 的 retained 状态。
+
+### Batch 10 后续节点义务
+
+后续 Batch 10 节点（E-actor-parity 等）若删除上表任何 TS test，必须按
+协议在此登记四类处置之一 + 理由 + 替代 owner，并确认对应
+`scenario-inventory.json` 场景（`differential_ext_*` / `actor_parity_*`）
+已真实跑通该可观察面；本 ledger 仍是 Router 迁移 TS test 处置的
+canonical 登记处。

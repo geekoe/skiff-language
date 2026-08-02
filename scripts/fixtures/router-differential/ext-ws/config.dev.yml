@@ -1,0 +1,4 @@
+test.skiff/router-rust-differential-ext-ws:
+  timeout: 5000
+  quota: { cpuMillis: 100, memoryBytes: 1048576 }
+  principal: service:test.skiff/router-rust-differential-ext-ws

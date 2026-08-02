@@ -1,0 +1,40 @@
+unary:
+  method: POST
+  path: /unary
+  kind: rawHttp
+  handler: main.unary
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+typed-unary:
+  method: POST
+  path: /typed-unary
+  kind: typedJson
+  handler: main.typedUnary
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+stream:
+  method: POST
+  path: /stream
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+error:
+  method: GET
+  path: /error
+  kind: rawHttp
+  handler: main.fail
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+cors-options:
+  method: OPTIONS
+  path: /cors
+  kind: rawHttp
+  handler: main.cors
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

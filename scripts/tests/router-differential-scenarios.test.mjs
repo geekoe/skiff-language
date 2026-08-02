@@ -14,7 +14,7 @@ test('checked-in differential inventory is complete and consistent', async () =>
   const inventory = await loadScenarioInventory({ skiffRoot: repoRoot });
   assert.equal(
     inventory.baseline,
-    'd228b613eafeba5e2275bf830f5770f21b931e81',
+    'edc111f888a70743a8ecadc3bdbcb6b4ae2fd54a',
   );
   assert.ok(inventory.scenarios.length >= 1);
   const ids = new Set(inventory.scenarios.map((scenario) => scenario.id));
@@ -23,7 +23,18 @@ test('checked-in differential inventory is complete and consistent', async () =>
   const runnable = inventory.scenarios.filter((scenario) => scenario.status === 'runnable');
   assert.deepEqual(
     runnable.map((scenario) => scenario.id),
-    ['session-handshake-basic'],
+    [
+      'session-handshake-basic',
+      'differential_ext_http_unary',
+      'differential_ext_http_stream',
+      'differential_ext_http_error',
+      'differential_ext_http_cors',
+      'differential_ext_ws_generation',
+      'differential_ext_ws_replacement',
+      'differential_ext_ws_id_lexical',
+      'differential_ext_actor_call',
+      'differential_ext_actor_control',
+    ],
   );
   for (const scenario of inventory.scenarios) {
     assert.ok(scenario.observationTypes.length > 0);
