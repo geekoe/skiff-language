@@ -1,12 +1,14 @@
 // E-activation live artifact authoring (`router-live:activation-full-chain`).
 //
-// Writes a real service source with HTTP gateway entries (immediate unary +
-// slow unary for the old-epoch lease scenario), then produces real compiler
-// package/assembly/config-snapshot artifacts for three package versions:
-// 0.1.0 (committed generation 1), 0.1.1 (candidate generation 2) and 0.1.2
-// (candidate generation 3). The activation coordinator loads the candidate
-// records strictly from the same artifact root, so all three assembly and
-// snapshot records must coexist.
+// Writes real service sources with distinct HTTP gateway entries, then
+// produces real compiler package/assembly/config-snapshot artifacts for
+// three service variants: 0.1.0 (committed generation 1), 0.1.1 (candidate
+// generation 2) and 0.1.2 (candidate generation 3). The deployment artifact
+// identity strips human version labels, so each variant also carries a
+// distinct ingress path (`/unary`, `/unary-new`, `/unary-third`) to make the
+// assembly records immutable-distinct. The activation coordinator loads the
+// candidate records strictly from the same artifact root, so all three
+// assembly and snapshot records must coexist.
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,36 +31,26 @@ const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json
 const ACTOR_ROUTING_PROJECTION_CONTENT =
   '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
 
-export function writeActivationLiveServiceSource(sourceRoot, version) {
-  return writeFile(join(sourceRoot, 'package.yml'), `id: ${ACTIVATION_LIVE_SERVICE_ID}\nversion: ${version}\n`);
-}
-
-export async function writeActivationLiveServiceFiles(sourceRoot) {
+export async function writeActivationLiveServiceSource(sourceRoot, variant) {
+  const variantSpec = ACTIVATION_LIVE_VARIANTS[variant];
+  if (variantSpec === undefined) {
+    throw new Error(`unknown activation-live variant ${variant}`);
+  }
   await mkdir(sourceRoot, { recursive: true });
+  await writeFile(
+    join(sourceRoot, 'package.yml'),
+    `id: ${ACTIVATION_LIVE_SERVICE_ID}\nversion: ${variantSpec.version}\n`,
+  );
   await writeFile(
     join(sourceRoot, 'service.yml'),
     `id: ${ACTIVATION_LIVE_SERVICE_ID}\n`,
   );
   await writeFile(join(sourceRoot, 'api.yml'), '{}\n');
+  const handlers = variantSpec.handlers.join('\n');
   await writeFile(
     join(sourceRoot, 'http.yml'),
     [
-      'unary:',
-      '  method: GET',
-      '  path: /unary',
-      '  kind: rawHttp',
-      '  handler: main.unary',
-      '  adapterArgs:',
-      '    - param: request',
-      '      source: { kind: http.request }',
-      'slow-unary:',
-      '  method: GET',
-      '  path: /slow-unary',
-      '  kind: rawHttp',
-      '  handler: main.slowUnary',
-      '  adapterArgs:',
-      '    - param: request',
-      '      source: { kind: http.request }',
+      ...variantSpec.entries,
       '',
     ].join('\n'),
   );
@@ -81,6 +73,16 @@ export async function writeActivationLiveServiceFiles(sourceRoot) {
       '  }',
       '}',
       '',
+      handlers,
+      '',
+    ].join('\n'),
+  );
+}
+
+const ACTIVATION_LIVE_VARIANTS = {
+  committed: {
+    version: ACTIVATION_LIVE_VERSION,
+    handlers: [
       'function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {',
       '  return textResponse(200, bytes.fromUtf8("pong"))',
       '}',
@@ -89,13 +91,67 @@ export async function writeActivationLiveServiceFiles(sourceRoot) {
       '  std.time.sleep(Duration.milliseconds(4000))',
       '  return textResponse(200, bytes.fromUtf8("late"))',
       '}',
-      '',
-    ].join('\n'),
-  );
-}
+    ],
+    entries: [
+      'unary:',
+      '  method: GET',
+      '  path: /unary',
+      '  kind: rawHttp',
+      '  handler: main.unary',
+      '  adapterArgs:',
+      '    - param: request',
+      '      source: { kind: http.request }',
+      'slow-unary:',
+      '  method: GET',
+      '  path: /slow-unary',
+      '  kind: rawHttp',
+      '  handler: main.slowUnary',
+      '  adapterArgs:',
+      '    - param: request',
+      '      source: { kind: http.request }',
+    ],
+  },
+  candidate: {
+    version: ACTIVATION_LIVE_CANDIDATE_VERSION,
+    handlers: [
+      'function unaryNew(request: std.http.HttpRequest) -> std.http.HttpResponse {',
+      '  return textResponse(200, bytes.fromUtf8("pong-new"))',
+      '}',
+    ],
+    entries: [
+      'unary-new:',
+      '  method: GET',
+      '  path: /unary-new',
+      '  kind: rawHttp',
+      '  handler: main.unaryNew',
+      '  adapterArgs:',
+      '    - param: request',
+      '      source: { kind: http.request }',
+    ],
+  },
+  third: {
+    version: ACTIVATION_LIVE_THIRD_VERSION,
+    handlers: [
+      'function unaryThird(request: std.http.HttpRequest) -> std.http.HttpResponse {',
+      '  return textResponse(200, bytes.fromUtf8("pong-third"))',
+      '}',
+    ],
+    entries: [
+      'unary-third:',
+      '  method: GET',
+      '  path: /unary-third',
+      '  kind: rawHttp',
+      '  handler: main.unaryThird',
+      '  adapterArgs:',
+      '    - param: request',
+      '      source: { kind: http.request }',
+    ],
+  },
+};
 
-async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment, version }) {
-  await writeActivationLiveServiceSource(sourceRoot, version);
+async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment, variant }) {
+  await writeActivationLiveServiceSource(sourceRoot, variant);
+  const version = ACTIVATION_LIVE_VARIANTS[variant].version;
   const packageReceipt = await runCompilerAuthoring({
     skiffRoot,
     kind: 'package',
@@ -152,7 +208,6 @@ export async function authorActivationLiveArtifact({
   artifactRoot,
   environment = ACTIVATION_LIVE_ENVIRONMENT,
 }) {
-  await writeActivationLiveServiceFiles(sourceRoot);
   await mkdir(artifactRoot, { recursive: true });
   // HTTP services import the canonical skiff.run/std package; seed the
   // compiler-owned std records/pointer into the artifact store exactly like
@@ -183,21 +238,21 @@ export async function authorActivationLiveArtifact({
     sourceRoot,
     artifactRoot,
     environment,
-    version: ACTIVATION_LIVE_VERSION,
+    variant: 'committed',
   });
   const candidate = await authorVersion({
     skiffRoot,
     sourceRoot,
     artifactRoot,
     environment,
-    version: ACTIVATION_LIVE_CANDIDATE_VERSION,
+    variant: 'candidate',
   });
   const third = await authorVersion({
     skiffRoot,
     sourceRoot,
     artifactRoot,
     environment,
-    version: ACTIVATION_LIVE_THIRD_VERSION,
+    variant: 'third',
   });
   await mkdir(join(artifactRoot, 'records/actor-routing'), { recursive: true });
   await writeFile(

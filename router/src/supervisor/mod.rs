@@ -253,7 +253,10 @@ impl RouterComponents {
             ActivationCoordinatorOptions {
                 mailbox_capacity: 64,
                 ack_deadline: Duration::from_millis(config.activation_prepare_timeout_ms),
-                service_db_mongo_url: Some(config.service_db.mongo_url.clone()),
+                // The runtime rejects an explicit activation serviceDb
+                // ("use connection bootstrap"); the DB transport binding is
+                // already carried by `router.bootstrap` (TS parity).
+                service_db_mongo_url: None,
             },
         );
 

@@ -248,7 +248,12 @@ impl InboundSinkSet {
 
     pub fn sink_for(&self, family: RuntimeFrameFamily) -> Option<&Arc<dyn InboundFrameSink>> {
         match family {
-            RuntimeFrameFamily::Session | RuntimeFrameFamily::Activation => None,
+            RuntimeFrameFamily::Session => None,
+            // E-activation: the activation-transaction sink delivers
+            // Runtime→Router Prepared/Reject ACKs to the coordinator. The
+            // frozen demux central match still routes Register internally;
+            // an absent sink keeps the Unimplemented fail-closed behavior.
+            RuntimeFrameFamily::Activation => self.activation_transaction.as_ref(),
             RuntimeFrameFamily::Request => self.request.as_ref(),
             RuntimeFrameFamily::Connection => self.connection.as_ref(),
             RuntimeFrameFamily::Actor => self.actor.as_ref(),

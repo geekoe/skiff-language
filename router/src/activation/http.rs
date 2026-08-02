@@ -764,7 +764,6 @@ mod tests {
         )
         .await;
         assert_eq!(status, 409);
-        eprintln!("DEBUG conflict body: {body}");
         assert!(body["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("does not match")));
