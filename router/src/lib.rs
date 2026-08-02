@@ -23,7 +23,7 @@ pub use config::{
 pub use dispatch::{
     candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
     dispatch_mode_from_wire, ActorMethodSpawnControl, AdmissionCounters, AdmissionHealth,
-    CancelFrame, CandidateViewSource, DerivedSpawnResult, DispatchRequest, DispatchedFrame,
+    CancelFrame, CandidateViewSource, DerivedSpawnResult, DispatchedFrame,
     DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate, PendingHealth, PendingTerminal,
     Permit, PermitLedger, RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome,
     Reservation, RevalidateOutcome, RoutingEpochSource, RuntimeAdmissionPool,

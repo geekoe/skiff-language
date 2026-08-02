@@ -57,6 +57,6 @@ pub use health::{
     TerminalSource,
 };
 pub use types::{
-    derived_deadline, ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchRequest,
+    derived_deadline, ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchSubmit,
     RequestAuthority, RequestDeadline, SpawnSubmit, SpawnTargetKind,
 };
