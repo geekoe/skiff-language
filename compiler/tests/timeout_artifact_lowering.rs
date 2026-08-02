@@ -1,9 +1,9 @@
 mod common;
 use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
 use skiff_artifact_model::{
-    ConcurrentLaneIr, ExprIr, InstructionSourceSite, StmtIr, FILE_IR_FORMAT_VERSION,
-    FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ExprIr, InstructionSourceSite, StmtIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
+    FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 fn executable<'a>(
@@ -35,39 +35,12 @@ fn assert_source_site(site: &InstructionSourceSite) {
     assert!(span.end.offset.unwrap() > span.start.offset.unwrap());
 }
 
-fn assert_lane(lane: &ConcurrentLaneIr, order: u32, kind: &str, dependencies: &[u32]) {
-    let (actual_order, actual_kind, actual_dependencies, site) = match lane {
-        ConcurrentLaneIr::Statement {
-            source_order,
-            dependencies,
-            site,
-            ..
-        } => (*source_order, "statement", dependencies.as_slice(), site),
-        ConcurrentLaneIr::Serial {
-            source_order,
-            dependencies,
-            site,
-            ..
-        } => (*source_order, "serial", dependencies.as_slice(), site),
-        ConcurrentLaneIr::Tail {
-            source_order,
-            dependencies,
-            site,
-            ..
-        } => (*source_order, "tail", dependencies.as_slice(), site),
-    };
-    assert_eq!(actual_order, order);
-    assert_eq!(actual_kind, kind);
-    assert_eq!(actual_dependencies, dependencies);
-    assert_source_site(site);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn source_execution_plans_lower_to_exact_timeout_value_and_concurrent_ir() {
+    fn source_execution_plans_lower_to_exact_timeout_ir() {
         let fixture = TestDir::new("skiff-compiler", "timeout-artifact-lowering");
         fixture.write(
             "package.yml",
@@ -91,26 +64,6 @@ function sequentialValue() -> string {
   }
 }
 
-function concurrentValue() -> number {
-  return timeout(40ms) concurrent value {
-    const seed = 1
-    const derived = seed + 1
-    serial {
-      const local = 3
-    }
-    derived
-  }
-}
-
-function concurrentStatement() -> number {
-  concurrent {
-    const first = 1
-    serial {
-      const second = 2
-    }
-  }
-  return 3
-}
 "#,
         );
 
@@ -126,7 +79,7 @@ function concurrentStatement() -> number {
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         assert_eq!(
         file.file_ir_identity,
-        "skiff-file-ir-v11:sha256:08ad0e03a0185e71756621f104cac45f20a86971102828c9c49d0b977a00e3a6"
+        "skiff-file-ir-v11:sha256:e000b89a9e99d44bcb8e319cd8749f4da64a5795d7e7d5b9aa203ef10b9f2b01"
     );
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
@@ -195,41 +148,6 @@ function concurrentStatement() -> number {
             sequential.return_type,
             skiff_artifact_model::TypeRefIr::builtin("string")
         );
-
-        let concurrent = executable(file, "concurrentValue");
-        let outer = expression_kind(concurrent, |expression| match expression {
-            ExprIr::Timeout {
-                duration_ms,
-                value,
-                site,
-            } => Some((*duration_ms, value.expression, site.clone())),
-            _ => None,
-        });
-        assert_eq!(outer.0, 40);
-        let ExprIr::ConcurrentValue { plan } = &concurrent.body.expressions[outer.1 as usize]
-        else {
-            panic!("timeout must wrap the concurrent value expression")
-        };
-        assert_source_site(&plan.site);
-        assert_eq!(plan.lanes.len(), 4);
-        assert_lane(&plan.lanes[0], 0, "statement", &[]);
-        assert_lane(&plan.lanes[1], 1, "statement", &[0]);
-        assert_lane(&plan.lanes[2], 2, "serial", &[]);
-        assert_lane(&plan.lanes[3], 3, "tail", &[0, 1, 2]);
-
-        let concurrent_statement = executable(file, "concurrentStatement");
-        let statement_plan = concurrent_statement
-            .body
-            .statements
-            .iter()
-            .find_map(|statement| match statement {
-                StmtIr::Concurrent { plan } => Some(plan),
-                _ => None,
-            })
-            .expect("concurrent statement plan");
-        assert_eq!(statement_plan.lanes.len(), 2);
-        assert_lane(&statement_plan.lanes[0], 0, "statement", &[]);
-        assert_lane(&statement_plan.lanes[1], 1, "serial", &[]);
     }
 
     #[test]
@@ -240,6 +158,38 @@ function concurrentStatement() -> number {
         );
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v5");
         assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
+    }
+
+    #[test]
+    fn concurrent_and_serial_source_is_rejected_in_package_compile() {
+        for (fixture_name, body) in [
+            (
+                "concurrent-statement",
+                "function run() -> void {\n  concurrent { const value = 1 }\n}\n",
+            ),
+            (
+                "concurrent-value",
+                "function run() -> number {\n  return concurrent value { 1 }\n}\n",
+            ),
+            (
+                "serial",
+                "function run() -> void {\n  serial { const value = 1 }\n}\n",
+            ),
+        ] {
+            let fixture = TestDir::new("skiff-compiler", fixture_name);
+            fixture.write(
+                "package.yml",
+                "id: example.com/timeout-artifact\nversion: 1.0.0\n",
+            );
+            fixture.write("api.yml", "{}\n");
+            fixture.write("main.skiff", body);
+            let error = compile_package_project(fixture.path())
+                .expect_err("concurrent/serial must be rejected in v1");
+            assert!(
+                error.to_string().contains("not supported in v1"),
+                "unexpected diagnostic: {error}"
+            );
+        }
     }
 
     #[test]

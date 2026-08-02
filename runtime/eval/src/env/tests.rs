@@ -1,11 +1,6 @@
 pub(crate) use super::*;
 use skiff_runtime_model::runtime_value::RuntimeValue;
 
-mod concurrent_scheduler;
-mod concurrent_scheduler_control;
-mod concurrent_scheduler_plan;
-mod concurrent_scheduler_terminal;
-
 #[test]
 fn rollback_checkpoint_keeps_only_slots_occupied_at_transaction_entry() {
     let layout = RuntimeSlotLayout {

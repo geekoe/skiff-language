@@ -74,7 +74,6 @@ use skiff_runtime_native_contract::{native_target_binding_key, native_target_nam
 
 mod actual_pending;
 mod checkpoint;
-mod concurrent;
 mod timeout;
 
 #[cfg(test)]
@@ -427,10 +426,9 @@ impl<'a> EvalContext<'a> {
                 .exec_timeout_statement(*duration_ms, body, site)
                 .await
                 .map(EvaluatorControl::from),
-            LinkedStmtIr::Concurrent { plan } => self
-                .exec_concurrent_statement(plan)
-                .await
-                .map(EvaluatorControl::from),
+            LinkedStmtIr::Concurrent { .. } => Err(RuntimeError::InvalidArtifact(
+                "concurrent is not supported in v1".to_string(),
+            )),
             LinkedStmtIr::Let { slot, value } => {
                 let value = self.eval_program_expr_ref(*value).await?;
                 self.env.declare_binding(
@@ -767,7 +765,9 @@ impl<'a> EvalContext<'a> {
                 self.eval_timeout_expression(*duration_ms, *value, site)
                     .await
             }
-            LinkedExprIr::ConcurrentValue { plan } => self.eval_concurrent_value(plan).await,
+            LinkedExprIr::ConcurrentValue { .. } => Err(RuntimeError::InvalidArtifact(
+                "concurrent value is not supported in v1".to_string(),
+            )),
             LinkedExprIr::Literal { value } => program_literal(value).map(Into::into),
             LinkedExprIr::LoadSlot { slot } => self
                 .env

@@ -8,7 +8,6 @@ mod imports;
 mod poll_support;
 mod r1_case;
 mod r2_timeout_case;
-mod r3_concurrent_case;
 mod r4_activation_case;
 mod r4_stream_case;
 mod runtime_factory;

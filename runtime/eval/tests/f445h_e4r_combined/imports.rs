@@ -75,11 +75,11 @@ pub(super) use skiff_runtime_linked_program::{
     ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets,
     HydratedPackageCode, LinkOverlay, LinkedActorDeclaration, LinkedActorDeclarationOwner,
     LinkedActorField, LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedCallTarget,
-    LinkedConcurrentLaneIr, LinkedConcurrentPlanIr, LinkedExecutable, LinkedExecutableBody,
-    LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr, LinkedTypeDescriptor,
-    LinkedTypeRef, LiteralIr, NativeTarget, PackageCodeSlotIndex, PackageSymbolKey,
-    PublicationResourceTable, RuntimeExecutionPackage, RuntimeTypeContext, ServiceMeta, SlotIr,
-    SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, UnitAddr,
+    LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    LinkedFunctionTypeParamIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
+    NativeTarget, PackageCodeSlotIndex, PackageSymbolKey, PublicationResourceTable,
+    RuntimeExecutionPackage, RuntimeTypeContext, ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto,
+    StmtRefIr, TypeAddr, UnitAddr,
 };
 pub(super) use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},

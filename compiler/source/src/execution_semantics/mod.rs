@@ -4,8 +4,6 @@ use crate::{
 };
 
 mod collectors;
-mod concurrent;
-mod effects;
 mod model;
 mod mutation;
 mod owner;
@@ -19,7 +17,6 @@ use collectors::{
     callable_definitions, expression_key_index, reject_static_execution_scopes,
     top_level_value_names,
 };
-use effects::callable_effect_profiles;
 use owner::OwnerAnalyzer;
 
 pub(crate) fn analyze_source_execution_semantics(
@@ -30,8 +27,6 @@ pub(crate) fn analyze_source_execution_semantics(
 ) -> Result<SourceExecutionSemantics, SourceCompileError> {
     let definitions = callable_definitions(parsed_sources);
     let expression_keys = expression_key_index(&definitions);
-    let callable_profiles =
-        callable_effect_profiles(&definitions, &expression_keys, resolved_targets);
     let mut semantics = SourceExecutionSemantics::default();
     let mut diagnostics = Vec::new();
     reject_static_execution_scopes(parsed_sources, &mut diagnostics);
@@ -55,7 +50,6 @@ pub(crate) fn analyze_source_execution_semantics(
                 &expression_keys,
                 resolved_targets,
                 callable_effects,
-                &callable_profiles,
                 top_level_value_names.clone(),
                 &mut semantics,
                 &mut diagnostics,
@@ -79,7 +73,6 @@ pub(crate) fn analyze_source_execution_semantics(
                     &expression_keys,
                     resolved_targets,
                     callable_effects,
-                    &callable_profiles,
                     top_level_value_names.clone(),
                     &mut semantics,
                     &mut diagnostics,

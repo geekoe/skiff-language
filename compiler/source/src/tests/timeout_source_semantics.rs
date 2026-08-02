@@ -10,7 +10,7 @@ use skiff_compiler_input::CompilerPlatformSources;
 use crate::{
     build_package_from_parsed_sources, parsed_sources::parse_publication_sources,
     prelude_registry::initialize_prelude_registry, source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, ConcurrentLaneKind, PackageSourceModel, SourceSymbolKey,
+    CompileParsedPackageSourcesInput, PackageSourceModel, SourceSymbolKey,
 };
 
 const PACKAGE_ID: &str = "example.com/timeout-source-semantics";
@@ -174,305 +174,36 @@ fn timeout_body_and_tail_preserve_suspend_effect_and_root_provenance() {
 }
 
 #[test]
-fn concurrent_plan_has_stable_lane_order_kinds_dependencies_and_tail_site() {
-    let model = build_ok(
-        r#"
-            function make() -> string { return "value" }
-
-            function run() -> string {
-              return concurrent value {
-                const first = make()
-                serial {
-                  const first = first
-                  first
-                }
-                const second = first
-                second
-              }
-            }
-        "#,
-    );
-    let plans = model.execution_semantics().concurrent_plans();
-    assert_eq!(plans.len(), 1);
-    let lanes = &plans[0].lanes;
-    assert_eq!(
-        lanes.iter().map(|lane| lane.kind).collect::<Vec<_>>(),
-        vec![
-            ConcurrentLaneKind::Statement,
-            ConcurrentLaneKind::Serial,
-            ConcurrentLaneKind::Statement,
-            ConcurrentLaneKind::Tail,
-        ]
-    );
-    assert_eq!(
-        lanes
-            .iter()
-            .map(|lane| lane.source_order)
-            .collect::<Vec<_>>(),
-        vec![0, 1, 2, 3]
-    );
-    assert_eq!(lanes[0].dependencies, Vec::<u32>::new());
-    assert_eq!(lanes[1].dependencies, vec![0]);
-    assert_eq!(lanes[2].dependencies, vec![0]);
-    assert_eq!(lanes[3].dependencies, vec![0, 1, 2]);
-    assert!(lanes
-        .iter()
-        .all(|lane| !lane.source_site.module_path.is_empty()));
-}
-
-#[test]
-fn concurrent_direct_const_shadow_reads_the_nearest_prior_lane() {
-    let model = build_ok(
-        r#"
-            function run() -> string {
-              return concurrent value {
-                const item = "first"
-                const item = item
-                item
-              }
-            }
-        "#,
-    );
-    let lanes = &model.execution_semantics().concurrent_plans()[0].lanes;
-    assert_eq!(lanes[1].dependencies, vec![0]);
-}
-
-#[test]
-fn concurrent_sibling_visibility_is_prior_direct_const_only() {
-    for source in [
-        r#"
-            function run() -> string {
-              return concurrent value {
-                const second = first
-                const first = "first"
-                second
-              }
-            }
-        "#,
-        r#"
-            function run() -> string {
-              return concurrent value {
-                let mutable = "value"
-                mutable
-              }
-            }
-        "#,
-        r#"
-            function run() -> string {
-              return concurrent value {
-                serial { const hidden = "value" }
-                const copy = hidden
-                copy
-              }
-            }
-        "#,
-    ] {
+fn concurrent_serial_and_concurrent_value_are_rejected_in_v1() {
+    let cases = [
+        (
+            "concurrent statement",
+            "function run() -> void {\n  concurrent { const value = 1 }\n}\n",
+            "concurrent is not supported in v1",
+        ),
+        (
+            "serial",
+            "function run() -> void {\n  serial { const value = 1 }\n}\n",
+            "serial is not supported in v1",
+        ),
+        (
+            "concurrent value",
+            "function run() -> number {\n  return concurrent value { 1 }\n}\n",
+            "concurrent value is not supported in v1",
+        ),
+    ];
+    for (label, source, expected) in cases {
         let error = build_error(source);
         assert!(
-            error.contains("concurrent")
-                && (error.contains("forward reference")
-                    || error.contains("mutable `let`")
-                    || error.contains("not sibling-visible")),
-            "unexpected diagnostic:\n{error}"
-        );
-    }
-}
-
-#[test]
-fn concurrent_rejects_outer_mutation_but_accepts_lane_local_fresh_root() {
-    let outer_error = build_error(
-        r#"
-            type Box { value: string }
-
-            function run(box: Box) -> void {
-              concurrent {
-                box.value = "changed"
-              }
-            }
-        "#,
-    );
-    assert!(
-        outer_error.contains("outer mutable root"),
-        "unexpected diagnostic:\n{outer_error}"
-    );
-
-    let transitive_error = build_error(
-        r#"
-            type Box { value: string }
-
-            function mutate(box: Box) -> void {
-              box.value = "changed"
-            }
-
-            function run(box: Box) -> void {
-              concurrent {
-                mutate(box)
-              }
-            }
-        "#,
-    );
-    assert!(
-        transitive_error.contains("outer mutable root"),
-        "unexpected diagnostic:\n{transitive_error}"
-    );
-
-    let projected_error = build_error(
-        r#"
-            type Box { value: string }
-            type Wrapper { box: Box }
-
-            function run(box: Box) -> void {
-              concurrent {
-                serial {
-                  const wrapper = Wrapper { box: box }
-                  wrapper.box.value = "changed"
-                }
-              }
-            }
-        "#,
-    );
-    assert!(
-        projected_error.contains("outer mutable root")
-            || projected_error.contains("opaque root provenance"),
-        "unexpected diagnostic:\n{projected_error}"
-    );
-
-    let stored_error = build_error(
-        r#"
-            type Box { value: string }
-            type Wrapper { box: Box }
-
-            function run(box: Box) -> void {
-              concurrent {
-                serial {
-                  const wrapper = Wrapper { box: Box { value: "local" } }
-                  wrapper.box = box
-                  wrapper.box.value = "changed"
-                }
-              }
-            }
-        "#,
-    );
-    assert!(
-        stored_error.contains("outer mutable root")
-            || stored_error.contains("opaque root provenance"),
-        "unexpected diagnostic:\n{stored_error}"
-    );
-
-    build_ok(
-        r#"
-            type Box { value: string }
-
-            function run() -> void {
-              concurrent {
-                serial {
-                  const local = Box { value: "initial" }
-                  local.value = "changed"
-                }
-              }
-            }
-        "#,
-    );
-}
-
-fn db_fixture(concurrent_body: &str) -> String {
-    format!(
-        r#"
-            type Stored {{ id: string, value: string }}
-
-            db object Stored {{
-              primary key(id)
-            }}
-
-            function run(id: string) -> void {{
-              concurrent {{
-                {concurrent_body}
-              }}
-            }}
-        "#
-    )
-}
-
-#[test]
-fn concurrent_external_effect_matrix_is_fail_closed() {
-    build_ok(&db_fixture(
-        r#"
-            db find Stored(id)
-            db optional Stored(id)
-        "#,
-    ));
-
-    for (body, expected) in [
-        (
-            r#"
-                db find Stored(id)
-                db update Stored(id) { value = "next" }
-            "#,
-            "read/write",
-        ),
-        (
-            r#"
-                db update Stored(id) { value = "one" }
-                db delete Stored(id)
-            "#,
-            "write/write",
-        ),
-        (
-            r#"
-                db transaction { db find Stored(id) }
-                db find Stored(id)
-            "#,
-            "exclusive",
-        ),
-    ] {
-        let error = build_error(&db_fixture(body));
-        assert!(
-            error.contains("concurrent effect conflict") && error.contains(expected),
-            "{expected} produced unexpected diagnostic:\n{error}"
-        );
-    }
-}
-
-#[test]
-fn concurrent_rejects_every_ast_representable_illegal_surface() {
-    let cases = [
-        ("if", "if true {}"),
-        ("for", "for item in items {}"),
-        ("while", "while true {}"),
-        ("match", "match true { true => {} }"),
-        ("timeout", "timeout(1ms) {}"),
-        ("value", "const nested = value { \"x\" }"),
-        ("return", "return"),
-        ("break", "break"),
-        ("continue", "continue"),
-        ("throw", "throw Failure { message: \"x\" }"),
-        (
-            "catch",
-            "const caught = catch<Failure>(throw Failure { message: \"x\" })",
-        ),
-        ("emit", "emit \"x\""),
-        ("spawn", "spawn sideEffect()"),
-        ("nested serial", "serial { serial {} }"),
-        ("nested concurrent", "concurrent {}"),
-    ];
-    for (label, statement) in cases {
-        let source = format!(
-            r#"
-                type Failure {{ message: string }}
-                function sideEffect() -> void {{}}
-                function run(items: Array<number>) -> void {{
-                  concurrent {{
-                    {statement}
-                  }}
-                }}
-            "#
-        );
-        let error = build_error(&source);
-        assert!(
-            error.contains("illegal concurrent surface"),
+            error.contains(expected),
             "{label} produced unexpected diagnostic:\n{error}"
         );
     }
+}
+
+#[test]
+fn ordinary_sources_without_concurrent_surface_still_compile() {
+    build_ok("function run() -> number {\n  const value = 1\n  return value\n}\n");
 }
 
 #[test]

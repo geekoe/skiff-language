@@ -7,8 +7,8 @@ use skiff_artifact_model::{
 use skiff_runtime_linked_program::{
     linked::TypeDeclarationIr, AssignTargetIr, BlockIr, ExecutableAddr, ExecutableKind, ExprRefIr,
     ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay,
-    LinkedActorCreateMethod, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedActorField, LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedExecutable,
+    LinkedActorCreateMethod, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
+    LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedExecutable,
     LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr,
     LinkedTypeDescriptor, LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext,
     ServiceMeta, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr,
@@ -38,8 +38,6 @@ use crate::{
     EvalRuntimeProgram,
 };
 use sha2::{Digest, Sha256};
-mod actor_concurrent_continuation;
-
 const FILE_ID: &str = "file:actor-executor";
 
 struct Fixture {

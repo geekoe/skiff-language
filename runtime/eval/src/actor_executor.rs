@@ -39,11 +39,7 @@ use crate::{
 
 mod actor_concurrent_continuation;
 
-// E4 consumes these crate-private bridge types when it wires evaluator lanes.
-#[allow(unused_imports)]
-pub(crate) use actor_concurrent_continuation::{
-    ActorConcurrentContinuationBridge, ActorConcurrentContinuationLane, ActorExecutionFrame,
-};
+pub(crate) use actor_concurrent_continuation::ActorExecutionFrame;
 
 pub struct ActorMethodExecutionRequest<'a> {
     pub instance: &'a ActorInstanceHandle,

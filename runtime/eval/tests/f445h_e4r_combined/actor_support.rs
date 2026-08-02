@@ -76,46 +76,6 @@ fn timeout_executable() -> LinkedExecutable {
     )
 }
 
-fn concurrent_executable() -> LinkedExecutable {
-    executable(
-        "CombinedActor.concurrent",
-        vec![
-            number(2),
-            LinkedExprIr::ConcurrentValue {
-                plan: LinkedConcurrentPlanIr {
-                    lanes: vec![LinkedConcurrentLaneIr::Tail {
-                        source_order: 0,
-                        dependencies: Vec::new(),
-                        tail: ExprRefIr { expression: 0 },
-                        site: site(),
-                    }],
-                    site: site(),
-                },
-            },
-        ],
-        vec![
-            LinkedStmtIr::Concurrent {
-                plan: LinkedConcurrentPlanIr {
-                    lanes: vec![LinkedConcurrentLaneIr::Serial {
-                        source_order: 0,
-                        dependencies: Vec::new(),
-                        body: "serial_body".to_string(),
-                        site: site(),
-                    }],
-                    site: site(),
-                },
-            },
-            LinkedStmtIr::Return {
-                value: Some(ExprRefIr { expression: 1 }),
-            },
-        ],
-        vec![BlockIr {
-            label: "serial_body".to_string(),
-            statements: Vec::new(),
-        }],
-    )
-}
-
 fn activation_executable(instruction: ActivationRelativeServiceCall) -> LinkedExecutable {
     let mut config_call = call(
         LinkedCallTarget::Builtin {
@@ -198,12 +158,8 @@ fn executable(
 }
 
 fn actor_file(include_activation: bool) -> Arc<LinkedFileUnit> {
-    let mut names = vec!["readyPending", "timeout", "concurrent"];
-    let mut executables = vec![
-        ready_pending_executable(),
-        timeout_executable(),
-        concurrent_executable(),
-    ];
+    let mut names = vec!["readyPending", "timeout"];
+    let mut executables = vec![ready_pending_executable(), timeout_executable()];
     if include_activation {
         names.extend(["activation", "competitor"]);
         executables.push(activation_executable(linked_activation_instruction()));

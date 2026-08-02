@@ -15,7 +15,6 @@ use super::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BindingRoot {
     Outer,
-    ConcurrentSibling,
     LaneLocalFresh,
     LaneLocalOpaque,
     Scalar,
@@ -46,14 +45,11 @@ impl OwnerAnalyzer<'_> {
                     "concurrent mutation target `{root}` is not a mutable lane-local fresh root"
                 ));
             }
-            Some(
-                BindingRoot::Outer
-                | BindingRoot::ConcurrentSibling
-                | BindingRoot::LaneLocalOpaque,
-            )
-            | None => self.diagnostic(format!(
-                "concurrent lane writes outer mutable root `{root}`; outer mutable root writes are forbidden"
-            )),
+            Some(BindingRoot::Outer | BindingRoot::LaneLocalOpaque) | None => {
+                self.diagnostic(format!(
+                    "concurrent lane writes outer mutable root `{root}`; outer mutable root writes are forbidden"
+                ))
+            }
         }
     }
 
@@ -144,7 +140,7 @@ impl OwnerAnalyzer<'_> {
                         source_callable.symbol()
                     ));
                 }
-                BindingRoot::ConcurrentSibling | BindingRoot::LaneLocalOpaque => {
+                BindingRoot::LaneLocalOpaque => {
                     self.diagnostic(format!(
                         "concurrent local call `{}` has caller-reachable mutation through a non-fresh lane value",
                         source_callable.symbol()

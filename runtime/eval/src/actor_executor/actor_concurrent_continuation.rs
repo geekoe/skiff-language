@@ -27,11 +27,6 @@ use crate::{
     error::RuntimeError,
 };
 
-mod bridge;
-
-use bridge::{ActorChildContinuationState, ActorConcurrentContinuationGate};
-pub(crate) use bridge::{ActorConcurrentContinuationBridge, ActorConcurrentContinuationLane};
-
 #[derive(Clone)]
 pub(crate) struct ActorExecutionFrame {
     pub(super) suspension: Arc<ActorSuspensionState>,
@@ -67,32 +62,8 @@ impl ActorExecutionFrame {
                     activation,
                 }),
                 lease: Mutex::new(Some(lease)),
-                outer_gate: Mutex::new(None),
-                child: None,
             }),
         }
-    }
-
-    fn suspended_child(
-        parent: &Self,
-        child: Arc<ActorChildContinuationState>,
-    ) -> ActorExecutionFrame {
-        Self {
-            suspension: Arc::new(ActorSuspensionState {
-                shared: Arc::clone(&parent.suspension.shared),
-                lease: Mutex::new(None),
-                outer_gate: Mutex::new(None),
-                child: Some(child),
-            }),
-        }
-    }
-
-    pub(crate) fn begin_concurrent(
-        &self,
-        heap: &RequestHeap,
-        lane_count: usize,
-    ) -> Result<ActorConcurrentContinuationBridge, RuntimeError> {
-        ActorConcurrentContinuationBridge::begin(self, heap, lane_count)
     }
 
     fn current_access(
@@ -306,9 +277,6 @@ impl ActorExecutionFrame {
             .store
             .commit_execution(&self.suspension.shared.handle, lease, snapshot)
             .map_err(store_error);
-        if let Some(child) = &self.suspension.child {
-            child.segment_released();
-        }
         result
     }
 
@@ -328,13 +296,6 @@ impl ActorExecutionFrame {
         {
             return Err(resume_with_installed_lease_error());
         }
-        self.ensure_outer_children_released()?;
-        let mut child_resume = self
-            .suspension
-            .child
-            .as_ref()
-            .map(|child| child.begin_resume())
-            .transpose()?;
         execution
             .poll_execution_budget()
             .map_err(RuntimeError::from)?;
@@ -405,12 +366,6 @@ impl ActorExecutionFrame {
             return Err(resume_with_installed_lease_error());
         }
         *current = Some(lease);
-        if let Some(child_resume) = child_resume.as_mut() {
-            if let Err(error) = child_resume.segment_acquired() {
-                current.take();
-                return Err(error);
-            }
-        }
         Ok(())
     }
 
@@ -440,13 +395,12 @@ impl ActorExecutionFrame {
     }
 
     pub(crate) fn finish_borrowed(&self, heap: &RequestHeap) -> Result<(), RuntimeError> {
-        self.ensure_outer_children_released()?;
         let snapshot = match self.snapshot_persistent_fields(heap) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 // A terminal method cannot leave an exclusive scheduler lease
                 // installed after its persistent snapshot has failed.
-                self.abandon_child();
+                self.abandon_lease();
                 return Err(error);
             }
         };
@@ -467,13 +421,10 @@ impl ActorExecutionFrame {
             .store
             .commit_execution(&self.suspension.shared.handle, lease, snapshot)
             .map_err(store_error);
-        if let Some(child) = &self.suspension.child {
-            child.finish();
-        }
         result
     }
 
-    fn abandon_child(&self) {
+    fn abandon_lease(&self) {
         if let Some(lease) = self
             .suspension
             .lease
@@ -483,22 +434,6 @@ impl ActorExecutionFrame {
         {
             drop(lease);
         }
-        if let Some(child) = &self.suspension.child {
-            child.finish();
-        }
-    }
-
-    fn ensure_outer_children_released(&self) -> Result<(), RuntimeError> {
-        let gate = self
-            .suspension
-            .outer_gate
-            .lock()
-            .expect("actor concurrent continuation gate lock poisoned")
-            .clone();
-        if let Some(gate) = gate {
-            gate.ensure_released()?;
-        }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -607,8 +542,6 @@ struct ActorContinuationFence {
 pub(super) struct ActorSuspensionState {
     shared: Arc<ActorContinuationShared>,
     pub(super) lease: Mutex<Option<ActorInstanceExecutionLease>>,
-    outer_gate: Mutex<Option<Arc<ActorConcurrentContinuationGate>>>,
-    child: Option<Arc<ActorChildContinuationState>>,
 }
 
 async fn poll_once_without_yield<F>(mut future: Pin<&mut F>) -> Option<F::Output>
