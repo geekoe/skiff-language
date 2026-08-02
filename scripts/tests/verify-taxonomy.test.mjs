@@ -26,14 +26,21 @@ test('ordinary selectors expose the two test domains and implementation subjects
     'compiler',
     'runtime',
     'test-runner',
+    'router-rust',
     'router',
     'telemetry',
     'tooling',
   ]) {
     assert.ok(PUBLIC_SELECTORS.includes(selector), selector);
   }
+  assert.ok(PUBLIC_SELECTORS.includes('router-rust-process-smoke'));
   assert.equal(PUBLIC_SELECTORS.includes('rust'), false);
   assert.equal(PUBLIC_SELECTORS.includes('node'), false);
+  assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions.router, [
+    'router-ts-tests',
+    'router-rust',
+    'router-rust-process-smoke',
+  ]);
   assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions.tests, [
     'skiff-tests',
     'implementation-tests',
@@ -87,6 +94,8 @@ test('implementation tests expand by subject without static or live tasks', asyn
     'implementation:compiler:rust',
     'implementation:runtime:rust',
     'implementation:test-runner:rust',
+    'router-rust:contracts',
+    'router-rust:process-smoke',
     'implementation:router',
     'implementation:telemetry',
     'implementation:tooling:dev-sync-fixture',
@@ -130,10 +139,13 @@ test('each focused implementation subject is independently usable', async () => 
   ]) {
     const plan = await buildVerifyPlan({ root, selectors: [selector] });
     assert.ok(plan.tasks.length > 0, selector);
+    const routerKinds = new Set(['implementation:router', 'implementation:router-rust']);
     assert.ok(
       plan.tasks.every(
         (task) =>
-          task.kind === `implementation:${selector}` ||
+          (selector === 'router'
+            ? routerKinds.has(task.kind)
+            : task.kind === `implementation:${selector}`) ||
           (selector === 'compiler' && task.id === 'checks:compiler-boundaries'),
       ),
       selector,
@@ -144,6 +156,31 @@ test('each focused implementation subject is independently usable', async () => 
       selector,
     );
   }
+});
+
+test('manual router and Rust subject expansion deduplicate across graph paths', async () => {
+  assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions['router-rust'], [
+    'router-rust-contracts',
+  ]);
+  const plan = await buildVerifyPlan({
+    root,
+    selectors: ['implementation-tests', 'router', 'router-rust'],
+  });
+  const ids = plan.tasks.map(({ id }) => id);
+  for (const id of [
+    'implementation:router',
+    'router-rust:contracts',
+    'router-rust:process-smoke',
+  ]) {
+    assert.equal(ids.filter((candidate) => candidate === id).length, 1, id);
+  }
+  assert.equal(new Set(ids).size, ids.length);
+  const executions = plan.tasks.map((task) => JSON.stringify([
+    resolve(task.cwd),
+    task.command,
+    task.args,
+  ]));
+  assert.equal(new Set(executions).size, executions.length);
 });
 
 test('every current Rust workspace package belongs to exactly one subject', async () => {

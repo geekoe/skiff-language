@@ -1,15 +1,32 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 
-const ROUTER_DIRECTORY = 'router';
-const LOCAL_TSX = join(ROUTER_DIRECTORY, 'node_modules', '.bin', 'tsx');
+import {
+  assertRouterProcessSpec,
+  resolveRouterProcessSpec,
+} from './dev-runtime-paths.mjs';
+
+const LOCAL_TSX = join('router', 'node_modules', '.bin', 'tsx');
 
 export async function prepareOwnedRouterNodeDependencies({
   root,
   runCommand,
   signal,
+  routerProcessSpec,
 }) {
   if (!isAbsolute(root)) throw new Error('owned Router dependency root must be absolute');
+  const spec = routerProcessSpec ?? resolveRouterProcessSpec({
+    devHome: join(root, '.skiff-instance', 'dev-home'),
+    implementation: 'ts',
+    repoRoot: root,
+  });
+  assertRouterProcessSpec(spec);
+  if (spec.implementation !== 'ts') {
+    throw new Error(
+      'owned Router node dependencies require the ts RouterProcessSpec implementation',
+    );
+  }
+  const routerDirectory = spec.ts_source_root;
   const evidence = {
     status: 'RUNNING',
     phase: 'router-dependencies',
@@ -19,7 +36,7 @@ export async function prepareOwnedRouterNodeDependencies({
   };
   try {
     evidence.install = await captureStep(runCommand, 'pnpm', [
-      '--dir', ROUTER_DIRECTORY,
+      '--dir', routerDirectory,
       'install',
       '--frozen-lockfile',
       '--offline',
@@ -32,7 +49,7 @@ export async function prepareOwnedRouterNodeDependencies({
 
     evidence.tsxExecutable = await captureStep(
       runCommand,
-      join(root, LOCAL_TSX),
+      join(routerDirectory, 'node_modules', '.bin', 'tsx'),
       ['--version'],
       {
         cwd: root,

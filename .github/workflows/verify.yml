@@ -26,6 +26,8 @@ jobs:
             command: node scripts/verify.mjs --only skiff-tests
           - scope: Implementation Tests
             command: node scripts/verify.mjs --only implementation-tests
+          - scope: Router Rust Contracts and Process Smoke
+            command: node scripts/verify.mjs --only router-rust,router-rust-process-smoke
           - scope: Quality and Checks
             command: node scripts/verify.mjs --only rust-quality,type-check,checks
     steps:
