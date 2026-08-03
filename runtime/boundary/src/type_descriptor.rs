@@ -7,6 +7,9 @@
 #[cfg(any(test, feature = "test-support"))]
 use serde_json::{json, Map, Value};
 
+pub use skiff_runtime_model::type_plan::builtins::{
+    bare_type_name, generic_root, generic_text_parts, split_top_level, type_name_root,
+};
 pub use skiff_runtime_model::type_plan::{
     RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
 };
@@ -526,70 +529,6 @@ pub fn generic_type_parts(expected_type: &Value) -> Option<(String, Vec<Value>)>
     }
 }
 
-pub fn generic_root(value: &str) -> Option<&str> {
-    generic_text_parts(value)
-        .map(|(root, _)| root)
-        .or_else(|| Some(value.trim()).filter(|value| !value.is_empty()))
-}
-
-pub fn generic_text_parts(value: &str) -> Option<(&str, Vec<&str>)> {
-    let value = value.trim();
-    let start = value.find('<')?;
-    if !value.ends_with('>') {
-        return None;
-    }
-    let root = value[..start].trim();
-    let inner = &value[start + 1..value.len() - 1];
-    Some((root, split_top_level(inner, ',')))
-}
-
-pub fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut angle_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut paren_depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (index, ch) in input.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '<' => angle_depth += 1,
-            '>' => angle_depth = angle_depth.saturating_sub(1),
-            '{' => brace_depth += 1,
-            '}' => brace_depth = brace_depth.saturating_sub(1),
-            '(' => paren_depth += 1,
-            ')' => paren_depth = paren_depth.saturating_sub(1),
-            ch if ch == delimiter && angle_depth == 0 && brace_depth == 0 && paren_depth == 0 => {
-                let part = input[start..index].trim();
-                if !part.is_empty() {
-                    parts.push(part);
-                }
-                start = index + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-
-    let part = input[start..].trim();
-    if !part.is_empty() {
-        parts.push(part);
-    }
-    parts
-}
-
 #[cfg(any(test, feature = "test-support"))]
 pub fn descriptor_kind(value: &Value) -> Option<&str> {
     value
@@ -748,28 +687,8 @@ pub fn strip_top_level_nullable_suffix(value: &str) -> Option<&str> {
     (angle_depth == 0 && brace_depth == 0 && paren_depth == 0).then_some(inner.trim())
 }
 
-pub fn type_name_root(name: &str) -> &str {
-    let name = name.trim();
-    generic_text_parts(name)
-        .map(|(root, _)| root)
-        .unwrap_or_else(|| {
-            name.find('<')
-                .map(|index| name[..index].trim())
-                .unwrap_or(name)
-        })
-}
-
 pub fn short_type_name(name: &str) -> &str {
     bare_type_name(name)
-}
-
-pub fn bare_type_name(name: &str) -> &str {
-    let root = type_name_root(name);
-    let name = root
-        .rsplit_once("::")
-        .map(|(_, short)| short)
-        .unwrap_or(root);
-    name.rsplit(['.', ':']).next().unwrap_or(name).trim()
 }
 
 pub fn type_name_matches(pattern: &str, actual: &str) -> bool {
@@ -843,26 +762,7 @@ pub fn descriptor_label(expected_type: &Value) -> String {
 }
 
 pub fn is_builtin_named_type(name: &str) -> bool {
-    matches!(
-        bare_type_name(name),
-        "Array"
-            | "Map"
-            | "Json"
-            | "JsonObject"
-            | "Date"
-            | "string"
-            | "bytes"
-            | "number"
-            | "integer"
-            | "bool"
-            | "boolean"
-            | "null"
-            | "void"
-            | "DbInsertManyResult"
-            | "DbUpdateManyResult"
-            | "DbDeleteManyResult"
-            | "DbUpsertResult"
-    )
+    skiff_runtime_model::type_plan::builtins::is_builtin_named_type(name)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -886,146 +786,9 @@ fn bool_descriptor() -> Value {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn builtin_plan(name: &str, node: RuntimeTypeNode) -> RuntimeTypePlan {
-    RuntimeTypePlan {
-        label: "builtin".to_string(),
-        named_type_name: Some(name.to_string()),
-        identity: RuntimeTypeIdentityPlan::default(),
-        node,
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn leaf_builtin_plan(name: &str, node: RuntimeTypeNode) -> RuntimeTypePlan {
-    builtin_plan(name, node)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_field(name: &str, ty: RuntimeTypePlan) -> RuntimeRecordFieldPlan {
-    let required = !matches!(ty.node, RuntimeTypeNode::Nullable(_));
-    RuntimeRecordFieldPlan {
-        name: name.to_string(),
-        ty,
-        required,
-        identity: None,
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn leaf_string_plan() -> RuntimeTypePlan {
-    leaf_builtin_plan("string", RuntimeTypeNode::String)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn leaf_integer_plan() -> RuntimeTypePlan {
-    leaf_builtin_plan("integer", RuntimeTypeNode::Integer)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn leaf_bytes_plan() -> RuntimeTypePlan {
-    leaf_builtin_plan("bytes", RuntimeTypeNode::Bytes)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_record_plan(name: &str, fields: Vec<RuntimeRecordFieldPlan>) -> RuntimeTypePlan {
-    builtin_plan(
-        name,
-        RuntimeTypeNode::Record {
-            fields,
-            boundary_record_kind: Some(name.to_string()),
-        },
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_nullable_plan(inner: RuntimeTypePlan) -> RuntimeTypePlan {
-    RuntimeTypePlan {
-        label: "nullable".to_string(),
-        named_type_name: None,
-        identity: RuntimeTypeIdentityPlan::default(),
-        node: RuntimeTypeNode::Nullable(Box::new(inner)),
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_array_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
-    builtin_plan("Array", RuntimeTypeNode::Array(Box::new(item)))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_stream_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
-    builtin_plan("Stream", RuntimeTypeNode::Stream(Box::new(item)))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_http_header_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.http.HttpHeader",
-        vec![
-            std_field("name", leaf_string_plan()),
-            std_field("value", leaf_string_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_http_client_request_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.http.HttpClientRequest",
-        vec![
-            std_field("method", leaf_string_plan()),
-            std_field("url", leaf_string_plan()),
-            std_field("headers", std_array_plan(std_http_header_plan())),
-            std_field("body", std_nullable_plan(leaf_bytes_plan())),
-            std_field("timeoutMs", std_nullable_plan(leaf_integer_plan())),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_http_client_response_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.http.HttpClientResponse",
-        vec![
-            std_field("status", leaf_integer_plan()),
-            std_field("headers", std_array_plan(std_http_header_plan())),
-            std_field("body", leaf_bytes_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.http.HttpClientStreamHandle",
-        vec![
-            std_field("status", leaf_integer_plan()),
-            std_field("headers", std_array_plan(std_http_header_plan())),
-            std_field("body", std_stream_plan(leaf_bytes_plan())),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result<RuntimeTypeNode>> {
     let (root, args) = generic_type_parts(descriptor)?;
-    let root_name = type_name_root(&root);
-    let bare = bare_type_name(root_name);
-    let node = match bare {
-        "HttpClientRequest" if args.is_empty() && root_name == "std.http.HttpClientRequest" => {
-            std_http_client_request_plan().node
-        }
-        "HttpClientResponse" if args.is_empty() && root_name == "std.http.HttpClientResponse" => {
-            std_http_client_response_plan().node
-        }
-        "HttpClientStreamHandle"
-            if args.is_empty() && root_name == "std.http.HttpClientStreamHandle" =>
-        {
-            std_http_client_stream_handle_plan().node
-        }
-        _ => return None,
-    };
-    Some(Ok(node))
+    skiff_runtime_model::type_plan::builtins::std_http_record_node(&root, args.len()).map(Ok)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1106,18 +869,7 @@ fn strip_nullable_suffix(name: String, nullable: bool) -> (String, bool) {
 }
 
 fn is_builtin_concrete_type_name(name: &str) -> bool {
-    matches!(
-        name.trim(),
-        "Json"
-            | "JsonObject"
-            | "Date"
-            | "Stream"
-            | "Config"
-            | "DbInsertManyResult"
-            | "DbUpdateManyResult"
-            | "DbDeleteManyResult"
-            | "DbUpsertResult"
-    )
+    skiff_runtime_model::type_plan::builtins::is_builtin_concrete_type_name(name)
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use super::linked::from_linked_descriptor;
 use super::*;
+use skiff_runtime_model::type_plan::RuntimeBuiltinShape;
 
 impl RuntimeRecoverableExpectedTypePlanLinkedExt for RuntimeRecoverableExpectedTypePlan {
     fn from_linked(type_ref: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self> {

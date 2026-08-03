@@ -1,5 +1,9 @@
 use super::builtins::std_runtime_builtin_node;
 use super::*;
+use skiff_runtime_model::type_plan::builtins::{
+    artifact_type_ref_label, artifact_type_ref_named_type_name,
+};
+use skiff_runtime_model::type_plan::RuntimeBuiltinShape;
 
 impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
     /// Build a `RuntimeTypePlan` directly from a service dependency operation's

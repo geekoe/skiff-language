@@ -3,8 +3,10 @@ use std::borrow::Cow;
 use skiff_artifact_model::{LiteralIr, TypeRefIr};
 use skiff_runtime_model::{
     recoverable::{RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane},
+    type_plan::builtins::{artifact_type_ref_label, artifact_type_ref_named_type_name},
     type_plan::{
-        RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
+        RuntimeBuiltinShape, RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode,
+        RuntimeTypePlan,
     },
 };
 use thiserror::Error;
@@ -601,45 +603,9 @@ fn runtime_builtin_type_node_from_artifact(name: &str, args: &[TypeRefIr]) -> Ru
             &args[0],
         )));
     }
-    match bare_type_name(name) {
-        "Json" => RuntimeTypeNode::Json,
-        "JsonObject" => RuntimeTypeNode::JsonObject,
-        "bytes" => RuntimeTypeNode::Bytes,
-        "Date" => RuntimeTypeNode::Date,
-        "string" => RuntimeTypeNode::String,
-        "bool" | "boolean" => RuntimeTypeNode::Bool,
-        "integer" => RuntimeTypeNode::Integer,
-        "number" => RuntimeTypeNode::Number,
-        "null" | "void" => RuntimeTypeNode::Null,
-        _ => RuntimeTypeNode::Unknown,
-    }
-}
-
-fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
-    match type_ref {
-        TypeRefIr::Builtin { .. } => "builtin",
-        TypeRefIr::LocalType { .. } => "localType",
-        TypeRefIr::PublicationType { .. } => "publicationType",
-        TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
-        TypeRefIr::PackageSymbol { .. } => "packageSymbol",
-        TypeRefIr::PackageSchema { .. } => "packageSchema",
-        TypeRefIr::AppliedNominal { .. } => "appliedNominal",
-        TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
-        TypeRefIr::Record { .. } => "record",
-        TypeRefIr::Union { .. } => "union",
-        TypeRefIr::Nullable { .. } => "nullable",
-        TypeRefIr::Literal { .. } => "literal",
-        TypeRefIr::TypeParam { .. } => "typeParam",
-        TypeRefIr::AnyInterface { .. } => "anyInterface",
-        TypeRefIr::Function { .. } => "function",
-    }
-}
-
-fn artifact_type_ref_named_type_name(type_ref: &TypeRefIr) -> Option<String> {
-    match type_ref {
-        TypeRefIr::Builtin { name, .. } => Some(name.clone()),
-        _ => None,
-    }
+    RuntimeBuiltinShape::of_name(name)
+        .and_then(RuntimeBuiltinShape::leaf_node)
+        .unwrap_or(RuntimeTypeNode::Unknown)
 }
 
 fn artifact_type_ref_identity(type_ref: &TypeRefIr) -> RuntimeTypeIdentityPlan {

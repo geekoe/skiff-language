@@ -944,6 +944,7 @@ mod differential_legacy_json_baseline_tests {
 #[cfg(test)]
 mod builtin_catalog_tests {
     use super::super::*;
+    use skiff_runtime_model::type_plan::RuntimeBuiltinShape;
 
     #[test]
     fn shape_of_name_resolves_bare_full_and_alias_spellings() {

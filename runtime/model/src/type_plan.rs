@@ -2,6 +2,18 @@ use std::fmt;
 
 use crate::service_error::CatchIdentity;
 
+pub mod builtins;
+
+pub use builtins::{
+    artifact_type_ref_label, artifact_type_ref_named_type_name, bare_type_name, builtin_plan,
+    db_result_record_node, db_result_upsert_record_node, generic_root, generic_text_parts,
+    is_builtin_concrete_type_name, is_builtin_named_type, leaf_builtin_plan, leaf_bytes_plan,
+    leaf_integer_plan, leaf_string_plan, split_top_level, std_array_plan, std_duration_plan,
+    std_field, std_http_client_request_plan, std_http_client_response_plan,
+    std_http_client_stream_handle_plan, std_http_header_plan, std_http_record_node,
+    std_nullable_plan, std_record_plan, std_stream_plan, type_name_root, RuntimeBuiltinShape,
+};
+
 #[derive(Clone)]
 pub struct RuntimeRecordFieldPlan {
     pub name: String,

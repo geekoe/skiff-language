@@ -76,33 +76,3 @@ pub(crate) fn linked_type_descriptor_label(descriptor: &LinkedTypeDescriptor) ->
         LinkedTypeDescriptor::Interface => "interface",
     }
 }
-
-pub(crate) fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'static str {
-    use skiff_artifact_model::TypeRefIr;
-    match type_ref {
-        TypeRefIr::Builtin { .. } => "builtin",
-        TypeRefIr::LocalType { .. } => "localType",
-        TypeRefIr::PublicationType { .. } => "publicationType",
-        TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
-        TypeRefIr::PackageSymbol { .. } => "packageSymbol",
-        TypeRefIr::PackageSchema { .. } => "packageSchema",
-        TypeRefIr::AppliedNominal { .. } => "appliedNominal",
-        TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
-        TypeRefIr::Record { .. } => "record",
-        TypeRefIr::Union { .. } => "union",
-        TypeRefIr::Nullable { .. } => "nullable",
-        TypeRefIr::Literal { .. } => "literal",
-        TypeRefIr::TypeParam { .. } => "typeParam",
-        TypeRefIr::Function { .. } => "function",
-        TypeRefIr::AnyInterface { .. } => "anyInterface",
-    }
-}
-
-pub(crate) fn artifact_type_ref_named_type_name(
-    type_ref: &skiff_artifact_model::TypeRefIr,
-) -> Option<String> {
-    match type_ref {
-        skiff_artifact_model::TypeRefIr::Builtin { name, .. } => Some(name.clone()),
-        _ => None,
-    }
-}

@@ -33,13 +33,11 @@ pub(crate) use address::{
     program_publication_type_addr, program_service_symbol_type_addr,
 };
 pub(crate) use builtins::native_builtin_plan;
-pub(crate) use builtins::RuntimeBuiltinShape;
 pub(crate) use builtins::{db_result_node, structural_builtin_node, PlanInput};
 pub use context::{PlanContext, ProgramTypeView};
 pub(crate) use labels::{
-    artifact_type_ref_label, artifact_type_ref_named_type_name, linked_type_descriptor_label,
-    linked_type_ref_kind, linked_type_ref_label, linked_type_ref_named_type_name,
-    unknown_plan_for_descriptor, unknown_plan_for_type_ref,
+    linked_type_descriptor_label, linked_type_ref_kind, linked_type_ref_label,
+    linked_type_ref_named_type_name, unknown_plan_for_descriptor, unknown_plan_for_type_ref,
 };
 pub(crate) use nominal::{
     applied_nominal_plan, apply_nominal_owner_context, close_linked_type_ref,
