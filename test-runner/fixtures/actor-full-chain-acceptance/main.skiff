@@ -177,21 +177,21 @@ impl Spawned {
   }
 
   function kickSelf(tag: string) -> string {
-    spawn self.record(tag)
+    dispatch self.record(tag)
     return "kicked"
   }
 
   function fanout() -> string {
-    spawn self.record("a")
-    spawn self.record("b")
-    spawn self.record("c")
+    dispatch self.record("a")
+    dispatch self.record("b")
+    dispatch self.record("c")
     return "fanned"
   }
 }
 
 function spawnExternal(body: null) -> string {
   const target = std.actor.get<Spawned>("external")
-  spawn target.record("x")
+  dispatch target.record("x")
   return "external-submitted"
 }
 
@@ -262,11 +262,11 @@ impl Chain {
     }
     self.steps = self.steps + 1
     self.history = self.history.concat(tag)
-    spawn self.tick(tag)
+    dispatch self.tick(tag)
   }
 
   function chainKick(tag: string) -> string {
-    spawn self.tick(tag)
+    dispatch self.tick(tag)
     return "chain-kicked"
   }
 
@@ -324,6 +324,6 @@ impl Throwing {
 
 function spawnThrow(body: null) -> string {
   const target = std.actor.get<Throwing>("throwing")
-  spawn target.boom("t")
+  dispatch target.boom("t")
   return "throw-spawned"
 }

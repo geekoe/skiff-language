@@ -34,7 +34,7 @@
   "events": [
     {
       "kind": "spawnActorMethod",
-      "requestId": "spawn-actor-1",
+      "requestId": "task-actor-1",
       "parentRequestId": "invocation-1"
     }
   ],

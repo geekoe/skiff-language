@@ -1,7 +1,7 @@
 //! Single heap-access mechanism for every evaluator execution.
 //!
 //! All executions (ordinary requests, actor instances, callback owners,
-//! providers, producers, spawn targets) share one lease protocol: the
+//! providers, producers, task targets) share one lease protocol: the
 //! execution state owns an `Arc<tokio::sync::Mutex<RequestHeap>>` arena and
 //! holds an owned guard for the synchronous segment. Ordinary requests use a
 //! fresh private arena; actor instances pass their shared arena. The guard

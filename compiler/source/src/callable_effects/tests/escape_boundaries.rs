@@ -106,7 +106,7 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
 }
 
 #[test]
-fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
+fn stream_task_database_and_callback_escape_lanes_are_explicit() {
     let model = AnalysisFixture::new(
         r#"
             interface Provider {
@@ -134,7 +134,7 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
             }
 
             function spawnWork(input: Boxed) -> void {
-              spawn sink(input)
+              dispatch sink(input)
             }
 
             function persist(input: Boxed) -> void {
@@ -150,7 +150,7 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
 
     assert_escape_lane(&model, "stream", ValueEscapeLane::Stream);
     assert_escape_lane(&model, "scalarStream", ValueEscapeLane::Stream);
-    assert_escape_lane(&model, "spawnWork", ValueEscapeLane::Spawn);
+    assert_escape_lane(&model, "spawnWork", ValueEscapeLane::Dispatch);
     assert!(effects(&model, "persist").may_suspend);
     assert_escape_lane(&model, "persist", ValueEscapeLane::Database);
     assert_escape_lane(&model, "callback", ValueEscapeLane::Callback);

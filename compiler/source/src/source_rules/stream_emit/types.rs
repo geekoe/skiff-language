@@ -132,7 +132,7 @@ fn collect_emit_stmt_violations(
             }
         }
         crate::shared::ast::Stmt::Let { value, .. }
-        | crate::shared::ast::Stmt::Spawn { call: value }
+        | crate::shared::ast::Stmt::Dispatch { call: value }
         | crate::shared::ast::Stmt::Expr(value)
         | crate::shared::ast::Stmt::Emit(value) => {
             collect_emit_expression_call_violations(path, value, violations)

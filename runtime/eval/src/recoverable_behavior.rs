@@ -665,7 +665,7 @@ fn recoverable_hook_error(
     expected: Option<&RuntimeRecoverableExpectedTypePlan>,
 ) -> BoundaryRuntimeError {
     let fallback_context = RuntimeRecoverableBoundaryContext::new(
-        skiff_runtime_model::recoverable::RuntimeRecoverableBoundaryKind::SpawnPayload,
+        skiff_runtime_model::recoverable::RuntimeRecoverableBoundaryKind::TaskDispatchPayload,
         skiff_runtime_model::recoverable::RuntimeRecoverableTrustBoundary::OwnerInternal,
         RuntimeRecoverableStorageLane::RecoverableEnvelope,
     )

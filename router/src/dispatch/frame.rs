@@ -7,7 +7,7 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::types::{ActorMethodSpawnDispatch, DispatchSubmit, RequestDeadline, SpawnSubmit};
+use super::types::{ActorMethodTaskDispatch, DispatchSubmit, RequestDeadline, TaskSubmit};
 
 /// Runtime-to-Router response/cancel frame already decoded and validated by
 /// the shared codec (C-model-request §2/§5). The dispatcher only enforces
@@ -70,10 +70,10 @@ pub trait RuntimePeer: Send + Sync + fmt::Debug {
         request_id: &str,
         reason: &str,
     ) -> Result<(), String>;
-    fn send_spawn_submit(
+    fn send_task_submit(
         &self,
         session: &RuntimeSessionEpoch,
-        spawn: &SpawnSubmit,
+        task: &TaskSubmit,
     ) -> Result<(), String>;
 }
 
@@ -88,11 +88,11 @@ pub trait SessionAbortControl: Send + Sync + fmt::Debug {
 /// Actor lane parent registry (C-dispatch §5.1).
 ///
 /// W-actor seam: the production implementation answers from
-/// `ActorMethodSpawnControl.activeActorInvocationParent`; the dispatcher
+/// `ActorMethodTaskControl.activeActorInvocationParent`; the dispatcher
 /// never holds actor invocation pending.
-pub trait ActorMethodSpawnControl: Send + Sync + fmt::Debug {
+pub trait ActorMethodTaskControl: Send + Sync + fmt::Debug {
     fn is_active_invocation_parent(&self, caller_request_id: &str) -> bool;
-    fn submit_spawn(&self, spawn: ActorMethodSpawnDispatch);
+    fn submit_task(&self, task: ActorMethodTaskDispatch);
 }
 
 /// Deadline expiry check (C-dispatch §3 "发送前 deadline 重检").

@@ -279,7 +279,7 @@ impl StreamEmitTypeChecker<'_> {
                 }
             }
             Stmt::DbTransaction { body } => self.check_block(body),
-            Stmt::Throw { value } | Stmt::Spawn { call: value } | Stmt::Expr(value) => {
+            Stmt::Throw { value } | Stmt::Dispatch { call: value } | Stmt::Expr(value) => {
                 self.check_expr(value);
             }
             Stmt::Emit(value) => {

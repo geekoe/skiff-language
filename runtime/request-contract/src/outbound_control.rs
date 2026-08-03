@@ -26,8 +26,8 @@ pub enum OutboundControlMessage {
     ActorRemove {
         request: ActorRemoveControlRequest,
     },
-    SpawnSubmit {
-        request: SpawnSubmitControlRequest,
+    TaskSubmit {
+        request: TaskSubmitControlRequest,
         payload: Vec<u8>,
     },
     RequestCancel {
@@ -115,7 +115,7 @@ pub struct ActorRemoveControlRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SpawnSubmitControlRequest {
+pub struct TaskSubmitControlRequest {
     pub rpc_id: String,
     pub runtime_id: String,
     pub target_kind: String,
@@ -123,28 +123,28 @@ pub struct SpawnSubmitControlRequest {
     pub service_version: String,
     pub service_protocol_identity: String,
     pub target: String,
-    pub spawn_id: Option<String>,
+    pub task_id: Option<String>,
     pub build_id: Option<String>,
     pub activation_identity: ActivationIdentityControl,
     pub caller_request_id: Option<String>,
     pub trace_id: Option<String>,
     pub caller_target: Option<String>,
     pub max_queue_wait_ms: Option<f64>,
-    pub actor_method: Option<ActorMethodSpawnTargetControl>,
+    pub actor_method: Option<ActorMethodTaskTargetControl>,
 }
 
-/// Closed parent-kind namespace for the canonical spawn wire generation
-/// (C-model-spawn §2). `callerKind` selects the unique parent resolver:
-/// `request` -> FunctionSpawnParentResolver, `actorInvocation` ->
-/// ActorSpawnParentResolver. The old shape (missing `callerKind`) is rejected
-/// with no compatible reader; `H-spawn-parent-cut` is the production hard cut.
+/// Closed parent-kind namespace for the canonical task wire generation
+/// (C-model-task §2). `callerKind` selects the unique parent resolver:
+/// `request` -> FunctionTaskParentResolver, `actorInvocation` ->
+/// ActorTaskParentResolver. The old shape (missing `callerKind`) is rejected
+/// with no compatible reader; `H-task-parent-cut` is the production hard cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnCallerKind {
+pub enum TaskCallerKind {
     Request,
     ActorInvocation,
 }
 
-impl SpawnCallerKind {
+impl TaskCallerKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Request => "request",
@@ -153,12 +153,12 @@ impl SpawnCallerKind {
     }
 }
 
-/// Actor-method target facts for a `spawn.submit` whose targetKind is
+/// Actor-method target facts for a `task.submit` whose targetKind is
 /// `actorMethod`. The receiver travels as identity metadata (never inside the
 /// recoverable args payload); the owner runtime routes by it and re-activates
 /// the instance from the registry entry when it is not live.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorMethodSpawnTargetControl {
+pub struct ActorMethodTaskTargetControl {
     pub actor_ref: ActorRef,
     pub declaration_owner: ActorInvocationDeclarationOwner,
     pub actor_abi_identity: ActorAbiIdentity,

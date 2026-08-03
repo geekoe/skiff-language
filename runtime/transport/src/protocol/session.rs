@@ -85,7 +85,7 @@ pub struct RuntimeHealthCountersFrameHeader {
     pub outbound_stream_leases_active: usize,
     pub stream_runtime_streams_active: usize,
     pub flag_backed_cancel_waiters_active: usize,
-    pub spawned_tasks_active: usize,
+    pub task_requests_active: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

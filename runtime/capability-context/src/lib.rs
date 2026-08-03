@@ -74,11 +74,11 @@ pub use native_projection::{
 };
 pub use outbound_control::{
     ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
-    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodSpawnTargetControl,
+    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, SpawnCallerKind,
-    SpawnSubmitControlMessage, SpawnSubmitControlRequest, WebSocketConnectionPolicyControl,
+    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
+    TaskSubmitControlMessage, TaskSubmitControlRequest, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{

@@ -75,7 +75,7 @@ struct EmptyProgramSource {
     service_files: Vec<Arc<LinkedFileUnit>>,
     packages: Vec<Arc<RuntimeExecutionPackage>>,
     service_resources: PublicationResourceTable,
-    spawn_routes: HashMap<String, ExecutableAddr>,
+    task_routes: HashMap<String, ExecutableAddr>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
 }
@@ -97,8 +97,8 @@ impl EvalRuntimeProgramSource for EmptyProgramSource {
         &self.service_resources
     }
 
-    fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {
-        &self.spawn_routes
+    fn task_routes(&self) -> &HashMap<String, ExecutableAddr> {
+        &self.task_routes
     }
 
     fn link_overlay(&self) -> &LinkOverlay {

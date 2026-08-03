@@ -29,9 +29,9 @@ use skiff_runtime_transport::{
         decode_router_bootstrap_frame_header, decode_typed_binary_frame,
         ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
-        ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
+        ActorTaskRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
         RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        SpawnSubmitResponseFrameHeader, TypedEnvelope,
+        TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
     runtime_assembly_request::decode_runtime_assembly_request_start_frame,
@@ -50,7 +50,7 @@ use crate::error::{Result, RuntimeError};
 
 mod activation;
 mod handshake;
-pub(crate) mod spawn_submit;
+pub(crate) mod task_submit;
 
 use activation::{
     cleanup_session_activation, dispatch_session_activation_frame, router_binary_frame_type,
@@ -60,7 +60,7 @@ use handshake::{
     ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
     HandshakeDeadlines,
 };
-use spawn_submit::{encode_spawn_submit_wire_message, legacy_spawn_submit_rejected};
+use task_submit::{encode_task_submit_wire_message, legacy_task_submit_rejected};
 
 fn handshake_terminal_error(terminal: ClientTerminalKind) -> RuntimeError {
     RuntimeError::Decode(format!(
@@ -707,7 +707,7 @@ fn runtime_health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader)
         && counters.outbound_stream_leases_active == 0
         && counters.stream_runtime_streams_active == 0
         && counters.flag_backed_cancel_waiters_active == 0
-        && counters.spawned_tasks_active == 0
+        && counters.task_requests_active == 0
 }
 
 #[cfg(test)]
@@ -1075,21 +1075,21 @@ async fn dispatch_router_binary_frame_inner(
                 "actor.remove.response",
             )?;
         }
-        "spawn.submit.response" => {
+        "task.submit.response" => {
             let (header, payload) =
-                decode_typed_binary_frame::<SpawnSubmitResponseFrameHeader>(bytes)
+                decode_typed_binary_frame::<TaskSubmitResponseFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_response(
                 host,
                 &header.rpc_id,
                 &header,
                 payload,
-                "spawn.submit.response",
+                "task.submit.response",
             )?;
         }
         "actor.getOrCreate.error" => {
             let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_error(
                 host,
@@ -1101,7 +1101,7 @@ async fn dispatch_router_binary_frame_inner(
         }
         "actor.replace.error" => {
             let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_error(
                 host,
@@ -1113,7 +1113,7 @@ async fn dispatch_router_binary_frame_inner(
         }
         "actor.find.error" => {
             let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_error(
                 host,
@@ -1125,7 +1125,7 @@ async fn dispatch_router_binary_frame_inner(
         }
         "actor.remove.error" => {
             let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_error(
                 host,
@@ -1135,16 +1135,16 @@ async fn dispatch_router_binary_frame_inner(
                 "actor.remove.error",
             )?;
         }
-        "spawn.submit.error" => {
+        "task.submit.error" => {
             let (header, payload) =
-                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_error(
                 host,
                 &header.rpc_id,
                 payload,
                 header.error,
-                "spawn.submit.error",
+                "task.submit.error",
             )?;
         }
         other => {
@@ -1444,12 +1444,12 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
 fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message> {
     match message {
         super::RouterWriterMessage::Binary(bytes) => Ok(Message::Binary(bytes.into())),
-        super::RouterWriterMessage::SpawnSubmit(message) => {
-            encode_spawn_submit_wire_message(message).map(|bytes| Message::Binary(bytes.into()))
+        super::RouterWriterMessage::TaskSubmit(message) => {
+            encode_task_submit_wire_message(message).map(|bytes| Message::Binary(bytes.into()))
         }
         super::RouterWriterMessage::Control(command) => match command {
-            skiff_runtime_request::OutboundControlMessage::SpawnSubmit { .. } => {
-                Err(legacy_spawn_submit_rejected())
+            skiff_runtime_request::OutboundControlMessage::TaskSubmit { .. } => {
+                Err(legacy_task_submit_rejected())
             }
             other => encode_outbound_control_message(other)
                 .map_err(super::transport_error_into_runtime_error)

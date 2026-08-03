@@ -207,7 +207,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn spawn_router(config_path: &Path) -> Child {
+fn task_router(config_path: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_skiff-router"))
         .arg(config_path)
         .stdin(Stdio::null())
@@ -277,7 +277,7 @@ fn assert_ports_closed(live: &LiveEnvironment) {
 
 fn assert_process_fails_closed(live: &LiveEnvironment) {
     let config_path = write_router_config(live);
-    let mut child = spawn_router(&config_path);
+    let mut child = task_router(&config_path);
     let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(30));
     assert!(
         !status.success(),
@@ -297,7 +297,7 @@ fn assert_process_fails_closed(live: &LiveEnvironment) {
 /// the activation coordinator without blocking the listener.
 async fn assert_process_starts_with_pending(live: &LiveEnvironment) {
     let config_path = write_router_config(live);
-    let mut child = spawn_router(&config_path);
+    let mut child = task_router(&config_path);
     wait_for_listeners(live, &mut child);
     let (mut socket, _response) =
         tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/runtime", live.runtime_port))
@@ -428,7 +428,7 @@ mod tests {
         // 2. Real process: committed epoch drives the SessionLayer epoch source and
         // the runtime socket receives `router.bootstrap` with the committed tuple.
         let config_path = write_router_config(&live);
-        let mut child = spawn_router(&config_path);
+        let mut child = task_router(&config_path);
         wait_for_listeners(&live, &mut child);
         let (mut socket, _response) = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{}/runtime",

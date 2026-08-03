@@ -665,7 +665,7 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
             executable_seeds.push((unit_index, declaration.executable_index));
         }
     }
-    collect_spawn_executable_seeds(units, &mut executable_seeds);
+    collect_task_executable_seeds(units, &mut executable_seeds);
 
     // Re-exported constants live in the seed's `public_symbols` map keyed by kind
     // (not in `publication_schema_symbols`/`publication_callable_symbols`). Their
@@ -852,7 +852,7 @@ fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSe
     }
 }
 
-fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
+fn collect_task_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
     for (unit_index, unit) in units.iter().enumerate() {
         for executable in &unit.executables {
             for expr in &executable.body.expressions {
@@ -861,8 +861,8 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
                 };
                 if !call
                     .metadata
-                    .get("spawnSubmit")
-                    .is_some_and(spawn_submit_metadata_is_function)
+                    .get("dispatchSubmit")
+                    .is_some_and(task_submit_metadata_is_function)
                 {
                     continue;
                 }
@@ -890,7 +890,7 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
     }
 }
 
-fn spawn_submit_metadata_is_function(metadata: &MetadataValue) -> bool {
+fn task_submit_metadata_is_function(metadata: &MetadataValue) -> bool {
     matches!(
         metadata,
         MetadataValue::Object(object)

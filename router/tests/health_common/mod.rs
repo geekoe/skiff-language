@@ -310,7 +310,7 @@ pub fn health_bytes(replica_id: &str) -> Vec<u8> {
             outbound_stream_leases_active: 0,
             stream_runtime_streams_active: 0,
             flag_backed_cancel_waiters_active: 0,
-            spawned_tasks_active: 0,
+            task_requests_active: 0,
         },
     };
     encode_binary_frame(&header, &[]).expect("health encodes")

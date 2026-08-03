@@ -145,7 +145,7 @@ impl fmt::Display for PayloadServiceRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PayloadBoundaryKind {
-    SpawnPayload,
+    TaskDispatchPayload,
     QueueWorkItemPayload,
     RuntimeWirePayload,
     OutboundServiceCall,
@@ -161,7 +161,7 @@ pub enum PayloadBoundaryKind {
 impl fmt::Display for PayloadBoundaryKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::SpawnPayload => "SpawnPayload",
+            Self::TaskDispatchPayload => "TaskDispatchPayload",
             Self::QueueWorkItemPayload => "QueueWorkItemPayload",
             Self::RuntimeWirePayload => "RuntimeWirePayload",
             Self::OutboundServiceCall => "OutboundServiceCall",
@@ -189,7 +189,7 @@ impl PayloadTrust {
         target_service: Option<&PayloadServiceRef>,
     ) -> Self {
         match kind {
-            PayloadBoundaryKind::SpawnPayload
+            PayloadBoundaryKind::TaskDispatchPayload
             | PayloadBoundaryKind::QueueWorkItemPayload
             | PayloadBoundaryKind::RuntimeInternal => Self::OwnerInternal,
             PayloadBoundaryKind::RuntimeWirePayload if target_service.is_some() => {

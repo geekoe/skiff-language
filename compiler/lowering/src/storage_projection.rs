@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    ActorMetadataIr, DbDeclarationIr, DbIndexIr, DbMetadataIndexIr, DbMetadataIr, SpawnTargetIr,
+    ActorMetadataIr, DbDeclarationIr, DbIndexIr, DbMetadataIndexIr, DbMetadataIr, TaskTargetIr,
 };
-pub use skiff_compiler_core::spawn_targets::PackageSpawnTargetSource;
+pub use skiff_compiler_core::dispatch_targets::PackageTaskTargetSource;
 
 use crate::file_ir::FileIrUnit;
 use skiff_compiler_source::{
@@ -45,19 +45,19 @@ pub fn service_storage_projection(
 }
 
 #[cfg(test)]
-pub fn service_spawn_targets(
+pub fn service_task_targets(
     file_ir_units: &[FileIrUnit],
     service_protocol_identity: &str,
-) -> Result<Vec<SpawnTargetIr>, PublicationError> {
-    service_spawn_targets_with_packages(file_ir_units, &[], service_protocol_identity)
+) -> Result<Vec<TaskTargetIr>, PublicationError> {
+    service_task_targets_with_packages(file_ir_units, &[], service_protocol_identity)
 }
 
-pub fn service_spawn_targets_with_packages(
+pub fn service_task_targets_with_packages(
     service_file_ir_units: &[FileIrUnit],
-    package_sources: &[PackageSpawnTargetSource],
+    package_sources: &[PackageTaskTargetSource],
     service_protocol_identity: &str,
-) -> Result<Vec<SpawnTargetIr>, PublicationError> {
-    skiff_compiler_core::spawn_targets::service_spawn_targets_with_packages(
+) -> Result<Vec<TaskTargetIr>, PublicationError> {
+    skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
         service_file_ir_units,
         package_sources,
         service_protocol_identity,
@@ -68,14 +68,14 @@ pub fn service_spawn_targets_with_packages(
 }
 
 #[cfg(test)]
-mod spawn_tests {
+mod task_tests {
     use super::*;
 
     #[test]
-    fn spawn_wrapper_matches_shared_core_for_empty_projection() {
-        let wrapper_targets = service_spawn_targets_with_packages(&[], &[], "proto")
+    fn task_wrapper_matches_shared_core_for_empty_projection() {
+        let wrapper_targets = service_task_targets_with_packages(&[], &[], "proto")
             .expect("wrapper should accept empty input");
-        let core_targets = skiff_compiler_core::spawn_targets::service_spawn_targets_with_packages(
+        let core_targets = skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
             &[],
             &[],
             "proto",

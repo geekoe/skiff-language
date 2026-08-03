@@ -152,7 +152,7 @@ fn adapt_ingress_arguments(
     }
     if request.payload_encoding() != RequestPayloadEncoding::RuntimeBinary {
         return Err(RuntimeError::InvalidArtifact(
-            "canonical assembly ingress does not accept recoverable spawn payloads".to_string(),
+            "canonical assembly ingress does not accept recoverable task dispatch payloads".to_string(),
         ));
     }
     if parameters.is_empty() && request.payload_bytes().is_empty() {

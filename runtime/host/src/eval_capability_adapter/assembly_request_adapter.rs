@@ -1,14 +1,14 @@
 use skiff_runtime_eval::program_execution::ProgramExecutionContext;
 use skiff_runtime_request::{
     RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
-    RuntimeSpawnEvalAdapter, RuntimeSpawnEvalExecutionInputParts,
+    RuntimeTaskEvalAdapter, RuntimeTaskEvalExecutionInputParts,
     RuntimeWebSocketConnectEvalAdapter, RuntimeWebSocketConnectEvalExecutionInputParts,
     RuntimeWebSocketJsonRpcEvalAdapter, RuntimeWebSocketJsonRpcEvalExecutionInputParts,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestClientSessionFrameHeader,
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
@@ -108,14 +108,14 @@ pub(crate) fn websocket_jsonrpc_eval_adapter(
     )?))
 }
 
-pub(crate) struct RuntimeSpawnEvalAdapterInput {
+pub(crate) struct RuntimeTaskEvalAdapterInput {
     pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
-    pub(crate) header: RuntimeAssemblySpawnRequestStartFrameHeader,
+    pub(crate) header: RuntimeAssemblyTaskRequestStartFrameHeader,
 }
 
-pub(crate) fn spawn_eval_adapter(
-    input: RuntimeSpawnEvalAdapterInput,
-) -> anyhow::Result<Arc<dyn RuntimeSpawnEvalAdapter>> {
+pub(crate) fn task_eval_adapter(
+    input: RuntimeTaskEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeTaskEvalAdapter>> {
     let metadata = RuntimeAssemblyRequestMetadata {
         request_id: input.header.request_id,
         mode: input.header.mode,
@@ -165,7 +165,7 @@ fn request_metadata(
     })
 }
 
-impl RuntimeSpawnEvalAdapter for RuntimeAssemblyExecutionContext {
+impl RuntimeTaskEvalAdapter for RuntimeAssemblyExecutionContext {
     fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
         runtime_factory()
     }
@@ -173,7 +173,7 @@ impl RuntimeSpawnEvalAdapter for RuntimeAssemblyExecutionContext {
     fn begin_test_effect_execution(
         &self,
     ) -> skiff_runtime_request::RequestResult<
-        Option<skiff_runtime_request::RuntimeSpawnTestEffectExecution>,
+        Option<skiff_runtime_request::RuntimeTaskTestEffectExecution>,
     > {
         let Some(capability) = self.test_case_capability.as_deref() else {
             return Ok(None);
@@ -188,17 +188,17 @@ impl RuntimeSpawnEvalAdapter for RuntimeAssemblyExecutionContext {
             .map_err(|error| skiff_runtime_request::RequestError::Unsupported(error.to_string()))?;
         self.admit_test_http_context(lease.admitted_context())?;
         Ok(Some(
-            skiff_runtime_request::RuntimeSpawnTestEffectExecution::new(lease.effects(), lease),
+            skiff_runtime_request::RuntimeTaskTestEffectExecution::new(lease.effects(), lease),
         ))
     }
 
     fn execution_context<'a>(
         &'a self,
-        parts: RuntimeSpawnEvalExecutionInputParts<'a>,
+        parts: RuntimeTaskEvalExecutionInputParts<'a>,
         interpreter: &'a skiff_runtime_eval::Interpreter,
-        target: &'a skiff_runtime_request::RuntimeAssemblySpawnTarget,
+        target: &'a skiff_runtime_request::RuntimeAssemblyTaskTarget,
     ) -> ProgramExecutionContext<'a> {
-        let RuntimeSpawnEvalExecutionInputParts {
+        let RuntimeTaskEvalExecutionInputParts {
             request: _,
             execution,
             cancellation,

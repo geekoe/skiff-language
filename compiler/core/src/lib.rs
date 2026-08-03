@@ -10,7 +10,7 @@ pub mod path_safety;
 pub mod prelude_registry;
 pub mod registry_helpers;
 pub mod source_role;
-pub mod spawn_targets;
+pub mod dispatch_targets;
 pub mod type_closure;
 pub mod type_graph;
 pub mod type_ref;

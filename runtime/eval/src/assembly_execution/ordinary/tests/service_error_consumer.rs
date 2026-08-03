@@ -764,7 +764,7 @@ fn restricted_service_diagnostic_ordinary_three_hop_preserves_bytes_and_local_st
                     }
                 });
         })
-        .expect("spawn three-hop test")
+        .expect("task three-hop test")
         .join()
         .expect("three-hop test thread");
 }

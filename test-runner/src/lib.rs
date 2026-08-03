@@ -9,7 +9,7 @@
 //! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
 //! entry, ingress binding, generated service identity, config snapshot partition, heap, effect
 //! registry and execution nonce. Sharing an assembly does not share a deployment or mutable state.
-//! Every root dispatch receives a new opaque `testCaseCapability`; direct and recursive spawn
+//! Every root dispatch receives a new opaque `testCaseCapability`; direct and recursive task
 //! requests inherit that exact capability instead of creating or borrowing one from another root.
 
 use std::{

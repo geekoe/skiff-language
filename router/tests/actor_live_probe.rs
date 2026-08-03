@@ -6,14 +6,14 @@
 //! builds explicit Rust router/runtime binaries. This ignored test then:
 //!   - seeds the committed activation state and spawns the real `skiff-router`
 //!     binary;
-//!   - spawns two real `runtime` binaries with independent runtime homes,
+//!   - tasks two real `runtime` binaries with independent runtime homes,
 //!     each connected through a test-only WS relay to the real Router;
 //!   - drives HTTP unary probes through the real Router into the fixture:
 //!     ownership claim token / activation broker (get-or-create dedup),
 //!     invocation relay, owner control, lease scheduler;
-//!   - proves function spawn and actor-method spawn parent authority and that
-//!     accepted spawns outlive the parent lifecycle;
-//!   - exercises disconnect/replacement/concurrent claim/spawn mismatch fail
+//!   - proves function task and actor-method task parent authority and that
+//!     accepted tasks outlive the parent lifecycle;
+//!   - exercises disconnect/replacement/concurrent claim/task mismatch fail
 //!     closed and asserts frame pairing (invocation/control/lease/timer zero
 //!     residue) plus graceful shutdown.
 
@@ -45,8 +45,8 @@ use skiff_runtime_transport::assembly_activation::{
 };
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_response_end_frame, decode_response_error_frame,
-    decode_spawn_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_spawn_submit_request_frame, RuntimeHealthFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
+    encode_task_submit_request_frame, RuntimeHealthFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
@@ -298,7 +298,7 @@ fn write_runtime_config(live: &LiveEnvironment, relay_port: u16, home: &Path) ->
     path
 }
 
-fn spawn_router(config_path: &Path) -> Child {
+fn task_router(config_path: &Path) -> Child {
     let stderr_path = config_path.with_extension("router.stderr.log");
     let stderr = OpenOptions::new()
         .create(true)
@@ -888,7 +888,7 @@ async fn wait_for_two_replicas(state: &Arc<RelayState>, expected: &[&str], after
 // Fake ingress dispatcher: real `runtimeAssembly request.start` frames
 // injected into the real Runtime through the test-only relay (E-dispatch
 // style). The actor control plane (get-or-create / claim / invocation /
-// owner control / lease / spawn) still flows through the real Router; the
+// owner control / lease / task) still flows through the real Router; the
 // business request itself is delivered directly to the Runtime because the
 // real Runtime at this baseline advertises no dispatch modes over the wire
 // (runtime capability seam owned by the E-http lane).
@@ -1107,7 +1107,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 fn frame_pairs_report(records: &[RelayRecord]) -> String {
     let mut get_or_create: BTreeMap<String, (i64, i64)> = BTreeMap::new();
-    let mut spawn_submit: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut task_submit: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut invocations: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut controls: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     for record in records {
@@ -1141,11 +1141,11 @@ fn frame_pairs_report(records: &[RelayRecord]) -> String {
             "actor.getOrCreate.response" | "actor.getOrCreate.error" => {
                 get_or_create.entry(text("rpcId")).or_insert((0, 0)).1 += 1;
             }
-            "spawn.submit.request" => {
-                spawn_submit.entry(text("rpcId")).or_insert((0, 0)).0 += 1;
+            "task.submit.request" => {
+                task_submit.entry(text("rpcId")).or_insert((0, 0)).0 += 1;
             }
-            "spawn.submit.response" | "spawn.submit.error" => {
-                spawn_submit.entry(text("rpcId")).or_insert((0, 0)).1 += 1;
+            "task.submit.response" | "task.submit.error" => {
+                task_submit.entry(text("rpcId")).or_insert((0, 0)).1 += 1;
             }
             "actor.method.invoke" => {
                 invocations.entry(text("invocationId")).or_insert((0, 0)).0 += 1;
@@ -1187,7 +1187,7 @@ fn frame_pairs_report(records: &[RelayRecord]) -> String {
         }
     };
     balanced(&mut problems, "getOrCreate", &get_or_create);
-    balanced(&mut problems, "spawn", &spawn_submit);
+    balanced(&mut problems, "task", &task_submit);
     balanced(&mut problems, "invoke", &invocations);
     balanced(&mut problems, "control", &controls);
     problems.join("; ")
@@ -1218,7 +1218,7 @@ mod tests {
         seed_committed(&live, &repository).await;
 
         let config_path = write_router_config(&live);
-        let mut router = spawn_router(&config_path);
+        let mut router = task_router(&config_path);
         wait_for_listeners(&live, &mut router);
 
         let state = Arc::new(RelayState::new());
@@ -1328,23 +1328,23 @@ mod tests {
             serde_json::json!(105)
         );
 
-        // 5. Function-parent actor-method spawn authority (fail closed): the
-        //    fixture function spawns `target.record("x")` with
+        // 5. Function-parent actor-method task authority (fail closed): the
+        //    fixture function tasks `target.record("x")` with
         //    `callerKind=request`. This harness delivers the business request
         //    directly to the Runtime (fake ingress), so the Router's
-        //    dispatcher has no request parent; the spawn must be rejected
-        //    with `spawn.submit.error` (ParentNotFound) and the request must
-        //    fail closed. No spawn.submit.response may appear for that rpc.
-        let spawn_external = live.entrypoint("spawnExternal");
+        //    dispatcher has no request parent; the task must be rejected
+        //    with `task.submit.error` (ParentNotFound) and the request must
+        //    fail closed. No task.submit.response may appear for that rpc.
+        let task_external = live.entrypoint("spawnExternal");
         let baseline_records = relay_records(&state).len();
         let rejected =
-            dispatch_unary(&live, &state, replica_one_connection, &spawn_external, None).await;
+            dispatch_unary(&live, &state, replica_one_connection, &task_external, None).await;
         assert!(
             rejected.error.is_some(),
-            "request-parent spawn without a dispatcher parent must fail closed: {:?}",
+            "request-parent task without a dispatcher parent must fail closed: {:?}",
             rejected.body
         );
-        let spawn_error_observed =
+        let task_error_observed =
             relay_records(&state)
                 .iter()
                 .skip(baseline_records)
@@ -1355,10 +1355,10 @@ mod tests {
                             direction: Direction::ToRuntime,
                             frame_type,
                             ..
-                        } if frame_type == "spawn.submit.error"
+                        } if frame_type == "task.submit.error"
                     )
                 });
-        let spawn_response_observed =
+        let task_response_observed =
             relay_records(&state)
                 .iter()
                 .skip(baseline_records)
@@ -1369,24 +1369,24 @@ mod tests {
                             direction: Direction::ToRuntime,
                             frame_type,
                             ..
-                        } if frame_type == "spawn.submit.response"
+                        } if frame_type == "task.submit.response"
                     )
                 });
         assert!(
-            spawn_error_observed,
-            "request-parent spawn must be rejected"
+            task_error_observed,
+            "request-parent task must be rejected"
         );
         assert!(
-            !spawn_response_observed,
-            "request-parent spawn must not be accepted without a parent"
+            !task_response_observed,
+            "request-parent task must not be accepted without a parent"
         );
 
-        // 6. Actor-method parent spawn (self message) advances the instance.
-        let spawn_self = live.entrypoint("spawnSelfKick");
+        // 6. Actor-method parent task (self message) advances the instance.
+        let task_self = live.entrypoint("spawnSelfKick");
         let self_kick_count = live.entrypoint("selfKickCount");
         let self_kick_history = live.entrypoint("selfKickHistory");
         assert_eq!(
-            dispatch_unary_ok(&live, &state, replica_one_connection, &spawn_self).await,
+            dispatch_unary_ok(&live, &state, replica_one_connection, &task_self).await,
             serde_json::json!("kicked")
         );
         wait_for_actor_value(
@@ -1403,12 +1403,12 @@ mod tests {
             serde_json::json!("s")
         );
 
-        // 7. Multiple spawned self messages queue serially.
-        let spawn_fanout = live.entrypoint("spawnFanout");
+        // 7. Multiple task self messages queue serially.
+        let task_fanout = live.entrypoint("spawnFanout");
         let fanout_count = live.entrypoint("fanoutCount");
         let fanout_history = live.entrypoint("fanoutHistory");
         assert_eq!(
-            dispatch_unary_ok(&live, &state, replica_one_connection, &spawn_fanout).await,
+            dispatch_unary_ok(&live, &state, replica_one_connection, &task_fanout).await,
             serde_json::json!("fanned")
         );
         wait_for_actor_value(
@@ -1436,7 +1436,7 @@ mod tests {
         );
         assert!(
             started.elapsed() < Duration::from_millis(250),
-            "chain spawn submit waited for the chained target"
+            "chain task submit waited for the chained target"
         );
         wait_for_actor_value(
             &live,
@@ -1452,17 +1452,17 @@ mod tests {
             serde_json::json!("c".repeat(160))
         );
 
-        // 9. Spawn mismatch fail closed: an actor-invocation spawn with an
+        // 9. Task mismatch fail closed: an actor-invocation task with an
         //    unknown parent is rejected and the session survives.
         let baseline_records = relay_records(&state).len();
-        let captured_spawn = wait_for_frame_type(&state, "spawn.submit.request", 0).await;
+        let captured_task = wait_for_frame_type(&state, "task.submit.request", 0).await;
         let (mut mutated, _payload) =
-            decode_spawn_submit_request_frame(&captured_spawn).expect("decode captured spawn");
+            decode_task_submit_request_frame(&captured_task).expect("decode captured task");
         mutated.caller_request_id = "no-such-actor-invocation-parent".to_string();
-        mutated.rpc_id = "spawn-mismatch-probe-rpc".to_string();
-        mutated.spawn_id = Some("spawn-mismatch-probe".to_string());
+        mutated.rpc_id = "task-mismatch-probe-rpc".to_string();
+        mutated.task_id = Some("task-mismatch-probe".to_string());
         let injected =
-            encode_spawn_submit_request_frame(&mutated, &[]).expect("encode mismatch spawn");
+            encode_task_submit_request_frame(&mutated, &[]).expect("encode mismatch task");
         state.inject(replica_one_connection, Direction::ToRouter, injected);
         let deadline = tokio::time::Instant::now() + CLIENT_TIMEOUT;
         loop {
@@ -1474,20 +1474,20 @@ mod tests {
                         direction: Direction::ToRuntime,
                         frame_type,
                         bytes,
-                    } if frame_type == "spawn.submit.error"
+                    } if frame_type == "task.submit.error"
                         && decode_binary_frame(bytes)
                             .ok()
                             .and_then(|frame| frame.header.get("rpcId").cloned())
                             .and_then(|value| value.as_str().map(str::to_string))
                             .as_deref()
-                            == Some("spawn-mismatch-probe-rpc")
+                            == Some("task-mismatch-probe-rpc")
                 )
             });
             if error {
                 break;
             }
             if tokio::time::Instant::now() > deadline {
-                panic!("spawn mismatch error frame was not observed");
+                panic!("task mismatch error frame was not observed");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -1497,19 +1497,19 @@ mod tests {
             serde_json::json!("actor-count-next")
         );
 
-        // 10. Replacement: inject a direction-violation spawn response on the
+        // 10. Replacement: inject a direction-violation task response on the
         //     relay; the Router terminates the exact session and the real
         //     Runtime reconnects through a fresh pair (connection 3).
         let direction_violation = {
-            let header = skiff_runtime_transport::protocol::SpawnSubmitResponseFrameHeader {
+            let header = skiff_runtime_transport::protocol::TaskSubmitResponseFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "spawn.submit.response".to_string(),
+                envelope_type: "task.submit.response".to_string(),
                 rpc_id: "direction-violation-rpc".to_string(),
-                spawn_id: "spawn-direction".to_string(),
+                task_id: "task-direction".to_string(),
                 request_id: "request-direction".to_string(),
                 status: "submitted".to_string(),
             };
-            skiff_runtime_transport::protocol::encode_spawn_submit_response_frame(&header)
+            skiff_runtime_transport::protocol::encode_task_submit_response_frame(&header)
                 .expect("encode direction violation")
         };
         state.inject(
@@ -1544,11 +1544,11 @@ mod tests {
         );
 
         // 12. Zero residue: every request/response pair across the actor and
-        //     spawn families is balanced (invocation/control/lease/timer).
+        //     task families is balanced (invocation/control/lease/timer).
         let records = relay_records(&state);
         assert!(
             frame_pairs_zero(&records),
-            "actor/spawn frame pairs are not balanced: {}",
+            "actor/task frame pairs are not balanced: {}",
             frame_pairs_report(&records)
         );
 

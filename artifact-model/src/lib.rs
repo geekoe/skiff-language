@@ -202,7 +202,7 @@ pub use service_unit::{
     ActorMetadataIr, ActorMethodMetadataIr, DbMetadataIndexIr, DbMetadataIr, GatewayConfig,
     GatewayRoute, OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding,
     ServiceConfigMetadata, ServiceMeta, ServiceOperation, ServiceOperationTarget,
-    ServiceReceiverOperationTarget, ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
+    ServiceReceiverOperationTarget, ServiceTimeoutConfig, TaskTargetIr, TaskTargetKindIr,
 };
 pub use symbols::{
     PackageCallableRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,

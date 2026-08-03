@@ -66,7 +66,7 @@ pub use service_unit::{
     GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,
     OperationRouteBinding, OperationTargetRef, OperationTargetRefRuntimeExt, PackageAbiExpectation,
     PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceMeta, ServiceOperation,
-    ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
+    ServiceTimeoutConfig, TaskTargetIr, TaskTargetKindIr,
 };
 pub use shared_image::{
     ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageCallableTarget,

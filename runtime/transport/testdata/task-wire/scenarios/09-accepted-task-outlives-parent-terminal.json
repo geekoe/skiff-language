@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "scenario": "accepted-task-outlives-parent-terminal",
+  "parents": {
+    "request": [ { "id": "parent-1", "runtimeId": "runtime-a", "connection": "conn-a", "assemblyGeneration": 42, "testCaseCapability": null } ],
+    "actorInvocation": []
+  },
+  "events": [
+    { "op": "submit", "callerKind": "request", "callerRequestId": "parent-1", "targetKind": "function", "connection": "conn-a" },
+    { "op": "parentTerminal", "callerKind": "request", "callerRequestId": "parent-1" },
+    { "op": "submit", "callerKind": "request", "callerRequestId": "parent-1", "targetKind": "function", "connection": "conn-a" }
+  ],
+  "expect": {
+    "accepted": [ "request:parent-1" ],
+    "rejected": [ "request:parent-1" ],
+    "errors": { "request:parent-1": "ParentTerminal" },
+    "acceptedTasks": 1
+  }
+}

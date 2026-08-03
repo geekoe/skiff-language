@@ -56,7 +56,7 @@ impl TerminalSource {
 pub struct PendingHealth {
     pub unary: u64,
     pub stream: u64,
-    pub derived_spawn: u64,
+    pub derived_task: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -76,9 +76,9 @@ pub struct AdmissionHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SpawnHealth {
-    pub derived_spawns: u64,
-    pub actor_lane_spawns: u64,
+pub struct TaskHealth {
+    pub derived_tasks: u64,
+    pub actor_lane_tasks: u64,
     pub ambiguous_rejects: u64,
 }
 
@@ -87,6 +87,6 @@ pub struct DispatcherHealthSnapshot {
     pub pending: PendingHealth,
     pub terminal: TerminalHealth,
     pub admission: AdmissionHealth,
-    pub spawn: SpawnHealth,
+    pub task: TaskHealth,
     pub stopped: bool,
 }

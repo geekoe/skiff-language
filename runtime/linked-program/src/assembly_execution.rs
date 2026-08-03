@@ -24,7 +24,7 @@ pub struct AssemblyExecutionImage {
     shared_packages: Arc<SharedPackageLinkedImage>,
     execution_packages: Vec<Arc<RuntimeExecutionPackage>>,
     code_slot_by_build: BTreeMap<PackageBuildId, PackageCodeSlotIndex>,
-    spawn_routes: BTreeMap<String, ExecutableAddr>,
+    task_routes: BTreeMap<String, ExecutableAddr>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
     service_error_types: Arc<ServiceErrorTypeIndex>,
@@ -100,7 +100,7 @@ impl AssemblyExecutionImage {
             shared_packages,
             execution_packages,
             code_slot_by_build,
-            spawn_routes: BTreeMap::new(),
+            task_routes: BTreeMap::new(),
             link_overlay,
             types,
             service_error_types,
@@ -140,30 +140,30 @@ impl AssemblyExecutionImage {
         &self.service_error_types
     }
 
-    pub fn with_spawn_routes(
+    pub fn with_task_routes(
         mut self,
         routes: BTreeMap<String, ExecutableAddr>,
     ) -> AssemblyExecutionResult<Self> {
         for (target, addr) in &routes {
             if target.is_empty() {
-                return Err(AssemblyExecutionImageError::InvalidSpawnRouteTarget {
+                return Err(AssemblyExecutionImageError::InvalidTaskRouteTarget {
                     target: target.clone(),
                 });
             }
             let executable = self.executable_at(addr)?;
             if executable.executable().kind != crate::ExecutableKind::Function {
-                return Err(AssemblyExecutionImageError::SpawnRouteNotFunction {
+                return Err(AssemblyExecutionImageError::TaskRouteNotFunction {
                     target: target.clone(),
                     addr: executable.addr().clone(),
                 });
             }
         }
-        self.spawn_routes = routes;
+        self.task_routes = routes;
         Ok(self)
     }
 
-    pub fn spawn_route(&self, target: &str) -> Option<&ExecutableAddr> {
-        self.spawn_routes.get(target)
+    pub fn task_route(&self, target: &str) -> Option<&ExecutableAddr> {
+        self.task_routes.get(target)
     }
 
     pub fn executable_at(
@@ -983,10 +983,10 @@ pub enum AssemblyExecutionImageError {
     DuplicatePackageBuild {
         package_build_id: PackageBuildId,
     },
-    InvalidSpawnRouteTarget {
+    InvalidTaskRouteTarget {
         target: String,
     },
-    SpawnRouteNotFunction {
+    TaskRouteNotFunction {
         target: String,
         addr: ExecutableAddr,
     },

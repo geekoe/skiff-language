@@ -69,9 +69,9 @@ fn request_payload_encoding(request: &RequestEnvelope) -> RequestPayloadEncoding
         .and_then(Value::as_object)
         .and_then(|caller| caller.get("kind"))
         .and_then(Value::as_str)
-        == Some("spawn")
+        == Some("task")
     {
-        RequestPayloadEncoding::RecoverableSpawnPayload
+        RequestPayloadEncoding::RecoverableTaskDispatchPayload
     } else {
         RequestPayloadEncoding::RuntimeBinary
     }

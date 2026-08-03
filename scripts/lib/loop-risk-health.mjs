@@ -69,7 +69,7 @@ export function runtimeCountersAreZero(counters) {
     && counters?.outboundStreamLeasesActive === 0
     && counters?.streamRuntimeStreamsActive === 0
     && counters?.flagBackedCancelWaitersActive === 0
-    && counters?.spawnedTasksActive === 0
+    && counters?.taskRequestsActive === 0
   );
 }
 

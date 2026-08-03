@@ -58,7 +58,7 @@ use super::{
         runtime_object_from_carriers, runtime_representation_wrap_for_plan, runtime_to_wire,
         runtime_to_wire_required_plan,
     },
-    spawn_ops,
+    task_ops,
     test_effect_registry::{
         RegisteredTestEffect, RegisteredTestEffectFailure, RegisteredTestEffectOutcome,
         RegisteredTestEffectThrow, ServiceTestEffectDispatch, TestEffectTarget,
@@ -466,7 +466,7 @@ impl<'a> EvalContext<'a> {
             }
             LinkedStmtIr::Break => Ok(Flow::Break.into()),
             LinkedStmtIr::Continue => Ok(Flow::LoopContinue.into()),
-            LinkedStmtIr::Spawn { call } => self.exec_statement_spawn(call).await,
+            LinkedStmtIr::Dispatch { call } => self.exec_statement_dispatch(call).await,
             LinkedStmtIr::Expr { value } => {
                 self.eval_program_expr_ref(*value).await?;
                 Ok(Flow::Continue.into())
@@ -559,8 +559,8 @@ impl<'a> EvalContext<'a> {
     }
 
     #[async_recursion]
-    async fn exec_statement_spawn(&mut self, call: &ExprRefIr) -> Result<EvaluatorControl> {
-        spawn_ops::submit_spawn_statement(self, *call).await?;
+    async fn exec_statement_dispatch(&mut self, call: &ExprRefIr) -> Result<EvaluatorControl> {
+        task_ops::submit_task_statement(self, *call).await?;
         Ok(Flow::Continue.into())
     }
 

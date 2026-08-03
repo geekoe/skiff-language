@@ -210,7 +210,7 @@ pub enum StmtIr {
     },
     Break,
     Continue,
-    Spawn {
+    Dispatch {
         call: ExprRefIr,
     },
     Emit {
@@ -903,7 +903,7 @@ fn visit_statement_type_refs<E>(
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue
-        | StmtIr::Spawn { .. }
+        | StmtIr::Dispatch { .. }
         | StmtIr::Emit { .. }
         | StmtIr::Expr { .. }
         | StmtIr::Return { .. }

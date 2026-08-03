@@ -69,7 +69,7 @@ impl<'a> RequestPayloadContext<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestPayloadEncoding {
     RuntimeBinary,
-    RecoverableSpawnPayload,
+    RecoverableTaskDispatchPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +287,7 @@ impl<'a> InvocationContext<'a> {
         self.request_service_protocol_identity
     }
 
-    pub fn spawn_service_protocol_identity(&self) -> &'a str {
+    pub fn task_service_protocol_identity(&self) -> &'a str {
         self.operation_service_protocol_identity
             .unwrap_or(self.request_service_protocol_identity)
     }

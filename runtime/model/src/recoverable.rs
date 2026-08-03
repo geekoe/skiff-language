@@ -1407,7 +1407,7 @@ fn validate_recoverable_date(epoch_millis: i64, path: &str) -> RecoverableValida
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeRecoverableBoundaryKind {
     DbValue,
-    SpawnPayload,
+    TaskDispatchPayload,
     QueueWorkItemPayload,
     RuntimeWirePayload,
     RuntimeBinaryPayload,
@@ -1421,7 +1421,7 @@ impl RuntimeRecoverableBoundaryKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DbValue => "dbValue",
-            Self::SpawnPayload => "spawnPayload",
+            Self::TaskDispatchPayload => "taskDispatchPayload",
             Self::QueueWorkItemPayload => "queueWorkItemPayload",
             Self::RuntimeWirePayload => "runtimeWirePayload",
             Self::RuntimeBinaryPayload => "runtimeBinaryPayload",

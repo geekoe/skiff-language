@@ -30,7 +30,7 @@ mod tests {
                 RuntimeFrameFamily::Activation,
                 RuntimeFrameFamily::Connection,
                 RuntimeFrameFamily::Actor,
-                RuntimeFrameFamily::Spawn,
+                RuntimeFrameFamily::Task,
             ]
         );
         assert_eq!(RUNTIME_FRAME_FAMILY_RULES.len(), 6);

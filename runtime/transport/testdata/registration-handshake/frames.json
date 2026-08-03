@@ -76,7 +76,7 @@
           "flagBackedCancelWaitersActive": 0,
           "outboundRequestsPending": 0,
           "outboundStreamLeasesActive": 0,
-          "spawnedTasksActive": 0,
+          "taskRequestsActive": 0,
           "streamRuntimeStreamsActive": 0
         },
         "observedAt": "2026-08-02T00:00:00Z",

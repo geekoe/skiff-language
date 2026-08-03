@@ -187,7 +187,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Stmt::Rethrow { .. }
                 | Stmt::Emit(_)
                 | Stmt::Return(_)
-                | Stmt::Spawn { .. }
+                | Stmt::Dispatch { .. }
                 | Stmt::Break
                 | Stmt::Continue
                 | Stmt::Expr(_) => None,

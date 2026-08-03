@@ -25,7 +25,7 @@ const FILE_ID: &str =
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[test]
-fn assembly_spawn_routes_are_exact_and_unknown_targets_do_not_fallback() {
+fn assembly_task_routes_are_exact_and_unknown_targets_do_not_fallback() {
     let addr = ExecutableAddr {
         unit: UnitAddr::Package(0),
         file: FileAddr::LoadedFileIndex(0),
@@ -33,15 +33,15 @@ fn assembly_spawn_routes_are_exact_and_unknown_targets_do_not_fallback() {
     };
     let image = admit(Vec::new(), Vec::new())
         .unwrap()
-        .with_spawn_routes(BTreeMap::from([(
+        .with_task_routes(BTreeMap::from([(
             "function:model.entry".to_string(),
             addr.clone(),
         )]))
         .unwrap();
 
-    assert_eq!(image.spawn_route("function:model.entry"), Some(&addr));
-    assert_eq!(image.spawn_route("model.entry"), None);
-    assert_eq!(image.spawn_route("function:model.missing"), None);
+    assert_eq!(image.task_route("function:model.entry"), Some(&addr));
+    assert_eq!(image.task_route("model.entry"), None);
+    assert_eq!(image.task_route("function:model.missing"), None);
 }
 
 #[test]

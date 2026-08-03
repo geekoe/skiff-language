@@ -359,7 +359,7 @@ mod tests {
             Arc::new(dispatch_harness::FakeLeaseRevalidate::new()),
             Arc::new(dispatch_harness::FakeRuntimePeer::new()),
             Arc::new(dispatch_harness::FakeSessionAbort::new()),
-            Arc::new(dispatch_harness::FakeActorMethodSpawnControl::new()),
+            Arc::new(dispatch_harness::FakeActorMethodTaskControl::new()),
         )
         .expect("options");
         let dispatcher = Arc::new(RequestDispatcher::new(options).expect("dispatcher"));

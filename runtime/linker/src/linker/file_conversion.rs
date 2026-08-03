@@ -802,7 +802,7 @@ fn linked_stmt(
         },
         artifact::StmtIr::Break => LinkedStmtIr::Break,
         artifact::StmtIr::Continue => LinkedStmtIr::Continue,
-        artifact::StmtIr::Spawn { call } => LinkedStmtIr::Spawn {
+        artifact::StmtIr::Dispatch { call } => LinkedStmtIr::Dispatch {
             call: linked_expr_ref(call),
         },
         artifact::StmtIr::Emit { operation, value } => LinkedStmtIr::Emit {

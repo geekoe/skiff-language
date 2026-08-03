@@ -78,7 +78,7 @@ pub(super) fn interpreter_for(file: Arc<LinkedFileUnit>) -> (Arc<Interpreter>, P
         service_files: vec![file],
         packages: vec![runtime_package_fixture("skiff.run/std", std_file)],
         service_resources: PublicationResourceTable::default(),
-        spawn_routes: HashMap::new(),
+        task_routes: HashMap::new(),
         link_overlay: overlay,
         types,
     });

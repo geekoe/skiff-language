@@ -26,7 +26,7 @@ use crate::{
 };
 
 impl RuntimeHost {
-    pub(super) async fn spawn_websocket_jsonrpc_on_pinned_route(
+    pub(super) async fn task_websocket_jsonrpc_on_pinned_route(
         &self,
         router_session_id: String,
         request: AdmittedWebSocketJsonRpcRequest,

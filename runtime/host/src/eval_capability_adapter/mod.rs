@@ -22,8 +22,8 @@ use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
     ConnectionRequestRegistry, ConnectionRequestSession, ExecutionControlResult,
-    FileCapabilityError, FileCapabilityFuture, RuntimeDeadlineControl, SpawnCallerKind,
-    SpawnSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
+    FileCapabilityError, FileCapabilityFuture, RuntimeDeadlineControl, TaskCallerKind,
+    TaskSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
     StreamRuntimeResult,
 };
 use skiff_runtime_eval::{
@@ -85,9 +85,9 @@ use websocket::{
 
 pub(crate) use assembly_execution_context::RuntimeAssemblyEvalAdapterContextInput;
 pub(crate) use assembly_request_adapter::{
-    http_gateway_eval_adapter, spawn_eval_adapter, websocket_connect_eval_adapter,
+    http_gateway_eval_adapter, task_eval_adapter, websocket_connect_eval_adapter,
     websocket_jsonrpc_eval_adapter, RuntimeHttpGatewayEvalAdapterInput,
-    RuntimeSpawnEvalAdapterInput, RuntimeWebSocketConnectEvalAdapterInput,
+    RuntimeTaskEvalAdapterInput, RuntimeWebSocketConnectEvalAdapterInput,
     RuntimeWebSocketJsonRpcEvalAdapterInput,
 };
 pub(crate) use error::root_error_into_eval;

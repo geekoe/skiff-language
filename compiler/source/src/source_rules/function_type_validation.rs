@@ -144,7 +144,7 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
         Stmt::Rethrow { exception } => {
             collect_expr_function_type_violations(path, exception, violations);
         }
-        Stmt::Spawn { call } => {
+        Stmt::Dispatch { call } => {
             collect_expr_function_type_violations(path, call, violations);
         }
         Stmt::Break | Stmt::Continue => {}

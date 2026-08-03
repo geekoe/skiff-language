@@ -92,23 +92,23 @@ impl RequestAuthority {
     }
 }
 
-/// Function spawn vs actor-method spawn (C-dispatch §5).
+/// Function task vs actor-method task (C-dispatch §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpawnTargetKind {
+pub enum TaskTargetKind {
     Function,
     ActorMethod,
 }
 
-/// `spawn.submit` entering the dispatcher (C-dispatch §5).
+/// `task.submit` entering the dispatcher (C-dispatch §5).
 ///
-/// `authority` is captured by the caller from the spawn frame's routing plus
+/// `authority` is captured by the caller from the task frame's routing plus
 /// the exact current connection; it must equal the parent pending's captured
 /// authority (exact parent authority, §5.1).
 #[derive(Debug, Clone)]
-pub struct SpawnSubmit {
-    pub spawn_request_id: String,
+pub struct TaskSubmit {
+    pub task_request_id: String,
     pub caller_request_id: String,
-    pub target_kind: SpawnTargetKind,
+    pub target_kind: TaskTargetKind,
     pub target: String,
     pub authority: RequestAuthority,
     /// Derived deadline = min(parent remaining, default derived timeout).
@@ -116,22 +116,22 @@ pub struct SpawnSubmit {
     pub deadline: Option<RequestDeadline>,
 }
 
-/// Derived function-spawn accepted as a dispatcher-owned pending
+/// Derived function-task accepted as a dispatcher-owned pending
 /// (C-dispatch §5.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DerivedSpawnResult {
-    pub spawn_request_id: String,
+pub struct DerivedTaskResult {
+    pub task_request_id: String,
     pub parent_request_id: String,
     pub session_epoch: RuntimeSessionEpoch,
 }
 
-/// Actor-method spawn forwarded to the actor lane (C-dispatch §5.1/§5.2).
+/// Actor-method task forwarded to the actor lane (C-dispatch §5.1/§5.2).
 ///
 /// The dispatcher does not hold actor invocation pending and therefore does
 /// not resolve the actor parent session; the actor lane owns that correlation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorMethodSpawnDispatch {
-    pub spawn_request_id: String,
+pub struct ActorMethodTaskDispatch {
+    pub task_request_id: String,
     pub caller_request_id: String,
     pub target: String,
 }
@@ -139,7 +139,7 @@ pub struct ActorMethodSpawnDispatch {
 /// Contract-shaped derived deadline (C-dispatch §5.2): the smaller
 /// `timeout_ms` of parent and default, preserving the parent's wire
 /// `expires_at`. Callers that already computed remaining time pass the result
-/// directly in [`SpawnSubmit::deadline`].
+/// directly in [`TaskSubmit::deadline`].
 pub fn derived_deadline(
     parent: Option<&RequestDeadline>,
     default: &RequestDeadline,

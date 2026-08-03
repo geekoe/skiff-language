@@ -49,8 +49,8 @@ use super::{
 mod execution;
 mod object_literal;
 
-const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
-const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
+const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
+const TASK_FUNCTION_TARGET_PREFIX: &str = "function:";
 
 pub(super) fn native_target_from_symbol(symbol: &str) -> NativeTarget {
     let binding_key = prelude_registry()
@@ -681,31 +681,31 @@ impl<'a> FunctionLowerer<'a> {
                 self.consume_expression_key();
                 StmtIr::Rethrow { exception_slot }
             }
-            Stmt::Spawn { call } => self.lower_spawn_stmt(call)?,
+            Stmt::Dispatch { call } => self.lower_task_stmt(call)?,
         };
         Ok(self.push_stmt(lowered))
     }
 
-    fn lower_spawn_stmt(&mut self, call: &Expr) -> Result<StmtIr> {
+    fn lower_task_stmt(&mut self, call: &Expr) -> Result<StmtIr> {
         let call_ref = self.lower_expr(call)?;
-        let metadata = self.spawn_function_target_metadata(call_ref)?;
+        let metadata = self.task_function_target_metadata(call_ref)?;
         let Some(ExprIr::Call { call }) =
             self.body.expressions.get_mut(call_ref.expression as usize)
         else {
             return Err(CompileError::Semantic(
-                "spawn statement expects a lowered call expression".to_string(),
+                "dispatch statement expects a lowered call expression".to_string(),
             ));
         };
         call.metadata
-            .insert(SPAWN_SUBMIT_METADATA_KEY.to_string(), metadata);
-        Ok(StmtIr::Spawn { call: call_ref })
+            .insert(TASK_SUBMIT_METADATA_KEY.to_string(), metadata);
+        Ok(StmtIr::Dispatch { call: call_ref })
     }
 
-    fn spawn_function_target_metadata(&self, call_ref: ExprRefIr) -> Result<MetadataValue> {
+    fn task_function_target_metadata(&self, call_ref: ExprRefIr) -> Result<MetadataValue> {
         let Some(ExprIr::Call { call }) = self.body.expressions.get(call_ref.expression as usize)
         else {
             return Err(CompileError::Semantic(
-                "spawn statement expects a call expression".to_string(),
+                "dispatch statement expects a call expression".to_string(),
             ));
         };
         let (target_kind, target) = match &call.target {
@@ -718,20 +718,20 @@ impl<'a> FunctionLowerer<'a> {
                     })
                     .ok_or_else(|| {
                         CompileError::Semantic(format!(
-                            "spawn target executable index {executable_index} is not declared in module {}",
+                            "dispatch target executable index {executable_index} is not declared in module {}",
                             self.module_path
                         ))
                     })?;
                 if declaration_name.contains('.') {
                     return Err(CompileError::Semantic(
-                        "spawn supports function calls; ordinary impl method calls cannot be spawned"
+                        "dispatch supports function calls; ordinary impl method calls cannot be dispatched"
                             .to_string(),
                     ));
                 }
                 (
                     "function",
                     format!(
-                        "{SPAWN_FUNCTION_TARGET_PREFIX}{}",
+                        "{TASK_FUNCTION_TARGET_PREFIX}{}",
                         executable_symbol(self.module_path, declaration_name)
                     ),
                 )
@@ -757,7 +757,7 @@ impl<'a> FunctionLowerer<'a> {
                     .try_fold(None, |existing: Option<&SourceSymbolKey>, candidate| {
                         if existing.is_some_and(|existing| existing != candidate) {
                             Err(CompileError::Semantic(format!(
-                                "spawn target {module_path} executable index {executable_index} maps to more than one typed source callable"
+                                "dispatch target {module_path} executable index {executable_index} maps to more than one typed source callable"
                             )))
                         } else {
                             Ok(Some(candidate))
@@ -765,18 +765,18 @@ impl<'a> FunctionLowerer<'a> {
                     })?
                     .ok_or_else(|| {
                         CompileError::Semantic(format!(
-                            "spawn target {module_path} executable index {executable_index} has no exact typed function source callable"
+                            "dispatch target {module_path} executable index {executable_index} has no exact typed function source callable"
                         ))
                     })?;
                 if symbol.symbol().contains('.') {
                     return Err(CompileError::Semantic(
-                        "spawn supports function calls; ordinary impl method calls cannot be spawned"
+                        "dispatch supports function calls; ordinary impl method calls cannot be dispatched"
                             .to_string(),
                     ));
                 }
                 (
                     "function",
-                    format!("{SPAWN_FUNCTION_TARGET_PREFIX}{symbol}"),
+                    format!("{TASK_FUNCTION_TARGET_PREFIX}{symbol}"),
                 )
             }
             CallTargetIr::PackageCallable {
@@ -822,7 +822,7 @@ impl<'a> FunctionLowerer<'a> {
             ),
             _ => {
                 return Err(CompileError::Semantic(
-                    "spawn currently supports only function calls and actor method calls"
+                    "dispatch currently supports only function calls and actor method calls"
                         .to_string(),
                 ));
             }
@@ -2860,7 +2860,7 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
         | Stmt::Emit(value)
-        | Stmt::Spawn { call: value }
+        | Stmt::Dispatch { call: value }
         | Stmt::Expr(value) => expr_preorder_node_count(value),
         Stmt::Return(value) => value
             .as_ref()
@@ -2938,7 +2938,7 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
         | Stmt::Emit(_)
         | Stmt::Break
         | Stmt::Continue
-        | Stmt::Spawn { .. }
+        | Stmt::Dispatch { .. }
         | Stmt::Expr(_) => false,
     }
 }

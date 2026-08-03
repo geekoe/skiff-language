@@ -42,7 +42,7 @@ static PINNED_ROUTE_FIXTURE_B: OnceLock<CompiledGatewayFixture> = OnceLock::new(
 static CURRENT_SCOPE_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 static PACKAGE_DIRECT_STREAM_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 static STREAM_ARGUMENT_FIXTURE: OnceLock<StreamArgumentCompiledFixture> = OnceLock::new();
-static SPAWN_SUBMIT_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
+static TASK_SUBMIT_FIXTURE: OnceLock<CurrentScopeCompiledFixture> = OnceLock::new();
 
 pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, ActiveAssemblyRoute>) {
     let fixture = fixture();
@@ -199,29 +199,29 @@ pub(super) async fn admitted_package_direct_stream_gateway_host(
     (host, routes)
 }
 
-pub(super) async fn admitted_spawn_submit_host() -> (RuntimeHost, ActiveAssemblyRoute) {
-    let fixture = SPAWN_SUBMIT_FIXTURE.get_or_init(compile_spawn_submit_fixture_with_stack);
+pub(super) async fn admitted_task_submit_host() -> (RuntimeHost, ActiveAssemblyRoute) {
+    let fixture = TASK_SUBMIT_FIXTURE.get_or_init(compile_task_submit_fixture_with_stack);
     let resolver = FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
-        .expect("spawn-submit filesystem resolver");
+        .expect("task-submit filesystem resolver");
     let host = super::super::test_host();
     host.assembly_admission
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
-        .expect("spawn-submit assembly should admit");
+        .expect("task-submit assembly should admit");
     let binding = fixture
         .assembly
         .gateway_ingress
         .iter()
         .find(|binding| binding.selector.path == "/probe")
-        .expect("spawn-submit probe ingress");
+        .expect("task-submit probe ingress");
     let route = host
         .lookup_active_assembly_request_route(&binding.service_ingress_key())
-        .expect("spawn-submit probe route");
+        .expect("task-submit probe route");
     (host, route)
 }
 
-fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
-    let temp = TempFixture::new("host-direct-spawn-submit");
+fn compile_task_submit_fixture() -> CurrentScopeCompiledFixture {
+    let temp = TempFixture::new("host-direct-task-submit");
     let source_artifacts = temp.child("source-artifacts");
     let runtime_artifacts = temp.child("runtime-artifacts");
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -233,21 +233,21 @@ fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
     let platform = CompilerPlatformSources::new(&repository).expect("repository platform sources");
     seed_canonical_std(&platform, &source_artifacts).expect("canonical std seed");
     let project = compile_package_project_for_test(&platform, &fixture_root, &source_artifacts)
-        .expect("spawn-submit test service production package");
+        .expect("task-submit test service production package");
     let cases = discover_test_service_cases(&fixture_root, &fixture_root, false)
-        .expect("spawn-submit test discovery");
+        .expect("task-submit test discovery");
     assert_eq!(cases.len(), 1);
     let test_fixture = assemble_test_service_fixture_for_run(
         &project,
         &cases,
         CanonicalBaseAssembly::default(),
-        "host-direct-spawn-submit",
+        "host-direct-task-submit",
         "test",
     )
-    .expect("spawn-submit test-service assembly");
+    .expect("task-submit test-service assembly");
     test_fixture
         .publish(&source_artifacts, &runtime_artifacts)
-        .expect("spawn-submit runtime records");
+        .expect("task-submit runtime records");
     let assembly = Arc::new(test_fixture.records.assembly.clone());
     CurrentScopeCompiledFixture {
         assembly,
@@ -256,14 +256,14 @@ fn compile_spawn_submit_fixture() -> CurrentScopeCompiledFixture {
     }
 }
 
-fn compile_spawn_submit_fixture_with_stack() -> CurrentScopeCompiledFixture {
+fn compile_task_submit_fixture_with_stack() -> CurrentScopeCompiledFixture {
     std::thread::Builder::new()
-        .name("host-direct-spawn-submit-fixture".to_string())
+        .name("host-direct-task-submit-fixture".to_string())
         .stack_size(32 * 1024 * 1024)
-        .spawn(compile_spawn_submit_fixture)
-        .expect("spawn-submit fixture compiler thread")
+        .spawn(compile_task_submit_fixture)
+        .expect("task-submit fixture compiler thread")
         .join()
-        .expect("spawn-submit fixture compiler thread should not panic")
+        .expect("task-submit fixture compiler thread should not panic")
 }
 
 pub(super) async fn admitted_stream_argument_gateway_host(

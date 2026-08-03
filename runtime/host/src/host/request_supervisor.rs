@@ -17,7 +17,7 @@ use skiff_runtime_request::{
     ResponseError,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
 };
 use tokio::sync::Mutex;
 
@@ -106,9 +106,9 @@ impl RequestSupervisor {
         .await
     }
 
-    pub(crate) async fn begin_spawn(
+    pub(crate) async fn begin_task(
         &self,
-        header: &RuntimeAssemblySpawnRequestStartFrameHeader,
+        header: &RuntimeAssemblyTaskRequestStartFrameHeader,
         telemetry: RequestTelemetryContext,
         start_event: &'static str,
     ) -> Option<SupervisedRequest> {
@@ -116,7 +116,7 @@ impl RequestSupervisor {
         if let Some(deadline) = &header.deadline {
             extra.insert(
                 "deadline".to_string(),
-                serde_json::to_value(deadline).expect("typed spawn deadline remains serializable"),
+                serde_json::to_value(deadline).expect("typed task deadline remains serializable"),
             );
         }
         let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(&extra));

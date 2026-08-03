@@ -97,7 +97,7 @@ impl ActivationExecutionOperation {
 ///
 /// Construction happens outside Eval from an immutable, generation-pinned Host context set. The
 /// bundle is deliberately indivisible: a failed rebind cannot leave config, DB, file, actor,
-/// spawn, WebSocket, telemetry or HTTP effects owned by different deployments.
+/// task, WebSocket, telemetry or HTTP effects owned by different deployments.
 pub struct OwnedActivationExecutionCapabilityBundle {
     config: OwnedConfigCapabilityContext,
     db: DbCapabilityContext,
@@ -630,7 +630,7 @@ mod provider_service_stack_scope_tests {
 /// reconstructs a borrowed `ProgramExecutionContext<'_>` from it. Wrap it in an
 /// `Arc` and clone the `Arc` into each spawned task.
 ///
-/// The owned `actor` strings are shared by both the actor and spawn contexts —
+/// The owned `actor` strings are shared by both the actor and task contexts —
 /// they are identical at the construction site (`runner.rs`).
 pub struct OwnedProgramExecutionContext {
     execution: OwnedExecutionControl,
@@ -1059,7 +1059,7 @@ impl Interpreter {
             &program.service_files,
             &program.packages,
             &program.service_resources,
-            &program.spawn_routes,
+            &program.task_routes,
             &program.link_overlay,
             &program.types,
         ))

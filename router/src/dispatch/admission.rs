@@ -179,7 +179,7 @@ impl RuntimeAdmissionPool {
         None
     }
 
-    /// Reserves a permit for one exact session (derived function spawn on the
+    /// Reserves a permit for one exact session (derived function task on the
     /// parent session, C-dispatch §5.2).
     pub fn reserve_exact(&self, session: &RuntimeSessionEpoch) -> Option<Reservation> {
         let mut inner = self.lock();

@@ -31,7 +31,7 @@ function acceptSubmittedReceipt(receipt: string) -> void {
 }
 
 function submitSpawnReceipt() -> string {
-  spawn acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")
+  dispatch acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")
   return "P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted"
 }
 

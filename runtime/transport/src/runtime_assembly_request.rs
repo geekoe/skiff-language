@@ -23,8 +23,8 @@ use lexical::{
     deserialize_runtime_assembly_websocket_jsonrpc_request_id,
     deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
     deserialize_service_caller_kind, deserialize_service_deployment_ref,
-    deserialize_spawn_invocation_kind, deserialize_spawn_target, deserialize_spawn_target_kind,
-    deserialize_spawn_unary_dispatch_mode, deserialize_unary_dispatch_mode,
+    deserialize_task_invocation_kind, deserialize_task_target, deserialize_task_target_kind,
+    deserialize_task_unary_dispatch_mode, deserialize_unary_dispatch_mode,
     deserialize_websocket_jsonrpc_unary_dispatch_mode,
 };
 use metadata::deserialize_present_option;
@@ -78,7 +78,7 @@ pub enum RuntimeAssemblyRequestStartFrameWireHeader {
     Http(RuntimeAssemblyRequestStartFrameHeader),
     WebSocketConnect(RuntimeAssemblyWebSocketConnectRequestStartFrameHeader),
     WebSocketJsonRpc(RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader),
-    Spawn(RuntimeAssemblySpawnRequestStartFrameHeader),
+    Task(RuntimeAssemblyTaskRequestStartFrameHeader),
 }
 
 impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
@@ -91,10 +91,10 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
             .get("invocation")
             .and_then(|invocation| invocation.get("kind"))
             .and_then(serde_json::Value::as_str)
-            == Some("spawn")
+            == Some("task")
         {
             return serde_json::from_value(value)
-                .map(Self::Spawn)
+                .map(Self::Task)
                 .map_err(de::Error::custom);
         }
         let protocol = value
@@ -133,17 +133,17 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblySpawnRequestStartFrameHeader {
+pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
     pub frame_type: String,
     pub request_id: String,
-    #[serde(deserialize_with = "deserialize_spawn_unary_dispatch_mode")]
+    #[serde(deserialize_with = "deserialize_task_unary_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblySpawnRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblySpawnRequestRoutingFrameHeader,
-    pub invocation: RuntimeAssemblySpawnInvocationFrameHeader,
+    pub caller: RuntimeAssemblyTaskRequestCallerFrameHeader,
+    pub routing: RuntimeAssemblyTaskRequestRoutingFrameHeader,
+    pub invocation: RuntimeAssemblyTaskInvocationFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
@@ -162,14 +162,14 @@ pub struct RuntimeAssemblySpawnRequestStartFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblySpawnRequestCallerFrameHeader {
+pub struct RuntimeAssemblyTaskRequestCallerFrameHeader {
     #[serde(deserialize_with = "deserialize_service_caller_kind")]
     pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblySpawnRequestRoutingFrameHeader {
+pub struct RuntimeAssemblyTaskRequestRoutingFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
     pub kind: String,
     #[serde(deserialize_with = "deserialize_assembly_identity")]
@@ -182,12 +182,12 @@ pub struct RuntimeAssemblySpawnRequestRoutingFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblySpawnInvocationFrameHeader {
-    #[serde(deserialize_with = "deserialize_spawn_invocation_kind")]
+pub struct RuntimeAssemblyTaskInvocationFrameHeader {
+    #[serde(deserialize_with = "deserialize_task_invocation_kind")]
     pub kind: String,
-    #[serde(deserialize_with = "deserialize_spawn_target_kind")]
+    #[serde(deserialize_with = "deserialize_task_target_kind")]
     pub target_kind: String,
-    #[serde(deserialize_with = "deserialize_spawn_target")]
+    #[serde(deserialize_with = "deserialize_task_target")]
     pub target: String,
 }
 
@@ -548,20 +548,20 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::Spawn(spawn) => {
+        RuntimeAssemblyRequestStartFrameWireHeader::Task(task) => {
             if payload.is_empty() {
                 return Err(TransportError::decode(
-                    "invalid runtimeAssembly spawn request.start frame: recoverable args payload must be present",
+                    "invalid runtimeAssembly task request.start frame: recoverable args payload must be present",
                 ));
             }
-            if spawn.request_id.is_empty() {
+            if task.request_id.is_empty() {
                 return Err(TransportError::decode(
-                    "invalid runtimeAssembly spawn request.start frame: requestId must be non-empty",
+                    "invalid runtimeAssembly task request.start frame: requestId must be non-empty",
                 ));
             }
-            if spawn.test_effects_enabled != spawn.test_case_capability.is_some() {
+            if task.test_effects_enabled != task.test_case_capability.is_some() {
                 return Err(TransportError::decode(
-                    "invalid runtimeAssembly spawn request.start frame: testEffectsEnabled must match testCaseCapability presence",
+                    "invalid runtimeAssembly task request.start frame: testEffectsEnabled must match testCaseCapability presence",
                 ));
             }
         }

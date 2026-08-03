@@ -1,4 +1,4 @@
-//! `RequestDispatcher`: ordinary unary/stream and derived function-spawn
+//! `RequestDispatcher`: ordinary unary/stream and derived function-task
 //! pending, terminal and reservation correlation (plan §3.2, C-dispatch §2-§5).
 //!
 //! The dispatcher is a synchronous reducer: every method takes the state lock
@@ -22,16 +22,16 @@ use super::candidate::{
     RevalidateOutcome, RoutingEpochSource,
 };
 use super::frame::{
-    ActorMethodSpawnControl, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TimeoutCheck,
+    ActorMethodTaskControl, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TimeoutCheck,
     WireTimeoutCheck,
 };
 use super::health::{
-    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, SpawnHealth, TerminalHealth,
+    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
     TerminalSource,
 };
 use super::types::{
-    ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchSubmit, RequestAuthority,
-    RequestDeadline, SpawnSubmit, SpawnTargetKind,
+    ActorMethodTaskDispatch, DerivedTaskResult, DispatchSubmit, RequestAuthority,
+    RequestDeadline, TaskSubmit, TaskTargetKind,
 };
 
 /// Dispatcher construction options (C-dispatch §3 `RuntimeDispatcherOptions`).
@@ -43,7 +43,7 @@ pub struct RuntimeDispatcherOptions {
     pub revalidate: Arc<dyn LeaseRevalidate>,
     pub peer: Arc<dyn RuntimePeer>,
     pub session_abort: Arc<dyn SessionAbortControl>,
-    pub actor_spawn_control: Arc<dyn ActorMethodSpawnControl>,
+    pub actor_task_control: Arc<dyn ActorMethodTaskControl>,
     pub timeout_check: Arc<dyn TimeoutCheck>,
 }
 
@@ -55,7 +55,7 @@ impl RuntimeDispatcherOptions {
         revalidate: Arc<dyn LeaseRevalidate>,
         peer: Arc<dyn RuntimePeer>,
         session_abort: Arc<dyn SessionAbortControl>,
-        actor_spawn_control: Arc<dyn ActorMethodSpawnControl>,
+        actor_task_control: Arc<dyn ActorMethodTaskControl>,
     ) -> Result<Self, String> {
         if max_concurrency < 1 {
             return Err("maxConcurrency must be >= 1".to_string());
@@ -67,7 +67,7 @@ impl RuntimeDispatcherOptions {
             revalidate,
             peer,
             session_abort,
-            actor_spawn_control,
+            actor_task_control,
             timeout_check: Arc::new(WireTimeoutCheck),
         })
     }
@@ -82,7 +82,7 @@ impl RuntimeDispatcherOptions {
 enum PendingKind {
     Unary,
     Stream,
-    DerivedSpawn,
+    DerivedTask,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,14 +109,14 @@ struct Pending {
     deadline: Option<RequestDeadline>,
 }
 
-/// Lightweight spawn-parent record for admitted requests that do not enter
+/// Lightweight task-parent record for admitted requests that do not enter
 /// the ordinary dispatcher pending map (websocketConnect admissions). The
 /// websocket lane owns the connection lifecycle; the dispatcher only records
-/// the parent facts required by the frozen C-model-spawn parent resolution
-/// (request namespace). Function spawns from these parents fail closed
-/// (no admission permit/lease is held here); actor-method spawns are accepted.
+/// the parent facts required by the frozen C-model-task parent resolution
+/// (request namespace). Function task submits from these parents fail closed
+/// (no admission permit/lease is held here); actor-method task submits are accepted.
 #[derive(Debug, Clone)]
-struct SpawnParent {
+struct TaskParent {
     session_epoch: RuntimeSessionEpoch,
     epoch: Arc<RoutingEpoch>,
     deadline: Option<RequestDeadline>,
@@ -126,16 +126,16 @@ struct SpawnParent {
 struct DispatcherInner {
     pool: RuntimeAdmissionPool,
     pending: BTreeMap<String, Pending>,
-    spawn_parents: BTreeMap<String, SpawnParent>,
+    task_parents: BTreeMap<String, TaskParent>,
     /// Terminal observation of closed sessions (idempotent cleanup state,
     /// not session truth): selection skips these even if a stale query returns
     /// them, closing the race between directory cancellation and enqueue.
     closed_sessions: HashSet<RuntimeSessionEpoch>,
     stopped: bool,
     terminal_by_source: BTreeMap<TerminalSource, u64>,
-    spawn_derived: u64,
-    spawn_actor_lane: u64,
-    spawn_ambiguous: u64,
+    task_derived: u64,
+    task_actor_lane: u64,
+    task_ambiguous: u64,
 }
 
 /// `RequestDispatcher` owner (plan §3.2).
@@ -153,13 +153,13 @@ impl RequestDispatcher {
             inner: Arc::new(Mutex::new(DispatcherInner {
                 pool,
                 pending: BTreeMap::new(),
-                spawn_parents: BTreeMap::new(),
+                task_parents: BTreeMap::new(),
                 closed_sessions: HashSet::new(),
                 stopped: false,
                 terminal_by_source: BTreeMap::new(),
-                spawn_derived: 0,
-                spawn_actor_lane: 0,
-                spawn_ambiguous: 0,
+                task_derived: 0,
+                task_actor_lane: 0,
+                task_ambiguous: 0,
             })),
         })
     }
@@ -448,7 +448,7 @@ impl RequestDispatcher {
                 PendingKind::Stream => {
                     pending.stream_phase == Some(StreamPhase::Streaming) && !payload_present
                 }
-                PendingKind::DerivedSpawn => !payload_present,
+                PendingKind::DerivedTask => !payload_present,
             },
         };
         if !completes {
@@ -644,106 +644,106 @@ impl RequestDispatcher {
         )
     }
 
-    /// Spawn correlation (C-dispatch §5).
+    /// Task correlation (C-dispatch §5).
     ///
-    /// Function spawns enter dispatcher-owned `derivedSpawn` pending on the
-    /// parent session and consume one per-session permit; actor-method spawns
+    /// Function tasks enter dispatcher-owned `derivedTask` pending on the
+    /// parent session and consume one per-session permit; actor-method tasks
     /// are forwarded to the actor lane and never enter this owner.
-    pub fn spawn_submit(&self, spawn: SpawnSubmit) -> SpawnSubmitResult {
+    pub fn task_submit(&self, task: TaskSubmit) -> TaskSubmitResult {
         let mut inner = self.lock();
         if inner.stopped {
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::Shutdown,
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::Shutdown,
             };
         }
-        let request_parent = inner.pending.contains_key(&spawn.caller_request_id)
-            || inner.spawn_parents.contains_key(&spawn.caller_request_id);
+        let request_parent = inner.pending.contains_key(&task.caller_request_id)
+            || inner.task_parents.contains_key(&task.caller_request_id);
         let actor_parent = self
             .options
-            .actor_spawn_control
-            .is_active_invocation_parent(&spawn.caller_request_id);
+            .actor_task_control
+            .is_active_invocation_parent(&task.caller_request_id);
         match (request_parent, actor_parent) {
             (true, true) => {
-                inner.spawn_ambiguous += 1;
-                return SpawnSubmitResult::Rejected {
-                    request_id: spawn.spawn_request_id,
-                    reason: SpawnRejectReason::Ambiguous,
+                inner.task_ambiguous += 1;
+                return TaskSubmitResult::Rejected {
+                    request_id: task.task_request_id,
+                    reason: TaskRejectReason::Ambiguous,
                 };
             }
             (false, false) => {
-                return SpawnSubmitResult::Rejected {
-                    request_id: spawn.spawn_request_id,
-                    reason: SpawnRejectReason::NoParent,
+                return TaskSubmitResult::Rejected {
+                    request_id: task.task_request_id,
+                    reason: TaskRejectReason::NoParent,
                 };
             }
             _ => {}
         }
-        match spawn.target_kind {
-            SpawnTargetKind::Function => self.spawn_function_locked(&mut inner, spawn),
-            SpawnTargetKind::ActorMethod => {
-                inner.spawn_actor_lane += 1;
-                let dispatch = ActorMethodSpawnDispatch {
-                    spawn_request_id: spawn.spawn_request_id,
-                    caller_request_id: spawn.caller_request_id,
-                    target: spawn.target,
+        match task.target_kind {
+            TaskTargetKind::Function => self.task_function_locked(&mut inner, task),
+            TaskTargetKind::ActorMethod => {
+                inner.task_actor_lane += 1;
+                let dispatch = ActorMethodTaskDispatch {
+                    task_request_id: task.task_request_id,
+                    caller_request_id: task.caller_request_id,
+                    target: task.target,
                 };
                 self.options
-                    .actor_spawn_control
-                    .submit_spawn(dispatch.clone());
-                SpawnSubmitResult::ForwardedActorMethod(dispatch)
+                    .actor_task_control
+                    .submit_task(dispatch.clone());
+                TaskSubmitResult::ForwardedActorMethod(dispatch)
             }
         }
     }
 
-    fn spawn_function_locked(
+    fn task_function_locked(
         &self,
         inner: &mut DispatcherInner,
-        spawn: SpawnSubmit,
-    ) -> SpawnSubmitResult {
-        if !inner.pending.contains_key(&spawn.caller_request_id) {
-            // A websocketConnect spawn parent (spawn_parents only) is not an
-            // ordinary dispatcher pending: function spawns from it fail closed
+        task: TaskSubmit,
+    ) -> TaskSubmitResult {
+        if !inner.pending.contains_key(&task.caller_request_id) {
+            // A websocketConnect task parent (task_parents only) is not an
+            // ordinary dispatcher pending: function task submits from it fail closed
             // because no admission permit/lease backs the parent here.
-            // Actor-method spawns route through `route_request_actor_method`
-            // and are accepted (C-model-spawn request namespace).
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::WrongParentKind,
+            // Actor-method tasks route through `route_request_actor_method`
+            // and are accepted (C-model-task request namespace).
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::WrongParentKind,
             };
         }
-        if inner.pending.contains_key(&spawn.spawn_request_id) {
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::Duplicate,
+        if inner.pending.contains_key(&task.task_request_id) {
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::Duplicate,
             };
         }
         let parent = inner
             .pending
-            .get(&spawn.caller_request_id)
+            .get(&task.caller_request_id)
             .expect("request parent exists");
-        if parent.authority != spawn.authority {
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::ParentAuthorityMismatch,
+        if parent.authority != task.authority {
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::ParentAuthorityMismatch,
             };
         }
         let parent_session = parent.session_epoch.clone();
         if inner.closed_sessions.contains(&parent_session) {
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::ParentTerminal,
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::ParentTerminal,
             };
         }
         let Some(reservation) = inner.pool.reserve_exact(&parent_session) else {
             inner.pool.record_queue_full();
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::QueueFull,
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::QueueFull,
             };
         };
         let permit = reservation.commit();
-        if let Err(write_error) = self.options.peer.send_spawn_submit(&parent_session, &spawn) {
+        if let Err(write_error) = self.options.peer.send_task_submit(&parent_session, &task) {
             permit.release();
             *inner
                 .terminal_by_source
@@ -751,23 +751,23 @@ impl RequestDispatcher {
                 .or_insert(0) += 1;
             let _ = self.options.peer.send_request_cancel(
                 &parent_session,
-                &spawn.spawn_request_id,
+                &task.task_request_id,
                 "protocol_error",
             );
             self.options.session_abort.abort_session(&parent_session);
             let _ = write_error;
-            return SpawnSubmitResult::Rejected {
-                request_id: spawn.spawn_request_id,
-                reason: SpawnRejectReason::CallbackError,
+            return TaskSubmitResult::Rejected {
+                request_id: task.task_request_id,
+                reason: TaskRejectReason::CallbackError,
             };
         }
-        let parent_request_id = spawn.caller_request_id.clone();
-        let spawn_request_id = spawn.spawn_request_id.clone();
-        inner.spawn_derived += 1;
+        let parent_request_id = task.caller_request_id.clone();
+        let task_request_id = task.task_request_id.clone();
+        inner.task_derived += 1;
         inner.pending.insert(
-            spawn_request_id.clone(),
+            task_request_id.clone(),
             Pending {
-                kind: PendingKind::DerivedSpawn,
+                kind: PendingKind::DerivedTask,
                 session_epoch: parent_session.clone(),
                 epoch: parent.epoch.clone(),
                 lease: parent.lease.clone(),
@@ -775,11 +775,11 @@ impl RequestDispatcher {
                 stream_phase: None,
                 next_seq: 0,
                 authority: parent.authority.clone(),
-                deadline: spawn.deadline,
+                deadline: task.deadline,
             },
         );
-        SpawnSubmitResult::AcceptedDerived(DerivedSpawnResult {
-            spawn_request_id,
+        TaskSubmitResult::AcceptedDerived(DerivedTaskResult {
+            task_request_id,
             parent_request_id,
             session_epoch: parent_session,
         })
@@ -845,7 +845,7 @@ impl RequestDispatcher {
             match entry.kind {
                 PendingKind::Unary => pending.unary += 1,
                 PendingKind::Stream => pending.stream += 1,
-                PendingKind::DerivedSpawn => pending.derived_spawn += 1,
+                PendingKind::DerivedTask => pending.derived_task += 1,
             }
         }
         DispatcherHealthSnapshot {
@@ -862,10 +862,10 @@ impl RequestDispatcher {
                 no_candidate_rejects: counters.no_candidate_rejects,
                 duplicate_request_id_rejects: counters.duplicate_request_id_rejects,
             },
-            spawn: SpawnHealth {
-                derived_spawns: inner.spawn_derived,
-                actor_lane_spawns: inner.spawn_actor_lane,
-                ambiguous_rejects: inner.spawn_ambiguous,
+            task: TaskHealth {
+                derived_tasks: inner.task_derived,
+                actor_lane_tasks: inner.task_actor_lane,
+                ambiguous_rejects: inner.task_ambiguous,
             },
             stopped: inner.stopped,
         }
@@ -891,7 +891,7 @@ impl RequestDispatcher {
             .map(|pending| pending.epoch.clone())
             .or_else(|| {
                 inner
-                    .spawn_parents
+                    .task_parents
                     .get(request_id)
                     .map(|parent| parent.epoch.clone())
             })
@@ -905,11 +905,11 @@ impl RequestDispatcher {
             .map(|pending| pending.lease.clone())
     }
 
-    /// Registers a lightweight spawn parent for an admitted non-ordinary
+    /// Registers a lightweight task parent for an admitted non-ordinary
     /// request (websocketConnect). The parent lives for the admission window
     /// only; callers must unregister it exactly once when the admission
     /// settles.
-    pub fn register_spawn_parent(
+    pub fn register_task_parent(
         &self,
         request_id: String,
         session_epoch: RuntimeSessionEpoch,
@@ -917,15 +917,15 @@ impl RequestDispatcher {
         deadline: Option<RequestDeadline>,
     ) -> Result<(), String> {
         let mut inner = self.lock();
-        if inner.pending.contains_key(&request_id) || inner.spawn_parents.contains_key(&request_id)
+        if inner.pending.contains_key(&request_id) || inner.task_parents.contains_key(&request_id)
         {
             return Err(format!(
-                "spawn parent request id {request_id} is already registered"
+                "task parent request id {request_id} is already registered"
             ));
         }
-        inner.spawn_parents.insert(
+        inner.task_parents.insert(
             request_id,
-            SpawnParent {
+            TaskParent {
                 session_epoch,
                 epoch,
                 deadline,
@@ -934,20 +934,20 @@ impl RequestDispatcher {
         Ok(())
     }
 
-    /// Removes one lightweight spawn parent (idempotent).
-    pub fn unregister_spawn_parent(&self, request_id: &str) {
-        self.lock().spawn_parents.remove(request_id);
+    /// Removes one lightweight task parent (idempotent).
+    pub fn unregister_task_parent(&self, request_id: &str) {
+        self.lock().task_parents.remove(request_id);
     }
 
-    /// Parent facts for a lightweight spawn parent (websocketConnect), if
+    /// Parent facts for a lightweight task parent (websocketConnect), if
     /// registered: captured routing epoch and the exact runtime session that
     /// owns the admission.
-    pub fn spawn_parent_facts(
+    pub fn task_parent_facts(
         &self,
         request_id: &str,
     ) -> Option<(Arc<RoutingEpoch>, RuntimeSessionEpoch)> {
         self.lock()
-            .spawn_parents
+            .task_parents
             .get(request_id)
             .map(|parent| (parent.epoch.clone(), parent.session_epoch.clone()))
     }
@@ -961,7 +961,7 @@ impl RequestDispatcher {
             .and_then(|pending| pending.deadline.clone())
             .or_else(|| {
                 inner
-                    .spawn_parents
+                    .task_parents
                     .get(request_id)
                     .and_then(|parent| parent.deadline.clone())
             })
@@ -1013,19 +1013,19 @@ impl SubmitRejectReason {
     }
 }
 
-/// Spawn correlation result (C-dispatch §5).
+/// Task correlation result (C-dispatch §5).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpawnSubmitResult {
-    AcceptedDerived(DerivedSpawnResult),
-    ForwardedActorMethod(ActorMethodSpawnDispatch),
+pub enum TaskSubmitResult {
+    AcceptedDerived(DerivedTaskResult),
+    ForwardedActorMethod(ActorMethodTaskDispatch),
     Rejected {
         request_id: String,
-        reason: SpawnRejectReason,
+        reason: TaskRejectReason,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnRejectReason {
+pub enum TaskRejectReason {
     Ambiguous,
     NoParent,
     WrongParentKind,
@@ -1037,7 +1037,7 @@ pub enum SpawnRejectReason {
     CallbackError,
 }
 
-impl SpawnRejectReason {
+impl TaskRejectReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ambiguous => "ambiguous",

@@ -3,7 +3,7 @@ mod control;
 mod frame;
 mod request;
 mod session;
-mod spawn;
+mod task;
 
 pub use actor::{
     ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader, ActorFindResponseFrameHeader,
@@ -57,16 +57,16 @@ pub use session::{
     StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
     RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
-pub use spawn::{
-    decode_spawn_submit_error_frame, decode_spawn_submit_request_frame,
-    decode_spawn_submit_response_frame, encode_spawn_submit_error_frame,
-    encode_spawn_submit_request_frame, encode_spawn_submit_response_frame,
-    spawn_submit_frame_direction, ActorSpawnRuntimeErrorFrameHeader,
-    SpawnActorMethodTargetFrameMetadata, SpawnCallerKind, SpawnSubmitAcceptance,
-    SpawnSubmitRequestFrame, SpawnSubmitRequestFrameHeader, SpawnSubmitRequestFrameHeaderV2,
-    SpawnSubmitResponseFrameHeader, SpawnTargetKind, SPAWN_CALLER_KIND_ACTOR_INVOCATION,
-    SPAWN_CALLER_KIND_REQUEST, SPAWN_SUBMIT_ERROR_FRAME_TYPE, SPAWN_SUBMIT_REQUEST_FRAME_TYPE,
-    SPAWN_SUBMIT_RESPONSE_FRAME_TYPE, SPAWN_SUBMIT_RESPONSE_STATUS_SUBMITTED,
+pub use task::{
+    decode_task_submit_error_frame, decode_task_submit_request_frame,
+    decode_task_submit_response_frame, encode_task_submit_error_frame,
+    encode_task_submit_request_frame, encode_task_submit_response_frame,
+    task_submit_frame_direction, ActorTaskRuntimeErrorFrameHeader,
+    TaskActorMethodTargetFrameMetadata, TaskCallerKind, TaskSubmitAcceptance,
+    TaskSubmitRequestFrame, TaskSubmitRequestFrameHeader, TaskSubmitRequestFrameHeaderV2,
+    TaskSubmitResponseFrameHeader, TaskTargetKind, TASK_CALLER_KIND_ACTOR_INVOCATION,
+    TASK_CALLER_KIND_REQUEST, TASK_SUBMIT_ERROR_FRAME_TYPE, TASK_SUBMIT_REQUEST_FRAME_TYPE,
+    TASK_SUBMIT_RESPONSE_FRAME_TYPE, TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
 
 pub use crate::BinaryFrameError;
@@ -85,7 +85,7 @@ pub enum RuntimeFrameFamily {
     Activation,
     Connection,
     Actor,
-    Spawn,
+    Task,
 }
 
 impl RuntimeFrameFamily {
@@ -95,7 +95,7 @@ impl RuntimeFrameFamily {
         Self::Activation,
         Self::Connection,
         Self::Actor,
-        Self::Spawn,
+        Self::Task,
     ];
 
     pub const fn direction(self) -> FrameDirection {
@@ -105,12 +105,12 @@ impl RuntimeFrameFamily {
             Self::Activation => FrameDirection::Either,
             Self::Connection => FrameDirection::Either,
             Self::Actor => FrameDirection::Either,
-            // The spawn family is mixed-direction: `spawn.submit.request` is
-            // Runtime->Router, `spawn.submit.response/error` are
-            // Router->Runtime (C-model-spawn §3.0). Consumers MUST narrow per
-            // frame via `spawn_submit_frame_direction`; family-level `Either`
+            // The task family is mixed-direction: `task.submit.request` is
+            // Runtime->Router, `task.submit.response/error` are
+            // Router->Runtime (C-model-task §3.0). Consumers MUST narrow per
+            // frame via `task_submit_frame_direction`; family-level `Either`
             // never means "any frame in any direction".
-            Self::Spawn => FrameDirection::Either,
+            Self::Task => FrameDirection::Either,
         }
     }
 
@@ -118,7 +118,7 @@ impl RuntimeFrameFamily {
         match self {
             Self::Session | Self::Activation => PayloadPresenceRule::Empty,
             Self::Request | Self::Connection | Self::Actor => PayloadPresenceRule::Optional,
-            Self::Spawn => PayloadPresenceRule::Required,
+            Self::Task => PayloadPresenceRule::Required,
         }
     }
 
@@ -129,7 +129,7 @@ impl RuntimeFrameFamily {
             Self::Activation => "assembly.activation",
             Self::Connection => "connection.",
             Self::Actor => "actor.",
-            Self::Spawn => "spawn.",
+            Self::Task => "task.",
         }
     }
 }
@@ -182,9 +182,9 @@ pub const RUNTIME_FRAME_FAMILY_RULES: [RuntimeFrameFamilyRule; 6] = [
         payload_presence: RuntimeFrameFamily::Actor.payload_presence(),
     },
     RuntimeFrameFamilyRule {
-        family: RuntimeFrameFamily::Spawn,
-        direction: RuntimeFrameFamily::Spawn.direction(),
-        payload_presence: RuntimeFrameFamily::Spawn.payload_presence(),
+        family: RuntimeFrameFamily::Task,
+        direction: RuntimeFrameFamily::Task.direction(),
+        payload_presence: RuntimeFrameFamily::Task.payload_presence(),
     },
 ];
 
@@ -227,7 +227,7 @@ pub struct RuntimeFrameSinks {
     pub activation: AssemblyActivationFrameSinks,
     pub connection: Box<dyn RuntimeFrameSink>,
     pub actor: Box<dyn RuntimeFrameSink>,
-    pub spawn: Box<dyn RuntimeFrameSink>,
+    pub task: Box<dyn RuntimeFrameSink>,
 }
 
 pub struct AssemblyActivationFrameSinks {

@@ -39,7 +39,7 @@ pub mod program_stream;
 pub mod program_types;
 pub mod receiver_methods;
 pub mod recoverable_behavior;
-pub mod recoverable_spawn_payload;
+pub mod recoverable_task_dispatch_payload;
 pub mod request_boundary;
 pub mod request_diagnostic;
 mod runtime_http_gateway;
@@ -48,7 +48,7 @@ pub mod runtime_value_view;
 mod runtime_websocket_connect;
 mod runtime_websocket_jsonrpc;
 pub mod source_context;
-pub mod spawn_ops;
+pub mod task_ops;
 pub mod stream_callback;
 mod test_effect_registry;
 #[cfg(any(test, feature = "test-support"))]
@@ -120,7 +120,7 @@ pub struct EvalRuntimeProgram {
     pub service_files: Vec<Arc<LinkedFileUnit>>,
     pub packages: Vec<Arc<RuntimeExecutionPackage>>,
     pub service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-    pub spawn_routes: HashMap<String, ExecutableAddr>,
+    pub task_routes: HashMap<String, ExecutableAddr>,
     pub link_overlay: LinkOverlay,
     pub types: RuntimeTypeContext,
 }
@@ -134,7 +134,7 @@ pub trait EvalRuntimeProgramSource {
 
     fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable;
 
-    fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr>;
+    fn task_routes(&self) -> &HashMap<String, ExecutableAddr>;
 
     fn link_overlay(&self) -> &LinkOverlay;
 
@@ -147,7 +147,7 @@ impl EvalRuntimeProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
         packages: Vec<Arc<RuntimeExecutionPackage>>,
         service_resources: skiff_runtime_linked_program::PublicationResourceTable,
-        spawn_routes: HashMap<String, ExecutableAddr>,
+        task_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
     ) -> Self {
@@ -156,7 +156,7 @@ impl EvalRuntimeProgram {
             service_files,
             packages,
             service_resources,
-            spawn_routes,
+            task_routes,
             link_overlay,
             types,
         }
@@ -168,7 +168,7 @@ impl EvalRuntimeProgram {
             source.service_files().to_vec(),
             source.packages().to_vec(),
             source.service_resources().clone(),
-            source.spawn_routes().clone(),
+            source.task_routes().clone(),
             source.link_overlay().clone(),
             source.types().clone(),
         )
@@ -180,7 +180,7 @@ impl EvalRuntimeProgram {
             &self.service_files,
             &self.packages,
             &self.service_resources,
-            &self.spawn_routes,
+            &self.task_routes,
             &self.link_overlay,
             &self.types,
         )
@@ -211,8 +211,8 @@ impl EvalRuntimeProgramSource for EvalRuntimeProgram {
         &self.service_resources
     }
 
-    fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {
-        &self.spawn_routes
+    fn task_routes(&self) -> &HashMap<String, ExecutableAddr> {
+        &self.task_routes
     }
 
     fn link_overlay(&self) -> &LinkOverlay {

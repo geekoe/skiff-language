@@ -184,7 +184,7 @@ pub(super) fn collect_package_block_std_type_violations(
                     violations,
                 );
             }
-            Stmt::Spawn { call: value } | Stmt::Emit(value) | Stmt::Expr(value) => {
+            Stmt::Dispatch { call: value } | Stmt::Emit(value) | Stmt::Expr(value) => {
                 collect_package_expr_std_type_violations(
                     path,
                     value,

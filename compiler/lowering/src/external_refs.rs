@@ -206,7 +206,7 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue
-        | StmtIr::Spawn { .. }
+        | StmtIr::Dispatch { .. }
         | StmtIr::Emit { .. }
         | StmtIr::Expr { .. }
         | StmtIr::Return { .. }

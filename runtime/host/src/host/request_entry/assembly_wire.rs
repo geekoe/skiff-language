@@ -10,14 +10,14 @@ use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget}
 use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_request::{
     BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
-    RuntimeAssemblySpawnTarget, RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest,
-    RuntimeSpawnRequest, RuntimeWebSocketConnectIngress,
+    RuntimeAssemblyTaskTarget, RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest,
+    RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
-    RuntimeAssemblySpawnRequestStartFrameHeader,
+    RuntimeAssemblyTaskRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
@@ -51,10 +51,10 @@ pub(super) struct AdmittedWebSocketJsonRpcRequest {
     pub(super) params: Vec<u8>,
 }
 
-pub(super) struct AdmittedSpawnRequest {
-    pub(super) header: RuntimeAssemblySpawnRequestStartFrameHeader,
-    pub(super) request: RuntimeSpawnRequest,
-    pub(super) target: RuntimeAssemblySpawnTarget,
+pub(super) struct AdmittedTaskRequest {
+    pub(super) header: RuntimeAssemblyTaskRequestStartFrameHeader,
+    pub(super) request: RuntimeTaskRequest,
+    pub(super) target: RuntimeAssemblyTaskTarget,
     pub(super) activation: Arc<ActivationContext>,
     pub(super) execution_image: Arc<AssemblyExecutionImage>,
     pub(super) contexts: Arc<crate::loader::active_assembly_context::ActiveAssemblyContextSet>,
@@ -80,7 +80,7 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 header.request_id.clone()
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) => header.request_id.clone(),
+            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
         let result = match header {
             RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
@@ -92,13 +92,13 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
                 .websocket_jsonrpc_request_from_wire(router_session_id, header, body)
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
-            RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) => self
-                .spawn_request_from_wire(header, body)
-                .map(AdmittedRuntimeAssemblyRequest::Spawn),
+            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => self
+                .task_request_from_wire(header, body)
+                .map(AdmittedRuntimeAssemblyRequest::Task),
         };
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
-                self.spawn_request_on_active_assembly_route(
+                self.task_request_on_active_assembly_route(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -107,7 +107,7 @@ impl RuntimeHost {
                 .await
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
-                self.spawn_websocket_connect_on_active_assembly_route(
+                self.task_websocket_connect_on_active_assembly_route(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -116,7 +116,7 @@ impl RuntimeHost {
                 .await
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(request)) => {
-                self.spawn_websocket_jsonrpc_on_pinned_route(
+                self.task_websocket_jsonrpc_on_pinned_route(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -124,8 +124,8 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedRuntimeAssemblyRequest::Spawn(request)) => {
-                self.spawn_direct_request_on_active_assembly(
+            Ok(AdmittedRuntimeAssemblyRequest::Task(request)) => {
+                self.task_direct_request_on_active_assembly(
                     router_session_id.to_string(),
                     request,
                     http_response_max_bytes,
@@ -252,12 +252,12 @@ impl RuntimeHost {
         })
     }
 
-    fn spawn_request_from_wire(
+    fn task_request_from_wire(
         &self,
-        mut header: RuntimeAssemblySpawnRequestStartFrameHeader,
+        mut header: RuntimeAssemblyTaskRequestStartFrameHeader,
         payload: Vec<u8>,
-    ) -> Result<AdmittedSpawnRequest> {
-        validate_spawn_header(&header, &payload)?;
+    ) -> Result<AdmittedTaskRequest> {
+        validate_task_header(&header, &payload)?;
         let active = self
             .active_runtime_assembly()
             .map_err(|error| RuntimeError::Decode(error.to_string()))?
@@ -267,7 +267,7 @@ impl RuntimeHost {
         {
             return Err(RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn routing does not match the exact active assembly generation"
+                message: "task routing does not match the exact active assembly generation"
                     .to_string(),
             });
         }
@@ -275,7 +275,7 @@ impl RuntimeHost {
             .activation(&header.routing.deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn routing deployment is not active in the pinned assembly"
+                message: "task routing deployment is not active in the pinned assembly"
                     .to_string(),
             })?;
         let activation = active
@@ -283,7 +283,7 @@ impl RuntimeHost {
             .activation_for_deployment(&header.routing.deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn routing deployment has no admitted activation".to_string(),
+                message: "task routing deployment has no admitted activation".to_string(),
             })?;
         let activation_identity = activation.identity();
         if activation_identity.assembly_identity != header.routing.assembly_identity
@@ -295,7 +295,7 @@ impl RuntimeHost {
         {
             return Err(RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn routing does not match the admitted activation owner".to_string(),
+                message: "task routing does not match the admitted activation owner".to_string(),
             });
         }
         let execution_image = Arc::clone(active.candidate().execution_image());
@@ -309,7 +309,7 @@ impl RuntimeHost {
             resolver,
         )
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let target = RuntimeAssemblySpawnTarget::new(eval, header.invocation.target.clone())
+        let target = RuntimeAssemblyTaskTarget::new(eval, header.invocation.target.clone())
             .map_err(|error| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
                 message: error.to_string(),
@@ -319,16 +319,16 @@ impl RuntimeHost {
             .db_source(activation.activation_id())
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn activation has no DB capability source".to_string(),
+                message: "task activation has no DB capability source".to_string(),
             })?;
         let config_views = active
             .contexts()
             .config_views(&header.routing.deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "spawn activation has no scoped config views".to_string(),
+                message: "task activation has no scoped config views".to_string(),
             })?;
-        header.deadline = effective_request_deadline(header.deadline.as_ref(), "spawn")?;
+        header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
         if header
             .deadline
             .as_ref()
@@ -336,14 +336,14 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
-        let request = RuntimeSpawnRequest {
+        let request = RuntimeTaskRequest {
             request_id: header.request_id.clone(),
             target: header.invocation.target.clone(),
             payload,
             test_effects_enabled: header.test_effects_enabled,
             test_case_capability: header.test_case_capability.clone(),
         };
-        Ok(AdmittedSpawnRequest {
+        Ok(AdmittedTaskRequest {
             header,
             request,
             target,
@@ -382,7 +382,7 @@ enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
-    Spawn(AdmittedSpawnRequest),
+    Task(AdmittedTaskRequest),
 }
 
 fn gateway_ingress_pin(
@@ -597,30 +597,30 @@ fn validate_websocket_jsonrpc_header(
     Ok(())
 }
 
-fn validate_spawn_header(
-    header: &RuntimeAssemblySpawnRequestStartFrameHeader,
+fn validate_task_header(
+    header: &RuntimeAssemblyTaskRequestStartFrameHeader,
     payload: &[u8],
 ) -> Result<()> {
     if header.request_id.is_empty()
         || header.mode != "unary"
         || header.caller.kind != "service"
-        || header.invocation.kind != "spawn"
+        || header.invocation.kind != "task"
         || header.invocation.target_kind != "function"
         || header.invocation.target.is_empty()
     {
         return Err(RuntimeError::Decode(
-            "canonical spawn requires a non-empty requestId, unary mode, service caller and function target"
+            "canonical task requires a non-empty requestId, unary mode, service caller and function target"
                 .to_string(),
         ));
     }
     if payload.is_empty() {
         return Err(RuntimeError::Decode(
-            "canonical spawn recoverable args payload must be present".to_string(),
+            "canonical task recoverable args payload must be present".to_string(),
         ));
     }
     if header.test_effects_enabled != header.test_case_capability.is_some() {
         return Err(RuntimeError::Decode(
-            "canonical spawn testEffectsEnabled must be true exactly when testCaseCapability is present"
+            "canonical task testEffectsEnabled must be true exactly when testCaseCapability is present"
                 .to_string(),
         ));
     }

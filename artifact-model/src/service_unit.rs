@@ -64,9 +64,9 @@ pub struct DbMetadataIndexIr {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpawnTargetIr {
+pub struct TaskTargetIr {
     pub target_identity: String,
-    pub kind: SpawnTargetKindIr,
+    pub kind: TaskTargetKindIr,
     pub executable_target: OperationTargetRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_types: Vec<TypeRefIr>,
@@ -76,7 +76,7 @@ pub struct SpawnTargetIr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SpawnTargetKindIr {
+pub enum TaskTargetKindIr {
     Function,
 }
 

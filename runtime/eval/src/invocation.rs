@@ -27,7 +27,7 @@ pub struct EvalProgramProjection<'a> {
     pub service_files: &'a [Arc<LinkedFileUnit>],
     pub packages: &'a [Arc<RuntimeExecutionPackage>],
     pub service_resources: &'a PublicationResourceTable,
-    pub spawn_routes: &'a HashMap<String, ExecutableAddr>,
+    pub task_routes: &'a HashMap<String, ExecutableAddr>,
     pub link_overlay: &'a LinkOverlay,
     pub types: &'a RuntimeTypeContext,
 }
@@ -37,7 +37,7 @@ impl<'a> EvalProgramProjection<'a> {
         service_id: &'a str,
         service_files: &'a [Arc<LinkedFileUnit>],
         packages: &'a [Arc<RuntimeExecutionPackage>],
-        spawn_routes: &'a HashMap<String, ExecutableAddr>,
+        task_routes: &'a HashMap<String, ExecutableAddr>,
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
     ) -> Self {
@@ -47,7 +47,7 @@ impl<'a> EvalProgramProjection<'a> {
             service_files,
             packages,
             service_resources,
-            spawn_routes,
+            task_routes,
             link_overlay,
             types,
         )
@@ -58,7 +58,7 @@ impl<'a> EvalProgramProjection<'a> {
         service_files: &'a [Arc<LinkedFileUnit>],
         packages: &'a [Arc<RuntimeExecutionPackage>],
         service_resources: &'a PublicationResourceTable,
-        spawn_routes: &'a HashMap<String, ExecutableAddr>,
+        task_routes: &'a HashMap<String, ExecutableAddr>,
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
     ) -> Self {
@@ -67,7 +67,7 @@ impl<'a> EvalProgramProjection<'a> {
             service_files,
             packages,
             service_resources,
-            spawn_routes,
+            task_routes,
             link_overlay,
             types,
         }
@@ -164,12 +164,12 @@ impl<'a> EvalProgramProjection<'a> {
         self.resolve_executable(addr)
     }
 
-    pub fn spawn_route(&self, target: &str) -> Option<&'a ExecutableAddr> {
-        self.spawn_routes.get(target)
+    pub fn task_route(&self, target: &str) -> Option<&'a ExecutableAddr> {
+        self.task_routes.get(target)
     }
 
-    pub fn spawn_route_targets_for(&self, addr: &ExecutableAddr) -> Vec<&'a str> {
-        self.spawn_routes
+    pub fn task_route_targets_for(&self, addr: &ExecutableAddr) -> Vec<&'a str> {
+        self.task_routes
             .iter()
             .filter_map(|(target, candidate)| (candidate == addr).then_some(target.as_str()))
             .collect()

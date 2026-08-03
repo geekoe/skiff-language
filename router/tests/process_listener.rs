@@ -22,7 +22,7 @@ mod tests {
         let control_port = reserve_port();
         assert_ne!(http_port, control_port, "ports must not collide");
         let config_path = write_config(http_port, control_port);
-        let mut child = spawn_router(config_path.to_str().expect("utf8 config path"));
+        let mut child = task_router(config_path.to_str().expect("utf8 config path"));
 
         let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(15));
         assert!(
@@ -40,7 +40,7 @@ mod tests {
         let _ = std::fs::remove_file(&config_path);
     }
 
-    fn spawn_router(config_path: &str) -> Child {
+    fn task_router(config_path: &str) -> Child {
         Command::new(env!("CARGO_BIN_EXE_skiff-router"))
             .arg(config_path)
             .stdin(Stdio::null())

@@ -2,7 +2,7 @@ pub use skiff_artifact_model::{
     ActorMetadataIr, GatewayConfig, OperationConstReceiverRef, OperationIngressKind, OperationMode,
     OperationRouteBinding, OperationTargetRef, PackageAbiExpectation, PackageUsedSymbol,
     PackageUsedSymbolKind, ServiceConfigMetadata, ServiceMeta, ServiceOperation,
-    ServiceTimeoutConfig, SpawnTargetIr, SpawnTargetKindIr,
+    ServiceTimeoutConfig, TaskTargetIr, TaskTargetKindIr,
 };
 
 use super::addr::ExecutableIndex;

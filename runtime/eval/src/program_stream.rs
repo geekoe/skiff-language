@@ -1085,7 +1085,7 @@ impl DeferredStreamProducerRegistry {
     }
 }
 
-/// Spawns `producer` (and, recursively, its argument producers) onto the tokio
+/// Tasks `producer` (and, recursively, its argument producers) onto the tokio
 /// runtime as independent tasks. This is the root fix for the stream
 /// stack-overflow: a producer body that consumes an inner producer used to drive
 /// that inner producer synchronously on the *same* native stack (via
@@ -1112,7 +1112,7 @@ fn spawn_stream_producer(
     });
 }
 
-/// Body of a spawned stream-producer task. Spawns argument producers as their
+/// Body of a spawned stream-producer task. Tasks argument producers as their
 /// own tasks first, then runs the producer call to completion, feeding the sink.
 /// When the main call finishes it cancels any argument streams (mirroring the
 /// old co-driven `select!`, which cancelled arg producers once the main producer

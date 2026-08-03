@@ -125,8 +125,8 @@ pub fn actor_wire_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/transport/testdata/actor-wire")
 }
 
-pub fn spawn_wire_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/transport/testdata/spawn-wire")
+pub fn task_wire_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime/transport/testdata/task-wire")
 }
 
 pub fn hex_bytes(hex: &str) -> Vec<u8> {

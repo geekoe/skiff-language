@@ -188,7 +188,7 @@ pub enum RecoverableExpectedTypeRoot {
 #[serde(rename_all = "camelCase")]
 pub enum RecoverableBoundaryKind {
     DbPayload,
-    SpawnPayload,
+    TaskDispatchPayload,
     QueuePayload,
     RuntimeWirePayload,
     ServicePayload,

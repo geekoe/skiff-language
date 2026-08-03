@@ -310,8 +310,8 @@ mod tests {
 
     #[test]
     fn parent_snapshot_uses_owner_connection_and_inactive_after_settle() {
-        // E-actor-parity (C-spawn §4.2): an ordinary actor-method invocation's
-        // spawn parent authority is the runtime connection where the method
+        // E-actor-parity (C-task §4.2): an ordinary actor-method invocation's
+        // task parent authority is the runtime connection where the method
         // executes (the owner). The caller may differ when the Router pins
         // the owner to another replica, so the snapshot must resolve to the
         // owner connection, not the original caller.
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn parent_snapshot_keeps_caller_origin_for_test_capability_lineage() {
-        // E-actor-parity (C-spawn §4.2 / TS dispatcher parity): test-capability
+        // E-actor-parity (C-task §4.2 / TS dispatcher parity): test-capability
         // invocations keep the capability parent origin (the caller
         // connection), matching the leaf's dual-semantics record.
         let relay = ActorInvocationRelay::new(ActorInvocationRelayOptions::default());

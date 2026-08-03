@@ -12,7 +12,7 @@ use super::{
 mod binary_precedence;
 mod parse_output_carrier;
 mod span_sensitive;
-mod spawn;
+mod dispatch;
 mod tolerant_recovery;
 mod type_golden;
 

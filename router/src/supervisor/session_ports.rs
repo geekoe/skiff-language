@@ -24,8 +24,8 @@ use skiff_runtime_transport::protocol::{
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-    RuntimeAssemblySpawnInvocationFrameHeader, RuntimeAssemblySpawnRequestCallerFrameHeader,
-    RuntimeAssemblySpawnRequestRoutingFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+    RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
+    RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
 };
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleControl,
@@ -33,13 +33,13 @@ use skiff_runtime_transport::websocket_generation_lifecycle::{
 };
 
 use crate::activation::{ActivationParticipantBinding, EnqueueResult, SessionEnqueuePort};
-use crate::actor::SpawnWireStore;
+use crate::actor::TaskWireStore;
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{
     CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
 };
 use crate::dispatch::{
-    DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, SpawnSubmit,
+    DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, TaskSubmit,
 };
 use crate::routing::{
     CandidateDirectoryView, DispatchCapabilities, RegisteredSessionLease, RuntimeCandidateQuery,
@@ -226,21 +226,21 @@ impl SessionAbortControl for LayerSessionAbort {
 #[derive(Debug, Clone)]
 pub struct SessionRuntimePeer {
     session: SessionHandle,
-    spawn_wire_store: Option<Arc<SpawnWireStore>>,
+    task_wire_store: Option<Arc<TaskWireStore>>,
 }
 
 impl SessionRuntimePeer {
     pub fn new(session: SessionHandle) -> Self {
         Self {
             session,
-            spawn_wire_store: None,
+            task_wire_store: None,
         }
     }
 
-    /// E-actor-rust: the derived function-spawn trace (and opaque spawn wire
+    /// E-actor-rust: the derived function-task trace (and opaque task wire
     /// facts) are correlated through the actor lane wire store.
-    pub fn with_spawn_wire_store(mut self, store: Arc<SpawnWireStore>) -> Self {
-        self.spawn_wire_store = Some(store);
+    pub fn with_task_wire_store(mut self, store: Arc<TaskWireStore>) -> Self {
+        self.task_wire_store = Some(store);
         self
     }
 }
@@ -273,61 +273,61 @@ impl RuntimePeer for SessionRuntimePeer {
         write_session_frame(&self.session, session, bytes)
     }
 
-    fn send_spawn_submit(
+    fn send_task_submit(
         &self,
         session: &RuntimeSessionEpoch,
-        spawn: &SpawnSubmit,
+        task: &TaskSubmit,
     ) -> Result<(), String> {
-        // Derived function spawn execution frame (TS `derivedSpawnRequest`
+        // Derived function task execution frame (TS `derivedTaskRequest`
         // parity): the dispatcher owns the derived pending; this port maps
-        // it onto the canonical `runtimeAssembly spawn request.start` wire.
-        // The recoverable args payload is the original spawn.submit payload
-        // (TS `dispatchDerivedSpawn(ws, request, payloadBytes)`); the strict
+        // it onto the canonical `runtimeAssembly task request.start` wire.
+        // The recoverable args payload is the original task.submit payload
+        // (TS `dispatchDerivedTask(ws, request, payloadBytes)`); the strict
         // Runtime decoder requires it to be present.
         let wire = self
-            .spawn_wire_store
+            .task_wire_store
             .as_ref()
-            .and_then(|store| store.get(&spawn.spawn_request_id))
+            .and_then(|store| store.get(&task.task_request_id))
             .ok_or_else(|| {
                 format!(
-                    "derived spawn {} has no captured spawn wire",
-                    spawn.spawn_request_id
+                    "derived task {} has no captured task wire",
+                    task.task_request_id
                 )
             })?;
         let wire_trace_id = wire.frame.header.trace_id.clone();
         let span_id = format!(
             "{:016x}",
-            now_nanos().wrapping_add(SPAWN_SPAN_SEQUENCE.fetch_add(1, Ordering::Relaxed))
+            now_nanos().wrapping_add(TASK_SPAN_SEQUENCE.fetch_add(1, Ordering::Relaxed))
         );
-        let header = RuntimeAssemblySpawnRequestStartFrameHeader {
+        let header = RuntimeAssemblyTaskRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
-            request_id: spawn.spawn_request_id.clone(),
+            request_id: task.task_request_id.clone(),
             mode: "unary".to_string(),
-            caller: RuntimeAssemblySpawnRequestCallerFrameHeader {
+            caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
                 kind: "service".to_string(),
             },
-            routing: RuntimeAssemblySpawnRequestRoutingFrameHeader {
+            routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                    spawn.authority.assembly_identity.clone(),
+                    task.authority.assembly_identity.clone(),
                 ),
-                assembly_generation: spawn.authority.assembly_generation,
-                deployment: spawn.authority.deployment.clone(),
+                assembly_generation: task.authority.assembly_generation,
+                deployment: task.authority.deployment.clone(),
             },
-            invocation: RuntimeAssemblySpawnInvocationFrameHeader {
-                kind: "spawn".to_string(),
+            invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+                kind: "task".to_string(),
                 target_kind: "function".to_string(),
-                target: spawn.target.clone(),
+                target: task.target.clone(),
             },
-            deadline: spawn.deadline.as_ref().map(|deadline| {
+            deadline: task.deadline.as_ref().map(|deadline| {
                 RuntimeAssemblyRequestDeadlineFrameHeader {
                     timeout_ms: deadline.timeout_ms,
                     expires_at: deadline.expires_at.clone(),
                 }
             }),
             trace: RuntimeAssemblyRequestTraceFrameHeader {
-                trace_id: wire_trace_id.unwrap_or_else(|| format!("spawn-trace-{span_id}")),
+                trace_id: wire_trace_id.unwrap_or_else(|| format!("task-trace-{span_id}")),
                 span_id,
                 parent_span_id: None,
                 sampled: None,
@@ -336,12 +336,12 @@ impl RuntimePeer for SessionRuntimePeer {
             test_case_capability: None,
         };
         let bytes = encode_binary_frame(&header, &wire.frame.payload)
-            .map_err(|error| format!("derived spawn request.start encode failed: {error}"))?;
+            .map_err(|error| format!("derived task request.start encode failed: {error}"))?;
         write_session_frame(&self.session, session, bytes)
     }
 }
 
-static SPAWN_SPAN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TASK_SPAN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()

@@ -11,7 +11,7 @@ const PACKAGE_ID: &str = "skiff.test/shared";
 
 struct DuplicatePackageProgram {
     packages: Vec<Arc<RuntimeExecutionPackage>>,
-    spawn_routes: HashMap<String, skiff_runtime_linked_program::ExecutableAddr>,
+    task_routes: HashMap<String, skiff_runtime_linked_program::ExecutableAddr>,
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
 }
@@ -33,7 +33,7 @@ impl DuplicatePackageProgram {
                     Default::default(),
                 ),
             ],
-            spawn_routes: HashMap::new(),
+            task_routes: HashMap::new(),
             link_overlay: LinkOverlay::default(),
             types: RuntimeTypeContext::default(),
         }
@@ -44,7 +44,7 @@ impl DuplicatePackageProgram {
             "skiff.test/service",
             &[],
             &self.packages,
-            &self.spawn_routes,
+            &self.task_routes,
             &self.link_overlay,
             &self.types,
         )

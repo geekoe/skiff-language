@@ -38,7 +38,7 @@ pub struct LinkedProgramImage {
     pub packages: Vec<Arc<RuntimeExecutionPackage>>,
     pub service_resources: PublicationResourceTable,
     pub routes: HashMap<String, ExecutableAddr>,
-    pub spawn_routes: HashMap<String, ExecutableAddr>,
+    pub task_routes: HashMap<String, ExecutableAddr>,
     pub operations: HashMap<String, ExecutableAddr>,
     pub operation_receivers: HashMap<String, ConstAddr>,
     pub link_overlay: LinkOverlay,

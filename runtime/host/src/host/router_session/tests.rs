@@ -83,7 +83,7 @@ mod connection_lifecycle;
 mod control_response_lifecycle;
 mod foreign_db_exact_identity;
 mod h_registration_cut;
-mod h_spawn_parent_cut;
+mod h_task_parent_cut;
 mod runtime_assembly_request;
 mod websocket_generation_lifecycle;
 mod websocket_jsonrpc_dispatch;
@@ -238,7 +238,7 @@ async fn actor_owner_test_admission_is_synchronous_before_detached_first_poll() 
         )
         .unwrap();
 
-    // A current-thread spawn cannot run until this test yields, so these observations prove the
+    // A current-thread task cannot run until this test yields, so these observations prove the
     // frame handler itself installed both owners.
     assert!(host
         .test_http_entries
@@ -851,7 +851,7 @@ fn writer_encodes_outbound_control_command_as_binary_frame() {
 }
 
 #[tokio::test]
-async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
+async fn writer_sends_no_websocket_frame_for_invalid_task_service_id() {
     use std::{
         pin::Pin,
         sync::{
@@ -897,17 +897,17 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
     }
 
     let encoded_frames = Arc::new(AtomicUsize::new(0));
-    let message = super::super::RouterWriterMessage::SpawnSubmit(
-        skiff_runtime_request::SpawnSubmitControlMessage {
-            request: skiff_runtime_request::SpawnSubmitControlRequest {
-                rpc_id: "rpc-spawn".to_string(),
+    let message = super::super::RouterWriterMessage::TaskSubmit(
+        skiff_runtime_request::TaskSubmitControlMessage {
+            request: skiff_runtime_request::TaskSubmitControlRequest {
+                rpc_id: "rpc-task".to_string(),
                 runtime_id: "runtime-1".to_string(),
                 target_kind: "operation".to_string(),
                 service_id: "test.skiff/agine.ai/api-tests/case-23".to_string(),
                 service_version: "1.0.0".to_string(),
                 service_protocol_identity: "service-protocol-1".to_string(),
                 target: "Worker.run".to_string(),
-                spawn_id: Some("spawn-1".to_string()),
+                task_id: Some("task-1".to_string()),
                 build_id: Some("build-1".to_string()),
                 activation_identity: skiff_runtime_request::ActivationIdentityControl {
                     assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -925,8 +925,8 @@ async fn writer_sends_no_websocket_frame_for_invalid_spawn_service_id() {
                 max_queue_wait_ms: Some(250.0),
                 actor_method: None,
             },
-            payload: b"opaque spawn args".to_vec(),
-            caller_kind: skiff_runtime_request::SpawnCallerKind::Request,
+            payload: b"opaque task args".to_vec(),
+            caller_kind: skiff_runtime_request::TaskCallerKind::Request,
         },
     );
     send_writer_message(&mut CountingSocket(Arc::clone(&encoded_frames)), message)
@@ -1038,7 +1038,7 @@ async fn runtime_health_frame_reports_loop_risk_counters() {
         header.counters.flag_backed_cancel_waiters_active,
         flag_waiter_baseline
     );
-    assert_eq!(header.counters.spawned_tasks_active, 0);
+    assert_eq!(header.counters.task_requests_active, 0);
 }
 
 #[tokio::test]
@@ -1152,14 +1152,14 @@ fn runtime_health_counters_for_test(
     outbound_stream_leases_active: usize,
     stream_runtime_streams_active: usize,
     flag_backed_cancel_waiters_active: usize,
-    spawned_tasks_active: usize,
+    task_requests_active: usize,
 ) -> RuntimeHealthCountersFrameHeader {
     RuntimeHealthCountersFrameHeader {
         outbound_requests_pending,
         outbound_stream_leases_active,
         stream_runtime_streams_active,
         flag_backed_cancel_waiters_active,
-        spawned_tasks_active,
+        task_requests_active,
     }
 }
 

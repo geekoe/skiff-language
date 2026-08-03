@@ -1,20 +1,20 @@
 use super::{
     actor_find_request_frame, actor_get_or_create_request_frame, actor_remove_request_frame,
     actor_replace_request_frame, connection_send_frame, encode_outbound_control_message,
-    request_cancel_frame, spawn_submit_request_frame,
+    request_cancel_frame, task_submit_request_frame,
 };
 use crate::protocol::{
     decode_binary_frame, decode_typed_binary_frame, ActivationIdentityFrameMetadata,
     ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
     ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
-    RequestCancelFrameHeader, SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    RequestCancelFrameHeader, TaskSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorControlDeadline, ActorGetOrCreateControlRequest,
     ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
     ActorKeyControlMetadata, ActorReplaceControlRequest, OutboundControlMessage,
-    RequestCancelControl, SpawnSubmitControlRequest,
+    RequestCancelControl, TaskSubmitControlRequest,
 };
 
 #[test]
@@ -149,18 +149,18 @@ fn actor_control_request_frames_map_headers_and_opaque_payloads() {
 }
 
 #[test]
-fn spawn_submit_request_frame_maps_header_and_opaque_payload() {
-    let header = SpawnSubmitRequestFrameHeader {
+fn task_submit_request_frame_maps_header_and_opaque_payload() {
+    let header = TaskSubmitRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "spawn.submit.request".to_string(),
-        rpc_id: "rpc-spawn".to_string(),
+        envelope_type: "task.submit.request".to_string(),
+        rpc_id: "rpc-task".to_string(),
         runtime_id: "runtime-1".to_string(),
         target_kind: "operation".to_string(),
         service_id: "example.com/worker".to_string(),
         service_version: "1.0.0".to_string(),
         service_protocol_identity: "service-protocol-1".to_string(),
         target: "Worker.run".to_string(),
-        spawn_id: Some("spawn-1".to_string()),
+        task_id: Some("task-1".to_string()),
         build_id: Some("build-1".to_string()),
         activation_identity: activation_identity_frame(),
         caller_request_id: Some("request-1".to_string()),
@@ -169,32 +169,32 @@ fn spawn_submit_request_frame_maps_header_and_opaque_payload() {
         max_queue_wait_ms: Some(250.0),
         actor_method: None,
     };
-    let payload = b"opaque spawn args".to_vec();
+    let payload = b"opaque task args".to_vec();
 
-    let frame = spawn_submit_request_frame(header.clone(), &payload).expect("spawn frame encodes");
+    let frame = task_submit_request_frame(header.clone(), &payload).expect("task frame encodes");
     let wire = decode_binary_frame(&frame).expect("wire decodes");
     assert_eq!(wire.header["callerRequestId"], "request-1");
     assert!(wire.header.get("testCaseCapability").is_none());
     assert!(wire.header.get("testCaseParentRequestId").is_none());
-    let (decoded, decoded_payload): (SpawnSubmitRequestFrameHeader, Vec<u8>) =
-        decode_typed_binary_frame(&frame).expect("spawn frame decodes");
+    let (decoded, decoded_payload): (TaskSubmitRequestFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).expect("task frame decodes");
 
     assert_eq!(decoded, header);
     assert_eq!(decoded_payload, payload);
 }
 
 #[test]
-fn outbound_spawn_submit_rejects_package_id_embedded_in_service_id() {
-    let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
-        request: spawn_submit_control_request("test.skiff/agine.ai/api-tests/case-23"),
-        payload: b"opaque spawn args".to_vec(),
+fn outbound_task_submit_rejects_package_id_embedded_in_service_id() {
+    let error = encode_outbound_control_message(OutboundControlMessage::TaskSubmit {
+        request: task_submit_control_request("test.skiff/agine.ai/api-tests/case-23"),
+        payload: b"opaque task args".to_vec(),
     })
     .expect_err("non-canonical service ID must fail before frame encoding");
 
     assert!(matches!(
         &error,
         crate::TransportError::InvalidOutboundServiceId {
-            envelope_type: "spawn.submit.request",
+            envelope_type: "task.submit.request",
             ..
         }
     ));
@@ -205,27 +205,27 @@ fn outbound_spawn_submit_rejects_package_id_embedded_in_service_id() {
 }
 
 #[test]
-fn outbound_spawn_submit_accepts_existing_and_generated_service_ids() {
+fn outbound_task_submit_accepts_existing_and_generated_service_ids() {
     for service_id in [
         "example.com/worker",
         "test.skiff/p-0123456789abcdef0123456789abcdef/case-23",
     ] {
-        let frame = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
-            request: spawn_submit_control_request(service_id),
-            payload: b"opaque spawn args".to_vec(),
+        let frame = encode_outbound_control_message(OutboundControlMessage::TaskSubmit {
+            request: task_submit_control_request(service_id),
+            payload: b"opaque task args".to_vec(),
         })
         .expect("canonical service ID should encode");
-        let (header, payload): (SpawnSubmitRequestFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("spawn.submit.request should decode");
+        let (header, payload): (TaskSubmitRequestFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&frame).expect("task.submit.request should decode");
 
         assert_eq!(header.service_id, service_id);
         assert_eq!(header.caller_request_id.as_deref(), Some("request-1"));
-        assert_eq!(payload, b"opaque spawn args");
+        assert_eq!(payload, b"opaque task args");
     }
 }
 
 #[test]
-fn outbound_spawn_submit_rejects_invalid_service_id_forms() {
+fn outbound_task_submit_rejects_invalid_service_id_forms() {
     let overlong = format!("example.com/{}", "a".repeat(64));
     for service_id in [
         "",
@@ -233,16 +233,16 @@ fn outbound_spawn_submit_rejects_invalid_service_id_forms() {
         "Example.com/worker",
         "example.com/bad!",
     ] {
-        let error = encode_outbound_control_message(OutboundControlMessage::SpawnSubmit {
-            request: spawn_submit_control_request(service_id),
-            payload: b"opaque spawn args".to_vec(),
+        let error = encode_outbound_control_message(OutboundControlMessage::TaskSubmit {
+            request: task_submit_control_request(service_id),
+            payload: b"opaque task args".to_vec(),
         })
         .expect_err("invalid service ID must fail before frame encoding");
 
         assert!(matches!(
             &error,
             crate::TransportError::InvalidOutboundServiceId {
-                envelope_type: "spawn.submit.request",
+                envelope_type: "task.submit.request",
                 ..
             }
         ));
@@ -478,16 +478,16 @@ fn actor_key_control() -> ActorKeyControlMetadata {
     }
 }
 
-fn spawn_submit_control_request(service_id: &str) -> SpawnSubmitControlRequest {
-    SpawnSubmitControlRequest {
-        rpc_id: "rpc-spawn".to_string(),
+fn task_submit_control_request(service_id: &str) -> TaskSubmitControlRequest {
+    TaskSubmitControlRequest {
+        rpc_id: "rpc-task".to_string(),
         runtime_id: "runtime-1".to_string(),
         target_kind: "operation".to_string(),
         service_id: service_id.to_string(),
         service_version: "1.0.0".to_string(),
         service_protocol_identity: "service-protocol-1".to_string(),
         target: "Worker.run".to_string(),
-        spawn_id: Some("spawn-1".to_string()),
+        task_id: Some("task-1".to_string()),
         build_id: Some("build-1".to_string()),
         activation_identity: activation_identity_control(),
         caller_request_id: Some("request-1".to_string()),

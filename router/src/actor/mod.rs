@@ -1,5 +1,5 @@
 //! W-actor: Router Rust actor lane (authority design §3.2/§3.3/§5.4/§5.5,
-//! C-actor/C-model-actor/C-spawn/C-model-spawn frozen contracts).
+//! C-actor/C-model-actor/C-task/C-model-task frozen contracts).
 //!
 //! Owners and their unique invariants:
 //!
@@ -17,7 +17,7 @@
 //!   correlation.
 //! - [`lease::ActorLeaseExpiryScheduler`]: lease/idle deadline scheduling and
 //!   bounded eviction trigger.
-//! - [`spawn::SpawnSubmitRouter`]: stateless exact parent-kind selection
+//! - [`task::TaskSubmitRouter`]: stateless exact parent-kind selection
 //!   (`request | actorInvocation`); sink stores no pending and accepted
 //!   spawns are separated from parent lifecycle.
 //!
@@ -31,8 +31,8 @@ mod health;
 mod invocation;
 mod lease;
 mod ownership;
-mod spawn;
-mod spawn_sink;
+mod task;
+mod task_sink;
 mod types;
 
 pub use activation::{
@@ -47,7 +47,7 @@ pub use control::{
 };
 pub use health::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, SpawnHealth,
+    LeaseHealth, OwnershipHealth, TaskHealth,
 };
 pub use invocation::{
     ActorInvocationRelay, ActorInvocationRelayOptions, ActorInvokeInput, InvocationError,
@@ -57,18 +57,18 @@ pub use lease::{
     ActorLeaseExpiryScheduler, IdleEvictControlPort, LeaseError, LeaseSchedulerOptions,
 };
 pub use ownership::{ActorOwnershipRegistry, OwnershipError};
-pub use spawn::{
-    ActorLaneSpawnControl, ActorMethodSpawnExecutionSink, ActorSpawnParentResolver,
-    FunctionSpawnParentResolver, ParentQuery, RelaySpawnParentLookup, SpawnAuthorityProbe,
-    SpawnErrorCode, SpawnParentAuthority, SpawnParentLookup, SpawnParentResolution,
-    SpawnParentSnapshot, SpawnSubmitAcceptance, SpawnSubmitError, SpawnSubmitRouter,
+pub use task::{
+    ActorLaneTaskControl, ActorMethodTaskExecutionSink, ActorTaskParentResolver,
+    FunctionTaskParentResolver, ParentQuery, RelayTaskParentLookup, TaskAuthorityProbe,
+    TaskErrorCode, TaskParentAuthority, TaskParentLookup, TaskParentResolution,
+    TaskParentSnapshot, TaskSubmitAcceptance, TaskSubmitError, TaskSubmitRouter,
 };
-pub use spawn_sink::{spawn_error_code, PendingSpawnWire, SpawnWireHealth, SpawnWireStore};
+pub use task_sink::{task_error_code, PendingTaskWire, TaskWireHealth, TaskWireStore};
 pub use types::{
     ActorClaimId, ActorClaimToken, ActorEntryFacts, ActorIncarnationFence, ActorLineage,
     ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, ActorRef, CommitFenceFacts,
     ExpiredOwner, LeaseIdMint, OwnerReleaseReason, DEFAULT_ACTIVATION_DEADLINE_MS,
     DEFAULT_ACTOR_PENDING_BUDGET, DEFAULT_ACTOR_TOMBSTONE_BUDGET, DEFAULT_CONTROL_ACK_DEADLINE_MS,
     DEFAULT_EVICTION_RETRY_BOUND, DEFAULT_IDLE_TTL_MS, DEFAULT_OWNER_LEASE_TTL_MS,
-    SPAWNED_ACTOR_METHOD_DEADLINE_MS, SPAWNED_ACTOR_METHOD_LEASE_MS,
+    TASK_ACTOR_METHOD_DEADLINE_MS, TASK_ACTOR_METHOD_LEASE_MS,
 };

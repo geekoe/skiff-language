@@ -417,11 +417,11 @@ impl Parser {
                 result
             }
             TokenKind::Ident(value) if value == "process" => Err(CompileError::syntax(
-                "process has been removed; use actors and spawn instead",
+                "process has been removed; use actors and dispatch instead",
                 token.span.start,
             )),
-            TokenKind::Ident(value) if value == "spawn" => Err(CompileError::syntax(
-                "spawn is a statement and cannot be used as an expression",
+            TokenKind::Ident(value) if value == "dispatch" => Err(CompileError::syntax(
+                "dispatch is a statement and cannot be used as an expression",
                 token.span.start,
             )),
             TokenKind::Ident(value) => {

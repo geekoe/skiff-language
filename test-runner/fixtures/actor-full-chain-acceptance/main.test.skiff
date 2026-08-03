@@ -83,7 +83,7 @@ impl TestEffectActor {
     secondExpected: string
   ) -> void {
     requireActorTestEffect(firstPath, firstExpected)
-    spawn self.consumeExpected(secondPath, secondExpected)
+    dispatch self.consumeExpected(secondPath, secondExpected)
   }
 }
 
@@ -116,7 +116,7 @@ test "root finalization waits for spawned and recursively spawned actor effects"
   }
 } {
   const actor = std.actor.get<TestEffectActor>("spawned-effect-case")
-  spawn actor.consumeThenSpawn(
+  dispatch actor.consumeThenSpawn(
     "/actor-test-effect/spawned-first",
     "spawned-first-body",
     "/actor-test-effect/spawned-recursive",

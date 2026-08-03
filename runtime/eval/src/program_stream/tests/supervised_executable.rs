@@ -797,7 +797,7 @@ fn interpreter_with_executables(
         service_files: vec![file.clone()],
         packages: Vec::new(),
         service_resources: PublicationResourceTable::default(),
-        spawn_routes: HashMap::new(),
+        task_routes: HashMap::new(),
         link_overlay: LinkOverlay::default(),
         types,
     });
