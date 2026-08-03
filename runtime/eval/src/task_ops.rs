@@ -1,13 +1,15 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use skiff_artifact_model::MetadataValue;
 use skiff_canonical_json::canonical_json_bytes;
+use skiff_runtime_boundary::recoverable::is_canonical_task_ref_string;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
     ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, CapabilityError,
-    OwnedExecutionControl, TaskSubmitControlRequest, TaskSubmitResponseControl,
-    TaskSubmitTimingControl,
+    OwnedExecutionControl, TaskCancelControlRequest, TaskCancelControlResponse,
+    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlRequest,
+    TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorMethodImplementation,
@@ -18,6 +20,7 @@ use skiff_runtime_model::{
     recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
     runtime_value::RuntimeValueCarrier, value::HeapNode,
 };
+use skiff_runtime_native::dispatch::RuntimeNativeInvocation;
 
 use crate::{
     actor_instance::resolve_actor_declaration,
@@ -30,6 +33,7 @@ use crate::{
     recoverable_task_dispatch_payload::{
         decode_task_args_payload, executable_request_recoverable_expected_plan,
     },
+    runtime_ops::{runtime_carrier_for_plan, runtime_from_wire_required_plan},
     Interpreter, RuntimeAssemblyEvalTarget,
 };
 
@@ -219,6 +223,126 @@ pub async fn submit_dispatch_call(
     )
     .await?;
     Ok(RuntimeValue::String(response.task_ref))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskControlOperation {
+    Status,
+    Cancel,
+}
+
+/// Evaluates `std.task.status` / `std.task.cancel`: decodes the canonical
+/// TaskRef runtime value, awaits the durable control response, and maps the
+/// wire kind to the user-visible discriminated union value. `notFound` error
+/// frames project to the stable `expired` result; `storeUnavailable` (and any
+/// other control failure) surfaces as a platform error to the caller.
+pub(super) async fn eval_task_control_native_call(
+    context: &mut EvalContext<'_>,
+    invocation: &RuntimeNativeInvocation,
+    values: &[RuntimeValueCarrier],
+) -> Result<Option<RuntimeValueCarrier>> {
+    let operation = match invocation.binding_key() {
+        "std.task.status" => TaskControlOperation::Status,
+        "std.task.cancel" => TaskControlOperation::Cancel,
+        _ => return Ok(None),
+    };
+    let target = match operation {
+        TaskControlOperation::Status => "task.status.request",
+        TaskControlOperation::Cancel => "task.cancel.request",
+    };
+    let task_ref = task_control_task_ref_arg(values, target)?;
+    let return_plan = invocation.return_plan()?.clone();
+    let request_context = context.context.request_context().clone();
+    let execution_control = context.execution.owned();
+
+    enum TaskControlOutcome {
+        Status(std::result::Result<TaskStatusControlResponse, CapabilityError>),
+        Cancel(std::result::Result<TaskCancelControlResponse, CapabilityError>),
+    }
+    let outcome = match operation {
+        TaskControlOperation::Status => TaskControlOutcome::Status(
+            context
+                .await_actual_pending(request_context.status_task(
+                    TaskStatusControlRequest {
+                        rpc_id: String::new(),
+                        runtime_id: String::new(),
+                        task_ref,
+                    },
+                    execution_control,
+                ))
+                .await?,
+        ),
+        TaskControlOperation::Cancel => TaskControlOutcome::Cancel(
+            context
+                .await_actual_pending(request_context.cancel_task(
+                    TaskCancelControlRequest {
+                        rpc_id: String::new(),
+                        runtime_id: String::new(),
+                        task_ref,
+                    },
+                    execution_control,
+                ))
+                .await?,
+        ),
+    };
+    let kind = match outcome {
+        TaskControlOutcome::Status(Ok(response)) => response.kind,
+        TaskControlOutcome::Cancel(Ok(response)) => response.kind,
+        TaskControlOutcome::Status(Err(error)) | TaskControlOutcome::Cancel(Err(error)) => {
+            match error {
+                CapabilityError::TaskControlRejected {
+                    code,
+                    message: _,
+                }
+                    if code == "notFound" =>
+                {
+                    // Wire `notFound` (TaskId unresolvable / owner scope
+                    // unknown) is the stable `expired` user result
+                    // (reference §3).
+                    "expired".to_string()
+                }
+                CapabilityError::TaskControlRejected { code, message } => {
+                    return Err(RuntimeError::ProviderUnavailable {
+                        target: target.to_string(),
+                        reason: format!("task control rejected ({code}): {message}"),
+                    })
+                }
+                other => {
+                    return Err(RuntimeError::ProviderUnavailable {
+                        target: target.to_string(),
+                        reason: other.to_string(),
+                    })
+                }
+            }
+        }
+    };
+    let value = runtime_from_wire_required_plan(
+        &json!({ "kind": kind }),
+        Some(&return_plan),
+        target,
+        context.heap.heap_mut(),
+    )?;
+    runtime_carrier_for_plan(value, &return_plan, target, context.heap.heap_mut()).map(Some)
+}
+
+fn task_control_task_ref_arg(
+    values: &[RuntimeValueCarrier],
+    target: &str,
+) -> Result<String> {
+    let value = values
+        .first()
+        .ok_or_else(|| RuntimeError::Decode(format!("{target} requires a TaskRef argument")))?;
+    let RuntimeValue::String(task_ref) = value.value() else {
+        return Err(RuntimeError::Decode(format!(
+            "{target} TaskRef argument is not a canonical taskRef string"
+        )));
+    };
+    if !is_canonical_task_ref_string(task_ref) {
+        return Err(RuntimeError::Decode(format!(
+            "{target} TaskRef argument is not a canonical skiff-task-v1 reference"
+        )));
+    }
+    Ok(task_ref.clone())
 }
 
 async fn evaluate_task_call_args(

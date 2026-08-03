@@ -14,6 +14,7 @@ use skiff_runtime_model::runtime_value::{
     InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RuntimeMap, RuntimeObject,
     RuntimeObjectFields, RuntimeValueKey,
 };
+use skiff_runtime_model::type_plan::{std_task_cancel_result_plan, std_task_status_plan};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
@@ -583,6 +584,48 @@ fn task_ref_roundtrips_through_recoverable_codec() {
     )
     .expect("canonical taskRef should decode through the recoverable boundary");
     assert_eq!(decoded, RuntimeValue::String(canonical.to_string()));
+}
+
+#[test]
+fn task_status_and_cancel_result_roundtrip_through_recoverable_codec() {
+    let context = recoverable_context();
+    for (plan, kind) in [
+        (std_task_status_plan(), "succeeded"),
+        (std_task_status_plan(), "platformFailed"),
+        (std_task_cancel_result_plan(), "canceled"),
+        (std_task_cancel_result_plan(), "alreadyTerminal"),
+    ] {
+        let expected = RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
+            &plan,
+        );
+        let mut heap = RequestHeap::default();
+        let value = RuntimeValue::Heap(
+            heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                "kind".to_string(),
+                RuntimeValue::String(kind.to_string()),
+            )])))
+            .expect("task control union record must allocate"),
+        );
+        let bytes = RecoverableBoundaryCodec::encode(&value, &expected, &context, &heap)
+            .unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let mut decode_heap = RequestHeap::default();
+        let decoded = RecoverableBoundaryCodec::decode(&bytes, &expected, &context, &mut decode_heap)
+            .unwrap_or_else(|error| panic!("{kind} decode: {error}"));
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("{kind}: decoded task control union must be a heap record");
+        };
+        let HeapNode::Object(object) = decode_heap
+            .get(handle)
+            .expect("decoded task control union should resolve")
+        else {
+            panic!("{kind}: decoded task control union must be an object");
+        };
+        assert_eq!(
+            object.fields().get("kind"),
+            Some(&RuntimeValue::String(kind.to_string())),
+            "{kind}: kind must roundtrip"
+        );
+    }
 }
 
 #[test]

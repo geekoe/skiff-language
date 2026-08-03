@@ -16,6 +16,7 @@ mod invocation;
 mod json;
 mod prepared;
 mod resource;
+mod task;
 mod telemetry;
 mod time;
 mod websocket;

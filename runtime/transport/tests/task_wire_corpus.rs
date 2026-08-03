@@ -18,20 +18,22 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
-    decode_task_cancel_request_frame, decode_task_cancel_response_frame,
+    decode_task_cancel_error_frame, decode_task_cancel_request_frame,
+    decode_task_cancel_response_frame, decode_task_status_error_frame,
     decode_task_status_request_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_request_frame,
     decode_task_submit_response_frame, encode_task_cancel_request_frame,
-    encode_task_cancel_response_frame, encode_task_status_request_frame,
+    encode_task_cancel_response_frame, encode_task_cancel_error_frame,
+    encode_task_status_error_frame, encode_task_status_request_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_request_frame, encode_task_submit_response_frame,
-    TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
+    TaskControlRejectionCode, TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 18] = [
+const REQUIRED_FRAMES: [&str; 22] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
     "task.submit.request.legacy-no-caller-kind",
@@ -46,8 +48,12 @@ const REQUIRED_FRAMES: [&str; 18] = [
     "task.submit.error.rejected",
     "task.status.request",
     "task.status.response.scheduled",
+    "task.status.error.notFound",
+    "task.status.error.storeUnavailable",
     "task.cancel.request",
     "task.cancel.response.canceled",
+    "task.cancel.error.notFound",
+    "task.cancel.error.storeUnavailable",
     "request.start.task.without-attempt",
     "request.start.task.with-attempt",
 ];
@@ -534,11 +540,17 @@ mod tests {
                 "task.status.response.scheduled" => {
                     ("task.status.response", "TaskStatusResponse", "empty")
                 }
+                "task.status.error.notFound" | "task.status.error.storeUnavailable" => {
+                    ("task.status.error", "TaskStatusError", "empty")
+                }
                 "task.cancel.request" => {
                     ("task.cancel.request", "TaskCancelRequest", "empty")
                 }
                 "task.cancel.response.canceled" => {
                     ("task.cancel.response", "TaskCancelResponse", "empty")
+                }
+                "task.cancel.error.notFound" | "task.cancel.error.storeUnavailable" => {
+                    ("task.cancel.error", "TaskCancelError", "empty")
                 }
                 "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
                     ("request.start", "RuntimeAssemblyTaskRequestStart", "required")
@@ -568,7 +580,11 @@ mod tests {
             | "task.submit.error.storeUnavailable"
             | "task.submit.error.rejected"
             | "task.status.response.scheduled"
+            | "task.status.error.notFound"
+            | "task.status.error.storeUnavailable"
             | "task.cancel.response.canceled"
+            | "task.cancel.error.notFound"
+            | "task.cancel.error.storeUnavailable"
             | "request.start.task.without-attempt"
             | "request.start.task.with-attempt" => "RouterToRuntime",
             _ => panic!("unexpected task frame {name}"),
@@ -770,6 +786,53 @@ mod tests {
                 kind: TaskCancelResultKindWire::Canceled
             }
         );
+    }
+
+    #[test]
+    fn status_and_cancel_error_frames_round_trip_with_rejection_code_projection() {
+        let catalog = catalog();
+        for (name, decode, encode, expected_code) in [
+            (
+                "task.status.error.notFound",
+                decode_task_status_error_frame as fn(&[u8]) -> _,
+                encode_task_status_error_frame as fn(&skiff_runtime_transport::protocol::ActorTaskRuntimeErrorFrameHeader) -> _,
+                TaskControlRejectionCode::NotFound,
+            ),
+            (
+                "task.status.error.storeUnavailable",
+                decode_task_status_error_frame,
+                encode_task_status_error_frame,
+                TaskControlRejectionCode::StoreUnavailable,
+            ),
+            (
+                "task.cancel.error.notFound",
+                decode_task_cancel_error_frame,
+                encode_task_cancel_error_frame,
+                TaskControlRejectionCode::NotFound,
+            ),
+            (
+                "task.cancel.error.storeUnavailable",
+                decode_task_cancel_error_frame,
+                encode_task_cancel_error_frame,
+                TaskControlRejectionCode::StoreUnavailable,
+            ),
+        ] {
+            let entry = &catalog.frames[name];
+            let bytes = hex_bytes(&entry.frame_hex);
+            let header = decode(&bytes).expect("task control error frame must decode");
+            assert_eq!(
+                bytes_hex(&encode(&header).expect("re-encode")),
+                entry.frame_hex,
+                "{name} must be byte-exact"
+            );
+            assert_eq!(
+                TaskControlRejectionCode::parse(&header.error.code),
+                Some(expected_code),
+                "{name}: rejection-code projection"
+            );
+        }
+        assert!(TaskControlRejectionCode::StoreUnavailable.is_transient());
+        assert!(!TaskControlRejectionCode::NotFound.is_transient());
     }
 
     #[test]

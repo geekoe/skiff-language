@@ -25,7 +25,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 18] = [
+const REQUIRED_FRAMES: [&str; 22] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
     "task.submit.request.legacy-no-caller-kind",
@@ -40,8 +40,12 @@ const REQUIRED_FRAMES: [&str; 18] = [
     "task.submit.error.rejected",
     "task.status.request",
     "task.status.response.scheduled",
+    "task.status.error.notFound",
+    "task.status.error.storeUnavailable",
     "task.cancel.request",
     "task.cancel.response.canceled",
+    "task.cancel.error.notFound",
+    "task.cancel.error.storeUnavailable",
     "request.start.task.without-attempt",
     "request.start.task.with-attempt",
 ];
@@ -428,8 +432,14 @@ mod tests {
             | "task.submit.error.rejected" => "task.submit.error",
             "task.status.request" => "task.status.request",
             "task.status.response.scheduled" => "task.status.response",
+            "task.status.error.notFound" | "task.status.error.storeUnavailable" => {
+                "task.status.error"
+            }
             "task.cancel.request" => "task.cancel.request",
             "task.cancel.response.canceled" => "task.cancel.response",
+            "task.cancel.error.notFound" | "task.cancel.error.storeUnavailable" => {
+                "task.cancel.error"
+            }
             "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
                 "request.start"
             }
@@ -454,7 +464,11 @@ mod tests {
             | "task.submit.error.storeUnavailable"
             | "task.submit.error.rejected"
             | "task.status.response.scheduled"
+            | "task.status.error.notFound"
+            | "task.status.error.storeUnavailable"
             | "task.cancel.response.canceled"
+            | "task.cancel.error.notFound"
+            | "task.cancel.error.storeUnavailable"
             | "request.start.task.without-attempt"
             | "request.start.task.with-attempt" => "RouterToRuntime",
             _ => panic!("unexpected task frame {name}"),
@@ -477,8 +491,14 @@ mod tests {
             | "task.submit.error.rejected" => "TaskSubmitError",
             "task.status.request" => "TaskStatusRequest",
             "task.status.response.scheduled" => "TaskStatusResponse",
+            "task.status.error.notFound" | "task.status.error.storeUnavailable" => {
+                "TaskStatusError"
+            }
             "task.cancel.request" => "TaskCancelRequest",
             "task.cancel.response.canceled" => "TaskCancelResponse",
+            "task.cancel.error.notFound" | "task.cancel.error.storeUnavailable" => {
+                "TaskCancelError"
+            }
             "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
                 "RuntimeAssemblyTaskRequestStart"
             }

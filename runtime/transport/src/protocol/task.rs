@@ -19,8 +19,10 @@ pub const TASK_SUBMIT_RESPONSE_FRAME_TYPE: &str = "task.submit.response";
 pub const TASK_SUBMIT_ERROR_FRAME_TYPE: &str = "task.submit.error";
 pub const TASK_STATUS_REQUEST_FRAME_TYPE: &str = "task.status.request";
 pub const TASK_STATUS_RESPONSE_FRAME_TYPE: &str = "task.status.response";
+pub const TASK_STATUS_ERROR_FRAME_TYPE: &str = "task.status.error";
 pub const TASK_CANCEL_REQUEST_FRAME_TYPE: &str = "task.cancel.request";
 pub const TASK_CANCEL_RESPONSE_FRAME_TYPE: &str = "task.cancel.response";
+pub const TASK_CANCEL_ERROR_FRAME_TYPE: &str = "task.cancel.error";
 pub const TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED: &str = "submitted";
 pub const TASK_CALLER_KIND_REQUEST: &str = "request";
 pub const TASK_CALLER_KIND_ACTOR_INVOCATION: &str = "actorInvocation";
@@ -300,6 +302,44 @@ impl TaskSubmitRejectionCode {
     }
 }
 
+/// Canonical `task.status.error` / `task.cancel.error` rejection-code
+/// vocabulary (E1 wire contract).
+///
+/// `notFound` means the TaskId cannot be resolved in the caller's owner scope
+/// (unknown owner or a store `NotFound`); the runtime projects it to the
+/// stable `expired` user result. `storeUnavailable` is a transient store /
+/// control-plane failure; the runtime surfaces it as a platform error instead
+/// of a fake stable result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskControlRejectionCode {
+    NotFound,
+    StoreUnavailable,
+}
+
+impl TaskControlRejectionCode {
+    pub const ALL: [Self; 2] = [Self::NotFound, Self::StoreUnavailable];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "notFound",
+            Self::StoreUnavailable => "storeUnavailable",
+        }
+    }
+
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == code)
+    }
+
+    /// `storeUnavailable` is the transient failure; `notFound` is a definite
+    /// stable projection (`expired` at the user surface).
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::StoreUnavailable)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSubmitRequestFrameHeader {
@@ -574,7 +614,7 @@ pub fn decode_task_submit_response_frame(
 pub fn encode_task_submit_error_frame(
     header: &ActorTaskRuntimeErrorFrameHeader,
 ) -> Result<Vec<u8>, BinaryFrameError> {
-    validate_error(header)?;
+    validate_error(header, TASK_SUBMIT_ERROR_FRAME_TYPE)?;
     encode_binary_frame(header, &[])
 }
 
@@ -585,7 +625,7 @@ pub fn decode_task_submit_error_frame(
     reject_payload(&frame.payload_bytes, TASK_SUBMIT_ERROR_FRAME_TYPE)?;
     let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header)
         .map_err(|error| TransportError::decode(format!("invalid task.submit.error: {error}")))?;
-    validate_error(&header)?;
+    validate_error(&header, TASK_SUBMIT_ERROR_FRAME_TYPE)?;
     Ok(header)
 }
 
@@ -665,11 +705,50 @@ pub fn decode_task_cancel_response_frame(
     Ok(header)
 }
 
+pub fn encode_task_status_error_frame(
+    header: &ActorTaskRuntimeErrorFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_error(header, TASK_STATUS_ERROR_FRAME_TYPE)?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_task_status_error_frame(
+    bytes: &[u8],
+) -> Result<ActorTaskRuntimeErrorFrameHeader, BinaryFrameError> {
+    let frame = decode_binary_frame(bytes)?;
+    reject_payload(&frame.payload_bytes, TASK_STATUS_ERROR_FRAME_TYPE)?;
+    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header).map_err(
+        |error| TransportError::decode(format!("invalid task.status.error: {error}")),
+    )?;
+    validate_error(&header, TASK_STATUS_ERROR_FRAME_TYPE)?;
+    Ok(header)
+}
+
+pub fn encode_task_cancel_error_frame(
+    header: &ActorTaskRuntimeErrorFrameHeader,
+) -> Result<Vec<u8>, BinaryFrameError> {
+    validate_error(header, TASK_CANCEL_ERROR_FRAME_TYPE)?;
+    encode_binary_frame(header, &[])
+}
+
+pub fn decode_task_cancel_error_frame(
+    bytes: &[u8],
+) -> Result<ActorTaskRuntimeErrorFrameHeader, BinaryFrameError> {
+    let frame = decode_binary_frame(bytes)?;
+    reject_payload(&frame.payload_bytes, TASK_CANCEL_ERROR_FRAME_TYPE)?;
+    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header).map_err(
+        |error| TransportError::decode(format!("invalid task.cancel.error: {error}")),
+    )?;
+    validate_error(&header, TASK_CANCEL_ERROR_FRAME_TYPE)?;
+    Ok(header)
+}
+
 /// Frame-level direction table for the task family (C-model-task §3.0).
 ///
 /// The family is mixed-direction: the family-level registry marks `Either`,
 /// but each task frame type has exactly one legal wire direction. Since D1
-/// the table covers the whole `task.*` family (submit + status/cancel).
+/// the table covers the whole `task.*` family (submit + status/cancel); E1
+/// adds the status/cancel error frames.
 /// Consumers (demux, Runtime inbound handler) must narrow per frame; any
 /// other direction is a protocol violation with no compatible reader.
 pub fn task_submit_frame_direction(frame_type: &str) -> Option<FrameDirection> {
@@ -680,7 +759,9 @@ pub fn task_submit_frame_direction(frame_type: &str) -> Option<FrameDirection> {
         TASK_SUBMIT_RESPONSE_FRAME_TYPE
         | TASK_SUBMIT_ERROR_FRAME_TYPE
         | TASK_STATUS_RESPONSE_FRAME_TYPE
-        | TASK_CANCEL_RESPONSE_FRAME_TYPE => Some(FrameDirection::RouterToRuntime),
+        | TASK_STATUS_ERROR_FRAME_TYPE
+        | TASK_CANCEL_RESPONSE_FRAME_TYPE
+        | TASK_CANCEL_ERROR_FRAME_TYPE => Some(FrameDirection::RouterToRuntime),
         _ => None,
     }
 }
@@ -784,22 +865,25 @@ fn validate_response(header: &TaskSubmitResponseFrameHeader) -> Result<(), Binar
     Ok(())
 }
 
-fn validate_error(header: &ActorTaskRuntimeErrorFrameHeader) -> Result<(), BinaryFrameError> {
+fn validate_error(
+    header: &ActorTaskRuntimeErrorFrameHeader,
+    expected_frame_type: &str,
+) -> Result<(), BinaryFrameError> {
     validate_common(
         &header.schema_version,
         &header.envelope_type,
-        TASK_SUBMIT_ERROR_FRAME_TYPE,
+        expected_frame_type,
     )
     .map_err(TransportError::decode)?;
     validate_token(&header.rpc_id, "rpcId").map_err(TransportError::decode)?;
     if header.error.code.trim().is_empty() {
         return Err(TransportError::decode(
-            "task.submit.error code must be non-empty",
+            format!("{expected_frame_type} code must be non-empty"),
         ));
     }
     if header.error.message.trim().is_empty() || header.error.message.len() > 4096 {
         return Err(TransportError::decode(
-            "task.submit.error message must contain 1..4096 bytes",
+            format!("{expected_frame_type} message must contain 1..4096 bytes"),
         ));
     }
     Ok(())

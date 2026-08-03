@@ -67,8 +67,9 @@ pub use outbound::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage,
-    RuntimeDeadlineControl, TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest,
-    TaskSubmitTimingControl,
+    RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest, TaskCancelControlResponse,
+    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlMessage,
+    TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

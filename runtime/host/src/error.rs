@@ -33,6 +33,8 @@ pub enum RuntimeError {
     Protocol { target: String, message: String },
     #[error("task.submit rejected ({code}): {message}")]
     TaskSubmitRejected { code: String, message: String },
+    #[error("task control rejected ({code}): {message}")]
+    TaskControlRejected { code: String, message: String },
     #[error("request was cancelled")]
     Cancelled,
     #[error("execution budget exceeded: {reason:?}")]
@@ -671,6 +673,7 @@ impl RuntimeError {
             | RuntimeError::ProviderUnavailable { .. }
             | RuntimeError::Protocol { .. }
             | RuntimeError::TaskSubmitRejected { .. }
+            | RuntimeError::TaskControlRejected { .. }
             | RuntimeError::ExternalErrorPayload { .. }
             | RuntimeError::Opaque(_)
             | RuntimeError::Json(_) => false,
@@ -716,6 +719,15 @@ impl RuntimeError {
                 status: None,
                 details: Some(serde_json::json!({
                     "rejectionCode": code,
+                    "message": message,
+                })),
+            },
+            RuntimeError::TaskControlRejected { code, message } => RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "controlCode": code,
                     "message": message,
                 })),
             },
@@ -779,6 +791,13 @@ impl RuntimeError {
                 PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 serde_json::json!({
                     "rejectionCode": code,
+                    "message": message,
+                })),
+            ),
+            RuntimeError::TaskControlRejected { code, message } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                serde_json::json!({
+                    "controlCode": code,
                     "message": message,
                 })),
             ),

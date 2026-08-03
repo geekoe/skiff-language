@@ -19,7 +19,8 @@ use skiff_runtime_capability_context::{
     ActorInvocationRequest, ActorRemoveControlRequest, ActorReplaceControlRequest, CapabilityError,
     CapabilityFuture, CapabilityResult, OwnedActorCapabilityContext, OwnedExecutionControl,
     OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
-    TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlRequest, TaskSubmitResponseControl,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -250,6 +251,22 @@ impl RequestCapabilityApi for RecordingActor {
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn status_task<'a>(
+        &'a self,
+        _request: TaskStatusControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse> {
+        Box::pin(async { Err(CapabilityError::unsupported("not used")) })
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        _request: TaskCancelControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse> {
         Box::pin(async { Err(CapabilityError::unsupported("not used")) })
     }
 }

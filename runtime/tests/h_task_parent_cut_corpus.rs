@@ -13,11 +13,13 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
-    decode_task_cancel_request_frame, decode_task_cancel_response_frame,
+    decode_task_cancel_error_frame, decode_task_cancel_request_frame,
+    decode_task_cancel_response_frame, decode_task_status_error_frame,
     decode_task_status_request_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_request_frame,
-    decode_task_submit_response_frame, encode_binary_frame, encode_task_cancel_request_frame,
-    encode_task_cancel_response_frame, encode_task_status_request_frame,
+    decode_task_submit_response_frame, encode_binary_frame, encode_task_cancel_error_frame,
+    encode_task_cancel_request_frame, encode_task_cancel_response_frame,
+    encode_task_status_error_frame, encode_task_status_request_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_request_frame, encode_task_submit_response_frame,
     TaskSubmitRequestFrameHeaderV2,
@@ -26,7 +28,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 18] = [
+const REQUIRED_FRAMES: [&str; 22] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
     "task.submit.request.legacy-no-caller-kind",
@@ -41,8 +43,12 @@ const REQUIRED_FRAMES: [&str; 18] = [
     "task.submit.error.rejected",
     "task.status.request",
     "task.status.response.scheduled",
+    "task.status.error.notFound",
+    "task.status.error.storeUnavailable",
     "task.cancel.request",
     "task.cancel.response.canceled",
+    "task.cancel.error.notFound",
+    "task.cancel.error.storeUnavailable",
     "request.start.task.without-attempt",
     "request.start.task.with-attempt",
 ];
@@ -457,8 +463,12 @@ mod tests {
         for name in [
             "task.status.request",
             "task.status.response.scheduled",
+            "task.status.error.notFound",
+            "task.status.error.storeUnavailable",
             "task.cancel.request",
             "task.cancel.response.canceled",
+            "task.cancel.error.notFound",
+            "task.cancel.error.storeUnavailable",
         ] {
             let entry = &catalog.frames[name];
             let bytes = hex_bytes(&entry.frame_hex);
@@ -471,6 +481,10 @@ mod tests {
                     &decode_task_status_response_frame(&bytes).expect(name),
                 )
                 .expect("status response re-encode"),
+                "TaskStatusError" => encode_task_status_error_frame(
+                    &decode_task_status_error_frame(&bytes).expect(name),
+                )
+                .expect("status error re-encode"),
                 "TaskCancelRequest" => encode_task_cancel_request_frame(
                     &decode_task_cancel_request_frame(&bytes).expect(name),
                 )
@@ -479,6 +493,10 @@ mod tests {
                     &decode_task_cancel_response_frame(&bytes).expect(name),
                 )
                 .expect("cancel response re-encode"),
+                "TaskCancelError" => encode_task_cancel_error_frame(
+                    &decode_task_cancel_error_frame(&bytes).expect(name),
+                )
+                .expect("cancel error re-encode"),
                 other => panic!("{name}: unexpected decodeAs {other}"),
             };
             assert_eq!(reencoded, bytes, "{name} must be byte-exact");
@@ -564,7 +582,11 @@ mod tests {
             | "task.submit.error.storeUnavailable"
             | "task.submit.error.rejected"
             | "task.status.response.scheduled"
+            | "task.status.error.notFound"
+            | "task.status.error.storeUnavailable"
             | "task.cancel.response.canceled"
+            | "task.cancel.error.notFound"
+            | "task.cancel.error.storeUnavailable"
             | "request.start.task.without-attempt"
             | "request.start.task.with-attempt" => "RouterToRuntime",
             _ => panic!("unexpected task frame {name}"),

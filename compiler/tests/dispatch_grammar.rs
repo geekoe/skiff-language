@@ -113,3 +113,74 @@ fn dispatch_keyword_is_reserved_for_local_and_pattern_bindings() {
         );
     }
 }
+
+#[test]
+fn std_task_status_and_cancel_compile_through_the_full_package_pipeline() {
+    let temp = package_with_source(
+        "std-task-surface-pipeline",
+        r#"
+            function run() -> void {
+              return
+            }
+
+            function start() -> std.task.TaskStatus {
+              const ref = dispatch run()
+              return std.task.status(ref)
+            }
+
+            function stop() -> std.task.TaskCancelResult {
+              const ref = dispatch run()
+              return std.task.cancel(ref)
+            }
+
+            function consumeStatus(status: std.task.TaskStatus) -> void {
+              return
+            }
+        "#,
+    );
+    compile_package_project(temp.path()).expect("std.task status/cancel should compile");
+}
+
+#[test]
+fn std_task_status_and_cancel_reject_non_task_ref_arguments() {
+    for (name, source, expected) in [
+        (
+            "status-string",
+            r#"
+                function start() -> std.task.TaskStatus {
+                  return std.task.status("not-a-task-ref")
+                }
+            "#,
+            "TaskRef",
+        ),
+        (
+            "cancel-number",
+            r#"
+                function start() -> std.task.TaskCancelResult {
+                  return std.task.cancel(42)
+                }
+            "#,
+            "TaskRef",
+        ),
+        (
+            "status-extra-arg",
+            r#"
+                function run() -> void {
+                  return
+                }
+
+                function start() -> std.task.TaskStatus {
+                  const ref = dispatch run()
+                  return std.task.status(ref, ref)
+                }
+            "#,
+            "arity mismatch",
+        ),
+    ] {
+        let error = compile_error(package_with_source(name, source));
+        assert!(
+            error.contains(expected),
+            "{name} should reject with {expected:?}: {error}"
+        );
+    }
+}

@@ -169,6 +169,18 @@ pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
         arity: 0,
         kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
+    CompilerBuiltinType {
+        name: "TaskStatus",
+        symbol: "std.task.TaskStatus",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
+    CompilerBuiltinType {
+        name: "TaskCancelResult",
+        symbol: "std.task.TaskCancelResult",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::Value,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

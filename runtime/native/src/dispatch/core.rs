@@ -2,7 +2,7 @@ use super::{
     actor::ActorNativeDispatch, bytes::BytesNativeDispatch, external::ExternalNativeDispatch,
     file::FileNativeDispatch, http::HttpNativeDispatch, invocation::RuntimeNativeInvocation,
     json::JsonNativeDispatch, prepared::run_prepared_native_call, resource::ResourceNativeDispatch,
-    telemetry::TelemetryNativeDispatch, time::TimeNativeDispatch,
+    task::TaskControlNativeDispatch, telemetry::TelemetryNativeDispatch, time::TimeNativeDispatch,
     websocket::WebsocketNativeDispatch, PreparedNativeCall,
 };
 use crate::error::{Result, RuntimeError};
@@ -29,6 +29,7 @@ pub enum RuntimeNativeRoute {
     Websocket,
     Telemetry,
     Resource,
+    TaskControl,
     NativeRegistry,
     ReceiverMethod,
 }
@@ -67,6 +68,9 @@ pub(crate) fn runtime_shared_native_route_for_validation(
     }
     if ResourceNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Resource);
+    }
+    if TaskControlNativeDispatch::matches(target) {
+        return Some(RuntimeNativeRoute::TaskControl);
     }
     if skiff_artifact_model::is_runtime_receiver_native_binding_key(target) {
         return Some(RuntimeNativeRoute::ReceiverMethod);

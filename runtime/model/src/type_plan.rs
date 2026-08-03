@@ -11,7 +11,8 @@ pub use builtins::{
     leaf_integer_plan, leaf_string_plan, split_top_level, std_array_plan, std_duration_plan,
     std_field, std_http_client_request_plan, std_http_client_response_plan,
     std_http_client_stream_handle_plan, std_http_header_plan, std_http_record_node,
-    std_nullable_plan, std_record_plan, std_stream_plan, type_name_root, RuntimeBuiltinShape,
+    std_nullable_plan, std_record_plan, std_stream_plan, std_task_cancel_result_plan,
+    std_task_status_plan, type_name_root, RuntimeBuiltinShape,
 };
 
 #[derive(Clone)]

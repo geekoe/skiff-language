@@ -12,6 +12,7 @@ use crate::{
     capabilities::ExecutionControl,
     heap_access::{await_with_release, HeapAccess},
     program_execution::ProgramExecutionContext,
+    task_ops::eval_task_control_native_call,
 };
 
 mod activation;
@@ -153,6 +154,9 @@ impl EvalContext<'_> {
             call,
             target,
         )?;
+        if let Some(value) = eval_task_control_native_call(self, &invocation, &values).await? {
+            return Ok(value);
+        }
         let return_plan = prepared_native_return_plan(&invocation)?;
         let native_capability_context = project_runtime_execution_native_capability_context(
             &self.context,

@@ -213,6 +213,32 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
             caller_kind,
         ))
     }
+
+    fn status_task<'a>(
+        &'a self,
+        request: TaskStatusControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskStatusControlResponse>
+    {
+        Box::pin(status_task(
+            self.request_context.clone(),
+            request,
+            execution_control,
+        ))
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        request: TaskCancelControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskCancelControlResponse>
+    {
+        Box::pin(cancel_task(
+            self.request_context.clone(),
+            request,
+            execution_control,
+        ))
+    }
 }
 
 struct RuntimeOwnedRequestCapabilityContext(RuntimeOwnedRequestParts);
@@ -380,6 +406,32 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
             args_payload,
             execution_control,
             caller_kind,
+        ))
+    }
+
+    fn status_task<'a>(
+        &'a self,
+        request: TaskStatusControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskStatusControlResponse>
+    {
+        Box::pin(status_task(
+            concrete_request_context_from_owned(&self.0),
+            request,
+            execution_control,
+        ))
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        request: TaskCancelControlRequest,
+        execution_control: capability_contract::OwnedExecutionControl,
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskCancelControlResponse>
+    {
+        Box::pin(cancel_task(
+            concrete_request_context_from_owned(&self.0),
+            request,
+            execution_control,
         ))
     }
 }
@@ -646,6 +698,34 @@ async fn submit_task(
     root_result_into_capability(
         concrete::RequestClient::new(context)
             .submit_task_in_scope(request, args_payload, scope, caller_kind)
+            .await,
+    )
+    .await
+}
+
+async fn status_task(
+    context: concrete::RequestClientContext<'_>,
+    request: TaskStatusControlRequest,
+    execution_control: capability_contract::OwnedExecutionControl,
+) -> capability_contract::CapabilityResult<capability_contract::TaskStatusControlResponse> {
+    let scope = actor_execution_scope(&execution_control)?;
+    root_result_into_capability(
+        concrete::RequestClient::new(context)
+            .status_task_in_scope(request, scope)
+            .await,
+    )
+    .await
+}
+
+async fn cancel_task(
+    context: concrete::RequestClientContext<'_>,
+    request: TaskCancelControlRequest,
+    execution_control: capability_contract::OwnedExecutionControl,
+) -> capability_contract::CapabilityResult<capability_contract::TaskCancelControlResponse> {
+    let scope = actor_execution_scope(&execution_control)?;
+    root_result_into_capability(
+        concrete::RequestClient::new(context)
+            .cancel_task_in_scope(request, scope)
             .await,
     )
     .await

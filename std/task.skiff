@@ -1,0 +1,9 @@
+// Durable detached task control surface (`doc/reference/dispatch.md` §3).
+//
+// `TaskRef` is the opaque handle produced by the `dispatch` expression.
+// `status` queries the durable task state and `cancel` performs
+// before-start cancellation; both return compiler-known discriminated union
+// values whose `kind` spellings match the reference verbatim.
+
+native function status(ref: TaskRef) -> TaskStatus
+native function cancel(ref: TaskRef) -> TaskCancelResult
