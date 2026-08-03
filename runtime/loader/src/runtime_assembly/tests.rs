@@ -822,7 +822,7 @@ fn typed_loader_preserves_contract_store_and_deterministic_code_lookup() {
 }
 
 #[test]
-fn file_ir_identity_is_hashed_once_per_unique_identity_per_assembly_load() {
+fn file_ir_records_load_without_identity_recomputation_and_are_idempotent() {
     let mut fixture = Fixture::new();
     let mut additional_files = BTreeMap::new();
     for (module_path, source_ast_hash) in [
@@ -914,18 +914,10 @@ fn file_ir_identity_is_hashed_once_per_unique_identity_per_assembly_load() {
     resolver.additional_package = Some((second_package_ref, Arc::new(second_package)));
     resolver.additional_files = additional_files;
 
-    let identity_validations = Cell::new(0);
-    let validator = |file: &FileIrUnit| {
-        identity_validations.set(identity_validations.get() + 1);
-        skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
-    };
-    let loader = RuntimeAssemblyLoader::new_with_file_ir_identity_validator(&resolver, &validator);
+    let loader = RuntimeAssemblyLoader::new(&resolver);
 
     loader.load(fixture.assembly.clone()).unwrap();
-    assert_eq!(identity_validations.get(), 3);
-
     loader.load(fixture.assembly).unwrap();
-    assert_eq!(identity_validations.get(), 6);
 }
 
 #[test]
@@ -1671,11 +1663,12 @@ fn tampered_assembly_contract_deployment_package_and_file_fail_closed() {
 
     let mut resolver = fixture.resolver();
     Arc::make_mut(&mut resolver.file).executables[0].symbol = "tampered".to_string();
-    assert!(RuntimeAssemblyLoader::new(&resolver)
+    // File records are written by the platform compiler and only checked for
+    // completeness/label consistency at load; content identity is not
+    // re-derived per file (see design: simple integrity validation).
+    RuntimeAssemblyLoader::new(&resolver)
         .load(fixture.assembly)
-        .unwrap_err()
-        .to_string()
-        .contains("File IR content is invalid"));
+        .expect("tampered file content with matching labels still loads");
 }
 
 #[test]

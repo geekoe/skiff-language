@@ -326,39 +326,14 @@ impl HydratedRuntimeAssembly {
 
 pub struct RuntimeAssemblyLoader<'a, R: ?Sized> {
     resolver: &'a R,
-    #[cfg(test)]
-    file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
 }
-
-fn validate_file_ir_identity(file: &FileIrUnit) -> anyhow::Result<()> {
-    skiff_artifact_identity::validate_file_ir_identity(file).map_err(anyhow::Error::from)
-}
-
-#[cfg(test)]
-static FILE_IR_IDENTITY_VALIDATOR: fn(&FileIrUnit) -> anyhow::Result<()> =
-    validate_file_ir_identity;
 
 impl<'a, R> RuntimeAssemblyLoader<'a, R>
 where
     R: RuntimeAssemblyContentResolver + ?Sized,
 {
     pub fn new(resolver: &'a R) -> Self {
-        Self {
-            resolver,
-            #[cfg(test)]
-            file_ir_identity_validator: &FILE_IR_IDENTITY_VALIDATOR,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_with_file_ir_identity_validator(
-        resolver: &'a R,
-        file_ir_identity_validator: &'a dyn Fn(&FileIrUnit) -> anyhow::Result<()>,
-    ) -> Self {
-        Self {
-            resolver,
-            file_ir_identity_validator,
-        }
+        Self { resolver }
     }
 
     fn validate_file_content(
@@ -367,14 +342,7 @@ where
         reference: &FileIrRef,
         file: &FileIrUnit,
     ) -> anyhow::Result<()> {
-        #[cfg(test)]
-        {
-            validate_file_content(package, reference, file, self.file_ir_identity_validator)
-        }
-        #[cfg(not(test))]
-        {
-            validate_file_content(package, reference, file, &validate_file_ir_identity)
-        }
+        validate_file_content(package, reference, file)
     }
 
     /// Resolve and hydrate one exact immutable assembly reference.

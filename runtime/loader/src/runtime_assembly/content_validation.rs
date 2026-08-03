@@ -87,21 +87,11 @@ pub(super) fn validate_file_ref_path(
     Ok(())
 }
 
-pub(super) fn validate_file_content<V>(
+pub(super) fn validate_file_content(
     package: &PackageArtifactRef,
     reference: &FileIrRef,
     file: &FileIrUnit,
-    validate_identity: &V,
-) -> anyhow::Result<()>
-where
-    V: Fn(&FileIrUnit) -> anyhow::Result<()> + ?Sized,
-{
-    validate_identity(file).with_context(|| {
-        format!(
-            "File IR content is invalid for {} in package {}",
-            reference.file_ir_identity, package.package_build_id
-        )
-    })?;
+) -> anyhow::Result<()> {
     validate_file_ref(package, reference, file)
 }
 

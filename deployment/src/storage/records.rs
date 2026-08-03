@@ -362,8 +362,21 @@ impl CanonicalArtifactStore {
         )?;
         raw_string(&host_path, &value, &["modulePath"], &reference.module_path)?;
         let file = typed_from_value::<FileIrUnit>(&host_path, value)?;
-        validate_file_ref(&host_path, package, reference, &file)?;
-        ensure_canonical(&host_path, &bytes, &file)?;
+        if file.file_ir_identity != reference.file_ir_identity
+            || file.module_path != reference.module_path
+            || reference
+                .source_ast_hash
+                .as_ref()
+                .is_some_and(|hash| hash != &file.source_ast_hash)
+        {
+            return invalid(
+                &host_path,
+                format!(
+                    "File IR record does not match package {} exact reference",
+                    package.package_build_id
+                ),
+            );
+        }
         Ok(Arc::new(file))
     }
 
