@@ -372,17 +372,14 @@ impl ActorFrameFixture {
         Self { store, handle }
     }
 
-    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess<'static>) {
+    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess) {
         let authority = ActorExecutorAuthority::new();
         let mut segment = self
             .store
             .acquire_segment(&authority, &self.handle)
             .await
             .expect("acquire stream Actor");
-        let access = HeapAccess::Shared {
-            arena: segment.arena().clone(),
-            guard: Some(segment.take_guard()),
-        };
+        let access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
         (
             ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
             access,
@@ -536,9 +533,9 @@ fn f445h_e4r_stream_for_in_materializes_current_local_deadline_owner_before_wait
     let current_scope = owned.execution_scope().expect("current local scope");
     let context = scoped_context(&interpreter, stream_runtime, owned.borrow());
     let addr = ExecutableAddr::service(0, 0);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let stream_value = json!({"$stream": "f445h-e4r-pending"});
     let future = interpreter.exec_program_stream_for_in(
         context,
@@ -612,7 +609,7 @@ async fn f445h_e4r_stream_for_in_natural_end_is_the_only_disarmed_terminal() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &mut Env::new(),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -646,7 +643,7 @@ async fn f445h_e4r_stream_for_in_break_initiates_local_cleanup_once() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -675,7 +672,7 @@ async fn f445h_e4r_stream_for_in_return_initiates_local_cleanup_once() {
     let result = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -709,7 +706,7 @@ async fn f445h_e4r_stream_for_in_ordinary_error_initiates_local_cleanup_once() {
     let error = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -758,7 +755,7 @@ async fn tail_call_negative_stream_real_consumer_barrier_uses_ordinary_call_and_
     let error = interpreter
         .exec_program_stream_for_in(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &mut Env::for_program_executable(&executable, None, 0).expect("loop env"),
             &ExecutableAddr::service(0, 0),
             &file,
@@ -788,12 +785,12 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
     let interpreter = interpreter_with_file(Arc::clone(&file));
     let (runtime, late_item, cancellations) = ScriptedStreamRuntime::gated();
     let context = scoped_context(&interpreter, runtime, test_runtime::execution_control());
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::new();
     let addr = ExecutableAddr::service(0, 0);
     let checkpoint = heap.checkpoint();
     let stats = heap.stats();
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
         &mut access,
@@ -831,14 +828,15 @@ fn f445h_e4r_stream_for_in_future_drop_initiates_cleanup_without_remote_ack() {
             .is_err(),
         "a late item and its heap must lose the dropped caller wait"
     );
+    let heap = access.into_owned_heap();
     assert_eq!(heap.checkpoint(), checkpoint);
     assert_eq!(heap.stats(), stats);
 
     let (runtime, late_error, error_cancellations) = ScriptedStreamRuntime::gated();
     let context = scoped_context(&interpreter, runtime, test_runtime::execution_control());
-    let mut error_heap = RequestHeap::default();
+    let error_heap = RequestHeap::default();
     let mut error_env = Env::new();
-    let mut error_access = HeapAccess::Exclusive(&mut error_heap);
+    let mut error_access = HeapAccess::private(error_heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
         &mut error_access,
@@ -880,10 +878,10 @@ fn f445h_e4r_stream_for_in_ancestor_cancel_wins_equal_expired_deadline() {
         .expect("derive equal terminal fixture");
     root.cancellation_token().cancel();
     let context = scoped_context(&interpreter, runtime, owned.borrow());
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::new();
     let addr = ExecutableAddr::service(0, 0);
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
         &mut access,
@@ -970,10 +968,10 @@ fn f445h_e4r_stream_for_in_buffered_ready_then_pending_observes_lease_child_scop
     let (lease, _completion) = parent.acquire_lease();
     let execution = ExecutionControl::new(ScopedControl::new(root, lease.child_execution_scope()));
     let context = scoped_context(&interpreter, runtime, execution);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::for_program_executable(&executable, None, 0).expect("loop env");
     let addr = ExecutableAddr::service(0, 0);
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let future = interpreter.exec_program_stream_for_in(
         context,
         &mut access,

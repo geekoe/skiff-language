@@ -58,7 +58,7 @@ impl Interpreter {
     pub async fn exec_program_stream_for_in(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -143,7 +143,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -200,7 +200,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -235,7 +235,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &Env,
         caller_addr: &ExecutableAddr,
         producer_addr: &ExecutableAddr,
@@ -325,8 +325,7 @@ impl Interpreter {
     ) -> Result<T>
     where
         Factory: FnOnce(Option<SupervisedStreamConsumptionChild>) -> Fut,
-        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess<'h>)>,
-        'h: 'x,
+        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess)>,
     {
         let Some(prepared) =
             stream_id(stream_value).and_then(|id| self.deferred_stream_producers.take(id))
@@ -373,7 +372,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -396,8 +395,7 @@ impl Interpreter {
         consumer: Fut,
     ) -> Result<T>
     where
-        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess<'h>)>,
-        'h: 'x,
+        Fut: std::future::Future<Output = (Result<T>, &'x mut HeapAccess)>,
     {
         let PreparedNativeStreamProducer {
             producer,
@@ -471,7 +469,7 @@ impl Interpreter {
     async fn drain_stream_producer_output(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         stream_runtime: &StreamRuntime,
         stream_value: &Value,
         cancel_signal: &StreamCancelSignal,
@@ -510,7 +508,7 @@ impl Interpreter {
         &self,
         program: RuntimeExecutionProjection<'async_recursion>,
         context: ProgramExecutionContext<'async_recursion>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         _file: &LinkedFileUnit,
@@ -1123,7 +1121,7 @@ async fn run_stream_producer_task(
     let StreamProducerExecution {
         _stream_runtime_owner,
         arg_producers,
-        mut producer_heap,
+        producer_heap,
         mut producer_env,
         producer_addr,
         producer_site,
@@ -1157,7 +1155,7 @@ async fn run_stream_producer_task(
         Some(site) => context.with_local_call_site(site),
         None => context,
     };
-    let mut producer_access = HeapAccess::Exclusive(&mut producer_heap);
+    let mut producer_access = HeapAccess::private(producer_heap);
     let result = match producer_self {
         StreamProducerSelf::Explicit(producer_self) => {
             interpreter
@@ -1196,6 +1194,7 @@ async fn run_stream_producer_task(
             }
         }
     };
+    let producer_heap = producer_access.into_owned_heap();
     match result {
         Ok(_) => sink.end().await,
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}

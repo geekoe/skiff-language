@@ -1000,14 +1000,14 @@ async fn execute(
         .await
 }
 
-async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, HeapAccess<'static>) {
+async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, HeapAccess) {
     execution_frame_with_activation(fixture, false).await
 }
 
 async fn execution_frame_with_activation(
     fixture: &Fixture,
     activation: bool,
-) -> (ActorExecutionFrame, HeapAccess<'static>) {
+) -> (ActorExecutionFrame, HeapAccess) {
     let authority = ActorExecutorAuthority::new();
     let mut segment = if activation {
         fixture
@@ -1022,10 +1022,7 @@ async fn execution_frame_with_activation(
             .await
             .unwrap()
     };
-    let access = HeapAccess::Shared {
-        arena: segment.arena().clone(),
-        guard: Some(segment.take_guard()),
-    };
+    let access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
     (
         ActorExecutionFrame::new(
             fixture.store.clone(),
@@ -1050,7 +1047,7 @@ fn stored_heap_len(fixture: &Fixture) -> usize {
 
 async fn force_pending_cut(
     frame: &ActorExecutionFrame,
-    access: &mut HeapAccess<'static>,
+    access: &mut HeapAccess,
     execution: &crate::capabilities::ExecutionControl<'_>,
 ) {
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
@@ -1836,7 +1833,7 @@ async fn partial_create_unassigned_roots_stay_null_and_resume_can_assign() {
     assert_eq!(stored_heap_len(&fixture), 2);
 }
 
-async fn frame_finish_and_drop(frame: ActorExecutionFrame, access: HeapAccess<'static>) {
+async fn frame_finish_and_drop(frame: ActorExecutionFrame, access: HeapAccess) {
     frame.finish().unwrap();
     drop(access);
 }
@@ -2069,7 +2066,7 @@ async fn executor_rechecks_abi_implementation_epoch_and_rejects_ordinary_context
     ));
 
     let ordinary = fixture(integer(), false);
-    let mut heap = skiff_runtime_model::request_heap::RequestHeap::default();
+    let heap = skiff_runtime_model::request_heap::RequestHeap::default();
     let addr = ExecutableAddr {
         unit: UnitAddr::Service,
         file: FileAddr::FileIrIdentity(FILE_ID.to_string()),
@@ -2079,7 +2076,7 @@ async fn executor_rechecks_abi_implementation_epoch_and_rejects_ordinary_context
         .interpreter
         .call_program_executable(
             context(&ordinary.interpreter),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &crate::env::Env::new(),
             &addr,
             &addr,

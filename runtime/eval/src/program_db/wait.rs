@@ -2,7 +2,7 @@ use std::future::Future;
 
 use crate::{
     error::Result,
-    heap_access::{await_shared_with_release, HeapAccess},
+    heap_access::{await_with_release, HeapAccess},
     program_execution::ProgramExecutionContext,
 };
 
@@ -10,7 +10,7 @@ use crate::{
 /// Actor continuation's first-poll state machine.
 pub(super) async fn await_operation<F>(
     context: &ProgramExecutionContext<'_>,
-    heap: &mut HeapAccess<'_>,
+    heap: &mut HeapAccess,
     operation: F,
 ) -> Result<F::Output>
 where
@@ -22,7 +22,6 @@ where
                 .await_if_pending(heap, &context.execution(), operation)
                 .await
         }
-        None if heap.is_shared() => Ok(await_shared_with_release(heap, operation).await),
-        None => Ok(operation.await),
+        None => Ok(await_with_release(heap, operation).await),
     }
 }

@@ -197,14 +197,14 @@ fn compiler_wrap_continues_through_file_ir_linking_and_eval() {
         .expect("linked image and activation should form an eval target");
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
     let context = execution_context(&interpreter, eval_target);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let addr = ExecutableAddr::package(0, linked_file_index, linked_executable_index);
     let value = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("combined probe Tokio runtime")
         .block_on(interpreter.execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &addr,
             Vec::new(),
         ))

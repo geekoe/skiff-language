@@ -329,10 +329,7 @@ async fn execution_frame_rejects_wrong_field_type_and_suspends() {
     admitted(&store, &handle);
     let authority = ActorExecutorAuthority::new();
     let mut segment = store.acquire_segment(&authority, &handle).await.unwrap();
-    let mut access = HeapAccess::Shared {
-        arena: segment.arena().clone(),
-        guard: Some(segment.take_guard()),
-    };
+    let mut access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
     let frame = ActorExecutionFrame::new(store.clone(), handle, segment, false);
     assert!(frame
         .read_field("count")

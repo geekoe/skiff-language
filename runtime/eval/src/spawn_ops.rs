@@ -90,15 +90,20 @@ pub async fn execute_runtime_assembly_spawn_target(
                         .to_string(),
                 ),
         );
-    let mut heap = context.request_heap();
-    let decoded =
-        decode_spawn_args_payload(payload, &expected, &boundary, &mut heap, &behavior_hooks)?;
+    let mut heap = HeapAccess::private(context.request_heap());
+    let decoded = decode_spawn_args_payload(
+        payload,
+        &expected,
+        &boundary,
+        heap.heap_mut(),
+        &behavior_hooks,
+    )?;
     let RuntimeValue::Heap(args_handle) = decoded else {
         return Err(RuntimeError::InvalidArtifact(
             "canonical spawn args payload did not decode to an object".to_string(),
         ));
     };
-    let HeapNode::Object(args_object) = heap.get(args_handle)? else {
+    let HeapNode::Object(args_object) = heap.heap_mut().get(args_handle)? else {
         return Err(RuntimeError::InvalidArtifact(
             "canonical spawn args payload did not decode to an object".to_string(),
         ));
@@ -120,9 +125,8 @@ pub async fn execute_runtime_assembly_spawn_target(
                 })
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let value = interpreter
-        .execute_runtime_assembly_addr(context, &mut access, &resolved.addr, args)
+        .execute_runtime_assembly_addr(context, &mut heap, &resolved.addr, args)
         .await?;
     if value != RuntimeValue::Null {
         return Err(RuntimeError::InvalidArtifact(format!(
@@ -134,7 +138,7 @@ pub async fn execute_runtime_assembly_spawn_target(
 }
 
 pub async fn submit_spawn_statement(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call_ref: ExprRefIr,
 ) -> Result<()> {
     let expression = program_expression_ref(context.executable, call_ref)?;
@@ -225,7 +229,7 @@ struct SpawnEncodedCall {
 }
 
 async fn encode_spawn_request_payload(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
 ) -> Result<SpawnEncodedCall> {
@@ -241,7 +245,7 @@ async fn encode_spawn_request_payload(
 }
 
 async fn encode_spawn_function_payload(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
@@ -311,7 +315,7 @@ async fn encode_spawn_function_payload(
 }
 
 async fn encode_spawn_actor_method_payload(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
@@ -1491,11 +1495,10 @@ mod recoverable_spawn_payload_tests {
             Interpreter::with_program(runtime_program, test_runtime::runtime_factory());
         let context = probe_program_context(&interpreter);
         let caller_addr = probe_caller_addr();
-        let mut access = HeapAccess::Exclusive(&mut decode_heap);
         let result = interpreter
             .call_program_executable(
                 context,
-                &mut access,
+                &mut HeapAccess::private(decode_heap),
                 &Env::new(),
                 &caller_addr,
                 &caller_addr,

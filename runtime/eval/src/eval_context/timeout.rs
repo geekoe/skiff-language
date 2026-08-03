@@ -6,7 +6,7 @@ use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 use super::*;
 use crate::program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind};
 
-impl EvalContext<'_, '_> {
+impl EvalContext<'_> {
     pub(super) async fn exec_timeout_statement(
         &mut self,
         duration_ms: u64,

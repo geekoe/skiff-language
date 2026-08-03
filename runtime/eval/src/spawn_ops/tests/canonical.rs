@@ -243,12 +243,12 @@ async fn f445h_i6_actor_scope_spawn_uses_current_projection_and_exact_target() {
         fixture.request,
         Some(fixture.eval_target),
     );
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
 
     interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             Vec::new(),
         )
@@ -305,7 +305,7 @@ async fn canonical_spawn_missing_metadata_fails_before_actor_capability() {
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &fixture.caller_addr,
             Vec::new(),
         )
@@ -331,7 +331,7 @@ async fn canonical_spawn_missing_execution_projection_fails_before_actor_capabil
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             &fixture.caller_addr,
             Vec::new(),
         )

@@ -275,11 +275,11 @@ impl LinkedFixture {
         let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
         let context =
             execution_context_with_trace(&interpreter, target, "trace:resource-package-direct");
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &ExecutableAddr::package(0, file_index, executable_index),
                 Vec::new(),
             )

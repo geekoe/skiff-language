@@ -88,7 +88,7 @@ impl Drop for ProviderUnaryRequestOwner {
 }
 
 pub(crate) fn prepare_provider_unary(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -140,7 +140,7 @@ impl PreparedProviderUnary {
             let Self {
                 interpreter,
                 provider_context,
-                mut provider_heap,
+                provider_heap,
                 provider_invocation_env,
                 caller_addr,
                 provider_addr,
@@ -153,9 +153,9 @@ impl PreparedProviderUnary {
                 caller_package_build_id,
                 parameter_count,
             } = self;
-            let terminal = {
+            let (terminal, provider_heap) = {
                 let provider_context = provider_context.borrow();
-                let mut provider_access = HeapAccess::Exclusive(&mut provider_heap);
+                let mut provider_access = HeapAccess::private(provider_heap);
                 let provider_future = super::call_provider_callable(
                     &interpreter,
                     provider_context,
@@ -167,7 +167,10 @@ impl PreparedProviderUnary {
                     &type_args,
                     provider_args,
                 );
-                await_provider_unary(&execution.borrow(), request.request(), provider_future).await
+                let terminal =
+                    await_provider_unary(&execution.borrow(), request.request(), provider_future)
+                        .await;
+                (terminal, provider_access.into_owned_heap())
             };
             let outcome = match terminal {
                 ProviderUnaryWaitTerminal::Provider(Err(error)) if error.is_cancelled() => {
@@ -261,7 +264,7 @@ impl CompletedProviderUnary {
 }
 
 pub(crate) async fn execute_provider_unary(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,

@@ -35,21 +35,21 @@ use skiff_runtime_linked_program::{
     ExecutableAddr, ExprRefIr, FieldPathIr, LinkedExecutable, LinkedFileUnit, LinkedTypeRef,
 };
 
-pub struct DbIrEvaluator<'a, 'h> {
+pub struct DbIrEvaluator<'a> {
     interpreter: &'a Interpreter,
     program_context: ProgramExecutionContext<'a>,
-    heap: &'a mut HeapAccess<'h>,
+    heap: &'a mut HeapAccess,
     env: &'a mut Env,
     addr: &'a ExecutableAddr,
     file: &'a LinkedFileUnit,
     executable: &'a LinkedExecutable,
 }
 
-impl<'a, 'h> DbIrEvaluator<'a, 'h> {
+impl<'a> DbIrEvaluator<'a> {
     pub fn new(
         interpreter: &'a Interpreter,
         program_context: ProgramExecutionContext<'a>,
-        heap: &'a mut HeapAccess<'h>,
+        heap: &'a mut HeapAccess,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,

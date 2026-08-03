@@ -65,7 +65,7 @@ pub(crate) struct CompletedActivationRelativeServiceCall {
     call_site: InstructionSourceSite,
 }
 
-impl EvalContext<'_, '_> {
+impl EvalContext<'_> {
     #[cfg(test)]
     pub(crate) fn install_activation_relative_wait_gate_for_test(
         request_generation: u64,
@@ -140,7 +140,7 @@ impl EvalContext<'_, '_> {
 impl PreparedActivationRelativeServiceCall {
     pub(crate) fn ready_result(
         self,
-        context: &mut EvalContext<'_, '_>,
+        context: &mut EvalContext<'_>,
     ) -> std::result::Result<Result<RuntimeValue>, Self> {
         let Self {
             operation,
@@ -215,7 +215,7 @@ async fn wait_activation_relative_gate_for_test(request_generation: u64) {
 }
 
 impl CompletedActivationRelativeServiceCall {
-    pub(crate) fn finalize(self, context: &mut EvalContext<'_, '_>) -> Result<RuntimeValue> {
+    pub(crate) fn finalize(self, context: &mut EvalContext<'_>) -> Result<RuntimeValue> {
         let result = self.completed.finalize(context.heap.heap_mut());
         finish_activation_relative_service_result(
             context,
@@ -228,7 +228,7 @@ impl CompletedActivationRelativeServiceCall {
 }
 
 fn finish_activation_relative_service_result(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     remote_service_id: &str,
     remote_operation_id: &str,
     call_site: &InstructionSourceSite,

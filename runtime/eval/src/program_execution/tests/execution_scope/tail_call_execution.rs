@@ -232,7 +232,7 @@ impl TailEntryCheckpointFixture {
     }
 
     async fn execute(&self, context: ProgramExecutionContext<'static>) -> Result<crate::env::Flow> {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(
             &self.file.executables[0],
             Some(self.file.module_path.clone()),
@@ -241,7 +241,7 @@ impl TailEntryCheckpointFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &mut env,
                 &self.entry,
                 &self.file,
@@ -292,7 +292,7 @@ impl TailPressureFixture {
     }
 
     async fn execute(self, context: ProgramExecutionContext<'static>, hops: u64) -> Result<Flow> {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let executable = &self.file.executables[0];
         let mut env =
             Env::for_program_executable(executable, Some(self.file.module_path.clone()), 0)?;
@@ -301,7 +301,7 @@ impl TailPressureFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &mut env,
                 &self.entry,
                 &self.file,
@@ -393,7 +393,7 @@ impl TailCallFixture {
         &self,
         context: ProgramExecutionContext<'static>,
     ) -> Result<crate::env::Flow> {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(
             &self.file.executables[0],
             Some(self.file.module_path.clone()),
@@ -402,7 +402,7 @@ impl TailCallFixture {
         self.interpreter
             .exec_program_executable(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &mut env,
                 &self.caller,
                 &self.file,
@@ -415,7 +415,7 @@ impl TailCallFixture {
         &self,
         context: ProgramExecutionContext<'static>,
     ) -> Result<crate::env::Flow> {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(
             &self.file.executables[0],
             Some(self.file.module_path.clone()),
@@ -424,7 +424,7 @@ impl TailCallFixture {
         self.interpreter
             .exec_program_block(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &mut env,
                 &self.caller,
                 &self.file,

@@ -36,12 +36,12 @@ async fn typed_execution_callback_native_uses_production_service_materialization
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let owner_error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -78,12 +78,13 @@ async fn typed_execution_callback_native_rejects_wrong_mapping_before_provider_o
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let mapping_error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -104,7 +105,8 @@ async fn typed_execution_callback_native_rejects_wrong_mapping_before_provider_o
     else {
         panic!("platform protocol error payload must remain a record")
     };
-    let HeapNode::Object(payload) = heap
+    let HeapNode::Object(payload) = access
+        .heap_mut()
         .get(*payload_handle)
         .expect("platform protocol error payload must remain in the caller heap")
     else {

@@ -53,8 +53,8 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
     let ordinary_generation = ordinary_target.request_activation().generation();
     start_restricted_service_diagnostic_probe_for_test(ordinary_generation);
     let ordinary_context = fixture.execution_context(&interpreter, ordinary_target);
-    let mut ordinary_heap = RequestHeap::default();
-    let mut ordinary_access = HeapAccess::Exclusive(&mut ordinary_heap);
+    let ordinary_heap = RequestHeap::default();
+    let mut ordinary_access = HeapAccess::private(ordinary_heap);
     let ordinary_result = interpreter
         .execute_runtime_assembly_addr(
             ordinary_context,
@@ -72,7 +72,7 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
         .expect("ordinary import must retain the fixed carrier")
         .clone();
     assert!(ordinary_exception.local_value().is_some());
-    assert!(!ordinary_heap.is_empty());
+    assert!(!ordinary_access.heap_mut().is_empty());
     let ordinary_diagnostics = take_restricted_service_diagnostics_for_test(ordinary_generation);
     assert_eq!(ordinary_diagnostics.len(), 1);
     assert_eq!(
@@ -115,8 +115,8 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
     let remote_service_id = async_target.contract().service_id.clone();
     let remote_operation_id = async_target.descriptor().operation_id.as_str().to_string();
     let context = fixture.execution_context(&interpreter, caller_target);
-    let mut async_heap = RequestHeap::default();
-    let mut async_access = HeapAccess::Exclusive(&mut async_heap);
+    let async_heap = RequestHeap::default();
+    let mut async_access = HeapAccess::private(async_heap);
     let mut env = Env::new();
     let mut eval_context = EvalContext::new(
         &interpreter,
@@ -161,7 +161,7 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
         ServiceErrorImportContext {
             execution_image: &image,
             type_view: projection.type_view(),
-            caller_heap: &mut async_heap,
+            caller_heap: async_access.heap_mut(),
             caller_package_build_id: fixture.caller_build(),
             caller_executable_addr: fixture.caller_addr(),
             call_site: &call.site,
@@ -186,12 +186,12 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
     start_restricted_service_diagnostic_probe_for_test(ingress_generation);
     let target = fixture.ingress_target(&ingress_target);
     let ingress_context = fixture.execution_context(&interpreter, ingress_target);
-    let mut ingress_heap = RequestHeap::default();
+    let mut ingress_access = HeapAccess::private(RequestHeap::default());
     let request = RequestPayloadContext::new("convergence-ingress", &[], None);
     let ingress_error = super::dispatch_ingress_via_in_process_boundary(
         &interpreter,
         ingress_context,
-        &mut ingress_heap,
+        &mut ingress_access,
         target,
         &request,
     )
@@ -204,7 +204,7 @@ async fn service_error_channel_contract_operation_restricted_service_diagnostic_
         ingress_fixed.encoded_bytes(),
         ordinary_fixed.encoded_bytes()
     );
-    assert!(ingress_heap.is_empty());
+    assert!(ingress_access.heap_mut().is_empty());
     let ingress_diagnostics = take_restricted_service_diagnostics_for_test(ingress_generation);
     assert_eq!(ingress_diagnostics.len(), 1);
     assert_eq!(

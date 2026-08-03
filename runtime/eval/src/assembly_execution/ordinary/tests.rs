@@ -56,10 +56,11 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
         .alloc_array(vec![RuntimeValue::String("caller".to_string())])
         .expect("caller mutable array should allocate");
 
+    let mut access = HeapAccess::private(heap);
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(caller_handle)],
         )
@@ -73,7 +74,7 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
         returned_handle, caller_handle,
         "package-direct must preserve handle identity"
     );
-    assert_array_item(&heap, caller_handle, "package-callee");
+    assert_array_item(&*access, caller_handle, "package-callee");
 }
 
 #[tokio::test]
@@ -81,12 +82,12 @@ async fn package_constant_load_resolves_exact_dependency_implementation_address(
     let fixture = package_constant_fixture();
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
     let context = execution_context(&interpreter, fixture.eval_target);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             Vec::new(),
         )
@@ -112,7 +113,7 @@ async fn inline_effect_setup_dispatch_reports_request_subset_mismatch() {
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -143,7 +144,7 @@ async fn inline_effect_request_finalization_reports_and_clears_unused_setup() {
     interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -178,10 +179,11 @@ async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero
         .alloc_array(vec![RuntimeValue::String("request".to_string())])
         .expect("request array should allocate");
 
+    let mut access = HeapAccess::private(heap);
     let caught = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -191,7 +193,9 @@ async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero
     let RuntimeValue::Heap(caught_handle) = caught else {
         panic!("catch result should be a request-heap object");
     };
-    let HeapNode::Object(caught_object) = heap.get(caught_handle).expect("caught result") else {
+    let HeapNode::Object(caught_object) =
+        access.heap_mut().get(caught_handle).expect("caught result")
+    else {
         panic!("catch result should be an object");
     };
     assert_eq!(
@@ -202,11 +206,13 @@ async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero
         .fields()
         .get("exception")
         .expect("caught result should retain the request-local exception")
+        .clone()
     else {
         panic!("request-local exception should be a heap node");
     };
-    let HeapNode::Exception(exception) = heap
-        .get(*exception_handle)
+    let HeapNode::Exception(exception) = access
+        .heap_mut()
+        .get(exception_handle)
         .expect("request-local exception")
     else {
         panic!("caught value must retain RequestException");
@@ -248,10 +254,15 @@ async fn restricted_service_diagnostic_package_callable_typed_throw_submits_zero
         .local_value()
         .expect("request-local exception cause")
         .value()
+        .clone()
     else {
         panic!("typed payload should be an object");
     };
-    let HeapNode::Object(payload) = heap.get(*payload_handle).expect("typed local payload") else {
+    let HeapNode::Object(payload) = access
+        .heap_mut()
+        .get(payload_handle)
+        .expect("typed local payload")
+    else {
         panic!("typed payload should be an object");
     };
     assert_eq!(
@@ -283,7 +294,7 @@ async fn inline_effect_stream_is_consumed_in_buffered_event_order() {
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -319,7 +330,7 @@ async fn inline_package_effect_stream_uses_the_current_context_runtime() {
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -345,10 +356,11 @@ async fn inline_effect_response_is_materialized_in_spawned_stream_producer_heap(
         .alloc_array(vec![RuntimeValue::String("request".to_string())])
         .expect("request array should allocate");
 
+    let mut access = HeapAccess::private(heap);
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
@@ -358,7 +370,7 @@ async fn inline_effect_response_is_materialized_in_spawned_stream_producer_heap(
     let RuntimeValue::Heap(response) = result else {
         panic!("stream consumer should return the response array");
     };
-    assert_array_item(&heap, response, "response");
+    assert_array_item(&*access, response, "response");
     interpreter
         .finalize_test_case()
         .expect("producer-dispatched response should be consumed");
@@ -407,17 +419,13 @@ async fn execute_materialization_expression(expression: ExprIr) -> (RuntimeValue
     let fixture = materialization_fixture(expression);
     let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
     let context = execution_context(&interpreter, fixture.eval_target);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
+    let mut access = HeapAccess::private(heap);
     let value = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut HeapAccess::Exclusive(&mut heap),
-            &fixture.caller_addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut access, &fixture.caller_addr, Vec::new())
         .await
         .expect("materialization expression should execute");
-    (value, heap)
+    (value, access.into_owned_heap())
 }
 
 fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {

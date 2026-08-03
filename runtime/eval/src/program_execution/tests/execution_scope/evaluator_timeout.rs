@@ -153,20 +153,22 @@ impl LinkedTimeoutFixture {
     }
 
     async fn execute(&self, context: ProgramExecutionContext<'static>) -> TimeoutRun {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(&self.file.executables[0], None, 0)
             .expect("timeout fixture slot layout");
+        let mut access = HeapAccess::private(heap);
         let result = self
             .interpreter
             .exec_program_executable(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &mut env,
                 &self.addr,
                 &self.file,
                 &self.file.executables[0],
             )
             .await;
+        let heap = access.into_owned_heap();
         TimeoutRun { result, heap }
     }
 

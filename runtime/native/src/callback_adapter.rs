@@ -348,6 +348,12 @@ impl InProcessCallbackAdapter {
             .map_err(|_| CallbackAdapterError::OwnerStateUnavailable)
     }
 
+    /// Exposes the callback owner's shared arena so the evaluator can reacquire
+    /// its guard through the unified `HeapAccess` lease protocol.
+    pub fn owner_heap_arena(&self) -> Arc<tokio::sync::Mutex<RequestHeap>> {
+        Arc::clone(&self.owner_heap)
+    }
+
     pub fn operation(
         &self,
         slot: u32,

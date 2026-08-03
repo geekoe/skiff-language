@@ -22,7 +22,7 @@ mod prepared_operation;
 pub(crate) use prepared_operation::PreparedActorMethodInvocation;
 
 pub(crate) async fn dispatch_actor_method(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     plan: &LinkedActorMethodDispatchPlan,
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<RuntimeValueCarrier> {
@@ -31,7 +31,7 @@ pub(crate) async fn dispatch_actor_method(
 }
 
 pub(crate) fn prepare_actor_method(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     plan: &LinkedActorMethodDispatchPlan,
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<PreparedActorMethodInvocation> {

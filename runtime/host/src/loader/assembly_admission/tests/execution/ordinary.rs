@@ -19,11 +19,11 @@ async fn typed_execution_ordinary() {
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
 
-    let mut service_heap = context.request_heap();
+    let service_heap = context.request_heap();
     let service_result = interpreter
         .execute_runtime_assembly_addr(
             context.clone(),
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut service_heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(service_heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -35,11 +35,11 @@ async fn typed_execution_ordinary() {
         "service execution must propagate the detached provider result"
     );
 
-    let mut package_heap = context.request_heap();
+    let package_heap = context.request_heap();
     let package_result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut package_heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(package_heap),
             &fixture.consumer_executable_addr(1),
             Vec::new(),
         )

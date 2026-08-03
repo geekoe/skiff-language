@@ -164,8 +164,15 @@ impl Interpreter {
             Ok(params) => params,
             Err(()) => return RuntimeWebSocketJsonRpcExecutionTerminal::invalid_params(),
         };
-        let mut heap = context.request_heap();
-        let args = match handler_args(request, &params, target, handler, executable, &mut heap) {
+        let mut heap = HeapAccess::private(context.request_heap());
+        let args = match handler_args(
+            request,
+            &params,
+            target,
+            handler,
+            executable,
+            heap.heap_mut(),
+        ) {
             Ok(args) => args,
             Err(HandlerArgumentError::InvalidParams) => {
                 return RuntimeWebSocketJsonRpcExecutionTerminal::invalid_params()
@@ -174,9 +181,8 @@ impl Interpreter {
                 return RuntimeWebSocketJsonRpcExecutionTerminal::internal_error()
             }
         };
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = match self
-            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
             .await
         {
             Ok(value) => value,
@@ -186,7 +192,7 @@ impl Interpreter {
             Ok(plan) => plan,
             Err(()) => return RuntimeWebSocketJsonRpcExecutionTerminal::internal_error(),
         };
-        match encode_result(&value, &return_plan, &mut heap) {
+        match encode_result(&value, &return_plan, heap.heap_mut()) {
             Ok(payload) => RuntimeWebSocketJsonRpcExecutionTerminal::success(payload),
             Err(()) => RuntimeWebSocketJsonRpcExecutionTerminal::internal_error(),
         }

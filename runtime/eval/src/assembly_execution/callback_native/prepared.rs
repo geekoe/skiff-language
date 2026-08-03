@@ -31,12 +31,12 @@ type CallbackOwnerFuture<'heap> =
 /// Invocation-scoped owner authority. The guard is owned rather than borrowed
 /// from the adapter, so a callback wait never keeps the caller context alive.
 struct CallbackOwnerWait {
-    owner_heap: tokio::sync::OwnedMutexGuard<RequestHeap>,
+    owner_access: HeapAccess,
 }
 
 impl CallbackOwnerWait {
-    fn new(owner_heap: tokio::sync::OwnedMutexGuard<RequestHeap>) -> Self {
-        Self { owner_heap }
+    fn new(owner_access: HeapAccess) -> Self {
+        Self { owner_access }
     }
 
     #[cfg(test)]
@@ -44,16 +44,16 @@ impl CallbackOwnerWait {
     where
         F: for<'heap> FnOnce(&'heap mut RequestHeap) -> CallbackOwnerFuture<'heap> + Send,
     {
-        let result = invoke(&mut self.owner_heap).await;
+        let result = invoke(self.owner_access.heap_mut()).await;
         CallbackOwnerWaitOutcome {
-            owner_heap: self.owner_heap,
+            owner_access: self.owner_access,
             result,
         }
     }
 }
 
 struct CallbackOwnerWaitOutcome {
-    owner_heap: tokio::sync::OwnedMutexGuard<RequestHeap>,
+    owner_access: HeapAccess,
     result: Result<RuntimeValue>,
 }
 
@@ -90,14 +90,13 @@ impl PreparedCallbackInvocation {
             return_type,
             package_schema_records,
         } = self;
-        let CallbackOwnerWait { mut owner_heap } = owner;
+        let CallbackOwnerWait { mut owner_access } = owner;
         let context = owner_context.borrow();
         let result = if context.actor_execution_frame().is_some() {
             Err(RuntimeError::InvalidArtifact(
                 "owned callback execution captured the caller Actor frame".to_string(),
             ))
         } else {
-            let mut owner_access = HeapAccess::Exclusive(&mut owner_heap);
             interpreter
                 .call_program_executable_with_self(
                     context,
@@ -111,7 +110,10 @@ impl PreparedCallbackInvocation {
                 )
                 .await
         };
-        let owner = CallbackOwnerWaitOutcome { owner_heap, result };
+        let owner = CallbackOwnerWaitOutcome {
+            owner_access,
+            result,
+        };
         CompletedCallbackInvocation {
             owner,
             return_type,
@@ -130,32 +132,39 @@ pub(crate) struct CompletedCallbackInvocation {
 
 impl CompletedCallbackInvocation {
     pub(crate) fn finalize(self, caller_heap: &mut RequestHeap) -> Result<RuntimeValue> {
-        let CallbackOwnerWaitOutcome { owner_heap, result } = self.owner;
+        let CallbackOwnerWaitOutcome {
+            mut owner_access,
+            result,
+        } = self.owner;
         let owner_result = match result {
             Ok(value) => value,
             Err(error) => {
-                let error =
-                    rematerialize_runtime_error_between_heaps(error, &owner_heap, caller_heap)
-                        .unwrap_or_else(|error| error);
-                drop(owner_heap);
+                let error = rematerialize_runtime_error_between_heaps(
+                    error,
+                    owner_access.heap_mut(),
+                    caller_heap,
+                )
+                .unwrap_or_else(|error| error);
+                drop(owner_access);
                 return Err(error);
             }
         };
+        let owner_heap = owner_access.heap_mut();
         let result = materialize_callback_value(
             &self.return_type,
             &self.package_schema_records,
             &owner_result,
-            &owner_heap,
+            &*owner_heap,
             caller_heap,
             BoundaryValueOwner::Provider,
         );
-        drop(owner_heap);
+        drop(owner_access);
         result
     }
 }
 
 pub(crate) fn prepare_interface_call(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     carrier: &CallbackCapabilityCarrier,
     method_abi_id: &str,
@@ -210,6 +219,7 @@ pub(crate) fn prepare_interface_call(
             "owned callback context captured the caller Actor frame".to_string(),
         ));
     }
+    let owner_arena = adapter.owner_heap_arena();
     let mut owner_heap = adapter
         .try_lock_owner_heap_owned()
         .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
@@ -225,7 +235,7 @@ pub(crate) fn prepare_interface_call(
     }
 
     Ok(PreparedCallbackInvocation {
-        owner: CallbackOwnerWait::new(owner_heap),
+        owner: CallbackOwnerWait::new(HeapAccess::with_guard(owner_arena, owner_heap)),
         owner_context,
         owner_call_env: callback_owner_call_env(context.env),
         caller_addr: context.addr.clone(),

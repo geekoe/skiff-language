@@ -55,10 +55,10 @@ mod tests {
             file: FileAddr::FileIrIdentity(file.file_ir_identity.clone()),
             executable: 0,
         };
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::new();
         let stream_value = stream_value("f445h-e4r-combined-pending-stream");
-        let mut access = skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap);
+        let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
         let mut execution = Box::pin(interpreter.exec_program_stream_for_in(
             context,
             &mut access,

@@ -285,16 +285,12 @@ impl ServiceErrorConsumerFixture {
         let target = self.caller_eval_target();
         let generation = target.request_activation().generation();
         let context = execution_context_with_trace(interpreter, target, ERROR_TRACE_ID);
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
+        let mut access = HeapAccess::private(heap);
         let result = interpreter
-            .execute_runtime_assembly_addr(
-                context,
-                &mut HeapAccess::Exclusive(&mut heap),
-                &self.caller_addr,
-                Vec::new(),
-            )
+            .execute_runtime_assembly_addr(context, &mut access, &self.caller_addr, Vec::new())
             .await;
-        (result, heap, generation)
+        (result, access.into_owned_heap(), generation)
     }
 
     pub(crate) fn ingress_target(
@@ -353,14 +349,10 @@ async fn restricted_service_diagnostic_ordinary_exports_before_provider_heap_dro
     let generation = target.request_activation().generation();
     start_restricted_service_diagnostic_probe_for_test(generation);
     let context = fixture.execution_context(&interpreter, target);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
+    let mut access = HeapAccess::private(heap);
     let result = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut HeapAccess::Exclusive(&mut heap),
-            fixture.caller_addr(),
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut access, fixture.caller_addr(), Vec::new())
         .await;
     let error = result.expect_err("provider throw must cross the ordinary boundary");
     let exception = user_exception(&error);
@@ -385,7 +377,8 @@ async fn restricted_service_diagnostic_ordinary_exports_before_provider_heap_dro
     let RuntimeValue::Heap(handle) = local.value() else {
         panic!("public record import must allocate in the caller heap");
     };
-    let HeapNode::Object(object) = heap
+    let HeapNode::Object(object) = access
+        .heap_mut()
         .get(*handle)
         .expect("provider heap is gone but caller handle must remain valid")
     else {
@@ -681,11 +674,11 @@ fn restricted_service_diagnostic_ordinary_three_hop_preserves_bytes_and_local_st
                         start_restricted_service_diagnostic_probe_for_test(generation);
                         let context =
                             execution_context_with_trace(&interpreter, target, ERROR_TRACE_ID);
-                        let mut heap = RequestHeap::default();
+                        let heap = RequestHeap::default();
                         let result = interpreter
                             .execute_runtime_assembly_addr(
                                 context,
-                                &mut HeapAccess::Exclusive(&mut heap),
+                                &mut HeapAccess::private(heap),
                                 fixture.caller_addr(),
                                 Vec::new(),
                             )

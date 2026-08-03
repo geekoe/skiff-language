@@ -75,7 +75,7 @@ pub(crate) fn provider_stream_tasks_active_for_test() -> usize {
 }
 
 pub(crate) async fn execute_service_call(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -163,7 +163,7 @@ where
 }
 
 fn start_provider_stream(
-    context: &mut EvalContext<'_, '_>,
+    context: &mut EvalContext<'_>,
     call: &CallIr,
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
@@ -384,13 +384,13 @@ fn spawn_provider_stream(producer: ProviderStreamTask) {
 async fn run_provider_stream(mut producer: ProviderStreamTask) {
     let _active = ProviderStreamTaskGuard::for_task(&producer);
     let args = std::mem::take(&mut producer.args);
-    let terminal = {
+    let (terminal, provider_heap) = {
         let provider_context = producer.provider_context.borrow_for_scheduled_task();
         #[cfg(test)]
         if let Some(probe) = &producer.depth_probe {
             probe.record_callable_entry(&provider_context);
         }
-        let mut provider_access = HeapAccess::Exclusive(&mut producer.provider_heap);
+        let mut provider_access = HeapAccess::private(std::mem::take(&mut producer.provider_heap));
         let provider_future = call_provider_callable(
             &producer.interpreter,
             provider_context,
@@ -402,14 +402,16 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
             &producer.type_args,
             args,
         );
-        await_provider_stream_terminal(
+        let terminal = await_provider_stream_terminal(
             &producer.execution,
             &producer.stream_cancel,
             provider_future,
         )
-        .await
+        .await;
+        (terminal, provider_access.into_owned_heap())
     };
 
+    producer.provider_heap = provider_heap;
     finish_provider_stream(producer, terminal).await;
 }
 
@@ -417,7 +419,7 @@ async fn run_provider_stream(mut producer: ProviderStreamTask) {
 fn call_provider_callable<'call, 'ctx>(
     interpreter: &'call crate::Interpreter,
     context: ProgramExecutionContext<'ctx>,
-    heap: &'call mut HeapAccess<'call>,
+    heap: &'call mut HeapAccess,
     env: &'call Env,
     caller_addr: &'call ExecutableAddr,
     provider_addr: &'call ExecutableAddr,

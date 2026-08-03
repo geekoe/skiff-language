@@ -123,11 +123,11 @@ impl TypedExecutionFixture {
         let interpreter = runtime.interpreter();
         let context = runtime.context(&interpreter, &self.eval_target, &self._active);
 
-        let mut service_heap = context.request_heap();
+        let service_heap = context.request_heap();
         let service_result = interpreter
             .execute_runtime_assembly_addr(
                 context.clone(),
-                &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut service_heap),
+                &mut skiff_runtime_eval::heap_access::HeapAccess::private(service_heap),
                 &self.consumer_executable_addr(0),
                 Vec::new(),
             )
@@ -139,11 +139,11 @@ impl TypedExecutionFixture {
             "service executable must propagate the detached provider result"
         );
 
-        let mut package_heap = context.request_heap();
+        let package_heap = context.request_heap();
         let package_result = interpreter
             .execute_runtime_assembly_addr(
                 context.clone(),
-                &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut package_heap),
+                &mut skiff_runtime_eval::heap_access::HeapAccess::private(package_heap),
                 &self.consumer_executable_addr(1),
                 Vec::new(),
             )
@@ -183,7 +183,7 @@ impl TypedExecutionFixture {
         let callback_error = interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut callback_heap),
+                &mut skiff_runtime_eval::heap_access::HeapAccess::private(callback_heap),
                 &self.consumer_executable_addr(2),
                 vec![RuntimeValue::Heap(callback_handle)],
             )

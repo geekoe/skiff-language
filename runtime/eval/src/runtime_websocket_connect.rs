@@ -80,19 +80,18 @@ impl Interpreter {
     ) -> Result<RuntimeWebSocketConnectResult> {
         validate_execution_pin(&context, target)?;
         validate_request(request, target)?;
-        let mut heap = context.request_heap();
+        let mut heap = HeapAccess::private(context.request_heap());
         let handler = target.handler();
-        let args = handler_args(request, target, handler, &mut heap)?;
-        let mut access = HeapAccess::Exclusive(&mut heap);
+        let args = handler_args(request, target, handler, heap.heap_mut())?;
         let value = self
-            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
             .await?;
         let return_plan = callable_return_plan(target, handler)?;
         let wire = runtime_to_wire_required_plan(
             &value,
             Some(&return_plan),
             "websocket connect result",
-            &mut heap,
+            heap.heap_mut(),
         )?;
         decode_connect_result(target, wire)
     }
