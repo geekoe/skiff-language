@@ -255,13 +255,23 @@ pub fn new_request_id() -> String {
     )
 }
 
-fn new_trace_id() -> String {
+pub(crate) fn new_trace_id() -> String {
     format!("trace-{}", now_nanos())
 }
 
-fn new_span_id() -> String {
+pub(crate) fn new_span_id() -> String {
     format!(
         "span-{}-{}",
+        now_nanos(),
+        REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Fresh canonical test-case correlation capability for one test dispatch
+/// (TS `randomUUID()` parity; bounded canonical token).
+pub(crate) fn new_test_case_capability() -> String {
+    format!(
+        "test-case-{}-{}",
         now_nanos(),
         REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
     )
@@ -274,7 +284,7 @@ fn now_nanos() -> u128 {
         .as_nanos()
 }
 
-fn deadline_parts(timeout: Duration) -> (u64, String) {
+pub(crate) fn deadline_parts(timeout: Duration) -> (u64, String) {
     let timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
     let expires_at = SystemTime::now() + timeout;
     (timeout_ms, format_iso8601(expires_at))

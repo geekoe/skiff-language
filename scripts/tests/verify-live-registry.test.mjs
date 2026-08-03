@@ -44,6 +44,14 @@ test('live registry is the single declaration for current selectors, policies, a
     'runtime-live',
     'db-encrypted-storage-live',
     'router-live:bootstrap',
+    'router-live:session',
+    'router-live:dispatch',
+    'router-live:activation-full-chain',
+    'router-live:ws',
+    'router-live:actor',
+    'router-live:http',
+    'router-live:chat',
+    'router-live:clean-host',
     'loop-risk-health-live',
     'loop-risk-stress-live',
   ]);
@@ -95,6 +103,99 @@ test('live registry is the single declaration for current selectors, policies, a
     forbidUnchecked: true,
   });
 
+  const dispatch = invocation('router-live:dispatch');
+  assert.equal(dispatch.entry.key, 'router-rust-dispatch-live');
+  assert.equal(dispatch.entry.source.type, 'script');
+  assert.equal(
+    dispatch.entry.source.path,
+    'scripts/check-router-dispatch-live.mjs',
+  );
+  assert.equal(dispatch.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(dispatch.value.id, 'live:router-rust-dispatch');
+  assert.equal(dispatch.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(dispatch.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(dispatch.value.requiredInputs, []);
+  assert.deepEqual(dispatch.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(dispatch.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const ws = invocation('router-live:ws');
+  assert.equal(ws.entry.key, 'router-rust-ws-live');
+  assert.equal(ws.entry.source.type, 'script');
+  assert.equal(ws.entry.source.path, 'scripts/check-router-ws-live.mjs');
+  assert.equal(ws.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(ws.value.id, 'live:router-rust-ws');
+  assert.equal(ws.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(ws.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(ws.value.requiredInputs, []);
+  assert.deepEqual(ws.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(ws.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const actor = invocation('router-live:actor');
+  assert.equal(actor.entry.key, 'router-rust-actor-live');
+  assert.equal(actor.entry.source.type, 'script');
+  assert.equal(
+    actor.entry.source.path,
+    'scripts/check-router-actor-live.mjs',
+  );
+  assert.equal(actor.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(actor.value.id, 'live:router-rust-actor');
+  assert.equal(actor.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(actor.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.match(actor.value.description, /Rust-only two-replica actor full chain/);
+  assert.deepEqual(actor.value.requiredInputs, []);
+  assert.deepEqual(actor.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(actor.value.requiredModules, []);
+  assert.deepEqual(actor.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const cleanHost = invocation('router-live:clean-host');
+  assert.equal(cleanHost.entry.key, 'router-rust-clean-host-live');
+  assert.equal(cleanHost.entry.source.type, 'script');
+  assert.equal(
+    cleanHost.entry.source.path,
+    'scripts/check-router-clean-host-live.mjs',
+  );
+  assert.equal(cleanHost.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(cleanHost.value.id, 'live:router-rust-clean-host');
+  assert.equal(cleanHost.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(cleanHost.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.match(cleanHost.value.description, /Rust-only clean-host release rehearsal/);
+  assert.deepEqual(cleanHost.value.requiredInputs, []);
+  assert.deepEqual(cleanHost.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(cleanHost.value.requiredModules, []);
+  assert.deepEqual(cleanHost.value.canonicalPolicy, {
+    forbidSkips: true,
+    forbidUnchecked: true,
+  });
+
   const healthSelfTest = invocation('checks-default');
   assert.equal(healthSelfTest.entry.source.path, 'scripts/check-loop-risk-health.mjs');
   assert.equal(healthSelfTest.value.id, 'checks:loop-risk-health:self-test');
@@ -113,7 +214,7 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.equal(stress.value.configProfile, 'stress');
   assert.deepEqual(stress.value.requiredExecutables, ['node', 'ps']);
   assert.deepEqual(stress.value.requiredModules, [
-    { specifier: 'ws', from: 'router/package.json' },
+    { specifier: 'ws', from: 'scripts/package.json' },
   ]);
 });
 
@@ -303,6 +404,7 @@ test('global catalog counts every discovered checker path exactly once across re
   for (const path of [
     'scripts/check-loop-risk-health.mjs',
     'scripts/check-loop-risk-stress-live.mjs',
+    'scripts/check-router-clean-host-live.mjs',
   ]) {
     assert.equal(CHECKER_REGISTRY.some((entry) => entry.path === path), false);
     assert.equal(LIVE_REGISTRY.some((entry) => entry.source.path === path), true);
@@ -684,9 +786,8 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
 
     const isolatedRoot = join(fixture.root, 'module-missing-root');
     await mkdir(join(isolatedRoot, 'scripts'), { recursive: true });
-    await mkdir(join(isolatedRoot, 'router'), { recursive: true });
     await writeFile(join(isolatedRoot, 'scripts', 'check-loop-risk-stress-live.mjs'), '');
-    await writeFile(join(isolatedRoot, 'router', 'package.json'), '{}\n');
+    await writeFile(join(isolatedRoot, 'scripts', 'package.json'), '{}\n');
     const bin = await fakeExecutablePath(fixture.root, ['node', 'ps'], 'module-missing');
     const moduleMissing = await buildVerifyPlan({
       root: isolatedRoot,
@@ -695,7 +796,7 @@ test('loop-risk registry derives exact executable and module prerequisites', asy
       loopRiskConfig: fixture.configPath,
       env: { PATH: bin },
     });
-    assert.match(moduleMissing.tasks[0].preconditionError, /ws from router\/package.json/);
+    assert.match(moduleMissing.tasks[0].preconditionError, /ws from scripts\/package.json/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

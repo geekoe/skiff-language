@@ -21,7 +21,7 @@ const cleanup = await runInIsolatedTestRuntime({
       signal.throwIfAborted();
       const result = await captureCheckedCommand(
         bootstrap,
-        bootstrapArgs(artifactRoot, environment),
+        seedCommittedArgs(artifactRoot, environment),
         { cwd: skiffRoot, env },
       );
       signal.throwIfAborted();
@@ -119,6 +119,19 @@ function bootstrapArgs(artifactRoot, environment) {
     skiffRoot,
     '--environment',
     environment,
+  ];
+}
+
+function seedCommittedArgs(artifactRoot, environment) {
+  return [
+    '--seed-committed',
+    join(fixtureRoot, 'active'),
+    '--artifact-root',
+    artifactRoot,
+    '--environment',
+    environment,
+    '--platform-source-root',
+    skiffRoot,
   ];
 }
 

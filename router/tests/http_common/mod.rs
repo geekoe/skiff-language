@@ -153,9 +153,13 @@ fn surface_entry(
 }
 
 pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
+    let deployment = fixture_deployment();
     let entries = BTreeMap::from([
         (
-            GatewayEntryKey::parse("items").expect("key"),
+            (
+                deployment.clone(),
+                GatewayEntryKey::parse("items").expect("key"),
+            ),
             surface_entry(
                 GatewayDispatchMode::Unary,
                 GatewayAdapterKind::TypedJson,
@@ -163,7 +167,10 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             ),
         ),
         (
-            GatewayEntryKey::parse("events").expect("key"),
+            (
+                deployment.clone(),
+                GatewayEntryKey::parse("events").expect("key"),
+            ),
             surface_entry(
                 GatewayDispatchMode::ServerStream,
                 GatewayAdapterKind::RawHttp,
@@ -171,7 +178,10 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             ),
         ),
         (
-            GatewayEntryKey::parse("items-options").expect("key"),
+            (
+                deployment.clone(),
+                GatewayEntryKey::parse("items-options").expect("key"),
+            ),
             surface_entry(
                 GatewayDispatchMode::Unary,
                 GatewayAdapterKind::TypedJson,

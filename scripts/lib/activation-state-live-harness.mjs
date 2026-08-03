@@ -58,23 +58,11 @@ export class ActivationStateMongoHarness {
 
   async start() {
     const logPath = join(this.tempRoot, 'mongod.log');
-    const child = spawn(
-      'mongod',
-      [
-        '--port',
-        String(this.port),
-        '--dbpath',
-        this.dbPath,
-        '--bind_ip',
-        '127.0.0.1',
-        '--replSet',
-        REPLICA_SET_NAME,
-        '--quiet',
-        '--logpath',
-        logPath,
-      ],
-      { stdio: ['ignore', 'ignore', 'ignore'] },
-    );
+    const child = spawnMongodProcess({
+      port: this.port,
+      dbPath: this.dbPath,
+      logPath,
+    });
     this.mongod = child;
     this.mongodExited = new Promise((resolve) => {
       child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -212,6 +200,27 @@ export class ActivationStateMongoHarness {
       ]);
     }
   }
+}
+
+function spawnMongodProcess({ port, dbPath, logPath }) {
+  // child-process-owner: activation-state-mongo-spawn
+  return spawn(
+    'mongod',
+    [
+      '--port',
+      String(port),
+      '--dbpath',
+      dbPath,
+      '--bind_ip',
+      '127.0.0.1',
+      '--replSet',
+      REPLICA_SET_NAME,
+      '--quiet',
+      '--logpath',
+      logPath,
+    ],
+    { stdio: ['ignore', 'ignore', 'ignore'] },
+  );
 }
 
 async function leaseProbePort() {

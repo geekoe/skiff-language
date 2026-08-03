@@ -4,14 +4,6 @@ import {
   pathIsWithin,
   runtimeExecutionBoundaryViolation,
 } from './runtime-execution-boundary-registry.mjs';
-import {
-  findForwardKindTokenIndexes,
-  findRouterRequestStartCases,
-  inspectRouterServiceRejectionCase,
-  isRouterRelayOwnerToken,
-  isRouterRelayWorkToken,
-} from './runtime-execution-boundary-router.mjs';
-
 const CALLBACK_CARRIER_REQUIRED_FIELDS = Object.freeze([
   'owner_runtime_replica_id',
   'owner_activation_id',
@@ -34,7 +26,6 @@ export function checkRuntimeExecutionBoundaryRules(
   checkOwnedContextSpawns(registry, sources, violations);
   checkHostRequestChain(ownerMatches, violations);
   checkRecoverableCallbackRejection(registry, sources, violations);
-  checkRouterServiceRejection(registry, sources, ownerMatches, violations);
 }
 
 function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
@@ -325,80 +316,6 @@ function checkRecoverableCallbackRejection(registry, sources, violations) {
       matched: 'InterfaceCarrier::CallbackCapability',
       detail: 'production recoverable encoder must reject callback capability before hooks/fallback',
     }));
-  }
-}
-
-function checkRouterServiceRejection(registry, sources, ownerMatches, violations) {
-  const subject = subjectById(registry, 'router-runtime-service-rejection');
-  if (!subject) {
-    return;
-  }
-  for (const source of sourcesWithin(subject.discoveryRoots, 'typescript', sources)) {
-    for (const token of source.tokens.filter(isRouterRelayOwnerToken)) {
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-service-relay',
-        subject: subject.id,
-        relPath: source.relPath,
-        line: lineNumberAt(source.code, token.start),
-        matched: token.value,
-        detail: 'router retains a runtime-originated service selection/forward lifecycle owner',
-      }));
-    }
-    for (const tokenIndex of findForwardKindTokenIndexes(source.tokens)) {
-      const token = source.tokens[tokenIndex];
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-service-relay',
-        subject: subject.id,
-        relPath: source.relPath,
-        line: lineNumberAt(source.code, token.start),
-        matched: "kind: 'forward'",
-        detail: 'router retains a runtime-originated service selection/forward lifecycle owner',
-      }));
-    }
-  }
-
-  for (const match of ownerMatches.get('router-runtime-service-rejection') ?? []) {
-    const requestStartCases = findRouterRequestStartCases(match.item.tokens);
-    if (requestStartCases.length !== 1) {
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-service-rejection-incomplete',
-        subject: subject.id,
-        ownerRole: match.owner.role,
-        relPath: match.relPath,
-        line: match.line,
-        matched: 'request.start',
-        detail: requestStartCases.length === 0
-          ? 'runtime endpoint rejection owner has no structural switch(header.type) request.start case'
-          : 'runtime endpoint rejection owner has multiple structural request.start cases',
-      }));
-      continue;
-    }
-    const requestStartCase = requestStartCases[0];
-    const structure = inspectRouterServiceRejectionCase(requestStartCase.tokens);
-    if (!structure.complete) {
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-service-rejection-incomplete',
-        subject: subject.id,
-        ownerRole: match.owner.role,
-        relPath: match.relPath,
-        line: match.line + lineNumberAt(match.item.code, requestStartCase.start) - 1,
-        matched: 'request.start',
-        detail: `service request.start rejection is structurally incomplete: ${structure.missing.join(', ')}`,
-      }));
-    }
-    for (const token of requestStartCase.tokens.filter(isRouterRelayWorkToken)) {
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-rejection-enters-relay-owner',
-        subject: subject.id,
-        ownerRole: match.owner.role,
-        relPath: match.relPath,
-        line: match.line
-          + lineNumberAt(match.item.code, token.start)
-          - 1,
-        matched: token.value,
-        detail: 'service rejection must occur before registry, lazy selection, pending, or forward work',
-      }));
-    }
   }
 }
 

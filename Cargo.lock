@@ -2398,6 +2398,7 @@ name = "skiff-router"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "futures-util",
  "http-body-util",
@@ -2407,6 +2408,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",

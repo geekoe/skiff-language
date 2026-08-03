@@ -17,6 +17,7 @@
     "websocket-fixture:smoke": "node ../runtime/scripts/websocket-fixture-smoke-playwright.mjs"
   },
   "dependencies": {
+    "ws": "^8.18.3",
     "yaml": "^2.8.3"
   },
   "devDependencies": {

@@ -137,6 +137,214 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-session-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-session-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:session',
+        description:
+          'real Rust Router binary + real Rust Runtime process bootstrap/register/health/reconnect/shutdown roundtrip with session barrier, pre-auth limit/timeout, ingress saturation and zero residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-session',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-dispatch-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-dispatch-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:dispatch',
+        description:
+          'real production Router composition + real Rust Runtime process: fake ingress through the production HttpDispatchPort -> epoch capture -> exact candidate -> permit -> revalidate -> enqueue -> terminal; missing/invalid selector, wrong deployment/entry, duplicate id, timeout, disconnect and selection/replacement races fail closed with exact pending/permit zeroing (managed CI, isolated instance + explicit Rust process)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-dispatch',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-activation-full-chain-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-activation-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:activation-full-chain',
+        description:
+          'real Router + temporary Mongo replica set + real compiler artifact + real Runtime: activate HTTP -> durable prepare -> real Runtime prepared -> durable commit -> epoch swap -> Runtime commit -> same-session re-register -> new-generation HTTP request; old captured-epoch request under its original lease; pre-decision disconnect abort / post-decision durable reconcile; cold recovery committed-first + rebind + candidate-load failure durable abort; audit/CAS/retry non-duplication (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-activation-full-chain',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-ws-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-ws-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:ws',
+        description:
+          'real client WebSocket -> real Rust Router binary -> real Rust Runtime process: generation acquire/release, business replacement, JSON-RPC id lexeme corpus, slow-client/frame budget, disconnect races and zero residue (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-ws',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-actor-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-actor-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:actor',
+        description:
+          'Rust-only two-replica actor full chain: canonical actor-routing projection, two real Runtime replicas through test-only relays, real HTTP get-or-create/invoke/owner-control/lease/function-spawn/actor-method-spawn, plus disconnect/replacement/claim-race/spawn-mismatch fail-closed and zero-residue regression layer (managed CI, isolated instance + explicit Rust processes)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-actor',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-http-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-http-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:http',
+        description:
+          'real HTTP->Router->Runtime unary/stream with trusted selectors, service-scoped ingress, typed/raw opaque payloads, stream sequencing, cumulative response ceiling, backpressure, disconnect/cancel/deadline, CORS preflight/service-managed and platform errors; every race one external terminal with at most one cancel and zero residue, plus the first TS->Rust->TS unary rollback roundtrip through the canonical RouterProcessSpec (managed CI, isolated instance + explicit process commands)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-http',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh', 'python3'],
+        requiredModules: [{ specifier: 'ws', from: 'scripts/package.json' }],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-chat-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-chat-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:chat',
+        description:
+          'pinned service artifact manifest (Skiff/internals/skiff-packages commits + every service artifact identity) loaded on an isolated Rust Router instance (real compiler artifact + temporary Mongo + real Rust Router/Runtime binaries), then `npm run e2e:chat-smoke` in internals/agine through a local ingress; real gate owned by the private internals repository trusted workflow, this script is the local equivalent using the same manifest schema and command',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-chat',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'npm', 'mongod', 'mongosh', 'git'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'router-rust-clean-host-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-clean-host-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:clean-host',
+        description:
+          'Rust-only clean-host release rehearsal: bundle with only router+runtime binaries, configs, compiler artifact root and POSIX sh start scripts is built in a fresh temp dir and started with a PATH that cannot resolve pnpm/tsx; real Router+Runtime unary-ready poll proves Runtime reconnect, HTTP unary five-case suite runs, SIGTERM/SIGINT exits are clean and the bundle identity is unchanged (real Linux/PM2 gate belongs to scheduled release CI; local run is a platform-equivalent dry run, not the Linux gate)',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-clean-host',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: true,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'loop-risk-health',
     source: {
       type: 'script',
@@ -198,7 +406,7 @@ export const LIVE_REGISTRY = deepFreeze([
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: ['loopRiskConfig'],
         requiredExecutables: ['node', 'ps'],
-        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        requiredModules: [{ specifier: 'ws', from: 'scripts/package.json' }],
         canonicalPolicy: {
           forbidSkips: true,
           forbidUnchecked: true,

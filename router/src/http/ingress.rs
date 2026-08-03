@@ -9,6 +9,7 @@
 //! wiring later promotes the surface view into the production composition.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use skiff_artifact_model::{
@@ -16,8 +17,9 @@ use skiff_artifact_model::{
     GatewayEntryProtocolSurface, GatewayProtocolSurface, IngressProtocol, IngressSelector,
     ServiceDeploymentRef,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 
-use crate::bootstrap::RoutingEpoch;
+use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 
 use super::error::HttpError;
 use super::selector::ServiceDeploymentSelector;
@@ -43,37 +45,45 @@ pub enum HttpAdapterKind {
     RawHttp,
 }
 
-/// Typed HTTP gateway surface for one gateway entry key.
+/// Typed HTTP gateway surface for one deployment gateway entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpGatewaySurface {
     pub mode: HttpDispatchMode,
     pub adapter_kind: HttpAdapterKind,
 }
 
-/// Immutable view of HTTP gateway surfaces keyed by gateway entry key.
+/// Immutable view of HTTP gateway surfaces keyed by deployment and gateway
+/// entry key.
 ///
 /// Constructed from canonical deployment gateway entries
 /// (`skiff-artifact-model::DeploymentGatewayEntry`); the HTTP layer never
-/// reads deployment files itself.
+/// reads deployment files itself. The same gateway entry key may exist in
+/// multiple deployments (for example aihub and codex-relay both publish
+/// `v1ModelsGet`); surfaces are therefore deployment-scoped and resolved
+/// together with the exact service selector binding.
 #[derive(Debug, Clone, Default)]
 pub struct HttpGatewaySurfaceView {
-    surfaces: BTreeMap<GatewayEntryKey, HttpGatewaySurface>,
+    surfaces: BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), HttpGatewaySurface>,
 }
 
 impl HttpGatewaySurfaceView {
     pub fn from_deployment_gateway_entries(
-        entries: &BTreeMap<GatewayEntryKey, DeploymentGatewayEntry>,
+        entries: &BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), DeploymentGatewayEntry>,
     ) -> Result<Self, String> {
         let mut surfaces = BTreeMap::new();
-        for (key, entry) in entries {
+        for ((deployment, key), entry) in entries {
             let surface = http_surface(&entry.protocol_surface, key.as_str())?;
-            surfaces.insert(key.clone(), surface);
+            surfaces.insert((deployment.clone(), key.clone()), surface);
         }
         Ok(Self { surfaces })
     }
 
-    pub fn get(&self, key: &GatewayEntryKey) -> Option<&HttpGatewaySurface> {
-        self.surfaces.get(key)
+    pub fn get(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        key: &GatewayEntryKey,
+    ) -> Option<&HttpGatewaySurface> {
+        self.surfaces.get(&(deployment.clone(), key.clone()))
     }
 
     pub fn len(&self) -> usize {
@@ -143,18 +153,66 @@ pub trait HttpIngressResolver: Send + Sync {
 }
 
 /// Real resolver over a captured `RoutingEpoch` and the HTTP surface view.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EpochHttpIngressResolver {
     surfaces: Arc<HttpGatewaySurfaceView>,
+    /// E-activation §8: when present, every resolve rebuilds the HTTP
+    /// surface from the live active epoch (activation swap visibility);
+    /// absent keeps the static captured surface.
+    live: Option<LiveHttpSurfaceSource>,
+}
+
+impl fmt::Debug for EpochHttpIngressResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EpochHttpIngressResolver")
+            .field("live", &self.live.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct LiveHttpSurfaceSource {
+    epoch_store: Arc<ActiveRoutingEpochStore>,
+    artifact_store: CanonicalArtifactStore,
 }
 
 impl EpochHttpIngressResolver {
     pub fn new(surfaces: Arc<HttpGatewaySurfaceView>) -> Self {
-        Self { surfaces }
+        Self {
+            surfaces,
+            live: None,
+        }
+    }
+
+    pub fn new_with_epoch_store(
+        surfaces: Arc<HttpGatewaySurfaceView>,
+        epoch_store: Arc<ActiveRoutingEpochStore>,
+        artifact_store: CanonicalArtifactStore,
+    ) -> Self {
+        Self {
+            surfaces,
+            live: Some(LiveHttpSurfaceSource {
+                epoch_store,
+                artifact_store,
+            }),
+        }
     }
 
     pub fn surfaces(&self) -> &Arc<HttpGatewaySurfaceView> {
         &self.surfaces
+    }
+
+    fn current_surfaces(&self) -> Result<Arc<HttpGatewaySurfaceView>, HttpError> {
+        let Some(live) = &self.live else {
+            return Ok(Arc::clone(&self.surfaces));
+        };
+        let Some(current) = live.epoch_store.capture() else {
+            return Ok(Arc::clone(&self.surfaces));
+        };
+        http_surface_view_from_epoch(&live.artifact_store, &current)
+            .map(Arc::new)
+            .map_err(|message| HttpError::internal(message))
     }
 }
 
@@ -197,12 +255,13 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
                 "RuntimeAssembly ingress references a deployment absent from the epoch projection",
             ));
         }
-        let surface = self
-            .surfaces
-            .get(&binding.gateway_entry_key)
+        let surfaces = self.current_surfaces()?;
+        let surface = surfaces
+            .get(&binding.deployment, &binding.gateway_entry_key)
             .ok_or_else(|| {
                 HttpError::internal(format!(
-                    "RuntimeAssembly HTTP ingress is missing its gateway surface for {}",
+                    "RuntimeAssembly HTTP ingress is missing its gateway surface for {} {}",
+                    binding.deployment.service_id,
                     binding.gateway_entry_key.as_str()
                 ))
             })?;
@@ -234,4 +293,34 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
     ) -> bool {
         self.resolve(epoch, selector, "OPTIONS", path).is_ok()
     }
+}
+
+/// Builds the HTTP surface view from one epoch's resolved deployment
+/// records (E-activation §8 live-surface rebuild after an activation swap;
+/// also consumed by the test-dispatch control handler).
+pub(crate) fn http_surface_view_from_epoch(
+    artifact_store: &CanonicalArtifactStore,
+    epoch: &RoutingEpoch,
+) -> Result<HttpGatewaySurfaceView, String> {
+    let mut entries = BTreeMap::new();
+    for deployment in epoch.deployment_projection() {
+        let record = artifact_store
+            .read_service_deployment(deployment)
+            .map_err(|error| {
+                format!(
+                    "read deployment record {} for HTTP surface: {error}",
+                    deployment.service_id
+                )
+            })?;
+        for (key, entry) in &record.gateway_entries {
+            if !matches!(
+                entry.protocol_surface.protocol,
+                GatewayProtocolSurface::Http(_)
+            ) {
+                continue;
+            }
+            entries.insert((deployment.clone(), key.clone()), entry.clone());
+        }
+    }
+    HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)
 }

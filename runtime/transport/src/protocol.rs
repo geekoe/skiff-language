@@ -61,10 +61,11 @@ pub use spawn::{
     decode_spawn_submit_error_frame, decode_spawn_submit_request_frame,
     decode_spawn_submit_response_frame, encode_spawn_submit_error_frame,
     encode_spawn_submit_request_frame, encode_spawn_submit_response_frame,
-    ActorSpawnRuntimeErrorFrameHeader, SpawnActorMethodTargetFrameMetadata, SpawnCallerKind,
-    SpawnSubmitRequestFrameHeader, SpawnSubmitRequestFrameHeaderV2, SpawnSubmitResponseFrameHeader,
-    SpawnTargetKind, SPAWN_CALLER_KIND_ACTOR_INVOCATION, SPAWN_CALLER_KIND_REQUEST,
-    SPAWN_SUBMIT_ERROR_FRAME_TYPE, SPAWN_SUBMIT_REQUEST_FRAME_TYPE,
+    spawn_submit_frame_direction, ActorSpawnRuntimeErrorFrameHeader,
+    SpawnActorMethodTargetFrameMetadata, SpawnCallerKind, SpawnSubmitAcceptance,
+    SpawnSubmitRequestFrame, SpawnSubmitRequestFrameHeader, SpawnSubmitRequestFrameHeaderV2,
+    SpawnSubmitResponseFrameHeader, SpawnTargetKind, SPAWN_CALLER_KIND_ACTOR_INVOCATION,
+    SPAWN_CALLER_KIND_REQUEST, SPAWN_SUBMIT_ERROR_FRAME_TYPE, SPAWN_SUBMIT_REQUEST_FRAME_TYPE,
     SPAWN_SUBMIT_RESPONSE_FRAME_TYPE, SPAWN_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
 
@@ -104,7 +105,12 @@ impl RuntimeFrameFamily {
             Self::Activation => FrameDirection::Either,
             Self::Connection => FrameDirection::Either,
             Self::Actor => FrameDirection::Either,
-            Self::Spawn => FrameDirection::RouterToRuntime,
+            // The spawn family is mixed-direction: `spawn.submit.request` is
+            // Runtime->Router, `spawn.submit.response/error` are
+            // Router->Runtime (C-model-spawn §3.0). Consumers MUST narrow per
+            // frame via `spawn_submit_frame_direction`; family-level `Either`
+            // never means "any frame in any direction".
+            Self::Spawn => FrameDirection::Either,
         }
     }
 

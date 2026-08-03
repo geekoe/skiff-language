@@ -48,10 +48,6 @@ export const RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS = Object.freeze([
   expectation('legacy outbound service edge', 'legacy-runtime-service-execution'),
   expectation('legacy remote interface carrier', 'legacy-runtime-service-execution'),
   expectation('legacy router request-start carrier', 'legacy-runtime-service-execution'),
-  expectation('router runtime service relay', 'router-service-relay'),
-  expectation('router rejection payload omitted', 'router-service-rejection-incomplete'),
-  expectation('router rejection enters registry', 'router-rejection-enters-relay-owner'),
-  expectation('router template case camouflage enters selection', 'router-rejection-enters-relay-owner'),
 ]);
 
 export async function runRuntimeExecutionBoundarySelfTest() {
@@ -149,7 +145,7 @@ function mutationMatrix() {
       undefined,
       (registry) => {
         registry.subjects = registry.subjects.filter(
-          ({ id }) => id !== 'router-runtime-service-rejection',
+          ({ id }) => id !== 'single-service-dispatcher',
         );
       },
     ),
@@ -375,76 +371,6 @@ function mutationMatrix() {
         '\nfn old_start(message: OutboundControlMessage) { if let OutboundControlMessage::RequestStart { .. } = message {} }\n',
       ),
     ),
-    mutation(
-      'router runtime service relay',
-      'router-service-relay',
-      (root) => append(
-        root,
-        'router/src/router/runtimeDispatcher.ts',
-        '\nfunction handleRuntimeRequestStart() { return { kind: \'forward\' }; }\n',
-      ),
-    ),
-    mutation(
-      'router rejection payload omitted',
-      'router-service-rejection-incomplete',
-      (root) => replace(
-        root,
-        'router/src/router/runtimeEndpoint.ts',
-        "          code: 'InProcessServiceCallRequired',",
-        "          code: 'UnexpectedRuntimeRequest',",
-      ),
-    ),
-    mutation(
-      'router rejection enters registry',
-      'router-rejection-enters-relay-owner',
-      (root) => replace(
-        root,
-        'router/src/router/runtimeEndpoint.ts',
-        '        this.sendFrame(ws, {',
-        '        this.options.registry.pickDispatchConnection(header);\n        this.sendFrame(ws, {',
-      ),
-    ),
-    mutation(
-      'router template case camouflage enters selection',
-      'router-rejection-enters-relay-owner',
-      (root) => replace(
-        root,
-        'router/src/router/runtimeEndpoint.ts',
-        [
-          "      case 'request.start':",
-          "        if (header.caller.kind !== 'service') throw new Error('invalid caller');",
-          '        this.sendFrame(ws, {',
-          "          type: 'response.error',",
-          '          requestId: header.requestId,',
-          '          error: {',
-          "            code: 'InProcessServiceCallRequired',",
-          "            message: 'service calls require an in-process binding'",
-          '          }',
-          '        });',
-          '        return;',
-        ].join('\n'),
-        [
-          "      case 'request.start': {",
-          '        const camouflage = `',
-          "          case 'request.start':",
-          "            if (header.caller.kind !== 'service') throw new Error('invalid caller');",
-          '            this.sendFrame(ws, {',
-          "              type: 'response.error',",
-          '              requestId: header.requestId,',
-          '              error: {',
-          "                code: 'InProcessServiceCallRequired',",
-          "                message: 'service calls require an in-process binding'",
-          '              }',
-          '            });',
-          '            return;',
-          '          ${this.options.registry.pickDispatchConnection(header)}',
-          '        `;',
-          '        void camouflage;',
-          '        return;',
-          '      }',
-        ].join('\n'),
-      ),
-    ),
   ];
 }
 
@@ -657,43 +583,6 @@ async function writeSafeFixture(root) {
         '}',
         '',
       ].join('\n'),
-    ),
-    write(
-      root,
-      'router/src/router/runtimeDispatcher.ts',
-      'export class RuntimeDispatcher {}\n',
-    ),
-    write(
-      root,
-      'router/src/router/runtimeEndpoint.ts',
-      [
-        'export class RuntimeEndpoint {',
-        '  private async handleBinaryMessage(ws: WebSocket, data: Uint8Array): Promise<void> {',
-        '    const header = decode(data);',
-        '    switch (header.type) {',
-        "      case 'request.start':",
-        "        if (header.caller.kind !== 'service') throw new Error('invalid caller');",
-        '        this.sendFrame(ws, {',
-          "          type: 'response.error',",
-          '          requestId: header.requestId,',
-          '          error: {',
-          "            code: 'InProcessServiceCallRequired',",
-          "            message: 'service calls require an in-process binding'",
-          '          }',
-        '        });',
-        '        return;',
-        "      case 'response.end':",
-        '        return;',
-        '    }',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
-    ),
-    write(
-      root,
-      'router/src/router/runtimeRegistry.ts',
-      'export class RuntimeRegistry { registerRuntime(): void {} }\n',
     ),
   ]);
 }

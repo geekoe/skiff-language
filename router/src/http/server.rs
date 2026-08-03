@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
@@ -25,7 +26,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::bootstrap::RoutingEpoch;
+use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 
 use super::cors;
 use super::dispatch::{
@@ -49,6 +50,26 @@ pub const DEFAULT_BACKPRESSURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10)
 pub const DEFAULT_PUBLIC_MAX_CONNECTIONS: usize = 1024;
 pub const DEFAULT_DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Optional WebSocket upgrade seam (E-ws wiring; additive, default `None`).
+///
+/// When set, the gateway accept loop calls [`GatewayUpgradeHandler::handle`]
+/// for requests whose path matches [`GatewayUpgradeOptions::path`] and whose
+/// `Upgrade` header is `websocket`, and the hyper connection is served with
+/// `.with_upgrades()`. The handler owns the 101 handshake response and any
+/// upgraded connection task (the supervisor tracks those tasks for shutdown).
+/// When unset, the gateway keeps its exact pre-seam behavior: no upgrade
+/// handling and no `.with_upgrades()`.
+#[async_trait]
+pub trait GatewayUpgradeHandler: Send + Sync + fmt::Debug {
+    async fn handle(&self, request: Request<Incoming>) -> GatewayResponse;
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayUpgradeOptions {
+    pub path: String,
+    pub handler: Arc<dyn GatewayUpgradeHandler>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpGatewayServerOptions {
     pub bind: SocketAddr,
@@ -59,6 +80,8 @@ pub struct HttpGatewayServerOptions {
     pub max_connections: usize,
     pub drain_deadline: Duration,
     pub stream_channel_capacity: usize,
+    /// Additive E-ws seam: absent by default; see [`GatewayUpgradeOptions`].
+    pub websocket_upgrade: Option<GatewayUpgradeOptions>,
 }
 
 impl HttpGatewayServerOptions {
@@ -72,6 +95,7 @@ impl HttpGatewayServerOptions {
             max_connections: DEFAULT_PUBLIC_MAX_CONNECTIONS,
             drain_deadline: DEFAULT_DRAIN_DEADLINE,
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
+            websocket_upgrade: None,
         }
     }
 }
@@ -178,16 +202,42 @@ impl Counters {
 
 struct GatewayContext {
     epoch: Arc<RoutingEpoch>,
+    /// E-activation §8: when present, every request resolves the ingress and
+    /// routing identity against the live active epoch (activation swap
+    /// visibility); absent keeps the pre-seam static-epoch behavior.
+    epoch_store: Option<Arc<ActiveRoutingEpochStore>>,
     resolver: Arc<dyn HttpIngressResolver>,
     dispatcher: Arc<dyn HttpDispatchPort>,
     options: HttpGatewayServerOptions,
     counters: Arc<Counters>,
 }
 
+impl GatewayContext {
+    fn current_epoch(&self) -> Arc<RoutingEpoch> {
+        self.epoch_store
+            .as_ref()
+            .and_then(|store| store.capture())
+            .unwrap_or_else(|| Arc::clone(&self.epoch))
+    }
+}
+
 /// Binds and starts the public HTTP gateway on a real socket.
 pub async fn start_http_gateway(
     options: HttpGatewayServerOptions,
     epoch: Arc<RoutingEpoch>,
+    resolver: Arc<dyn HttpIngressResolver>,
+    dispatcher: Arc<dyn HttpDispatchPort>,
+) -> Result<HttpGatewayServer, HttpServerError> {
+    start_http_gateway_with_epoch_store(options, epoch, None, resolver, dispatcher).await
+}
+
+/// Binds and starts the public HTTP gateway against a live active epoch
+/// store (E-activation §8: the gateway follows activation swaps). `None`
+/// keeps the static-epoch behavior of the 4-argument seam.
+pub async fn start_http_gateway_with_epoch_store(
+    options: HttpGatewayServerOptions,
+    epoch: Arc<RoutingEpoch>,
+    epoch_store: Option<Arc<ActiveRoutingEpochStore>>,
     resolver: Arc<dyn HttpIngressResolver>,
     dispatcher: Arc<dyn HttpDispatchPort>,
 ) -> Result<HttpGatewayServer, HttpServerError> {
@@ -200,6 +250,7 @@ pub async fn start_http_gateway(
     let counters = Arc::new(Counters::new());
     let context = Arc::new(GatewayContext {
         epoch,
+        epoch_store,
         resolver,
         dispatcher,
         options,
@@ -237,23 +288,60 @@ async fn serve(
                     }
                 };
                 let context = Arc::clone(&context);
+                let upgrade_seam = context
+                    .options
+                    .websocket_upgrade
+                    .as_ref()
+                    .map(|options| {
+                        (
+                            options.path.clone(),
+                            Arc::clone(&options.handler),
+                        )
+                    });
+                let use_upgrades = upgrade_seam.is_some();
                 let mut connection_shutdown = shutdown_rx.clone();
                 connections.spawn(async move {
                     let _permit = permit;
                     let service = service_fn(move |request: Request<Incoming>| {
                         let context = Arc::clone(&context);
-                        async move { handle_request(&context, request).await }
-                    });
-                    let connection = http1::Builder::new()
-                        .serve_connection(TokioIo::new(stream), service);
-                    tokio::pin!(connection);
-                    tokio::select! {
-                        result = connection.as_mut() => {
-                            let _ = result;
+                        let upgrade_seam = upgrade_seam.clone();
+                        async move {
+                            if let Some((path, handler)) = &upgrade_seam {
+                                if is_websocket_upgrade(&request)
+                                    && request.uri().path() == path
+                                {
+                                    return handler.handle(request).await;
+                                }
+                            }
+                            handle_request(&context, request).await
                         }
-                        _ = connection_shutdown.changed() => {
-                            connection.as_mut().graceful_shutdown();
-                            let _ = connection.await;
+                    });
+                    if use_upgrades {
+                        let connection = http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .with_upgrades();
+                        tokio::pin!(connection);
+                        tokio::select! {
+                            result = connection.as_mut() => {
+                                let _ = result;
+                            }
+                            _ = connection_shutdown.changed() => {
+                                connection.as_mut().graceful_shutdown();
+                                let _ = connection.await;
+                            }
+                        }
+                    } else {
+                        let connection = http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service);
+                        tokio::pin!(connection);
+                        tokio::select! {
+                            result = connection.as_mut() => {
+                                let _ = result;
+                            }
+                            _ = connection_shutdown.changed() => {
+                                connection.as_mut().graceful_shutdown();
+                                let _ = connection.await;
+                            }
                         }
                     }
                 });
@@ -276,6 +364,14 @@ async fn reject_over_capacity(mut stream: TcpStream) {
 
 type GatewayResponse = Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>;
 
+fn is_websocket_upgrade(request: &Request<Incoming>) -> bool {
+    request
+        .headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
 async fn handle_request(context: &GatewayContext, request: Request<Incoming>) -> GatewayResponse {
     context.counters.bump(&context.counters.requests);
     let (cancel_signal, cancel_watch) = cancel_channel();
@@ -285,7 +381,9 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
     let path = request.uri().path().to_string();
     let origin = first_header_value(request.headers(), "origin");
 
-    let path_is_control = path == "/__router/health" || path == "/__router/prune-runtimes";
+    let path_is_control = path == "/__router/health"
+        || path == "/__router/prune-runtimes"
+        || path == "/__skiff/test-dispatch";
     if path_is_control {
         cancel_on_drop.defuse();
         return early_error_response(
@@ -340,10 +438,11 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             .await;
         }
     };
-    let service_manages_cors =
-        context
-            .resolver
-            .has_explicit_options_ingress(&context.epoch, &selector, &target.path);
+    let service_manages_cors = context.resolver.has_explicit_options_ingress(
+        &context.current_epoch(),
+        &selector,
+        &target.path,
+    );
     if service_manages_cors {
         context
             .counters
@@ -385,7 +484,7 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             )
             .await;
         }
-        if !has_http_ingress_path(&context.epoch, &selector, &target.path) {
+        if !has_http_ingress_path(&context.current_epoch(), &selector, &target.path) {
             context.counters.bump(&context.counters.ingress_misses);
             context.counters.bump(&context.counters.platform_errors);
             cancel_on_drop.defuse();
@@ -423,27 +522,28 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             return Ok(error_response(error, &cors_headers));
         }
     };
-    let binding =
-        match context
-            .resolver
-            .resolve(&context.epoch, &selector, &method_str, &target.path)
-        {
-            Ok(binding) => binding,
-            Err(error) => {
-                if error.status == 404 {
-                    context.counters.bump(&context.counters.ingress_misses);
-                }
-                context.counters.bump(&context.counters.platform_errors);
-                cancel_on_drop.defuse();
-                return early_error_response(
-                    request,
-                    error,
-                    &cors_headers,
-                    context.options.max_request_bytes,
-                )
-                .await;
+    let binding = match context.resolver.resolve(
+        &context.current_epoch(),
+        &selector,
+        &method_str,
+        &target.path,
+    ) {
+        Ok(binding) => binding,
+        Err(error) => {
+            if error.status == 404 {
+                context.counters.bump(&context.counters.ingress_misses);
             }
-        };
+            context.counters.bump(&context.counters.platform_errors);
+            cancel_on_drop.defuse();
+            return early_error_response(
+                request,
+                error,
+                &cors_headers,
+                context.options.max_request_bytes,
+            )
+            .await;
+        }
+    };
     let metadata = build_http_request_metadata(&method, &target, request.headers());
     let body = match read_request_body(request.into_body(), context.options.max_request_bytes).await
     {
@@ -458,7 +558,7 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
         }
     };
     let header = match build_request_start_header(
-        &context.epoch,
+        &context.current_epoch(),
         &binding,
         new_request_id(),
         context.options.request_timeout,

@@ -7,7 +7,7 @@ use crate::{
     },
     protocol::{
         actor::ActivationIdentityFrameMetadata, decode_binary_frame, encode_binary_frame,
-        request::RuntimeErrorFramePayload, RUNTIME_FRAME_SCHEMA_VERSION,
+        request::RuntimeErrorFramePayload, FrameDirection, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     BinaryFrameError, TransportError,
 };
@@ -256,6 +256,63 @@ pub fn decode_spawn_submit_error_frame(
         .map_err(|error| TransportError::decode(format!("invalid spawn.submit.error: {error}")))?;
     validate_error(&header)?;
     Ok(header)
+}
+
+/// Frame-level direction table for the spawn family (C-model-spawn §3.0).
+///
+/// The family is mixed-direction: the family-level registry marks `Either`,
+/// but each spawn frame type has exactly one legal wire direction. Consumers
+/// (demux, Runtime inbound handler) must narrow per frame; any other
+/// direction is a protocol violation with no compatible reader.
+pub fn spawn_submit_frame_direction(frame_type: &str) -> Option<FrameDirection> {
+    match frame_type {
+        SPAWN_SUBMIT_REQUEST_FRAME_TYPE => Some(FrameDirection::RuntimeToRouter),
+        SPAWN_SUBMIT_RESPONSE_FRAME_TYPE | SPAWN_SUBMIT_ERROR_FRAME_TYPE => {
+            Some(FrameDirection::RouterToRuntime)
+        }
+        _ => None,
+    }
+}
+
+/// Canonical decoded `spawn.submit.request` (corpus `decodeAs:
+/// "SpawnSubmitRequest"`): the raw wire header plus the immutable opaque args
+/// payload. This is the demux -> `SpawnSubmitRouter` dispatch boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnSubmitRequestFrame {
+    pub header: SpawnSubmitRequestFrameHeaderV2,
+    pub payload: Vec<u8>,
+}
+
+/// Acceptance boundary for the stateless `SpawnSubmitRouter`
+/// (C-model-spawn §7.2 / C-spawn §3.3).
+///
+/// The acceptance carries the full decoded request (raw wire header + args
+/// bytes) so the real execution sink can reconstruct the outbound
+/// `spawn.submit.request` wire without re-parsing: service/activation
+/// identity, `actorMethod` metadata and opaque args are all preserved
+/// (E-actor-rust prerequisite). `request_id` is the Router-generated
+/// correlation key for the accepted spawn's execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnSubmitAcceptance {
+    pub request: SpawnSubmitRequestFrame,
+    pub spawn_id: String,
+    pub request_id: String,
+}
+
+impl SpawnSubmitAcceptance {
+    /// Typed projection of the Router->Runtime accept frame
+    /// (`spawn.submit.response`, status `submitted`), echoing the request
+    /// `rpcId` and carrying the Router-generated `spawnId`/`requestId`.
+    pub fn response_header(&self) -> SpawnSubmitResponseFrameHeader {
+        SpawnSubmitResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: SPAWN_SUBMIT_RESPONSE_FRAME_TYPE.to_string(),
+            rpc_id: self.request.header.rpc_id.clone(),
+            spawn_id: self.spawn_id.clone(),
+            request_id: self.request_id.clone(),
+            status: SPAWN_SUBMIT_RESPONSE_STATUS_SUBMITTED.to_string(),
+        }
+    }
 }
 
 fn validate_spawn_submit_request(header: &SpawnSubmitRequestFrameHeaderV2) -> Result<(), String> {

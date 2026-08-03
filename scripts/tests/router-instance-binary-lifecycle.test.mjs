@@ -39,7 +39,7 @@ test('instance build/up installs the Rust router binary and refresh keeps runtim
   await writeFakeCargo(join(fakeBin, 'cargo'));
 
   try {
-    await initializeFixture(configPath, base, env);
+    await initializeFixture(configPath, base, join(root, 'cargo-target'), env);
 
     await run('node', [skiffCli, 'instance', 'up', configPath], {
       env: { ...env, FAKE_ROUTER_VERSION: 'v1' },
@@ -138,46 +138,20 @@ test('instance build/up installs the Rust router binary and refresh keeps runtim
   }
 });
 
-test('instance build --only router rejects the TS implementation', {
-  skip: process.platform === 'win32',
-}, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'skiff-router-only-ts-'));
-  const fakeBin = join(root, 'fake-bin');
-  const env = {
-    ...process.env,
-    PATH: `${fakeBin}:${process.env.PATH}`,
-  };
-  await mkdir(fakeBin, { recursive: true });
-  await writeFakeCargo(join(fakeBin, 'cargo'));
-  const configPath = join(root, 'instance', 'config.yml');
-  try {
-    await initializeFixture(configPath, await reservePortPair(), env, 'ts');
-    const outcome = await spawnCapture(
-      'node',
-      [skiffCli, 'instance', 'build', configPath, '--only', 'router'],
-      { env },
-    );
-    assert.notEqual(outcome.code, 0);
-    assert.match(outcome.stderr, /requires router\.implementation: rust/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-async function initializeFixture(configPath, base, env, implementation = 'rust') {
+async function initializeFixture(configPath, base, cargoTargetDir, env) {
   await run('node', [skiffCli, 'instance', 'init', configPath], { env });
   const source = await readFile(configPath, 'utf8');
   await writeFile(
     configPath,
     [
       source
-        .replace('cargoTargetDir: ../build/cargo-target', `cargoTargetDir: ${join(skiffRoot, 'build', 'cargo-target')}`)
+        .replace('cargoTargetDir: ../build/cargo-target', `cargoTargetDir: ${cargoTargetDir}`)
         .replace('  base: 4100', `  base: ${base}`)
         .replace('  telemetry: managed', '  telemetry: disabled')
         .replace('  mongo: disabled', '  mongo: disabled')
         .replace('  watch: disabled', '  watch: disabled'),
       'router:',
-      `  implementation: ${implementation}`,
+      '  implementation: rust',
       '',
     ].join('\n'),
   );
@@ -185,8 +159,7 @@ async function initializeFixture(configPath, base, env, implementation = 'rust')
 
 async function writeFakeCargo(path) {
   await writeExecutable(path, `#!/usr/bin/env node
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const binIndex = process.argv.indexOf('--bin');
 const bin = process.argv[binIndex + 1];
@@ -205,14 +178,28 @@ if (bin === 'runtime') {
   writeFileSync(output, '#!/usr/bin/env node\\n');
   chmodSync(output, 0o755);
 } else if (bin === 'skiff-router') {
-  const result = spawnSync(process.env.REAL_CARGO, process.argv.slice(2), { stdio: 'inherit', env: process.env });
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
-  const output = join(outputDir, process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router');
+  // Post-cutover the real Router fail-closes without a seeded artifact root
+  // and Mongo state, so the lifecycle fixture uses a managed router shim that
+  // binds the configured ports and answers every request with 200. The shim
+  // content changes with FAKE_ROUTER_VERSION so binary install/refresh and
+  // identity recording stay observable. Real-binary instance startup is
+  // covered by the isolated live fixtures (router-live:* gates).
   const version = process.env.FAKE_ROUTER_VERSION || 'base';
-  const original = readFileSync(output);
-  writeFileSync(output, Buffer.concat([original, Buffer.from('\\nskiff-router-fake-version:' + version + '\\n')]));
+  const program = [
+    '#!/usr/bin/env node',
+    "import { readFileSync } from 'node:fs';",
+    "import http from 'node:http';",
+    'const source = readFileSync(process.argv[2], \\'utf8\\');',
+    'const ports = [...source.matchAll(/^\\\\s+port:\\\\s*(\\\\d+)$/gm)].map((match) => Number(match[1]));',
+    'for (const port of new Set(ports)) {',
+    '  http.createServer((request, response) => { response.writeHead(200); response.end(); })',
+    '    .listen(port, \\'127.0.0.1\\');',
+    '}',
+    'setInterval(() => {}, 60_000);',
+    '// router-shim-version:' + version,
+  ].join('\\n');
+  const output = join(outputDir, process.platform === 'win32' ? 'skiff-router.exe' : 'skiff-router');
+  writeFileSync(output, program);
   chmodSync(output, 0o755);
 } else {
   throw new Error('unexpected fake cargo bin ' + bin);

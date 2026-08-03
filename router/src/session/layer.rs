@@ -23,6 +23,7 @@ use tokio::time::timeout;
 
 use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
+use crate::routing::DispatchCapabilities;
 
 use super::bootstrap::RuntimeBootstrapProvider;
 use super::budget::SessionBudgets;
@@ -30,11 +31,12 @@ use super::consumer::{
     ConsumerKind, ConsumerMailbox, ConsumerManifest, FailStop, SessionConsumer,
     TerminalDeliveryError,
 };
-use super::demux::{RegistrationFrameSink, RuntimeFrameDemux};
+use super::demux::{InboundSinkSet, RegistrationFrameSink, RuntimeFrameDemux};
 use super::directory::RuntimeRegistrationDirectory;
 use super::handshake::EpochContext;
 use super::health::RuntimeHealthLedger;
 use super::identity::{RegisteredAssemblyTuple, RuntimeConnectionEpoch, RuntimeSessionEpoch};
+use super::observer::RegistrationObserver;
 use super::pre_auth::PreAuthPool;
 use super::task::{run_session_task, RuntimeSocket};
 
@@ -53,8 +55,13 @@ pub struct SessionTiming {
 impl Default for SessionTiming {
     fn default() -> Self {
         Self {
-            bootstrap: Duration::from_secs(10),
-            capabilities: Duration::from_secs(10),
+            // Cold-start parity (TS had no per-phase handshake deadlines):
+            // a fresh Runtime may spend 10-21s provisioning the
+            // whole-assembly service DB indexes before it can send
+            // `runtime.capabilities`; the deadline must cover that window.
+            // Registered sessions never consult these deadlines again.
+            bootstrap: Duration::from_secs(30),
+            capabilities: Duration::from_secs(30),
             register: Duration::from_secs(30),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(20),
@@ -96,6 +103,19 @@ pub enum SessionCloseReason {
     Shutdown,
     Replaced,
     Disconnect,
+}
+
+/// Bounded non-blocking writer for one exact Runtime session (composition
+/// seam; C-session §5.3).
+///
+/// The `OutboundQueue` stays owned by the per-connection session task; this
+/// trait exposes only the bounded enqueue surface so installed lane ports
+/// (`RuntimePeer`, activation enqueue, WS lifecycle/responder, actor
+/// control) can write frames to the exact session. `Err` means the queue is
+/// full or the session has no registered writer; the caller fails closed per
+/// its own contract and must never wait.
+pub trait SessionFrameWriter: Send + Sync + fmt::Debug {
+    fn enqueue(&self, bytes: Vec<u8>) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -148,6 +168,10 @@ pub struct SessionLayer {
     fail_stop_tx: watch::Sender<Option<String>>,
     handles: Mutex<HashMap<String, SessionTaskHandle>>,
     epoch_index: Mutex<HashMap<RuntimeSessionEpoch, String>>,
+    frame_writers: Mutex<HashMap<RuntimeSessionEpoch, Arc<dyn SessionFrameWriter>>>,
+    inbound_sinks: Mutex<Arc<InboundSinkSet>>,
+    dispatch_capabilities: Mutex<HashMap<RuntimeSessionEpoch, DispatchCapabilities>>,
+    registration_observer: Mutex<Option<Arc<dyn RegistrationObserver>>>,
 }
 
 impl SessionLayer {
@@ -165,6 +189,12 @@ impl SessionLayer {
     ) -> Result<Self, SessionLayerError> {
         // Static manifest checker: every installed session-keyed component is
         // in the manifest, and every manifest kind has exactly one consumer.
+        // The health ledger is the single owner of retained observations:
+        // the layer records into it and registers it as the HealthLedger
+        // session consumer so the close barrier removes exact observations
+        // (batch 12 health leaf; without this, disconnected sessions leave
+        // stale observations forever).
+        let health = Arc::new(RuntimeHealthLedger::new());
         let mut consumer_kinds = std::collections::BTreeSet::new();
         for consumer in &options.consumers {
             if !consumer_kinds.insert(consumer.kind()) {
@@ -186,8 +216,14 @@ impl SessionLayer {
 
         let pre_auth_limit = usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX);
         let mut mailboxes = BTreeMap::new();
-        for consumer in &options.consumers {
-            let mailbox = ConsumerMailbox::spawn(Arc::clone(consumer), pre_auth_limit);
+        for consumer in options.consumers.iter().map(|consumer| {
+            if consumer.kind() == ConsumerKind::HealthLedger {
+                Arc::clone(&health) as Arc<dyn SessionConsumer>
+            } else {
+                Arc::clone(consumer)
+            }
+        }) {
+            let mailbox = ConsumerMailbox::spawn(Arc::clone(&consumer), pre_auth_limit);
             mailboxes.insert(consumer.kind(), mailbox);
         }
 
@@ -205,7 +241,7 @@ impl SessionLayer {
             manifest: options.manifest,
             directory: Mutex::new(directory),
             pre_auth: Mutex::new(pre_auth),
-            health: Arc::new(RuntimeHealthLedger::new()),
+            health,
             mailboxes,
             demux: RuntimeFrameDemux,
             registration_sink: RegistrationFrameSink,
@@ -219,7 +255,35 @@ impl SessionLayer {
             fail_stop_tx,
             handles: Mutex::new(HashMap::new()),
             epoch_index: Mutex::new(HashMap::new()),
+            frame_writers: Mutex::new(HashMap::new()),
+            inbound_sinks: Mutex::new(Arc::new(InboundSinkSet::default())),
+            dispatch_capabilities: Mutex::new(HashMap::new()),
+            registration_observer: Mutex::new(None),
         })
+    }
+
+    /// Installs the registration observer (plan §4.2 cold recovery seam).
+    /// Additive: an absent observer is a no-op and the session state machine
+    /// never depends on the callback.
+    pub fn set_registration_observer(&self, observer: Arc<dyn RegistrationObserver>) {
+        *self
+            .registration_observer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(observer);
+    }
+
+    /// Notifies the installed observer that a session became routable. Used
+    /// by the session task right after `mark_registered`; failures inside the
+    /// observer are non-blocking by contract and never fail-stop the session.
+    pub(crate) fn notify_session_registered(&self, session: &RuntimeSessionEpoch) {
+        if let Some(observer) = self
+            .registration_observer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            observer.on_session_registered(session);
+        }
     }
 
     /// The current committed tuple: from the epoch store when wired, else the
@@ -339,6 +403,119 @@ impl SessionLayer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session, connection_id.to_string());
+    }
+
+    /// Registers the bounded frame writer for one bound session. The session
+    /// task calls this once after capabilities bind; replacement sessions
+    /// register their own writer under their own session epoch.
+    pub fn register_frame_writer(
+        &self,
+        session: &RuntimeSessionEpoch,
+        writer: Arc<dyn SessionFrameWriter>,
+    ) {
+        self.frame_writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session.clone(), writer);
+    }
+
+    /// Unregisters the exact-session writer before the close barrier. The
+    /// public write path returns `Err` afterwards; the writer task itself is
+    /// drained by the session task.
+    pub fn unregister_frame_writer(&self, session: &RuntimeSessionEpoch) {
+        self.frame_writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session);
+    }
+
+    /// Bounded non-blocking enqueue of one arbitrary frame to the exact
+    /// session (composition seam; C-session §5.3). `Err` when the session has
+    /// no registered writer or the frame/byte budget rejects the frame.
+    pub fn write_session_frame(
+        &self,
+        session: &RuntimeSessionEpoch,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        let writer = self
+            .frame_writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "no frame writer registered for session {:?}",
+                    session.replica_id
+                )
+            })?;
+        writer.enqueue(bytes)
+    }
+
+    pub fn has_frame_writer(&self, session: &RuntimeSessionEpoch) -> bool {
+        self.frame_writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(session)
+    }
+
+    /// Retains the validated dispatch capability binding for one bound
+    /// session (composition seam; the handshake already validated the
+    /// `runtime.capabilities` frame). Removed with the session.
+    pub fn record_dispatch_capabilities(
+        &self,
+        session: &RuntimeSessionEpoch,
+        capabilities: DispatchCapabilities,
+    ) {
+        self.dispatch_capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session.clone(), capabilities);
+    }
+
+    pub fn remove_dispatch_capabilities(&self, session: &RuntimeSessionEpoch) {
+        self.dispatch_capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(session);
+    }
+
+    /// Coherent snapshot of the per-session dispatch capability bindings
+    /// (C-routing-query seam; `RuntimeCandidateQuery::snapshot_directory_view`
+    /// consumes it under the directory lock).
+    pub fn dispatch_capabilities_snapshot(
+        &self,
+    ) -> HashMap<RuntimeSessionEpoch, DispatchCapabilities> {
+        self.dispatch_capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Current exact session for one replica (composition seam for
+    /// actor/activation outbound ports that carry only `replica_id`).
+    pub fn current_session_by_replica(&self, replica_id: &str) -> Option<RuntimeSessionEpoch> {
+        self.directory_lock()
+            .current_by_replica()
+            .get(replica_id)
+            .cloned()
+    }
+
+    /// Installs the static lane sink bundle (plan §5.5). Called by the
+    /// composition before any listener starts; never extended at runtime.
+    /// Existing session behavior is unchanged while the bundle is empty.
+    pub fn install_inbound_sinks(&self, sinks: Arc<InboundSinkSet>) {
+        *self
+            .inbound_sinks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sinks;
+    }
+
+    pub fn inbound_sinks(&self) -> Arc<InboundSinkSet> {
+        self.inbound_sinks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Cancel the exact old session task (replacement or shutdown). The close

@@ -1,11 +1,15 @@
 //! Initial bootstrap orchestration (C-bootstrap §2.5, plan §7 E-bootstrap).
 //!
 //! `BootstrapRunner` owns the read → project → strict load → publish chain.
-//! Any non-stable read outcome or load failure fail-closes: no epoch is
-//! published and the store stays empty. Pending recovery belongs to
-//! E-activation.
+//! A stable committed outcome (with or without a durable pending
+//! activation) publishes the committed epoch; missing/malformed/identity
+//! mismatch/loader failures still fail close with an empty store. Durable
+//! pending recovery is installed by the activation coordinator (§4.2); the
+//! runner only surfaces the pending record to the assembly.
 
 use std::sync::Arc;
+
+use skiff_deployment::activation_state::PendingActivation;
 
 use crate::artifact::ActorRoutingProjectionRef;
 
@@ -26,6 +30,15 @@ pub enum BootstrapError {
     Load(#[from] BootstrapLoadFailure),
     #[error("blocking loader failed: {0}")]
     Loader(String),
+}
+
+/// Successful initial bootstrap result: the published committed epoch plus
+/// the durable pending activation (if any) that E-activation must install as
+/// a recovery transaction (plan §4.2).
+#[derive(Debug)]
+pub struct BootstrapRunOutcome {
+    pub epoch: Arc<RoutingEpoch>,
+    pub pending: Option<PendingActivation>,
 }
 
 /// Health snapshot combining the epoch store, reader counters and loader.
@@ -71,8 +84,12 @@ impl BootstrapRunner {
         &self,
         environment: &str,
         actor_projection: &ActorRoutingProjectionRef,
-    ) -> Result<Arc<RoutingEpoch>, BootstrapError> {
+    ) -> Result<BootstrapRunOutcome, BootstrapError> {
         let outcome = self.reader.read_committed(environment).await;
+        let pending = match &outcome {
+            BootstrapReadOutcome::CommittedWithPending { pending, .. } => Some(pending.clone()),
+            _ => None,
+        };
         let refs = match outcome {
             BootstrapReadOutcome::StableCommitted {
                 generation,
@@ -83,6 +100,7 @@ impl BootstrapRunner {
                 assembly,
                 config_snapshot,
             },
+            BootstrapReadOutcome::CommittedWithPending { refs, .. } => refs,
             other => return Err(BootstrapError::Read(other)),
         };
         let strict_loader = Arc::clone(&self.strict_loader);
@@ -105,7 +123,7 @@ impl BootstrapRunner {
                 other => BootstrapError::Loader(other.to_string()),
             })?;
         self.epoch_store.publish(Arc::clone(&epoch));
-        Ok(epoch)
+        Ok(BootstrapRunOutcome { epoch, pending })
     }
 
     pub fn epoch_store(&self) -> &Arc<ActiveRoutingEpochStore> {

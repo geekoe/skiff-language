@@ -291,6 +291,49 @@ fn assert_process_fails_closed(live: &LiveEnvironment) {
     let _ = std::fs::remove_file(config_path);
 }
 
+/// Plan §4.2 process-level pending behavior: the router must start (committed
+/// epoch published first), serve the committed bootstrap tuple on the runtime
+/// socket, and shut down cleanly; the recovery transaction is installed by
+/// the activation coordinator without blocking the listener.
+async fn assert_process_starts_with_pending(live: &LiveEnvironment) {
+    let config_path = write_router_config(live);
+    let mut child = spawn_router(&config_path);
+    wait_for_listeners(live, &mut child);
+    let (mut socket, _response) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/runtime", live.runtime_port))
+            .await
+            .expect("connect runtime websocket");
+    let frame = tokio::time::timeout(Duration::from_secs(15), socket.next())
+        .await
+        .expect("bootstrap frame timeout")
+        .expect("bootstrap frame stream")
+        .expect("bootstrap frame read");
+    let bytes = match frame {
+        tokio_tungstenite::tungstenite::Message::Binary(bytes) => bytes,
+        other => panic!("expected binary router.bootstrap frame, got {other:?}"),
+    };
+    let header = skiff_runtime_transport::protocol::decode_router_bootstrap_frame(&bytes)
+        .expect("decode router.bootstrap frame");
+    assert_eq!(header.envelope_type, "router.bootstrap");
+    assert_eq!(header.activation.environment, live.environment);
+    assert_eq!(header.activation.generation, live.generation);
+    drop(socket);
+
+    let pid = child.id();
+    let signaled = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .expect("send SIGTERM to router");
+    assert!(signaled.success());
+    let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(30));
+    assert!(
+        status.success(),
+        "router with pending recovery must shut down cleanly, got {status}; stderr: {stderr}"
+    );
+    assert_ports_closed(live);
+    let _ = std::fs::remove_file(config_path);
+}
+
 async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
     let state = live.committed_state(live.assembly_ref());
     repository
@@ -361,10 +404,15 @@ mod tests {
         seed_committed(&live, &repository).await;
         let pool = Arc::new(BlockingLoader::new(BlockingLoaderOptions::default()));
         let chain = runner(&live, Arc::clone(&repository), Arc::clone(&pool));
-        let epoch = chain
+        let outcome = chain
             .run_initial(&live.environment, &live.actor_ref())
             .await
             .expect("committed bootstrap must publish an epoch");
+        let epoch = outcome.epoch;
+        assert!(
+            outcome.pending.is_none(),
+            "committed-only state must not surface recovery pending"
+        );
         assert_eq!(epoch.environment(), live.environment);
         assert_eq!(epoch.assembly_generation(), live.generation);
         assert_eq!(epoch.assembly_identity(), live.assembly_identity);
@@ -490,18 +538,18 @@ mod tests {
             Arc::clone(&repository),
             Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
         );
-        let pending = pending_runner
+        let pending_outcome = pending_runner
             .run_initial(&live.environment, &live.actor_ref())
             .await
-            .expect_err("pending state must fail closed");
-        assert!(
-            matches!(
-                pending,
-                BootstrapError::Read(BootstrapReadOutcome::FailClosedPending { .. })
-            ),
-            "{pending}"
-        );
-        assert_eq!(pending_runner.health().epoch_store_publish_count, 0);
+            .expect("pending state must publish the committed epoch");
+        assert_eq!(pending_outcome.epoch.assembly_generation(), live.generation);
+        let pending = pending_outcome
+            .pending
+            .expect("pending recovery must be surfaced by the runner");
+        assert_eq!(pending.activation_id, "live-pending-1");
+        assert_eq!(pending.expected_generation, live.generation);
+        assert_eq!(pending.candidate_generation, live.generation + 1);
+        assert_eq!(pending_runner.health().epoch_store_publish_count, 1);
         assert_eq!(pending_runner.health().reader_fail_closed.pending, 1);
 
         reset_state_collection(&live).await;
@@ -602,9 +650,11 @@ mod tests {
         assert!(loader_health.saturated >= 1);
         assert!(loader_health.shutdown_refusals >= 1);
 
-        // 5. Process-level fail-closed negatives: no listener may bind and the
-        // process must exit non-zero for missing / malformed / pending / identity
-        // mismatch states.
+        // 5. Process-level negatives: no listener may bind and the process
+        // must exit non-zero for missing / malformed / identity mismatch
+        // states. A durable pending (plan §4.2) must NOT fail closed: the
+        // committed epoch is published, listeners open, and shutdown stays
+        // clean.
         reset_state_collection(&live).await;
         assert_process_fails_closed(&live); // missing
         seed_malformed(&live).await;
@@ -623,7 +673,7 @@ mod tests {
             })
             .await
             .expect("prepare pending activation");
-        assert_process_fails_closed(&live); // pending
+        assert_process_starts_with_pending(&live).await; // pending -> recovery
         reset_state_collection(&live).await;
         repository
             .initialize(&mismatched)

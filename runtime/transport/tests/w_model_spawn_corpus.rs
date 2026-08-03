@@ -106,7 +106,11 @@ mod tests {
             "legacy old-shape frame must be legacyCut"
         );
         for (name, entry) in &catalog.frames {
-            assert_eq!(entry.direction, "RouterToRuntime", "{name}: direction");
+            assert_eq!(
+                entry.direction,
+                expected_direction(name),
+                "{name}: direction"
+            );
             assert_eq!(
                 entry.frame_type,
                 expected_frame_type(name),
@@ -320,6 +324,16 @@ mod tests {
             | "spawn.submit.request.legacy-no-caller-kind" => "spawn.submit.request",
             "spawn.submit.response" => "spawn.submit.response",
             "spawn.submit.error.parentNotFound" => "spawn.submit.error",
+            _ => panic!("unexpected spawn frame {name}"),
+        }
+    }
+
+    fn expected_direction(name: &str) -> &'static str {
+        match name {
+            "spawn.submit.request.function"
+            | "spawn.submit.request.actorMethod"
+            | "spawn.submit.request.legacy-no-caller-kind" => "RuntimeToRouter",
+            "spawn.submit.response" | "spawn.submit.error.parentNotFound" => "RouterToRuntime",
             _ => panic!("unexpected spawn frame {name}"),
         }
     }

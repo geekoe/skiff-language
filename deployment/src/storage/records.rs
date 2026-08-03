@@ -4,12 +4,15 @@ use std::{
     sync::Arc,
 };
 
+use crate::projection::actor_routing::{
+    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+};
 use serde_json::Value;
 use skiff_artifact_identity::{
     package_schema_type_id, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
     validate_file_ir_identity, validate_package_artifact_identities, validate_package_schema_index,
     validate_package_schema_records, validate_runtime_assembly_identity,
-    validate_service_contract_identities, validate_service_deployment_ref,
+    validate_service_contract_identities, validate_service_deployment_ref, ArtifactRelativePath,
     PackageArtifactRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
     PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, RuntimeAssemblyRecordPath,
     ServiceContractRecordPath, ServiceDeploymentRecordPath,
@@ -305,6 +308,29 @@ impl CanonicalArtifactStore {
         let reference = runtime_assembly_ref(assembly)?;
         let path = RuntimeAssemblyRecordPath::new(&reference)?;
         self.write_immutable(path.as_relative_path(), &canonical_bytes(assembly)?)
+    }
+
+    /// Publishes the mutable "current" actor routing projection record.
+    ///
+    /// The relative record path is the canonical A1 producer output surface
+    /// consumed by the A3 Rust strict reader and the A2 TS loader
+    /// (`records/actor-routing/current.json`). Unlike identity-addressed
+    /// immutable records, the current projection is atomically replaced on
+    /// each publish; the bytes are the exact canonical JSON the strict
+    /// readers require.
+    pub fn write_actor_routing_projection(
+        &self,
+        projection: &ActorRoutingProjection,
+    ) -> StorageResult<PathBuf> {
+        let path = ArtifactRelativePath::new(
+            ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+            "actor routing projection record",
+        )?;
+        let bytes = canonical_bytes(projection)?;
+        self.with_exclusive_pointer_lock(&path, |destination| {
+            self.replace_locked(destination, &bytes)?;
+            Ok(destination.to_path_buf())
+        })
     }
 
     pub fn read_runtime_assembly(

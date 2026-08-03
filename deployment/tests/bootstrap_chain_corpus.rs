@@ -315,9 +315,13 @@ mod tests {
                                 "{} repository must surface pending to the bootstrap reader",
                                 state.id
                             );
-                            assert_ne!(
+                            assert_eq!(
                                 record.recovery_action(&[], &[]).expect("recovery action"),
-                                ActivationRecoveryAction::StableCommitted
+                                ActivationRecoveryAction::AbortPending {
+                                    activation_id: "activation-1".to_string()
+                                },
+                                "{} must surface a recoverable pending activation",
+                                state.id
                             );
                         }
                         other => panic!("unexpected ok repository read for kind {other}"),
@@ -333,17 +337,22 @@ mod tests {
                 other => panic!("unsupported repositoryRead {other}"),
             }
 
-            // Bootstrap outcome mapping: committedOnly is stable; every negative
-            // kind must fail closed; pending is never projected.
+            // Bootstrap outcome mapping: committedOnly is stable; pendingPresent
+            // carries recovery semantics (committed published + recovery
+            // installed, E-activation §4.2); every other negative kind must
+            // fail closed. Pending candidates are never projected as committed.
             match state.bootstrap_outcome.as_str() {
                 "stableCommitted" => {
                     assert_eq!(state.kind, "committedOnly");
                 }
-                outcome @ ("failClosedPending"
-                | "failClosedMissing"
+                "recoverPending" => {
+                    assert_eq!(state.kind, "pendingPresent");
+                }
+                outcome @ ("failClosedMissing"
                 | "failClosedMalformed"
                 | "failClosedIdentityMismatch") => {
                     assert_ne!(state.kind, "committedOnly", "{outcome} for {}", state.id);
+                    assert_ne!(state.kind, "pendingPresent", "{outcome} for {}", state.id);
                 }
                 other => panic!("unsupported bootstrapOutcome {other}"),
             }

@@ -24,6 +24,7 @@ skiff-runtime-transport = { path = "../runtime/transport" }
 # dependencies consumed by the Router binary. Every version is already pinned in
 # the workspace Cargo.lock; no new crate or version is introduced.
 async-trait = "0.1"
+base64 = "0.22"
 bytes = "1"
 futures-util = "0.3"
 http-body-util = "0.1"
@@ -32,6 +33,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 mongodb = "3.2"
 serde = "1.0"
 serde_json = "1.0"
+sha2 = "0.10"
 thiserror = "2.0"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.26"

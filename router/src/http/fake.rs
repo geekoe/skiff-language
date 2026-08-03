@@ -10,13 +10,15 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
-use skiff_runtime_transport::protocol::RuntimeHttpNameValueFrameHeader;
+use skiff_runtime_transport::protocol::{
+    ResponseErrorFrameHeader, RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader,
+};
 use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
 use tokio::sync::watch;
 
 use super::dispatch::{
     cancel_reason_for_terminal, DispatchRequest, HttpDispatchError, HttpDispatchPort,
-    PendingTerminalSource, UnaryHttpResponse,
+    PendingTerminalSource, TestDispatchOutcome, UnaryHttpResponse,
 };
 use super::stream::HttpStreamSink;
 
@@ -397,6 +399,65 @@ impl HttpDispatchPort for FakeHttpDispatcher {
             }
         }
         Ok(())
+    }
+
+    async fn dispatch_test(
+        &self,
+        request: DispatchRequest,
+    ) -> Result<TestDispatchOutcome, HttpDispatchError> {
+        self.record_request(&request);
+        let Some(plan) = self.take_plan() else {
+            return Err(HttpDispatchError::Cancelled {
+                source: PendingTerminalSource::RuntimeDisconnect,
+                message: "fake dispatcher has no plan".to_string(),
+            });
+        };
+        match plan {
+            FakeDispatchPlan::UnaryOk {
+                status,
+                headers,
+                payload,
+            } => Ok(TestDispatchOutcome::End(UnaryHttpResponse {
+                status,
+                headers: http_headers(&headers),
+                payload,
+            })),
+            FakeDispatchPlan::UnaryControlError {
+                code,
+                message,
+                status,
+                details,
+            } => Ok(TestDispatchOutcome::Error(
+                ResponseErrorFrameHeader::control(
+                    request.header.request_id.clone(),
+                    RuntimeErrorFramePayload {
+                        code,
+                        message,
+                        status,
+                        details,
+                    },
+                ),
+                Bytes::new(),
+            )),
+            FakeDispatchPlan::UnaryFixedServiceError { trace_id, error_id } => {
+                let error = fixed_service_error(&trace_id, &error_id);
+                Ok(TestDispatchOutcome::Error(
+                    ResponseErrorFrameHeader::fixed_service(request.header.request_id.clone()),
+                    Bytes::from(error.into_encoded_bytes()),
+                ))
+            }
+            FakeDispatchPlan::UnaryRuntimeCancel => Err(HttpDispatchError::Cancelled {
+                source: PendingTerminalSource::RuntimeRequestCancel,
+                message: "runtime cancelled the request".to_string(),
+            }),
+            FakeDispatchPlan::UnaryHang => Err(self.run_hang(&request).await),
+            FakeDispatchPlan::Stream { .. } | FakeDispatchPlan::StreamHang => {
+                Err(HttpDispatchError::Cancelled {
+                    source: PendingTerminalSource::ProtocolError,
+                    message: "stream plan used for test dispatch".to_string(),
+                })
+            }
+        }
     }
 }
 

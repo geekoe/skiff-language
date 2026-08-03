@@ -11,7 +11,9 @@ use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
-use skiff_runtime_transport::protocol::RuntimeHttpNameValueFrameHeader;
+use skiff_runtime_transport::protocol::{
+    RuntimeHttpNameValueFrameHeader, ResponseErrorFrameHeader,
+};
 use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
 use tokio::sync::watch;
 
@@ -32,6 +34,18 @@ pub struct UnaryHttpResponse {
     pub status: u16,
     pub headers: Vec<RuntimeHttpNameValueFrameHeader>,
     pub payload: Bytes,
+}
+
+/// One runtime frame outcome of a test dispatch (plan §7 E-http; TS
+/// `dispatchAssemblyTestBinary` parity). The control endpoint re-emits
+/// runtime `response.end` / `response.error` frames verbatim as HTTP 200;
+/// only dispatcher-level failures are control errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestDispatchOutcome {
+    End(UnaryHttpResponse),
+    /// The exact runtime `response.error` frame header and its opaque
+    /// payload bytes (fixed-service payload; empty for control errors).
+    Error(ResponseErrorFrameHeader, Bytes),
 }
 
 /// Terminal sources of ordinary requests (C-dispatch §4.2).
@@ -118,6 +132,15 @@ pub trait HttpDispatchPort: Send + Sync {
         request: DispatchRequest,
         sink: Arc<dyn HttpStreamSink>,
     ) -> Result<(), HttpDispatchError>;
+
+    /// Test-dispatch seam (TS `dispatchAssemblyTestBinary` parity): returns
+    /// the exact runtime frame outcome so the control endpoint can re-emit
+    /// `response.end` / `response.error` frames without conflating them with
+    /// dispatcher-level rejections.
+    async fn dispatch_test(
+        &self,
+        request: DispatchRequest,
+    ) -> Result<TestDispatchOutcome, HttpDispatchError>;
 }
 
 /// Client-disconnect cancellation signal (HTTP side) and watch (dispatch

@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assembly_fails_closed_on_pending_state() {
+    async fn assembly_publishes_committed_epoch_and_exposes_pending_recovery() {
         let chain = materialize("prod");
         let repository = Arc::new(MemoryActivationStateRepository::new());
         repository
@@ -328,22 +328,28 @@ mod tests {
             .await
             .expect("prepare pending state");
         let config = config(Some("prod"), chain._root.path());
-        let error = RouterBootstrapAssembly::assemble_with(
+        let assembly = RouterBootstrapAssembly::assemble_with(
             &config,
             "prod",
             Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
         )
         .await
-        .expect_err("pending activation must fail closed at bootstrap");
-        assert!(
-            matches!(
-                error,
-                BootstrapAssemblyError::Bootstrap(skiff_router::bootstrap::BootstrapError::Read(
-                    skiff_router::bootstrap::BootstrapReadOutcome::FailClosedPending { .. }
-                ))
-            ),
-            "{error}"
+        .expect("pending activation must assemble with the committed epoch published");
+        // §4.2(1): the committed epoch is published first; the pending record
+        // is surfaced for the activation recovery transaction.
+        assert_eq!(assembly.epoch().assembly_generation(), 7);
+        assert_eq!(assembly.health().epoch_store_publish_count, 1);
+        let pending = assembly
+            .pending_recovery()
+            .expect("pending recovery must be exposed by the assembly");
+        assert_eq!(pending.activation_id, "live-activation-1");
+        assert_eq!(pending.expected_generation, 7);
+        assert_eq!(pending.candidate_generation, 8);
+        assert_eq!(
+            pending.participant_replica_ids,
+            vec!["replica-1".to_string()]
         );
+        assembly.shutdown().await;
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { cargoTargetDir } from './cargo-target-dir.mjs';
@@ -21,28 +21,11 @@ export async function runRouterProcessSmoke({ root, env = process.env }) {
     throw new Error('router process smoke requires the repository root');
   }
   const devHome = join(root, '.skiff-instance', 'dev-home');
-  const tsSpec = assertRouterProcessSpec(
-    resolveRouterProcessSpec({
-      devHome,
-      implementation: 'ts',
-      repoRoot: root,
-    }),
-  );
-  const tsInvocation = routerProcessInvocation(tsSpec);
   const rustSpec = assertRouterProcessSpec(
-    resolveRouterProcessSpec({
-      devHome,
-      implementation: 'rust',
-      repoRoot: root,
-    }),
+    resolveRouterProcessSpec({ devHome, repoRoot: root }),
   );
   const rustInvocation = routerProcessInvocation(rustSpec);
 
-  await assertPathIsFile(join(tsSpec.ts_source_root, 'package.json'), 'TS router package.json');
-  assertInvocation(tsInvocation, {
-    command: 'pnpm',
-    args: ['--dir', tsSpec.ts_source_root, 'dev', '--config', tsSpec.config_path],
-  });
   assertInvocation(rustInvocation, {
     command: rustSpec.rust_binary_path,
     args: [rustSpec.config_path],
@@ -97,7 +80,6 @@ export async function runRouterProcessSmoke({ root, env = process.env }) {
 
   return {
     implementation: 'rust',
-    ts: { spec: tsSpec, invocation: tsInvocation },
     rust: { spec: rustSpec, invocation: rustInvocation },
     binary: {
       path: rustSpec.rust_binary_path,
@@ -124,18 +106,6 @@ function assertInvocation(actual, expected) {
     throw new Error(
       `router process smoke: unexpected process invocation ${JSON.stringify(actual)}`,
     );
-  }
-}
-
-async function assertPathIsFile(path, label) {
-  try {
-    if (!(await stat(path)).isFile()) {
-      throw new Error(`${label} is not a file`);
-    }
-  } catch (error) {
-    throw new Error(`router process smoke: missing ${label} at ${path}`, {
-      cause: error,
-    });
   }
 }
 

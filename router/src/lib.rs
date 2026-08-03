@@ -2,15 +2,34 @@
 //! final listener skeleton assembled from the C-net mechanism.
 
 pub mod activation;
+pub mod actor;
 pub mod artifact;
 pub mod bootstrap;
 pub mod config;
 pub mod dispatch;
+pub mod health;
 pub mod http;
 pub mod listener;
 pub mod routing;
 pub mod session;
+pub mod supervisor;
+pub mod test_dispatch;
+pub mod ws;
 
+pub use activation::{
+    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
+    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationHttpHandler,
+    ActivationParticipantBinding, ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort,
+    CandidateEpochRefs, CoordinatorError, EnqueueResult, PublishCommittedEpochPort,
+    RecoveryTransaction, RuntimeCandidateQueryPort, SessionEnqueuePort,
+    ACTIVATION_REQUEST_BODY_CAP, ASSEMBLY_ACTIVATION_CONTROL_PATH,
+};
+pub use actor::{
+    ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneSpawnControl,
+    ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorMethodSpawnExecutionSink,
+    ActorOwnerControlBroker, ActorOwnershipRegistry, ActorSpawnParentResolver,
+    FunctionSpawnParentResolver, RelaySpawnParentLookup, SpawnSubmitRouter,
+};
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
     BootstrapStrictLoader, CommittedActivationBootstrapReader, RouterBootstrapAssembly,
@@ -32,16 +51,23 @@ pub use dispatch::{
     SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
     SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
 };
+pub use health::{
+    project_capability_connections, project_loop_risk_runtimes, project_replicas, render_base,
+    session_facts, ActiveAssemblyProjection, CapabilitiesProjection,
+    CapabilityConnectionProjection, HealthAggregator, HealthCounters, LoopRiskDispatcherProjection,
+    LoopRiskHttpStreamProjection, LoopRiskProjection, LoopRiskRouterProjection,
+    LoopRiskRuntimeProjection, ReplicaProjection, SessionFacts,
+};
 pub use http::{
     CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
     HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
     HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
-    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
-    HttpStreamSink, UnaryHttpResponse,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource, HttpStreamSink,
+    TestDispatchOutcome, UnaryHttpResponse,
 };
 pub use listener::{
-    run_router, start_listeners, ListenerError, ListenerHandle, ListenerStartOptions,
-    RouterListeners,
+    run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,
+    ListenerStartOptions, RouterListeners, WsTaskRegistry,
 };
 pub use routing::{
     CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
@@ -49,6 +75,25 @@ pub use routing::{
     RuntimeCandidateQuery, SessionCancellation,
 };
 pub use session::{
-    ConsumerKind, ConsumerManifest, RuntimeRegistrationDirectory, RuntimeSessionEpoch,
-    SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
+    ConsumerKind, ConsumerManifest, RegistrationObserver, RuntimeRegistrationDirectory,
+    RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
+};
+pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
+pub use test_dispatch::{
+    TestDispatchHttpHandler, TestDispatchHttpHandlerOptions, TestDispatchHttpResponse,
+    TEST_DISPATCH_CONTROL_PATH, TEST_DISPATCH_REQUEST_BODY_CAP,
+};
+pub use ws::{
+    AllowAnyPendingAdmission, BrokerConnectionGeneration, BrokerGenerationAdapter,
+    BrokerGenerationPort, BrokerHealthSnapshot, BrokerRuntimeResponse, BrokerRuntimeSource,
+    BusinessKey, ClientConnectionIndex, ClientConnectionIndexOptions, ClientTerminal, Clock,
+    DispatchInbound, InboundDispatchAction, InboundDispatchResult, InboundExecutionToken,
+    JsonRpc20TextProfile, LedgerReleaseAdapter, LedgerReleasePort, MethodCatalog,
+    NoopNotificationObserver, NoopRuntimeViolationSink, NotificationObserver, OverflowPolicy,
+    PeerResponseTerminal, PeerTextOutcome, PeerWriter, PendingAdmissionSender,
+    PendingReleaseHandle, PlatformErrorKind, ProfileLimits, ReleaseOutcome, ReleaseResolution,
+    RuntimeGenerationPeer, RuntimeGenerationPinLedger, RuntimeRequest, RuntimeRequestOutcome,
+    RuntimeResponder, RuntimeSessionClose, RuntimeViolationSink, WebSocketLane,
+    WebSocketLaneOptions, WebSocketLifecycleClose, WebSocketRequestBroker,
+    WebSocketRequestBrokerOptions, WriteBudget, WsHealthSnapshot,
 };

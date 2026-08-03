@@ -58,24 +58,21 @@ export function resolveRouterProcessSpec({
   if (devHome === undefined || devHome === null || String(devHome).trim().length === 0) {
     throw new Error('RouterProcessSpec requires an explicit devHome');
   }
-  assertRouterImplementation(implementation);
+  const selectedImplementation = implementation ?? 'rust';
+  assertRouterImplementation(selectedImplementation);
   const resolvedDevHome = resolve(devHome);
-  const resolvedRepoRoot = resolve(repoRoot);
-  const spec = {
-    implementation,
+  return deepFreeze({
+    implementation: selectedImplementation,
     config_path: join(resolvedDevHome, 'router.yml'),
-  };
-  if (implementation === 'ts') {
-    spec.ts_source_root = join(resolvedRepoRoot, 'router');
-  } else {
-    spec.rust_binary_path = join(resolvedDevHome, 'bin', routerBinaryName(platform));
-  }
-  return deepFreeze(spec);
+    rust_binary_path: join(resolvedDevHome, 'bin', routerBinaryName(platform)),
+  });
 }
 
 export function assertRouterImplementation(value) {
-  if (value !== 'ts' && value !== 'rust') {
-    throw new Error('router implementation must be exactly "ts" or "rust"');
+  if (value !== 'rust') {
+    throw new Error(
+      'router implementation is no longer selectable; the Router is always the Rust binary',
+    );
   }
   return value;
 }
@@ -88,43 +85,25 @@ export function assertRouterProcessSpec(spec) {
   if (!isAbsolutePath(spec.config_path)) {
     throw new Error('RouterProcessSpec.config_path must be an absolute path');
   }
-  const expectedKeys = spec.implementation === 'ts'
-    ? ['implementation', 'config_path', 'ts_source_root']
-    : ['implementation', 'config_path', 'rust_binary_path'];
+  const expectedKeys = ['implementation', 'config_path', 'rust_binary_path'];
   const actualKeys = Object.keys(spec).sort();
   if (actualKeys.join(',') !== [...expectedKeys].sort().join(',')) {
     throw new Error(
       `RouterProcessSpec must contain exactly ${expectedKeys.join(', ')}`,
     );
   }
-  const sourceKey = spec.implementation === 'ts'
-    ? 'ts_source_root'
-    : 'rust_binary_path';
-  if (!isAbsolutePath(spec[sourceKey])) {
-    throw new Error(`RouterProcessSpec.${sourceKey} must be an absolute path`);
+  if (!isAbsolutePath(spec.rust_binary_path)) {
+    throw new Error('RouterProcessSpec.rust_binary_path must be an absolute path');
   }
   return spec;
 }
 
 export function routerProcessInvocation(spec) {
   assertRouterProcessSpec(spec);
-  return Object.freeze(
-    spec.implementation === 'ts'
-      ? {
-          command: 'pnpm',
-          args: Object.freeze([
-            '--dir',
-            spec.ts_source_root,
-            'dev',
-            '--config',
-            spec.config_path,
-          ]),
-        }
-      : {
-          command: spec.rust_binary_path,
-          args: Object.freeze([spec.config_path]),
-        },
-  );
+  return Object.freeze({
+    command: spec.rust_binary_path,
+    args: Object.freeze([spec.config_path]),
+  });
 }
 
 function isAbsolutePath(value) {
