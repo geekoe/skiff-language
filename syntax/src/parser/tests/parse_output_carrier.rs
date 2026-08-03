@@ -10,6 +10,7 @@
 //! `UPDATE_PARSER_PHASE0_BASELINE=1` only when the change is intentional.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::parser::parse_source;
 
@@ -19,33 +20,27 @@ pub(crate) fn repo_root() -> PathBuf {
 }
 
 pub(crate) fn skiff_fixture_paths(root: &Path) -> Vec<PathBuf> {
+    let output = Command::new("git")
+        .arg("ls-files")
+        .arg("-z")
+        .arg("--cached")
+        .arg("--")
+        .arg("*.skiff")
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to list tracked .skiff files: {error}"));
+    assert!(
+        output.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let mut paths = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|error| panic!("failed to list {}: {error}", dir.display()));
-        for entry in entries {
-            let entry = entry.unwrap_or_else(|error| {
-                panic!("failed to read entry in {}: {error}", dir.display())
-            });
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name();
-                if name == "target"
-                    || name == "cargo-target"
-                    || name == ".git"
-                    || name == "node_modules"
-                {
-                    continue;
-                }
-                pending.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "skiff")
-            {
-                paths.push(path);
-            }
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
         }
+        let relative = String::from_utf8_lossy(raw);
+        paths.push(root.join(relative.as_ref()));
     }
     paths.sort();
     paths
