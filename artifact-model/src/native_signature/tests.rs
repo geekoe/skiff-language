@@ -88,6 +88,8 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         "std.string.encodeQueryComponent",
         "std.string.isAsciiDigits",
         "std.string.truncateUtf8Bytes",
+        "std.task.cancel",
+        "std.task.status",
         "std.time.sleep",
         "std.websocket.sendBinaryToBusinessIdentity",
         "std.websocket.sendBinaryToConnection",
@@ -124,6 +126,8 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
                         | "std.http.client.request"
                         | "std.http.client.sse"
                         | "std.http.client.stream"
+                        | "std.task.cancel"
+                        | "std.task.status"
                         | "std.time.sleep"
                         | "std.websocket.requestJsonToConnection"
                 )
