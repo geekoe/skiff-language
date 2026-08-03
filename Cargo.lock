@@ -2745,6 +2745,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-task-control"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "skiff-artifact-model",
+ "skiff-deployment",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "skiff-test-runner"
 version = "0.1.0"
 dependencies = [

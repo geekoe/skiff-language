@@ -5,6 +5,7 @@ members = [
   "artifact-model",
   "artifact-identity",
   "deployment",
+  "task-control",
   "runtime-config-snapshot",
   "config-snapshot-tooling",
   "syntax",
