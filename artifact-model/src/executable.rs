@@ -340,6 +340,14 @@ pub enum PatternIr {
     Literal { value: LiteralIr },
     Type { ty: TypeRefIr },
     Binding { slot: u32 },
+    Record { fields: Vec<RecordPatternFieldIr> },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordPatternFieldIr {
+    pub name: String,
+    pub pattern: PatternIr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

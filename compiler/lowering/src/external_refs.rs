@@ -355,6 +355,11 @@ mod tests;
 fn collect_pattern_external_refs(pattern: &PatternIr, refs: &mut ExternalRefTable) {
     match pattern {
         PatternIr::Type { ty } => collect_type_ref_external_refs(ty, refs),
+        PatternIr::Record { fields } => {
+            for field in fields {
+                collect_pattern_external_refs(&field.pattern, refs);
+            }
+        }
         PatternIr::Wildcard | PatternIr::Literal { .. } | PatternIr::Binding { .. } => {}
     }
 }

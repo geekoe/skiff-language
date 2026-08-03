@@ -1,5 +1,6 @@
 mod common;
 use common::{package_project::compile_package_project, TestDir};
+use skiff_artifact_model::{LiteralIr, PatternIr, StmtIr};
 
 fn package_with_source(name: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
@@ -136,9 +137,102 @@ fn std_task_status_and_cancel_compile_through_the_full_package_pipeline() {
             function consumeStatus(status: std.task.TaskStatus) -> void {
               return
             }
+
+            function statusKind(status: std.task.TaskStatus) -> string {
+              match status {
+                { kind: "succeeded" } => {
+                  return "succeeded"
+                }
+                { kind: "failed" } => {
+                  return "failed"
+                }
+                _ => {
+                  return "other"
+                }
+              }
+            }
+
+            function cancelKind(result: std.task.TaskCancelResult) -> string {
+              match result {
+                { kind: "alreadyStarted" } => {
+                  return "alreadyStarted"
+                }
+                _ => {
+                  return "other"
+                }
+              }
+            }
         "#,
     );
-    compile_package_project(temp.path()).expect("std.task status/cancel should compile");
+    let project =
+        compile_package_project(temp.path()).expect("std.task status/cancel should compile");
+    let unit = project
+        .package
+        .file_ir_units
+        .iter()
+        .find(|unit| {
+            unit.unit
+                .executables
+                .iter()
+                .any(|executable| executable.symbol.ends_with("statusKind"))
+        })
+        .expect("statusKind file IR should be emitted");
+    let status_kind = unit
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with("statusKind"))
+        .expect("statusKind executable should be emitted");
+    let status_arms = status_kind
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            StmtIr::Match { arms, .. } => Some(arms),
+            _ => None,
+        })
+        .expect("statusKind should contain a match statement");
+    assert_match_arm_kind(&status_arms[0], "succeeded");
+    assert_match_arm_kind(&status_arms[1], "failed");
+    assert!(matches!(status_arms[2].pattern, PatternIr::Wildcard));
+
+    let cancel_kind = unit
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol.ends_with("cancelKind"))
+        .expect("cancelKind executable should be emitted");
+    let cancel_arms = cancel_kind
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            StmtIr::Match { arms, .. } => Some(arms),
+            _ => None,
+        })
+        .expect("cancelKind should contain a match statement");
+    assert_match_arm_kind(&cancel_arms[0], "alreadyStarted");
+}
+
+fn assert_match_arm_kind(arm: &skiff_artifact_model::MatchArmIr, expected_kind: &str) {
+    let PatternIr::Record { fields } = &arm.pattern else {
+        panic!(
+            "TaskStatus/TaskCancelResult match arm must lower to a record pattern, got {:?}",
+            arm.pattern
+        );
+    };
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name, "kind");
+    assert!(
+        matches!(
+            &fields[0].pattern,
+            PatternIr::Literal {
+                value: LiteralIr::String { value },
+            } if value == expected_kind
+        ),
+        "expected kind literal `{expected_kind}`, got {:?}",
+        fields[0].pattern
+    );
 }
 
 #[test]

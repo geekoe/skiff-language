@@ -2120,6 +2120,51 @@ function run(flag: bool, user: RepoImpl) -> void {
 }
 
 #[test]
+fn match_record_pattern_parses_kind_literal_and_bare_field() {
+    let ast = parse_source(
+        r#"
+function run(status: { kind: string }) -> void {
+  match status {
+    { kind: "succeeded" } => {
+      return
+    }
+    { kind } => {
+      return
+    }
+  }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::Match { arms, .. } = &statements[0] else {
+        panic!("expected match statement, got {:?}", statements[0]);
+    };
+
+    let crate::ast::Pattern::Record { fields } = &arms[0].pattern else {
+        panic!("expected record pattern, got {:?}", arms[0].pattern);
+    };
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name, "kind");
+    assert!(matches!(
+        &fields[0].pattern,
+        Some(crate::ast::Pattern::Literal(crate::ast::Literal::String(value)))
+            if value == "succeeded"
+    ));
+
+    let crate::ast::Pattern::Record { fields } = &arms[1].pattern else {
+        panic!("expected record pattern, got {:?}", arms[1].pattern);
+    };
+    assert_eq!(fields[0].name, "kind");
+    assert!(
+        fields[0].pattern.is_none(),
+        "bare record pattern field must parse without a sub-pattern"
+    );
+}
+
+#[test]
 fn parenthesized_record_construct_in_statement_header() {
     let ast = parse_source(
         r#"

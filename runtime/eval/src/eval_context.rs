@@ -601,7 +601,9 @@ impl<'a> EvalContext<'a> {
                 continue;
             }
             self.env.push();
-            if let Err(error) = bind_program_pattern(self.env, &arm.pattern, value.clone()) {
+            if let Err(error) =
+                bind_program_pattern(self.env, &arm.pattern, value.clone(), self.heap.heap_mut())
+            {
                 self.env.pop();
                 return Err(error);
             }

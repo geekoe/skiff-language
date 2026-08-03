@@ -29,8 +29,8 @@ use crate::file_ir::{
     ExprRefIr, FunctionTypeParamIr, InstructionSourceSite, InterfaceMethodSlotPlanIr,
     InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
     LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr,
-    ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr, TestEffectExpectedIr,
-    TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
+    RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr,
+    TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
@@ -2648,8 +2648,21 @@ impl<'a> FunctionLowerer<'a> {
                 PatternIr::Type { ty: resolved.ir }
             }
             skiff_syntax::ast::Pattern::Record { fields } => {
-                self.declare_pattern_fields(fields)?;
-                PatternIr::Wildcard
+                let mut lowered_fields = Vec::with_capacity(fields.len());
+                for field in fields {
+                    lowered_fields.push(RecordPatternFieldIr {
+                        name: field.name.clone(),
+                        pattern: match &field.pattern {
+                            Some(pattern) => self.lower_pattern_and_bind(pattern)?,
+                            None => PatternIr::Binding {
+                                slot: self.declare_slot(&field.name, SlotKind::Pattern, false)?,
+                            },
+                        },
+                    });
+                }
+                PatternIr::Record {
+                    fields: lowered_fields,
+                }
             }
             skiff_syntax::ast::Pattern::Or(patterns) => {
                 if let Some(pattern) = patterns.first() {

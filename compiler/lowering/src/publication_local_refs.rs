@@ -280,6 +280,11 @@ fn rewrite_pattern(index: &PublicationLocalRefIndex, module_path: &str, pattern:
         PatternIr::Type { ty } => {
             rewrite_type_ref(index, module_path, ty);
         }
+        PatternIr::Record { fields } => {
+            for field in fields {
+                rewrite_pattern(index, module_path, &mut field.pattern);
+            }
+        }
         PatternIr::Wildcard | PatternIr::Literal { .. } | PatternIr::Binding { .. } => {}
     }
 }
