@@ -109,14 +109,25 @@
 
 - `/submit-immediate`：`const task = dispatch markEffect(tag)`（表达式位置，
   TaskRef 入 `TaskEntry` DB stored field）；
-- `/submit-after` / `/submit-at`：`dispatch ... after(3000ms)` /
-  `dispatch ... at(futureInstant)`（本地 `type Instant = Date`，未来时间用
-  `Date.fromEpochMilliseconds(Date.now().toEpochMilliseconds() + 3000)`）；
-- `/submit-actor`：`const actor = std.actor.get<Counter>(tag)` 后
-  `dispatch actor.increment()`（actor-method target，方法返回 void）；
+- `/submit-after`：`dispatch ... after(3000ms)`（延迟 task，到期前
+  scheduled/ready、到期后执行）；
+- at() 绝对时间路径：`scheduleAt(future: Instant)`（本地
+  `type Instant = Date`）随 artifact 编译（compiler/lowering 证据）。
+  `std.time.Instant` 尚不在 std（D3/D4 叶子记录为待定），HTTP formal 无法
+  携带 Instant（Date 不是 external-schema eligible），因此 at() 的 runtime
+  时序执行由既有 eval 单测
+  `canonical_task_statement_at_timing_evaluates_expression_once` 覆盖；
+- `/submit-actor` / `/submit-actor-after`：HTTP handler
+  `std.actor.get<Counter>(tag)` 后调用 actor 方法
+  `scheduleIncrement(id)` / `scheduleIncrementDelayed(id)`；actor 方法在
+  **actor execution frame 内** `dispatch self.increment()`（E2a 提交侧边界：
+  普通 HTTP frame 不能直接 `dispatch actor.method()`）并把 TaskRef 写入
+  `TaskEntry`（handler 传入 id）；
 - `/status` / `/cancel`：从 DB `TaskEntry` 恢复 TaskRef 后调用
-  `std.task.status` / `std.task.cancel`，返回 `{ kind: string }`（union kind
-  投影为普通 record，避免 typedJson 出口对 union 的 schema 要求）；
+  `std.task.status` / `std.task.cancel`，kind 经
+  `std.json.encode<T>` → `std.json.decode<{kind}>` 投影为
+  `{ kind: string }`（规避 compiler record-pattern match 降级缺陷；见
+  “E2E 发现并处理/记录的缺陷”第 2 条）；
 - `/effect`：读取 `Effect.visits`（函数 target 的持久 effect，`db upsert` +
   `visits += 1`），用于证明执行与重复 attempt；
 - `/actor-count`：读取 actor 内存字段（证明 actor-method 执行）。
@@ -266,6 +277,9 @@ runtime/service-db/src/tests/recoverable_support.rs       # TaskRef metadata/exp
 2. `after(3000ms)`：到期前 status `scheduled`、effect 0；`/cancel` →
    `canceled` 且 4 秒后 effect 仍 0（无 attempt）；第二个延迟 task 到期后
    执行成功。
+   at() 绝对时间路径为 artifact 级编译证据（`scheduleAt`）+ runtime eval
+   单测（`canonical_task_statement_at_timing_evaluates_expression_once`）；
+   `std.time.Instant` 待 std API 节点定稿后可在 E2E 探针补真实 at() 执行。
 3. `cancel` vs `claim`：慢 target 进入 `running` 后 cancel →
    `alreadyStarted`，最终 `succeeded`。
 4. runtime SIGKILL 断连 → scheduler 停止 renew → lease 过期 recovery（约
