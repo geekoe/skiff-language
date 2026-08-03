@@ -473,12 +473,12 @@ policy：
 
 - ordinary service/public API schema：必须 schema-closed，不允许 `any I` 默认 wire shape，也不隐式调用
   recoverable codec。
-- DB stored field、`spawn` target 参数、queue / persistent work item payload、runtime 内部跨 request payload：
+- DB stored field、`dispatch` target 参数、queue / persistent work item payload、runtime 内部跨 request payload：
   是 owner-internal recoverable boundary，底线是“值必须可恢复”。详见
   [`../architecture/recoverable-value.md`](../architecture/recoverable-value.md)。
 - service/public API 的显式 recoverable slot：只有 ABI/schema 明确标记时才调用 recoverable codec；第一版离开 owner
   service trust domain 时只允许 plain data envelope，行为节点 fail closed。
-- package public 入口不是跨进程边界。`any I` 可在同 runtime request 内流动；若该值再进入 DB/spawn/queue/persistent
+- package public 入口不是跨进程边界。`any I` 可在同 runtime request 内流动；若该值再进入 DB/dispatch/queue/persistent
   payload，才按 recoverable boundary 检查。
 
 Recoverable boundary 的静态检查对象是 recoverable state plan，而不是所有 runtime raw field 的图。compiler 必须拒绝

@@ -6,7 +6,7 @@
 
 平台把业务协调分成两个互补机制：
 
-- **数据面**：service-owned database。业务事实、长时工作、跨 version 共享的状态都在这里；同一实体的运行唯一性由 actor 面表达，后台推进由 `spawn` 唤醒。
+- **数据面**：service-owned database。业务事实、长时工作、跨 version 共享的状态都在这里；同一实体的运行唯一性由 actor 面表达，后台推进由 `dispatch` 唤醒。
 - **actor 面**：运行时唯一实体。同一 identity 同时至多一个 live 实例，成员方法在同一实例上串行执行，承载“短同步裁决”。actor 不承诺持久性，但持久性不是它的定义特征；定义特征是运行时唯一性。
 
 唯一性归属：业务声明的 `db object` 不承载租约语义或语法；“谁在推进、谁能写”的运行时唯一性由
@@ -23,7 +23,7 @@ actor 面承担。平台内部可以使用租约实现 actor 的单实例保证�
 | | 调用方等结果 | 调用方等“已接收” |
 | --- | --- | --- |
 | 内存收件箱 | actor 同步调用 | （不提供） |
-| 持久收件箱 | （不提供；拆成“已接收 + 订阅结果”） | DB 写入 + `spawn` 唤醒 |
+| 持久收件箱 | （不提供；拆成“已接收 + 订阅结果”） | DB 写入 + `dispatch` 唤醒 |
 
 典型 actor 场景：协同编辑的操作排序、实时房间、在线 session、配额计数，以及对活跃 stream 的停止、替换和事件排序。完整 LLM 推理循环、长工具执行、聊天消息可靠接收仍属于数据面；agent 场景中 thread 本身是 actor，正在运行的 model turn 是它的活跃方法。actor 不能取代 thread、message、run 和 checkpoint 的持久化模型。
 
@@ -96,16 +96,16 @@ const hub = std.actor.get<DocHub>("room-1", 0)
 - create 内不能调用本实例其他方法。
 - key 字段在 create 内只读；平台在 create 执行前写入。
 
-### spawn 到 actor 方法（自消息 / 异步推进）
+### dispatch 到 actor 方法（自消息 / 异步推进）
 
-`spawn` 可以以 actor 方法为 target：提交的调用作为该 actor 的一次独立方法调用，按 identity
+`dispatch` 可以以 actor 方法为 target：提交的调用作为该 actor 的一次独立方法调用，按 identity
 路由、在单线程 executor 上排队执行；调用方不等结果（fire-and-forget，只等“已接收”）。
 
-- actor 不在 live 时，spawn 按 entry 保存的创建输入激活实例后排队目标方法。
-- spawned 调用与 caller request 生命周期分离；同一实例的多个 spawned 调用串行执行。
+- actor 不在 live 时，dispatch 按 entry 保存的创建输入激活实例后排队目标方法。
+- dispatched 调用与 caller request 生命周期分离；同一实例的多个 dispatched 调用串行执行。
 - 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
-  `spawn actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
-- 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `spawn` 目标方法。
+  `dispatch actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
+- 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `dispatch` 目标方法。
 
 ### 消费视图与验收矩阵
 
@@ -116,7 +116,7 @@ actor 声明的权威表示是 PackageArtifact 中的 actor 元数据（key/crea
 1. 生产同包路径（`root.*` 直接调用 actor 方法）——compile / link / execute；
 2. 公共 API 跨包调用方（public view）——compile / link / execute；
 3. `kind: test` service 经 `topLevelAlias` 的测试视图——compile / link / execute；
-4. router 控制面（`get` / `spawn` / owner 路由）——运行期。
+4. router 控制面（`get` / `dispatch` / owner 路由）——运行期。
 
 验收红线：actor 相关改动必须覆盖视图 1、2、3 的 compile/link/execute 与视图 4 的运行期
 路径，否则视为未闭合。历史缺口示例：视图 3 的 runtime link 曾报
@@ -222,7 +222,7 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 - `upgrading` incarnation 即使有 suspended method 也会在这些方法到达安全点并退出后逐出。
 - owner runtime 断连或 crash：排队与执行中的调用以平台错误返回调用方；实例状态丢失；下一个调用按创建输入重新激活。
 - 平台不持久化待执行调用队列。可靠投递、重试和补偿属于数据面。
-- 身份删除（移除 registry entry 并清理持久状态）不在 v1 提供，需要显式操作：quiescence 只是必要条件——句柄仍可能被持有、spawned call 可能还在路上、持久状态需要业务清理，这些都不能从实例状态推导。
+- 身份删除（移除 registry entry 并清理持久状态）不在 v1 提供，需要显式操作：quiescence 只是必要条件——句柄仍可能被持有、dispatched call 可能还在路上、持久状态需要业务清理，这些都不能从实例状态推导。
 
 ## 边界规则
 

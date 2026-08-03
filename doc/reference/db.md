@@ -333,7 +333,7 @@ const result = db transaction value {
   `collection`是源码声明的logical collection identity；错误不包含Mongo原始消息、物理collection、
   物理索引名或冲突值，也不归类为`std.db.ConflictError`。
 
-transaction 内不应执行外部副作用或长时间工作，例如 HTTP、LLM、service call、actor call、`spawn` 或 `db claim`。actor routing、spawn 提交和外部副作用不随 DB rollback 回滚。
+transaction 内不应执行外部副作用或长时间工作，例如 HTTP、LLM、service call、actor call、`dispatch` 或 `db claim`。actor routing、dispatch 提交和外部副作用不随 DB rollback 回滚。
 
 ## 8. Lease
 
@@ -388,15 +388,15 @@ const claimed = db claim Thread(threadId).drain as thread {
 
 约束：
 
-- `db claim` 不允许出现在 `db transaction` 内：编译器拒绝词法可见的情形，动态进入（经函数调用）由 runtime 拒绝。块体内允许普通 transaction 和 `spawn`。
+- `db claim` 不允许出现在 `db transaction` 内：编译器拒绝词法可见的情形，动态进入（经函数调用）由 runtime 拒绝。块体内允许普通 transaction 和 `dispatch`。
 - 租约不可重入：当前 request 已持有某对象的某个槽时，对同一对象同一槽再次 claim 是平台错误。对其他对象实例的同名槽 claim 是普通 try-claim。
-- 块体内 `spawn` 的调用在新 request 中执行，可能在本租约释放前就开始 try-claim 同一槽并得到 `false`。需要接力持有同一槽时，应在块体退出后再 `spawn`。
+- 块体内 `dispatch` 的调用在新 request 中执行，可能在本租约释放前就开始 try-claim 同一槽并得到 `false`。需要接力持有同一槽时，应在块体退出后再 `dispatch`。
 
 ### 8.3 Fencing
 
 守卫的作用域是动态的：claim 持有期间，当前 request 内对该 leased 对象实例（同一 db object、同一 primary key）的 `update` / `replace` / `delete`——无论写入语句位于哪个函数或 module——都自动追加租约守卫：提交时校验槽 token 仍属于当前持有者。守卫失败的写入不生效，并以 lease-lost 结束当前 claim。过期后复活的旧持有者由此被挡在写入之外。
 
-`spawn` 提交的调用在新的 request 中执行，不继承持有关系：spawned call 对同一对象的写入不带守卫，也不受当前 claim 约束。跨 service 调用同理。
+`dispatch` 提交的调用在新的 request 中执行，不继承持有关系：dispatched call 对同一对象的写入不带守卫，也不受当前 claim 约束。跨 service 调用同理。
 
 跨对象写入不被租约自动保护。需要与租约对齐的多对象写入，应放进包含至少一条 leased 对象写入的 `db transaction`：守卫失败使整个 transaction 回滚。
 

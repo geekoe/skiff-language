@@ -64,7 +64,7 @@ dependency public instance root 的"受控 root"形态——把它们从"不可�
 
 “linked-program-local” 是 ordinary public schema 的硬边界：`any I` **值**不进入 service public API payload、
 ordinary JSON materialization、public instance operation signature、config schema 或 test double external fixture schema
-的默认 wire shape。但 DB schema、`spawn`、queue / persistent work item 和 runtime 内部跨 request payload
+的默认 wire shape。但 DB schema、`dispatch`、queue / persistent work item 和 runtime 内部跨 request payload
 已经由 `recoverable-value.md` 重新定义为 owner-internal recoverable boundary：`carrier = Local` 且 self payload 全可恢复时可恢复，
 `carrier = Remote` 仍是 request-scope 正向远程引用、不可持久化。它**可以**作为Package public入口的参数类型
 （Package link进consumer同一linked program，`any I`值不跨service boundary；远程性只在调用时dispatch）——见§Boundary Contract与
@@ -285,10 +285,10 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
 约束：
 
 - Interface value 是 request-scope dynamic value。**本条的绝对排除已被 `recoverable-value.md` 部分取代**：
-  `carrier = Local` 的行为值可经可恢复 codec 进 DB/spawn/persistent（self payload 全可恢复时）；跨 service 把 `any I`
+  `carrier = Local` 的行为值可经可恢复 codec 进 DB/dispatch/persistent（self payload 全可恢复时）；跨 service 把 `any I`
   作 payload 传去对端、对端回拨这一恢复语义第一版 fail-closed（卡 service callback transport）。仍然成立的是：远程
   装箱的`ContractOperationId`（正向`Remote` carrier，consumer主动调用service-call public instance）是
-  request-scope寻址，不持久化重建——它是“指向远程实例的引用”，不是被恢复的值。能否进DB/spawn的权威
+  request-scope寻址，不持久化重建——它是“指向远程实例的引用”，不是被恢复的值。能否进DB/dispatch的权威
   判据见`recoverable-value.md`。
 - `carrier`（method table / operation 寻址）、type descriptor 和 artifact metadata 不计入 ordinary object
   payload，也不写入 DB / JSON。
@@ -561,8 +561,8 @@ Contract。
 - public instance operation signature。
 - public API type schema closure。
 - ~~service DB schema、queue/spawn/persistent work item payload~~ —— **此条已被 `recoverable-value.md` 取代**：
-  `carrier = Local` 行为值可经可恢复 codec 进 DB/spawn/persistent（self 全可恢复时）；跨 service 恢复语义第一版
-  fail-closed。DB/spawn/persistent 能否进的权威判据见 `recoverable-value.md`，不再由本条绝对排除。
+  `carrier = Local` 行为值可经可恢复 codec 进 DB/dispatch/persistent（self 全可恢复时）；跨 service 恢复语义第一版
+  fail-closed。DB/dispatch/persistent 能否进的权威判据见 `recoverable-value.md`，不再由本条绝对排除。
 - cross-service ordinary payload、ordinary JSON materialization。runtime binary payload 若是 owner-internal 跨 request
   lane，按 recoverable boundary 处理；若带 cross-service / external trust boundary，第一版行为节点 fail closed。
 - config schema、test double external fixture schema。
@@ -575,7 +575,7 @@ Contract。
   （见§Capability As Parameter）。注意：这是Package local-link入口，**不是**service operation；后者即使
   物理同进程也经过service boundary，仍然fail closed。
 
-判据收敛为：ordinary public schema 不承载 `any I` 默认 wire shape；owner-internal DB/spawn/queue/persistent/runtime
+判据收敛为：ordinary public schema 不承载 `any I` 默认 wire shape；owner-internal DB/dispatch/queue/persistent/runtime
 lane 按“值必须可恢复”处理；离开 owner service trust domain 的行为值第一版 fail closed。boundary walker 区分
 "Package入口签名"（local link，允许）、"service operation签名"（service boundary，拒绝）和
 "owner-internal recoverable boundary"（按 carrier/self recoverability 判定）。
@@ -662,7 +662,7 @@ boundary 限制，不能把保留字段解释成已支持用户可见 downcast�
 - **package 抽象依赖的最终形态**：§Capability As Parameter 给的是"入口吃 `any I` 参数"。是否再保留一个
   更轻的"能力 requirement"声明（让 consumer 用 `as I` 满足），还是完全靠参数，待定。
 - **动态并发**：当前 `concurrent` 只接静态平铺 lane、不接 `for`，无法对运行期变长 `any I` 集合并发
-  fan-out（动态得靠 `spawn` 手搓）。toolprovider 场景闭环需要"对 Array 并发 map"原语。这是将来是否要求
+  fan-out（动态得靠 `dispatch` 手搓）。toolprovider 场景闭环需要"对 Array 并发 map"原语。这是将来是否要求
   远程调用出现在并发上下文（§远程性的可见性）的前提。
 - **`as I` 是否隐式引入 service dependency**：§Remote Fail-Closed 要求远程装箱源是已声明 dependency。是否
   允许远程 `as I` 隐式引入 dependency，待 implementation 定。

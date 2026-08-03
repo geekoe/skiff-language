@@ -3,7 +3,7 @@
 本文负责：Skiff 平台持久调度的能力边界——durable queue item / policy / claim / lease /
 timer、同步请求排队、cancel / timeout，以及它们和 runtime request 的关系。
 
-本文不负责：actor、`spawn` 后台提交、service-owned database、queue store 物理实现、
+本文不负责：actor、`dispatch` 后台提交、service-owned database、queue store 物理实现、
 wire envelope、具体 manifest 字段、观测 schema。
 
 ## 定位

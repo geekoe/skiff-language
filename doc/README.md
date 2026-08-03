@@ -5,7 +5,7 @@
 ## 目录结构
 
 - `overview.md`：语言定位、工程模型和关键设计取舍。
-- `reference/`：稳定规则，包括 syntax、static semantics、`api.yml`、service/config authoring、interface、runtime、DB、queue、spawn、observability、file and command、std surface 和 testing。
+- `reference/`：稳定规则，包括 syntax、static semantics、`api.yml`、service/config authoring、interface、runtime、DB、queue、dispatch、observability、file and command、std surface 和 testing。
 - `architecture/`：长期内部架构契约，包括 compiler/runtime/router 边界、DB capability、release/registry、artifact linking、未规范化问题和共享协议 fixture；不作为用户语言规范。
 - `implementation/`：阶段性实现方案、迁移计划和审计记录；不作为长期架构契约。
 

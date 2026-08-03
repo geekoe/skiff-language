@@ -58,7 +58,7 @@ sequence test。
 | `RuntimeRegistrationDirectory` | live `RuntimeSessionEpoch`、registered assembly tuple、capability index、socket handle、replica/epoch 双索引 | active/draining 副本、capacity/pending、health history |
 | `RuntimeHealthLedger` | current/retained health observation | routing eligibility、socket ownership |
 | `RuntimeAdmissionPool` | per-session capacity permits、selection cursor/policy | session truth、request pending、active routing epoch |
-| `RequestDispatcher` | ordinary unary/stream 与 derived function-spawn correlation、terminal、reservation token | actor-method invocation、peer WS correlation、socket |
+| `RequestDispatcher` | ordinary unary/stream 与 derived task correlation、terminal、reservation token | actor-method invocation、peer WS correlation、socket |
 | `ClientConnectionIndex` | logical client connection、business identity replacement、`ClientSocketGeneration` | Runtime generation pin、broker pending |
 | `RuntimeGenerationPinLedger` | Runtime generation acquire/release pending/cache/session attachment | client business index、peer RPC correlation |
 | `WebSocketRequestBroker` | peer request/response correlation、deadline、tombstone、captured socket generation | ordinary dispatcher pending、connection replacement policy |

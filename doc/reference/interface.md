@@ -191,7 +191,7 @@ marker 不应该引入 runtime wrapper value。
 
 first-class interface value（动态分派）是 `any I`，见 `any-interface.md`：`any I` 类型 / `as I` 显式
 装箱（装箱源可以是本地 concrete record 或远程 public instance）/ 裸 interface 名不能当类型。一个能力
-可以作为 `any I` 值赋值、传参、放入 `Array<any I>`。进入 DB/spawn/queue/persistent 等跨 request
+可以作为 `any I` 值赋值、传参、放入 `Array<any I>`。进入 DB/dispatch/queue/persistent 等跨 request
 边界时按 recoverable boundary policy 判定；ordinary public schema 仍不承载 `any I` 默认 wire shape。见
 `any-interface.md` 与 `recoverable-value.md`。
 

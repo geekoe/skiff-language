@@ -3,8 +3,8 @@
 本文定义 Skiff **可恢复值**的长期内部架构契约。文件名使用英文 `recoverable-value` 只是路径约定；本文主术语是
 **可恢复值**。
 
-用户可见语义后续应落到 `../reference/static-semantics.md`、`../reference/spawn.md`、`../reference/db.md`
-和 `../reference/any-interface.md`；本文只规定 compiler、artifact、runtime、DB、spawn/queue payload
+用户可见语义后续应落到 `../reference/static-semantics.md`、`../reference/dispatch.md`、`../reference/db.md`
+和 `../reference/any-interface.md`；本文只规定 compiler、artifact、runtime、DB、dispatch/queue payload
 如何统一承载“值离开当前 request 后还能恢复”的机制。
 
 Skiff 尚未发布。本文目标态不要求兼容旧 DB schema、旧 spawn payload、旧 `any I` boundary 禁令或旧
@@ -44,7 +44,7 @@ decode(envelope, expected_type_plan, boundary_context) -> restored value
 
 这里的“可恢复”是**所有跨 request / 持久边界的值闭包要求**，不是 DB 专属规则，也不是 interface value 专属规则。
 `any I` 只是最容易暴露这个要求的一类值，因为它把 concrete self、interface projection 和 method table 隐藏在 existential
-wrapper 后面；普通 record、array、map、nominal object、native handle 只要进入 DB / spawn / queue / persistent payload，同样必须满足
+wrapper 后面；普通 record、array、map、nominal object、native handle 只要进入 DB / dispatch / queue / persistent payload，同样必须满足
 recoverable closure。
 
 `recoverable envelope` 是行为/动态恢复节点的统一载体。语义上所有跨 request / 持久边界的值都必须可恢复，但物理存储不要求
@@ -55,7 +55,7 @@ envelope lane。DB 在这条底线之上还叠加查询能力要求，见 §DB s
 边界包括：
 
 - DB object field / DB row。
-- spawn payload。
+- dispatch payload。
 - queue / persistent work item payload。
 - 跨 request runtime binary payload。
 - 普通 JSON/materialization 中被标记为可恢复 envelope 的值。
@@ -64,16 +64,16 @@ envelope lane。DB 在这条底线之上还叠加查询能力要求，见 §DB s
 后两条指的是**显式 envelope** 形态，不放开 `any-interface-value.md`“`any I` 不得编码成 ordinary JSON、不进
 public API schema closure”这条禁令；ordinary（无 envelope）路径仍 fail closed。`any I` 进可恢复边界永远走显式
 envelope，没有默认 wire shape。显式 envelope 还必须受信任边界约束：第一版只有 owner service 内部的
-DB/spawn/queue/runtime lane 可以承载行为节点；public API、导出 materialization 或跨 service 这类离开 service trust
+DB/dispatch/queue/runtime lane 可以承载行为节点；public API、导出 materialization 或跨 service 这类离开 service trust
 domain 的 envelope 第一版只允许 plain data，除非未来引入 sealed opaque payload。
 
-本文的表述不再围绕“`any I` 是否跨 spawn”。正确表述是：
+本文的表述不再围绕“`any I` 是否跨 dispatch”。正确表述是：
 
 ```text
 所有跨 request / 持久边界的值都必须是可恢复值。
 any I 只是其中一种值；判据是进入了哪类边界：
 package public 入口传参（同 service / 同 runtime）= request-scope 本地值，不需要恢复；
-DB/spawn/queue/persistent payload = 可恢复边界，按 carrier 与 self payload 判定；
+DB/dispatch/queue/persistent payload = 可恢复边界，按 carrier 与 self payload 判定；
 跨 service 反向 local callback / 明文 local behavior / native adapter 节点进恢复边界 = 第一版 fail-closed（卡 service
 callback transport 与 sealed payload）；
 跨 service / public / 导出 materialization 的 plain data 显式 envelope 可传输，但不改变 public API schema closure 规则。
@@ -127,7 +127,7 @@ program、当前 method table registry 和当前 expected type plan 来解释这
   `artifact_identity`、`build_id`、service version、package version、activation identity、activation-local id、package slot、
   type table index、source hash、本地路径或 `TypeAddr`。
 - DB recoverable-envelope lane 可以为 v2 历史记录使用显式 durable read policy：未知 record field 忽略，缺失 nullable field
-  materialize 为 `Null`，缺失 required field 失败。默认 decode、spawn payload、runtime transient payload 仍是 strict policy。
+  materialize 为 `Null`，缺失 required field 失败。默认 decode、dispatch payload、runtime transient payload 仍是 strict policy。
 - DB 普通数据字段的类型变更、rename、backfill 属于 **DB schema migration**（`../reference/db.md §11` 当前未定），
   与 recoverable codec 的 local behavior restore key 不是同一层。
 
@@ -349,7 +349,7 @@ enum RecoverableMapKey {
   - `carrier = Local` → `InterfaceValue` wrapper 节点 `code_identity = None`，`InterfaceValueState` 只保存
     `self_node`；interface/projection 来自 encode/decode 的 expected type plan。concrete self 的身份与状态写入
     `self_node`（通常是 `NominalObject + LocalConcrete`）。local interface 不能把 runtime carrier 或 payload 直接写进
-    DB/spawn/queue；只能写入显式 envelope 中的 `Local{ self_node }`。
+    DB/dispatch/queue；只能写入显式 envelope 中的 `Local{ self_node }`。
   - `carrier = Remote` → 是正向远程引用（consumer主动调一个service-call public instance）。在owner-internal
     recoverable lane 中，它写成 `Remote{ carrier }`，只保存 `dependency_ref`、`public_instance_key` 和
     `operation table`，不保存远端 self payload；恢复时用当前 linked program 重建并校验 operation table。把本地 local
@@ -412,7 +412,7 @@ DB projection 和 index policy 只看 DB 可投影的 storage shape：
 DB recoverable-envelope read 可使用 durable DB policy：已选中的 envelope 内部 record 多出的历史字段被忽略，缺失 nullable
 字段 materialize 为 `Null`，缺失 required 字段仍失败。这个 policy 只作用于正在 decode 的 v2 envelope 及其递归
 `LocalConcrete` self durable state；projection 没选中某个 top-level envelope 字段时，不触发 decode，也不 materialize 字段。
-写入、spawn payload 和 runtime transient payload 默认仍使用 strict policy。
+写入、dispatch payload 和 runtime transient payload 默认仍使用 strict policy。
 
 ## Decode Against Expected Type
 
@@ -538,7 +538,7 @@ enum RestoreCapability {
 
 - encode hook 输入当前 object self 和 `RestoreCapability::PureRecoverableRestore`，输出 `durable_state_type_plan` 下的
   recoverable value；runtime-only raw fields 不被 recoverable closure 遍历，除非 hook 自己把它们投影成 durable state。
-- encode/decode hook 在该 capability 下都不允许网络、DB write、spawn、文件写入、外部 clock/random 等不可回滚副作用；
+- encode/decode hook 在该 capability 下都不允许网络、DB write、dispatch、文件写入、外部 clock/random 等不可回滚副作用；
   第一版以 runtime capability guard 为准，lint 只能作为辅助，违反时 fail closed。
 - hook 由当前 `LocalConcreteRestoreKey` 定位。找不到 plan、durable state 不符合当前 plan、hook 输出对象 concrete type
   不匹配时 fail closed。
@@ -596,7 +596,7 @@ enum AdapterSchemaCompatibility {
 
 **`carrier = Remote`**（装箱源是被`service.yml.serviceCalls`选择的public instance，如
 `remoteLlm/llmInstance`）→ 是consumer**主动调用**一个service-call public instance的正向引用。
-owner-internal DB/spawn/queue/persistent payload或显式recoverable envelope slot可以持久化它，
+owner-internal DB/dispatch/queue/persistent payload或显式recoverable envelope slot可以持久化它，
 但只保存：
 
 - `dependency_ref`：当前 service dependency 指向的远端 service/public contract。
@@ -610,7 +610,7 @@ encode/restore hook，不保存remote self payload，也不新增artifact retent
 
 同 service 内（跨 package 同 runtime）的 `any I` 在 package public 入口之间传参时是 request-scope 本地值
 （`any-interface-value.md §Boundary Contract`），这类同 request / 同 runtime 的流动不需要 envelope。若同一个值进入
-DB/spawn/queue/persistent payload，则仍按本文的可恢复边界处理：`carrier = Local` 且 self payload 全可恢复时允许；
+DB/dispatch/queue/persistent payload，则仍按本文的可恢复边界处理：`carrier = Local` 且 self payload 全可恢复时允许；
 `carrier = Remote` 为正向 public-instance carrier 且当前 linked program 可重建 operation table 时允许；self 不可恢复或
 local carrier 被当作跨 service 反向 callback payload 时 fail closed。
 
@@ -621,7 +621,7 @@ local carrier 被当作跨 service 反向 callback payload 时 fail closed。
 
 - **正向：consumer 主动调远程公开实例。** `remoteLlm/llmInstance as I`——装箱出 `carrier = Remote`，consumer 持有它、
   **主动** consumer→callee 调用，复用现状 service dependency dispatch。这是 request-scope 引用，consumer **本地主动调**
-  时不需要 envelope。若它进入 owner-internal DB/spawn/queue/persistent payload，则按上节的
+  时不需要 envelope。若它进入 owner-internal DB/dispatch/queue/persistent payload，则按上节的
   `Remote{ dependency_ref, public_instance_key, operation table }` 形式持久化并恢复。这个能力已经落地，恢复时校验的是当前
   linked program 是否仍能解释该正向 public-instance carrier。
 - **反向：值被传去对端，对端之后回拨构造侧。** consumer 把一个 `any I`（装箱源是本进程**局部** concrete 值）作为
@@ -690,8 +690,8 @@ const i = localImpl as I  ──sealed 可恢复字节随 wire 传──►   �
 字节结构和构造侧按字节重建的内部 codec 可以复用 owner-internal `LocalConcrete` 恢复路径；但跨 service encode 第一版不开放。缺的不只是
 state 结构，还有“对端真的发起回拨”那条反向通道，以及对端只能保存/回传、不能读取/篡改的 sealed payload。recoverable codec
 能定义本地恢复字节，不能序列化出尚不存在的反向通道、寻址能力和 sealed transport，故这些能力落地前跨 service 行为值
-统一 fail closed。`spawn` 现状不支持跨 service callable / callback（`../reference/spawn.md`）——若回拨要在 callee spawn
-的 worker 里发起，另受 spawn 自身限制约束，那是 spawn 的范围。
+统一 fail closed。`dispatch` 现状不支持跨 service callable / callback（`../reference/dispatch.md`）——若回拨要在 callee dispatch
+的 worker 里发起，另受 dispatch 自身限制约束，那是 dispatch 的范围。
 
 ## Recoverable Boundary Context
 
@@ -734,7 +734,7 @@ enum RecoverableTrustBoundary {
 - `DbPayload` / `SpawnPayload` / `QueuePayload` 是 owner service 内部的跨 request / 持久边界；`target_service = None`。
   `trust_boundary = OwnerInternal`。`carrier = Local` 且 self payload 全可恢复时允许；正向 `carrier = Remote`
   public-instance 引用可按 dependency/publicInstance/operation table 持久化并恢复。`explicit_recoverable_slot` 对这类
-  owner-internal lane 不是 public ABI 开关；DB schema / spawn target / queue payload plan 本身就是可恢复边界。
+  owner-internal lane 不是 public ABI 开关；DB schema / dispatch target / queue payload plan 本身就是可恢复边界。
 - package public 入口传参不调用 recoverable codec；它是同 runtime request-scope 值传递。
 - service/public API 的 ordinary schema payload 不允许 `any I` 默认 wire shape，也不允许隐式 recoverable envelope。
 - service/public API 只有在 schema/ABI 明确标记 `explicit_recoverable_slot = true` 的位置才能调用 recoverable codec。
@@ -772,7 +772,7 @@ enum RecoverableTrustBoundary {
 动态查询失败时，边界操作失败：
 
 - DB write 不写半截 row。
-- spawn submit 不提交 work item。
+- dispatch submit 不提交 work item。
 - queue enqueue 不提交 work item。
 - service payload encode 不发送请求。
 
@@ -787,7 +787,7 @@ callback 缺失、cross-service behavior transport 缺失、不可信明文行�
 
 - DB 可以要求 schema/index 可投影。
 - service public API 可以要求 public schema 可描述。
-- spawn 可以要求 target function 参数可恢复且 target 返回 `void/null`。
+- dispatch 可以要求 target function 参数可恢复且 target 返回 `void/null`。
 - queue 可以要求 work item payload 可恢复且大小受限。
 
 这些是额外 policy，而非 interface value 特例。DB 拒绝某个值，可能是因为 DB schema/index policy，不是因为它本质
@@ -813,8 +813,8 @@ type AgentRuntimeBindings {
 provider 第一版 fail-closed（见 §Cross-Service Interface Value）。`HostProvider` 怎么恢复是 `HostProvider` 的责任，不是
 agent 包的责任。
 
-spawn payload 不保存 provider array。agent drain 类后台任务只能传 `threadId` / `runId` 等稳定 id；worker 进入新 request 后从
-  `AgentRun.runtimeBindings` 读取 run 生命周期冻结的 provider array。这样 spawn payload 只是唤醒信号，不成为第二份 runtime
+dispatch payload 不保存 provider array。agent drain 类后台任务只能传 `threadId` / `runId` 等稳定 id；worker 进入新 request 后从
+  `AgentRun.runtimeBindings` 读取 run 生命周期冻结的 provider array。这样 dispatch payload 只是唤醒信号，不成为第二份 runtime
   binding source。所有写入 `AgentRun.runtimeBindings` 的 `llm` / `events` / `providers` interface 值都必须在 owner-internal
   recoverable boundary 中可恢复；正向 `carrier = Remote` public-instance carrier 可恢复，不可恢复 local self 或跨 service
   反向 callback local carrier 在创建 run/config 时稳定拒绝。
@@ -834,12 +834,12 @@ snapshot 路由的命题（本文只规定这一条，不冻结 agent 包 snapsh
 本文采用以下约束：
 
 - 主术语是“可恢复值”；英文仅用于文件名和 Rust-ish 类型草图。
-- DB/spawn/queue/persistent payload 使用“值必须可恢复”的统一底线。
+- DB/dispatch/queue/persistent payload 使用“值必须可恢复”的统一底线。
 - `any I` 是否可恢复、走哪条路径，取自其 `InterfaceCarrier` 分支（装箱点 `as I` 已定，recoverable 不重判）：
   `carrier = Local` 行为值走 `InterfaceValueState + self_node`（self 节点携带 `LocalConcrete` stable restore key）；
   `carrier = Remote`（正向引用service-call public instance）在owner-internal recoverable lane以
   dependencyRef/publicInstanceKey/operation table 持久化，并在恢复时校验当前 linked program。跨 package（同 service 内）
-  `any I` 在 package public 入口传参时是 request-scope 本地值；若进入 DB/spawn/queue/persistent payload，则仍按本文可恢复边界处理。
+  `any I` 在 package public 入口传参时是 request-scope 本地值；若进入 DB/dispatch/queue/persistent payload，则仍按本文可恢复边界处理。
   **跨 service 反向 local callback / sealed local value 第一版 fail-closed**（卡 `any-interface-value.md §Evolution` 的
   service callback transport 与 sealed payload）；坐标方案（含未发布内部 root 路径寻址）是演进方向、不在第一版。见
   §Cross-Service Interface Value。
@@ -856,19 +856,19 @@ snapshot 路由的命题（本文只规定这一条，不冻结 agent 包 snapsh
 - ToolProvider 不使用 provider key registry 作为通用恢复机制；agent 保存/传递 `any ToolProvider`。
 - Tool snapshot 不重复保存 provider array；snapshot entry 保存 `providerIndex`，dispatch 从
   `AgentRun.runtimeBindings.providers` 取对应 provider。
-- spawn 不携带 provider array；后台 worker 通过 `runId` 读取 `AgentRun.runtimeBindings`，避免 providerIndex 出现第二个解释源。
+- dispatch 不携带 provider array；后台 worker 通过 `runId` 读取 `AgentRun.runtimeBindings`，避免 providerIndex 出现第二个解释源。
 
 ## Compatibility With Existing Docs
 
 本文会取代这些旧表述：
 
-- `any-interface.md` / `any-interface-value.md` 中把同 service 内 `any I` 行为值排除在 DB/spawn/persistent payload
+- `any-interface.md` / `any-interface-value.md` 中把同 service 内 `any I` 行为值排除在 DB/dispatch/persistent payload
   之外的旧绝对规则已被取代；同 service 内行为值（`carrier = Local`）现在走可恢复机制。注意：
   `any-interface-value.md §Runtime Value / §Evolution` 关于跨 service `any I` durable 句柄未提供的定位**部分被取代**：
   本文把它落为“跨 service 进恢复边界第一版统一 fail-closed、待 service callback transport 落地后解除”，并同步否定了原
   “运行期实例级句柄+注册表”这块基建（见 §Cross-Service Interface Value 与 `any-interface-value.md §Evolution` 否定注）。
-- `spawn.md` 的旧参数编码判据收敛为“参数必须可恢复”（由实现计划 P0 承接）。
-- ToolProvider 实现文档中用 key 代替 interface 值、并在 spawned worker 侧通过 registry 重装箱的通用结论。
+- `dispatch.md` 的旧参数编码判据收敛为“参数必须可恢复”（由实现计划 P0 承接）。
+- ToolProvider 实现文档中用 key 代替 interface 值、并在 dispatched worker 侧通过 registry 重装箱的通用结论。
 
 保留的正确部分：
 
@@ -877,4 +877,4 @@ snapshot 路由的命题（本文只规定这一条，不冻结 agent 包 snapsh
 - 跨service `any I`的callback transport基建依赖，以及正向`Remote` carrier（service-call public
   instance）的request-scope
   定位，仍以 `any-interface-value.md §Runtime Value / §Evolution` 为准。
-- spawn 仍是后台唤醒，不是业务可靠层；业务事实仍需先落 DB。
+- dispatch 仍是后台唤醒，不是业务可靠层；业务事实仍需先落 DB。

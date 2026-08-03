@@ -92,7 +92,7 @@ deployment或assembly identity。详见`reference/config.md`。
 数据库名；同一service中的所有Package共享该数据库，同时保留各自精确Package/schema/collection identity。
 业务代码描述对象schema、查询和显式写入操作，而不是暴露连接串、Mongo filter或update operator。
 
-actor 是内存面的可寻址常驻对象，目标态契约见 `architecture/actor-model.md`；后台提交见 `reference/spawn.md`。长时间业务事实必须落到数据库、队列、timer 或业务自己的持久状态；数据面的单写者用 `db object` 的 lease 表达，见 `reference/db.md`。
+actor 是内存面的可寻址常驻对象，目标态契约见 `architecture/actor-model.md`；后台提交见 `reference/dispatch.md`。长时间业务事实必须落到数据库、队列、timer 或业务自己的持久状态；数据面的单写者用 `db object` 的 lease 表达，见 `reference/db.md`。
 
 `std.log` 和 telemetry 用于诊断，不用于业务正确性。审计、扣费、任务进度、可靠通知和 outbox 这类事实不能靠日志送达来保证。
 
