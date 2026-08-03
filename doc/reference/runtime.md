@@ -73,7 +73,7 @@ Skiff保证一类明确的本地尾调用不随递归次数增加程序调用深
 - `timeout(...)`、DB transaction/lease、`concurrent` lane/value或尚未完成stream consumer cleanup中的调用；
 - deferred stream producer、service call、Actor dispatch、callback capability、native/builtin或尚未解析为
   exact local executable的interface dispatch；
-- `spawn`与`emit`；前者创建独立request work，后者的参数求值不是callable return。
+- `dispatch`与`emit`；前者创建独立request work，后者的参数求值不是callable return。
 
 `maySuspend`本身不是尾调用障碍。Exact local callee可以在同一个request、execution scope、heap和Actor
 execution frame内挂起并恢复；只有真实pending work适用既有suspension规则。Actor method内对local helper的
@@ -154,7 +154,7 @@ Package使用相同裸collection名字不会共享storage。Package dependency�
 同一进程中的service call仍然跨service boundary。进入provider时，Runtime一次性切换到当前request已经
 pin住的同一assembly/snapshot/generation中目标deployment的activation owner：
 
-- provider看到自己的Package配置、service DB、file、actor、spawn、WebSocket、telemetry及service
+- provider看到自己的Package配置、service DB、file、actor、dispatch、WebSocket、telemetry及service
   dependency；
 - deadline、内部停止、time source、request generation/lifecycle、trace/error、runtime request identity、
   stream lifecycle、测试effect/case capability及heap上限仍属于原request；
@@ -186,7 +186,7 @@ runtime:
 
 `runtime.maxConcurrency`是每条Runtime WebSocket连接统一的普通request上限。Router把已经交给该连接、
 尚未terminal的HTTP unary/stream、WebSocket connect、WebSocket JSON-RPC、service call、
-package-test root和direct-spawn derived request都计入同一个pending计数。`response.end`、
+package-test root和direct-dispatch derived request都计入同一个pending计数。`response.end`、
 `response.error`、cancel/timeout收束或连接断开会释放计数；Actor与其他control frame不计入。
 
 未绑定的请求可以选择另一条仍有容量的合格Runtime连接；已经钉死连接或generation的请求不能为了绕过
@@ -261,7 +261,7 @@ string representation map key 在 request heap 中按 erased string payload 保�
 
 `concurrent` 是结构化并发语义。无依赖且通过 effect / mutation 检查的 sibling lane 必须能在 async host / service await 边界真实重叠执行；实现可以重排无依赖 lane，但不能把 `concurrent` 降级为纯串行执行。用户可见 join、错误选择和 mutation 规则必须确定。
 
-`concurrent { ... }` 只把被修饰 block 的第一层直属项划分为 lane：直属 statement 是一个 lane，直属 `serial { ... }` 整体是一个 lane，`concurrent value { ... }` 的 tail expression 是保留 `tail` kind 的普通 synthetic lane。当前 `concurrent` surface 是受限 lane list，不是普通 block；`if`、`match`、loop、`with`、`timeout`、普通 `value` block、`return`、`break`、`continue`、直接 `throw` / `rethrow`、`catch`、`emit`、`spawn`、嵌套 `serial`、嵌套 `concurrent` 和 callback / anonymous function body 在该 surface 内非法，包括在直属 `serial { ... }` 内非法。被调用函数内部仍可包含普通控制流；lane 只观察其normal return、throw、timeout或内部停止结果。
+`concurrent { ... }` 只把被修饰 block 的第一层直属项划分为 lane：直属 statement 是一个 lane，直属 `serial { ... }` 整体是一个 lane，`concurrent value { ... }` 的 tail expression 是保留 `tail` kind 的普通 synthetic lane。当前 `concurrent` surface 是受限 lane list，不是普通 block；`if`、`match`、loop、`with`、`timeout`、普通 `value` block、`return`、`break`、`continue`、直接 `throw` / `rethrow`、`catch`、`emit`、`dispatch`、嵌套 `serial`、嵌套 `concurrent` 和 callback / anonymous function body 在该 surface 内非法，包括在直属 `serial { ... }` 内非法。被调用函数内部仍可包含普通控制流；lane 只观察其normal return、throw、timeout或内部停止结果。
 
 `concurrent` block 自身是词法作用域，但只有直属 const declaration lane 声明的 `const` 能被后续 sibling lane 读取。后续 lane 只能读取源码位置严格在前的 sibling-visible `const`。读取后方声明是 forward reference。当前 `let` 在 `concurrent` surface 内非法；嵌套 block 内声明和 `serial` 内声明都不跨 sibling 可见。
 
@@ -490,7 +490,7 @@ non-suspending；`std.websocket.requestJsonToConnection`必须标记`maySuspend`
 - 用户可调用的request cancellation、按request id取消或runtime stop inspection API。
 - WebSocket JSON-RPC peer `$/cancelRequest`与`-32800 Request cancelled`。
 - 函数体级 `concurrent` modifier。
-- `concurrent` surface 内的普通控制语句、直接 throw/catch、`timeout(...)`、`with`、stream control、`spawn`、嵌套 `concurrent` 和 callback / anonymous function body。
+- `concurrent` surface 内的普通控制语句、直接 throw/catch、`timeout(...)`、`with`、stream control、`dispatch`、嵌套 `concurrent` 和 callback / anonymous function body。
 - `return` 穿过 `concurrent` 边界；`break` / `continue` 穿过不在同一 lane 内的 loop 边界。
 - Set surface、string indexing 和 heap cycle。
 - 自动 retry 非幂等 operation。

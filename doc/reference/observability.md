@@ -157,7 +157,7 @@ DB、actor、queue、timer 和 runtime request 都应产生观测事件，但观
 示例归属边界：
 
 - DB 慢查询、constraint error、transaction conflict 可以产生 trace / metric / log。
-- actor put / remove、method call、owner lease renewal、spawn submit / execution 可以产生 trace / metric / health。
+- actor put / remove、method call、owner lease renewal、dispatch submit / execution 可以产生 trace / metric / health。
 - queue wait、claim batch、lease renew、deadline miss、cancel、timeout、failure 可以产生 trace / metric / log。
 - runtime request start / end / error / cancel 是 request frame 的基础 trace 事件。
 

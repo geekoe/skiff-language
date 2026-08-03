@@ -392,7 +392,7 @@ identity bits 的扁平聚合对象都不属于 architecture contract。producti
 
 职责：
 
-- config、DB、file、time、HTTP/WebSocket effect、actor、spawn、service dependency、
+- config、DB、file、time、HTTP/WebSocket effect、actor、dispatch、service dependency、
   telemetry 等 capability context trait / DTO。
 - `NativeCapabilityContexts` 的 projection contract。
 - capability required-context 到实际 context projection 的校验规则。
@@ -495,7 +495,7 @@ adapter。它不拥有 request response event DTO；这些 DTO 属于 request �
 职责：
 
 - runtime protocol frame DTO：request start/cancel、response start/chunk/end/error、
-  runtime register/capabilities、connection send、actor/spawn control frames。
+  runtime register/capabilities、connection send、actor/dispatch control frames。
 - binary frame encode/decode；frame payload bytes 在 transport 中保持 opaque。
 - `RuntimeTransportSession`：router WebSocket read/write loop 和 frame envelope decode。
 - request-owned `ResponseEvent` / `ResponseStreamEvent` 到 protocol frame 的唯一映射。
@@ -600,9 +600,9 @@ RuntimeHost
 - request cancellation / active request / outbound request registry 归 `RequestSupervisor`。
 - host 可以组合各层，但不能让下层拿 `&RuntimeHost`。
 
-### Spawn derived request
+### Dispatch derived request
 
-`spawn` 不拥有独立 worker/queue 子系统。它沿普通 request 分层创建一个 direct derived request：
+`dispatch` 不拥有独立 worker/queue 子系统。它沿普通 request 分层创建一个 direct derived request：
 
 ```text
 current Eval request
@@ -767,7 +767,7 @@ activation owner进入service provider或callback capability owner的唯一入�
   thread-local current service；
 - 先完整验证target projection、fresh heap与boundary materialization plan，再原子发布新execution
   context；失败不修改source；
-- config、service DB、file、actor capability、spawn、WebSocket、telemetry和service dependency context
+- config、service DB、file、actor capability、dispatch、WebSocket、telemetry和service dependency context
   从target `ServiceRuntimeContext`重新投影；
 - deadline、内部停止、time、request generation/lifecycle、trace/error、transport request identity、
   stream/test effect/case capability与heap limits从source request projection继承；
@@ -776,7 +776,7 @@ activation owner进入service provider或callback capability owner的唯一入�
   不被改写。
 
 service provider entry与callback owner entry以外的代码不能调用rebinder。普通continuation、stream poll和
-actor恢复只恢复它们已pin的context；spawned request start创建新的request context。Escaping service
+actor恢复只恢复它们已pin的context；dispatched request start创建新的request context。Escaping service
 stream继续保留创建时的旧generation set，直到terminal/drop释放pin。
 
 ### `ServiceRuntimeContext`

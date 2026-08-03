@@ -87,7 +87,7 @@ deployment和该capability把self-ingress子请求附着到仍active的父test e
 registry，子请求不finalize，父case结束时唯一finalize。assembly/generation不能充当case identity。
 
 `testCaseCapability`是Router/Runtime Host间的不透明私有authority，不进入Eval value、config或业务
-effect surface。direct spawn、任意深度recursive spawn与Actor method spawn使用的`spawn.submit`
+effect surface。direct dispatch、任意深度recursive dispatch与Actor method dispatch使用的`spawn.submit`
 wire只携带`callerRequestId`；它不得重复携带`testCaseCapability`或test parent id。Router只从发送
 frame的同一Runtime WebSocket session上的active parent request派生authority：父可以是root/derived
 runtime-assembly request，也可以是已admit且尚未terminal的Actor invocation。同步Actor method call、
@@ -98,7 +98,7 @@ service与active parent service精确相同；test capability chain不得跨serv
 可见范围。
 
 derived authority还不可变地钉住其activation generation。generation推进后，已active的old-generation
-Actor invocation及其同步Actor call/Actor spawn仍沿原capability、parent chain、assembly/deployment和generation
+Actor invocation及其同步Actor call/Actor dispatch仍沿原capability、parent chain、assembly/deployment和generation
 执行；Router和Runtime不得把它们重绑到current generation。current-generation test Actor的self-ingress携带
 该完整derived authority进入普通gateway route。old-generation Actor没有可安全使用的历史gateway route
 snapshot，其self-ingress必须在dispatch前fail closed；不保留、合成、后补或构造历史snapshot，也不
@@ -114,8 +114,8 @@ Router reader在同步frame handler内用capability与active parent request id�
 lease释放。
 
 该约束依赖service-scoped、Runtime-local case registry与effect state，不定义或承诺跨service/Runtime
-test-effect共享。production request、同步Actor call与Actor spawn均不携带test capability/parent id，仍按
-普通Actor owner routing执行，也不能访问test case registry；其中cross-service Actor spawn仍然合法，Router不得
+test-effect共享。production request、同步Actor call与Actor dispatch均不携带test capability/parent id，仍按
+普通Actor owner routing执行，也不能访问test case registry；其中cross-service Actor dispatch仍然合法，Router不得
 把test-only same-service约束应用到production。首版每个case只允许一个active self-ingress；stream在EOF、
 失败或consumer drop/break后才释放active slot，并沿普通HTTP disconnect/backpressure链收束。
 

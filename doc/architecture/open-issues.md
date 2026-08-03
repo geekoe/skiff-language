@@ -12,7 +12,7 @@ nominal public path和service dependency cycle已经在
 
 1. **用户级异步任务和后台流程**
 
-   Actor 文档已定义 `spawn` 的最小后台调用语义，queue 文档已定义 durable queue 和 timer 的平台边界，但用户可见的完整 async task、cron、startup / managed worker 和 `TaskHandle` surface 仍未规范化。后续版本仍需定义任务声明、结果查询、重试、取消、观测、启动恢复、后台 worker 和业务错误记录方式。
+   Actor 文档已定义 `dispatch` 的最小后台调用语义，queue 文档已定义 durable queue 和 timer 的平台边界，但用户可见的完整 async task、cron、startup / managed worker 和 `TaskHandle` surface 仍未规范化。后续版本仍需定义任务声明、结果查询、重试、取消、观测、启动恢复、后台 worker 和业务错误记录方式。
 
 2. **宿主互操作 / FFI**
 

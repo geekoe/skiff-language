@@ -127,7 +127,7 @@ const providers: Array<any ToolProvider> = [
 - 远程对象也是本地对象：装箱后的 `any I` 值在本进程内自由流动；"远程"只体现在**调用方法时**——那一刻
   发生跨 service 调用（带 remote 语义）。值传递本身不跨进程。
 - 远程能力是 request-scope 正向远程引用，不能持久化后跨 request 重建（见 §7）。若进入
-  DB/spawn/queue/persistent payload 或显式 recoverable slot，按可恢复值规则以
+  DB/dispatch/queue/persistent payload 或显式 recoverable slot，按可恢复值规则以
   `recoverable_remote_carrier_not_persistable` fail closed。
 
 ## 3. 值布局
@@ -198,7 +198,7 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
   `any I`默认wire shape，也不会隐式生成recoverable envelope。第一版不接受`Array<any I>`、nullable/record
   内嵌`any I`或泛型`any I<T>`作为service position；直接出现的普通Package schema也不会因为其descriptor是
   interface而自动变成callback。DB schema、
-  `spawn` 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是 owner-internal
+  `dispatch` 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是 owner-internal
   recoverable boundary：`carrier = Local` 且 self payload 全可恢复时可恢复；`carrier = Remote` 是 request-scope
   正向远程引用，不可持久化。service callback capability同样不能进入这些recoverable lane；其生命周期到顶层
   request结束，server stream存在时延长到stream关闭。失效稳定返回`CapabilityExpired`或
@@ -217,7 +217,7 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 - **不支持嵌套或泛型service callback position**：第一版只投影operation顶层、非泛型`any I`。`Array<any I>`、
   record/nullable内嵌`any I`、泛型interface instantiation和raw function值在service boundary继续fail closed。
   native value只有显式callback adapter时才可用，不能从native类型或Package schema descriptor猜测adapter。
-- **callback capability不可持久化**：owner-internal DB/spawn/queue/persistent payload仍按可恢复值规则处理；
+- **callback capability不可持久化**：owner-internal DB/dispatch/queue/persistent payload仍按可恢复值规则处理；
   service callback capability和`carrier = Remote`都不能被序列化进跨request/持久payload，也不能durable化为
   远程能力句柄。
 - **不改默认**：默认仍静态分派；`any I` 必须显式。
@@ -264,7 +264,7 @@ identity 锁进 dependency lock（fail-closed）。远程性由值布局 `carrie
 用户声明的独立 effect；但remote method call仍因其调用种类是service call而被推断为
 `maySuspend=true`。service operation顶层、非泛型`any I`由compiler投影为opaque callback capability；
 compiler和artifact admission从同一个canonical position规则重建并校验carrier、owner、lifetime及callback
-interface清单。DB/spawn/queue/persistent等跨request边界是否接受普通local `any I`由recoverable boundary
+interface清单。DB/dispatch/queue/persistent等跨request边界是否接受普通local `any I`由recoverable boundary
 plan与runtime carrier check决定，本文不展开。
 
 内部架构契约见 `../architecture/any-interface-value.md`；可恢复边界契约见

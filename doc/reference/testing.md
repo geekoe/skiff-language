@@ -199,8 +199,8 @@ test-only source file 输入：
 Router/Runtime Host的测试传输与注册状态，不是Skiff值、config或用户可见effect API。普通production
 request及其Actor调用不携带该capability。
 
-root发起的direct spawn、任意深度recursive spawn、同步Actor method call与
-`spawn actor.method(...)`都是同一case的派生请求。测试运行时为它们携带父请求的同一
+root发起的direct dispatch、任意深度recursive dispatch、同步Actor method call与
+`dispatch actor.method(...)`都是同一case的派生请求。测试运行时为它们携带父请求的同一
 capability和当前active parent request id；Router只从同一Runtime session上仍active的父请求
 授权派生，capability token本身不足以授权。派生请求不得新建capability、借用其它root的
 capability或在父请求终结后迟到加入。另一个case的root dispatch即使属于同一assembly，也必须
@@ -212,9 +212,9 @@ origin Runtime connection上执行，以共享该Runtime内存中的case effect 
 fail closed；测试语义不承诺跨service或Runtime共享test effects。已admit的Actor method一直属于
 该case，直到其terminal execution结束；root finalization必须等待它结束，但拒绝父请求结束后才
 到达的新Actor child。这项test-only约束不改变production Actor语义：不携带test capability的
-跨service Actor spawn仍按普通Actor owner routing合法执行。
+跨service Actor dispatch仍按普通Actor owner routing合法执行。
 
-activation generation推进不会重绑已active的test Actor execution。它的同步Actor call与Actor spawn继续
+activation generation推进不会重绑已active的test Actor execution。它的同步Actor call与Actor dispatch继续
 使用进入该execution时已固定的capability、parent chain、assembly/deployment与generation authority。
 该authority仍是current generation时，Actor发起的self-ingress完整继承它；Actor已属于old generation时，
 self-ingress必须在路由前fail closed。runner不为此保留或构造历史gateway route snapshot，也不得把
@@ -255,9 +255,9 @@ ingress URL时，该调用是self-ingress：
   capability/parent pair；Host只把capability-only frame视为root，携带pair的frame必须从仍active的
   parent建立derived execution，不得重复创建root case；
 - entry内部的outbound effects继续使用父case同一个inline-effect registry；
-- current-generation test Actor的self-ingress及其direct/recursive spawn、同步Actor method call与
-  Actor method spawn完整继承父root的derived authority，不得因共享assembly或activation generation
-  附着到另一个case；old-generation Actor可继续其immutable direct/spawn chain，但self-ingress fail closed；
+- current-generation test Actor的self-ingress及其direct/recursive dispatch、同步Actor method call与
+  Actor method dispatch完整继承父root的derived authority，不得因共享assembly或activation generation
+  附着到另一个case；old-generation Actor可继续其immutable direct/dispatch chain，但self-ingress fail closed；
 - 同一case第一版禁止两个active self-ingress请求。stream EOF、失败或consumer drop/break才释放
   active状态。
 
@@ -383,8 +383,8 @@ event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal
 - runner 对一个 case 只创建一次执行上下文，并在其中依次执行 setup 和 test body；setup
   产生的 response、error 和 stream event 必须立即按 linked target type plan
   materialize 到该 case 的 effect registry，不能把 heap value 作为跨执行共享对象保存；
-- root dispatch为该执行上下文新建`testCaseCapability`；direct/recursive spawn、同步Actor method call和
-  Actor method spawn必须由同Runtime session上的active parent派生，并继承父请求的同一
+- root dispatch为该执行上下文新建`testCaseCapability`；direct/recursive dispatch、同步Actor method call和
+  Actor method dispatch必须由同Runtime session上的active parent派生，并继承父请求的同一
   capability，因此共享该case的registry与finalization owner，但不与同一assembly内其它root共享；
 - setup 成功后才执行 test body；setup 失败时 body 不执行；
 - case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、

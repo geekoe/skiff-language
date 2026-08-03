@@ -10,7 +10,7 @@
 `any I` 的装箱点 `expr as I` 决定 runtime carrier：
 
 - `carrier = Local`：装箱源是当前 service/runtime 中的 concrete nominal value。该值在同 request / 同 runtime 内可自由
-  传参和放入内部集合；进入 DB、`spawn`、queue / persistent work item 或 runtime 内部跨 request payload 时，必须按
+  传参和放入内部集合；进入 DB、`dispatch`、queue / persistent work item 或 runtime 内部跨 request payload 时，必须按
   owner-internal recoverable boundary 编码。只有 self payload 全可恢复时才允许；否则 fail closed。
 - `carrier = Remote`：装箱源是已发布 public instance，例如 `remoteLlm/managedLlm as LlmClient`。这是 request-scope
   正向远程引用，只用于持有方主动发起 consumer -> callee 调用。它不是 durable remote handle；进入任何
@@ -36,13 +36,13 @@ callback position是精确的类型位置规则，不按schema descriptor猜测�
 callback capability在request或stream结束、owner退出或内部停止后失效，稳定返回`CapabilityExpired`或
 `CapabilityUnavailable`；runtime不重建、不fallback，也不把它转换成recoverable envelope。
 
-DB stored field、`spawn` target 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是
+DB stored field、`dispatch` target 参数、queue / persistent work item payload 和 runtime 内部跨 request payload 是
 owner-internal recoverable boundary。它们的底线是“值必须可恢复”，不是“`any I` 一律禁止”。`carrier = Local` 行为值走
 `InterfaceValueState + self_node`；`InterfaceValueState` 不把 interface/projection 当 durable truth 保存，typed boundary 的
 expected type plan 提供 interface/projection。`self_node` 携带 concrete value 的 stable `LocalConcrete` restore key 和可恢复
 state，并按当前 execution context 恢复。若 expected type 是 union，多个 any-interface 分支都可匹配同一 local concrete 时
 fail closed，不能按分支顺序猜测。`carrier = Remote` 或 self payload 不可恢复时，边界操作 fail closed，且不得写入半截
-DB row、不得提交 spawn/queue item。
+DB row、不得提交 dispatch/queue item。
 
 `LocalConcrete` restore key 只表达 stable concrete identity：owner 是当前 service，或当前 linked program 中唯一的
 package id；concrete identity 是该 concrete type 的稳定 ABI type identity。它不携带 service/package version、
@@ -52,18 +52,18 @@ interface/projection，或 self state 不再符合当前 expected type 时，边
 runtime wrapper schema version 迁移旧 local self。
 
 跨service只发送上述sealed opaque callback capability，绝不发送明文`LocalConcrete`、`NativeAdapter`、
-`InterfaceValue` state、method table或本地地址。callback capability不能进入DB、`spawn`、queue、persistent work
+`InterfaceValue` state、method table或本地地址。callback capability不能进入DB、`dispatch`、queue、persistent work
 item或其它recoverable lane；离开owner service trust domain的显式recoverable slot第一版仍只允许plain data envelope。
 
 ## Examples
 
 ```skiff
 const local: any ToolProvider = HostProvider { ... } as ToolProvider
-spawn drainWithProvider(local)      // allowed only if HostProvider self payload is recoverable
+dispatch drainWithProvider(local)      // allowed only if HostProvider self payload is recoverable
 
 const remote: any ToolProvider = remoteLlm/remoteTools as ToolProvider
 remote.listTools(ctx)              // request-scope forward remote call
-spawn drainWithProvider(remote)    // fail closed: Remote carrier is not persistable
+dispatch drainWithProvider(remote)    // fail closed: Remote carrier is not persistable
 ```
 
 Field rename、union branch rename、method projection mismatch 和其它跨版本变化不由 `any I` 自行迁移；recoverable decode

@@ -75,7 +75,7 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
     generation-pinned `ActivationExecutionContextRebinder`原子切换到provider owner，callback也只通过
     同一rebinder切回capability owner。普通continuation不得重绑owner，任何入口都不得按latest或ambient
     context补事实。
-12. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
+12. actor、dispatch及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
     exact assembly registration及active/draining generation验证，不能按serviceId、package build、display
     name或legacy runtime registration补事实。
 13. 所有boundary命名类型由Package拥有；ServiceContract只能引用PackageSchemaTypeId，不能复制descriptor、
@@ -656,7 +656,7 @@ service作为fallback。
 原子重绑定按owner把执行上下文拆成两类：
 
 - deployment-scoped owner全部替换为provider deployment的事实：Package-scoped `ConfigView`、service DB、
-  file capability、actor registry/capability、spawn dispatch、WebSocket service/entry lookup、telemetry
+  file capability、actor registry/capability、dispatch、WebSocket service/entry lookup、telemetry
   service attribution及service dependency binding；
 - request-scoped owner保持caller request的同一事实：deadline、runtime内部停止/cancellation、clock/time
   source、request generation与lifecycle、trace、error channel、runtime transport request identity、
@@ -703,7 +703,7 @@ Binding vector的逻辑key是`(callerPackageBuildId, serviceRequirementSlot)`，
 普通挂起/恢复和stream producer/consumer必须保留创建它们时的显式ActivationContext owner；不能依赖
 thread-local“当前service”。Service provider entry和callback capability dispatch是仅有的两个owner
 rebind入口。Callback调用通过rebinder切回capability owner，返回时恢复receiver context；Package direct
-call、普通continuation、actor方法恢复、spawned request start及native helper不能私自调用rebinder。
+call、普通continuation、actor方法恢复、dispatched request start及native helper不能私自调用rebinder。
 
 若service operation返回的stream在generation切换后仍未结束，producer、consumer bridge、callback与每个
 item materialization继续使用创建该stream时pin住的旧generation context set，直到stream end/error/drop
@@ -969,7 +969,7 @@ RecoverableValuePlan<Lane>
   = LinkableValuePlan<Lane> + FutureValidityPlan
 ```
 
-DB、spawn、queue、persistent work item或其它跨request lane才要求recoverable。普通service参数、返回
+DB、dispatch、queue、persistent work item或其它跨request lane才要求recoverable。普通service参数、返回
 和error payload不因为是boundary call就必须在未来request中恢复。
 
 ordinary data按contract生成detached value graph。caller可观察的alias、共享heap identity或原地
@@ -1000,7 +1000,7 @@ CallbackCapability
 - capability由创建该值的activation拥有；
 - 生命周期到顶层request结束，stream存在时延长到stream关闭；内部停止或owner退出会提前失效；
 - 对端只能通过contract声明的operation回调owner，不能得到method table、native object或本地地址；
-- capability不能进入DB、spawn、queue、persistent payload或其它recoverable lane；
+- capability不能进入DB、dispatch、queue、persistent payload或其它recoverable lane；
 - 失效返回稳定`CapabilityExpired`/`CapabilityUnavailable`错误，不重建、不fallback；
 - `any I`只有所有被投影method都boundary-capable时才可生成callback；native value必须有显式callback
   adapter，否则对应operation不可用。
@@ -1017,7 +1017,7 @@ compiler执行sound may-analysis，至少追踪：
 
 - caller-reachable参数图的write；
 - 返回或throw payload是否alias caller graph；
-- caller value是否escape到capture、callback、stream、spawn、DB或native/external target；
+- caller value是否escape到capture、callback、stream、dispatch、DB或native/external target；
 - 是否对caller-reachable引用执行了引用身份敏感操作；
 - callback/native adapter requirement；
 - unknown call/effect。

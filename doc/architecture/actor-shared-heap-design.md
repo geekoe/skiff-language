@@ -102,7 +102,7 @@ v4 决策（用户确认）：
 - 现状在挂起/结束时全图扫描拒绝 callback capability、request-local exception、stream 字段；
   共享 heap 下坏句柄写入后立刻可见，校验必须前移到**写路径**（字段赋值 / 原地修改入口）与
   **压缩根收集**两个时点；
-- 跨任务边界（spawn 载荷、stream producer）仍要求可编码值，不得携带共享 arena 句柄
+- 跨任务边界（dispatch 载荷、stream producer）仍要求可编码值，不得携带共享 arena 句柄
   （沿用现有边界 codec 与 request-scoped 规则）。
 
 ## 4. EvalContext 借用改造（reacquire）
@@ -125,7 +125,7 @@ v4 决策（用户确认）：
   `program_stream/current_scope.rs::next_with_actor`、`callback_native/prepared.rs` wait、
   actor frame `await_if_pending` / `resume`，以及 `program_execution.rs` 的全部 `Interpreter` async 入口；
 - 实际载点约 130+（EvalContext 方法、Interpreter 入口、DbIrEvaluator、program stream、timeout 子求值器、
-  assembly / callback / provider 分发、spawn ops）；**嵌套 future 是结构性改造，不是漏斗机械修改**；
+  assembly / callback / provider 分发、dispatch ops）；**嵌套 future 是结构性改造，不是漏斗机械修改**；
 - 普通 request 走 `Exclusive` 模式，语义与所有权不变，但代码路径统一经过 `HeapAccess`；
   这是全 API 面的机械改动，不是局部漏斗改动。
 
@@ -206,7 +206,7 @@ v4 决策（用户确认）：
 - 触发条件：计数 == 0、无 pending upgrade / discard、arena 规模超过阈值、实例仍存活；
 - 操作：锁内克隆 live 根（字段）到新 arena → bump arena epoch → 原子替换 store arena；
 - 升级 / 逐出优先级高于压缩：实例进入 `upgrading` 或被 discard 时跳过压缩；
-- 跨任务边界（spawn 载荷、stream producer）不得持有共享 arena 句柄（§3.5 校验保证），
+- 跨任务边界（dispatch 载荷、stream producer）不得持有共享 arena 句柄（§3.5 校验保证），
   因此 detached task 不构成压缩阻碍；
 - **前置修复（独立于压缩）**：router `inMemoryRegistryStore` 存在 idle 逐出与 upgrade 互卡竞态
   （进入 `upgrading` 时未取消 pending eviction，逐出 ACK 清 owner 后 `upgradeFence` 永久等待）；
@@ -244,7 +244,7 @@ v4 决策（用户确认）：
 - ABI：字段存储形态是内部实现，不改变 artifact ABI；
 - **implementation identity**：字段存储与求值器改造会改变规范化编译结果；必须重新冻结 identity
   测试向量，并回归 actor-model.md 的四个消费视图：同包直接调用、公共跨包调用、
-  `kind: test` / `topLevelAlias` 测试视图、router 控制面（get / spawn / owner 路由）。
+  `kind: test` / `topLevelAlias` 测试视图、router 控制面（get / dispatch / owner 路由）。
 
 ## 10. 验收矩阵
 
@@ -261,7 +261,7 @@ v4 决策（用户确认）：
 
 - R1. `HeapAccess` 双模式改造的真实函数面（~130+ 载点）是否可穷举；`Exclusive` 模式是否真正做到
   语义不变（Slice 2 原型验证）。
-- R2. `db transaction` 同包禁令的边界：`create`、本地 helper 可达性、`spawn` 目标排除；跨包边界
+- R2. `db transaction` 同包禁令的边界：`create`、本地 helper 可达性、`dispatch` 目标排除；跨包边界
   文档化限制是否可接受。
 - R3. arena epoch 的表示与校验点（句柄结构变更的波及面：codec、序列化、测试向量）。
 - R4. per-instance arena limits 与长方法增长的阈值；压缩触发条件（Slice 3+）。

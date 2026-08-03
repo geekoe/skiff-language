@@ -47,9 +47,9 @@ runtimeConfigSnapshotRef
 闭包不完整都拒绝prepare。配置变化通过新snapshot和新generation生效，不重建assembly。冷恢复重读同一
 generation的两个ref并执行相同的environment比较，不能读取最新配置文件或ambient environment。
 
-Canonical runtime connection上的actor、spawn及其它跨request control frame必须显式携带当前
+Canonical runtime connection上的actor、dispatch及其它跨request control frame必须显式携带当前
 ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
-从发起动作的当前ActivationContext填充；callback、continuation或spawn source不能重建、删减或用ambient
+从发起动作的当前ActivationContext填充；callback、continuation或dispatch source不能重建、删减或用ambient
 connection state替代。
 
 `runtime.register.serviceProtocolIdentity`必须原样携带canonical
@@ -64,7 +64,7 @@ Router先把frame绑定到发送者的exact assembly registration，再按active
   ActivationContext；
 - 未注册sender、identity缺失/歧义、tuple不匹配、generation已完成drain或只有serviceId/legacy register
   fact时fail closed；
-- actor/spawn response按同一request与sender correlation返回，Router不恢复service/build inference。
+- actor/dispatch response按同一request与sender correlation返回，Router不恢复service/build inference。
 
 Candidate prepare与cold recovery还必须在每个service的activation context publish、prepared ACK或恢复成功
 之前，完成exact service DB index plan协调。Runtime先把candidate中同一storage domain/environment/service
@@ -107,7 +107,7 @@ context、创建fresh provider heap及boundary materialization plan，再一次�
 ambient registration或thread-local current service补齐target。
 
 重绑定必须原子替换所有deployment-scoped owner：config、service DB、file、actor capability/registry、
-spawn、WebSocket service/entry、telemetry attribution及service dependency bindings。同时保留同一request
+dispatch、WebSocket service/entry、telemetry attribution及service dependency bindings。同时保留同一request
 的deadline、内部停止/cancellation、time source、request generation/lifecycle、trace/error、transport
 request identity、stream lifecycle、test effects/case capability与heap limits。保留heap limits不等于共享
 heap；provider使用fresh heap，参数、返回、错误、callback payload和stream item经过boundary
@@ -118,7 +118,7 @@ owner字段。内部`ActorRef`已有显式route owner，rebinder不重写它；c
 provider execution。
 
 只有service provider entry和callback owner entry可以调用rebinder。普通continuation、Package direct
-call、actor恢复、spawned request start和native helper只能恢复或创建其已经验证的context，不能借rebinder
+call、actor恢复、dispatched request start和native helper只能恢复或创建其已经验证的context，不能借rebinder
 改变owner。Service stream跨generation存活时继续pin原exact set；每个后续item/callback都使用旧generation，
 直到end/error/drop释放pin，不回退到当前active/latest context。
 

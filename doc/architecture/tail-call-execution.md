@@ -130,7 +130,7 @@ local/publication edges在link后都属于该variant，因此direct self、mutua
 - activation-relative service、Actor dispatch和callback capability：它们跨activation/owner、fresh heap、
   admission、epoch、wire或continuation boundary。
 - native、builtin、receiver builtin及未链接/未知interface target：它们不是普通program frame replacement。
-- stream defer、spawn和emit：它们分别属于scheduler、request或stream terminal owner。
+- stream defer、dispatch和emit：它们分别属于scheduler、request或stream terminal owner。
 
 未来扩展到`PackageDirect`或运行时解析出的local interface/const receiver时，必须先把现有validation、
 test-effect、receiver和call-site preparation收敛到同一个prepared-frame seam。不能复制dispatch逻辑，也
