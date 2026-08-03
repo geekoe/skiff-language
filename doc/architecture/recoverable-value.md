@@ -711,7 +711,7 @@ struct RecoverableBoundaryContext {
 
 enum RecoverableBoundaryKind {
     DbPayload,
-    SpawnPayload,
+    TaskDispatchPayload,
     QueuePayload,
     RuntimeWirePayload,
     ServicePayload,
@@ -731,7 +731,7 @@ enum RecoverableTrustBoundary {
 
 规则：
 
-- `DbPayload` / `SpawnPayload` / `QueuePayload` 是 owner service 内部的跨 request / 持久边界；`target_service = None`。
+- `DbPayload` / `TaskDispatchPayload` / `QueuePayload` 是 owner service 内部的跨 request / 持久边界；`target_service = None`。
   `trust_boundary = OwnerInternal`。`carrier = Local` 且 self payload 全可恢复时允许；正向 `carrier = Remote`
   public-instance 引用可按 dependency/publicInstance/operation table 持久化并恢复。`explicit_recoverable_slot` 对这类
   owner-internal lane 不是 public ABI 开关；DB schema / dispatch target / queue payload plan 本身就是可恢复边界。
