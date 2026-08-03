@@ -134,7 +134,7 @@ WhileStmt = "while" Expr Block
 
 `concurrent { ... }` 是 statement。`serial { ... }` 在语法上是 statement，但只能作为 `concurrent` block 的直属子语句。
 
-expression statement 的最外层表达式必须是普通函数调用、method call、std API call、service call 或 IIFE call。裸 literal、name、object / array literal、`match` expression 和 `value` expression 不能作为独立 statement。
+expression statement 的最外层表达式必须是普通函数调用、method call、std API call、service call、IIFE call 或 dispatch 表达式。裸 literal、name、object / array literal、`match` expression 和 `value` expression 不能作为独立 statement。
 
 ## 7. Expression Syntax
 

@@ -179,7 +179,7 @@ Skiff 使用 type namespace、value namespace 和 method namespace。`impl` 不�
 
 虽然 lookup 按上下文区分 type / value，当前仍要求同一模块顶层声明和 import local binding 的文本名不得重复。
 
-关键字不能作为任何用户标识符。核心 prelude type 名、primitive 名、`Self`、`Array`、`Map`、`Stream`、`Json`、`JsonObject`、错误和 gateway 相关 prelude 类型都是 type namespace 保留名。
+关键字不能作为任何用户标识符。`dispatch` 是保留关键字。核心 prelude type 名、primitive 名、`Self`、`Array`、`Map`、`Stream`、`Json`、`JsonObject`、错误和 gateway 相关 prelude 类型都是 type namespace 保留名。
 
 `std`、`root` 和 `config` 是 value namespace reserved root，用户不得声明、作为 alias 或局部绑定同名标识符。
 
@@ -480,6 +480,8 @@ policy：
   service trust domain 时只允许 plain data envelope，行为节点 fail closed。
 - package public 入口不是跨进程边界。`any I` 可在同 runtime request 内流动；若该值再进入 DB/dispatch/queue/persistent
   payload，才按 recoverable boundary 检查。
+
+`std.task.TaskRef` 属于可恢复类型，可进入 DB stored field / persistent payload 等 recoverable 上下文。
 
 Recoverable boundary 的静态检查对象是 recoverable state plan，而不是所有 runtime raw field 的图。compiler 必须拒绝
 明显不可恢复的 request-local 类型，例如 callback/function value、`Stream`、`Exception`、transaction handle、live

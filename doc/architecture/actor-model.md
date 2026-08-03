@@ -126,7 +126,7 @@ actor 声明的权威表示是 PackageArtifact 中的 actor 元数据（key/crea
 
 registry entry 保存创建输入，不保存实例状态：
 
-- entry 是激活所需的最小事实，不是持久层；router 重启后 entry 丢失，业务在入口路径用 `get` 从业务事实重建。
+- entry 是激活所需的最小事实，不是持久层；durable activation state 丢失（例如 operator 删除或数据丢失）时 entry 丢失，业务在入口路径用 `get` 从业务事实重建；普通 router 重启不触发该路径。
 - 实例状态的演化不写回 registry；idle 逐出后重新激活时，按 entry 保存的创建输入重新执行 create 构造初始状态，不恢复逐出前的内存状态。
 - create 不要求是纯函数：允许挂起读取外部状态。典型实现是“记录存在则加载、不存在则按创建输入建立”——当 actor 需要持久状态时，create 内用 `db require` / `db find` 加载对应 db object 并回填成员，缺失则 `db insert` / `db upsert` 建立初始记录。重新激活因此以数据库当前事实为准，而不是恢复旧内存快照。
 

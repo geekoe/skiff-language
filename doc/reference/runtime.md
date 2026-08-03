@@ -73,7 +73,7 @@ Skiff保证一类明确的本地尾调用不随递归次数增加程序调用深
 - `timeout(...)`、DB transaction/lease、`concurrent` lane/value或尚未完成stream consumer cleanup中的调用；
 - deferred stream producer、service call、Actor dispatch、callback capability、native/builtin或尚未解析为
   exact local executable的interface dispatch；
-- `dispatch`与`emit`；前者创建独立request work，后者的参数求值不是callable return。
+- `dispatch`与`emit`；前者提交持久 detached task，后者的参数求值不是callable return。
 
 `maySuspend`本身不是尾调用障碍。Exact local callee可以在同一个request、execution scope、heap和Actor
 execution frame内挂起并恢复；只有真实pending work适用既有suspension规则。Actor method内对local helper的
@@ -186,7 +186,8 @@ runtime:
 
 `runtime.maxConcurrency`是每条Runtime WebSocket连接统一的普通request上限。Router把已经交给该连接、
 尚未terminal的HTTP unary/stream、WebSocket connect、WebSocket JSON-RPC、service call、
-package-test root和direct-dispatch derived request都计入同一个pending计数。`response.end`、
+package-test root以及leased task attempt对应的active request都计入同一个pending计数；
+scheduled / ready backlog不计入任何Runtime connection。`response.end`、
 `response.error`、cancel/timeout收束或连接断开会释放计数；Actor与其他control frame不计入。
 
 未绑定的请求可以选择另一条仍有容量的合格Runtime连接；已经钉死连接或generation的请求不能为了绕过
