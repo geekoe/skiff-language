@@ -119,6 +119,7 @@ impl RuntimeHost {
                     return;
                 }
             },
+            actor_instance_store: Arc::clone(self.actor_instances.store()),
             http_response_max_bytes,
             test_http_entries: self.test_http_entries.clone(),
         };
@@ -924,6 +925,7 @@ impl RuntimeHost {
                 connection_requests: Arc::clone(&self.connection_requests),
                 router_session: ConnectionRequestSession::new(router_session_id.to_string())
                     .map_err(RuntimeError::Decode)?,
+                actor_instance_store: Arc::clone(self.actor_instances.store()),
                 http_response_max_bytes,
                 test_http_entries: self.test_http_entries.clone(),
             },

@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use skiff_runtime_activation::ActivationContext;
+use skiff_runtime_eval::actor_instance::ActorInstanceStore;
 use skiff_runtime_eval::program_execution::{ProgramExecutionContext, ProgramExecutionInput};
 use skiff_runtime_request::{RequestEnvelope, RequestError, RequestResult, RuntimeOperation};
 
@@ -24,6 +25,7 @@ pub(crate) struct RuntimeAssemblyEvalAdapterContextInput {
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) router_session: ConnectionRequestSession,
+    pub(crate) actor_instance_store: Arc<ActorInstanceStore>,
     pub(crate) http_response_max_bytes: usize,
     pub(crate) test_http_entries: concrete::TestHttpEntryRegistry,
 }
@@ -57,6 +59,7 @@ pub(super) struct RuntimeAssemblyExecutionContext {
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     connection_requests: Arc<ConnectionRequestRegistry>,
     pub(super) router_session: ConnectionRequestSession,
+    actor_instance_store: Arc<ActorInstanceStore>,
     http_response_max_bytes: usize,
     pub(super) test_http_entries: concrete::TestHttpEntryRegistry,
     pub(super) test_ingress_url: Option<String>,
@@ -131,6 +134,7 @@ impl RuntimeAssemblyExecutionContext {
             router_sender: input.router_sender,
             connection_requests: input.connection_requests,
             router_session: input.router_session,
+            actor_instance_store: input.actor_instance_store,
             http_response_max_bytes: input.http_response_max_bytes,
             test_http_entries: input.test_http_entries,
             test_ingress_url: metadata.test_ingress_url,
@@ -274,6 +278,7 @@ impl RuntimeAssemblyExecutionContext {
             request,
             request_heap_limits,
         })
+        .with_actor_instance_store(Arc::clone(&self.actor_instance_store))
         .with_runtime_assembly_target(eval_target.clone());
         let rebinder =
             activation_execution_context_rebinder(RuntimeActivationExecutionContextRebinderInput {
