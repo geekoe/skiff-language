@@ -11,6 +11,8 @@ use std::{
 
 use skiff_artifact_identity::runtime_assembly_ref;
 use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
+use skiff_compiler::authoring::project_assembly_actor_routing;
+use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
@@ -106,11 +108,18 @@ pub fn run_package_cases(
         )));
     }
 
-    execute_assembly_batches(execution_batches, activation_url, ingress_url, options)
+    execute_assembly_batches(
+        execution_batches,
+        runtime_artifact_root,
+        activation_url,
+        ingress_url,
+        options,
+    )
 }
 
 fn execute_assembly_batches(
     batches: Vec<ExecutionBatch<Arc<CanonicalTestRecords>>>,
+    runtime_artifact_root: &Path,
     activation_url: &str,
     ingress_url: &str,
     options: &SkiffTestOptions,
@@ -119,6 +128,60 @@ fn execute_assembly_batches(
         batches,
         options.expected_generation,
         |records, expected_generation, candidate_generation| {
+            // The router's A0/A3 actor method catalog is loaded from the
+            // artifact root's actor routing projection record at activation
+            // time. Publish the exact projection for this batch's deployments
+            // before activating so cross-package actor method invocations are
+            // admitted instead of silently dropped.
+            let store = CanonicalArtifactStore::open(runtime_artifact_root).map_err(|error| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "open runtime artifact store for actor routing projection: {error}"
+                ))
+            })?;
+            let mut packages = records
+                .packages
+                .iter()
+                .map(|published| published.artifact.clone())
+                .collect::<Vec<_>>();
+            let mut loaded_builds = packages
+                .iter()
+                .map(|artifact| artifact.package_build_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            for deployment in &records.deployments {
+                let refs = deployment
+                    .package_bindings
+                    .iter()
+                    .map(|binding| &binding.package)
+                    .chain(std::iter::once(&deployment.implementation));
+                for package_ref in refs {
+                    if loaded_builds.insert(package_ref.package_build_id.clone()) {
+                        let artifact = store
+                            .read_package_artifact(package_ref)
+                            .map_err(|error| {
+                                CanonicalFixtureError::InvalidInput(format!(
+                                    "read package artifact {}@{} for actor routing projection: {error}",
+                                    package_ref.package_id, package_ref.package_version
+                                ))
+                            })?;
+                        packages.push((*artifact).clone());
+                    }
+                }
+            }
+            let projection =
+                project_assembly_actor_routing(&store, &records.deployments, &packages).map_err(
+                    |error| {
+                        CanonicalFixtureError::InvalidInput(format!(
+                            "actor routing projection failed for the activation batch: {error}"
+                        ))
+                    },
+                )?;
+            store
+                .write_actor_routing_projection(&projection)
+                .map_err(|error| {
+                    CanonicalFixtureError::InvalidInput(format!(
+                        "write actor routing projection for the activation batch: {error}"
+                    ))
+                })?;
             let assembly_ref = runtime_assembly_ref(&records.assembly)
                 .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
             let config_snapshot_ref = records.config_snapshot.snapshot_ref().clone();

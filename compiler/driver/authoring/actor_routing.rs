@@ -44,7 +44,7 @@ pub(super) fn project_package_actor_routing(
 /// ordering, uniqueness and identity validation over the union (A0 immutable
 /// epoch construction semantics). An empty assembly is the legal empty
 /// projection.
-pub(super) fn project_assembly_actor_routing(
+pub fn project_assembly_actor_routing(
     store: &CanonicalArtifactStore,
     deployments: &[ServiceDeployment],
     packages: &[PackageArtifact],

@@ -18,7 +18,7 @@ use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, encode_actor_method_frame, ActorMethodCancelFrameHeader,
     ActorMethodCancelReason, ActorMethodDeadlineFrameHeader, ActorMethodFrame,
-    ActorMethodInvokeFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
+    ActorMethodInvokeFrameHeader, ActorOwnerUnitFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
 };
 use skiff_runtime_transport::actor_owner::{
     decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
@@ -27,14 +27,14 @@ use skiff_runtime_transport::actor_owner::{
 };
 use skiff_runtime_transport::protocol::{
     decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_task_submit_error_frame, encode_task_submit_response_frame,
-    ActorFindRequestFrameHeader, ActorFindResponseFrameHeader, ActorGetOrCreateRequestFrameHeader,
+    encode_task_submit_error_frame, encode_task_submit_response_frame, ActorFindRequestFrameHeader,
+    ActorFindResponseFrameHeader, ActorGetOrCreateRequestFrameHeader,
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
-    ActorTaskRuntimeErrorFrameHeader, RuntimeErrorFramePayload, RuntimeFrameFamily,
-    TaskCallerKind, TaskSubmitRequestFrame, TaskSubmitRequestFrameHeaderV2,
-    TaskSubmitResponseFrameHeader, TaskTargetKind as WireTaskTargetKind,
-    RUNTIME_FRAME_SCHEMA_VERSION, TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
+    ActorTaskRuntimeErrorFrameHeader, RuntimeErrorFramePayload, RuntimeFrameFamily, TaskCallerKind,
+    TaskSubmitRequestFrame, TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader,
+    TaskTargetKind as WireTaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
+    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
 
 use crate::actor::{
@@ -44,7 +44,7 @@ use crate::actor::{
     TaskSubmitAcceptance, TaskSubmitError, DEFAULT_OWNER_LEASE_TTL_MS,
     TASK_ACTOR_METHOD_DEADLINE_MS, TASK_ACTOR_METHOD_LEASE_MS,
 };
-use crate::bootstrap::ActiveRoutingEpochStore;
+use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{
     derived_deadline, RequestDeadline, RequestDispatcher, TaskSubmit, TaskSubmitResult,
     TaskTargetKind,
@@ -172,7 +172,31 @@ impl ActorFrameSink {
         let (header, payload) =
             decode_typed_binary_frame::<ActorGetOrCreateRequestFrameHeader>(raw)
                 .map_err(|_| TerminalKind::MalformedFrame)?;
-        let actor_key = ActorLogicalKey::from_wire(&header.actor_key);
+        let Some(epoch) = self.epoch_store.capture() else {
+            let bytes = self.error_frame(
+                "actor.getOrCreate.error",
+                &header.rpc_id,
+                "OwnerUnavailable",
+                "no active routing epoch is available to select an Actor owner",
+            )?;
+            return self.write(session, bytes);
+        };
+        let actor_key = match self.actor_owner_service_id(&epoch, &header) {
+            Ok(service_id) => {
+                let mut key = ActorLogicalKey::from_wire(&header.actor_key);
+                key.service_id = service_id;
+                key
+            }
+            Err(code) => {
+                let bytes = self.error_frame(
+                    "actor.getOrCreate.error",
+                    &header.rpc_id,
+                    code,
+                    "actor declaration owner service cannot be resolved",
+                )?;
+                return self.write(session, bytes);
+            }
+        };
         // E-actor-parity owner selection: the Router pins the owner runtime
         // deterministically over the registered session candidates with
         // `sha256(actorIdHash) % candidates.len()` (TS coordinator parity).
@@ -186,15 +210,6 @@ impl ActorFrameSink {
                     &header.rpc_id,
                     "OwnerUnavailable",
                     "no Runtime is available to own the Actor",
-                )?;
-                return self.write(session, bytes);
-            };
-            let Some(epoch) = self.epoch_store.capture() else {
-                let bytes = self.error_frame(
-                    "actor.getOrCreate.error",
-                    &header.rpc_id,
-                    "OwnerUnavailable",
-                    "no active routing epoch is available to select an Actor owner",
                 )?;
                 return self.write(session, bytes);
             };
@@ -277,6 +292,39 @@ impl ActorFrameSink {
                     "actor get-or-create failed closed",
                 )?;
                 self.write(session, bytes)
+            }
+        }
+    }
+
+    /// Resolves the service id an actor's logical key must use: the actor's
+    /// own declaration owner service, not the caller's service. Same-service
+    /// actors keep the wire caller id; package-owned actors are normalized to
+    /// the deployment service that owns the declaration owner's code slot.
+    /// The A0/A3 catalog and ownership registry are keyed by that owning
+    /// service id, so a cross-package caller key would miss the catalog and
+    /// leave method invocations silently undeliverable.
+    fn actor_owner_service_id(
+        &self,
+        epoch: &Arc<RoutingEpoch>,
+        header: &ActorGetOrCreateRequestFrameHeader,
+    ) -> Result<String, &'static str> {
+        match &header.declaration_owner.unit {
+            ActorOwnerUnitFrameHeader::Service => Ok(header.actor_key.service_id.clone()),
+            ActorOwnerUnitFrameHeader::Package(slot) => {
+                let build_id = epoch
+                    .assembly()
+                    .package_link_plan
+                    .code_slots
+                    .get(*slot as usize)
+                    .map(|slot| &slot.package.package_build_id)
+                    .ok_or("ActorOwnerServiceUnresolved")?;
+                epoch
+                    .actor_catalog()
+                    .entries()
+                    .iter()
+                    .find(|entry| &entry.package.package_build_id == build_id)
+                    .map(|entry| entry.deployment.service_id.clone())
+                    .ok_or("ActorOwnerServiceUnresolved")
             }
         }
     }
@@ -1251,10 +1299,9 @@ impl ActorTaskFrameSink {
             deadline: Some(deadline),
         };
         match self.dispatcher.task_submit(task) {
-            TaskSubmitResult::AcceptedDerived(result) => Ok((
-                task_request_id.to_string(),
-                result.task_request_id.clone(),
-            )),
+            TaskSubmitResult::AcceptedDerived(result) => {
+                Ok((task_request_id.to_string(), result.task_request_id.clone()))
+            }
             TaskSubmitResult::Rejected { reason, .. } => {
                 let (code, message) = Self::reject_code(&reason);
                 Err((code.to_string(), message.to_string()))
