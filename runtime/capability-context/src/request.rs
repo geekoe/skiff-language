@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     ActivationIdentityControl, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
-    TaskSubmitControlRequest,
+    TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 
 /// Request/invocation metadata and `task.submit` operations provided by the host/runtime.

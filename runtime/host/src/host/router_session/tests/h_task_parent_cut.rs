@@ -9,7 +9,7 @@
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, TaskCallerKind, TaskSubmitControlMessage,
-    TaskSubmitControlRequest,
+    TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::{
@@ -42,6 +42,7 @@ fn task_submit_message(
                 deployment_revision: DeploymentRevision::new("rev-1"),
             },
             caller_request_id: Some(caller_request_id.to_string()),
+            timing: TaskSubmitTimingControl::Immediate,
             trace_id: None,
             caller_target: None,
             max_queue_wait_ms: None,

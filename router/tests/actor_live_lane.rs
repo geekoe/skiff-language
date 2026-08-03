@@ -30,6 +30,7 @@ fn wire_frame() -> TaskSubmitRequestFrame {
             service_version: "1.0.0".to_string(),
             service_protocol_identity: "protocol".to_string(),
             target: "actorMethod".to_string(),
+            timing: None,
             task_id: None,
             build_id: None,
             activation_identity:

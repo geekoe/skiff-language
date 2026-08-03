@@ -5,6 +5,7 @@ use skiff_runtime_capability_context::{
     CancellationSource, ConnectionRequestSession, ConnectionRequestTerminal, ExecutionScope,
 };
 use skiff_runtime_request::OutboundResponse;
+use skiff_runtime_transport::protocol::TaskRef;
 use tokio::{
     io::duplex,
     sync::{mpsc, oneshot, Notify},
@@ -444,6 +445,8 @@ async fn authority_error_ends_real_session_before_later_success_receipt_is_read(
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "task.submit.response".to_string(),
             rpc_id: "rpc-after-authority-error".to_string(),
+            task_ref: TaskRef::new("task-must-not-complete", "example.com/service")
+                .expect("task ref"),
             task_id: "task-must-not-complete".to_string(),
             request_id: "request-must-not-complete".to_string(),
             status: "submitted".to_string(),

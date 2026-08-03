@@ -4,10 +4,12 @@ use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata, CancellationToken,
     ExecutionScope, OutboundControlMessage, RouterWriterMessage, TaskSubmitControlRequest,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, ActorFindResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader,
-    RuntimeErrorFramePayload, TaskSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeErrorFramePayload, TaskRef, TaskSubmitResponseFrameHeader,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{sync::mpsc, time::timeout};
 
@@ -106,6 +108,7 @@ async fn scoped_task_submit_response_dispatch_reaches_the_caller() {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "task.submit.response".to_string(),
             rpc_id: rpc_id.clone(),
+            task_ref: TaskRef::new("task-7", "example.com/docs").expect("task ref"),
             task_id: "task-7".to_string(),
             request_id: "task-request-11".to_string(),
             status: "submitted".to_string(),
@@ -268,6 +271,7 @@ fn task_submit_request() -> TaskSubmitControlRequest {
         build_id: Some(BUILD_ID.to_string()),
         activation_identity: activation_identity(),
         caller_request_id: Some("request-test".to_string()),
+        timing: TaskSubmitTimingControl::Immediate,
         trace_id: None,
         caller_target: Some("program.test".to_string()),
         max_queue_wait_ms: None,

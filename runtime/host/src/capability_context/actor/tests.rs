@@ -8,7 +8,7 @@ use skiff_runtime_capability_context::{
     ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner,
     ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorKeyControlMetadata,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationSource, ExecutionScope,
-    OutboundResponse, ResponseError, TaskSubmitControlRequest,
+    OutboundResponse, ResponseError, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 
 use super::*;
@@ -149,6 +149,7 @@ async fn task_submit_accepts_correlated_receipt_and_preserves_activation_identit
             "schemaVersion": "skiff-runtime-frame-v1",
             "type": "task.submit.response",
             "rpcId": rpc_id,
+            "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
             "taskId": "task-7",
             "requestId": "task-request-11",
             "status": "submitted"
@@ -248,6 +249,8 @@ async fn task_submit_rejects_uncorrelated_status_and_identity_receipts() {
     let cases = [
         InvalidReceipt::WrongRpcId,
         InvalidReceipt::BadStatus,
+        InvalidReceipt::MissingTaskRef,
+        InvalidReceipt::InvalidTaskRef,
         InvalidReceipt::MissingTaskId,
         InvalidReceipt::EmptyTaskId,
         InvalidReceipt::InvalidTaskId,
@@ -368,6 +371,7 @@ fn task_submit_request() -> TaskSubmitControlRequest {
         build_id: Some(BUILD_ID.to_string()),
         activation_identity: untrusted_identity,
         caller_request_id: Some("request-test".to_string()),
+        timing: TaskSubmitTimingControl::Immediate,
         trace_id: None,
         caller_target: Some("program.test".to_string()),
         max_queue_wait_ms: None,
@@ -444,6 +448,8 @@ fn remove_request() -> ActorRemoveControlRequest {
 enum InvalidReceipt {
     WrongRpcId,
     BadStatus,
+    MissingTaskRef,
+    InvalidTaskRef,
     MissingTaskId,
     EmptyTaskId,
     InvalidTaskId,
@@ -458,6 +464,7 @@ impl InvalidReceipt {
             "schemaVersion": "skiff-runtime-frame-v1",
             "type": "task.submit.response",
             "rpcId": rpc_id,
+            "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
             "taskId": "task-7",
             "requestId": "task-request-11",
             "status": "submitted"
@@ -465,6 +472,13 @@ impl InvalidReceipt {
         match self {
             Self::WrongRpcId => response["rpcId"] = json!("another-rpc"),
             Self::BadStatus => response["status"] = json!("queued"),
+            Self::MissingTaskRef => {
+                response
+                    .as_object_mut()
+                    .expect("response object")
+                    .remove("taskRef");
+            }
+            Self::InvalidTaskRef => response["taskRef"] = json!("not-a-task-ref"),
             Self::MissingTaskId => {
                 response
                     .as_object_mut()
@@ -489,6 +503,8 @@ impl InvalidReceipt {
         match self {
             Self::WrongRpcId => "wrong rpcId",
             Self::BadStatus => "bad status",
+            Self::MissingTaskRef => "missing taskRef",
+            Self::InvalidTaskRef => "invalid taskRef",
             Self::MissingTaskId => "missing taskId",
             Self::EmptyTaskId => "empty taskId",
             Self::InvalidTaskId => "invalid taskId",
@@ -502,6 +518,8 @@ impl InvalidReceipt {
         match self {
             Self::WrongRpcId => "does not match request",
             Self::BadStatus => "status must be submitted",
+            Self::MissingTaskRef => "missing field `taskRef`",
+            Self::InvalidTaskRef => "taskRef must start with skiff-task-v1",
             Self::MissingTaskId => "missing field `taskId`",
             Self::EmptyTaskId | Self::InvalidTaskId => "taskId must be an ASCII visible token",
             Self::MissingRequestId => "missing field `requestId`",

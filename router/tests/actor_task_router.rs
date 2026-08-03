@@ -190,6 +190,7 @@ fn task_header(
         service_version: "1.0.0".to_string(),
         service_protocol_identity: "example.com/docs:1.0.0".to_string(),
         target: "example.com/fn".to_string(),
+        timing: None,
         task_id: task_id.map(str::to_string),
         build_id: None,
         activation_identity: activation_identity_wire("runtime-a"),

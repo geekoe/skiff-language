@@ -10,7 +10,7 @@
 use base64::Engine as _;
 use skiff_runtime_capability_context::{
     ActorInvocationOwnerFile, ActorInvocationOwnerUnit, TaskCallerKind, TaskSubmitControlMessage,
-    TaskSubmitControlRequest,
+    TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 use skiff_runtime_transport::actor_method::{
     ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader, ActorOwnerFileFrameHeader,
@@ -115,6 +115,17 @@ fn task_submit_request_header_v2(
         service_version: request.service_version.clone(),
         service_protocol_identity: request.service_protocol_identity.clone(),
         target: request.target.clone(),
+        timing: match request.timing {
+            TaskSubmitTimingControl::Immediate => None,
+            TaskSubmitTimingControl::After { duration_ms } => {
+                Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After {
+                    duration_ms,
+                })
+            }
+            TaskSubmitTimingControl::At { utc_millis } => {
+                Some(skiff_runtime_transport::protocol::TaskSubmitTiming::At { utc_millis })
+            }
+        },
         task_id: request.task_id.clone(),
         build_id: request.build_id.clone(),
         activation_identity,

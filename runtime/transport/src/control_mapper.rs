@@ -259,6 +259,15 @@ fn task_submit_request_frame_header(
         service_version: request.service_version,
         service_protocol_identity: request.service_protocol_identity,
         target: request.target,
+        timing: match request.timing {
+            skiff_runtime_request_contract::TaskSubmitTimingControl::Immediate => None,
+            skiff_runtime_request_contract::TaskSubmitTimingControl::After { duration_ms } => {
+                Some(crate::protocol::TaskSubmitTiming::After { duration_ms })
+            }
+            skiff_runtime_request_contract::TaskSubmitTimingControl::At { utc_millis } => {
+                Some(crate::protocol::TaskSubmitTiming::At { utc_millis })
+            }
+        },
         task_id: request.task_id,
         build_id: request.build_id,
         activation_identity: activation_identity_frame_metadata(request.activation_identity),

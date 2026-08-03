@@ -4,7 +4,7 @@ pub use skiff_runtime_request_contract::{
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
     RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
-    TaskSubmitControlRequest, WebSocketConnectionPolicyControl,
+    TaskSubmitControlRequest, TaskSubmitTimingControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
 

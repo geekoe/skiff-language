@@ -12,7 +12,8 @@ use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
         ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, TaskSubmitResponseFrameHeader,
+        ResponseErrorFrameHeader, ResponseStartFrameHeader, TaskRef,
+        TaskSubmitResponseFrameHeader,
         TypedEnvelope, BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
@@ -67,6 +68,7 @@ async fn host_direct_task_executes_exact_route_and_cleans_supervision() {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "task.submit.response".to_string(),
             rpc_id: submit.rpc_id.clone(),
+            task_ref: TaskRef::new("task-direct-1", "example.com/service").expect("task ref"),
             task_id: "task-direct-1".to_string(),
             request_id: "host-direct-task-child".to_string(),
             status: "submitted".to_string(),
@@ -1102,6 +1104,7 @@ fn direct_task_header(
         },
         test_effects_enabled: false,
         test_case_capability: None,
+        task_attempt: None,
     }
 }
 
