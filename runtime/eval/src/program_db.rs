@@ -80,7 +80,7 @@ impl Interpreter {
     pub async fn eval_program_db_operation(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -106,7 +106,7 @@ impl Interpreter {
         &self,
         program_context: ProgramExecutionContext<'_>,
         db_context: &DbCapabilityContext,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -141,7 +141,7 @@ impl Interpreter {
         &self,
         db_context: &DbCapabilityContext,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -205,7 +205,7 @@ impl Interpreter {
     pub async fn eval_program_explicit_db_transaction(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -231,7 +231,7 @@ impl Interpreter {
         &self,
         program_context: ProgramExecutionContext<'_>,
         db_context: &DbCapabilityContext,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -362,7 +362,7 @@ impl Interpreter {
     pub async fn eval_program_db_query_value(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -380,7 +380,7 @@ impl Interpreter {
     pub async fn eval_program_db_lease_claim(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -480,7 +480,7 @@ impl Interpreter {
     pub async fn eval_program_db_lease_read(
         &self,
         program_context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -519,7 +519,7 @@ impl Interpreter {
 async fn abort_transaction_and_rollback(
     lifecycle: transaction::TransactionLifecycle,
     program_context: &ProgramExecutionContext<'_>,
-    heap: &mut HeapAccess<'_>,
+    heap: &mut HeapAccess,
     env: &mut Env,
     checkpoint: rollback::TransactionRollbackCheckpoint,
     original_error: RuntimeError,
@@ -557,7 +557,7 @@ async fn execute_db_command(
     store: &DbCapabilityStore,
     program: RuntimeExecutionProjection<'_>,
     program_context: &ProgramExecutionContext<'_>,
-    heap: &mut HeapAccess<'_>,
+    heap: &mut HeapAccess,
     command: DbCommand,
 ) -> Result<RuntimeValue> {
     match command {

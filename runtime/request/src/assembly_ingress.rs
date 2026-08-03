@@ -2,8 +2,8 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
-    dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse, Interpreter,
-    TestEffectDouble,
+    dispatch_ingress_via_in_process_boundary, heap_access::HeapAccess,
+    InProcessBoundaryIngressResponse, Interpreter, TestEffectDouble,
 };
 
 use crate::{
@@ -87,7 +87,7 @@ pub async fn execute_runtime_assembly_request(
         &interpreter,
         target,
     );
-    let mut heap = context.request_heap();
+    let mut heap = HeapAccess::private(context.request_heap());
     let body_result = dispatch_ingress_via_in_process_boundary(
         &interpreter,
         context,

@@ -31,47 +31,53 @@
     语义测试。基线包含 F1（事务路径已移除）与 F2（HeapAccess API 已存在）。
 - **批末**：集成 Agent 将 `integration/actor-shared-heap` 合入 `main` 一次。
 
-## 3. `HeapAccess`（新文件 `runtime/eval/src/heap_access.rs`，F2 拥有）
+## 3. `HeapAccess`（单一机制，文件 `runtime/eval/src/heap_access.rs`）
+
+用户已确认：求值器对所有执行只使用**一个** heap 访问机制，不再有 Exclusive/Shared 双模式。
 
 ```rust
-pub(crate) enum HeapAccess<'a> {
-    Exclusive(&'a mut RequestHeap),
-    Shared {
-        arena: Arc<tokio::sync::Mutex<RequestHeap>>,
-        guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
-    },
+pub struct HeapAccess {
+    arena: Arc<tokio::sync::Mutex<RequestHeap>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
 }
 
-impl HeapAccess<'_> {
-    pub fn heap_mut(&mut self) -> &mut RequestHeap;   // Shared: guard 必须 Some，否则 invariant 错误
-    pub fn release(&mut self);                        // Shared: guard.take() 并 drop；Exclusive: no-op
-    pub async fn reacquire(&mut self);                // Shared: guard = Some(arena.lock_owned().await)；Exclusive: no-op
-    pub fn is_shared(&self) -> bool;
+impl HeapAccess {
+    pub fn private(heap: RequestHeap) -> Self;   // 普通执行：新建私有 arena 并立即持有 guard
+    pub fn with_guard(arena, guard) -> Self;     // actor 段 / callback owner 等既有 guard 构造
+    pub fn heap_mut(&mut self) -> &mut RequestHeap;   // guard 必须 Some，否则 invariant 错误
+    pub fn release(&mut self);                  // guard.take() 并 drop
+    pub async fn reacquire(&mut self);          // guard = Some(arena.lock_owned().await)
+    pub fn into_owned_heap(self) -> RequestHeap; // 私有 arena 执行结束后取回 RequestHeap
 }
-impl Deref / DerefMut for HeapAccess（Shared 经 guard；Exclusive 直接）
+impl Deref / DerefMut for HeapAccess（经 guard）
 ```
 
-- 普通 request / 未共享路径 = `Exclusive`，语义与现状完全一致，release/reacquire 为 no-op；
-- actor 实例 arena = `Shared`；guard 不得跨 `Pending` 存活；release/reacquire 只发生在漏斗内。
+- 普通 request = 执行状态持有的**私有 arena**（`private`），guard 语义与其他执行完全一致；
+- actor 实例 = 共享 arena（`with_guard`），guard 不得跨 `Pending` 存活；
+- release/reacquire 只发生在漏斗内；没有 `is_shared()` 分支，也没有任何绕过 guard 协议的
+  `&mut RequestHeap` 直达求值器路径。
 
 ## 4. 漏斗契约（F2 实现；F3 只经 `ActorExecutionFrame` 使用，不直接依赖漏斗签名）
 
 - `actual_pending::await_operation`、`program_db::wait::await_operation`、
   `program_stream::current_scope::next_with_actor`、`callback_native::prepared` 的 wait：
-  对 `Shared` 执行 poll-once（`Ready` 不释放；`Pending` → `release()` → await → `reacquire().await`），
-  对 `Exclusive` 保持现状直接 await；
+  一律执行 poll-once（`Ready` 不释放；`Pending` → `release()` → await → `reacquire().await`），
+  通过统一漏斗 `await_with_release`；普通 request 与 actor 共享 arena 走同一条路径；
 - `ActorExecutionFrame::await_if_pending` 语义（F3）：poll-once；`Pending` →
   `access.release()` → await future → `access.reacquire().await` → 校验 instance fence / arena epoch；
   F3 通过 `HeapAccess` 的公开方法实现，不依赖 F2 漏斗内部。
 
 ## 5. `EvalContext` 与 `Interpreter` 入口（F2）
 
-- `EvalContext.heap` 从 `&'a mut RequestHeap` 改为 `HeapAccess<'a>`；所有内部 heap 访问走
+- `EvalContext.heap` 从 `&'a mut RequestHeap` 改为 `&mut HeapAccess`（无生命周期参数）；所有内部 heap 访问走
   `self.heap.heap_mut()`；`heap_mut()` 定义在 `HeapAccess` 上，不在 `EvalContext` 上
   （避免同语句借用 `self.env` / `self.context`）；
-- 共享模式下，任何能返回 `Pending` 的路径不得持有 guard；
-- `call_program_executable*` 系列的 heap 参数由 `&mut RequestHeap` 改为 `&mut HeapAccess`
-  （或等效）；普通 request 调用点传 `Exclusive`；actor 调用点传 `Shared`；
+- 任何能返回 `Pending` 的路径不得持有 guard（所有执行一致）；
+- `call_program_executable*` 系列与 `execute_runtime_assembly_addr*` 的 heap 参数为 `&mut HeapAccess`；
+  普通 request 调用点持有私有 arena，actor 调用点持有共享 arena，代码路径相同；
+- 顶层调用者把 `RequestHeap` 所有权移入私有 arena（`HeapAccess::private`），或直接接收
+  `HeapAccess`/arena；`PreparedProgramInvocation` 等执行状态在运行期间持有 arena，
+  返回时经 `into_owned_heap()` 取回 `RequestHeap`（保持既有公开返回形态）；
 - 同步函数（deep clone、codec、materialize、error promote）继续收 `&mut RequestHeap`。
 
 ## 6. Actor store 契约（F3）

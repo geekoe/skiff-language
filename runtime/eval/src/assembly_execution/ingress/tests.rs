@@ -17,13 +17,13 @@ async fn ingress_hands_fixed_failure_up_without_importing_an_external_caller() {
         let eval_target = fixture.terminal_eval_target();
         let target = fixture.ingress_target(&eval_target);
         let context = fixture.execution_context(&interpreter, eval_target);
-        let mut heap = RequestHeap::default();
+        let mut access = HeapAccess::private(RequestHeap::default());
         let request = RequestPayloadContext::new("fixture-ingress", &[], None);
 
         let error = dispatch_ingress_via_in_process_boundary(
             &interpreter,
             context,
-            &mut heap,
+            &mut access,
             target,
             &request,
         )
@@ -33,7 +33,7 @@ async fn ingress_hands_fixed_failure_up_without_importing_an_external_caller() {
             panic!("ingress must not manufacture an external caller UserException");
         };
         assert!(
-            heap.is_empty(),
+            access.heap_mut().is_empty(),
             "ingress must not allocate a caller-local exception or retain the provider heap"
         );
         let bytes = String::from_utf8_lossy(error.encoded_bytes());

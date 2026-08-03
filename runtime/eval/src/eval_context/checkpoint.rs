@@ -8,7 +8,7 @@ pub(super) fn actual_pending_checkpoint(context: &ProgramExecutionContext<'_>) -
     ))
 }
 
-impl EvalContext<'_, '_> {
+impl EvalContext<'_> {
     pub(super) fn checkpoint_function_entry(&self) -> Result<()> {
         self.context.checkpoint(ExecutionCheckpoint::new(
             ExecutionCheckpointKind::FunctionEntry,

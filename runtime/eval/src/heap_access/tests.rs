@@ -10,22 +10,16 @@ use skiff_runtime_model::{
     runtime_value::RuntimeValue,
 };
 
-use super::{await_shared_with_release, HeapAccess};
-
-fn exclusive_access(heap: &mut RequestHeap) -> HeapAccess<'_> {
-    HeapAccess::Exclusive(heap)
-}
+use super::{await_with_release, HeapAccess};
 
 #[tokio::test]
-async fn exclusive_release_and_reacquire_are_noops() {
-    let mut heap = RequestHeap::new(RequestHeapLimits::default());
-    let mut access = exclusive_access(&mut heap);
-    assert!(!access.is_shared());
+async fn private_arena_holds_guard_until_release() {
+    let mut access = HeapAccess::private(RequestHeap::new(RequestHeapLimits::default()));
 
     let handle = access
         .heap_mut()
         .alloc_local_carrier_cell(RuntimeValue::Null.into())
-        .expect("allocate in exclusive heap");
+        .expect("allocate in private arena");
     assert!(access.heap_mut().get(handle).is_ok());
 
     access.release();
@@ -35,16 +29,23 @@ async fn exclusive_release_and_reacquire_are_noops() {
 }
 
 #[tokio::test]
+async fn private_into_owned_heap_recovers_the_heap() {
+    let mut access = HeapAccess::private(RequestHeap::new(RequestHeapLimits::default()));
+    let handle = access
+        .heap_mut()
+        .alloc_local_carrier_cell(RuntimeValue::Number(7.0).into())
+        .expect("allocate in private arena");
+    let heap = access.into_owned_heap();
+    assert!(heap.get(handle).is_ok());
+}
+
+#[tokio::test]
 async fn shared_release_drops_guard_and_reacquire_restores_it() {
     let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
         RequestHeap::new(RequestHeapLimits::default()),
     ));
     let guard = arena.clone().lock_owned().await;
-    let mut access = HeapAccess::Shared {
-        arena: arena.clone(),
-        guard: Some(guard),
-    };
-    assert!(access.is_shared());
+    let mut access = HeapAccess::with_guard(arena.clone(), guard);
 
     let handle = access
         .heap_mut()
@@ -71,24 +72,15 @@ async fn shared_release_drops_guard_and_reacquire_restores_it() {
 }
 
 #[tokio::test]
-async fn shared_funnel_ready_keeps_guard() {
-    let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
-        RequestHeap::new(RequestHeapLimits::default()),
-    ));
-    let guard = arena.clone().lock_owned().await;
-    let mut access = HeapAccess::Shared {
-        arena: arena.clone(),
-        guard: Some(guard),
-    };
+async fn funnel_ready_keeps_guard() {
+    let mut access = HeapAccess::private(RequestHeap::new(RequestHeapLimits::default()));
+    let arena = arena_of(&access);
 
-    let output = await_shared_with_release(&mut access, async { 7 }).await;
+    let output = await_with_release(&mut access, async { 7 }).await;
 
     assert_eq!(output, 7);
-    let HeapAccess::Shared { guard, .. } = &access else {
-        panic!("funnel access must remain Shared");
-    };
     assert!(
-        guard.is_some(),
+        access.guard.is_some(),
         "a Ready first poll must not release the guard"
     );
     assert!(
@@ -121,22 +113,17 @@ impl Future for PendingGate {
     }
 }
 
-#[tokio::test]
-async fn shared_funnel_pending_releases_guard_and_reacquires_after_wake() {
-    let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
-        RequestHeap::new(RequestHeapLimits::default()),
-    ));
+async fn run_pending_funnel<F>(arena: Arc<tokio::sync::Mutex<RequestHeap>>, make_access: F) -> u32
+where
+    F: FnOnce(Arc<tokio::sync::Mutex<RequestHeap>>) -> HeapAccess + Send + 'static,
+{
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let arena_for_task = arena.clone();
 
     let task = tokio::spawn(async move {
-        let guard = arena_for_task.clone().lock_owned().await;
-        let mut access = HeapAccess::Shared {
-            arena: arena_for_task,
-            guard: Some(guard),
-        };
-        let output = await_shared_with_release(
+        let mut access = make_access(arena_for_task);
+        let output = await_with_release(
             &mut access,
             PendingGate {
                 entered: Some(entered_tx),
@@ -144,11 +131,8 @@ async fn shared_funnel_pending_releases_guard_and_reacquires_after_wake() {
             },
         )
         .await;
-        let HeapAccess::Shared { guard, .. } = &access else {
-            panic!("funnel task access must remain Shared");
-        };
         assert!(
-            guard.is_some(),
+            access.guard.is_some(),
             "guard must be reacquired before the funnel returns"
         );
         output
@@ -159,7 +143,7 @@ async fn shared_funnel_pending_releases_guard_and_reacquires_after_wake() {
         .expect("funnel must report its first Pending poll");
     assert!(
         arena.clone().try_lock_owned().is_ok(),
-        "Shared guard must be released while the funnel future is Pending"
+        "guard must be released while the funnel future is Pending"
     );
     release_tx.send(()).expect("release the pending funnel");
 
@@ -171,4 +155,37 @@ async fn shared_funnel_pending_releases_guard_and_reacquires_after_wake() {
         arena.clone().try_lock_owned().is_ok(),
         "funnel task must release the arena when its access is dropped"
     );
+    42
+}
+
+#[tokio::test]
+async fn private_funnel_pending_releases_guard_and_reacquires_after_wake() {
+    let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
+        RequestHeap::new(RequestHeapLimits::default()),
+    ));
+    run_pending_funnel(arena, |arena| {
+        let guard = Arc::clone(&arena)
+            .try_lock_owned()
+            .expect("fresh private arena should lock");
+        HeapAccess::with_guard(arena, guard)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn shared_funnel_pending_releases_guard_and_reacquires_after_wake() {
+    let arena: Arc<tokio::sync::Mutex<RequestHeap>> = Arc::new(tokio::sync::Mutex::new(
+        RequestHeap::new(RequestHeapLimits::default()),
+    ));
+    run_pending_funnel(arena, |arena| {
+        let guard = Arc::clone(&arena)
+            .try_lock_owned()
+            .expect("fresh shared arena should lock");
+        HeapAccess::with_guard(arena, guard)
+    })
+    .await;
+}
+
+fn arena_of(access: &HeapAccess) -> Arc<tokio::sync::Mutex<RequestHeap>> {
+    Arc::clone(&access.arena)
 }

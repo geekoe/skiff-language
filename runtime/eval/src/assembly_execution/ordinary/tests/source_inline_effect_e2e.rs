@@ -277,16 +277,13 @@ async fn execute_linked_effect(
     }
     let context =
         execution_context_with_trace(&interpreter, target, LINKED_SERVICE_EFFECT_TRACE_ID);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
+    let mut access = HeapAccess::private(heap);
     let result = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut HeapAccess::Exclusive(&mut heap),
-            &addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut access, &addr, Vec::new())
         .await;
     let diagnostics = take_restricted_service_diagnostics_for_test(generation);
+    let heap = access.into_owned_heap();
     LinkedEffectExecution {
         interpreter,
         result,
@@ -1200,12 +1197,12 @@ async fn execute_hydrated_test_service_case(
     );
     let context =
         execution_context_with_trace(&interpreter, eval_target, LINKED_SERVICE_EFFECT_TRACE_ID);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
 
     interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &caller_addr,
             Vec::new(),
         )

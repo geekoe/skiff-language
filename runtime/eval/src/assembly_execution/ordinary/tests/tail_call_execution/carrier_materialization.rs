@@ -27,11 +27,12 @@ impl CanonicalTailCallFixture {
         let entry_addr = self.entry_addr.clone();
         let context = execution_context(&interpreter, self.eval_target)
             .with_program_call_depth_for_test(initial_depth);
-        let mut heap = heap;
+        let heap = heap;
+        let mut access = HeapAccess::private(heap);
         let value = interpreter
             .call_program_executable_carriers(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &Env::new(),
                 &entry_addr,
                 &entry_addr,
@@ -39,7 +40,7 @@ impl CanonicalTailCallFixture {
                 args,
             )
             .await?;
-        Ok((value, heap))
+        Ok((value, access.into_owned_heap()))
     }
 }
 

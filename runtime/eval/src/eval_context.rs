@@ -80,12 +80,12 @@ mod timeout;
 #[cfg(test)]
 pub(crate) use actual_pending::tests::legacy_native_call_expected_to_suspend as native_call_suspends;
 
-pub struct EvalContext<'a, 'h> {
+pub struct EvalContext<'a> {
     pub interpreter: &'a Interpreter,
     projection: RuntimeExecutionProjection<'a>,
     pub context: ProgramExecutionContext<'a>,
     pub execution: ExecutionControl<'a>,
-    pub heap: &'a mut HeapAccess<'h>,
+    pub heap: &'a mut HeapAccess,
     pub env: &'a mut Env,
     pub addr: &'a ExecutableAddr,
     pub file: &'a LinkedFileUnit,
@@ -147,11 +147,11 @@ pub(crate) fn promote_call_site_error<T>(
     Err(RuntimeError::UserException(UserException::new(exception)))
 }
 
-impl<'a, 'h> EvalContext<'a, 'h> {
+impl<'a> EvalContext<'a> {
     pub fn new(
         interpreter: &'a Interpreter,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut HeapAccess<'h>,
+        heap: &'a mut HeapAccess,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -174,7 +174,7 @@ impl<'a, 'h> EvalContext<'a, 'h> {
         interpreter: &'a Interpreter,
         projection: RuntimeExecutionProjection<'a>,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut HeapAccess<'h>,
+        heap: &'a mut HeapAccess,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
@@ -199,7 +199,7 @@ impl<'a, 'h> EvalContext<'a, 'h> {
     pub(crate) fn new_with_tail_call_context(
         interpreter: &'a Interpreter,
         context: ProgramExecutionContext<'a>,
-        heap: &'a mut HeapAccess<'h>,
+        heap: &'a mut HeapAccess,
         env: &'a mut Env,
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,

@@ -117,7 +117,7 @@ impl CanonicalNegativeFixture {
         interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+                &mut HeapAccess::private(RequestHeap::default()),
                 &self.entry_addr,
                 args,
             )
@@ -225,7 +225,7 @@ async fn assembly_tail_call_negative_service_target_keeps_real_boundary_dispatch
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut RequestHeap::default()),
+            &mut HeapAccess::private(RequestHeap::default()),
             fixture.caller_addr(),
             Vec::new(),
         )

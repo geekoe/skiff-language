@@ -865,7 +865,7 @@ impl<'a> ExecutableInvocation<'a> {
         &self,
         interpreter: &Interpreter,
         context: impl IntoProgramExecutionContext<'ctx> + Send,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
@@ -1008,7 +1008,7 @@ impl Interpreter {
     pub async fn execute_runtime_assembly_addr(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         addr: &ExecutableAddr,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
@@ -1031,7 +1031,7 @@ impl Interpreter {
     pub async fn execute_runtime_assembly_addr_with_stream_defer(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         addr: &ExecutableAddr,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
@@ -1069,7 +1069,7 @@ impl Interpreter {
     pub async fn call_program_executable(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1093,7 +1093,7 @@ impl Interpreter {
     pub(crate) async fn call_program_executable_carriers(
         &self,
         context: ProgramExecutionContext<'async_recursion>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1173,7 +1173,7 @@ impl Interpreter {
         &self,
         context: &ProgramExecutionContext<'_>,
         projection: &RuntimeAssemblyExecutionProjection,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1234,7 +1234,7 @@ impl Interpreter {
     pub async fn call_program_executable_with_self(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1259,7 +1259,7 @@ impl Interpreter {
     pub(crate) async fn call_program_executable_with_self_carriers(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1284,7 +1284,7 @@ impl Interpreter {
     pub async fn call_program_executable_with_self_direct(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1309,7 +1309,7 @@ impl Interpreter {
     pub(crate) async fn call_program_executable_with_self_direct_carriers(
         &self,
         context: ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1335,7 +1335,7 @@ impl Interpreter {
     async fn call_program_executable_with_self_inner(
         &self,
         context: ProgramExecutionContext<'async_recursion>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
         addr: &ExecutableAddr,
@@ -1445,7 +1445,7 @@ impl Interpreter {
     pub async fn exec_program_executable<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1514,7 +1514,7 @@ impl Interpreter {
     pub async fn eval_program_const<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1529,7 +1529,7 @@ impl Interpreter {
     pub async fn eval_program_const_addr<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         const_addr: &ConstAddr,
     ) -> Result<RuntimeValueCarrier> {
@@ -1555,7 +1555,7 @@ impl Interpreter {
     async fn eval_program_const_in_file<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         caller_env: &Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1604,7 +1604,7 @@ impl Interpreter {
     pub async fn exec_program_block<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1620,7 +1620,7 @@ impl Interpreter {
     async fn exec_program_statement<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1637,7 +1637,7 @@ impl Interpreter {
     pub async fn exec_program_for_in_body<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1664,7 +1664,7 @@ impl Interpreter {
     pub(crate) async fn exec_program_for_in_body_carrier<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1682,7 +1682,7 @@ impl Interpreter {
     pub async fn eval_program_expr_ref<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
@@ -1698,7 +1698,7 @@ impl Interpreter {
     async fn eval_program_expr<'ctx>(
         &self,
         context: impl IntoProgramExecutionContext<'ctx>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,

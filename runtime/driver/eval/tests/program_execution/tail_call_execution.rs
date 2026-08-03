@@ -339,15 +339,16 @@ async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_ex
     let frame = test_invocation("svc.main.run");
     let invocation_context = program_invocation_context(&interpreter, &frame);
     let context = invocation_context.execution_context();
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::for_program_executable(&executable, Some(file.module_path.clone()), 0)
         .expect("tail error entry environment");
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let error = tokio::time::timeout(
         Duration::from_secs(30),
         interpreter.exec_program_executable(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &ExecutableAddr::service(0, 0),
             file.as_ref(),
@@ -390,11 +391,11 @@ async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_ex
         .expect("rethrow should preserve the request-local payload")
         .as_heap_handle()
         .expect("DecodeError payload should remain a heap object");
-    let target = heap
+    let target = access
         .object_field_carrier(payload_handle, "target")
         .expect("DecodeError target should be readable")
         .expect("DecodeError target should exist");
-    let message = heap
+    let message = access
         .object_field_carrier(payload_handle, "message")
         .expect("DecodeError message should be readable")
         .expect("DecodeError message should exist");
@@ -412,12 +413,12 @@ async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_ex
         .expect("exact catch should store its result")
         .as_heap_handle()
         .expect("catch result should be a heap object");
-    let caught_tag = heap
+    let caught_tag = access
         .object_field_carrier(caught_handle, "tag")
         .expect("catch tag should be readable")
         .expect("catch tag should exist");
     assert_eq!(caught_tag.value(), &RuntimeValue::String("err".to_string()));
-    let caught_exception_handle = heap
+    let caught_exception_handle = access
         .object_field_carrier(caught_handle, "exception")
         .expect("caught exception should be readable")
         .expect("err catch result should carry the exception")
@@ -430,7 +431,8 @@ async fn runtime_program_legacy_tail_call_error_catch_rethrow_preserves_exact_ex
         .expect("rethrow slot should contain the caught exception node");
     assert_eq!(rethrow_exception_handle, caught_exception_handle);
     assert!(matches!(
-        heap.get(caught_exception_handle)
+        access
+            .get(caught_exception_handle)
             .expect("caught exception handle should resolve"),
         HeapNode::Exception(caught) if caught == request
     ));

@@ -35,7 +35,7 @@ use crate::{
 pub async fn dispatch_ingress_via_in_process_boundary(
     interpreter: &Interpreter,
     context: ProgramExecutionContext<'_>,
-    heap: &mut RequestHeap,
+    heap: &mut HeapAccess,
     target: RuntimeAssemblyServiceCallTarget,
     request: &RequestPayloadContext<'_>,
 ) -> Result<InProcessBoundaryIngressResponse> {
@@ -48,7 +48,7 @@ pub async fn dispatch_ingress_via_in_process_boundary(
         &projection,
         &canonical_addr,
         resolved.executable,
-        heap,
+        heap.heap_mut(),
     )?;
     let mut env = Env::new();
     let call = CallIr {
@@ -64,11 +64,10 @@ pub async fn dispatch_ingress_via_in_process_boundary(
         },
     };
     let value = {
-        let mut access = HeapAccess::Exclusive(&mut *heap);
         let mut eval_context = EvalContext::new(
             interpreter,
             context,
-            &mut access,
+            heap,
             &mut env,
             &canonical_addr,
             resolved.file,
@@ -90,7 +89,7 @@ pub async fn dispatch_ingress_via_in_process_boundary(
                 resolved.executable.return_type.as_ref(),
                 projection.type_view(),
                 &canonical_addr,
-                heap,
+                heap.heap_mut(),
             )?,
         ));
     }
@@ -109,7 +108,7 @@ pub async fn dispatch_ingress_via_in_process_boundary(
             &value,
             &return_plan,
             &PayloadBoundary::external_untrusted(PayloadBoundaryKind::ServiceResponse),
-            heap,
+            heap.heap_mut(),
         )?,
     ))
 }

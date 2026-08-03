@@ -86,17 +86,14 @@ impl ActorFixture {
 
     pub(in crate::program_db::tests) async fn execution_frame(
         &self,
-    ) -> (ActorExecutionFrame, HeapAccess<'static>) {
+    ) -> (ActorExecutionFrame, HeapAccess) {
         let authority = ActorExecutorAuthority::new();
         let mut segment = self
             .store
             .acquire_segment(&authority, &self.handle)
             .await
             .expect("DB/Actor fixture execution segment");
-        let access = HeapAccess::Shared {
-            arena: segment.arena().clone(),
-            guard: Some(segment.take_guard()),
-        };
+        let access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
         (
             ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
             access,

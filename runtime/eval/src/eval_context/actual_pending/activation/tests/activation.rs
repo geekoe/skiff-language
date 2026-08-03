@@ -135,17 +135,14 @@ impl ActorFrameFixture {
         }
     }
 
-    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess<'static>) {
+    async fn frame(&self) -> (ActorExecutionFrame, HeapAccess) {
         let authority = ActorExecutorAuthority::new();
         let mut segment = self
             .store
             .acquire_segment(&authority, &self.handle)
             .await
             .expect("acquire Actor probe");
-        let access = HeapAccess::Shared {
-            arena: segment.arena().clone(),
-            guard: Some(segment.take_guard()),
-        };
+        let access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
         (
             ActorExecutionFrame::new(self.store.clone(), self.handle.clone(), segment, false),
             access,
@@ -1197,9 +1194,9 @@ async fn inline_service_effect_stream_uses_the_current_context_runtime() {
         fixture.target,
         context_stream_runtime.clone(),
     );
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::new();
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,
@@ -1307,10 +1304,10 @@ async fn f445h_e4r_stream_activation_unary_actual_evaluator_imports_provider_fai
     let caller = projection
         .resolve_executable(fixture.caller_addr())
         .expect("linked caller");
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::new();
     let context = fixture.execution_context(&interpreter, fixture.caller_eval_target());
-    let mut access = HeapAccess::Exclusive(&mut heap);
+    let mut access = HeapAccess::private(heap);
     let mut eval = EvalContext::new(
         &interpreter,
         context,

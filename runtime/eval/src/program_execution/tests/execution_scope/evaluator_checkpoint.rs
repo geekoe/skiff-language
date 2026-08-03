@@ -100,14 +100,14 @@ impl LinkedCheckpointFixture {
         context: ProgramExecutionContext<'static>,
         control: &ScopeAwareControl,
     ) -> Result<crate::env::Flow, RuntimeError> {
-        let mut heap = RequestHeap::default();
+        let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(&self.file.executables[0], None, 0)
             .expect("fixture slot layout must be installable");
         let result = self
             .interpreter
             .exec_program_executable(
                 context,
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut HeapAccess::private(heap),
                 &mut env,
                 &self.addr,
                 &self.file,

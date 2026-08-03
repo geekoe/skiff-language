@@ -122,7 +122,7 @@ impl<'a> ProgramInvocationContext<'a> {
 struct PreparedProgramInvocation<'a> {
     executable_invocation: ExecutableInvocation<'a>,
     boundary_projection: Option<EvalBoundaryProjection<'a>>,
-    heap: RequestHeap,
+    heap: HeapAccess,
     env: Env,
 }
 
@@ -154,14 +154,13 @@ impl<'a> PreparedProgramInvocation<'a> {
         }
     }
 
-    async fn exec_with_heap_access<'ctx>(
+    async fn exec<'ctx>(
         &mut self,
         interpreter: &Interpreter,
         context: impl crate::program_execution::IntoProgramExecutionContext<'ctx> + Send,
     ) -> Result<Flow> {
-        let mut access = HeapAccess::Exclusive(&mut self.heap);
         self.executable_invocation
-            .exec(interpreter, context, &mut access, &mut self.env)
+            .exec(interpreter, context, &mut self.heap, &mut self.env)
             .await
     }
 
@@ -177,7 +176,7 @@ impl<'a> PreparedProgramInvocation<'a> {
                 request_plan.parameter_name.as_str(),
                 &request_plan.parameter_plan,
                 binary_http,
-                &mut self.heap,
+                self.heap.heap_mut(),
             )?;
             self.env.declare_program_parameter(
                 self.executable_invocation.executable,
@@ -203,7 +202,7 @@ impl<'a> PreparedProgramInvocation<'a> {
                 self.executable_invocation.program_projection().type_view(),
                 addr,
                 binary_http,
-                &mut self.heap,
+                self.heap.heap_mut(),
             )?;
             self.env.declare_program_parameter(
                 self.executable_invocation.executable,
@@ -237,7 +236,7 @@ impl<'a> PreparedProgramInvocation<'a> {
             self.executable_invocation.executable,
             self.executable_invocation.explicit_self_param,
             &args_plan,
-            &mut self.heap,
+            self.heap.heap_mut(),
             &mut self.env,
         )
     }
@@ -297,11 +296,10 @@ impl Interpreter {
         }
         if let Some(receiver_const) = receiver_const {
             let caller_env = invocation.env.clone();
-            let mut invocation_heap_access = HeapAccess::Exclusive(&mut invocation.heap);
             let receiver_value = self
                 .eval_program_const_addr(
                     context.execution_context(),
-                    &mut invocation_heap_access,
+                    &mut invocation.heap,
                     &caller_env,
                     receiver_const,
                 )
@@ -311,10 +309,7 @@ impl Interpreter {
                 .declare_self(&mut invocation.env, receiver_value)?;
         }
 
-        match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let return_type_ref = invocation
                     .executable_invocation
@@ -332,10 +327,10 @@ impl Interpreter {
                             "response {}",
                             invocation.executable_invocation.executable.symbol
                         ),
-                        &mut invocation.heap,
+                        invocation.heap.heap_mut(),
                     )
                 } else {
-                    runtime_to_wire(value.value(), &invocation.heap)
+                    runtime_to_wire(value.value(), &*invocation.heap)
                 }
             }
             Ok(Flow::Continue | Flow::Parked) => Ok(Value::Null),
@@ -365,10 +360,7 @@ impl Interpreter {
         let mut invocation = self.prepare_eval_invocation(context, eval_invocation)?;
         invocation.declare_binary_http_request_parameters(self, context, addr)?;
 
-        match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let return_type = invocation
                     .executable_invocation
@@ -383,7 +375,7 @@ impl Interpreter {
                         .program_projection()
                         .type_view(),
                     addr,
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 )
             }
             Ok(Flow::Continue | Flow::Parked) => Err(RuntimeError::Decode(
@@ -472,10 +464,7 @@ impl Interpreter {
                 item_type: item_type_plan.clone(),
             });
             let producer_future = async {
-                match invocation
-                    .exec_with_heap_access(self, context.execution_context())
-                    .await
-                {
+                match invocation.exec(self, context.execution_context()).await {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -496,10 +485,7 @@ impl Interpreter {
             };
         }
 
-        let stream_value = match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        let stream_value = match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let value = map_eval_error(runtime_coerce_required_plan(
                     &value,
@@ -508,7 +494,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?;
                 map_eval_error(runtime_to_wire_required_plan(
                     &value,
@@ -517,7 +503,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?
             }
             Ok(Flow::Continue | Flow::Parked) => {
@@ -646,10 +632,7 @@ impl Interpreter {
                 item_type: item_type_plan.clone(),
             });
             let producer_future = async {
-                match invocation
-                    .exec_with_heap_access(self, context.execution_context())
-                    .await
-                {
+                match invocation.exec(self, context.execution_context()).await {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -670,10 +653,7 @@ impl Interpreter {
             };
         }
 
-        let stream_value = match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        let stream_value = match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let value = map_eval_error(runtime_coerce_required_plan(
                     &value,
@@ -682,7 +662,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?;
                 map_eval_error(runtime_to_wire_required_plan(
                     &value,
@@ -691,7 +671,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?
             }
             Ok(Flow::Continue | Flow::Parked) => {
@@ -767,10 +747,7 @@ impl Interpreter {
         context: &ProgramInvocationContext<'_>,
         mut invocation: PreparedProgramInvocation<'a>,
     ) -> Result<(RuntimeValue, RuntimeTypePlan, RequestHeap)> {
-        match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let return_type_ref = invocation
                     .executable_invocation
@@ -801,14 +778,14 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 )?;
-                Ok((value, return_plan, invocation.heap))
+                Ok((value, return_plan, invocation.heap.into_owned_heap()))
             }
             Ok(Flow::Continue | Flow::Parked) => Ok((
                 RuntimeValue::Null,
                 RuntimeTypePlan::json_value_plan(),
-                invocation.heap,
+                invocation.heap.into_owned_heap(),
             )),
             Ok(Flow::Break | Flow::LoopContinue) => {
                 Err(FlowCompletionPolicy::entry_loop_control_error(
@@ -874,10 +851,7 @@ impl Interpreter {
             invocation.env.stream_sink = Some(sink.clone());
             invocation.env.current_stream_item_type = Some(item_type_plan.clone());
             let producer_future = async {
-                match invocation
-                    .exec_with_heap_access(self, context.execution_context())
-                    .await
-                {
+                match invocation.exec(self, context.execution_context()).await {
                     Ok(_) => sink.end().await,
                     Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(stream_runtime_error_from_eval(error)).await,
@@ -898,10 +872,7 @@ impl Interpreter {
             };
         }
 
-        let stream_value = match invocation
-            .exec_with_heap_access(self, context.execution_context())
-            .await
-        {
+        let stream_value = match invocation.exec(self, context.execution_context()).await {
             Ok(Flow::Return(value)) => {
                 let value = map_eval_error(runtime_coerce_required_plan(
                     &value,
@@ -910,7 +881,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?;
                 map_eval_error(runtime_to_wire_required_plan(
                     &value,
@@ -919,7 +890,7 @@ impl Interpreter {
                         "response {}",
                         invocation.executable_invocation.executable.symbol
                     ),
-                    &mut invocation.heap,
+                    invocation.heap.heap_mut(),
                 ))?
             }
             Ok(Flow::Continue | Flow::Parked) => {
@@ -1204,7 +1175,7 @@ impl Interpreter {
         &'a self,
         request: &RequestPayloadContext<'_>,
         invocation: ExecutableInvocation<'a>,
-        mut heap: RequestHeap,
+        heap: RequestHeap,
         validate_request_args: bool,
         boundary_projection: Option<EvalBoundaryProjection<'a>>,
     ) -> Result<PreparedProgramInvocation<'a>> {
@@ -1213,7 +1184,8 @@ impl Interpreter {
         }
 
         let mut env = invocation.env()?;
-        let self_value = runtime_empty_object(&mut heap)?;
+        let mut heap = HeapAccess::private(heap);
+        let self_value = runtime_empty_object(heap.heap_mut())?;
         invocation.declare_self(&mut env, self_value.into())?;
 
         Ok(PreparedProgramInvocation {

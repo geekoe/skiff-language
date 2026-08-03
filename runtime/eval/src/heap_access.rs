@@ -1,9 +1,12 @@
-//! Dual-mode heap access for the evaluator.
+//! Single heap-access mechanism for every evaluator execution.
 //!
-//! Ordinary requests keep the historical exclusive borrow of the caller
-//! `RequestHeap`; actor instances will use a shared arena behind
-//! `tokio::sync::Mutex`. In Shared mode the owned guard must never survive a
-//! `Pending` poll: funnels release before awaiting and reacquire after wake.
+//! All executions (ordinary requests, actor instances, callback owners,
+//! providers, producers, spawn targets) share one lease protocol: the
+//! execution state owns an `Arc<tokio::sync::Mutex<RequestHeap>>` arena and
+//! holds an owned guard for the synchronous segment. Ordinary requests use a
+//! fresh private arena; actor instances pass their shared arena. The guard
+//! must never survive a `Pending` poll: funnels release before awaiting and
+//! reacquire after wake.
 
 use std::{
     future::Future,
@@ -16,77 +19,94 @@ use std::{
 use skiff_runtime_model::request_heap::RequestHeap;
 
 #[derive(Debug)]
-pub enum HeapAccess<'a> {
-    Exclusive(&'a mut RequestHeap),
-    Shared {
-        arena: Arc<tokio::sync::Mutex<RequestHeap>>,
-        guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
-    },
+pub struct HeapAccess {
+    arena: Arc<tokio::sync::Mutex<RequestHeap>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<RequestHeap>>,
 }
 
-impl HeapAccess<'_> {
+impl HeapAccess {
+    /// Creates a fresh private arena for an ordinary execution and acquires
+    /// the guard immediately. The new arena is uncontended, so the initial
+    /// lock cannot fail.
+    pub fn private(heap: RequestHeap) -> Self {
+        let arena = Arc::new(tokio::sync::Mutex::new(heap));
+        let guard = Arc::clone(&arena)
+            .try_lock_owned()
+            .expect("fresh private heap arena must be uncontended");
+        Self {
+            arena,
+            guard: Some(guard),
+        }
+    }
+
+    /// Wraps an already-acquired guard over an existing arena (actor segment,
+    /// callback owner heap).
+    pub fn with_guard(
+        arena: Arc<tokio::sync::Mutex<RequestHeap>>,
+        guard: tokio::sync::OwnedMutexGuard<RequestHeap>,
+    ) -> Self {
+        Self {
+            arena,
+            guard: Some(guard),
+        }
+    }
+
     #[inline(always)]
     pub fn heap_mut(&mut self) -> &mut RequestHeap {
-        match self {
-            HeapAccess::Exclusive(heap) => heap,
-            HeapAccess::Shared { guard, .. } => match guard.as_mut() {
-                Some(guard) => guard,
-                None => missing_shared_guard(),
-            },
+        match self.guard.as_mut() {
+            Some(guard) => guard,
+            None => missing_guard(),
         }
     }
 
-    /// Releases the Shared arena guard (dropping it). Exclusive mode is a no-op.
+    /// Releases the arena guard (dropping it).
     pub fn release(&mut self) {
-        if let HeapAccess::Shared { guard, .. } = self {
-            *guard = None;
-        }
+        self.guard = None;
     }
 
-    /// Re-acquires the Shared arena guard. Exclusive mode is a no-op.
+    /// Re-acquires the arena guard.
     pub async fn reacquire(&mut self) {
-        if let HeapAccess::Shared { arena, guard } = self {
-            if guard.is_none() {
-                *guard = Some(arena.clone().lock_owned().await);
-            }
+        if self.guard.is_none() {
+            self.guard = Some(self.arena.clone().lock_owned().await);
         }
     }
 
-    pub fn is_shared(&self) -> bool {
-        matches!(self, HeapAccess::Shared { .. })
+    /// Recovers the owned heap from a private arena. The guard is dropped
+    /// first; the arena must then have no other strong references.
+    pub fn into_owned_heap(self) -> RequestHeap {
+        let HeapAccess { arena, mut guard } = self;
+        guard.take();
+        Arc::try_unwrap(arena)
+            .ok()
+            .expect("private heap arena must be uniquely owned at execution end")
+            .into_inner()
     }
 }
 
-impl Deref for HeapAccess<'_> {
+impl Deref for HeapAccess {
     type Target = RequestHeap;
 
     fn deref(&self) -> &Self::Target {
-        match self {
-            HeapAccess::Exclusive(heap) => heap,
-            HeapAccess::Shared { guard, .. } => match guard.as_ref() {
-                Some(guard) => guard,
-                None => missing_shared_guard(),
-            },
+        match self.guard.as_ref() {
+            Some(guard) => guard,
+            None => missing_guard(),
         }
     }
 }
 
-impl DerefMut for HeapAccess<'_> {
+impl DerefMut for HeapAccess {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            HeapAccess::Exclusive(heap) => heap,
-            HeapAccess::Shared { guard, .. } => match guard.as_mut() {
-                Some(guard) => guard,
-                None => missing_shared_guard(),
-            },
+        match self.guard.as_mut() {
+            Some(guard) => guard,
+            None => missing_guard(),
         }
     }
 }
 
 #[cold]
 #[inline(never)]
-fn missing_shared_guard() -> ! {
-    panic!("HeapAccess::Shared heap access requires an acquired guard")
+fn missing_guard() -> ! {
+    panic!("HeapAccess heap access requires an acquired guard")
 }
 
 /// Polls the future once without yielding to the executor.
@@ -103,9 +123,9 @@ where
     .await
 }
 
-/// Shared-mode funnel body: poll once; a `Ready` keeps the guard, a `Pending`
+/// Unified funnel body: poll once; a `Ready` keeps the guard, a `Pending`
 /// releases the guard before awaiting and reacquires after wake.
-pub(crate) async fn await_shared_with_release<F>(heap: &mut HeapAccess<'_>, future: F) -> F::Output
+pub(crate) async fn await_with_release<F>(heap: &mut HeapAccess, future: F) -> F::Output
 where
     F: Future,
 {

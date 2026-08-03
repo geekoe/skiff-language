@@ -226,7 +226,7 @@ impl ActorExecutionFrame {
     /// release/reacquire are no-ops).
     pub(crate) async fn await_if_pending<F>(
         &self,
-        access: &mut HeapAccess<'_>,
+        access: &mut HeapAccess,
         execution: &crate::capabilities::ExecutionControl<'_>,
         future: F,
     ) -> Result<F::Output, RuntimeError>

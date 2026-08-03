@@ -142,11 +142,12 @@ async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit
     let context = execution_context(&interpreter)
         .with_program_call_depth_for_test(crate::program_execution::MAX_PROGRAM_CALL_DEPTH - 1);
     let route_addr = ExecutableAddr::service(0, 0);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
+    let mut access = HeapAccess::private(heap);
     let result = interpreter
         .call_program_executable(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &Env::new(),
             &route_addr,
             &route_addr,
@@ -155,8 +156,8 @@ async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit
         )
         .await
         .expect("a tail-position producer call must return its deferred Stream handle");
-    let stream_value =
-        runtime_to_wire(&result, &heap).expect("returned Stream handle must remain wire encodable");
+    let stream_value = runtime_to_wire(&result, &*access)
+        .expect("returned Stream handle must remain wire encodable");
     assert!(
         stream_id(&stream_value).is_some(),
         "the deferred producer continuation must return a canonical Stream value"
@@ -164,7 +165,6 @@ async fn tail_call_negative_stream_producer_call_remains_deferred_at_depth_limit
 
     let stream_runtime = interpreter.stream_runtime.clone();
     let consumed_stream_value = stream_value.clone();
-    let mut access = HeapAccess::Exclusive(&mut heap);
     let access_ref = &mut access;
     let values = interpreter
         .drive_deferred_stream_producer(
@@ -231,8 +231,8 @@ async fn prepared_stream_outer_cancellation_removes_registry_before_return() {
         stream_runtime,
         stream_value,
     } = prepared_fixture().await;
-    let mut scratch_heap = RequestHeap::default();
-    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::private(scratch_heap);
     let access_ref = &mut access;
     let result = interpreter
         .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async move {
@@ -259,10 +259,7 @@ async fn prepared_stream_outer_drop_cleans_registry_without_late_result() {
         context,
         &caller_addr,
         prepared,
-        std::future::pending::<(
-            crate::error::Result<RuntimeValue>,
-            &'static mut HeapAccess<'static>,
-        )>(),
+        std::future::pending::<(crate::error::Result<RuntimeValue>, &'static mut HeapAccess)>(),
     ));
 
     tokio::select! {
@@ -282,8 +279,8 @@ async fn deferred_stream_drive_natural_end_completes_without_leak() {
     let fixture = deferred_fixture(emit_then_end_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
-    let mut scratch_heap = RequestHeap::default();
-    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::private(scratch_heap);
     let access_ref = &mut access;
     let values = fixture
         .interpreter
@@ -314,8 +311,8 @@ async fn deferred_stream_drive_cancellation_closes_without_leak() {
     let fixture = deferred_fixture(emit_then_end_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
-    let mut scratch_heap = RequestHeap::default();
-    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::private(scratch_heap);
     let access_ref = &mut access;
     let result = fixture
         .interpreter
@@ -340,8 +337,8 @@ async fn deferred_stream_drive_preserves_consumed_producer_error() {
     let fixture = deferred_fixture(emit_then_fail_producer()).await;
     let stream_runtime = fixture.stream_runtime.clone();
     let stream_value = fixture.stream_value.clone();
-    let mut scratch_heap = RequestHeap::default();
-    let mut access = HeapAccess::Exclusive(&mut scratch_heap);
+    let scratch_heap = RequestHeap::default();
+    let mut access = HeapAccess::private(scratch_heap);
     let access_ref = &mut access;
     let error = fixture
         .interpreter
@@ -402,12 +399,13 @@ async fn legacy_from_values_preserves_self_argument_alias_without_caller_storage
     env.declare_binding("other", Some(1), RuntimeValue::Heap(shared))
         .expect("caller arg");
 
+    let mut access = HeapAccess::private(heap);
     let stream = interpreter
         .prepare_deferred_stream_producer_from_values(
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &env,
             &caller_addr,
             &producer_addr,
@@ -419,7 +417,7 @@ async fn legacy_from_values_preserves_self_argument_alias_without_caller_storage
         .await
         .expect("prepare from values")
         .expect("emit executable must defer");
-    let stream = runtime_to_wire(&stream, &heap).expect("deferred stream wire value");
+    let stream = runtime_to_wire(&stream, &*access).expect("deferred stream wire value");
     let id = stream_id(&stream).expect("deferred stream id");
     let prepared = interpreter
         .deferred_stream_producers
@@ -486,7 +484,7 @@ async fn legacy_ordinary_inherited_self_and_arg_share_one_cloned_graph() {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &mut env,
             &caller_addr,
             &file,
@@ -535,7 +533,7 @@ async fn from_values_clone_limit_failure_leaves_no_deferred_registry_entry() {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy projection"),
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &Env::new(),
             &caller_addr,
             &producer_addr,
@@ -594,13 +592,14 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
         item_type: item_type.clone(),
     };
 
+    let mut access = HeapAccess::private(heap);
     let poll = if deferred {
         let stream = interpreter
             .prepare_deferred_stream_producer(
                 RuntimeExecutionProjection::for_context(&interpreter, &context)
                     .expect("legacy projection"),
                 context.clone(),
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &mut env,
                 &caller_addr,
                 &file,
@@ -609,9 +608,8 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             )
             .await
             .expect("deferred producer");
-        let stream = runtime_to_wire(&stream, &heap).expect("stream wire value");
+        let stream = runtime_to_wire(&stream, &*access).expect("stream wire value");
         let consumed = stream.clone();
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let access_ref = &mut access;
         let poll = interpreter
             .drive_deferred_stream_producer(context, &caller_addr, &stream, |_| {
@@ -634,7 +632,7 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
                 RuntimeExecutionProjection::for_context(&interpreter, &context)
                     .expect("legacy projection"),
                 context.clone(),
-                &mut HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &mut env,
                 &caller_addr,
                 &file,
@@ -644,7 +642,6 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             .await
             .expect("inline producer");
         let stream = prepared.stream_value().clone();
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let access_ref = &mut access;
         interpreter
             .exec_prepared_native_stream_producer_arg(context, &caller_addr, prepared, async move {
@@ -658,14 +655,14 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             .expect("inline first item")
     };
 
-    let carrier = materialize_runtime_stream_item(poll, Some(&item_type), &mut heap)
+    let carrier = materialize_runtime_stream_item(poll, Some(&item_type), access.heap_mut())
         .expect("materialize producer item")
         .expect("first producer item");
     let handle = carrier
         .value()
         .as_heap_handle()
         .expect("emitted self remains heap-backed");
-    let HeapNode::Array(items) = heap.get(handle).expect("emitted self array") else {
+    let HeapNode::Array(items) = access.heap_mut().get(handle).expect("emitted self array") else {
         panic!("emitted self must be an array");
     };
     let RuntimeValue::String(marker) = &items[0] else {
@@ -772,12 +769,12 @@ async fn execute_program_at_depth(
     let (interpreter, _) = interpreter_with_executables(executables);
     let context = execution_context(&interpreter).with_program_call_depth_for_test(initial_depth);
     let route_addr = ExecutableAddr::service(0, 0);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
 
     interpreter
         .call_program_executable(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &Env::new(),
             &route_addr,
             &route_addr,
@@ -873,7 +870,7 @@ async fn prepared_fixture_with(producer: LinkedExecutable) -> PreparedFixture {
     let stream_runtime = context.stream_runtime();
     let caller_addr = ExecutableAddr::service(0, 0);
     let producer_addr = ExecutableAddr::service(0, 1);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::for_program_executable(&file.executables[0], None, 0).expect("caller env");
     let producer = StreamProducerCall {
         addr: producer_addr.clone(),
@@ -901,7 +898,7 @@ async fn prepared_fixture_with(producer: LinkedExecutable) -> PreparedFixture {
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy execution projection"),
             context.clone(),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &mut env,
             &caller_addr,
             &file,
@@ -940,7 +937,7 @@ async fn deferred_fixture(producer_executable: LinkedExecutable) -> DeferredFixt
     let stream_runtime = context.stream_runtime();
     let caller_addr = ExecutableAddr::service(0, 0);
     let producer_addr = ExecutableAddr::service(0, 1);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::for_program_executable(&file.executables[0], None, 0).expect("caller env");
     let producer = StreamProducerCall {
         addr: producer_addr.clone(),
@@ -968,7 +965,7 @@ async fn deferred_fixture(producer_executable: LinkedExecutable) -> DeferredFixt
             RuntimeExecutionProjection::for_context(&interpreter, &context)
                 .expect("legacy execution projection"),
             context.clone(),
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &mut env,
             &caller_addr,
             &file,

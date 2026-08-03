@@ -68,7 +68,7 @@ impl Interpreter {
             ));
         }
         request.require_binary_http()?;
-        let mut heap = context.request_heap();
+        let mut heap = HeapAccess::private(context.request_heap());
         if let Some(response) = self
             .execute_gateway_guard(&context, &request, target, &mut heap)
             .await?
@@ -79,10 +79,15 @@ impl Interpreter {
             .execute_gateway_pre(&context, &request, target, &mut heap)
             .await?;
         let handler = target.handler();
-        let args = handler_args(&request, target, handler, pre_context.as_ref(), &mut heap)?;
-        let mut access = HeapAccess::Exclusive(&mut heap);
+        let args = handler_args(
+            &request,
+            target,
+            handler,
+            pre_context.as_ref(),
+            heap.heap_mut(),
+        )?;
         let value = self
-            .execute_runtime_assembly_addr(context, &mut access, handler.addr, args)
+            .execute_runtime_assembly_addr(context, &mut heap, handler.addr, args)
             .await?;
         match http.adapter_kind {
             GatewayAdapterKind::TypedJson => {
@@ -90,7 +95,7 @@ impl Interpreter {
                 let body = encode_typed_json_response(
                     &value,
                     &typed_json_response_encode_plan(response_plan),
-                    &mut heap,
+                    heap.heap_mut(),
                 )?
                 .into_bytes();
                 Ok(HttpBoundaryResponseParts {
@@ -107,7 +112,7 @@ impl Interpreter {
                 callable_executable(target, handler)?.return_type.as_ref(),
                 target.eval_target().execution_projection().type_view(),
                 handler.addr,
-                &mut heap,
+                heap.heap_mut(),
             ),
             GatewayAdapterKind::WebSocketConnect => Err(protocol_error(
                 target,
@@ -146,7 +151,7 @@ impl Interpreter {
             ));
         }
         request.require_binary_http()?;
-        let mut heap = context.request_heap();
+        let mut heap = HeapAccess::private(context.request_heap());
         if let Some(response) = self
             .execute_gateway_guard(&context, &request, target, &mut heap)
             .await?
@@ -158,7 +163,13 @@ impl Interpreter {
             .execute_gateway_pre(&context, &request, target, &mut heap)
             .await?;
         let handler = target.handler();
-        let args = handler_args(&request, target, handler, pre_context.as_ref(), &mut heap)?;
+        let args = handler_args(
+            &request,
+            target,
+            handler,
+            pre_context.as_ref(),
+            heap.heap_mut(),
+        )?;
         let executable = callable_executable(target, handler)?;
         let return_type = executable.return_type.as_ref().ok_or_else(|| {
             RuntimeError::InvalidArtifact(
@@ -182,11 +193,10 @@ impl Interpreter {
         );
         let response_plan = RuntimeTypePlan::from_linked(return_type, &plan_context)?;
         let item_plan = RuntimeTypePlan::from_linked_nested_ref(item_type, &plan_context)?;
-        let mut access = HeapAccess::Exclusive(&mut heap);
         let value = self
             .execute_runtime_assembly_addr_with_stream_defer(
                 context.clone(),
-                &mut access,
+                &mut heap,
                 handler.addr,
                 args,
             )
@@ -195,7 +205,7 @@ impl Interpreter {
             &value,
             Some(&response_plan),
             "HTTP gateway response stream",
-            &mut heap,
+            heap.heap_mut(),
         )?;
         self.attach_deferred_http_response_sink(
             &stream_value,
@@ -203,8 +213,7 @@ impl Interpreter {
             context.stream_runtime().request_scope_generation(),
         )?;
         let consumer_stream_value = stream_value.clone();
-        let mut access = HeapAccess::Exclusive(&mut heap);
-        let access_ref = &mut access;
+        let access_ref = &mut heap;
         self.drive_deferred_stream_producer(
             context.clone(),
             handler.addr,
@@ -235,7 +244,7 @@ impl Interpreter {
         context: &ProgramExecutionContext<'_>,
         request: &RequestPayloadContext<'_>,
         target: &impl RuntimeHttpGatewayExecutionTarget,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess,
     ) -> Result<Option<HttpBoundaryResponseParts>> {
         let Some(guard) = target.guard() else {
             return Ok(None);
@@ -250,15 +259,10 @@ impl Interpreter {
             target.eval_target().execution_projection().type_view(),
             guard.addr,
             request.require_binary_http()?,
-            heap,
+            heap.heap_mut(),
         )?;
         let result = self
-            .execute_runtime_assembly_addr(
-                context.clone(),
-                &mut HeapAccess::Exclusive(&mut *heap),
-                guard.addr,
-                vec![value],
-            )
+            .execute_runtime_assembly_addr(context.clone(), heap, guard.addr, vec![value])
             .await?;
         if result == RuntimeValue::Null {
             return Ok(None);
@@ -274,7 +278,7 @@ impl Interpreter {
             response_type,
             target.eval_target().execution_projection().type_view(),
             guard.addr,
-            heap,
+            heap.heap_mut(),
         )
         .map(Some)
     }
@@ -284,7 +288,7 @@ impl Interpreter {
         context: &ProgramExecutionContext<'_>,
         request: &RequestPayloadContext<'_>,
         target: &impl RuntimeHttpGatewayExecutionTarget,
-        heap: &mut RequestHeap,
+        heap: &mut HeapAccess,
     ) -> Result<Option<RuntimeValue>> {
         let Some(pre) = target.pre() else {
             return Ok(None);
@@ -299,16 +303,11 @@ impl Interpreter {
             target.eval_target().execution_projection().type_view(),
             pre.addr,
             request.require_binary_http()?,
-            heap,
+            heap.heap_mut(),
         )?;
-        self.execute_runtime_assembly_addr(
-            context.clone(),
-            &mut HeapAccess::Exclusive(&mut *heap),
-            pre.addr,
-            vec![value],
-        )
-        .await
-        .map(Some)
+        self.execute_runtime_assembly_addr(context.clone(), heap, pre.addr, vec![value])
+            .await
+            .map(Some)
     }
 }
 

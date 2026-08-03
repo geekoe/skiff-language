@@ -221,10 +221,7 @@ impl<'a> ActorMethodExecutor<'a> {
                 .acquire_segment(&self.authority, request.instance),
         )
         .await?;
-        let mut access = HeapAccess::Shared {
-            arena: segment.arena().clone(),
-            guard: Some(segment.take_guard()),
-        };
+        let mut access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
         let args = decode_arguments(
             request.arguments_payload,
             method,
@@ -279,10 +276,7 @@ impl<'a> ActorMethodExecutor<'a> {
             .store
             .acquire_segment_for_activation(&self.authority, handle)
             .await?;
-        let mut access = HeapAccess::Shared {
-            arena: segment.arena().clone(),
-            guard: Some(segment.take_guard()),
-        };
+        let mut access = HeapAccess::with_guard(segment.arena().clone(), segment.take_guard());
         let args = decode_create_arguments(
             create_args_payload,
             create,

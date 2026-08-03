@@ -10,7 +10,7 @@ use super::*;
 use crate::{
     actor_executor::ActorExecutionFrame,
     capabilities::ExecutionControl,
-    heap_access::{await_shared_with_release, HeapAccess},
+    heap_access::{await_with_release, HeapAccess},
     program_execution::ProgramExecutionContext,
 };
 
@@ -22,7 +22,7 @@ pub(super) mod tests;
 pub(super) async fn await_operation<F>(
     context: &ProgramExecutionContext<'_>,
     frame: Option<ActorExecutionFrame>,
-    heap: &mut HeapAccess<'_>,
+    heap: &mut HeapAccess,
     execution: &ExecutionControl<'_>,
     future: F,
 ) -> Result<F::Output>
@@ -32,14 +32,13 @@ where
     super::checkpoint::actual_pending_checkpoint(context)?;
     let output = match frame {
         Some(frame) => frame.await_if_pending(heap, execution, future).await?,
-        None if heap.is_shared() => await_shared_with_release(heap, future).await,
-        None => future.await,
+        None => await_with_release(heap, future).await,
     };
     super::checkpoint::actual_pending_checkpoint(context)?;
     Ok(output)
 }
 
-impl EvalContext<'_, '_> {
+impl EvalContext<'_> {
     pub(crate) async fn await_actual_pending<F>(&mut self, future: F) -> Result<F::Output>
     where
         F: Future,

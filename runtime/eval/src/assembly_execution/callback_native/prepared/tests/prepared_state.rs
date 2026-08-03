@@ -37,7 +37,8 @@ fn owner_wait() -> (Arc<Mutex<RequestHeap>>, CallbackOwnerWait) {
     let guard = Arc::clone(&owner_heap)
         .try_lock_owned()
         .expect("fresh owner heap should lock");
-    (owner_heap, CallbackOwnerWait::new(guard))
+    let wait = CallbackOwnerWait::new(HeapAccess::with_guard(Arc::clone(&owner_heap), guard));
+    (owner_heap, wait)
 }
 
 fn completed(

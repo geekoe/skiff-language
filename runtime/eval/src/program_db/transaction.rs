@@ -27,7 +27,7 @@ impl TransactionLifecycle {
     pub(super) async fn begin(
         store: DbCapabilityStore,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
     ) -> Result<Self> {
         let begin_store = store.clone();
         await_operation(context, heap, async move {
@@ -43,7 +43,7 @@ impl TransactionLifecycle {
     pub(super) async fn commit(
         mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
     ) -> Result<()> {
         debug_assert_eq!(self.phase, TransactionPhase::Body);
         self.phase = TransactionPhase::CommitSelected;
@@ -67,7 +67,7 @@ impl TransactionLifecycle {
     pub(super) async fn abort(
         mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
     ) -> Result<()> {
         debug_assert_eq!(self.phase, TransactionPhase::Body);
         self.abort_selected(context, heap).await
@@ -76,7 +76,7 @@ impl TransactionLifecycle {
     async fn abort_selected(
         &mut self,
         context: &ProgramExecutionContext<'_>,
-        heap: &mut HeapAccess<'_>,
+        heap: &mut HeapAccess,
     ) -> Result<()> {
         debug_assert!(matches!(
             self.phase,

@@ -50,12 +50,12 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
         .unwrap()
         .request_activation()
         .generation();
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -105,12 +105,13 @@ async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fi
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -137,17 +138,20 @@ async fn typed_execution_async_stream_cancel_restores_public_typed_error_from_fi
     else {
         panic!("restored public error payload must remain a record")
     };
-    let HeapNode::Object(payload) = heap
+    let HeapNode::Object(payload) = access
+        .heap_mut()
         .get(*payload_handle)
         .expect("restored public error record must remain in the caller heap")
     else {
         panic!("restored public error payload must remain an object")
     };
-    let Some(RuntimeValue::Heap(messages_handle)) = payload.fields().get("messages") else {
+    let Some(RuntimeValue::Heap(messages_handle)) = payload.fields().get("messages").cloned()
+    else {
         panic!("restored public error payload must retain its messages array")
     };
-    let HeapNode::Array(messages) = heap
-        .get(*messages_handle)
+    let HeapNode::Array(messages) = access
+        .heap_mut()
+        .get(messages_handle)
         .expect("restored public error messages must remain in the caller heap")
     else {
         panic!("restored public error messages must remain an array")
@@ -178,12 +182,13 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
         );
         let interpreter = runtime.interpreter();
         let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-        let mut heap = context.request_heap();
+        let heap = context.request_heap();
+        let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
         let result = interpreter
             .execute_runtime_assembly_addr(
                 context,
-                &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+                &mut access,
                 &fixture.consumer_executable_addr(0),
                 Vec::new(),
             )
@@ -192,7 +197,8 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
         let RuntimeValue::Heap(stream_handle) = result else {
             panic!("server-stream consumer must return the admitted stream carrier")
         };
-        let HeapNode::Object(stream_carrier) = heap
+        let HeapNode::Object(stream_carrier) = access
+            .heap_mut()
             .get(stream_handle)
             .expect("returned stream carrier must remain in the consumer heap")
         else {
@@ -245,12 +251,12 @@ async fn typed_execution_service_stream_preserves_two_items_and_generic_substitu
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -275,12 +281,12 @@ async fn typed_execution_package_direct_stream_installs_exact_producer_context_f
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(1),
             Vec::new(),
         )
@@ -305,12 +311,13 @@ async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -334,7 +341,8 @@ async fn typed_execution_service_stream_propagates_provider_error_full_chain() {
     else {
         panic!("restored stream error payload must be a record")
     };
-    let HeapNode::Object(payload) = heap
+    let HeapNode::Object(payload) = access
+        .heap_mut()
         .get(*payload_handle)
         .expect("restored stream error record must remain in the caller heap")
     else {
@@ -371,11 +379,11 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
         &cancelled_fixture.eval_target,
         &cancelled_fixture._active,
     );
-    let mut cancelled_heap = cancelled_context.request_heap();
+    let cancelled_heap = cancelled_context.request_heap();
     let stream = cancelled_interpreter
         .execute_runtime_assembly_addr(
             cancelled_context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut cancelled_heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(cancelled_heap),
             &cancelled_fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -398,11 +406,11 @@ async fn typed_execution_service_stream_request_cancel_cleans_provider_and_isola
         &peer_fixture.eval_target,
         &peer_fixture._active,
     );
-    let mut peer_heap = peer_context.request_heap();
+    let peer_heap = peer_context.request_heap();
     let peer_result = cancelled_interpreter
         .execute_runtime_assembly_addr(
             peer_context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut peer_heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(peer_heap),
             &peer_fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -438,12 +446,12 @@ async fn typed_execution_service_stream_deadline_releases_provider_task_and_leas
     .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(250));
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let stream = interpreter
         .execute_runtime_assembly_addr(
             context.clone(),
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -533,19 +541,20 @@ async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
         .await
         .expect("consumer should invoke the provider-owned callback item and observe stream end");
     assert_eq!(result, RuntimeValue::Null);
-    let carrier = callback_carrier_in_heap(&heap);
+    let carrier = callback_carrier_in_heap(&*access);
     assert_eq!(
         provider_activation
             .callback_capabilities()
@@ -580,19 +589,20 @@ async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_brea
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let result = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
         .await
         .expect("consumer should invoke one callback item before breaking the stream");
     assert_eq!(result, RuntimeValue::Null);
-    let carrier = callback_carrier_in_heap(&heap);
+    let carrier = callback_carrier_in_heap(&*access);
     assert_eq!(
         provider_activation
             .callback_capabilities()
@@ -628,12 +638,12 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_mapping
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )
@@ -675,12 +685,12 @@ async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_b
     );
     let interpreter = runtime.interpreter();
     let context = runtime.context(&interpreter, &fixture.eval_target, &fixture._active);
-    let mut heap = context.request_heap();
+    let heap = context.request_heap();
 
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &fixture.consumer_executable_addr(0),
             Vec::new(),
         )

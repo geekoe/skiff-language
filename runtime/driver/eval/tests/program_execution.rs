@@ -1035,13 +1035,14 @@ async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exce
     let frame = test_invocation("svc.main.run");
     let invocation_context = program_invocation_context(&interpreter, &frame);
     let context = invocation_context.execution_context();
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let mut env = Env::default();
+    let mut access = skiff_runtime_eval::heap_access::HeapAccess::private(heap);
 
     let caught = interpreter
         .eval_program_expr_ref(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut access,
             &mut env,
             &ExecutableAddr::service(0, 0),
             file.as_ref(),
@@ -1053,18 +1054,18 @@ async fn runtime_program_direct_native_resource_error_catch_preserves_exact_exce
     let caught_handle = caught
         .as_heap_handle()
         .expect("catch result should be a request-local object");
-    let tag = heap
+    let tag = access
         .object_field_carrier(caught_handle, "tag")
         .expect("catch tag should be readable")
         .expect("catch result should have a tag");
     assert_eq!(tag.value(), &RuntimeValue::String("err".to_string()));
-    let exception_handle = heap
+    let exception_handle = access
         .object_field_carrier(caught_handle, "exception")
         .expect("catch exception should be readable")
         .expect("err result should have an exception")
         .as_heap_handle()
         .expect("caught exception should remain a request-local handle");
-    let HeapNode::Exception(exception) = heap
+    let HeapNode::Exception(exception) = access
         .get(exception_handle)
         .expect("caught exception handle should resolve")
     else {
@@ -1696,7 +1697,7 @@ async fn runtime_program_stream_variable_for_in_decodes_item_with_item_type() {
     let value = interpreter
         .call_program_executable(
             context,
-            &mut skiff_runtime_eval::heap_access::HeapAccess::Exclusive(&mut heap),
+            &mut skiff_runtime_eval::heap_access::HeapAccess::private(heap),
             &Env::new(),
             &run_addr,
             &run_addr,

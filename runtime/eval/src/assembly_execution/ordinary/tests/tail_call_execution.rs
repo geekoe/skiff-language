@@ -75,16 +75,12 @@ impl CanonicalTailCallFixture {
         let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
         let context = execution_context(&interpreter, self.eval_target)
             .with_program_call_depth_for_test(initial_depth);
-        let mut heap = heap;
+        let heap = heap;
+        let mut access = HeapAccess::private(heap);
         let value = interpreter
-            .execute_runtime_assembly_addr(
-                context,
-                &mut HeapAccess::Exclusive(&mut heap),
-                &self.entry_addr,
-                args,
-            )
+            .execute_runtime_assembly_addr(context, &mut access, &self.entry_addr, args)
             .await?;
-        Ok((value, heap))
+        Ok((value, access.into_owned_heap()))
     }
 
     fn expression(&self, file: usize, executable: usize, expression: usize) -> &LinkedExprIr {
@@ -344,7 +340,7 @@ async fn assembly_tail_call_package_direct_target_remains_excluded_and_depth_che
     let error = interpreter
         .execute_runtime_assembly_addr(
             context,
-            &mut HeapAccess::Exclusive(&mut heap),
+            &mut HeapAccess::private(heap),
             &fixture.caller_addr,
             vec![RuntimeValue::Heap(input)],
         )
