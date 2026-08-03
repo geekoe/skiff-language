@@ -15,7 +15,7 @@ use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingRef, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 
-use crate::bootstrap::RoutingEpoch;
+use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 
 use super::health::CatalogHealth;
 
@@ -47,37 +47,37 @@ impl CatalogQuery {
     }
 }
 
-/// Read-only projection view over one captured immutable epoch.
+/// Read-only projection view over the current epoch captured from the
+/// single-authority store on every query.
 #[derive(Debug, Clone)]
 pub struct ActorMethodCatalogView {
-    epoch: Arc<RoutingEpoch>,
+    epoch_store: Arc<ActiveRoutingEpochStore>,
     captures: Arc<AtomicU64>,
     hits: Arc<AtomicU64>,
     misses: Arc<AtomicU64>,
 }
 
 impl ActorMethodCatalogView {
-    /// Captures one explicit epoch lease. The epoch is never replaced under
-    /// the view; an old captured `Arc` keeps its whole index alive.
-    pub fn new(epoch: Arc<RoutingEpoch>) -> Self {
+    /// Captures the current epoch from the store on every query. The actor
+    /// lane is assembled once at supervisor startup, so the view must follow
+    /// committed epoch advances instead of pinning the bootstrap epoch.
+    pub fn new(epoch_store: Arc<ActiveRoutingEpochStore>) -> Self {
         Self {
-            epoch,
-            captures: Arc::new(AtomicU64::new(1)),
+            epoch_store,
+            captures: Arc::new(AtomicU64::new(0)),
             hits: Arc::new(AtomicU64::new(0)),
             misses: Arc::new(AtomicU64::new(0)),
         }
     }
 
+    /// Test convenience: a fresh store pre-published with exactly this epoch.
     pub fn from_epoch(epoch: Arc<RoutingEpoch>) -> Self {
-        Self::new(epoch)
+        let epoch_store = ActiveRoutingEpochStore::new();
+        epoch_store.publish(epoch);
+        Self::new(Arc::new(epoch_store))
     }
 
-    /// The captured epoch lease backing this view.
-    pub fn epoch(&self) -> &Arc<RoutingEpoch> {
-        &self.epoch
-    }
-
-    /// Projection schema version of the captured epoch (C-actor §7).
+    /// Projection schema version (C-actor §7).
     pub fn schema_version(&self) -> &str {
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
     }
@@ -90,8 +90,11 @@ impl ActorMethodCatalogView {
     /// Exact typed-key lookup returning the immutable method entry with its
     /// deployment/package binding.
     pub fn method_for(&self, query: &CatalogQuery) -> Option<ActorRoutingMethod> {
-        let found = self
-            .epoch
+        let Some(epoch) = self.epoch_store.capture() else {
+            return None;
+        };
+        self.captures.fetch_add(1, Ordering::Relaxed);
+        let found = epoch
             .actor_catalog()
             .entries()
             .iter()

@@ -140,7 +140,7 @@ impl TaskParentLookup for DispatcherTaskParentLookup {
 /// Assembles the actor lane against one captured routing epoch and the
 /// session outbound registry.
 pub fn assemble_actor_components(
-    epoch: Arc<RoutingEpoch>,
+    _epoch: Arc<RoutingEpoch>,
     epoch_store: Arc<ActiveRoutingEpochStore>,
     session: SessionHandle,
 ) -> Result<Arc<ActorComponents>, String> {
@@ -149,7 +149,7 @@ pub fn assemble_actor_components(
         ActorInvocationRelayOptions::default(),
     ));
     let control_broker = Arc::new(ActorOwnerControlBroker::new(ControlBrokerOptions::default()));
-    let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch)));
+    let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch_store)));
     let task_wire_store = Arc::new(TaskWireStore::new());
     let idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>> =
         Arc::new(Mutex::new(HashMap::new()));

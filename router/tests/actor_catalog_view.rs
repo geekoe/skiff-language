@@ -129,7 +129,7 @@ mod tests {
         let projection: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("projection parses");
         let epoch = epoch_from_projection(projection);
-        let view = ActorMethodCatalogView::new(Arc::clone(&epoch));
+        let view = ActorMethodCatalogView::from_epoch(Arc::clone(&epoch));
         let method = &epoch.actor_catalog().entries()[0];
         let query = query_from_method(method);
         assert!(view.has_method(&query));
@@ -148,8 +148,8 @@ mod tests {
         let projection: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("projection parses");
         let epoch = epoch_from_projection(projection);
-        let view = ActorMethodCatalogView::new(epoch);
-        let method = &view.epoch().actor_catalog().entries()[0];
+        let view = ActorMethodCatalogView::from_epoch(Arc::clone(&epoch));
+        let method = &epoch.actor_catalog().entries()[0];
         let mut wrong_service = query_from_method(method);
         wrong_service.service_id = "example.com/unknown".to_string();
         assert!(!view.has_method(&wrong_service));
@@ -167,7 +167,7 @@ mod tests {
             serde_json::from_str(&a3_record("empty")).expect("empty projection parses");
         assert!(projection.methods.is_empty());
         let epoch = epoch_from_projection(projection);
-        let view = ActorMethodCatalogView::new(epoch);
+        let view = ActorMethodCatalogView::from_epoch(epoch);
         assert!(!view.has_method(&CatalogQuery::new(
             "example.com/docs",
             ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", "a".repeat(64))),
@@ -181,22 +181,22 @@ mod tests {
     }
 
     #[test]
-    fn old_captured_epoch_survives_store_replacement() {
+    fn view_follows_store_replacement() {
         let first: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("first projection");
         let second: ActorRoutingProjection =
             serde_json::from_str(&a3_record("multi-entry-sorted")).expect("second projection");
-        let store = ActiveRoutingEpochStore::new();
+        let store = Arc::new(ActiveRoutingEpochStore::new());
         let first_epoch = epoch_from_projection(first);
         let second_epoch = epoch_from_projection(second);
+        let view = ActorMethodCatalogView::new(Arc::clone(&store));
         store.publish(Arc::clone(&first_epoch));
-        let view = ActorMethodCatalogView::new(Arc::clone(&first_epoch));
-        store.publish(Arc::clone(&second_epoch));
-        assert_eq!(store.capture().as_ref(), Some(&second_epoch));
-        assert_eq!(view.epoch().as_ref(), first_epoch.as_ref());
-        assert_eq!(view.epoch().actor_catalog().len(), 1);
         let method = &first_epoch.actor_catalog().entries()[0];
         assert!(view.has_method(&query_from_method(method)));
+        store.publish(Arc::clone(&second_epoch));
+        assert_eq!(store.capture().as_ref(), Some(&second_epoch));
+        let replacement = &second_epoch.actor_catalog().entries()[0];
+        assert!(view.has_method(&query_from_method(replacement)));
         assert_eq!(store.publish_count(), 2);
     }
 
@@ -213,8 +213,8 @@ mod tests {
             let projection: ActorRoutingProjection = serde_json::from_value(case.json.clone())
                 .unwrap_or_else(|error| panic!("{}: {error}", case.id));
             let epoch = epoch_from_projection(projection);
-            let view = ActorMethodCatalogView::new(epoch);
-            for method in view.epoch().actor_catalog().entries() {
+            let view = ActorMethodCatalogView::from_epoch(Arc::clone(&epoch));
+            for method in epoch.actor_catalog().entries() {
                 let query = query_from_method(method);
                 assert!(
                     view.has_method(&query),
@@ -247,7 +247,7 @@ mod tests {
         let projection: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("projection parses");
         let epoch = epoch_from_projection(projection);
-        let view = ActorMethodCatalogView::new(Arc::clone(&epoch));
+        let view = ActorMethodCatalogView::from_epoch(Arc::clone(&epoch));
         let method = &epoch.actor_catalog().entries()[0];
         assert!(view.has_method(&query_from_method(method)));
         assert!(view.method_for(&query_from_method(method)).is_some());
@@ -259,17 +259,17 @@ mod tests {
         );
         assert!(view.method_for(&miss).is_none());
         let health = view.health();
-        assert_eq!(health.captures, 1);
+        assert_eq!(health.captures, 3);
         assert_eq!(health.hits, 2);
         assert_eq!(health.misses, 1);
     }
 
     #[test]
     fn view_has_no_index_refresh_or_file_ir_surface() {
-        // The catalog view only carries the captured epoch; `CatalogQuery`
-        // has no declarationOwner/modulePath/actorName/methodName/sourceSpan
-        // fields. This test constructs a query purely from A0 identities to
-        // prove the File-IR-free admission surface.
+        // The catalog view only reads the current epoch's projection;
+        // `CatalogQuery` has no declarationOwner/modulePath/actorName/
+        // methodName/sourceSpan fields. This test constructs a query purely
+        // from A0 identities to prove the File-IR-free admission surface.
         let query = CatalogQuery::new(
             "example.com/docs",
             ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", "a".repeat(64))),
@@ -281,10 +281,10 @@ mod tests {
         );
         let projection: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("projection parses");
-        let view = ActorMethodCatalogView::new(epoch_from_projection(projection));
+        let view = ActorMethodCatalogView::from_epoch(epoch_from_projection(projection));
         assert!(view.has_method(&query));
-        // No refresh/publication port exists on the view type; the epoch
-        // pointer is immutable.
+        // No refresh/publication port exists on the view type; the current
+        // epoch is captured from the store on every query.
         let _ = ActorRoutingProjectionRef::new(
             skiff_artifact_identity::ArtifactRelativePath::new(
                 "records/single-entry.json",
