@@ -8,7 +8,7 @@
 // each binary exercises a different subset of the seams.
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{AssemblyIdentity, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef};
@@ -22,9 +22,9 @@ use skiff_deployment::projection::actor_routing::{
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::dispatch::{
-    capabilities_from_wire_names, ActorMethodTaskControl, ActorMethodTaskDispatch,
-    CandidateViewSource, DispatchSubmit, LeaseRevalidate, RequestAuthority, RevalidateOutcome,
-    RoutingEpochSource, RuntimePeer, SessionAbortControl, TaskSubmit,
+    capabilities_from_wire_names, CandidateViewSource, DispatchSubmit, LeaseRevalidate,
+    RequestAuthority, RevalidateOutcome, RoutingEpochSource, RuntimePeer, SessionAbortControl,
+    TaskAttemptSubmit,
 };
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
@@ -33,8 +33,11 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
     RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader,
+    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyTaskAttemptFrameHeader,
+    RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
+    RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
 };
+use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 
 /// One live session fact in the fake directory view.
 #[derive(Debug, Clone)]
@@ -150,10 +153,10 @@ impl LeaseRevalidate for FakeLeaseRevalidate {
 pub struct PeerRecord {
     pub starts: Vec<String>,
     pub cancels: Vec<(String, String)>,
-    pub tasks: Vec<String>,
+    pub attempts: Vec<String>,
     pub fail_start: bool,
     pub fail_cancel: bool,
-    pub fail_task: bool,
+    pub fail_attempt: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -199,16 +202,16 @@ impl RuntimePeer for FakeRuntimePeer {
         Ok(())
     }
 
-    fn send_task_submit(
+    fn send_task_attempt_start(
         &self,
         _session: &RuntimeSessionEpoch,
-        task: &TaskSubmit,
+        attempt: &TaskAttemptSubmit,
     ) -> Result<(), String> {
         let mut record = self.record.lock().unwrap();
-        if record.fail_task {
+        if record.fail_attempt {
             return Err("writer queue full".to_string());
         }
-        record.tasks.push(task.task_request_id.clone());
+        record.attempts.push(attempt.request_id().to_string());
         Ok(())
     }
 }
@@ -235,40 +238,6 @@ impl FakeSessionAbort {
 impl SessionAbortControl for FakeSessionAbort {
     fn abort_session(&self, session: &RuntimeSessionEpoch) {
         self.record.lock().unwrap().sessions.push(session.clone());
-    }
-}
-
-/// Fake actor lane parent registry (C-dispatch §5.1).
-#[derive(Debug, Default)]
-pub struct ActorTaskRecord {
-    pub parents: HashSet<String>,
-    pub submitted: Vec<ActorMethodTaskDispatch>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FakeActorMethodTaskControl {
-    pub record: Arc<Mutex<ActorTaskRecord>>,
-}
-
-impl FakeActorMethodTaskControl {
-    pub fn new() -> Self {
-        Self {
-            record: Arc::new(Mutex::new(ActorTaskRecord::default())),
-        }
-    }
-}
-
-impl ActorMethodTaskControl for FakeActorMethodTaskControl {
-    fn is_active_invocation_parent(&self, caller_request_id: &str) -> bool {
-        self.record
-            .lock()
-            .unwrap()
-            .parents
-            .contains(caller_request_id)
-    }
-
-    fn submit_task(&self, task: ActorMethodTaskDispatch) {
-        self.record.lock().unwrap().submitted.push(task);
     }
 }
 
@@ -446,5 +415,54 @@ pub fn authority_for_session(session: &RuntimeSessionEpoch) -> RequestAuthority 
         assembly_generation: CORPUS_GENERATION,
         deployment: corpus_deployment_ref(),
         session_epoch: session.clone(),
+    }
+}
+
+/// Fixed corpus-shaped durable task attempt request (function target).
+pub fn task_attempt(
+    request_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    lease_id: &str,
+) -> TaskAttemptSubmit {
+    TaskAttemptSubmit {
+        header: RuntimeAssemblyTaskRequestStartFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "request.start".to_string(),
+            request_id: request_id.to_string(),
+            mode: "unary".to_string(),
+            caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
+                kind: "service".to_string(),
+            },
+            routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
+                kind: "runtimeAssembly".to_string(),
+                assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY.to_string()),
+                assembly_generation: CORPUS_GENERATION,
+                deployment: corpus_deployment_ref(),
+            },
+            invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+                kind: "task".to_string(),
+                target_kind: "function".to_string(),
+                target: "example.com/service-1:fn".to_string(),
+            },
+            deadline: None,
+            trace: RuntimeAssemblyRequestTraceFrameHeader {
+                trace_id: "trace-task".to_string(),
+                span_id: "span-task".to_string(),
+                parent_span_id: None,
+                sampled: None,
+            },
+            test_effects_enabled: false,
+            test_case_capability: None,
+            task_attempt: Some(RuntimeAssemblyTaskAttemptFrameHeader {
+                task_id: task_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                lease_id: lease_id.to_string(),
+            }),
+        },
+        payload: Vec::new(),
+        task_id: task_id.to_string(),
+        attempt_id: attempt_id.to_string(),
+        lease_id: lease_id.to_string(),
     }
 }

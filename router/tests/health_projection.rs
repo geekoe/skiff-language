@@ -9,7 +9,7 @@ use skiff_artifact_model::{
 use skiff_router::activation::{ActivationCoordinatorHealth, ActivationPhase, DecisionState};
 use skiff_router::actor::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, TaskHealth as ActorTaskHealth,
+    LeaseHealth, OwnershipHealth,
 };
 use skiff_router::dispatch::{
     AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
@@ -120,12 +120,12 @@ mod tests {
             invocation: InvocationHealth::default(),
             control: ControlHealth::default(),
             lease: LeaseHealth::default(),
-            task: ActorTaskHealth::default(),
         };
         build_counters(
             &dispatcher,
             &coordinator,
             &actor,
+            &skiff_router::health::counters::DurableTaskCounters::default(),
             &IndexHealthSnapshot {
                 connection_count: 0,
                 open_connections: Vec::new(),
@@ -145,6 +145,7 @@ mod tests {
         dispatcher: &DispatcherHealthSnapshot,
         coordinator: &ActivationCoordinatorHealth,
         actor: &ActorHealthSnapshot,
+        tasks: &skiff_router::health::counters::DurableTaskCounters,
         index: &IndexHealthSnapshot,
         ledger: &LedgerHealthSnapshot,
         broker: &BrokerHealthSnapshot,
@@ -204,7 +205,7 @@ mod tests {
             request_pending: skiff_router::health::counters::RequestPendingCounters {
                 unary: dispatcher.pending.unary,
                 stream: dispatcher.pending.stream,
-                derived_task: dispatcher.pending.derived_task,
+                task_attempt: dispatcher.pending.task_attempt,
                 http_pending: 0,
                 http_overflow_terminals: 0,
                 stopped: dispatcher.stopped,
@@ -231,12 +232,7 @@ mod tests {
                 ws_slow_client_count: 0,
                 ws_observed_write_bytes_total: 0,
             },
-            tasks: skiff_router::health::counters::SpawnedTaskCounters {
-                live_session_tasks: 0,
-                actor_task_capacity_in_use: 0,
-                actor_task_accepted: 0,
-                actor_task_rejected: 0,
-            },
+            tasks: tasks.clone(),
             shutdown: skiff_router::health::counters::ShutdownResidueCounters {
                 session_fail_stop: None,
                 coordinator_shutdown: false,
@@ -298,7 +294,7 @@ mod tests {
             pending: PendingHealth {
                 unary: 1,
                 stream: 2,
-                derived_task: 3,
+                task_attempt: 3,
             },
             terminal: TerminalHealth {
                 by_source: BTreeMap::from([(TerminalSource::Timeout, 4)]),
@@ -323,11 +319,20 @@ mod tests {
         let mut actor = ActorHealthSnapshot::default();
         actor.ownership.current_fences = 3;
         actor.invocation.pending = 4;
-        actor.task.actor_invocation_accepted = 6;
+        let tasks = skiff_router::health::counters::DurableTaskCounters {
+            live_session_tasks: 1,
+            renewing_attempts: 2,
+            pending_attempts: 3,
+            backlog_ready: 4,
+            submissions_accepted: 5,
+            settlements_failed: 6,
+            ..skiff_router::health::counters::DurableTaskCounters::default()
+        };
         let counters = build_counters(
             &dispatcher,
             &coordinator,
             &actor,
+            &tasks,
             &IndexHealthSnapshot {
                 connection_count: 1,
                 open_connections: vec!["conn-1".to_string()],
@@ -354,10 +359,15 @@ mod tests {
         let value = serde_json::to_value(&counters).expect("counters serialize");
         assert_eq!(value["requestPending"]["unary"], 1);
         assert_eq!(value["requestPending"]["stream"], 2);
-        assert_eq!(value["requestPending"]["derivedTask"], 3);
+        assert_eq!(value["requestPending"]["taskAttempt"], 3);
         assert_eq!(value["admission"]["permitsHeld"], 5);
         assert_eq!(value["terminal"]["bySource"]["timeout"], 4);
-        assert_eq!(value["actor"]["task"]["actorInvocationAccepted"], 6);
+        assert_eq!(value["tasks"]["liveSessionTasks"], 1);
+        assert_eq!(value["tasks"]["renewingAttempts"], 2);
+        assert_eq!(value["tasks"]["pendingAttempts"], 3);
+        assert_eq!(value["tasks"]["backlogReady"], 4);
+        assert_eq!(value["tasks"]["submissionsAccepted"], 5);
+        assert_eq!(value["tasks"]["settlementsFailed"], 6);
         assert_eq!(value["activation"]["phase"], "prepared");
         assert_eq!(value["activation"]["activationId"], "activation-x");
         assert_eq!(value["actor"]["ownership"]["currentFences"], 3);

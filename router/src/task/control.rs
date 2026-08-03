@@ -1,0 +1,299 @@
+//! Task control plane owner: pending-attempt correlation, terminal
+//! settlement through [`TaskStore`], lease bookkeeping through the
+//! scheduler, and the ordinary request-deadline sweep.
+//!
+//! The dispatcher reports task-attempt terminals through the injected
+//! [`TaskAttemptTerminalSink`]; this owner maps definite outcomes to
+//! `TaskStore.settle` and uncertain outcomes to lease-loss recovery (no
+//! settlement, no release; the scheduler stops renewing so lease expiry is
+//! the store-authority arbiter).
+
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use skiff_task_control::model::{
+    DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal,
+};
+use skiff_task_control::scheduler::Scheduler;
+use skiff_task_control::store::{SettleInput, TaskStore};
+
+use crate::dispatch::{
+    RequestDispatcher, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink,
+};
+use crate::ws::Clock;
+
+use super::health::TaskControlCounters;
+
+/// One pending task-attempt correlation: the ordinary `request.start` frame
+/// is keyed by its transport `request_id`; the durable task facts stay with
+/// the task store / scheduler.
+#[derive(Debug, Clone)]
+struct PendingAttempt {
+    /// Local request deadline (ordinary full budget; not the task lease).
+    deadline_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+enum ControlEvent {
+    Settle {
+        request_id: String,
+        task_id: TaskId,
+        lease_id: LeaseId,
+        outcome: TaskOutcome,
+    },
+}
+
+/// Durable task settlement / deadline owner (authoritative design "Runtime
+/// Admission And Settlement").
+pub struct DurableTaskControl {
+    store: Arc<dyn TaskStore>,
+    /// Deferred scheduler handle (assembled after this control plane; the
+    /// admission seam cannot create attempts before the scheduler exists).
+    scheduler: Arc<Mutex<Option<Arc<Scheduler>>>>,
+    /// Deferred dispatcher handle: the scheduler/admission are assembled
+    /// before the dispatcher exists; the composition installs it before any
+    /// listener starts, and the deadline sweep no-ops until then.
+    dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
+    clock: Arc<dyn Clock>,
+    counters: Arc<TaskControlCounters>,
+    pending: Mutex<HashMap<String, PendingAttempt>>,
+    events: tokio::sync::mpsc::Sender<ControlEvent>,
+    events_rx: Mutex<Option<tokio::sync::mpsc::Receiver<ControlEvent>>>,
+    sweep_interval: Duration,
+    started: AtomicBool,
+}
+
+impl fmt::Debug for DurableTaskControl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DurableTaskControl")
+            .field("pending", &self.pending.lock().map(|guard| guard.len()).unwrap_or(0))
+            .finish()
+    }
+}
+
+impl DurableTaskControl {
+    pub fn new(
+        store: Arc<dyn TaskStore>,
+        scheduler: Arc<Mutex<Option<Arc<Scheduler>>>>,
+        dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
+        clock: Arc<dyn Clock>,
+        counters: Arc<TaskControlCounters>,
+        sweep_interval: Duration,
+    ) -> Self {
+        let (events, events_rx) = tokio::sync::mpsc::channel(4096);
+        Self {
+            store,
+            scheduler,
+            dispatcher,
+            clock,
+            counters,
+            pending: Mutex::new(HashMap::new()),
+            events,
+            events_rx: Mutex::new(Some(events_rx)),
+            sweep_interval,
+            started: AtomicBool::new(false),
+        }
+    }
+
+    /// Starts the settlement worker + deadline sweep task. Exactly once per
+    /// control plane instance.
+    pub fn spawn_worker(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        if self.started.swap(true, Ordering::SeqCst) {
+            panic!("task control worker already started");
+        }
+        let control = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut sweep = tokio::time::interval(control.sweep_interval);
+            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut events = control
+                .events_rx
+                .lock()
+                .expect("events receiver lock")
+                .take()
+                .expect("task control worker started exactly once");
+            loop {
+                tokio::select! {
+                    _ = sweep.tick() => control.sweep_deadlines(),
+                    event = events.recv() => match event {
+                        Some(event) => control.handle_event(event).await,
+                        None => break,
+                    },
+                }
+            }
+        })
+    }
+
+    /// Registers one accepted attempt so the deadline sweep can enforce the
+    /// ordinary request timeout (a definite failed settlement, never lease
+    /// extension).
+    pub fn track_attempt(
+        &self,
+        request_id: &str,
+        _task_id: &TaskId,
+        _lease_id: &LeaseId,
+        deadline_ms: u64,
+    ) {
+        self.pending.lock().expect("pending lock").insert(
+            request_id.to_string(),
+            PendingAttempt {
+                deadline_ms,
+            },
+        );
+    }
+
+    /// Number of attempts this replica is currently correlating.
+    pub fn pending_attempt_count(&self) -> usize {
+        self.pending.lock().expect("pending lock").len()
+    }
+
+    /// Read-only store backlog (observability; store-authority snapshot).
+    pub async fn backlog(&self) -> skiff_task_control::store::BacklogObservation {
+        self.store
+            .observe_backlog()
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Counter bank shared with the sink / admission seam.
+    pub fn counters(&self) -> &TaskControlCounters {
+        &self.counters
+    }
+
+    fn sweep_deadlines(&self) {
+        let now = self.clock.now_ms();
+        let expired = {
+            let mut pending = self.pending.lock().expect("pending lock");
+            let ids = pending
+                .iter()
+                .filter(|(_, attempt)| attempt.deadline_ms <= now)
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            for request_id in &ids {
+                pending.remove(request_id);
+            }
+            ids
+        };
+        for request_id in expired {
+            if let Some(dispatcher) = self
+                .dispatcher
+                .lock()
+                .expect("deferred dispatcher lock")
+                .clone()
+            {
+                // Ordinary request timeout: the dispatcher terminal maps to
+                // a definite failed settlement (never lease-loss recovery).
+                let _ = dispatcher.timeout(&request_id);
+            }
+        }
+    }
+
+    async fn handle_event(&self, event: ControlEvent) {
+        match event {
+            ControlEvent::Settle {
+                request_id,
+                task_id,
+                lease_id,
+                outcome,
+            } => {
+                let settled_at = self
+                    .store
+                    .now()
+                    .await
+                    .unwrap_or(DurableUtcTimestamp::from_millis(
+                        i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
+                    ));
+                let _ = self
+                    .store
+                    .settle(SettleInput {
+                        task_id,
+                        lease_id,
+                        terminal: TaskTerminal { settled_at, outcome },
+                    })
+                    .await;
+                self.pending.lock().expect("pending lock").remove(&request_id);
+            }
+        }
+    }
+
+    fn enqueue_settle(
+        &self,
+        request_id: &str,
+        task_id: &TaskId,
+        lease_id: &LeaseId,
+        outcome: TaskOutcome,
+    ) {
+        self.pending.lock().expect("pending lock").remove(request_id);
+        let _ = self.events.try_send(ControlEvent::Settle {
+            request_id: request_id.to_string(),
+            task_id: task_id.clone(),
+            lease_id: lease_id.clone(),
+            outcome,
+        });
+    }
+
+    fn forget_now(&self, request_id: &str, task_id: &TaskId, lease_id: &LeaseId) {
+        self.pending.lock().expect("pending lock").remove(request_id);
+        // Stop renewing so store-authority lease expiry drives recovery; the
+        // attempt is neither settled nor released.
+        if let Some(scheduler) = self
+            .scheduler
+            .lock()
+            .expect("deferred scheduler lock")
+            .clone()
+        {
+            scheduler.forget_active_lease(task_id, lease_id);
+        }
+    }
+}
+
+impl TaskAttemptTerminalSink for DurableTaskControl {
+    fn on_terminal(
+        &self,
+        request_id: &str,
+        task_id: &str,
+        _attempt_id: &str,
+        lease_id: &str,
+        outcome: TaskAttemptTerminalOutcome,
+    ) {
+        let task_id = TaskId::new(task_id);
+        let lease_id = LeaseId::new(lease_id);
+        match outcome {
+            TaskAttemptTerminalOutcome::Succeeded => {
+                self.counters
+                    .settlements_succeeded
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_settle(request_id, &task_id, &lease_id, TaskOutcome::Succeeded);
+            }
+            TaskAttemptTerminalOutcome::Failed { message } => {
+                self.counters
+                    .settlements_failed
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_settle(
+                    request_id,
+                    &task_id,
+                    &lease_id,
+                    TaskOutcome::TargetFailed { error: message },
+                );
+            }
+            TaskAttemptTerminalOutcome::Uncertain { reason } => {
+                self.counters
+                    .settlements_uncertain
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing_or_eprintln(format!(
+                    "task attempt {request_id} terminal uncertain: {reason}"
+                ));
+                self.forget_now(request_id, &task_id, &lease_id);
+            }
+        }
+    }
+}
+
+fn tracing_or_eprintln(message: String) {
+    if std::env::var("SKIFF_ROUTER_TASK_DEBUG").is_ok() {
+        eprintln!("[task-control] {message}");
+    }
+}

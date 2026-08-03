@@ -45,18 +45,16 @@ pub use candidate::{
 };
 pub use dispatcher::{
     CancelFrame, DispatchedFrame, FrameOutcome, PendingTerminal, RequestDispatcher, RequestOutcome,
-    RuntimeDispatcherOptions, TaskRejectReason, TaskSubmitResult, SubmitRejectReason,
-    SubmitResult,
+    RuntimeDispatcherOptions, SubmitRejectReason, SubmitResult, TaskAttemptSubmitResult,
 };
 pub use frame::{
-    ActorMethodTaskControl, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TimeoutCheck,
-    WireTimeoutCheck,
+    NoopTaskAttemptTerminalSink, RuntimePeer, RuntimeResponseFrame, SessionAbortControl,
+    TaskAttemptTerminalOutcome, TaskAttemptTerminalSink, TimeoutCheck, WireTimeoutCheck,
 };
 pub use health::{
     AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
     TerminalSource,
 };
 pub use types::{
-    derived_deadline, ActorMethodTaskDispatch, DerivedTaskResult, DispatchSubmit,
-    RequestAuthority, RequestDeadline, TaskSubmit, TaskTargetKind,
+    DispatchSubmit, RequestAuthority, RequestDeadline, TaskAttemptSubmit,
 };

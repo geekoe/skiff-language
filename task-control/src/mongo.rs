@@ -35,9 +35,10 @@ use crate::model::{
 };
 use crate::retry::TaskRetryPolicy;
 use crate::store::{
-    CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
-    ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput, TaskStore,
+    BacklogObservation, CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput,
+    LeaseRecoveryInput, LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput,
+    RenewOutcome, RenewRejection, ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput,
+    TaskStore,
 };
 
 pub const DEFAULT_TASK_DATABASE: &str = "skiff-router";
@@ -640,6 +641,45 @@ impl MongoTaskStore {
             kind: record.status_kind(),
         })
     }
+
+    async fn observe_backlog_once(&self) -> Result<BacklogObservation, TaskStoreError> {
+        self.check_open()?;
+        let scheduled = self
+            .tasks
+            .count_documents(doc! { "state": "scheduled" })
+            .await
+            .map_err(map_driver_error)?;
+        let ready = self
+            .tasks
+            .count_documents(doc! { "state": "ready" })
+            .await
+            .map_err(map_driver_error)?;
+        let leased = self
+            .tasks
+            .count_documents(doc! { "state": "leased" })
+            .await
+            .map_err(map_driver_error)?;
+        let oldest = self
+            .tasks
+            .find_one(doc! {
+                "state": { "$in": ["scheduled", "ready"] },
+            })
+            .sort(doc! { "dueAt": 1 })
+            .projection(doc! { "dueAt": 1 })
+            .await
+            .map_err(map_driver_error)?;
+        let oldest_due_at = oldest
+            .as_ref()
+            .and_then(|document| document.get("dueAt"))
+            .and_then(Bson::as_datetime)
+            .map(|timestamp| DurableUtcTimestamp::from_millis(timestamp.timestamp_millis()));
+        Ok(BacklogObservation {
+            scheduled: usize::try_from(scheduled).unwrap_or(usize::MAX),
+            ready: usize::try_from(ready).unwrap_or(usize::MAX),
+            leased: usize::try_from(leased).unwrap_or(usize::MAX),
+            oldest_due_at,
+        })
+    }
 }
 
 #[async_trait]
@@ -693,6 +733,10 @@ impl TaskStore for MongoTaskStore {
 
     async fn status(&self, input: StatusInput) -> Result<TaskStatus, TaskStoreError> {
         self.with_retry(|| self.status_once(input.clone())).await
+    }
+
+    async fn observe_backlog(&self) -> Result<BacklogObservation, TaskStoreError> {
+        self.with_retry(|| self.observe_backlog_once()).await
     }
 
     async fn ensure_indexes(&self) -> Result<(), TaskStoreError> {

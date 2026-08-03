@@ -158,6 +158,14 @@ impl Scheduler {
         self.active_leases.lock().expect("active leases lock").len()
     }
 
+    /// Stops renewing one exact accepted lease. Used by the control plane
+    /// when an attempt terminal is uncertain (disconnect, shutdown, protocol
+    /// loss): the task is neither settled nor released, so lease expiry at
+    /// store authority time drives recovery with platform backoff.
+    pub fn forget_active_lease(&self, task_id: &TaskId, lease_id: &LeaseId) {
+        self.remove_active_lease_if(task_id, lease_id);
+    }
+
     /// Main loop: waits for a wake or the scan interval, then runs one
     /// recovery + renewal + due-scan cycle. Runs forever until the task is
     /// aborted or the store is closed.

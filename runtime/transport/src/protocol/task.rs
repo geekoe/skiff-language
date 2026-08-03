@@ -251,6 +251,8 @@ pub struct TaskCancelResultWire {
 /// guarantee no task was created by that submission. Existing router parent /
 /// authority error strings remain accepted by the wire so current runtime
 /// behavior is unchanged; the control plane (D2) emits this vocabulary.
+/// `unsupportedTarget` (D2) rejects target kinds the control plane cannot
+/// yet execute (actor-method before stage E) and is definite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskSubmitRejectionCode {
@@ -259,15 +261,17 @@ pub enum TaskSubmitRejectionCode {
     QuotaExceeded,
     StoreUnavailable,
     Rejected,
+    UnsupportedTarget,
 }
 
 impl TaskSubmitRejectionCode {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::InvalidTiming,
         Self::PayloadInvalid,
         Self::QuotaExceeded,
         Self::StoreUnavailable,
         Self::Rejected,
+        Self::UnsupportedTarget,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -277,6 +281,7 @@ impl TaskSubmitRejectionCode {
             Self::QuotaExceeded => "quotaExceeded",
             Self::StoreUnavailable => "storeUnavailable",
             Self::Rejected => "rejected",
+            Self::UnsupportedTarget => "unsupportedTarget",
         }
     }
 
@@ -682,50 +687,11 @@ pub fn task_submit_frame_direction(frame_type: &str) -> Option<FrameDirection> {
 
 /// Canonical decoded `task.submit.request` (corpus `decodeAs:
 /// "TaskSubmitRequest"`): the raw wire header plus the immutable opaque args
-/// payload. This is the demux -> `TaskSubmitRouter` dispatch boundary.
+/// payload. This is the demux -> router task control plane dispatch boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskSubmitRequestFrame {
     pub header: TaskSubmitRequestFrameHeaderV2,
     pub payload: Vec<u8>,
-}
-
-/// Acceptance boundary for the stateless `TaskSubmitRouter`
-/// (C-model-task §7.2 / C-task §3.3).
-///
-/// The acceptance carries the full decoded request (raw wire header + args
-/// bytes) so the real execution sink can reconstruct the outbound
-/// `task.submit.request` wire without re-parsing: service/activation
-/// identity, `actorMethod` metadata and opaque args are all preserved
-/// (E-actor-rust prerequisite). `request_id` is the Router-generated
-/// correlation key for the accepted task's execution.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TaskSubmitAcceptance {
-    pub request: TaskSubmitRequestFrame,
-    pub task_id: String,
-    pub request_id: String,
-}
-
-impl TaskSubmitAcceptance {
-    /// Typed projection of the Router->Runtime accept frame
-    /// (`task.submit.response`, status `submitted`), echoing the request
-    /// `rpcId` and carrying the Router-generated
-    /// `taskRef`/`taskId`/`requestId`. The owner scope is the accepted
-    /// request's authenticated service id (D1 wire contract).
-    pub fn response_header(&self) -> TaskSubmitResponseFrameHeader {
-        TaskSubmitResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: TASK_SUBMIT_RESPONSE_FRAME_TYPE.to_string(),
-            rpc_id: self.request.header.rpc_id.clone(),
-            task_ref: TaskRef::new(
-                self.task_id.clone(),
-                self.request.header.service_id.clone(),
-            )
-            .expect("accepted taskId and serviceId are non-empty"),
-            task_id: self.task_id.clone(),
-            request_id: self.request_id.clone(),
-            status: TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED.to_string(),
-        }
-    }
 }
 
 fn validate_task_submit_request(header: &TaskSubmitRequestFrameHeaderV2) -> Result<(), String> {

@@ -10,15 +10,13 @@
 //! frames are out of scope (M-task-repair shared-model node).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, encode_actor_method_frame, ActorMethodCancelFrameHeader,
-    ActorMethodCancelReason, ActorMethodDeadlineFrameHeader, ActorMethodFrame,
-    ActorMethodInvokeFrameHeader, ActorOwnerUnitFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
+    ActorMethodCancelReason, ActorMethodFrame, ActorOwnerUnitFrameHeader,
 };
 use skiff_runtime_transport::actor_owner::{
     decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
@@ -26,29 +24,19 @@ use skiff_runtime_transport::actor_owner::{
     ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader, ActorOwnerRouteAuthorityFrameHeader,
 };
 use skiff_runtime_transport::protocol::{
-    decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_task_submit_error_frame, encode_task_submit_response_frame, ActorFindRequestFrameHeader,
+    decode_typed_binary_frame, encode_binary_frame, ActorFindRequestFrameHeader,
     ActorFindResponseFrameHeader, ActorGetOrCreateRequestFrameHeader,
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
-    ActorTaskRuntimeErrorFrameHeader, RuntimeErrorFramePayload, RuntimeFrameFamily, TaskCallerKind,
-    TaskRef, TaskSubmitRequestFrame, TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader,
-    TaskTargetKind as WireTaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
-    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
+    ActorTaskRuntimeErrorFrameHeader, RuntimeFrameFamily, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 use crate::actor::{
     ActivationAckOutcome, ActorGetOrCreateRequest, ActorInvokeInput, ActorLogicalKey,
-    ActorMethodTaskExecutionSink, ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery,
-    GetOrCreateOutcome, InvocationError, OwnerReleaseReason, OwnerSettleKind, TaskErrorCode,
-    TaskSubmitAcceptance, TaskSubmitError, DEFAULT_OWNER_LEASE_TTL_MS,
-    TASK_ACTOR_METHOD_DEADLINE_MS, TASK_ACTOR_METHOD_LEASE_MS,
+    ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery, GetOrCreateOutcome, InvocationError,
+    OwnerReleaseReason, OwnerSettleKind, DEFAULT_OWNER_LEASE_TTL_MS,
 };
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
-use crate::dispatch::{
-    derived_deadline, RequestDeadline, RequestDispatcher, TaskSubmit, TaskSubmitResult,
-    TaskTargetKind,
-};
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
@@ -71,22 +59,11 @@ pub struct ActorFrameSink {
     clock: Arc<dyn Clock>,
     waiters: Mutex<HashMap<String, (RuntimeSessionEpoch, ActorLogicalKey)>>,
     invocations: Mutex<HashMap<String, InvocationCorrelation>>,
-    /// Task actor-method invocations have no caller to forward to; the
-    /// owner settle still goes through the relay so its pending returns to
-    /// zero (E-actor-rust; C-task §4.5 accepted task lifecycle).
-    task_invocations: Mutex<HashMap<String, TaskInvocationCorrelation>>,
-    task_seq: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
 struct InvocationCorrelation {
     caller: RuntimeSessionEpoch,
-    owner: RuntimeSessionEpoch,
-    fence: ActorOwnerFence,
-}
-
-#[derive(Debug, Clone)]
-struct TaskInvocationCorrelation {
     owner: RuntimeSessionEpoch,
     fence: ActorOwnerFence,
 }
@@ -107,8 +84,6 @@ impl ActorFrameSink {
             clock,
             waiters: Mutex::new(HashMap::new()),
             invocations: Mutex::new(HashMap::new()),
-            task_invocations: Mutex::new(HashMap::new()),
-            task_seq: AtomicU64::new(0),
         }
     }
 
@@ -399,8 +374,8 @@ impl ActorFrameSink {
     }
 
     /// Relay invocation deadline: send `actor.method.cancel` to the exact
-    /// owner (caller or task correlation) and remove the correlation so the
-    /// relay pending and this sink's map return to zero.
+    /// owner and remove the correlation so the relay pending and this sink's
+    /// map return to zero.
     pub fn on_relay_deadline(&self, invocation_id: &str, correlation: &str) {
         let connection_owner = {
             let invocations = self
@@ -419,28 +394,6 @@ impl ActorFrameSink {
                 ActorMethodCancelReason::DeadlineExceeded,
             );
             self.invocations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(invocation_id);
-            return;
-        }
-        let task_owner = {
-            let task_invocations = self
-                .task_invocations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            task_invocations
-                .get(invocation_id)
-                .map(|entry| (entry.owner.clone(), entry.fence.clone()))
-        };
-        if let Some((owner, _fence)) = task_owner {
-            self.write_owner_cancel(
-                invocation_id,
-                &owner,
-                correlation,
-                ActorMethodCancelReason::DeadlineExceeded,
-            );
-            self.task_invocations
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(invocation_id);
@@ -474,11 +427,6 @@ impl ActorFrameSink {
         invocations.retain(|_id, correlation| {
             correlation.owner != *session && correlation.caller != *session
         });
-        drop(invocations);
-        self.task_invocations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|_id, correlation| correlation.owner != *session);
     }
 
     fn write_owner_cancel(
@@ -497,193 +445,6 @@ impl ActorFrameSink {
         };
         if let Ok(bytes) = encode_actor_method_frame(&ActorMethodFrame::Cancel(header)) {
             let _ = self.writer.write(owner, bytes);
-        }
-    }
-
-    fn settle_task_owner_return(
-        &self,
-        invocation_id: &str,
-        session: &RuntimeSessionEpoch,
-    ) -> Result<(), TerminalKind> {
-        let task = self
-            .task_invocations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(invocation_id)
-            .cloned();
-        let Some(task) = task else {
-            return Ok(());
-        };
-        if self
-            .components
-            .relay
-            .on_owner_settle(
-                invocation_id,
-                &task.fence,
-                &Self::session_token(session),
-                OwnerSettleKind::Return,
-            )
-            .is_ok()
-        {
-            self.task_invocations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(invocation_id);
-        }
-        Ok(())
-    }
-
-    fn settle_task_owner_error(
-        &self,
-        invocation_id: &str,
-        session: &RuntimeSessionEpoch,
-    ) -> Result<(), TerminalKind> {
-        let task = self
-            .task_invocations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(invocation_id)
-            .cloned();
-        let Some(task) = task else {
-            return Ok(());
-        };
-        if self
-            .components
-            .relay
-            .on_owner_settle(
-                invocation_id,
-                &task.fence,
-                &Self::session_token(session),
-                OwnerSettleKind::Error,
-            )
-            .is_ok()
-        {
-            self.task_invocations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(invocation_id);
-        }
-        Ok(())
-    }
-
-    /// Real actor-method task execution owner (C-task §3.3/§4.5): the
-    /// accepted task is executed against the current owner fence of the
-    /// target actor; the task outlives the parent lifecycle and this router
-    /// stores no parent-child mapping. The caller-less invocation settles
-    /// through the relay on the owner's return/error.
-    pub fn task_actor_method_execution(
-        &self,
-        wire: &TaskSubmitRequestFrame,
-    ) -> Result<(), TaskSubmitError> {
-        let header = &wire.header;
-        let actor_method = header
-            .actor_method
-            .as_ref()
-            .ok_or_else(|| TaskSubmitError::new(TaskErrorCode::TargetKindMismatch))?;
-        let key = ActorLogicalKey::from_actor_ref(&actor_method.actor_ref);
-        let Some(fence) = self.components.registry.current_owner(&key) else {
-            return Err(TaskSubmitError::new(TaskErrorCode::UnknownTarget));
-        };
-        if fence.epoch != actor_method.actor_ref.epoch {
-            return Err(TaskSubmitError::new(TaskErrorCode::AuthorityMismatch));
-        }
-        let owner = self
-            .owner_session(&fence.owner_runtime_id)
-            .map_err(|_| TaskSubmitError::new(TaskErrorCode::ParentConnectionMismatch))?;
-        let now = self.clock.now_ms();
-        let fence = self
-            .components
-            .registry
-            .renew(&key, &fence, TASK_ACTOR_METHOD_LEASE_MS, now)
-            .unwrap_or(fence);
-        let owner_connection = Self::session_token(&owner);
-        self.components
-            .lease_scheduler
-            .mark_live(&key, now, &owner_connection);
-        let seq = self.task_seq.fetch_add(1, Ordering::Relaxed);
-        let invocation_id = format!("actor-task-{seq}");
-        let correlation = format!("actor-task-{seq}:cancel");
-        let deadline = ActorMethodDeadlineFrameHeader {
-            timeout_ms: TASK_ACTOR_METHOD_DEADLINE_MS,
-            expires_at: iso_timestamp(now.saturating_add(TASK_ACTOR_METHOD_DEADLINE_MS)),
-        };
-        let route_authority = self
-            .route_authority()
-            .map_err(|_| TaskSubmitError::new(TaskErrorCode::AuthorityMismatch))?;
-        let input = ActorInvokeInput {
-            invocation_id: invocation_id.clone(),
-            // A task method's parent authority is its owner runtime
-            // connection: when the task method itself tasks
-            // (`callerKind=actorInvocation`), the relay parent snapshot must
-            // resolve to this exact session (C-task §4.2).
-            caller_connection: owner_connection.clone(),
-            caller_runtime_id: owner.replica_id.clone(),
-            owner_fence: fence.clone(),
-            owner_connection: owner_connection.clone(),
-            route_authority: route_authority.clone(),
-            correlation: correlation.clone(),
-            deadline: Some(deadline.clone()),
-            test_case_capability: None,
-            now,
-        };
-        self.components
-            .relay
-            .invoke(&input)
-            .map_err(|_| TaskSubmitError::new(TaskErrorCode::Saturated))?;
-        let invoke_header = ActorMethodInvokeFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "actor.method.invoke".to_string(),
-            invocation_id: invocation_id.clone(),
-            actor_ref: actor_method.actor_ref.clone(),
-            declaration_owner: actor_method.declaration_owner.clone(),
-            actor_abi_identity: actor_method.actor_abi_identity.clone(),
-            actor_implementation_identity: actor_method.actor_implementation_identity.clone(),
-            method_identity: actor_method.method_identity.clone(),
-            arguments_encoding_version: ACTOR_ARGUMENTS_ENCODING_V1.to_string(),
-            deadline,
-            cancellation_correlation: correlation.clone(),
-            trace_id: header.trace_id.clone(),
-            test_case_capability: None,
-            test_case_parent_request_id: None,
-        };
-        let route = ActorOwnerRouteAuthorityFrameHeader {
-            assembly_identity: route_authority.assembly_identity,
-            assembly_generation: route_authority.assembly_generation,
-        };
-        let owner_invoke = ActorOwnerInvokeFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "actor.owner.invoke".to_string(),
-            target_runtime_id: fence.owner_runtime_id.clone(),
-            owner_fence: Self::fence_to_wire(&fence),
-            invoke: invoke_header,
-            route_authority: route,
-            activation_bootstrap: None,
-        };
-        let bytes = encode_actor_owner_invoke_frame(&owner_invoke, &wire.payload)
-            .map_err(|_| TaskSubmitError::new(TaskErrorCode::UnknownTarget))?;
-        self.write(&owner, bytes)
-            .map_err(|_| TaskSubmitError::new(TaskErrorCode::ParentConnectionMismatch))?;
-        self.task_invocations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                invocation_id,
-                TaskInvocationCorrelation {
-                    owner: owner.clone(),
-                    fence,
-                },
-            );
-        Ok(())
-    }
-
-    fn fence_to_wire(fence: &ActorOwnerFence) -> ActorOwnerFenceFrameHeader {
-        ActorOwnerFenceFrameHeader {
-            owner_runtime_id: fence.owner_runtime_id.clone(),
-            epoch: fence.epoch,
-            actor_abi_identity: fence.actor_abi_identity.clone(),
-            actor_implementation_identity: fence.actor_implementation_identity.clone(),
-            declaration_owner: fence.declaration_owner.clone(),
-            owner_lease_id: fence.owner_lease_id.clone(),
         }
     }
 
@@ -869,7 +630,7 @@ impl ActorFrameSink {
                         Err(_) => Ok(()),
                     }
                 } else {
-                    self.settle_task_owner_return(&header.invocation_id, session)
+                    Ok(())
                 }
             }
             ActorMethodFrame::Error(header) => {
@@ -898,7 +659,7 @@ impl ActorFrameSink {
                         Err(_) => Ok(()),
                     }
                 } else {
-                    self.settle_task_owner_error(&header.invocation_id, session)
+                    Ok(())
                 }
             }
             ActorMethodFrame::Cancel(header) => {
@@ -909,13 +670,8 @@ impl ActorFrameSink {
                     .get(&header.invocation_id)
                     .cloned();
                 let Some(correlation) = correlation else {
-                    // Task invocations have no caller to cancel; a stray
-                    // cancel is dropped fail-closed (relay deadline owns the
-                    // terminal).
-                    self.task_invocations
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .remove(&header.invocation_id);
+                    // A stray cancel has no caller correlation; it is dropped
+                    // fail-closed (relay deadline owns the terminal).
                     return Ok(());
                 };
                 match self.components.relay.on_caller_cancel(
@@ -1069,19 +825,6 @@ impl InboundFrameSink for ActorFrameSink {
     }
 }
 
-impl ActorMethodTaskExecutionSink for ActorFrameSink {
-    fn on_accept(&self, acceptance: &TaskSubmitAcceptance) {
-        let Some(wire) = self.components.task_wire_store.get(&acceptance.task_id) else {
-            self.components.task_wire_store.record_orphan_accept();
-            return;
-        };
-        let outcome = self.task_actor_method_execution(&wire.frame);
-        self.components
-            .task_wire_store
-            .set_outcome(&acceptance.task_id, outcome);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::pick_owner_candidate;
@@ -1138,396 +881,4 @@ fn pick_owner_candidate<'a>(
     let index = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize
         % candidates.len();
     candidates.get(index)
-}
-
-/// Production `task.submit.request` inbound sink (E-actor-rust). Installed
-/// into `InboundSinkSet.task`; the demux already narrowed the frame-level
-/// direction so only Runtime→Router `task.submit.request` reaches here.
-///
-/// Parent authority is resolved exactly (C-task §4):
-/// - `callerKind=request` resolves through the `RequestDispatcher` pending
-///   (function targets become dispatcher-owned derived tasks);
-/// - `callerKind=actorInvocation` resolves through the
-///   `ActorInvocationRelay` parent store;
-/// - both namespaces hit → `ambiguous` fail closed; neither → fail closed;
-/// - accepted actor-method task submits are handed to the real execution owner with
-///   the raw wire request and the response is written from its synchronous
-///   admission outcome; accepted task submits are separated from parent lifecycle.
-#[derive(Debug)]
-pub struct ActorTaskFrameSink {
-    components: Arc<ActorComponents>,
-    dispatcher: Arc<RequestDispatcher>,
-    epoch_store: Arc<ActiveRoutingEpochStore>,
-    writer: Arc<dyn WsSessionWriter>,
-    clock: Arc<dyn Clock>,
-    default_task_deadline_ms: u64,
-    seq: AtomicU64,
-}
-
-impl ActorTaskFrameSink {
-    pub fn new(
-        components: Arc<ActorComponents>,
-        dispatcher: Arc<RequestDispatcher>,
-        epoch_store: Arc<ActiveRoutingEpochStore>,
-        writer: Arc<dyn WsSessionWriter>,
-        clock: Arc<dyn Clock>,
-        default_task_deadline_ms: u64,
-    ) -> Self {
-        Self {
-            components,
-            dispatcher,
-            epoch_store,
-            writer,
-            clock,
-            default_task_deadline_ms,
-            seq: AtomicU64::new(0),
-        }
-    }
-
-    fn write(&self, session: &RuntimeSessionEpoch, bytes: Vec<u8>) -> Result<(), TerminalKind> {
-        self.writer
-            .write(session, bytes)
-            .map_err(|_| TerminalKind::MalformedFrame)
-    }
-
-    fn response_frame(
-        rpc_id: &str,
-        task_id: &str,
-        request_id: &str,
-        owner: &str,
-    ) -> Result<Vec<u8>, TerminalKind> {
-        let header = TaskSubmitResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "task.submit.response".to_string(),
-            rpc_id: rpc_id.to_string(),
-            task_ref: TaskRef::new(task_id.to_string(), owner.to_string())
-                .map_err(|_| TerminalKind::MalformedFrame)?,
-            task_id: task_id.to_string(),
-            request_id: request_id.to_string(),
-            status: TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED.to_string(),
-        };
-        encode_task_submit_response_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
-    }
-
-    fn error_frame(rpc_id: &str, code: &str, message: &str) -> Result<Vec<u8>, TerminalKind> {
-        let header = ActorTaskRuntimeErrorFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "task.submit.error".to_string(),
-            rpc_id: rpc_id.to_string(),
-            error: RuntimeErrorFramePayload {
-                code: code.to_string(),
-                message: message.to_string(),
-                status: None,
-                details: None,
-            },
-        };
-        encode_task_submit_error_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
-    }
-
-    fn reject_code(reason: &crate::dispatch::TaskRejectReason) -> (&'static str, &'static str) {
-        use crate::dispatch::TaskRejectReason as Reason;
-        match reason {
-            Reason::NoParent | Reason::WrongParentKind => (
-                "ParentNotFound",
-                "dispatch callerRequestId does not identify an active parent",
-            ),
-            Reason::ParentTerminal => ("ParentTerminal", "task parent is terminal"),
-            Reason::ParentAuthorityMismatch => (
-                "AuthorityMismatch",
-                "task parent authority does not match the request",
-            ),
-            Reason::QueueFull => ("Saturated", "task submit capacity is saturated"),
-            Reason::Ambiguous => (
-                "TaskSubmitRejected",
-                "task parent matched both typed namespaces",
-            ),
-            Reason::Duplicate => ("TaskSubmitRejected", "task request id is already pending"),
-            Reason::Shutdown => ("TaskSubmitRejected", "router is shutting down"),
-            Reason::CallbackError => ("TaskSubmitRejected", "task derived request write failed"),
-        }
-    }
-
-    fn route_task(
-        &self,
-        session: &RuntimeSessionEpoch,
-        frame: &TaskSubmitRequestFrame,
-        task_request_id: &str,
-    ) -> Result<(String, String), (String, String)> {
-        let header = &frame.header;
-        match (header.caller_kind, header.target_kind) {
-            (TaskCallerKind::Request, WireTaskTargetKind::Function) => {
-                self.route_request_function(session, header, task_request_id)
-            }
-            (TaskCallerKind::Request, WireTaskTargetKind::ActorMethod) => {
-                self.route_request_actor_method(session, header, task_request_id)
-            }
-            (TaskCallerKind::ActorInvocation, WireTaskTargetKind::ActorMethod) => {
-                self.route_actor_invocation_actor_method(session, header, task_request_id)
-            }
-            (TaskCallerKind::ActorInvocation, WireTaskTargetKind::Function) => Err((
-                "CallerKindRejected".to_string(),
-                "function task requires a runtime assembly request parent".to_string(),
-            )),
-        }
-    }
-
-    fn route_request_function(
-        &self,
-        session: &RuntimeSessionEpoch,
-        header: &TaskSubmitRequestFrameHeaderV2,
-        task_request_id: &str,
-    ) -> Result<(String, String), (String, String)> {
-        let authority = self.request_authority(session, header).ok_or_else(|| {
-            (
-                "AuthorityMismatch".to_string(),
-                "task activation identity does not match the active routing epoch".to_string(),
-            )
-        })?;
-        let parent_deadline = self.dispatcher.pending_deadline(&header.caller_request_id);
-        let default_deadline = RequestDeadline {
-            timeout_ms: self.default_task_deadline_ms,
-            expires_at: iso_timestamp(
-                self.clock
-                    .now_ms()
-                    .saturating_add(self.default_task_deadline_ms),
-            ),
-        };
-        let deadline = derived_deadline(parent_deadline.as_ref(), &default_deadline);
-        let task = TaskSubmit {
-            task_request_id: task_request_id.to_string(),
-            caller_request_id: header.caller_request_id.clone(),
-            target_kind: TaskTargetKind::Function,
-            target: header.target.clone(),
-            authority,
-            deadline: Some(deadline),
-        };
-        match self.dispatcher.task_submit(task) {
-            TaskSubmitResult::AcceptedDerived(result) => {
-                Ok((task_request_id.to_string(), result.task_request_id.clone()))
-            }
-            TaskSubmitResult::Rejected { reason, .. } => {
-                let (code, message) = Self::reject_code(&reason);
-                Err((code.to_string(), message.to_string()))
-            }
-            TaskSubmitResult::ForwardedActorMethod(_) => Err((
-                "TaskSubmitRejected".to_string(),
-                "function task was misrouted to the actor lane".to_string(),
-            )),
-        }
-    }
-
-    fn route_request_actor_method(
-        &self,
-        session: &RuntimeSessionEpoch,
-        header: &TaskSubmitRequestFrameHeaderV2,
-        task_request_id: &str,
-    ) -> Result<(String, String), (String, String)> {
-        if self
-            .components
-            .relay
-            .is_active_parent(&header.caller_request_id)
-        {
-            return Err((
-                "TaskSubmitRejected".to_string(),
-                "task parent matched both typed namespaces".to_string(),
-            ));
-        }
-        if self
-            .dispatcher
-            .pending_epoch(&header.caller_request_id)
-            .is_none()
-        {
-            return Err((
-                "ParentNotFound".to_string(),
-                "dispatch callerRequestId does not identify an active request parent".to_string(),
-            ));
-        }
-        let authority = self.request_authority(session, header).ok_or_else(|| {
-            (
-                "AuthorityMismatch".to_string(),
-                "task activation identity does not match the active routing epoch".to_string(),
-            )
-        })?;
-        let probe = crate::actor::TaskAuthorityProbe {
-            connection: Self::session_token(session),
-            runtime_id: Some(header.runtime_id.clone()),
-            assembly_generation: authority.assembly_generation,
-            test_case_capability: None,
-        };
-        self.admit_actor_method(header, task_request_id, &probe)
-    }
-
-    fn route_actor_invocation_actor_method(
-        &self,
-        session: &RuntimeSessionEpoch,
-        header: &TaskSubmitRequestFrameHeaderV2,
-        task_request_id: &str,
-    ) -> Result<(String, String), (String, String)> {
-        if self
-            .dispatcher
-            .pending_epoch(&header.caller_request_id)
-            .is_some()
-        {
-            return Err((
-                "TaskSubmitRejected".to_string(),
-                "task parent matched both typed namespaces".to_string(),
-            ));
-        }
-        let Some(parent) = self
-            .components
-            .relay
-            .parent_snapshot(&header.caller_request_id)
-        else {
-            return Err((
-                "ParentNotFound".to_string(),
-                "dispatch callerRequestId does not identify an active actor invocation parent"
-                    .to_string(),
-            ));
-        };
-        let epoch = self.epoch_store.capture().ok_or_else(|| {
-            (
-                "AuthorityMismatch".to_string(),
-                "no active routing epoch for actor invocation task".to_string(),
-            )
-        })?;
-        if epoch.assembly_identity() != header.activation_identity.assembly_identity.as_str() {
-            return Err((
-                "AuthorityMismatch".to_string(),
-                "task activation identity does not match the active routing epoch".to_string(),
-            ));
-        }
-        let probe = crate::actor::TaskAuthorityProbe {
-            connection: Self::session_token(session),
-            runtime_id: Some(header.runtime_id.clone()),
-            assembly_generation: parent.assembly_generation,
-            test_case_capability: parent.test_case_capability.clone(),
-        };
-        self.admit_actor_method(header, task_request_id, &probe)
-    }
-
-    fn admit_actor_method(
-        &self,
-        header: &TaskSubmitRequestFrameHeaderV2,
-        task_request_id: &str,
-        probe: &crate::actor::TaskAuthorityProbe,
-    ) -> Result<(String, String), (String, String)> {
-        let mut admitted_header = header.clone();
-        admitted_header.task_id = Some(task_request_id.to_string());
-        let acceptance = self
-            .components
-            .task_router
-            .submit(&admitted_header, probe)
-            .map_err(|error| (error.code().as_str().to_string(), error.to_string()))?;
-        let request_id = acceptance.request_id.clone();
-        self.components.execution_sink.on_accept(&acceptance);
-        let outcome = self
-            .components
-            .task_wire_store
-            .get(&acceptance.task_id)
-            .and_then(|wire| wire.outcome);
-        match outcome {
-            Some(Ok(())) => Ok((acceptance.task_id.clone(), request_id)),
-            Some(Err(error)) => Err((error.code().as_str().to_string(), error.to_string())),
-            None => Err((
-                "TaskSubmitRejected".to_string(),
-                "actor-method task execution did not report an admission outcome".to_string(),
-            )),
-        }
-    }
-
-    fn request_authority(
-        &self,
-        session: &RuntimeSessionEpoch,
-        header: &TaskSubmitRequestFrameHeaderV2,
-    ) -> Option<crate::dispatch::RequestAuthority> {
-        let epoch = self.epoch_store.capture()?;
-        if epoch.assembly_identity() != header.activation_identity.assembly_identity.as_str()
-            || epoch.assembly_generation() != header.activation_identity.generation
-        {
-            return None;
-        }
-        let deployment = epoch.deployment_projection().iter().find(|deployment| {
-            deployment.service_id == header.service_id
-                && deployment.contract_version == header.service_version
-                && deployment.deployment_revision.as_str()
-                    == header.activation_identity.deployment_revision
-        })?;
-        Some(crate::dispatch::RequestAuthority {
-            assembly_identity: header.activation_identity.assembly_identity.clone(),
-            assembly_generation: header.activation_identity.generation,
-            deployment: deployment.clone(),
-            session_epoch: session.clone(),
-        })
-    }
-
-    fn session_token(session: &RuntimeSessionEpoch) -> String {
-        format!("{}#{}", session.replica_id, session.connection_generation)
-    }
-}
-
-impl InboundFrameSink for ActorTaskFrameSink {
-    fn family(&self) -> RuntimeFrameFamily {
-        RuntimeFrameFamily::Task
-    }
-
-    fn accepts_frame_type(&self, frame_type: &str) -> bool {
-        frame_type == "task.submit.request"
-    }
-
-    fn handle(&self, session: &RuntimeSessionEpoch, raw: &[u8]) -> Result<(), TerminalKind> {
-        let (header, payload) =
-            decode_task_submit_request_frame(raw).map_err(|_| TerminalKind::MalformedFrame)?;
-        let frame = TaskSubmitRequestFrame { header, payload };
-        let task_request_id = frame
-            .header
-            .task_id
-            .clone()
-            .unwrap_or_else(|| format!("task-{}", self.seq.fetch_add(1, Ordering::Relaxed)));
-        self.components
-            .task_wire_store
-            .register(&task_request_id, frame.clone());
-        let result = self.route_task(session, &frame, &task_request_id);
-        let rpc_id = frame.header.rpc_id.clone();
-        let outcome = match result {
-            Ok((task_id, request_id)) => {
-                Self::response_frame(&rpc_id, &task_id, &request_id, &frame.header.service_id)
-            }
-            Err((code, message)) => Self::error_frame(&rpc_id, &code, &message),
-        };
-        self.components.task_wire_store.remove(&task_request_id);
-        let bytes = outcome?;
-        self.write(session, bytes)
-    }
-}
-
-fn iso_timestamp(epoch_ms: u64) -> String {
-    let seconds = (epoch_ms / 1000) as i64;
-    let millis = epoch_ms % 1000;
-    let days = seconds.div_euclid(86_400);
-    let secs_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (
-        secs_of_day / 3600,
-        (secs_of_day % 3600) / 60,
-        secs_of_day % 60,
-    );
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    // Howard Hinnant's civil_from_days algorithm.
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        if month <= 2 { year + 1 } else { year },
-        month as u32,
-        day as u32,
-    )
 }

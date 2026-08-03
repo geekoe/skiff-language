@@ -849,26 +849,6 @@ impl GatewayUpgradeHandler for ClientWsContext {
                 return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }
         };
-        let task_parent_deadline = crate::dispatch::RequestDeadline {
-            timeout_ms: self.connect_timeout_ms,
-            expires_at: crate::supervisor::ws::format_iso8601_now_plus(self.connect_timeout_ms),
-        };
-        if let Err(_) = self.dispatcher.register_task_parent(
-            connect_request_id.clone(),
-            runtime.clone(),
-            epoch.clone(),
-            Some(task_parent_deadline),
-        ) {
-            // The admission cannot act as a task parent; fail closed so a
-            // connect handler that tasks gets a deterministic error instead
-            // of a mid-flight parent loss.
-            self.store.connect_unavailable(
-                &connect_request_id,
-                "websocket connect task parent registration failed".to_string(),
-            );
-            self.fail_reservation(&connection_id);
-            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
-        }
         let outcome = tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(self.connect_timeout_ms + 1000)) => {
                 self.store.connect_unavailable(
@@ -883,7 +863,6 @@ impl GatewayUpgradeHandler for ClientWsContext {
             }
         };
         self.selector.release(&connection_id);
-        self.dispatcher.unregister_task_parent(&connect_request_id);
         let Some(outcome) = outcome else {
             let _ = self
                 .lane

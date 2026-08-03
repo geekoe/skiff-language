@@ -48,7 +48,7 @@ fn corpus_frame(name: &str) -> Vec<u8> {
 }
 
 /// Canonical task sink probe: decodes through the shared codec (the real
-/// `TaskSubmitRouter` boundary) and records the decoded frame. Any decode
+/// router task control plane boundary) and records the decoded frame. Any decode
 /// failure (legacy shape, closed-enum violation) rejects with
 /// `MalformedFrame`, terminating the exact session.
 #[derive(Debug)]

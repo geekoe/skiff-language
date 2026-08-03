@@ -23,7 +23,7 @@ use super::counters::{
     ClientConnectionCounters, CoordinatorMailboxCounters, GenerationLeaseCounters, HealthCounters,
     HealthObservationCounters, HttpCounters, MailboxCounters, ReaderFailClosedCountersDto,
     RepositoryCounters, RequestPendingCounters, SessionCounters, ShutdownResidueCounters,
-    SpawnedTaskCounters, TerminalCounters, WriterQueueCounters,
+    TerminalCounters, WriterQueueCounters, DurableTaskCounters,
 };
 use super::time::format_iso_millis;
 use super::wire::{
@@ -107,7 +107,6 @@ impl HealthAggregator {
             invocation: components.actor.relay.health(),
             control: components.actor.control_broker.health(),
             lease: components.actor.lease_scheduler.health(),
-            task: components.actor.task_router.health(),
         };
 
         let observations = components.session.health().observations_snapshot();
@@ -146,10 +145,10 @@ impl HealthAggregator {
             observed_at: format_iso_millis(now),
             router: LoopRiskRouterProjection {
                 dispatcher: LoopRiskDispatcherProjection {
-                    // TS parity: task-derived pending was counted as unary
-                    // by `pendingLifecycleCounters`.
+                    // TS parity: task attempts are unary request pending and
+                    // count toward the loop-risk unary projection.
                     pending_unary: dispatcher_health.pending.unary
-                        + dispatcher_health.pending.derived_task,
+                        + dispatcher_health.pending.task_attempt,
                     pending_stream: dispatcher_health.pending.stream,
                 },
                 http_stream: LoopRiskHttpStreamProjection {
@@ -189,6 +188,7 @@ impl HealthAggregator {
                 .and_then(|state| state.pending),
             None => None,
         };
+        let task_backlog = components.task_control.backlog().await;
 
         let counters = HealthCounters {
             active_routing_epoch: ActiveRoutingEpochCounters::from(&epoch_store_health),
@@ -214,7 +214,7 @@ impl HealthAggregator {
             request_pending: RequestPendingCounters {
                 unary: dispatcher_health.pending.unary,
                 stream: dispatcher_health.pending.stream,
-                derived_task: dispatcher_health.pending.derived_task,
+                task_attempt: dispatcher_health.pending.task_attempt,
                 http_pending: components.pending_http.pending_count(),
                 http_overflow_terminals: components.pending_http.overflow_terminal_count(),
                 stopped: dispatcher_health.stopped,
@@ -241,11 +241,104 @@ impl HealthAggregator {
                 ws_slow_client_count: index_health.slow_client_count,
                 ws_observed_write_bytes_total: index_health.observed_write_bytes.values().sum(),
             },
-            tasks: SpawnedTaskCounters {
+            tasks: DurableTaskCounters {
                 live_session_tasks: session_health.live_session_tasks,
-                actor_task_capacity_in_use: actor_health.task.capacity_in_use,
-                actor_task_accepted: actor_health.task.accepted,
-                actor_task_rejected: actor_health.task.rejected,
+                renewing_attempts: components.scheduler.active_lease_count(),
+                pending_attempts: components.task_control.pending_attempt_count(),
+                backlog_scheduled: task_backlog.scheduled,
+                backlog_ready: task_backlog.ready,
+                backlog_leased: task_backlog.leased,
+                oldest_due_at_ms: task_backlog.oldest_due_at.map(|timestamp| timestamp.millis()),
+                submissions_accepted: components
+                    .task_control
+                    .counters()
+                    .submissions_accepted
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                submissions_rejected: components
+                    .task_control
+                    .counters()
+                    .submissions_rejected
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                submissions_transient: components
+                    .task_control
+                    .counters()
+                    .submissions_transient
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                status_queries: components
+                    .task_control
+                    .counters()
+                    .status_queries
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                status_expired: components
+                    .task_control
+                    .counters()
+                    .status_expired
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                status_unavailable: components
+                    .task_control
+                    .counters()
+                    .status_unavailable
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_canceled: components
+                    .task_control
+                    .counters()
+                    .cancel_canceled
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_already_started: components
+                    .task_control
+                    .counters()
+                    .cancel_already_started
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_already_terminal: components
+                    .task_control
+                    .counters()
+                    .cancel_already_terminal
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_expired: components
+                    .task_control
+                    .counters()
+                    .cancel_expired
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_unavailable: components
+                    .task_control
+                    .counters()
+                    .cancel_unavailable
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                settlements_succeeded: components
+                    .task_control
+                    .counters()
+                    .settlements_succeeded
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                settlements_failed: components
+                    .task_control
+                    .counters()
+                    .settlements_failed
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                settlements_uncertain: components
+                    .task_control
+                    .counters()
+                    .settlements_uncertain
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                admissions_accepted: components
+                    .task_control
+                    .counters()
+                    .admissions_accepted
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                admissions_rejected: components
+                    .task_control
+                    .counters()
+                    .admissions_rejected
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                admissions_uncertain: components
+                    .task_control
+                    .counters()
+                    .admissions_uncertain
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                admissions_permanent_failure: components
+                    .task_control
+                    .counters()
+                    .admissions_permanent_failure
+                    .load(std::sync::atomic::Ordering::Relaxed),
             },
             shutdown: ShutdownResidueCounters {
                 session_fail_stop: session_health.fail_stop,

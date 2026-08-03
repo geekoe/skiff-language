@@ -9,7 +9,6 @@
 //! another owner's state across `.await`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use skiff_runtime_transport::assembly_activation::{
@@ -22,24 +21,18 @@ use skiff_runtime_transport::protocol::{
     encode_binary_frame, encode_request_cancel_frame, RequestCancelFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-    RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
-    RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
-};
 use skiff_runtime_transport::websocket_generation_lifecycle::{
     encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleControl,
     WebSocketGenerationLifecycleDirection,
 };
 
 use crate::activation::{ActivationParticipantBinding, EnqueueResult, SessionEnqueuePort};
-use crate::actor::TaskWireStore;
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{
     CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
 };
 use crate::dispatch::{
-    DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, TaskSubmit,
+    DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, TaskAttemptSubmit,
 };
 use crate::routing::{
     CandidateDirectoryView, DispatchCapabilities, RegisteredSessionLease, RuntimeCandidateQuery,
@@ -226,22 +219,11 @@ impl SessionAbortControl for LayerSessionAbort {
 #[derive(Debug, Clone)]
 pub struct SessionRuntimePeer {
     session: SessionHandle,
-    task_wire_store: Option<Arc<TaskWireStore>>,
 }
 
 impl SessionRuntimePeer {
     pub fn new(session: SessionHandle) -> Self {
-        Self {
-            session,
-            task_wire_store: None,
-        }
-    }
-
-    /// E-actor-rust: the derived function-task trace (and opaque task wire
-    /// facts) are correlated through the actor lane wire store.
-    pub fn with_task_wire_store(mut self, store: Arc<TaskWireStore>) -> Self {
-        self.task_wire_store = Some(store);
-        self
+        Self { session }
     }
 }
 
@@ -273,82 +255,15 @@ impl RuntimePeer for SessionRuntimePeer {
         write_session_frame(&self.session, session, bytes)
     }
 
-    fn send_task_submit(
+    fn send_task_attempt_start(
         &self,
         session: &RuntimeSessionEpoch,
-        task: &TaskSubmit,
+        attempt: &TaskAttemptSubmit,
     ) -> Result<(), String> {
-        // Derived function task execution frame (TS `derivedTaskRequest`
-        // parity): the dispatcher owns the derived pending; this port maps
-        // it onto the canonical `runtimeAssembly task request.start` wire.
-        // The recoverable args payload is the original task.submit payload
-        // (TS `dispatchDerivedTask(ws, request, payloadBytes)`); the strict
-        // Runtime decoder requires it to be present.
-        let wire = self
-            .task_wire_store
-            .as_ref()
-            .and_then(|store| store.get(&task.task_request_id))
-            .ok_or_else(|| {
-                format!(
-                    "derived task {} has no captured task wire",
-                    task.task_request_id
-                )
-            })?;
-        let wire_trace_id = wire.frame.header.trace_id.clone();
-        let span_id = format!(
-            "{:016x}",
-            now_nanos().wrapping_add(TASK_SPAN_SEQUENCE.fetch_add(1, Ordering::Relaxed))
-        );
-        let header = RuntimeAssemblyTaskRequestStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "request.start".to_string(),
-            request_id: task.task_request_id.clone(),
-            mode: "unary".to_string(),
-            caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
-                kind: "service".to_string(),
-            },
-            routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
-                kind: "runtimeAssembly".to_string(),
-                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                    task.authority.assembly_identity.clone(),
-                ),
-                assembly_generation: task.authority.assembly_generation,
-                deployment: task.authority.deployment.clone(),
-            },
-            invocation: RuntimeAssemblyTaskInvocationFrameHeader {
-                kind: "task".to_string(),
-                target_kind: "function".to_string(),
-                target: task.target.clone(),
-            },
-            deadline: task.deadline.as_ref().map(|deadline| {
-                RuntimeAssemblyRequestDeadlineFrameHeader {
-                    timeout_ms: deadline.timeout_ms,
-                    expires_at: deadline.expires_at.clone(),
-                }
-            }),
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
-                trace_id: wire_trace_id.unwrap_or_else(|| format!("task-trace-{span_id}")),
-                span_id,
-                parent_span_id: None,
-                sampled: None,
-            },
-            test_effects_enabled: false,
-            test_case_capability: None,
-            task_attempt: None,
-        };
-        let bytes = encode_binary_frame(&header, &wire.frame.payload)
-            .map_err(|error| format!("derived task request.start encode failed: {error}"))?;
+        let bytes = encode_binary_frame(&attempt.header, &attempt.payload)
+            .map_err(|error| format!("task attempt request.start encode failed: {error}"))?;
         write_session_frame(&self.session, session, bytes)
     }
-}
-
-static TASK_SPAN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 fn write_session_frame(

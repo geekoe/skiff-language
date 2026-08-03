@@ -20,9 +20,10 @@ use crate::model::{
 };
 use crate::reducer;
 use crate::store::{
-    CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
-    ScanExpiredLeasesInput, SettleInput, SettleOutcome, SettleTransition, StatusInput, TaskStore,
+    BacklogObservation, CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput,
+    LeaseRecoveryInput, LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput,
+    RenewOutcome, RenewRejection, ScanExpiredLeasesInput, SettleInput, SettleOutcome,
+    SettleTransition, StatusInput, TaskStore,
 };
 
 #[derive(Debug)]
@@ -305,6 +306,29 @@ impl TaskStore for MemoryTaskStore {
         })
     }
 
+    async fn observe_backlog(&self) -> Result<BacklogObservation, TaskStoreError> {
+        self.gate().await?;
+        let state = self.inner.read().await;
+        let mut observation = BacklogObservation::default();
+        for record in state.records.values() {
+            match record.state {
+                TaskState::Scheduled => {
+                    observation.scheduled += 1;
+                    observation.oldest_due_at =
+                        Some(older(observation.oldest_due_at, record.due_at));
+                }
+                TaskState::Ready => {
+                    observation.ready += 1;
+                    observation.oldest_due_at =
+                        Some(older(observation.oldest_due_at, record.due_at));
+                }
+                TaskState::Leased => observation.leased += 1,
+                _ => {}
+            }
+        }
+        Ok(observation)
+    }
+
     async fn ensure_indexes(&self) -> Result<(), TaskStoreError> {
         Ok(())
     }
@@ -312,5 +336,15 @@ impl TaskStore for MemoryTaskStore {
     async fn close(&self) -> Result<(), TaskStoreError> {
         self.inner.write().await.closed = true;
         Ok(())
+    }
+}
+
+fn older(
+    current: Option<DurableUtcTimestamp>,
+    candidate: DurableUtcTimestamp,
+) -> DurableUtcTimestamp {
+    match current {
+        Some(current) => current.min(candidate),
+        None => candidate,
     }
 }

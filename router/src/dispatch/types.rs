@@ -3,6 +3,7 @@
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
+    RuntimeAssemblyTaskRequestStartFrameHeader,
 };
 
 use crate::routing::DispatchMode;
@@ -92,63 +93,40 @@ impl RequestAuthority {
     }
 }
 
-/// Function task vs actor-method task (C-dispatch §5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskTargetKind {
-    Function,
-    ActorMethod,
-}
-
-/// `task.submit` entering the dispatcher (C-dispatch §5).
-///
-/// `authority` is captured by the caller from the task frame's routing plus
-/// the exact current connection; it must equal the parent pending's captured
-/// authority (exact parent authority, §5.1).
+/// One durable task attempt entering the ordinary request dispatcher
+/// (authoritative design "Runtime Admission And Settlement"): the attempt is
+/// a normal `request.start` frame whose header carries the
+/// `taskAttempt` association (taskId/attemptId/leaseId). The dispatcher
+/// treats it exactly like an ordinary unary admission (same pool, permit,
+/// revalidation and deadline machinery) and returns the terminal to the task
+/// control plane through the injected [`super::frame::TaskAttemptTerminalSink`].
 #[derive(Debug, Clone)]
-pub struct TaskSubmit {
-    pub task_request_id: String,
-    pub caller_request_id: String,
-    pub target_kind: TaskTargetKind,
-    pub target: String,
-    pub authority: RequestAuthority,
-    /// Derived deadline = min(parent remaining, default derived timeout).
-    /// Full remaining-time arithmetic is caller-owned; see `derived_deadline`.
-    pub deadline: Option<RequestDeadline>,
+pub struct TaskAttemptSubmit {
+    /// Fresh per-attempt transport frame (`request.start` with the task
+    /// invocation shape and `taskAttempt` populated). `request_id` is not
+    /// the task identity.
+    pub header: RuntimeAssemblyTaskRequestStartFrameHeader,
+    pub payload: Vec<u8>,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub lease_id: String,
 }
 
-/// Derived function-task accepted as a dispatcher-owned pending
-/// (C-dispatch §5.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DerivedTaskResult {
-    pub task_request_id: String,
-    pub parent_request_id: String,
-    pub session_epoch: RuntimeSessionEpoch,
-}
+impl TaskAttemptSubmit {
+    pub fn request_id(&self) -> &str {
+        &self.header.request_id
+    }
 
-/// Actor-method task forwarded to the actor lane (C-dispatch §5.1/§5.2).
-///
-/// The dispatcher does not hold actor invocation pending and therefore does
-/// not resolve the actor parent session; the actor lane owns that correlation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorMethodTaskDispatch {
-    pub task_request_id: String,
-    pub caller_request_id: String,
-    pub target: String,
-}
+    pub fn deadline(&self) -> Option<RequestDeadline> {
+        self.header.deadline.as_ref().map(RequestDeadline::from)
+    }
 
-/// Contract-shaped derived deadline (C-dispatch §5.2): the smaller
-/// `timeout_ms` of parent and default, preserving the parent's wire
-/// `expires_at`. Callers that already computed remaining time pass the result
-/// directly in [`TaskSubmit::deadline`].
-pub fn derived_deadline(
-    parent: Option<&RequestDeadline>,
-    default: &RequestDeadline,
-) -> RequestDeadline {
-    match parent {
-        Some(parent) => RequestDeadline {
-            timeout_ms: parent.timeout_ms.min(default.timeout_ms),
-            expires_at: parent.expires_at.clone(),
-        },
-        None => default.clone(),
+    pub fn authority(&self, session_epoch: &RuntimeSessionEpoch) -> RequestAuthority {
+        RequestAuthority {
+            assembly_identity: self.header.routing.assembly_identity.as_str().to_string(),
+            assembly_generation: self.header.routing.assembly_generation,
+            deployment: self.header.routing.deployment.clone(),
+            session_epoch: session_epoch.clone(),
+        }
     }
 }

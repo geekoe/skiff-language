@@ -7,7 +7,7 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::types::{ActorMethodTaskDispatch, DispatchSubmit, RequestDeadline, TaskSubmit};
+use super::types::{DispatchSubmit, RequestDeadline, TaskAttemptSubmit};
 
 /// Runtime-to-Router response/cancel frame already decoded and validated by
 /// the shared codec (C-model-request §2/§5). The dispatcher only enforces
@@ -70,10 +70,12 @@ pub trait RuntimePeer: Send + Sync + fmt::Debug {
         request_id: &str,
         reason: &str,
     ) -> Result<(), String>;
-    fn send_task_submit(
+    /// Task-attempt `request.start` (task invocation shape + `taskAttempt`
+    /// header). Same bounded-writer contract as `send_request_start`.
+    fn send_task_attempt_start(
         &self,
         session: &RuntimeSessionEpoch,
-        task: &TaskSubmit,
+        attempt: &TaskAttemptSubmit,
     ) -> Result<(), String>;
 }
 
@@ -85,14 +87,52 @@ pub trait SessionAbortControl: Send + Sync + fmt::Debug {
     fn abort_session(&self, session: &RuntimeSessionEpoch);
 }
 
-/// Actor lane parent registry (C-dispatch §5.1).
-///
-/// W-actor seam: the production implementation answers from
-/// `ActorMethodTaskControl.activeActorInvocationParent`; the dispatcher
-/// never holds actor invocation pending.
-pub trait ActorMethodTaskControl: Send + Sync + fmt::Debug {
-    fn is_active_invocation_parent(&self, caller_request_id: &str) -> bool;
-    fn submit_task(&self, task: ActorMethodTaskDispatch);
+/// Definite terminal of one task-attempt request, as proven by the ordinary
+/// request lifecycle. The task control plane maps these to
+/// `TaskStore.settle` or to lease-loss recovery (uncertain outcomes are
+/// neither settled nor released).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskAttemptTerminalOutcome {
+    /// `response.end` converged: the target returned normally.
+    Succeeded,
+    /// `response.error` / contract cancel / ordinary request timeout:
+    /// the attempt executed and failed.
+    Failed { message: String },
+    /// Disconnect, shutdown or protocol loss: the platform cannot prove the
+    /// outcome. No settlement; lease expiry drives recovery.
+    Uncertain { reason: String },
+}
+
+/// Settlement port consumed by the dispatcher for task-attempt terminals
+/// (authoritative design "Runtime Admission And Settlement"). The
+/// implementation is the task control plane; it owns settlement correlation
+/// and pending-attempt bookkeeping.
+pub trait TaskAttemptTerminalSink: Send + Sync + fmt::Debug {
+    fn on_terminal(
+        &self,
+        request_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        lease_id: &str,
+        outcome: TaskAttemptTerminalOutcome,
+    );
+}
+
+/// Default no-op sink used by dispatcher-only tests that do not exercise the
+/// task control plane.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopTaskAttemptTerminalSink;
+
+impl TaskAttemptTerminalSink for NoopTaskAttemptTerminalSink {
+    fn on_terminal(
+        &self,
+        _request_id: &str,
+        _task_id: &str,
+        _attempt_id: &str,
+        _lease_id: &str,
+        _outcome: TaskAttemptTerminalOutcome,
+    ) {
+    }
 }
 
 /// Deadline expiry check (C-dispatch §3 "发送前 deadline 重检").

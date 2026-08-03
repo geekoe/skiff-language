@@ -75,6 +75,12 @@ pub trait TaskStore: Send + Sync {
     /// return `expired`; terminal records never reopen.
     async fn status(&self, input: StatusInput) -> Result<TaskStatus, TaskStoreError>;
 
+    /// Read-only backlog projection for observability: non-terminal record
+    /// counts by state and the oldest `due_at` among scheduled / ready
+    /// records, at store authority time. Never mutates state and never
+    /// advances due visibility; duplicate scanners keep their own CAS.
+    async fn observe_backlog(&self) -> Result<BacklogObservation, TaskStoreError>;
+
     /// Create / verify storage indexes (no-op for in-memory stores).
     async fn ensure_indexes(&self) -> Result<(), TaskStoreError>;
 
@@ -141,6 +147,20 @@ pub struct ReleaseInput {
 pub struct StatusInput {
     pub task_id: TaskId,
     pub retention: DurableDuration,
+}
+
+/// One read-only backlog snapshot (authoritative design "Observability And
+/// Retention": backlog depth and oldest eligible age).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BacklogObservation {
+    /// Records still in `scheduled` (future or due but not yet advanced).
+    pub scheduled: usize,
+    /// Records in `ready` (due and claimable).
+    pub ready: usize,
+    /// Records in `leased` (an active attempt owns them).
+    pub leased: usize,
+    /// Oldest `due_at` across scheduled + ready records.
+    pub oldest_due_at: Option<DurableUtcTimestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

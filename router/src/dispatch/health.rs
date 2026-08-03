@@ -56,7 +56,8 @@ impl TerminalSource {
 pub struct PendingHealth {
     pub unary: u64,
     pub stream: u64,
-    pub derived_task: u64,
+    /// Durable task attempts executing as ordinary unary requests.
+    pub task_attempt: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -77,9 +78,8 @@ pub struct AdmissionHealth {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaskHealth {
-    pub derived_tasks: u64,
-    pub actor_lane_tasks: u64,
-    pub ambiguous_rejects: u64,
+    pub task_attempts_accepted: u64,
+    pub task_attempts_rejected: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
