@@ -14,9 +14,8 @@ use skiff_artifact_model::{
     RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
 use skiff_router::dispatch::{
-    CancelFrame, DispatchSubmit, PendingTerminal, RequestAuthority, RequestDispatcher,
-    RevalidateOutcome, RuntimeDispatcherOptions, RuntimeResponseFrame, SubmitResult,
-    TaskSubmit, TaskSubmitResult, TaskTargetKind,
+    CancelFrame, DispatchSubmit, PendingTerminal, RequestDispatcher, RevalidateOutcome,
+    RuntimeDispatcherOptions, RuntimeResponseFrame, SubmitResult,
 };
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -27,11 +26,11 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 
 use dispatch_harness::{
-    build_epoch, FakeActorMethodTaskControl, FakeCandidateViewSource, FakeEpochSource,
-    FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
+    build_epoch, FakeCandidateViewSource, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer,
+    FakeSessionAbort, SessionState,
 };
 
-const REQUIRED_SCENARIOS: [&str; 19] = [
+const REQUIRED_SCENARIOS: [&str; 16] = [
     "unary-completed-releases-permit",
     "unary-response-error-failed",
     "stream-start-chunk-end-completed",
@@ -48,9 +47,6 @@ const REQUIRED_SCENARIOS: [&str; 19] = [
     "runtime-disconnect-terminates-all-pending",
     "replacement-terminates-old-pending",
     "shutdown-terminates-all-pending",
-    "function-spawn-derived-pending",
-    "actor-method-spawn-actor-lane",
-    "spawn-ambiguous-parent-rejected",
 ];
 
 fn scenario_files() -> Vec<(&'static str, &'static str)> {
@@ -151,24 +147,6 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
                 "../../runtime/transport/testdata/dispatch-admission/scenarios/16-shutdown-terminates-all-pending.json"
             ),
         ),
-        (
-            "function-spawn-derived-pending",
-            include_str!(
-                "../../runtime/transport/testdata/dispatch-admission/scenarios/17-function-spawn-derived-pending.json"
-            ),
-        ),
-        (
-            "actor-method-spawn-actor-lane",
-            include_str!(
-                "../../runtime/transport/testdata/dispatch-admission/scenarios/18-actor-method-spawn-actor-lane.json"
-            ),
-        ),
-        (
-            "spawn-ambiguous-parent-rejected",
-            include_str!(
-                "../../runtime/transport/testdata/dispatch-admission/scenarios/19-spawn-ambiguous-parent-rejected.json"
-            ),
-        ),
     ]
 }
 
@@ -212,6 +190,13 @@ struct Session {
     capabilities: Vec<String>,
 }
 
+/// Frozen corpus parent facts (reference-machine shape; D2 keeps parsing the
+/// shared testdata but no longer resolves task parents in the dispatcher).
+#[derive(Debug, Clone, Deserialize)]
+struct ActorParent {
+    session: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Deployment {
@@ -235,12 +220,6 @@ struct Epoch {
     #[serde(rename = "configSnapshotId")]
     config_snapshot_id: String,
     deployment: Deployment,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ActorParent {
-    session: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -303,21 +282,6 @@ enum Event {
         new_session: String,
     },
     Shutdown,
-    #[serde(rename = "spawnFunction")]
-    SpawnFunction {
-        #[serde(rename = "requestId")]
-        request_id: String,
-        #[serde(rename = "parentRequestId")]
-        parent_request_id: String,
-        target: Option<String>,
-    },
-    #[serde(rename = "spawnActorMethod")]
-    SpawnActorMethod {
-        #[serde(rename = "requestId")]
-        request_id: String,
-        #[serde(rename = "parentRequestId")]
-        parent_request_id: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -344,9 +308,13 @@ struct Expect {
     #[serde(rename = "permitsHeld")]
     permits_held: usize,
     releases: u64,
+    // Frozen reference-machine counters kept for shared-testdata parsing;
+    // D2 removed the volatile task path, so they are no longer asserted.
     #[serde(rename = "actorLaneSpawns")]
+    #[allow(dead_code)]
     actor_lane_spawns: u64,
     #[serde(rename = "derivedSpawns")]
+    #[allow(dead_code)]
     derived_spawns: u64,
     #[serde(rename = "failStop")]
     fail_stop: bool,
@@ -428,12 +396,6 @@ impl Harness {
             .collect();
         let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
-        let abort = FakeSessionAbort::new();
-        let actor_control = FakeActorMethodTaskControl::new();
-        {
-            let mut record = actor_control.record.lock().unwrap();
-            record.parents = scenario.actor_invocation_parents.keys().cloned().collect();
-        }
         for parent in scenario.actor_invocation_parents.values() {
             assert!(
                 session_epochs.contains_key(&parent.session),
@@ -441,6 +403,7 @@ impl Harness {
                 parent.session
             );
         }
+        let abort = FakeSessionAbort::new();
         let revalidate = FakeLeaseRevalidate::new();
         let options = RuntimeDispatcherOptions::new(
             scenario.max_concurrency,
@@ -449,7 +412,6 @@ impl Harness {
             Arc::new(revalidate.clone()),
             Arc::new(peer.clone()),
             Arc::new(abort.clone()),
-            Arc::new(actor_control.clone()),
         )
         .expect("options");
         let dispatcher = RequestDispatcher::new(options).expect("dispatcher");
@@ -603,69 +565,6 @@ impl Harness {
         }
     }
 
-    fn authority_for(&self, session_id: &str) -> RequestAuthority {
-        let epoch = &self.scenario.epoch;
-        RequestAuthority {
-            assembly_identity: epoch.assembly_identity.clone(),
-            assembly_generation: epoch.generation,
-            deployment: scenario_deployment_ref(epoch),
-            session_epoch: self.session(session_id),
-        }
-    }
-
-    fn spawn_function(&mut self, request_id: &str, parent_request_id: &str, target: &str) {
-        let parent_session = self.session_of(parent_request_id);
-        let parent_session_id = self
-            .session_ids
-            .get(&parent_session)
-            .expect("parent session")
-            .clone();
-        let task = TaskSubmit {
-            task_request_id: request_id.to_string(),
-            caller_request_id: parent_request_id.to_string(),
-            target_kind: TaskTargetKind::Function,
-            target: target.to_string(),
-            authority: self.authority_for(&parent_session_id),
-            deadline: None,
-        };
-        match self.dispatcher.task_submit(task) {
-            TaskSubmitResult::AcceptedDerived(result) => {
-                let session_id = self
-                    .session_ids
-                    .get(&result.session_epoch)
-                    .expect("derived session")
-                    .clone();
-                self.session_bindings
-                    .insert(result.task_request_id.clone(), session_id);
-            }
-            TaskSubmitResult::ForwardedActorMethod(_) => {
-                panic!("function spawn must not forward to the actor lane")
-            }
-            TaskSubmitResult::Rejected { request_id, reason } => {
-                self.record_rejected(&request_id, reason.as_str());
-            }
-        }
-    }
-
-    fn spawn_actor_method(&mut self, request_id: &str, parent_request_id: &str) {
-        let task = TaskSubmit {
-            task_request_id: request_id.to_string(),
-            caller_request_id: parent_request_id.to_string(),
-            target_kind: TaskTargetKind::ActorMethod,
-            target: String::new(),
-            authority: self.authority_for(&self.scenario.sessions[0].id),
-            deadline: None,
-        };
-        match self.dispatcher.task_submit(task) {
-            TaskSubmitResult::ForwardedActorMethod(_) => {}
-            TaskSubmitResult::AcceptedDerived(_) => {
-                panic!("actor-method spawn must not enter dispatcher pending")
-            }
-            TaskSubmitResult::Rejected { request_id, reason } => {
-                self.record_rejected(&request_id, reason.as_str());
-            }
-        }
-    }
 }
 
 impl Harness {
@@ -815,25 +714,6 @@ mod tests {
                             harness.record_terminal(terminal);
                         }
                     }
-                    Event::SpawnFunction {
-                        request_id,
-                        parent_request_id,
-                        target,
-                    } => {
-                        assert!(
-                            target.as_ref().is_some_and(|target| !target.is_empty()),
-                            "{name} spawnFunction requires a target"
-                        );
-                        harness.spawn_function(
-                            request_id,
-                            parent_request_id,
-                            target.as_deref().expect("target"),
-                        );
-                    }
-                    Event::SpawnActorMethod {
-                        request_id,
-                        parent_request_id,
-                    } => harness.spawn_actor_method(request_id, parent_request_id),
                 }
             }
 
@@ -871,14 +751,6 @@ mod tests {
             assert_eq!(
                 health.admission.releases, scenario.expect.releases,
                 "{name} releases"
-            );
-            assert_eq!(
-                health.task.derived_tasks, scenario.expect.derived_spawns,
-                "{name} derived spawns"
-            );
-            assert_eq!(
-                health.task.actor_lane_tasks, scenario.expect.actor_lane_spawns,
-                "{name} actor lane spawns"
             );
             assert!(!scenario.expect.fail_stop, "{name} failStop");
             assert!(

@@ -69,7 +69,7 @@ pub use task::{
     TaskCallerKind, TaskCancelRequestFrameHeader, TaskCancelResponseFrameHeader,
     TaskCancelResultKindWire, TaskCancelResultWire, TaskRef, TaskStatusKindWire,
     TaskStatusRequestFrameHeader, TaskStatusResponseFrameHeader, TaskStatusWire,
-    TaskSubmitAcceptance, TaskSubmitRejectionCode, TaskSubmitRequestFrame,
+    TaskSubmitRejectionCode, TaskSubmitRequestFrame,
     TaskSubmitRequestFrameHeader, TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader,
     TaskSubmitTiming, TaskTargetKind, TASK_CALLER_KIND_ACTOR_INVOCATION, TASK_CALLER_KIND_REQUEST,
     TASK_CANCEL_REQUEST_FRAME_TYPE, TASK_CANCEL_RESPONSE_FRAME_TYPE,

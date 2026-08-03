@@ -3,8 +3,6 @@
 //! Health never exposes payload bytes, actor key bytes, Mongo URLs or
 //! secrets; it only carries occupancy/counter projections.
 
-use std::collections::BTreeMap;
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CatalogHealth {
     pub captures: u64,
@@ -78,17 +76,6 @@ pub struct LeaseHealth {
     pub eviction_exhausted: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TaskHealth {
-    pub capacity_in_use: usize,
-    pub accepted: u64,
-    pub rejected: u64,
-    pub legacy_rejected: u64,
-    pub request_accepted: u64,
-    pub actor_invocation_accepted: u64,
-    pub by_error: BTreeMap<String, u64>,
-}
-
 /// Combined health projection of the W-actor lane.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ActorHealthSnapshot {
@@ -98,5 +85,4 @@ pub struct ActorHealthSnapshot {
     pub invocation: InvocationHealth,
     pub control: ControlHealth,
     pub lease: LeaseHealth,
-    pub task: TaskHealth,
 }

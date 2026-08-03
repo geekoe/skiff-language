@@ -8,9 +8,9 @@ use skiff_task_control::model::{
     TaskState, TaskStatusKind, TaskTerminal,
 };
 use skiff_task_control::store::{
-    CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection, SettleInput, SettleOutcome,
-    StatusInput, TaskStore,
+    BacklogObservation, CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput,
+    LeaseRecoveryInput, LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection,
+    SettleInput, SettleOutcome, StatusInput, TaskStore,
 };
 
 use super::{fixtures, TestTime};
@@ -32,6 +32,7 @@ pub async fn run_contract(store: &dyn TaskStore, time: &TestTime) {
     state_machine_illegal_transitions(store, time).await;
     permanent_error_classification(store, time).await;
     status_retention(store, time).await;
+    backlog_observation(store, time).await;
 }
 
 fn task_id(seed: u64) -> TaskId {
@@ -906,6 +907,84 @@ async fn status_retention(store: &dyn TaskStore, time: &TestTime) {
             .expect("missing cancel")
             .kind,
         TaskCancelResultKind::Expired
+    );
+}
+
+async fn backlog_observation(store: &dyn TaskStore, time: &TestTime) {
+    let baseline = store
+        .observe_backlog()
+        .await
+        .expect("observe backlog baseline");
+    let future = fixtures::record(701, time.now_millis() + FUTURE_MILLIS);
+    store.create(future.clone()).await.expect("create future task");
+    let mut due = fixtures::record(702, time.now_millis() - PAST_MILLIS);
+    due.created_at = DurableUtcTimestamp::from_millis(time.now_millis() - 1_000);
+    store.create(due.clone()).await.expect("create due task");
+
+    let before = store
+        .observe_backlog()
+        .await
+        .expect("observe backlog before scan");
+    assert!(
+        before.scheduled >= baseline.scheduled + 2,
+        "both new records are scheduled before the scan"
+    );
+    assert_eq!(before.ready, baseline.ready);
+    assert_eq!(before.leased, baseline.leased);
+    assert!(
+        before
+            .oldest_due_at
+            .is_some_and(|oldest| oldest <= due.due_at),
+        "oldest due must not be later than the new due record"
+    );
+
+    let due_records = store
+        .scan_due(DueScanInput { limit: 100 })
+        .await
+        .expect("scan due");
+    assert!(due_records.iter().any(|record| record.task_id == due.task_id));
+    let scanned = store
+        .observe_backlog()
+        .await
+        .expect("observe backlog after scan");
+    assert_eq!(
+        scanned.scheduled + scanned.ready + scanned.leased,
+        baseline.scheduled + baseline.ready + baseline.leased + 2,
+        "the scan moves records but never creates or drops them"
+    );
+    assert_eq!(scanned.leased, baseline.leased);
+    assert!(
+        scanned
+            .oldest_due_at
+            .is_some_and(|oldest| oldest <= due.due_at),
+        "the due record is still scheduled/ready, so it bounds the oldest"
+    );
+
+    let lease_expiry = DurableUtcTimestamp::from_millis(time.now_millis() + LONG_LEASE_MILLIS);
+    let claim = store
+        .claim(ClaimInput {
+            task_id: due.task_id.clone(),
+            owner: "scheduler-backlog".to_string(),
+            lease_expiry,
+            image_activatable: true,
+        })
+        .await
+        .expect("claim due task");
+    assert!(matches!(claim, ClaimOutcome::Claimed(_)));
+    let leased = store
+        .observe_backlog()
+        .await
+        .expect("observe backlog after claim");
+    assert_eq!(leased.leased, baseline.leased + 1);
+    assert_eq!(
+        leased.scheduled + leased.ready + leased.leased,
+        baseline.scheduled + baseline.ready + baseline.leased + 2
+    );
+    assert!(
+        leased
+            .oldest_due_at
+            .is_some_and(|oldest| oldest <= future.due_at),
+        "the future record is still scheduled, so it bounds the oldest"
     );
 }
 

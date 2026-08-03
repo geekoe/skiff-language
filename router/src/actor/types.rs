@@ -22,10 +22,6 @@ pub const DEFAULT_CONTROL_ACK_DEADLINE_MS: u64 = 10_000;
 pub const DEFAULT_OWNER_LEASE_TTL_MS: u64 = 30_000;
 /// Default idle TTL (C-actor §8): 30s.
 pub const DEFAULT_IDLE_TTL_MS: u64 = 30_000;
-/// Spawned actor method deadline (frozen TS constant): 300s.
-pub const TASK_ACTOR_METHOD_DEADLINE_MS: u64 = 300_000;
-/// Spawned actor method lease extension (frozen TS constant): 330s.
-pub const TASK_ACTOR_METHOD_LEASE_MS: u64 = 330_000;
 /// Default activation claim / control pending budget (C-actor §4).
 pub const DEFAULT_ACTOR_PENDING_BUDGET: usize = 4096;
 /// Default late/settled tombstone budget (C-actor §4).

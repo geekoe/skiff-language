@@ -3,7 +3,6 @@
 //! and the A3 catalog captured into the routing epoch view.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -21,15 +20,10 @@ use crate::actor::ActorLogicalKey;
 use crate::actor::{
     ActivateInitialControlRequest, ActivationControlPort, ActorActivationBrokerOptions,
     ActorActivationRequestBroker, ActorInvocationRelay, ActorInvocationRelayOptions,
-    ActorLaneTaskControl, ActorLeaseExpiryScheduler, ActorMethodCatalogView,
-    ActorMethodTaskExecutionSink, ActorOwnerControlBroker, ActorOwnershipRegistry,
-    ActorTaskParentResolver, ControlBrokerOptions, FunctionTaskParentResolver,
-    IdleEvictControlPort, LeaseSchedulerOptions, RelayTaskParentLookup, TaskParentLookup,
-    TaskParentSnapshot, TaskSubmitAcceptance, TaskSubmitRouter, TaskWireStore,
-    DEFAULT_ACTOR_PENDING_BUDGET,
+    ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorOwnerControlBroker,
+    ActorOwnershipRegistry, ControlBrokerOptions, IdleEvictControlPort, LeaseSchedulerOptions,
 };
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
-use crate::dispatch::RequestDispatcher;
 use crate::session::consumer::{ConsumerKind, SessionConsumer};
 use crate::session::identity::RuntimeSessionEpoch;
 
@@ -45,96 +39,9 @@ pub struct ActorComponents {
     pub control_broker: Arc<ActorOwnerControlBroker>,
     pub lease_scheduler: Arc<ActorLeaseExpiryScheduler>,
     pub catalog_view: Arc<ActorMethodCatalogView>,
-    pub task_router: Arc<TaskSubmitRouter>,
-    pub execution_sink: Arc<DeferredActorMethodTaskExecutionSink>,
-    pub actor_lane_task_control: Arc<ActorLaneTaskControl>,
-    /// Raw wire correlation for accepted actor-method tasks
-    /// (E-actor-rust; M-task-repair `TaskSubmitAcceptance` data surface).
-    pub task_wire_store: Arc<TaskWireStore>,
     /// `eviction_request_id -> actor key` registered by the idle-evict port
     /// and consumed by the actor frame sink on the ACK.
     pub idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
-    /// Deferred dispatcher reference (assembled after the actor lane; the
-    /// function-task parent lookup answers through it).
-    pub deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
-}
-
-/// Execution sink installed before the `ActorFrameSink` exists. The
-/// composition sets the real sink once the session/actor sink is assembled;
-/// accepts before then fail closed (no silently dropped task).
-#[derive(Debug, Default)]
-pub struct DeferredActorMethodTaskExecutionSink {
-    inner: Mutex<Option<Arc<dyn ActorMethodTaskExecutionSink>>>,
-    uninstalled_accepts: AtomicU64,
-}
-
-impl DeferredActorMethodTaskExecutionSink {
-    pub fn set(&self, sink: Arc<dyn ActorMethodTaskExecutionSink>) {
-        *self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
-    }
-
-    pub fn uninstalled_accepts(&self) -> u64 {
-        self.uninstalled_accepts.load(Ordering::Relaxed)
-    }
-}
-
-impl ActorMethodTaskExecutionSink for DeferredActorMethodTaskExecutionSink {
-    fn on_accept(&self, acceptance: &TaskSubmitAcceptance) {
-        match self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-        {
-            Some(sink) => sink.on_accept(acceptance),
-            None => {
-                self.uninstalled_accepts.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-}
-
-/// `callerKind=request` parent lookup backed by the `RequestDispatcher`
-/// pending (C-dispatch §5.1). The dispatcher owns request pending truth; this
-/// adapter only reads its public fenced snapshot ports.
-#[derive(Debug, Clone)]
-pub struct DispatcherTaskParentLookup {
-    dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
-}
-
-impl DispatcherTaskParentLookup {
-    pub fn new(dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>) -> Self {
-        Self { dispatcher }
-    }
-}
-
-impl TaskParentLookup for DispatcherTaskParentLookup {
-    fn find_parent(&self, caller_request_id: &str) -> Option<TaskParentSnapshot> {
-        let dispatcher = self
-            .dispatcher
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()?;
-        let (epoch, session) = match dispatcher.task_parent_facts(caller_request_id) {
-            Some(facts) => facts,
-            None => {
-                let epoch = dispatcher.pending_epoch(caller_request_id)?;
-                let lease = dispatcher.pending_lease(caller_request_id)?;
-                (epoch, lease.session_epoch)
-            }
-        };
-        Some(TaskParentSnapshot {
-            runtime_id: session.replica_id.clone(),
-            connection: format!("{}#{}", session.replica_id, session.connection_generation),
-            assembly_generation: epoch.assembly_generation(),
-            test_case_capability: None,
-            active: true,
-            replaced: false,
-        })
-    }
 }
 
 /// Assembles the actor lane against one captured routing epoch and the
@@ -150,12 +57,8 @@ pub fn assemble_actor_components(
     ));
     let control_broker = Arc::new(ActorOwnerControlBroker::new(ControlBrokerOptions::default()));
     let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch_store)));
-    let task_wire_store = Arc::new(TaskWireStore::new());
     let idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
-        Arc::new(Mutex::new(None));
-    let execution_sink = Arc::new(DeferredActorMethodTaskExecutionSink::default());
     let lease_scheduler = Arc::new(ActorLeaseExpiryScheduler::new(
         Arc::clone(&registry),
         Arc::new(ActorIdleEvictControlPort::with_idle_evictions(
@@ -164,20 +67,6 @@ pub fn assemble_actor_components(
             Arc::clone(&idle_evictions),
         )),
         LeaseSchedulerOptions::default(),
-    ));
-    let task_router = Arc::new(TaskSubmitRouter::new(
-        Arc::new(FunctionTaskParentResolver::new(Arc::new(
-            DispatcherTaskParentLookup::new(Arc::clone(&deferred_dispatcher)),
-        ))),
-        Arc::new(ActorTaskParentResolver::new(Arc::new(
-            RelayTaskParentLookup::new(Arc::clone(&relay)),
-        ))),
-        DEFAULT_ACTOR_PENDING_BUDGET,
-    )?);
-    let actor_lane_task_control = Arc::new(ActorLaneTaskControl::new(
-        Arc::clone(&relay),
-        Arc::clone(&task_router),
-        Arc::clone(&execution_sink) as Arc<dyn ActorMethodTaskExecutionSink>,
     ));
     let activation_broker = Arc::new(ActorActivationRequestBroker::new(
         Arc::clone(&registry),
@@ -194,12 +83,7 @@ pub fn assemble_actor_components(
         control_broker,
         lease_scheduler,
         catalog_view,
-        task_router,
-        execution_sink,
-        actor_lane_task_control,
-        task_wire_store,
         idle_evictions,
-        deferred_dispatcher,
     }))
 }
 

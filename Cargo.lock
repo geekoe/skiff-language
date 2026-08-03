@@ -2416,6 +2416,7 @@ dependencies = [
  "skiff-runtime-config-snapshot",
  "skiff-runtime-request-contract",
  "skiff-runtime-transport",
+ "skiff-task-control",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

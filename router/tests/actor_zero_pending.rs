@@ -94,7 +94,6 @@ fn assert_all_zero(health: &ActorHealthSnapshot) {
     assert_eq!(health.control.pending, 0, "control pending");
     assert_eq!(health.control.tombstones, 0, "control tombstones");
     assert_eq!(health.lease.eviction_pending, 0, "lease eviction pending");
-    assert_eq!(health.task.capacity_in_use, 0, "task capacity");
 }
 
 #[cfg(test)]
@@ -240,7 +239,6 @@ mod tests {
             invocation: relay.health(),
             control: control_broker.health(),
             lease: scheduler.health(),
-            task: Default::default(),
         };
         assert_all_zero(&health);
     }

@@ -20,8 +20,8 @@ use skiff_router::supervisor::http::{HttpDispatchEvent, PendingHttpRouter};
 use skiff_router::supervisor::session_ports::{DispatcherSessionConsumer, PendingHttpHandle};
 
 use dispatch_harness::{
-    corpus_epoch, request, session_state, FakeActorMethodTaskControl, FakeCandidateViewSource,
-    FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort,
+    corpus_epoch, request, session_state, FakeCandidateViewSource, FakeEpochSource,
+    FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort,
 };
 
 struct Rig {
@@ -44,7 +44,6 @@ impl Rig {
             Arc::new(FakeLeaseRevalidate::new()),
             Arc::new(FakeRuntimePeer::new()),
             Arc::new(FakeSessionAbort::new()),
-            Arc::new(FakeActorMethodTaskControl::new()),
         )
         .expect("dispatcher options");
         let dispatcher = Arc::new(RequestDispatcher::new(options).expect("dispatcher"));

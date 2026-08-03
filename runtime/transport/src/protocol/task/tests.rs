@@ -198,40 +198,34 @@ fn task_frame_direction_table_is_frozen_per_frame() {
 }
 
 #[test]
-fn task_submit_acceptance_carries_raw_wire_request_and_response_projection() {
+fn task_submit_response_projection_round_trips() {
     let mut header = canonical_request(
         TaskCallerKind::ActorInvocation,
         TaskTargetKind::ActorMethod,
     );
     header.actor_method = Some(actor_method_metadata());
-    let request = TaskSubmitRequestFrame {
-        header: header.clone(),
-        payload: b"\x01\x02".to_vec(),
-    };
-    let acceptance = TaskSubmitAcceptance {
-        request,
-        task_id: "task-1".to_string(),
-        request_id: "req:task-1".to_string(),
-    };
-
-    // The acceptance boundary preserves the raw wire header + args bytes so
-    // the execution sink can reconstruct the outbound request without
-    // re-parsing (C-model-task §7.2).
     let reconstructed =
-        encode_task_submit_request_frame(&acceptance.request.header, &acceptance.request.payload)
-            .expect("accepted request must re-encode");
+        encode_task_submit_request_frame(&header, b"\x01\x02").expect("request must re-encode");
     assert_eq!(
         decode_task_submit_request_frame(&reconstructed).expect("must decode"),
         (header, b"\x01\x02".to_vec())
     );
 
-    let response = acceptance.response_header();
+    let response = TaskSubmitResponseFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: TASK_SUBMIT_RESPONSE_FRAME_TYPE.to_string(),
+        rpc_id: "rpc:task-1".to_string(),
+        task_ref: TaskRef::new("task-1", "svc-1").expect("taskRef"),
+        task_id: "task-1".to_string(),
+        request_id: "task-1".to_string(),
+        status: TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED.to_string(),
+    };
     assert_eq!(response.rpc_id, "rpc:task-1");
     assert_eq!(response.task_id, "task-1");
-    assert_eq!(response.request_id, "req:task-1");
+    assert_eq!(response.request_id, "task-1");
     assert_eq!(response.status, TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED);
     let response_bytes = encode_task_submit_response_frame(&response)
-        .expect("acceptance response projection must encode");
+        .expect("response projection must encode");
     assert_eq!(
         decode_task_submit_response_frame(&response_bytes).expect("must decode"),
         response
@@ -411,6 +405,7 @@ fn rejection_code_projection_and_transient_classification() {
         (TaskSubmitRejectionCode::QuotaExceeded, "quotaExceeded"),
         (TaskSubmitRejectionCode::StoreUnavailable, "storeUnavailable"),
         (TaskSubmitRejectionCode::Rejected, "rejected"),
+        (TaskSubmitRejectionCode::UnsupportedTarget, "unsupportedTarget"),
     ] {
         assert_eq!(code.as_str(), expected);
         assert_eq!(TaskSubmitRejectionCode::parse(expected), Some(code));
@@ -419,6 +414,16 @@ fn rejection_code_projection_and_transient_classification() {
     assert_eq!(TaskSubmitRejectionCode::parse("ParentNotFound"), None);
     assert!(TaskSubmitRejectionCode::StoreUnavailable.is_transient());
     assert!(!TaskSubmitRejectionCode::StoreUnavailable.is_definite());
+    for definite in [
+        TaskSubmitRejectionCode::InvalidTiming,
+        TaskSubmitRejectionCode::PayloadInvalid,
+        TaskSubmitRejectionCode::QuotaExceeded,
+        TaskSubmitRejectionCode::Rejected,
+        TaskSubmitRejectionCode::UnsupportedTarget,
+    ] {
+        assert!(definite.is_definite());
+        assert!(!definite.is_transient());
+    }
 }
 
 #[test]

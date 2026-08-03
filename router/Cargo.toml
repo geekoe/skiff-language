@@ -19,6 +19,7 @@ skiff-deployment = { path = "../deployment" }
 skiff-runtime-config-snapshot = { path = "../runtime-config-snapshot" }
 skiff-runtime-request-contract = { path = "../runtime/request-contract" }
 skiff-runtime-transport = { path = "../runtime/transport" }
+skiff-task-control = { path = "../task-control" }
 
 # Final listener mechanism (C-net) and strict YAML parsing (C-config): production
 # dependencies consumed by the Router binary. Every version is already pinned in

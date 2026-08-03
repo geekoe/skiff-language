@@ -404,7 +404,7 @@ mod tests {
                 now: 0,
             })
             .expect("invoke admitted");
-        assert!(relay.is_active_parent(&owner_invoke.invoke.invocation_id));
+        assert_eq!(relay.health().pending, 1);
 
         let return_bytes = hex_bytes(&catalog.frames["actor.method.return"].frame_hex);
         let return_frame =
@@ -425,7 +425,6 @@ mod tests {
         assert_eq!(health.pending, 0);
         assert_eq!(health.settled, 1);
         assert_eq!(health.tombstones, 1);
-        assert!(!relay.is_active_parent("inv:1"));
         let duplicate = relay.on_owner_settle(
             &return_header.invocation_id,
             &fence,

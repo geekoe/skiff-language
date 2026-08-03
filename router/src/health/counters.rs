@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::activation::{ActivationCoordinatorHealth, ActivationRepositoryHealth, DecisionState};
 use crate::actor::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, TaskHealth as ActorTaskHealth,
+    LeaseHealth, OwnershipHealth,
 };
 use crate::bootstrap::{BlockingLoaderHealth, ReaderFailClosedCounters};
 use crate::dispatch::DispatcherHealthSnapshot;
@@ -42,7 +42,7 @@ pub struct HealthCounters {
     pub http: HttpCounters,
     pub mailboxes: MailboxCounters,
     pub writer_queues: WriterQueueCounters,
-    pub tasks: SpawnedTaskCounters,
+    pub tasks: DurableTaskCounters,
     pub shutdown: ShutdownResidueCounters,
 }
 
@@ -154,7 +154,7 @@ pub struct AdmissionCounters {
 pub struct RequestPendingCounters {
     pub unary: u64,
     pub stream: u64,
-    pub derived_task: u64,
+    pub task_attempt: u64,
     pub http_pending: usize,
     pub http_overflow_terminals: u64,
     pub stopped: bool,
@@ -215,7 +215,6 @@ pub struct ActorCounters {
     pub invocation: InvocationHealthDto,
     pub control: ControlHealthDto,
     pub lease: LeaseHealthDto,
-    pub task: ActorTaskHealthDto,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -295,18 +294,6 @@ pub struct LeaseHealthDto {
     pub eviction_acked: u64,
     pub eviction_retries: u64,
     pub eviction_exhausted: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActorTaskHealthDto {
-    pub capacity_in_use: usize,
-    pub accepted: u64,
-    pub rejected: u64,
-    pub legacy_rejected: u64,
-    pub request_accepted: u64,
-    pub actor_invocation_accepted: u64,
-    pub by_error: BTreeMap<String, u64>,
 }
 
 /// `counters.activation` (owners: coordinator + repository).
@@ -418,14 +405,37 @@ pub struct WriterQueueCounters {
     pub ws_observed_write_bytes_total: u64,
 }
 
-/// `counters.tasks` (session tasks + actor task capacity).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `counters.tasks`: session tasks + durable task control plane projection
+/// (authoritative design "Observability And Retention": leased count, backlog
+/// depth, oldest eligible age, submission/status/cancel/settlement counters).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpawnedTaskCounters {
+pub struct DurableTaskCounters {
     pub live_session_tasks: usize,
-    pub actor_task_capacity_in_use: usize,
-    pub actor_task_accepted: u64,
-    pub actor_task_rejected: u64,
+    pub renewing_attempts: usize,
+    pub pending_attempts: usize,
+    pub backlog_scheduled: usize,
+    pub backlog_ready: usize,
+    pub backlog_leased: usize,
+    pub oldest_due_at_ms: Option<i64>,
+    pub submissions_accepted: u64,
+    pub submissions_rejected: u64,
+    pub submissions_transient: u64,
+    pub status_queries: u64,
+    pub status_expired: u64,
+    pub status_unavailable: u64,
+    pub cancel_canceled: u64,
+    pub cancel_already_started: u64,
+    pub cancel_already_terminal: u64,
+    pub cancel_expired: u64,
+    pub cancel_unavailable: u64,
+    pub settlements_succeeded: u64,
+    pub settlements_failed: u64,
+    pub settlements_uncertain: u64,
+    pub admissions_accepted: u64,
+    pub admissions_rejected: u64,
+    pub admissions_uncertain: u64,
+    pub admissions_permanent_failure: u64,
 }
 
 /// `counters.shutdown` (shutdown residue across owners).
@@ -514,7 +524,7 @@ impl From<&DispatcherHealthSnapshot> for RequestPendingCounters {
         Self {
             unary: health.pending.unary,
             stream: health.pending.stream,
-            derived_task: health.pending.derived_task,
+            task_attempt: health.pending.task_attempt,
             http_pending: 0,
             http_overflow_terminals: 0,
             stopped: health.stopped,
@@ -585,7 +595,6 @@ impl From<&ActorHealthSnapshot> for ActorCounters {
             invocation: InvocationHealthDto::from(&health.invocation),
             control: ControlHealthDto::from(&health.control),
             lease: LeaseHealthDto::from(&health.lease),
-            task: ActorTaskHealthDto::from(&health.task),
         }
     }
 }
@@ -677,20 +686,6 @@ impl From<&LeaseHealth> for LeaseHealthDto {
             eviction_acked: health.eviction_acked,
             eviction_retries: health.eviction_retries,
             eviction_exhausted: health.eviction_exhausted,
-        }
-    }
-}
-
-impl From<&ActorTaskHealth> for ActorTaskHealthDto {
-    fn from(health: &ActorTaskHealth) -> Self {
-        Self {
-            capacity_in_use: health.capacity_in_use,
-            accepted: health.accepted,
-            rejected: health.rejected,
-            legacy_rejected: health.legacy_rejected,
-            request_accepted: health.request_accepted,
-            actor_invocation_accepted: health.actor_invocation_accepted,
-            by_error: health.by_error.clone(),
         }
     }
 }

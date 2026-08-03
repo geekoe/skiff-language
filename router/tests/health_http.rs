@@ -37,7 +37,7 @@ mod tests {
             ("admission", "permitsHeld"),
             ("requestPending", "unary"),
             ("requestPending", "stream"),
-            ("requestPending", "derivedTask"),
+            ("requestPending", "taskAttempt"),
             ("requestPending", "httpPending"),
             ("clientConnections", "connectionCount"),
             ("clientConnections", "finalizerPending"),
@@ -54,12 +54,13 @@ mod tests {
             ("actor", "invocation.pending"),
             ("actor", "control.pending"),
             ("actor", "lease.evictionPending"),
-            ("actor", "task.capacityInUse"),
             ("activation", "participantBindings"),
             ("mailboxes", "coordinator.occupancy"),
             ("writerQueues", "wsSlowClientCount"),
             ("tasks", "liveSessionTasks"),
-            ("tasks", "actorTaskCapacityInUse"),
+            ("tasks", "renewingAttempts"),
+            ("tasks", "pendingAttempts"),
+            ("tasks", "backlogReady"),
         ] {
             let mut current = counters;
             for part in format!("{section}.{field}").split('.') {

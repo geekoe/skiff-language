@@ -14,8 +14,12 @@ pub mod session_ports;
 pub mod sinks;
 pub mod ws;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use skiff_task_control::scheduler::{RetryBackoffPolicy, Scheduler, SchedulerConfig};
+use skiff_task_control::store::TaskStore;
+use skiff_task_control::{MemoryTaskStore, MongoTaskStore, MongoTaskStoreOptions};
 
 use crate::activation::{
     ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorOptions,
@@ -24,12 +28,11 @@ use crate::activation::{
     MongoActivationStateRepositoryOptions, NoopHealthSink, RoutingCandidateQueryPortAdapter,
     SystemClock,
 };
-use crate::actor::ActorMethodTaskExecutionSink;
 use crate::bootstrap::{
     ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
 };
 use crate::config::RouterConfig;
-use crate::dispatch::{ActorMethodTaskControl, RequestDispatcher, RuntimeDispatcherOptions};
+use crate::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use crate::health::HealthAggregator;
 use crate::http::dispatch::HttpDispatchPort;
 use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
@@ -54,7 +57,7 @@ use crate::ws::{
 };
 
 use self::actor::{assemble_actor_components, ActorComponents, ActorSessionOwnerConsumer};
-use self::actor_sink::{ActorFrameSink, ActorTaskFrameSink};
+use self::actor_sink::ActorFrameSink;
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
@@ -67,6 +70,11 @@ use self::ws::{
     load_ws_surface_view, LayerWsSessionWriter, ProductionWsConnectSelector, WsConnectSelector,
     WsDispatchStore, WsGatewaySurfaceView, WsInboundDispatch, WsLaneHandle, WsLaneSessionConsumer,
     WsMethodCatalog, WsPendingAdmissionSender, WsSessionWriter,
+};
+
+use crate::task::{
+    DurableTaskControl, DurableTaskFrameSink, EpochTaskExecutionImageSource,
+    RouterTaskAttemptAdmission, TaskControlCounters,
 };
 
 /// Fail-closed supervisor assembly errors; no listener is started and owned
@@ -83,6 +91,8 @@ pub enum SupervisorError {
     Surface(String),
     #[error("actor assembly failed: {0}")]
     Actor(String),
+    #[error("task store assembly failed: {0}")]
+    TaskStore(String),
     #[error("dispatcher assembly failed: {0}")]
     Dispatcher(String),
     #[error("session layer assembly failed: {0}")]
@@ -93,7 +103,6 @@ pub enum SupervisorError {
 
 /// Stable component manifest (plan §3.2/§5.5). Holds every production owner
 /// and the port adapters that wire them together.
-#[derive(Debug)]
 pub struct RouterComponents {
     pub config: RouterConfig,
     pub assembly: Arc<RouterBootstrapAssembly>,
@@ -114,6 +123,38 @@ pub struct RouterComponents {
     pub ws_store: Arc<WsDispatchStore>,
     pub ws_selector: Arc<dyn WsConnectSelector>,
     pub client_ws: Arc<ClientWsContext>,
+    pub task_control: Arc<DurableTaskControl>,
+    /// Scheduler replica handle (lease bookkeeping + wake fast path).
+    pub scheduler: Arc<Scheduler>,
+    /// TaskStore handle (close on supervisor shutdown).
+    pub task_store: Arc<dyn TaskStore>,
+    /// Task worker joins; aborted on supervisor shutdown.
+    pub task_tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for RouterComponents {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RouterComponents")
+            .field("config", &self.config)
+            .field("epoch_store", &self.epoch_store)
+            .field("session", &self.session)
+            .field("dispatcher", &self.dispatcher)
+            .field("task_control", &self.task_control)
+            .field("task_tasks", &self.task_tasks.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RouterComponents {
+    /// Aborts the scheduler / settlement workers and closes the TaskStore.
+    /// Idempotent; safe to call after listeners have stopped.
+    pub async fn shutdown_task_control(&self) {
+        for handle in &self.task_tasks {
+            handle.abort();
+        }
+        let _ = self.task_store.close().await;
+    }
 }
 
 impl RouterComponents {
@@ -133,7 +174,19 @@ impl RouterComponents {
             .await
             .map_err(|error| SupervisorError::Repository(error.to_string()))?,
         ) as Arc<dyn crate::activation::ActivationStateRepository>;
-        Self::assemble_with(config, &environment, repository).await
+        let task_store = Arc::new(
+            MongoTaskStore::connect(
+                &config.service_db.mongo_url,
+                MongoTaskStoreOptions::default(),
+            )
+            .await
+            .map_err(|error| SupervisorError::TaskStore(error.to_string()))?,
+        ) as Arc<dyn TaskStore>;
+        task_store
+            .ensure_indexes()
+            .await
+            .map_err(|error| SupervisorError::TaskStore(error.to_string()))?;
+        Self::assemble_with_task_store(config, &environment, repository, task_store).await
     }
 
     /// Assembly with an injected repository (tests use the memory fake).
@@ -142,10 +195,27 @@ impl RouterComponents {
         environment: &str,
         repository: Arc<dyn ActivationStateRepository>,
     ) -> Result<Arc<Self>, SupervisorError> {
+        Self::assemble_with_task_store(
+            config,
+            environment,
+            repository,
+            Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>,
+        )
+        .await
+    }
+
+    /// Assembly with an explicitly injected task store (production Mongo,
+    /// tests memory / scripted fakes).
+    pub async fn assemble_with_task_store(
+        config: &RouterConfig,
+        environment: &str,
+        repository: Arc<dyn ActivationStateRepository>,
+        task_store: Arc<dyn TaskStore>,
+    ) -> Result<Arc<Self>, SupervisorError> {
         let assembly = Arc::new(
             RouterBootstrapAssembly::assemble_with(config, environment, repository).await?,
         );
-        match Self::assemble_components(config, Arc::clone(&assembly)).await {
+        match Self::assemble_components(config, Arc::clone(&assembly), task_store).await {
             Ok(components) => Ok(components),
             Err(error) => {
                 // Fail closed: drain the blocking loader and close the
@@ -159,6 +229,7 @@ impl RouterComponents {
     async fn assemble_components(
         config: &RouterConfig,
         assembly: Arc<RouterBootstrapAssembly>,
+        task_store: Arc<dyn TaskStore>,
     ) -> Result<Arc<Self>, SupervisorError> {
         let epoch = assembly.epoch().clone();
         let epoch_store = assembly.epoch_store();
@@ -180,6 +251,52 @@ impl RouterComponents {
         .map_err(SupervisorError::Actor)?;
         let actor_session_owner = Arc::new(ActorSessionOwnerConsumer::new(Arc::clone(&actor)));
 
+        // Durable task dispatch composition (D2): TaskStore + Scheduler are
+        // isolated from activation/session owners. The dispatcher is
+        // assembled after the scheduler, so the control plane and admission
+        // seam consume it through a deferred handle.
+        let deferred_task_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
+            Arc::new(Mutex::new(None));
+        let deferred_task_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> =
+            Arc::new(Mutex::new(None));
+        let task_counters = Arc::new(TaskControlCounters::default());
+        let task_clock: Arc<dyn skiff_task_control::TaskClock> =
+            Arc::new(skiff_task_control::SystemClock);
+        let ws_clock: Arc<dyn crate::ws::Clock> = Arc::new(WsSystemClock);
+        let task_control = Arc::new(DurableTaskControl::new(
+            Arc::clone(&task_store),
+            Arc::clone(&deferred_task_scheduler),
+            Arc::clone(&deferred_task_dispatcher),
+            Arc::clone(&ws_clock),
+            Arc::clone(&task_counters),
+            Duration::from_millis(1_000),
+        ));
+        let mut task_tasks = Vec::new();
+        task_tasks.push(task_control.spawn_worker());
+        let scheduler = Arc::new(Scheduler::new(
+            Arc::clone(&task_store),
+            Arc::new(RouterTaskAttemptAdmission::new(
+                Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
+                Arc::clone(&deferred_task_dispatcher),
+                Arc::clone(&task_control),
+                Arc::clone(&ws_clock),
+                config.request_timeout_ms,
+                Arc::clone(&task_counters),
+            )),
+            task_clock,
+            SchedulerConfig::default(),
+            RetryBackoffPolicy::default(),
+        ));
+        *deferred_task_scheduler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&scheduler));
+        task_tasks.push(tokio::spawn({
+            let scheduler = Arc::clone(&scheduler);
+            async move {
+                scheduler.run().await;
+            }
+        }));
+
         let dispatcher = Arc::new(
             RequestDispatcher::new(
                 RuntimeDispatcherOptions::new(
@@ -187,21 +304,18 @@ impl RouterComponents {
                     Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
                     Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
-                    Arc::new(
-                        SessionRuntimePeer::new(session_handle.clone())
-                            .with_task_wire_store(Arc::clone(&actor.task_wire_store)),
-                    ),
+                    Arc::new(SessionRuntimePeer::new(session_handle.clone())),
                     Arc::new(LayerSessionAbort::new(session_handle.clone())),
-                    Arc::clone(&actor.actor_lane_task_control) as Arc<dyn ActorMethodTaskControl>,
                 )
-                .map_err(SupervisorError::Dispatcher)?,
+                .map_err(SupervisorError::Dispatcher)?
+                .with_task_attempt_terminal(
+                    Arc::clone(&task_control) as Arc<dyn crate::dispatch::TaskAttemptTerminalSink>
+                )
+                ,
             )
             .map_err(SupervisorError::Dispatcher)?,
         );
-        // The request-parent task lookup answers through the dispatcher
-        // pending (assembled after the actor lane).
-        *actor
-            .deferred_dispatcher
+        *deferred_task_dispatcher
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&dispatcher));
 
@@ -341,19 +455,14 @@ impl RouterComponents {
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
         ));
-        let task_sink = Arc::new(ActorTaskFrameSink::new(
-            Arc::clone(&actor),
-            Arc::clone(&dispatcher),
-            Arc::clone(&epoch_store),
+        let task_sink = Arc::new(DurableTaskFrameSink::new(
+            Arc::clone(&task_store),
+            Arc::clone(&scheduler),
+            Arc::new(EpochTaskExecutionImageSource::new(Arc::clone(&epoch_store))),
             Arc::clone(&session_writer),
-            Arc::new(WsSystemClock),
-            config.request_timeout_ms,
+            Arc::clone(&task_counters),
+            usize::try_from(config.http_max_request_bytes).unwrap_or(usize::MAX),
         ));
-        // E-actor-rust: the real task execution owner is the actor frame
-        // sink (correlation + owner forward share one surface).
-        actor
-            .execution_sink
-            .set(Arc::clone(&actor_sink) as Arc<dyn ActorMethodTaskExecutionSink>);
         actor_session_owner.set_sink(Arc::clone(&actor_sink));
         let sinks = InboundSinkSet {
             request: Some(
@@ -418,6 +527,10 @@ impl RouterComponents {
             ws_store,
             ws_selector,
             client_ws,
+            task_control,
+            scheduler,
+            task_store,
+            task_tasks,
         }))
     }
 }
@@ -615,6 +728,7 @@ impl RouterSupervisor {
     /// Shuts down the bootstrap assembly (loader drain + repository close)
     /// after the listeners/sessions have shut down.
     pub async fn shutdown(&self) {
+        self.components.shutdown_task_control().await;
         self.components.assembly.shutdown().await;
     }
 }

@@ -247,10 +247,10 @@ impl RuntimePeer for RecordingPeer {
         Ok(())
     }
 
-    fn send_task_submit(
+    fn send_task_attempt_start(
         &self,
         _session: &RuntimeSessionEpoch,
-        _task: &skiff_router::dispatch::TaskSubmit,
+        _attempt: &skiff_router::dispatch::TaskAttemptSubmit,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -265,17 +265,6 @@ impl SessionAbortControl for RecordingAbort {
     fn abort_session(&self, session: &RuntimeSessionEpoch) {
         self.aborts.lock().unwrap().push(session.clone());
     }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct NoActorTaskControl;
-
-impl skiff_router::dispatch::ActorMethodTaskControl for NoActorTaskControl {
-    fn is_active_invocation_parent(&self, _caller_request_id: &str) -> bool {
-        false
-    }
-
-    fn submit_task(&self, _task: skiff_router::dispatch::ActorMethodTaskDispatch) {}
 }
 
 fn dispatcher_pair(
@@ -297,7 +286,6 @@ fn dispatcher_pair(
                 Arc::new(OkRevalidate),
                 Arc::clone(&peer) as Arc<dyn RuntimePeer>,
                 Arc::new(RecordingAbort::default()) as Arc<dyn SessionAbortControl>,
-                Arc::new(NoActorTaskControl),
             )
             .expect("dispatcher options"),
         )
@@ -393,7 +381,6 @@ mod tests {
                     Arc::new(OkRevalidate),
                     Arc::clone(&peer) as Arc<dyn RuntimePeer>,
                     Arc::new(RecordingAbort::default()) as Arc<dyn SessionAbortControl>,
-                    Arc::new(NoActorTaskControl),
                 )
                 .expect("dispatcher options"),
             )

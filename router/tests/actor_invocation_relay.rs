@@ -305,58 +305,5 @@ mod tests {
             "tombstones must be zero after shutdown"
         );
         assert_eq!(health.terminals, 1);
-        assert!(!relay.is_active_parent("inv:2"));
-    }
-
-    #[test]
-    fn parent_snapshot_uses_owner_connection_and_inactive_after_settle() {
-        // E-actor-parity (C-task §4.2): an ordinary actor-method invocation's
-        // task parent authority is the runtime connection where the method
-        // executes (the owner). The caller may differ when the Router pins
-        // the owner to another replica, so the snapshot must resolve to the
-        // owner connection, not the original caller.
-        let relay = ActorInvocationRelay::new(ActorInvocationRelayOptions::default());
-        relay
-            .invoke(&invoke_input("conn-c", "inv:1", "runtime-b", 7, "cancel:1"))
-            .expect("invoke");
-        let snapshot = relay.parent_snapshot("inv:1").expect("parent snapshot");
-        assert_eq!(snapshot.connection, "conn-b");
-        assert_eq!(snapshot.runtime_id, "runtime-b");
-        assert_eq!(snapshot.assembly_generation, 42);
-        assert!(snapshot.active);
-        assert!(!snapshot.replaced);
-        let right_fence = fence("runtime-b", 7, 40_000);
-        relay
-            .on_owner_settle("inv:1", &right_fence, "conn-b", OwnerSettleKind::Return)
-            .expect("settle");
-        assert!(relay.parent_snapshot("inv:1").is_none());
-    }
-
-    #[test]
-    fn parent_snapshot_keeps_caller_origin_for_test_capability_lineage() {
-        // E-actor-parity (C-task §4.2 / TS dispatcher parity): test-capability
-        // invocations keep the capability parent origin (the caller
-        // connection), matching the leaf's dual-semantics record.
-        let relay = ActorInvocationRelay::new(ActorInvocationRelayOptions::default());
-        relay
-            .invoke(&ActorInvokeInput {
-                invocation_id: "inv:cap-1".to_string(),
-                caller_connection: "conn-c".to_string(),
-                caller_runtime_id: "conn-c".to_string(),
-                owner_fence: fence("runtime-b", 7, 40_000),
-                owner_connection: "conn-b".to_string(),
-                route_authority: route_authority(),
-                correlation: "cancel:cap-1".to_string(),
-                deadline: None,
-                test_case_capability: Some("test:cap-1".to_string()),
-                now: 0,
-            })
-            .expect("invoke");
-        let snapshot = relay.parent_snapshot("inv:cap-1").expect("parent snapshot");
-        assert_eq!(snapshot.connection, "conn-c");
-        assert_eq!(snapshot.runtime_id, "conn-c");
-        assert_eq!(snapshot.test_case_capability.as_deref(), Some("test:cap-1"));
-        assert!(snapshot.active);
-        assert!(!snapshot.replaced);
     }
 }

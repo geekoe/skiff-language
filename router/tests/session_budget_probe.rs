@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::{start_listeners_with_session, ListenerStartOptions};
 use skiff_router::session::budget::SessionBudgets;
@@ -59,26 +59,6 @@ fn epoch() -> skiff_router::session::RegisteredAssemblyTuple {
             .expect("snapshot id"),
         },
     }
-}
-
-fn frame_bytes(name: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("runtime")
-        .join("transport")
-        .join("testdata")
-        .join("registration-handshake")
-        .join("frames.json");
-    let root: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("frames.json must exist"))
-            .expect("frames.json parses");
-    let hex = root["frames"][name]["frameHex"]
-        .as_str()
-        .unwrap_or_else(|| panic!("frame {name} missing"));
-    (0..hex.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex"))
-        .collect()
 }
 
 async fn start_with_budgets(budgets: SessionBudgets) -> skiff_router::listener::RouterListeners {
@@ -140,8 +120,6 @@ mod tests {
         let budgets = SessionBudgets {
             outbound_frames: 256,
             outbound_bytes: 100, // router.bootstrap fixture is 510 bytes
-            inbound_frames: 64,
-            inbound_bytes: 1024 * 1024,
         };
         let listeners = start_with_budgets(budgets).await;
         let mut socket = connect(listeners.runtime_control.addr()).await;
@@ -149,37 +127,6 @@ mod tests {
         assert!(
             matches!(outcome, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
             "bootstrap enqueue full must fail closed without bytes, got {outcome:?}"
-        );
-        listeners.shutdown().await.expect("graceful shutdown");
-    }
-    #[tokio::test(flavor = "multi_thread")]
-    async fn inbound_budget_overflow_aborts_exact_session() {
-        let budgets = SessionBudgets {
-            outbound_frames: 256,
-            outbound_bytes: 4 * 1024 * 1024,
-            inbound_frames: 64,
-            inbound_bytes: 100, // capabilities fixture is 216 bytes
-        };
-        let listeners = start_with_budgets(budgets).await;
-        let mut socket = connect(listeners.runtime_control.addr()).await;
-        let bootstrap = recv_any(&mut socket).await;
-        assert!(
-            matches!(bootstrap, Some(Ok(Message::Binary(_)))),
-            "bootstrap must be delivered before the inbound budget check"
-        );
-        timeout(
-            CLIENT_TIMEOUT,
-            socket.send(Message::Binary(
-                frame_bytes("capabilities.runtime-a").into(),
-            )),
-        )
-        .await
-        .expect("send timed out")
-        .expect("send failed");
-        let outcome = recv_any(&mut socket).await;
-        assert!(
-            matches!(outcome, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
-            "ingress budget overflow must abort the exact session, got {outcome:?}"
         );
         listeners.shutdown().await.expect("graceful shutdown");
     }

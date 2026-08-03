@@ -17,9 +17,6 @@
 //!   correlation.
 //! - [`lease::ActorLeaseExpiryScheduler`]: lease/idle deadline scheduling and
 //!   bounded eviction trigger.
-//! - [`task::TaskSubmitRouter`]: stateless exact parent-kind selection
-//!   (`request | actorInvocation`); sink stores no pending and accepted
-//!   spawns are separated from parent lifecycle.
 //!
 //! All owners are synchronous reducers (never cross `.await` while holding
 //! state) and publish only counter/occupancy health projections.
@@ -31,8 +28,6 @@ mod health;
 mod invocation;
 mod lease;
 mod ownership;
-mod task;
-mod task_sink;
 mod types;
 
 pub use activation::{
@@ -47,7 +42,7 @@ pub use control::{
 };
 pub use health::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, TaskHealth,
+    LeaseHealth, OwnershipHealth,
 };
 pub use invocation::{
     ActorInvocationRelay, ActorInvocationRelayOptions, ActorInvokeInput, InvocationError,
@@ -57,18 +52,10 @@ pub use lease::{
     ActorLeaseExpiryScheduler, IdleEvictControlPort, LeaseError, LeaseSchedulerOptions,
 };
 pub use ownership::{ActorOwnershipRegistry, OwnershipError};
-pub use task::{
-    ActorLaneTaskControl, ActorMethodTaskExecutionSink, ActorTaskParentResolver,
-    FunctionTaskParentResolver, ParentQuery, RelayTaskParentLookup, TaskAuthorityProbe,
-    TaskErrorCode, TaskParentAuthority, TaskParentLookup, TaskParentResolution,
-    TaskParentSnapshot, TaskSubmitAcceptance, TaskSubmitError, TaskSubmitRouter,
-};
-pub use task_sink::{task_error_code, PendingTaskWire, TaskWireHealth, TaskWireStore};
 pub use types::{
     ActorClaimId, ActorClaimToken, ActorEntryFacts, ActorIncarnationFence, ActorLineage,
     ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, ActorRef, CommitFenceFacts,
     ExpiredOwner, LeaseIdMint, OwnerReleaseReason, DEFAULT_ACTIVATION_DEADLINE_MS,
     DEFAULT_ACTOR_PENDING_BUDGET, DEFAULT_ACTOR_TOMBSTONE_BUDGET, DEFAULT_CONTROL_ACK_DEADLINE_MS,
     DEFAULT_EVICTION_RETRY_BOUND, DEFAULT_IDLE_TTL_MS, DEFAULT_OWNER_LEASE_TTL_MS,
-    TASK_ACTOR_METHOD_DEADLINE_MS, TASK_ACTOR_METHOD_LEASE_MS,
 };

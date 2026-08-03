@@ -12,9 +12,8 @@ use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use dispatch_harness::{
-    authority_for_session, corpus_epoch, request, session_state, FakeActorMethodTaskControl,
-    FakeCandidateViewSource, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer,
-    FakeSessionAbort, SessionState,
+    corpus_epoch, request, session_state, task_attempt, FakeCandidateViewSource, FakeEpochSource,
+    FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
 };
 
 struct Rig {
@@ -44,7 +43,6 @@ impl Rig {
         let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
-        let actor = FakeActorMethodTaskControl::new();
         let revalidate = FakeLeaseRevalidate::new();
         let mut options = RuntimeDispatcherOptions::new(
             max_concurrency,
@@ -55,7 +53,6 @@ impl Rig {
             Arc::new(revalidate.clone()),
             Arc::new(peer.clone()),
             Arc::new(abort.clone()),
-            Arc::new(actor.clone()),
         )
         .expect("options");
         if let Some(timeout_check) = timeout_check {
@@ -236,31 +233,27 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_task_authority_mismatch_is_rejected_without_pending() {
+    fn dispatch_task_attempt_is_admitted_and_tracked() {
         let rig = Rig::new(2);
-        rig.accept("req-1", "unary");
-        let wrong_authority = {
-            let mut authority = authority_for_session(&rig.session);
-            authority.assembly_generation += 1;
-            authority
+        let result = rig.dispatcher.task_attempt_submit(task_attempt(
+            "task-attempt-1",
+            "task-1",
+            "attempt-1",
+            "lease-1",
+        ));
+        let TaskAttemptSubmitResult::Accepted {
+            request_id,
+            session_epoch,
+        } = result
+        else {
+            panic!("task attempt must be accepted");
         };
-        let result = rig.dispatcher.task_submit(TaskSubmit {
-            task_request_id: "task-1".to_string(),
-            caller_request_id: "req-1".to_string(),
-            target_kind: TaskTargetKind::Function,
-            target: "example.com/service-1:fn".to_string(),
-            authority: wrong_authority,
-            deadline: None,
-        });
-        assert_eq!(
-            result,
-            TaskSubmitResult::Rejected {
-                request_id: "task-1".to_string(),
-                reason: TaskRejectReason::ParentAuthorityMismatch,
-            }
-        );
+        assert_eq!(request_id, "task-attempt-1");
+        assert_eq!(session_epoch, rig.session);
         assert_eq!(rig.dispatcher.pending_count(), 1);
         assert_eq!(rig.dispatcher.health().admission.permits_held, 1);
+        assert!(rig.dispatcher.is_task_attempt("task-attempt-1"));
+        assert_eq!(rig.peer.record.lock().unwrap().attempts, vec!["task-attempt-1"]);
     }
 
     #[test]
@@ -404,31 +397,27 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_derived_task_end_with_payload_is_protocol_error() {
+    fn dispatch_task_attempt_end_with_payload_is_protocol_error() {
         let rig = Rig::new(2);
         rig.accept("req-1", "unary");
-        let result = rig.dispatcher.task_submit(TaskSubmit {
-            task_request_id: "task-1".to_string(),
-            caller_request_id: "req-1".to_string(),
-            target_kind: TaskTargetKind::Function,
-            target: "example.com/service-1:fn".to_string(),
-            authority: authority_for_session(&rig.session),
-            deadline: None,
-        });
-        let TaskSubmitResult::AcceptedDerived(derived) = result else {
-            panic!("derived task must be accepted");
-        };
-        assert_eq!(derived.session_epoch, rig.session);
+        let result = rig.dispatcher.task_attempt_submit(task_attempt(
+            "task-attempt-1",
+            "task-1",
+            "attempt-1",
+            "lease-1",
+        ));
+        assert!(matches!(result, TaskAttemptSubmitResult::Accepted { .. }));
 
         let outcome = rig.dispatcher.on_frame(
             &rig.session,
             RuntimeResponseFrame::End {
-                request_id: "task-1".to_string(),
+                request_id: "task-attempt-1".to_string(),
                 payload_present: true,
                 payload: Vec::new(),
             },
         );
         assert_eq!(outcome.terminals[0].source, TerminalSource::ProtocolError);
+        assert!(!rig.dispatcher.is_task_attempt("task-attempt-1"));
 
         let outcome = rig.dispatcher.on_frame(
             &rig.session,
@@ -516,29 +505,28 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_duplicate_task_request_id_is_rejected() {
+    fn dispatch_duplicate_task_attempt_request_id_is_rejected() {
         let rig = Rig::new(2);
-        rig.accept("req-1", "unary");
-        let task = || TaskSubmit {
-            task_request_id: "task-1".to_string(),
-            caller_request_id: "req-1".to_string(),
-            target_kind: TaskTargetKind::Function,
-            target: "example.com/service-1:fn".to_string(),
-            authority: authority_for_session(&rig.session),
-            deadline: None,
+        let task = || {
+            task_attempt(
+                "task-attempt-1",
+                "task-1",
+                "attempt-1",
+                "lease-1",
+            )
         };
         assert!(matches!(
-            rig.dispatcher.task_submit(task()),
-            TaskSubmitResult::AcceptedDerived(_)
+            rig.dispatcher.task_attempt_submit(task()),
+            TaskAttemptSubmitResult::Accepted { .. }
         ));
         assert_eq!(
-            rig.dispatcher.task_submit(task()),
-            TaskSubmitResult::Rejected {
-                request_id: "task-1".to_string(),
-                reason: TaskRejectReason::Duplicate,
+            rig.dispatcher.task_attempt_submit(task()),
+            TaskAttemptSubmitResult::Rejected {
+                request_id: "task-attempt-1".to_string(),
+                reason: SubmitRejectReason::Duplicate,
             }
         );
-        assert_eq!(rig.dispatcher.health().admission.permits_held, 2);
+        assert_eq!(rig.dispatcher.health().admission.permits_held, 1);
     }
 
     #[test]
@@ -562,7 +550,6 @@ mod tests {
         let candidate = FakeCandidateViewSource::new(vec![session_state("s1", "runtime-a", 1)]);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
-        let actor = FakeActorMethodTaskControl::new();
         let revalidate = FakeLeaseRevalidate::new();
         let options = RuntimeDispatcherOptions::new(
             2,
@@ -571,7 +558,6 @@ mod tests {
             Arc::new(revalidate),
             Arc::new(peer),
             Arc::new(abort),
-            Arc::new(actor),
         )
         .expect("options");
         let dispatcher = RequestDispatcher::new(options).expect("dispatcher");
@@ -581,28 +567,6 @@ mod tests {
         };
         assert_eq!(reason, SubmitRejectReason::NoCandidate);
         assert_eq!(dispatcher.health().admission.permits_held, 0);
-    }
-
-    #[test]
-    fn dispatch_derived_deadline_takes_smaller_timeout() {
-        let default = RequestDeadline {
-            timeout_ms: 3000,
-            expires_at: "2026-08-02T00:00:00Z".to_string(),
-        };
-        let parent = RequestDeadline {
-            timeout_ms: 5000,
-            expires_at: "2026-08-02T00:01:00Z".to_string(),
-        };
-        let derived = derived_deadline(Some(&parent), &default);
-        assert_eq!(derived.timeout_ms, 3000);
-        assert_eq!(derived.expires_at, parent.expires_at);
-
-        let parent = RequestDeadline {
-            timeout_ms: 500,
-            expires_at: "2026-08-02T00:00:00Z".to_string(),
-        };
-        assert_eq!(derived_deadline(Some(&parent), &default).timeout_ms, 500);
-        assert_eq!(derived_deadline(None, &default).timeout_ms, 3000);
     }
 
     #[test]

@@ -276,6 +276,14 @@ impl InboundFrameSink for RequestFrameSink {
         }
         let (frame, http) = decode_request_family_frame(raw)?;
         let request_id = frame.request_id().to_string();
+        if self.dispatcher.is_task_attempt(&request_id) {
+            // Durable task attempt terminal: the dispatcher already returned
+            // it to the task control plane through the settlement port.
+            // There is no HTTP phase; forwarding/backpressure would abort a
+            // task frame as a client backpressure terminal.
+            let _ = self.dispatcher.on_frame(session, frame);
+            return Ok(());
+        }
         if let Some(ws) = &self.ws {
             match &frame {
                 RuntimeResponseFrame::Error { .. } => {
