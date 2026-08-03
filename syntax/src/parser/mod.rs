@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+pub(super) use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
+pub(super) use crate::{
     ast::{
         ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage,
         ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection,
@@ -25,7 +25,12 @@ const LEGACY_PROVIDER_REMOVED_MESSAGE: &str =
     "legacy provider syntax has been removed; use native std APIs or package APIs instead";
 
 mod cursor;
+mod pattern;
+mod span;
+mod stmt;
+mod validate;
 
+use span::{expr_source_spans, parsed_leaf_expr, ParsedExpr};
 pub fn parse_source(source: &str) -> Result<SourceFile> {
     Parser::new(lex(source)?, ParseMode::Full).parse_source_file()
 }
@@ -37,7 +42,6 @@ pub fn parse_source_metadata(source: &str) -> Result<SourceFile> {
 pub fn parse_source_with_bodies_tolerant(source: &str) -> Result<SourceFile> {
     Parser::new(lex(source)?, ParseMode::BodiesTolerant).parse_source_file()
 }
-
 const OLD_DB_DOTTED_OPERATIONS: &[&str] = &[
     "get",
     "require",
@@ -60,50 +64,35 @@ fn is_old_db_dotted_operation(operation: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParseMode {
+pub(super) enum ParseMode {
     Full,
     Metadata,
     BodiesTolerant,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct FunctionModifiers {
+pub(super) struct FunctionModifiers {
     is_native: bool,
     is_provider: bool,
     is_static: bool,
     start: Option<SourceLocation>,
 }
 
-struct Parser {
+pub(super) struct Parser {
     tokens: Vec<Token>,
     current: usize,
     mode: ParseMode,
     source_spans: SourceSpanTable,
 }
 
-struct ParsedBlock {
-    block: Block,
-    spans: BlockSourceSpans,
-}
-
-struct ParsedStmt {
-    stmt: Stmt,
-    spans: StmtSourceSpans,
-}
-
-struct ParsedExpr {
-    expr: Expr,
-    spans: ExprSourceSpans,
-}
-
 #[derive(Debug, Clone, Copy)]
-enum CallableNoBodyPolicy {
+pub(super) enum CallableNoBodyPolicy {
     EmptyDecl,
     SignatureOnly,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum NativeBodyPolicy {
+pub(super) enum NativeBodyPolicy {
     Error(&'static str),
     FollowBodyPolicy,
     SkipAndKeepSignature,
@@ -111,7 +100,7 @@ enum NativeBodyPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CallableBodyPolicy {
+pub(super) enum CallableBodyPolicy {
     ParseStrict,
     ParseTolerantKeepSignature,
     ParseTolerantDrop,
@@ -119,7 +108,7 @@ enum CallableBodyPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CallableParseOptions {
+pub(super) struct CallableParseOptions {
     exported: bool,
     provider_without_body: CallableNoBodyPolicy,
     native_without_body: CallableNoBodyPolicy,
@@ -127,7 +116,7 @@ struct CallableParseOptions {
     body_policy: CallableBodyPolicy,
 }
 
-enum CallableParseResult {
+pub(super) enum CallableParseResult {
     Decl {
         decl: FunctionDecl,
         spans: Option<ExecutableSourceSpans>,
@@ -136,282 +125,10 @@ enum CallableParseResult {
     None,
 }
 
-fn parsed_leaf_expr(expr: Expr, span: SourceSpan) -> ParsedExpr {
-    ParsedExpr::new(expr, span, Vec::new())
-}
-
-impl ParsedExpr {
-    fn new(expr: Expr, span: SourceSpan, children: Vec<ExprSourceSpans>) -> ParsedExpr {
-        ParsedExpr {
-            expr,
-            spans: expr_source_spans(span, children),
-        }
-    }
-
-    fn into_parts(self) -> (Expr, ExprSourceSpans) {
-        (self.expr, self.spans)
-    }
-
-    fn with_children_and_parts(
-        expr: Expr,
-        span: SourceSpan,
-        children: Vec<ExprSourceSpans>,
-        blocks: Vec<BlockSourceSpans>,
-        record_fields: Vec<RecordFieldSourceSpans>,
-    ) -> ParsedExpr {
-        ParsedExpr {
-            expr,
-            spans: ExprSourceSpans {
-                span,
-                children,
-                blocks,
-                record_fields,
-            },
-        }
-    }
-}
-
-impl ParsedBlock {
-    fn from_stmt(stmt: ParsedStmt) -> ParsedBlock {
-        let ParsedStmt { stmt, spans } = stmt;
-        ParsedBlock {
-            spans: BlockSourceSpans {
-                span: spans.span,
-                statements: vec![spans],
-            },
-            block: Block {
-                statements: vec![stmt],
-            },
-        }
-    }
-
-    fn into_parts(self) -> (Block, BlockSourceSpans) {
-        (self.block, self.spans)
-    }
-}
-
-impl ParsedStmt {
-    fn new(
-        stmt: Stmt,
-        span: SourceSpan,
-        expressions: Vec<ExprSourceSpans>,
-        blocks: Vec<BlockSourceSpans>,
-    ) -> ParsedStmt {
-        ParsedStmt {
-            stmt,
-            spans: StmtSourceSpans {
-                span,
-                expressions,
-                blocks,
-            },
-        }
-    }
-
-    fn expr(expression: ParsedExpr) -> ParsedStmt {
-        Self::new(
-            Stmt::Expr(expression.expr),
-            expression.spans.span,
-            vec![expression.spans],
-            Vec::new(),
-        )
-    }
-
-    fn leaf(stmt: Stmt, span: SourceSpan) -> ParsedStmt {
-        Self::new(stmt, span, Vec::new(), Vec::new())
-    }
-
-    fn with_expression(stmt: Stmt, span: SourceSpan, expression: ExprSourceSpans) -> ParsedStmt {
-        Self::new(stmt, span, vec![expression], Vec::new())
-    }
-
-    fn with_block(stmt: Stmt, span: SourceSpan, block: BlockSourceSpans) -> ParsedStmt {
-        Self::new(stmt, span, Vec::new(), vec![block])
-    }
-
-    fn with_expression_and_block(
-        stmt: Stmt,
-        span: SourceSpan,
-        expression: ExprSourceSpans,
-        block: BlockSourceSpans,
-    ) -> ParsedStmt {
-        Self::new(stmt, span, vec![expression], vec![block])
-    }
-}
-
-fn expr_source_spans(span: SourceSpan, children: Vec<ExprSourceSpans>) -> ExprSourceSpans {
-    ExprSourceSpans {
-        span,
-        children,
-        blocks: Vec::new(),
-        record_fields: Vec::new(),
-    }
-}
-
 fn object_literal_key_name(key: &crate::ast::ObjectLiteralKey) -> Option<String> {
     match key {
         crate::ast::ObjectLiteralKey::Name(name) => Some(name.clone()),
     }
-}
-
-fn validate_type_decl_discriminator(
-    name: &str,
-    ty: &str,
-    discriminator: Option<&str>,
-    location: SourceLocation,
-) -> Result<()> {
-    let union = split_top_level(ty.trim(), '|');
-    if union.len() <= 1 {
-        if discriminator.is_some() {
-            return Err(CompileError::syntax(
-                format!(
-                    "type {name} discriminator can only be used with anonymous record union branches"
-                ),
-                location,
-            ));
-        }
-        return Ok(());
-    }
-
-    let anonymous_record_branches = union
-        .iter()
-        .filter_map(|part| parser_record_type_fields(part.trim()))
-        .collect::<Vec<_>>();
-    if anonymous_record_branches.is_empty() {
-        if discriminator.is_some() {
-            return Err(CompileError::syntax(
-                format!(
-                    "type {name} discriminator can only be used with anonymous record union branches"
-                ),
-                location,
-            ));
-        }
-        return Ok(());
-    }
-
-    let Some(discriminator) = discriminator else {
-        return Err(CompileError::syntax(
-            format!(
-                "named union type {name} uses anonymous record branches; add discriminator \"tag\" to the type declaration"
-            ),
-            location,
-        ));
-    };
-
-    let mut values = BTreeSet::new();
-    for fields in anonymous_record_branches {
-        let Some(value) = discriminator_record_branch_value(&fields, discriminator) else {
-            return Err(CompileError::syntax(
-                format!(
-                    "anonymous record union branch in {name} must declare {discriminator} as a string literal"
-                ),
-                location,
-            ));
-        };
-        if !values.insert(value.clone()) {
-            return Err(CompileError::syntax(
-                format!(
-                    "anonymous record union branch {discriminator} \"{value}\" in {name} must be unique"
-                ),
-                location,
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_actor_declarations(
-    actors: &[ActorDecl],
-    types: &[TypeDecl],
-    dbs: &[DbDecl],
-) -> Result<()> {
-    let type_by_name = types
-        .iter()
-        .map(|declaration| (declaration.name.as_str(), declaration))
-        .collect::<BTreeMap<_, _>>();
-    let db_type_names = dbs
-        .iter()
-        .map(|declaration| declaration.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut actor_names = BTreeSet::new();
-    for actor in actors {
-        if !actor_names.insert(actor.name.as_str()) {
-            return Err(CompileError::syntax(
-                format!("duplicated actor declaration {}", actor.name),
-                actor.span.start,
-            ));
-        }
-        let attached = type_by_name.get(actor.name.as_str()).ok_or_else(|| {
-            CompileError::syntax(
-                format!(
-                    "actor {} requires a same-file type declaration of the same name",
-                    actor.name
-                ),
-                actor.span.start,
-            )
-        })?;
-        if !attached.type_params.is_empty() {
-            return Err(CompileError::syntax(
-                format!(
-                    "actor {} must attach to a non-generic type declaration",
-                    actor.name
-                ),
-                actor.span.start,
-            ));
-        }
-        if attached.alias.is_some() || attached.discriminator.is_some() {
-            return Err(CompileError::syntax(
-                format!(
-                    "actor {} must attach to a concrete record type declaration",
-                    actor.name
-                ),
-                actor.span.start,
-            ));
-        }
-        if !attached
-            .fields
-            .iter()
-            .any(|field| field.name == actor.key_field)
-        {
-            return Err(CompileError::syntax(
-                format!(
-                    "actor {} key({}) must name a field of the attached type {}",
-                    actor.name, actor.key_field, actor.name
-                ),
-                actor.span.start,
-            ));
-        }
-        if db_type_names.contains(actor.name.as_str()) {
-            return Err(CompileError::syntax(
-                format!(
-                    "type {} cannot attach both db object and actor declarations",
-                    actor.name
-                ),
-                actor.span.start,
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn discriminator_record_branch_value(
-    fields: &[(String, String)],
-    discriminator: &str,
-) -> Option<String> {
-    fields.iter().find_map(|(field_name, field_type)| {
-        (field_name == discriminator)
-            .then(|| string_literal(field_type))
-            .flatten()
-    })
-}
-
-fn parser_record_type_fields(ty: &str) -> Option<Vec<(String, String)>> {
-    record_type_fields(ty).map(|fields| {
-        fields
-            .into_iter()
-            .map(|field| (field.name.to_string(), field.ty.to_string()))
-            .collect()
-    })
 }
 
 impl Parser {
@@ -558,7 +275,7 @@ impl Parser {
                 ));
             }
         }
-        validate_actor_declarations(&actors, &types, &dbs)?;
+        validate::validate_actor_declarations(&actors, &types, &dbs)?;
         Ok(SourceFile {
             provider_capability: None,
             functions,
@@ -591,7 +308,8 @@ impl Parser {
         }
         Ok(())
     }
-
+}
+impl Parser {
     fn parse_import(&mut self) -> Result<ImportDecl> {
         let start = self.expect_ident_value("import")?.span.start;
         let name = self.expect_ident(IMPORT_NAME_RULE)?;
@@ -654,7 +372,7 @@ impl Parser {
 
         if self.match_symbol("=") {
             let target_type = self.parse_type()?;
-            validate_type_decl_discriminator(
+            validate::validate_type_decl_discriminator(
                 &name,
                 &target_type.name,
                 discriminator.as_deref(),
@@ -1956,486 +1674,8 @@ impl Parser {
         }
         Ok(values)
     }
-
-    fn parse_block(&mut self, in_test: bool) -> Result<ParsedBlock> {
-        let start = self.peek().span.start;
-        self.expect_symbol("{")?;
-        let mut statements = Vec::new();
-        let mut statement_spans = Vec::new();
-        while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") {
-                continue;
-            }
-            let mut statement = self.parse_statement(in_test)?;
-            if self.match_symbol(";") {
-                statement.spans.span.end = self.previous().span.end;
-            }
-            statements.push(statement.stmt);
-            statement_spans.push(statement.spans);
-        }
-        self.expect_symbol("}")?;
-        let end = self.previous().span.end;
-        Ok(ParsedBlock {
-            block: Block { statements },
-            spans: BlockSourceSpans {
-                span: SourceSpan { start, end },
-                statements: statement_spans,
-            },
-        })
-    }
-
-    fn parse_statement(&mut self, in_test: bool) -> Result<ParsedStmt> {
-        if self.match_ident("const") {
-            return self.parse_let(false, self.previous().span.start);
-        }
-        if self.match_ident("let") {
-            return self.parse_let(true, self.previous().span.start);
-        }
-        if self.match_ident("timeout") {
-            return self.parse_timeout_statement(in_test, self.previous().span.start);
-        }
-        if self.match_ident("concurrent") {
-            return self.parse_concurrent_statement(in_test, self.previous().span.start);
-        }
-        if self.match_ident("serial") {
-            return self.parse_serial_statement(in_test, self.previous().span.start);
-        }
-        if self.match_ident("if") {
-            return self.parse_if(in_test, self.previous().span.start);
-        }
-        if self.match_ident("for") {
-            return self.parse_for(in_test, self.previous().span.start);
-        }
-        if self.match_ident("while") {
-            return self.parse_while(in_test, self.previous().span.start);
-        }
-        if self.match_ident("match") {
-            return self.parse_match(in_test, self.previous().span.start);
-        }
-        if self.match_ident("assert") {
-            let start = self.previous().span.start;
-            if !in_test {
-                return Err(CompileError::syntax(
-                    "assert can only be used in test blocks",
-                    self.previous().span.start,
-                ));
-            }
-            return self.parse_assert_statement(start);
-        }
-        if self.match_ident("return") {
-            let start = self.previous().span.start;
-            if self.check_symbol("}") || self.check_symbol(";") {
-                return Ok(ParsedStmt::leaf(
-                    Stmt::Return(None),
-                    SourceSpan {
-                        start,
-                        end: self.previous().span.end,
-                    },
-                ));
-            }
-            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
-            let end = value_spans.span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Return(Some(value_expr)),
-                SourceSpan { start, end },
-                value_spans,
-            ));
-        }
-        if self.match_ident("spawn") {
-            let start = self.previous().span.start;
-            let call = self.parse_expression()?;
-            if !matches!(call.expr, Expr::Call { .. }) {
-                return Err(CompileError::syntax(
-                    "spawn statement expects a call expression",
-                    call.spans.span.start,
-                ));
-            }
-            let (call_expr, call_spans) = call.into_parts();
-            let end = call_spans.span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Spawn { call: call_expr },
-                SourceSpan { start, end },
-                call_spans,
-            ));
-        }
-        if self.match_ident("throw") {
-            let start = self.previous().span.start;
-            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
-            let end = value_spans.span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Throw { value: value_expr },
-                SourceSpan { start, end },
-                value_spans,
-            ));
-        }
-        if self.match_ident("rethrow") {
-            let start = self.previous().span.start;
-            let (exception_expr, exception_spans) = self.parse_expression()?.into_parts();
-            let end = exception_spans.span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Rethrow {
-                    exception: exception_expr,
-                },
-                SourceSpan { start, end },
-                exception_spans,
-            ));
-        }
-        if self.match_ident("emit") {
-            let start = self.previous().span.start;
-            let value = if self.match_symbol("(") {
-                let value = self.parse_expression()?;
-                self.expect_symbol(")")?;
-                value
-            } else {
-                self.parse_expression()?
-            };
-            let (value_expr, value_spans) = value.into_parts();
-            let end = self.previous().span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Emit(value_expr),
-                SourceSpan { start, end },
-                value_spans,
-            ));
-        }
-        if self.match_ident("break") {
-            let span = self.previous().span;
-            return Ok(ParsedStmt::leaf(Stmt::Break, span));
-        }
-        if self.match_ident("continue") {
-            let span = self.previous().span;
-            return Ok(ParsedStmt::leaf(Stmt::Continue, span));
-        }
-        let expr = self.parse_expression()?;
-        if self.match_symbol("=") {
-            let (target_expr, target_spans) = expr.into_parts();
-            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
-            let span = SourceSpan {
-                start: target_spans.span.start,
-                end: value_spans.span.end,
-            };
-            return Ok(ParsedStmt::new(
-                Stmt::Assign {
-                    target: target_expr,
-                    value: value_expr,
-                },
-                span,
-                vec![target_spans, value_spans],
-                Vec::new(),
-            ));
-        }
-        Ok(ParsedStmt::expr(expr))
-    }
-
-    fn parse_timeout_statement(
-        &mut self,
-        in_test: bool,
-        start: SourceLocation,
-    ) -> Result<ParsedStmt> {
-        let duration = self.parse_timeout_duration()?;
-        if self.check_ident("value") || self.check_ident("concurrent") {
-            return self
-                .parse_timeout_value_after_duration(start, duration)
-                .map(ParsedStmt::expr);
-        }
-        if !self.check_symbol("{") {
-            return Err(CompileError::syntax(
-                "expected timeout body",
-                self.peek().span.start,
-            ));
-        }
-        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
-        let end = body_spans.span.end;
-        Ok(ParsedStmt::with_block(
-            Stmt::Timeout {
-                duration,
-                body: body_expr,
-            },
-            SourceSpan { start, end },
-            body_spans,
-        ))
-    }
-
-    fn parse_concurrent_statement(
-        &mut self,
-        in_test: bool,
-        start: SourceLocation,
-    ) -> Result<ParsedStmt> {
-        if self.match_ident("value") {
-            return self
-                .parse_value_block_expression(start, true)
-                .map(ParsedStmt::expr);
-        }
-        if !self.check_symbol("{") {
-            let message = if self.check_ident("timeout")
-                || self.check_ident("serial")
-                || self.check_ident("concurrent")
-            {
-                "noncanonical modifier order; use `timeout(...) concurrent value { ... }`"
-            } else {
-                "expected concurrent body"
-            };
-            return Err(CompileError::syntax(message, self.peek().span.start));
-        }
-        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
-        let end = body_spans.span.end;
-        Ok(ParsedStmt::with_block(
-            Stmt::Concurrent { body: body_expr },
-            SourceSpan { start, end },
-            body_spans,
-        ))
-    }
-
-    fn parse_serial_statement(
-        &mut self,
-        in_test: bool,
-        start: SourceLocation,
-    ) -> Result<ParsedStmt> {
-        if !self.check_symbol("{") {
-            return Err(CompileError::syntax(
-                "expected serial body",
-                self.peek().span.start,
-            ));
-        }
-        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
-        let end = body_spans.span.end;
-        Ok(ParsedStmt::with_block(
-            Stmt::Serial { body: body_expr },
-            SourceSpan { start, end },
-            body_spans,
-        ))
-    }
-
-    fn parse_assert_statement(&mut self, start: SourceLocation) -> Result<ParsedStmt> {
-        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
-        let message = if self.match_symbol(",") {
-            Some(self.expect_string("expected assert message string")?)
-        } else {
-            None
-        };
-        let end = if message.is_some() {
-            self.previous().span.end
-        } else {
-            condition_spans.span.end
-        };
-        Ok(ParsedStmt::with_expression(
-            Stmt::Assert {
-                condition: condition_expr,
-                message,
-            },
-            SourceSpan { start, end },
-            condition_spans,
-        ))
-    }
-
-    fn parse_let(&mut self, mutable: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let name = self.expect_ident("expected binding name")?;
-        let ty = if self.match_symbol(":") {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-        self.expect_symbol("=")?;
-        let (value_expr, value_spans) = self.parse_expression()?.into_parts();
-        let end = value_spans.span.end;
-        Ok(ParsedStmt::with_expression(
-            Stmt::Let {
-                mutable,
-                name,
-                ty,
-                value: value_expr,
-            },
-            SourceSpan { start, end },
-            value_spans,
-        ))
-    }
-
-    fn parse_if(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
-        let then_block = self.parse_block(in_test)?;
-        let else_block = if self.match_ident("else") {
-            if self.match_ident("if") {
-                let nested_if = self.parse_if(in_test, self.previous().span.start)?;
-                Some(ParsedBlock::from_stmt(nested_if))
-            } else {
-                Some(self.parse_block(in_test)?)
-            }
-        } else {
-            None
-        };
-        let end = else_block
-            .as_ref()
-            .map(|block| block.spans.span.end)
-            .unwrap_or(then_block.spans.span.end);
-        let (then_expr, then_spans) = then_block.into_parts();
-        let (else_expr, blocks) = match else_block {
-            Some(block) => {
-                let (block_expr, block_spans) = block.into_parts();
-                (Some(block_expr), vec![then_spans, block_spans])
-            }
-            None => (None, vec![then_spans]),
-        };
-        Ok(ParsedStmt::new(
-            Stmt::If {
-                condition: condition_expr,
-                then_block: then_expr,
-                else_block: else_expr,
-            },
-            SourceSpan { start, end },
-            vec![condition_spans],
-            blocks,
-        ))
-    }
-
-    fn parse_for(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let first = self.expect_ident("expected loop item name")?;
-        let binding = if self.match_symbol(",") {
-            let value = self.expect_ident("expected loop value name")?;
-            ForBinding::Entry { key: first, value }
-        } else {
-            ForBinding::Item { item: first }
-        };
-        self.expect_ident_value("in")?;
-        let (iterable_expr, iterable_spans) = self.parse_expression()?.into_parts();
-        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
-        let end = body_spans.span.end;
-        Ok(ParsedStmt::with_expression_and_block(
-            Stmt::For {
-                binding,
-                iterable: iterable_expr,
-                body: body_expr,
-            },
-            SourceSpan { start, end },
-            iterable_spans,
-            body_spans,
-        ))
-    }
-
-    fn parse_while(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
-        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
-        let end = body_spans.span.end;
-        Ok(ParsedStmt::with_expression_and_block(
-            Stmt::While {
-                condition: condition_expr,
-                body: body_expr,
-            },
-            SourceSpan { start, end },
-            condition_spans,
-            body_spans,
-        ))
-    }
-
-    fn parse_match(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let (value_expr, value_spans) = self.parse_expression()?.into_parts();
-        let mut arms = Vec::new();
-        let mut blocks = Vec::new();
-        self.expect_symbol("{")?;
-        while !self.check_symbol("}") && !self.is_at_end() {
-            let pattern = self.parse_pattern()?;
-            self.expect_symbol("=>")?;
-            let body = self.parse_block(in_test)?;
-            blocks.push(body.spans);
-            arms.push(MatchArm {
-                pattern,
-                body: body.block,
-            });
-        }
-        self.expect_symbol("}")?;
-        let end = self.previous().span.end;
-        Ok(ParsedStmt::new(
-            Stmt::Match {
-                value: value_expr,
-                arms,
-            },
-            SourceSpan { start, end },
-            vec![value_spans],
-            blocks,
-        ))
-    }
-
-    fn parse_pattern(&mut self) -> Result<Pattern> {
-        let mut patterns = vec![self.parse_primary_pattern()?];
-        while self.match_symbol("|") {
-            patterns.push(self.parse_primary_pattern()?);
-        }
-        if patterns.len() == 1 {
-            Ok(patterns.pop().expect("one pattern"))
-        } else {
-            Ok(Pattern::Or(patterns))
-        }
-    }
-
-    fn parse_primary_pattern(&mut self) -> Result<Pattern> {
-        if self.match_ident("_") {
-            return Ok(Pattern::Wildcard);
-        }
-        if self.match_symbol("{") {
-            return Ok(Pattern::Record {
-                fields: self.parse_pattern_fields_after_open_brace()?,
-            });
-        }
-        if self.match_ident("true") {
-            return Ok(Pattern::Literal(Literal::Bool(true)));
-        }
-        if self.match_ident("false") {
-            return Ok(Pattern::Literal(Literal::Bool(false)));
-        }
-        if self.match_ident("null") {
-            return Ok(Pattern::Literal(Literal::Null));
-        }
-        if matches!(self.peek().kind, TokenKind::String(_)) {
-            let TokenKind::String(value) = self.advance().kind.clone() else {
-                unreachable!();
-            };
-            return Ok(Pattern::Literal(Literal::String(value)));
-        }
-        if matches!(self.peek().kind, TokenKind::Number(_)) {
-            let TokenKind::Number(value) = self.advance().kind.clone() else {
-                unreachable!();
-            };
-            return Ok(Pattern::Literal(Literal::Number(value)));
-        }
-
-        let name = self.expect_ident("expected pattern")?;
-        let snapshot = self.snapshot();
-        let type_args = if self.check_symbol("<") {
-            match self.parse_generic_args() {
-                Ok(type_args) => type_args,
-                Err(_) => {
-                    self.restore(snapshot);
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-        if self.match_symbol("{") {
-            return Ok(Pattern::Nominal {
-                name,
-                type_args,
-                fields: self.parse_pattern_fields_after_open_brace()?,
-            });
-        }
-        self.restore(snapshot);
-        Ok(Pattern::Binding(name))
-    }
-
-    fn parse_pattern_fields_after_open_brace(&mut self) -> Result<Vec<PatternField>> {
-        let mut fields = Vec::new();
-        while !self.check_symbol("}") && !self.is_at_end() {
-            let name = self.expect_ident("expected record pattern field name")?;
-            let pattern = if self.match_symbol(":") {
-                Some(self.parse_pattern()?)
-            } else {
-                None
-            };
-            fields.push(PatternField { name, pattern });
-            self.match_symbol(",");
-        }
-        self.expect_symbol("}")?;
-        Ok(fields)
-    }
-
+}
+impl Parser {
     fn parse_expression(&mut self) -> Result<ParsedExpr> {
         self.parse_binary(0)
     }
@@ -3796,7 +3036,6 @@ impl Parser {
         }
     }
 }
-
 fn contiguous_locations(left: SourceLocation, right: SourceLocation) -> bool {
     left.line == right.line && left.column == right.column
 }
