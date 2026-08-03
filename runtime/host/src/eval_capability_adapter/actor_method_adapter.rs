@@ -230,6 +230,7 @@ impl ActorMethodEvalExecution {
             self.test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
+            self.telemetry_context.clone(),
             TaskCallerKind::ActorInvocation,
             self.cancellation.clone(),
         );

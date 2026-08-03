@@ -1,4 +1,5 @@
 use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 use skiff_artifact_model::validate_activation_token;
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
@@ -22,8 +23,9 @@ use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
     ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskCancelResponseFrameHeader,
     TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader, TaskSubmitRejectionCode,
-    TaskSubmitResponseFrameHeader,
+    TaskSubmitResponseFrameHeader, TelemetryLevel, TelemetrySource, TelemetryTopic,
 };
+use crate::telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext};
 
 const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
 const ACTOR_REPLACE_TARGET: &str = "actor.replace";
@@ -246,15 +248,54 @@ impl<'a> RequestClient<'a> {
             .context
             .current_activation_identity(TASK_SUBMIT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
+        let task_id = request.task_id.clone();
         let message = TaskSubmitControlMessage {
             request,
             payload: args_payload,
             caller_kind,
         };
-        let response: TaskSubmitResponseFrameHeader =
-            send_task_submit_request(&self.context, TASK_SUBMIT_TARGET, &rpc_id, message, scope)
-                .await?;
+        let response: TaskSubmitResponseFrameHeader = match send_task_submit_request(
+            &self.context,
+            TASK_SUBMIT_TARGET,
+            &rpc_id,
+            message,
+            scope,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                match &error {
+                    RuntimeError::TaskSubmitRejected { code, message } => {
+                        self.context.emit_task_submit_event(
+                            "task.submit.rejected",
+                            TelemetryLevel::Warn,
+                            task_id.as_deref(),
+                            Some(code),
+                            Some(message),
+                        );
+                    }
+                    _ => {
+                        self.context.emit_task_submit_event(
+                            "task.submit.uncertain",
+                            TelemetryLevel::Warn,
+                            task_id.as_deref(),
+                            None,
+                            Some(&error.to_string()),
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        };
         validate_task_submit_response(&response, &rpc_id)?;
+        self.context.emit_task_submit_event(
+            "task.submit.accepted",
+            TelemetryLevel::Info,
+            task_id.as_deref().or(Some(response.task_id.as_str())),
+            None,
+            None,
+        );
         Ok(TaskSubmitResponseControl {
             task_ref: response.task_ref.into_string(),
             task_id: response.task_id,
@@ -417,6 +458,7 @@ pub struct RequestClientContext<'a> {
     operation_service_protocol_identity: Option<&'a str>,
     activation_identity: Option<&'a ActivationIdentityControl>,
     trace_id: Option<&'a str>,
+    telemetry: Option<RequestTelemetryContext>,
     router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
     outbound_requests: &'a OutboundRequestRegistry,
     cancellation: CancellationToken,
@@ -441,6 +483,7 @@ impl<'a> RequestClientContext<'a> {
             operation_service_protocol_identity: Some(invocation.task_service_protocol_identity()),
             activation_identity,
             trace_id: invocation.trace_id(),
+            telemetry: None,
             router_sender,
             outbound_requests,
             cancellation,
@@ -459,6 +502,7 @@ impl<'a> RequestClientContext<'a> {
         operation_service_protocol_identity: Option<&'a str>,
         activation_identity: Option<&'a ActivationIdentityControl>,
         trace_id: Option<&'a str>,
+        telemetry: Option<RequestTelemetryContext>,
         router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
         outbound_requests: &'a OutboundRequestRegistry,
         cancellation: CancellationToken,
@@ -474,6 +518,7 @@ impl<'a> RequestClientContext<'a> {
             operation_service_protocol_identity,
             activation_identity,
             trace_id,
+            telemetry,
             router_sender,
             outbound_requests,
             cancellation,
@@ -523,6 +568,50 @@ impl<'a> RequestClientContext<'a> {
 
     pub fn trace_id(&self) -> Option<&'a str> {
         self.trace_id
+    }
+
+    /// Attaches the request platform telemetry context (task submission
+    /// observability). `None` keeps the client silent.
+    pub fn with_telemetry(mut self, telemetry: Option<RequestTelemetryContext>) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    fn emit_task_submit_event(
+        &self,
+        name: &str,
+        level: TelemetryLevel,
+        task_id: Option<&str>,
+        code: Option<&str>,
+        message: Option<&str>,
+    ) {
+        let Some(telemetry) = self.telemetry.as_ref() else {
+            return;
+        };
+        let mut event = telemetry_event(
+            TelemetryTopic::Log,
+            telemetry_timestamp_now(),
+            TelemetrySource::Runtime,
+        );
+        event.name = Some(name.to_string());
+        event.level = Some(level);
+        event.service_id = Some(self.service_id.to_string());
+        event.runtime_id = Some(self.runtime_id.to_string());
+        event.request_id = Some(self.request_id.to_string());
+        event.trace_id = self.trace_id.map(str::to_string);
+        event.target = Some(TASK_SUBMIT_TARGET.to_string());
+        let mut attrs = Map::new();
+        if let Some(task_id) = task_id {
+            attrs.insert("taskId".to_string(), Value::String(task_id.to_string()));
+        }
+        if let Some(code) = code {
+            attrs.insert("code".to_string(), Value::String(code.to_string()));
+        }
+        if let Some(message) = message {
+            attrs.insert("reason".to_string(), Value::String(message.to_string()));
+        }
+        event.attrs = Some(attrs);
+        let _ = telemetry.emit(event);
     }
 }
 

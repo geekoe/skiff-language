@@ -74,7 +74,11 @@ use self::ws::{
 
 use crate::task::{
     DurableTaskControl, DurableTaskFrameSink, EpochTaskExecutionImageSource,
-    RouterTaskAttemptAdmission, TaskControlCounters,
+    RouterTaskAttemptAdmission, RouterTaskSchedulerObservation, TaskControlCounters,
+};
+use crate::telemetry::{
+    NoopTaskTelemetrySink, RouterTelemetryExporter, RouterTelemetryExporterHandle,
+    RouterTelemetryProducer, TaskTelemetrySink,
 };
 
 /// Fail-closed supervisor assembly errors; no listener is started and owned
@@ -128,6 +132,10 @@ pub struct RouterComponents {
     pub scheduler: Arc<Scheduler>,
     /// TaskStore handle (close on supervisor shutdown).
     pub task_store: Arc<dyn TaskStore>,
+    /// Task-dispatch telemetry sink (no-op when telemetry is disabled).
+    pub task_telemetry: Arc<dyn TaskTelemetrySink>,
+    /// Optional telemetry exporter task; shut down with the control plane.
+    pub telemetry_exporter: Mutex<Option<RouterTelemetryExporterHandle>>,
     /// Task worker joins; aborted on supervisor shutdown.
     pub task_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -152,6 +160,14 @@ impl RouterComponents {
     pub async fn shutdown_task_control(&self) {
         for handle in &self.task_tasks {
             handle.abort();
+        }
+        if let Some(exporter) = self
+            .telemetry_exporter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            exporter.shutdown().await;
         }
         let _ = self.task_store.close().await;
     }
@@ -264,6 +280,10 @@ impl RouterComponents {
         > =
             Arc::new(Mutex::new(None));
         let task_counters = Arc::new(TaskControlCounters::default());
+        let task_telemetry: Arc<dyn TaskTelemetrySink> = match RouterTelemetryProducer::new(config) {
+            Some(producer) => Arc::new(producer),
+            None => Arc::new(NoopTaskTelemetrySink),
+        };
         let task_clock: Arc<dyn skiff_task_control::TaskClock> =
             Arc::new(skiff_task_control::SystemClock);
         let ws_clock: Arc<dyn crate::ws::Clock> = Arc::new(WsSystemClock);
@@ -275,6 +295,7 @@ impl RouterComponents {
             Arc::clone(&deferred_task_dispatcher),
             Arc::clone(&ws_clock),
             Arc::clone(&task_counters),
+            Arc::clone(&task_telemetry),
             Duration::from_millis(1_000),
         ));
         let mut task_tasks = Vec::new();
@@ -284,7 +305,7 @@ impl RouterComponents {
                 session_handle.clone(),
                 Arc::clone(&session_writer),
             ));
-        let scheduler = Arc::new(Scheduler::new(
+        let scheduler = Arc::new(Scheduler::with_observer(
             Arc::clone(&task_store),
             Arc::new(RouterTaskAttemptAdmission::new(
                 Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
@@ -293,6 +314,7 @@ impl RouterComponents {
                 Arc::clone(&ws_clock),
                 config.request_timeout_ms,
                 Arc::clone(&task_counters),
+                Arc::clone(&task_telemetry),
                 Arc::clone(&actor),
                 Arc::clone(&task_actor_port),
                 crate::actor::DEFAULT_ACTIVATION_DEADLINE_MS,
@@ -301,6 +323,9 @@ impl RouterComponents {
             task_clock,
             SchedulerConfig::default(),
             RetryBackoffPolicy::default(),
+            Arc::new(RouterTaskSchedulerObservation::new(Arc::clone(
+                &task_telemetry,
+            ))),
         ));
         *deferred_task_scheduler
             .lock()
@@ -478,6 +503,7 @@ impl RouterComponents {
             Arc::new(EpochTaskExecutionImageSource::new(Arc::clone(&epoch_store))),
             Arc::clone(&session_writer),
             Arc::clone(&task_counters),
+            Arc::clone(&task_telemetry),
             usize::try_from(config.http_max_request_bytes).unwrap_or(usize::MAX),
         ));
         actor_session_owner.set_sink(Arc::clone(&actor_sink));
@@ -524,6 +550,15 @@ impl RouterComponents {
             config.request_timeout_ms,
         );
 
+        let telemetry_exporter = config
+            .telemetry
+            .as_ref()
+            .filter(|telemetry| telemetry.enabled && !telemetry.endpoint.trim().is_empty())
+            .and_then(|telemetry| {
+                RouterTelemetryProducer::new(config).map(|producer| {
+                    RouterTelemetryExporter::new(telemetry.endpoint.clone(), producer).start()
+                })
+            });
         Ok(Arc::new(Self {
             config: config.clone(),
             assembly: Arc::clone(&assembly),
@@ -547,6 +582,8 @@ impl RouterComponents {
             task_control,
             scheduler,
             task_store,
+            task_telemetry,
+            telemetry_exporter: Mutex::new(telemetry_exporter),
             task_tasks,
         }))
     }

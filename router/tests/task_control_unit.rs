@@ -29,6 +29,7 @@ use skiff_router::task::{
     DurableTaskControl, DurableTaskFrameSink, NoopActorAttemptTerminalSink,
     RouterTaskAttemptAdmission, TaskActorOwnerPort, TaskControlCounters, TaskExecutionImageSource,
 };
+use skiff_router::telemetry::{NoopTaskTelemetrySink, TaskTelemetrySink};
 use skiff_router::ws::Clock;
 use skiff_runtime_transport::actor_method::{
     ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader, ActorOwnerFileFrameHeader,
@@ -60,6 +61,10 @@ use tokio::sync::watch;
 
 const SERVICE_ID: &str = "example.com/service-1";
 const TASK_ID: &str = "task-control-1";
+
+fn noop_telemetry() -> Arc<dyn TaskTelemetrySink> {
+    Arc::new(NoopTaskTelemetrySink)
+}
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -659,6 +664,7 @@ fn sink_rig() -> (
         Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
+        noop_telemetry(),
         4096,
     ));
     (store, scheduler, sink, writer, counters)
@@ -688,6 +694,7 @@ fn scripted_control_rig(
         Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
+        noop_telemetry(),
         4096,
     ));
     (scheduler, sink, writer, counters)
@@ -899,6 +906,7 @@ async fn submit_transient_create_queries_same_task_id() {
         Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&ambiguous_writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
+        noop_telemetry(),
         4096,
     ));
     ambiguous.fail_next_create();
@@ -950,6 +958,7 @@ async fn immediate_submit_wakes_scheduler_without_waiting_for_scan() {
         Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
+        noop_telemetry(),
         4096,
     ));
     let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
@@ -997,6 +1006,7 @@ fn control_rig() -> ControlRig {
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&clock) as Arc<dyn Clock>,
         Arc::clone(&counters),
+        noop_telemetry(),
         Duration::from_millis(20),
     ));
     let worker = control.spawn_worker();
@@ -1016,6 +1026,7 @@ fn control_rig() -> ControlRig {
         Arc::clone(&clock) as Arc<dyn Clock>,
         5_000,
         Arc::clone(&counters),
+        noop_telemetry(),
         actor,
         actor_port as Arc<dyn TaskActorOwnerPort>,
         30_000,
@@ -1142,6 +1153,7 @@ async fn admission_uncertain_when_control_plane_not_assembled() {
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&clock) as Arc<dyn Clock>,
         Arc::clone(&counters),
+        noop_telemetry(),
         Duration::from_millis(20),
     ));
     let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
@@ -1154,6 +1166,7 @@ async fn admission_uncertain_when_control_plane_not_assembled() {
         Arc::clone(&clock) as Arc<dyn Clock>,
         5_000,
         Arc::clone(&counters),
+        noop_telemetry(),
         actor,
         actor_port as Arc<dyn TaskActorOwnerPort>,
         30_000,
@@ -1590,6 +1603,7 @@ async fn status_and_cancel_unknown_owner_is_not_found_error() {
         }),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
+        noop_telemetry(),
         4096,
     ));
     let session = RuntimeSessionEpoch {

@@ -24,8 +24,9 @@ use crate::model::{
     TaskState, TaskTerminal,
 };
 use crate::store::{
-    ClaimInput, ClaimOutcome, DueScanInput, LeaseRecoveryInput, LeaseRecoveryOutcome, ReleaseInput,
-    RenewInput, RenewOutcome, RenewRejection, ScanExpiredLeasesInput, SettleInput, TaskStore,
+    ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
+    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
+    ScanExpiredLeasesInput, SettleInput, TaskStore,
 };
 
 pub mod admission;
@@ -33,6 +34,54 @@ pub mod backoff;
 
 pub use admission::{AdmissionDecision, AttemptAdmission};
 pub use backoff::{FixedJitter, Jitter, LcgJitter, RetryBackoffPolicy};
+
+/// Observability seam for scheduler-owned transitions (authoritative design
+/// "Observability And Retention": claim / eligible wait / lease renew / loss /
+/// recovery / duplicate notification absorption / provable-rejection release).
+///
+/// The seam is strictly read-only: observers must never mutate store records,
+/// leases, backoff or scheduler policy. The default implementation is a no-op,
+/// so task-control has no telemetry dependency.
+pub trait SchedulerObservation: Send + Sync {
+    /// A scheduled record became due-visible in this scan (`ready` at store
+    /// authority `now`).
+    fn on_due_ready(&self, _record: &TaskRecord, _now: DurableUtcTimestamp) {}
+
+    /// This replica won the claim CAS for the record (fresh attempt / lease).
+    fn on_claim(&self, _record: &TaskRecord, _now: DurableUtcTimestamp) {}
+
+    /// A claim CAS was rejected for an already visible task (ordinary
+    /// duplicate delivery absorption; never creates a second logical task).
+    fn on_claim_duplicate(&self, _task_id: &TaskId, _reason: &ClaimRejection) {}
+
+    /// One accepted lease was renewed at store authority time.
+    fn on_renewed(&self, _task_id: &TaskId, _lease_id: &LeaseId, _new_expiry: DurableUtcTimestamp) {}
+
+    /// Renewal of one accepted lease was rejected (stale / expired / terminal /
+    /// missing); bookkeeping for that exact lease ends.
+    fn on_renew_lost(&self, _task_id: &TaskId, _lease_id: &LeaseId, _rejection: RenewRejection) {}
+
+    /// Lease-expiry recovery won the CAS: the task is `ready` again and the
+    /// next attempt is paced by the durable retry not-before.
+    fn on_recover(&self, _task_id: &TaskId, _lease_id: &LeaseId) {}
+
+    /// A provable-rejection release won the CAS: the lease is returned to
+    /// `ready` with the scheduler-owned backoff.
+    fn on_release(
+        &self,
+        _task_id: &TaskId,
+        _lease_id: &LeaseId,
+        _retry_not_before: DurableUtcTimestamp,
+    ) {
+    }
+}
+
+/// Default no-op observation (plain `Scheduler::new` keeps task-control free
+/// of producers).
+#[derive(Debug, Default)]
+pub struct NoopSchedulerObservation;
+
+impl SchedulerObservation for NoopSchedulerObservation {}
 
 /// Scheduler policy and local loop configuration.
 #[derive(Debug, Clone)]
@@ -95,6 +144,7 @@ pub struct Scheduler {
     clock: Arc<dyn TaskClock>,
     config: SchedulerConfig,
     backoff: Arc<RetryBackoffPolicy>,
+    observer: Arc<dyn SchedulerObservation>,
     /// Leases this replica accepted and must renew while the attempt is
     /// pending. Settlement / lease loss removes the entry by lease id; a
     /// later claim for the same TaskId has a fresh lease id and is never
@@ -112,6 +162,7 @@ impl Clone for Scheduler {
             clock: self.clock.clone(),
             config: self.config.clone(),
             backoff: self.backoff.clone(),
+            observer: self.observer.clone(),
             active_leases: Mutex::new(
                 self.active_leases
                     .lock()
@@ -132,6 +183,26 @@ impl Scheduler {
         config: SchedulerConfig,
         backoff: RetryBackoffPolicy,
     ) -> Self {
+        Self::with_observer(
+            store,
+            admission,
+            clock,
+            config,
+            backoff,
+            Arc::new(NoopSchedulerObservation),
+        )
+    }
+
+    /// Scheduler with an injected observability seam (router telemetry).
+    /// The observer is read-only and never influences execution semantics.
+    pub fn with_observer(
+        store: Arc<dyn TaskStore>,
+        admission: Arc<dyn AttemptAdmission>,
+        clock: Arc<dyn TaskClock>,
+        config: SchedulerConfig,
+        backoff: RetryBackoffPolicy,
+        observer: Arc<dyn SchedulerObservation>,
+    ) -> Self {
         config.validate().expect("invalid scheduler config");
         let (wake_tx, wake_rx) = watch::channel(0);
         Self {
@@ -140,6 +211,7 @@ impl Scheduler {
             clock,
             config,
             backoff: Arc::new(backoff),
+            observer,
             active_leases: Mutex::new(HashMap::new()),
             wake_tx,
             wake_rx,
@@ -203,6 +275,7 @@ impl Scheduler {
             if record.state != TaskState::Ready {
                 continue;
             }
+            self.observer.on_due_ready(&record, now);
             if record
                 .retry_not_before
                 .is_some_and(|not_before| not_before > now)
@@ -225,8 +298,17 @@ impl Scheduler {
                     image_activatable: self.config.image_activatable,
                 })
                 .await;
-            let Ok(ClaimOutcome::Claimed(record)) = claim else {
-                continue;
+            let record = match claim {
+                Ok(ClaimOutcome::Claimed(record)) => {
+                    self.observer.on_claim(&record, now);
+                    record
+                }
+                Ok(ClaimOutcome::Rejected(reason)) => {
+                    self.observer
+                        .on_claim_duplicate(&record.task_id, &reason);
+                    continue;
+                }
+                Err(_) => continue,
             };
             let decision = self.admission.admit(&record).await;
             self.handle_decision(record, decision, now).await;
@@ -269,6 +351,8 @@ impl Scheduler {
                 })
                 .await;
             if matches!(recovered, Ok(LeaseRecoveryOutcome::Recovered(_))) {
+                self.observer
+                    .on_recover(&record.task_id, &lease.lease_id);
                 self.remove_active_lease_if(&record.task_id, &lease.lease_id);
             }
         }
@@ -302,6 +386,16 @@ impl Scheduler {
                 .await;
             match renewed {
                 Ok(RenewOutcome::Renewed(record)) => {
+                    self.observer
+                        .on_renewed(
+                            &task_id,
+                            &lease.lease_id,
+                            record
+                                .active_lease
+                                .as_ref()
+                                .map(|next| next.expiry)
+                                .unwrap_or(new_expiry),
+                        );
                     if let Some(next) = record.active_lease.as_ref().cloned() {
                         let mut guard = self.active_leases.lock().expect("active leases lock");
                         if guard
@@ -321,6 +415,8 @@ impl Scheduler {
                             | RenewRejection::Terminal
                             | RenewRejection::NotFound
                     ) {
+                        self.observer
+                            .on_renew_lost(&task_id, &lease.lease_id, rejection.clone());
                         self.remove_active_lease_if(&task_id, &lease.lease_id);
                     }
                 }
@@ -353,14 +449,19 @@ impl Scheduler {
                 else {
                     return;
                 };
-                let _ = self
-                    .store
-                    .release(ReleaseInput {
-                        task_id: record.task_id.clone(),
-                        lease_id: lease.lease_id.clone(),
-                        retry_not_before,
-                    })
-                    .await;
+                if matches!(
+                    self.store
+                        .release(ReleaseInput {
+                            task_id: record.task_id.clone(),
+                            lease_id: lease.lease_id.clone(),
+                            retry_not_before,
+                        })
+                        .await,
+                    Ok(ReleaseOutcome::Released(_))
+                ) {
+                    self.observer
+                        .on_release(&record.task_id, &lease.lease_id, retry_not_before);
+                }
                 self.remove_active_lease_if(&record.task_id, &lease.lease_id);
             }
             AdmissionDecision::Uncertain { .. } => {

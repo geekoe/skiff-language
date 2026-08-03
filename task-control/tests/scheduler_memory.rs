@@ -5,18 +5,28 @@
 mod support;
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use skiff_task_control::model::{
-    DurableDuration, DurableUtcTimestamp, TaskId, TaskOutcome, TaskState, TaskStatusKind,
-    TaskTerminal,
+    DurableDuration, DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskRecord, TaskState,
+    TaskStatusKind, TaskTerminal,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, FixedJitter, RetryBackoffPolicy, Scheduler, SchedulerConfig,
+    SchedulerObservation,
 };
-use skiff_task_control::store::{SettleInput, SettleOutcome, StatusInput, TaskStore};
-use skiff_task_control::{MemoryTaskStore, TaskClock};
+use skiff_task_control::store::{
+    BacklogObservation, CancelInput, ClaimInput, ClaimRejection, ClaimOutcome, DueScanInput,
+    LeaseRecoveryInput, LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection,
+    ReleaseInput, ReleaseOutcome, ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput,
+    TaskStore,
+};
+use skiff_task_control::{MemoryTaskStore, TaskClock, TaskStoreError};
 
 use support::scheduler::FakeAdmission;
 use support::{fixtures, FakeClock};
@@ -60,6 +70,216 @@ async fn record(store: &MemoryTaskStore, task_id: TaskId) -> skiff_task_control:
 
 fn task_id(seed: u64) -> TaskId {
     TaskId::new(format!("task-{seed}"))
+}
+
+#[derive(Debug, Default)]
+struct RecordingObservation {
+    events: Mutex<Vec<String>>,
+}
+
+impl RecordingObservation {
+    fn events(&self) -> Vec<String> {
+        self.events.lock().expect("observation lock").clone()
+    }
+
+    fn push(&self, event: String) {
+        self.events.lock().expect("observation lock").push(event);
+    }
+}
+
+impl SchedulerObservation for RecordingObservation {
+    fn on_due_ready(&self, record: &TaskRecord, _now: DurableUtcTimestamp) {
+        self.push(format!("ready:{}", record.task_id.as_str()));
+    }
+
+    fn on_claim(&self, record: &TaskRecord, _now: DurableUtcTimestamp) {
+        self.push(format!("claim:{}", record.task_id.as_str()));
+    }
+
+    fn on_claim_duplicate(&self, task_id: &TaskId, reason: &ClaimRejection) {
+        self.push(format!("duplicate:{}:{reason:?}", task_id.as_str()));
+    }
+
+    fn on_renewed(&self, task_id: &TaskId, _lease_id: &LeaseId, _new_expiry: DurableUtcTimestamp) {
+        self.push(format!("renewed:{}", task_id.as_str()));
+    }
+
+    fn on_renew_lost(
+        &self,
+        task_id: &TaskId,
+        _lease_id: &LeaseId,
+        rejection: RenewRejection,
+    ) {
+        self.push(format!("renewLost:{}:{rejection:?}", task_id.as_str()));
+    }
+
+    fn on_recover(&self, task_id: &TaskId, _lease_id: &LeaseId) {
+        self.push(format!("recovered:{}", task_id.as_str()));
+    }
+
+    fn on_release(
+        &self,
+        task_id: &TaskId,
+        _lease_id: &LeaseId,
+        _retry_not_before: DurableUtcTimestamp,
+    ) {
+        self.push(format!("released:{}", task_id.as_str()));
+    }
+}
+
+/// Deterministic duplicate-delivery script: the next claim CAS is answered
+/// `AlreadyLeased` (as if another replica won the race) while the due scan
+/// still reports the record as ready. All other operations delegate to the
+/// in-memory store, so the observation seam path is exercised without racing.
+struct ScriptedDuplicateStore {
+    inner: MemoryTaskStore,
+    duplicate_next_claim: AtomicBool,
+}
+
+#[async_trait]
+impl TaskStore for ScriptedDuplicateStore {
+    async fn now(&self) -> Result<DurableUtcTimestamp, TaskStoreError> {
+        self.inner.now().await
+    }
+
+    async fn create(&self, record: TaskRecord) -> Result<TaskRecord, TaskStoreError> {
+        self.inner.create(record).await
+    }
+
+    async fn claim(&self, input: ClaimInput) -> Result<ClaimOutcome, TaskStoreError> {
+        if self.duplicate_next_claim.swap(false, Ordering::SeqCst) {
+            return Ok(ClaimOutcome::Rejected(ClaimRejection::AlreadyLeased));
+        }
+        self.inner.claim(input).await
+    }
+
+    async fn renew(&self, input: RenewInput) -> Result<RenewOutcome, TaskStoreError> {
+        self.inner.renew(input).await
+    }
+
+    async fn settle(&self, input: SettleInput) -> Result<SettleOutcome, TaskStoreError> {
+        self.inner.settle(input).await
+    }
+
+    async fn cancel(&self, input: CancelInput) -> Result<skiff_task_control::model::TaskCancelResult, TaskStoreError> {
+        self.inner.cancel(input).await
+    }
+
+    async fn recover_expired_lease(
+        &self,
+        input: LeaseRecoveryInput,
+    ) -> Result<LeaseRecoveryOutcome, TaskStoreError> {
+        self.inner.recover_expired_lease(input).await
+    }
+
+    async fn release(&self, input: ReleaseInput) -> Result<ReleaseOutcome, TaskStoreError> {
+        self.inner.release(input).await
+    }
+
+    async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.inner.scan_due(input).await
+    }
+
+    async fn scan_expired_leases(
+        &self,
+        input: ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.inner.scan_expired_leases(input).await
+    }
+
+    async fn status(&self, input: StatusInput) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
+        self.inner.status(input).await
+    }
+
+    async fn observe_backlog(&self) -> Result<BacklogObservation, TaskStoreError> {
+        self.inner.observe_backlog().await
+    }
+
+    async fn ensure_indexes(&self) -> Result<(), TaskStoreError> {
+        self.inner.ensure_indexes().await
+    }
+
+    async fn close(&self) -> Result<(), TaskStoreError> {
+        self.inner.close().await
+    }
+}
+
+#[tokio::test]
+async fn scheduler_observation_seam_records_lifecycle_events() {
+    let clock = Arc::new(FakeClock::new(START_MILLIS));
+    let store = Arc::new(MemoryTaskStore::with_clock(clock.clone()));
+    let admission = Arc::new(FakeAdmission::new());
+    let observation = Arc::new(RecordingObservation::default());
+    let scheduler = Scheduler::with_observer(
+        store.clone(),
+        admission.clone(),
+        clock.clone(),
+        test_config("obs"),
+        test_backoff(100, 400, 0),
+        observation.clone(),
+    );
+
+    store
+        .create(immediate_record(501))
+        .await
+        .expect("create task");
+    scheduler.scan_once().await;
+    let after_scan = observation.events();
+    assert!(
+        after_scan.iter().any(|event| event == "ready:task-501"),
+        "scheduled -> ready must be observed, got {after_scan:?}"
+    );
+    assert!(
+        after_scan.iter().any(|event| event == "claim:task-501"),
+        "claim must be observed, got {after_scan:?}"
+    );
+
+    scheduler.renew_active_leases().await;
+    assert!(
+        observation
+            .events()
+            .iter()
+            .any(|event| event == "renewed:task-501"),
+        "accepted lease renewal must be observed"
+    );
+
+    // Deterministic duplicate-delivery absorption: the due scan reports the
+    // record ready, but the claim CAS loses to another replica.
+    let scripted = Arc::new(ScriptedDuplicateStore {
+        inner: MemoryTaskStore::with_clock(clock.clone()),
+        duplicate_next_claim: AtomicBool::new(true),
+    });
+    let duplicate_observer = Arc::new(RecordingObservation::default());
+    let duplicate_scheduler = Scheduler::with_observer(
+        scripted.clone(),
+        Arc::new(FakeAdmission::new()),
+        clock.clone(),
+        test_config("obs-duplicate"),
+        test_backoff(100, 400, 0),
+        duplicate_observer.clone(),
+    );
+    scripted
+        .create(immediate_record(502))
+        .await
+        .expect("create duplicate task");
+    duplicate_scheduler.scan_once().await;
+    assert!(
+        duplicate_observer
+            .events()
+            .iter()
+            .any(|event| event == "duplicate:task-502:AlreadyLeased"),
+        "duplicate claim rejection must be observed"
+    );
+
+    clock.advance(60_000);
+    scheduler.recover_once().await;
+    assert!(
+        observation
+            .events()
+            .iter()
+            .any(|event| event == "recovered:task-501"),
+        "lease-expiry recovery must be observed"
+    );
 }
 
 #[tokio::test]

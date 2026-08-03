@@ -150,7 +150,8 @@ pub struct StatusInput {
 }
 
 /// One read-only backlog snapshot (authoritative design "Observability And
-/// Retention": backlog depth and oldest eligible age).
+/// Retention": backlog depth, oldest eligible age, terminal age and store
+/// authority observation time). Never mutates state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BacklogObservation {
     /// Records still in `scheduled` (future or due but not yet advanced).
@@ -161,6 +162,13 @@ pub struct BacklogObservation {
     pub leased: usize,
     /// Oldest `due_at` across scheduled + ready records.
     pub oldest_due_at: Option<DurableUtcTimestamp>,
+    /// Terminal records still retained by the store (status/audit horizon).
+    pub terminal_count: usize,
+    /// Oldest `settled_at` across retained terminal records.
+    pub oldest_terminal_at: Option<DurableUtcTimestamp>,
+    /// Store-authority UTC time of this observation (terminal age / eligible
+    /// age are derived against this timestamp, never a local wall clock).
+    pub observed_at: Option<DurableUtcTimestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

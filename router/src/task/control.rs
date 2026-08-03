@@ -14,16 +14,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde_json::{json, Map, Value};
+use skiff_runtime_transport::protocol::TelemetryLevel;
 use skiff_task_control::model::{
     DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal,
 };
 use skiff_task_control::scheduler::Scheduler;
-use skiff_task_control::store::{ReleaseInput, SettleInput, TaskStore};
+use skiff_task_control::store::{ReleaseInput, SettleInput, SettleOutcome, TaskStore};
 
 use crate::dispatch::{
     RequestDispatcher, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink,
 };
 use crate::ws::Clock;
+use crate::telemetry::{task_event, TaskTelemetrySink};
 
 use super::actor_attempt::{ActorAttemptTerminal, ActorAttemptTerminalSink};
 use super::health::TaskControlCounters;
@@ -66,6 +69,7 @@ pub struct DurableTaskControl {
     dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
     clock: Arc<dyn Clock>,
     counters: Arc<TaskControlCounters>,
+    telemetry: Arc<dyn TaskTelemetrySink>,
     pending: Mutex<HashMap<String, PendingAttempt>>,
     events: tokio::sync::mpsc::Sender<ControlEvent>,
     events_rx: Mutex<Option<tokio::sync::mpsc::Receiver<ControlEvent>>>,
@@ -89,6 +93,7 @@ impl DurableTaskControl {
         dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
         clock: Arc<dyn Clock>,
         counters: Arc<TaskControlCounters>,
+        telemetry: Arc<dyn TaskTelemetrySink>,
         sweep_interval: Duration,
     ) -> Self {
         let (events, events_rx) = tokio::sync::mpsc::channel(4096);
@@ -98,6 +103,7 @@ impl DurableTaskControl {
             dispatcher,
             clock,
             counters,
+            telemetry,
             pending: Mutex::new(HashMap::new()),
             events,
             events_rx: Mutex::new(Some(events_rx)),
@@ -213,14 +219,15 @@ impl DurableTaskControl {
                     .unwrap_or(DurableUtcTimestamp::from_millis(
                         i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
                     ));
-                let _ = self
+                let result = self
                     .store
                     .settle(SettleInput {
-                        task_id,
-                        lease_id,
+                        task_id: task_id.clone(),
+                        lease_id: lease_id.clone(),
                         terminal: TaskTerminal { settled_at, outcome },
                     })
                     .await;
+                self.emit_settle_outcome(&request_id, &task_id, &result);
                 self.pending.lock().expect("pending lock").remove(&request_id);
             }
             ControlEvent::Release {
@@ -253,6 +260,118 @@ impl DurableTaskControl {
         }
     }
 
+    fn emit_settle_outcome(
+        &self,
+        request_id: &str,
+        task_id: &TaskId,
+        result: &std::result::Result<SettleOutcome, skiff_task_control::TaskStoreError>,
+    ) {
+        match result {
+            Ok(SettleOutcome::Settled(record)) | Ok(SettleOutcome::AlreadySettled(record)) => {
+                let outcome = record
+                    .terminal
+                    .as_ref()
+                    .map(|terminal| match &terminal.outcome {
+                        TaskOutcome::Succeeded => "succeeded",
+                        TaskOutcome::TargetFailed { .. } => "targetFailed",
+                        TaskOutcome::PlatformFailed { .. } => "platformFailed",
+                        TaskOutcome::Canceled => "canceled",
+                    })
+                    .unwrap_or("unknown");
+                let level = match outcome {
+                    "succeeded" => TelemetryLevel::Info,
+                    _ => TelemetryLevel::Warn,
+                };
+                let mut event = task_event(
+                    "task.settled",
+                    level,
+                    Some(record.task_id.as_str()),
+                    json!({
+                        "outcome": outcome,
+                        "settledAtMs": record
+                            .terminal
+                            .as_ref()
+                            .map(|terminal| terminal.settled_at.millis())
+                            .unwrap_or_default(),
+                    })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                );
+                event.request_id = Some(request_id.to_string());
+                self.telemetry.emit(event);
+            }
+            Ok(SettleOutcome::Conflict(_)) => {
+                self.emit_settle_stale(request_id, task_id, "conflict");
+            }
+            Ok(SettleOutcome::StaleLease) => {
+                self.emit_settle_stale(request_id, task_id, "staleLease");
+            }
+            Ok(SettleOutcome::ExpiredLease) => {
+                self.emit_settle_stale(request_id, task_id, "expiredLease");
+            }
+            Ok(SettleOutcome::NotLeased) => {
+                self.emit_settle_stale(request_id, task_id, "notLeased");
+            }
+            Ok(SettleOutcome::NotFound) => {
+                self.emit_settle_stale(request_id, task_id, "notFound");
+            }
+            Err(_) => {
+                let mut attrs = Map::new();
+                attrs.insert(
+                    "reason".to_string(),
+                    Value::String("storeUnavailable".to_string()),
+                );
+                let mut event = task_event(
+                    "task.settle.uncertain",
+                    TelemetryLevel::Warn,
+                    Some(task_id.as_str()),
+                    attrs,
+                );
+                event.request_id = Some(request_id.to_string());
+                self.telemetry.emit(event);
+            }
+        }
+    }
+
+    fn emit_settle_stale(&self, request_id: &str, task_id: &TaskId, reason: &str) {
+        let mut attrs = Map::new();
+        attrs.insert("reason".to_string(), Value::String(reason.to_string()));
+        let mut event = task_event(
+            "task.settle.stale",
+            TelemetryLevel::Warn,
+            Some(task_id.as_str()),
+            attrs,
+        );
+        event.request_id = Some(request_id.to_string());
+        self.telemetry.emit(event);
+    }
+
+    fn emit_uncertain_attempt(&self, request_id: &str, task_id: &TaskId, reason: &str) {
+        let mut attrs = Map::new();
+        attrs.insert("reason".to_string(), Value::String(reason.to_string()));
+        let mut event = task_event(
+            "task.attempt.uncertain",
+            TelemetryLevel::Warn,
+            Some(task_id.as_str()),
+            attrs,
+        );
+        event.request_id = Some(request_id.to_string());
+        self.telemetry.emit(event);
+    }
+
+    fn emit_lease_released(&self, task_id: &TaskId, lease_id: &LeaseId, retry_after_ms: u64) {
+        let mut attrs = Map::new();
+        attrs.insert("leaseId".to_string(), Value::String(lease_id.as_str().to_string()));
+        attrs.insert("retryAfterMs".to_string(), json!(retry_after_ms));
+        self.telemetry.emit(task_event(
+            "task.lease.released",
+            TelemetryLevel::Info,
+            Some(task_id.as_str()),
+            attrs,
+        ));
+    }
+
     fn enqueue_settle(
         &self,
         request_id: &str,
@@ -277,6 +396,7 @@ impl DurableTaskControl {
         retry_after_ms: u64,
     ) {
         self.pending.lock().expect("pending lock").remove(request_id);
+        self.emit_lease_released(task_id, lease_id, retry_after_ms);
         if let Some(scheduler) = self
             .scheduler
             .lock()
@@ -295,6 +415,11 @@ impl DurableTaskControl {
 
     fn forget_now(&self, request_id: &str, task_id: &TaskId, lease_id: &LeaseId) {
         self.pending.lock().expect("pending lock").remove(request_id);
+        self.emit_uncertain_attempt(
+            request_id,
+            task_id,
+            "attempt terminal uncertain; lease expiry drives infrastructure recovery",
+        );
         // Stop renewing so store-authority lease expiry drives recovery; the
         // attempt is neither settled nor released.
         if let Some(scheduler) = self

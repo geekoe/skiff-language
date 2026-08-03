@@ -305,7 +305,7 @@ ArtifactGraph
 - linker 不能依赖 host、request runner、router session、service DB runtime、telemetry、
   artifact cache、runtime config reload 或 package-test runner。
 - linker 输出只读 linked image。它不能绑定本机 runtime config、DB connection、telemetry
-  producer、spawn worker 或 route registry mutable state。
+  producer、task dispatch worker 或 route registry mutable state。
 - native validation 只使用 native contract 中的 signature metadata；不能依赖
   `skiff-runtime-native` handler / dispatch crate，不能调用 native handler。
 - linker 不修改 canonical artifact DTO，也不把 linked facts 写回 artifact JSON。
@@ -602,24 +602,31 @@ RuntimeHost
 
 ### Dispatch derived request
 
-`dispatch` 不拥有独立 worker/queue 子系统。它沿普通 request 分层创建一个 direct derived request：
+`dispatch` 不拥有独立 worker/queue 子系统。提交侧沿普通 request 分层发送 durable
+`task.submit.request`；执行 attempt 在 TaskStore 接受并 claim 后，沿普通 request 分层
+创建一个 ordinary derived request（任务调度语义见
+[`durable-task-dispatch.md`](durable-task-dispatch.md)）：
 
 ```text
 current Eval request
-  -> Runtime sends spawn.submit with runtime-owned callerRequestId
+  -> Runtime sends task.submit.request with runtime-owned callerRequestId and TaskId
   -> Router authenticates caller against the active request on the same WebSocket
-  -> Router pins the exact service/version/build/activation/replica
-  -> Router sends ordinary request.start with an internal spawn invocation branch
+  -> Router freezes the exact service/version/build/activation execution image
+     into a TaskId-idempotent durable task record and wakes the scheduler
+  -> scheduler claims due tasks and, through the admission seam, sends ordinary
+     request.start with an internal task invocation branch
   -> HostRequestEntry validates target and admits an independent RequestSupervisor scope
   -> Eval decodes recoverable args against the exact target plan and executes
-  -> ordinary response.end / response.error terminal tracking and telemetry
+  -> ordinary response.end / response.error terminal tracking, settlement and telemetry
 ```
 
-Router owns parent authentication and derived dispatch；Host request layer owns admission and terminal；
-Eval owns target execution。`spawn` submit receipt只等待Router建立普通pending owner并把
-`request.start`交给选定连接，不等待terminal。父request的cancellation/deadline不得传播到已经
-提交的derived request。不得新增spawn专用start/accepted frame；若将来所有request都需要显式
-admission ack，应扩展通用request lifecycle。
+Router owns parent authentication and durable submission；scheduler / admission seam owns claim
+and attempt admission；Host request layer owns attempt admission and terminal；Eval owns target
+execution。`task.submit` receipt 只等待 TaskStore 的 durable commit，不等待 terminal，也不在
+提交时创建执行 request；执行 attempt 由 scheduler claim 后经普通 `request.start`（task
+invocation branch）建立。父request的cancellation/deadline不得传播到已经提交的task。不得新增
+task 专用 start/accepted frame；若将来所有request都需要显式 admission ack，应扩展通用
+request lifecycle。
 
 测试运行可以在内部start frame附带Router签发的opaque case capability。Host用它借用同一case的
 inline-effect registry并维护root-closing/derived引用；该token不进入artifact、配置、args或业务API。
@@ -721,7 +728,7 @@ skiff-runtime-package-test
 
 - linked files。
 - linked package export overlay。
-- routes / operations / spawn routes / receiver dispatch index。
+- routes / operations / task routes / receiver dispatch index。
 - linked type context。
 - native call validation facts。
 

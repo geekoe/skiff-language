@@ -12,6 +12,7 @@ pub(super) struct RuntimeOwnedRequestParts {
     pub(super) operation_service_protocol_identity: Option<String>,
     pub(super) activation_identity: Option<ActivationIdentityControl>,
     pub(super) trace_id: Option<String>,
+    pub(super) telemetry_context: Option<crate::telemetry::RequestTelemetryContext>,
     pub(super) test_case_capability: Option<String>,
     pub(super) task_caller_kind: TaskCallerKind,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,

@@ -15,6 +15,7 @@ pub mod actor_ports;
 pub mod actor_target;
 pub mod control;
 pub mod health;
+pub mod observation;
 pub mod sink;
 
 use std::time::{Duration, SystemTime};
@@ -29,6 +30,7 @@ pub use actor_ports::{SessionTaskActorOwnerPort, TaskActorOwnerPort};
 pub use actor_target::{snapshot_actor_key, store_declaration_owner_to_frame};
 pub use control::DurableTaskControl;
 pub use health::{TaskControlCounters, TaskControlHealth};
+pub use observation::RouterTaskSchedulerObservation;
 pub use sink::{DurableTaskFrameSink, EpochTaskExecutionImageSource, TaskExecutionImageSource};
 
 /// Formats epoch millis as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC) for the ordinary

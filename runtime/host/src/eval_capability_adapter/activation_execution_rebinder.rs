@@ -264,6 +264,7 @@ impl ActivationExecutionContextRebinder for RuntimeActivationExecutionContextReb
                 .test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
+            self.input.telemetry_context.clone(),
             TaskCallerKind::Request,
             self.input.cancellation.clone(),
         );

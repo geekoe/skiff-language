@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde_json::{Map, Value};
 use skiff_runtime_transport::actor_method::{
     ActorLogicalRefFrameHeader, ActorMethodDeadlineFrameHeader, ActorMethodInvokeFrameHeader,
     ACTOR_ARGUMENTS_ENCODING_V1,
@@ -33,6 +34,7 @@ use skiff_runtime_transport::actor_owner::{
     ActorOwnerRouteAuthorityFrameHeader,
 };
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
+use skiff_runtime_transport::protocol::TelemetryLevel;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
     RuntimeAssemblyTaskAttemptFrameHeader, RuntimeAssemblyTaskInvocationFrameHeader,
@@ -55,6 +57,7 @@ use crate::session::identity::RuntimeSessionEpoch;
 use crate::supervisor::actor_sink::ActorFrameSink;
 use crate::supervisor::actor::ActorComponents;
 use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation};
+use crate::telemetry::{task_event, TaskTelemetrySink};
 use crate::ws::Clock;
 
 use super::actor_target::{snapshot_actor_key, store_declaration_owner_to_frame};
@@ -70,6 +73,7 @@ pub struct RouterTaskAttemptAdmission {
     clock: Arc<dyn Clock>,
     request_timeout_ms: u64,
     counters: Arc<TaskControlCounters>,
+    telemetry: Arc<dyn TaskTelemetrySink>,
     seq: AtomicU64,
     /// Actor lane owners consumed by get-or-activate / invocation admission.
     actor: Arc<ActorComponents>,
@@ -100,6 +104,7 @@ impl RouterTaskAttemptAdmission {
         clock: Arc<dyn Clock>,
         request_timeout_ms: u64,
         counters: Arc<TaskControlCounters>,
+        telemetry: Arc<dyn TaskTelemetrySink>,
         actor: Arc<ActorComponents>,
         actor_port: Arc<dyn TaskActorOwnerPort>,
         activation_deadline_ms: u64,
@@ -112,6 +117,7 @@ impl RouterTaskAttemptAdmission {
             clock,
             request_timeout_ms,
             counters,
+            telemetry,
             seq: AtomicU64::new(0),
             actor,
             actor_port,
@@ -209,6 +215,112 @@ impl RouterTaskAttemptAdmission {
         })
     }
 
+    fn emit_admission_decision(&self, record: &TaskRecord, decision: &AdmissionDecision) {
+        let lease = record.active_lease.as_ref();
+        let mut attrs = Map::new();
+        if let Some(lease) = lease {
+            attrs.insert(
+                "attemptId".to_string(),
+                Value::String(lease.attempt_id.as_str().to_string()),
+            );
+            attrs.insert(
+                "leaseId".to_string(),
+                Value::String(lease.lease_id.as_str().to_string()),
+            );
+        }
+        attrs.insert(
+            "targetKind".to_string(),
+            Value::String(match record.target {
+                DetachedCallTarget::Function { .. } => "function",
+                DetachedCallTarget::ActorMethod { .. } => "actorMethod",
+            }
+            .to_string()),
+        );
+        match decision {
+            AdmissionDecision::Accepted => {
+                self.telemetry.emit(task_event(
+                    "task.admission.accepted",
+                    TelemetryLevel::Info,
+                    Some(record.task_id.as_str()),
+                    attrs,
+                ));
+            }
+            AdmissionDecision::RejectedProvable { reason } => {
+                attrs.insert("reason".to_string(), Value::String(reason.clone()));
+                self.telemetry.emit(task_event(
+                    "task.admission.rejected",
+                    TelemetryLevel::Warn,
+                    Some(record.task_id.as_str()),
+                    attrs,
+                ));
+            }
+            AdmissionDecision::Uncertain { reason } => {
+                attrs.insert("reason".to_string(), Value::String(reason.clone()));
+                self.telemetry.emit(task_event(
+                    "task.admission.uncertain",
+                    TelemetryLevel::Warn,
+                    Some(record.task_id.as_str()),
+                    attrs,
+                ));
+            }
+            AdmissionDecision::PermanentFailure { reason } => {
+                attrs.insert("reason".to_string(), Value::String(reason.clone()));
+                self.telemetry.emit(task_event(
+                    "task.platform.failed",
+                    TelemetryLevel::Error,
+                    Some(record.task_id.as_str()),
+                    attrs,
+                ));
+            }
+        }
+    }
+
+    fn emit_admission_selection(
+        &self,
+        record: &TaskRecord,
+        request_id: Option<&str>,
+        runtime: Option<&str>,
+        target: Option<&str>,
+    ) {
+        let mut attrs = Map::new();
+        if let Some(lease) = record.active_lease.as_ref() {
+            attrs.insert(
+                "attemptId".to_string(),
+                Value::String(lease.attempt_id.as_str().to_string()),
+            );
+            attrs.insert(
+                "leaseId".to_string(),
+                Value::String(lease.lease_id.as_str().to_string()),
+            );
+        }
+        if let Some(runtime) = runtime {
+            attrs.insert("runtimeId".to_string(), Value::String(runtime.to_string()));
+        }
+        if let Some(target) = target {
+            attrs.insert("target".to_string(), Value::String(target.to_string()));
+        }
+        let mut event = task_event(
+            "task.admission.selection",
+            TelemetryLevel::Info,
+            Some(record.task_id.as_str()),
+            attrs,
+        );
+        event.request_id = request_id.map(str::to_string);
+        event.trace_id = Some(record.trace.trace_id.clone());
+        self.telemetry.emit(event);
+    }
+
+    fn emit_artifact_event(&self, record: &TaskRecord, name: &str, reason: &str) {
+        let mut attrs = Map::new();
+        attrs.insert("reason".to_string(), Value::String(reason.to_string()));
+        self.telemetry.emit(task_event(
+            name,
+            TelemetryLevel::Warn,
+            Some(record.task_id.as_str()),
+            attrs,
+        ));
+    }
+
     /// Actor-method get-or-activate admission (authoritative design
     /// "Actor-method target", five branches).
     async fn admit_actor_method(&self, record: &TaskRecord) -> AdmissionDecision {
@@ -258,6 +370,11 @@ impl RouterTaskAttemptAdmission {
             self.counters
                 .admissions_rejected
                 .fetch_add(1, Ordering::Relaxed);
+            self.emit_artifact_event(
+                record,
+                "task.artifact.unavailable",
+                "frozen execution image is not admitted by any runtime",
+            );
             return AdmissionDecision::RejectedProvable {
                 reason: "frozen execution image is not admitted by any runtime".to_string(),
             };
@@ -289,6 +406,7 @@ impl RouterTaskAttemptAdmission {
             "{}#{}",
             owner.replica_id, owner.connection_generation
         );
+        self.emit_admission_selection(record, None, Some(&owner_connection), Some(method.as_str()));
         let now = self.clock.now_ms();
         let declaration_owner_frame = store_declaration_owner_to_frame(declaration_owner);
 
@@ -773,13 +891,27 @@ fn parse_waiter_outcome(outcome: &str) -> ActivationWaiterOutcome {
 #[async_trait::async_trait]
 impl AttemptAdmission for RouterTaskAttemptAdmission {
     async fn admit(&self, record: &TaskRecord) -> AdmissionDecision {
-        if matches!(record.target, DetachedCallTarget::ActorMethod { .. }) {
-            return self.admit_actor_method(record).await;
-        }
+        let decision = if matches!(record.target, DetachedCallTarget::ActorMethod { .. }) {
+            self.admit_actor_method(record).await
+        } else {
+            self.admit_function(record).await
+        };
+        self.emit_admission_decision(record, &decision);
+        decision
+    }
+}
+
+impl RouterTaskAttemptAdmission {
+    async fn admit_function(&self, record: &TaskRecord) -> AdmissionDecision {
         let Some(authority) = self.image_authority(record) else {
             self.counters
                 .admissions_rejected
                 .fetch_add(1, Ordering::Relaxed);
+            self.emit_artifact_event(
+                record,
+                "task.artifact.unavailable",
+                "frozen execution image is not admitted by any runtime",
+            );
             return AdmissionDecision::RejectedProvable {
                 reason: "frozen execution image is not admitted by any runtime".to_string(),
             };
@@ -828,10 +960,22 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
             lease_id: lease_id.as_str().to_string(),
         });
         match result {
-            TaskAttemptSubmitResult::Accepted { .. } => {
+            TaskAttemptSubmitResult::Accepted {
+                session_epoch, ..
+            } => {
                 self.counters
                     .admissions_accepted
                     .fetch_add(1, Ordering::Relaxed);
+                let target = match &record.target {
+                    DetachedCallTarget::Function { callable } => callable.as_str(),
+                    DetachedCallTarget::ActorMethod { .. } => "actorMethod",
+                };
+                self.emit_admission_selection(
+                    record,
+                    Some(&request_id),
+                    Some(&session_epoch.replica_id),
+                    Some(target),
+                );
                 self.control
                     .track_attempt(&request_id, &task_id, &lease_id, deadline_ms);
                 AdmissionDecision::Accepted

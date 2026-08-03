@@ -530,6 +530,7 @@ fn actor_invocation_fixture(
         operation_service_protocol_identity: Some("protocol-test".to_string()),
         activation_identity: None,
         trace_id: Some("trace:actor-invoke".to_string()),
+        telemetry_context: None,
         test_case_capability: None,
         task_caller_kind: TaskCallerKind::Request,
         router_sender: Some(router_sender),

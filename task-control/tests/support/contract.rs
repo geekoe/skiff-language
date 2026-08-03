@@ -986,6 +986,54 @@ async fn backlog_observation(store: &dyn TaskStore, time: &TestTime) {
             .is_some_and(|oldest| oldest <= future.due_at),
         "the future record is still scheduled, so it bounds the oldest"
     );
+
+    let settled_at = DurableUtcTimestamp::from_millis(time.now_millis() - 1_000);
+    let terminal = TaskTerminal {
+        settled_at,
+        outcome: TaskOutcome::Succeeded,
+    };
+    match store
+        .settle(SettleInput {
+            task_id: due.task_id.clone(),
+            lease_id: lease_id_of(&claim),
+            terminal: terminal.clone(),
+        })
+        .await
+        .expect("settle due task")
+    {
+        SettleOutcome::Settled(_) | SettleOutcome::AlreadySettled(_) => {}
+        other => panic!("settle for backlog terminal failed: {other:?}"),
+    }
+    let observed = store
+        .observe_backlog()
+        .await
+        .expect("observe backlog after terminal");
+    assert!(
+        observed.observed_at.is_some(),
+        "backlog observation must carry the store-authority time"
+    );
+    assert!(
+        observed.terminal_count >= baseline.terminal_count + 1,
+        "settled task must be counted as a retained terminal"
+    );
+    assert!(
+        observed
+            .oldest_terminal_at
+            .is_some_and(|oldest| oldest <= settled_at),
+        "oldest terminal must not be later than the new settled record"
+    );
+}
+
+fn lease_id_of(claim: &ClaimOutcome) -> LeaseId {
+    match claim {
+        ClaimOutcome::Claimed(record) => record
+            .active_lease
+            .as_ref()
+            .expect("claimed record has a lease")
+            .lease_id
+            .clone(),
+        other => panic!("expected a claimed record, got {other:?}"),
+    }
 }
 
 pub(crate) fn terminal_succeeded(time: &TestTime) -> TaskTerminal {

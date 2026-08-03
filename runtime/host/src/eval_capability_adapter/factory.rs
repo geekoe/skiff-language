@@ -110,6 +110,7 @@ pub(crate) fn actor_from_request<'a>(
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
     actor_method_outbound: &'a Arc<ActorMethodOutboundRegistry>,
     test_case_capability: Option<&str>,
+    telemetry_context: Option<crate::telemetry::RequestTelemetryContext>,
     task_caller_kind: TaskCallerKind,
     cancellation: CancellationToken,
 ) -> (
@@ -129,7 +130,8 @@ pub(crate) fn actor_from_request<'a>(
         router_sender,
         outbound_requests.as_ref(),
         cancellation.clone(),
-    );
+    )
+    .with_telemetry(telemetry_context.clone());
     let actor_context = concrete::ActorClientContext::new(
         invocation,
         activation_identity,
@@ -152,6 +154,7 @@ pub(crate) fn actor_from_request<'a>(
             .map(str::to_string),
         activation_identity: request_context.activation_identity().cloned(),
         trace_id: request_context.trace_id().map(str::to_string),
+        telemetry_context,
         test_case_capability: test_case_capability.map(str::to_string),
         task_caller_kind,
         router_sender: router_sender.cloned(),
@@ -199,10 +202,11 @@ impl TestActorCapabilityFactory {
             operation,
             None,
             router_sender,
-            outbound_requests,
-            &self.actor_method_outbound,
-            None,
-            TaskCallerKind::Request,
+        outbound_requests,
+        &self.actor_method_outbound,
+        None,
+        None,
+        TaskCallerKind::Request,
             cancellation,
         )
     }
