@@ -109,10 +109,24 @@ struct Pending {
     deadline: Option<RequestDeadline>,
 }
 
+/// Lightweight spawn-parent record for admitted requests that do not enter
+/// the ordinary dispatcher pending map (websocketConnect admissions). The
+/// websocket lane owns the connection lifecycle; the dispatcher only records
+/// the parent facts required by the frozen C-model-spawn parent resolution
+/// (request namespace). Function spawns from these parents fail closed
+/// (no admission permit/lease is held here); actor-method spawns are accepted.
+#[derive(Debug, Clone)]
+struct SpawnParent {
+    session_epoch: RuntimeSessionEpoch,
+    epoch: Arc<RoutingEpoch>,
+    deadline: Option<RequestDeadline>,
+}
+
 #[derive(Debug)]
 struct DispatcherInner {
     pool: RuntimeAdmissionPool,
     pending: BTreeMap<String, Pending>,
+    spawn_parents: BTreeMap<String, SpawnParent>,
     /// Terminal observation of closed sessions (idempotent cleanup state,
     /// not session truth): selection skips these even if a stale query returns
     /// them, closing the race between directory cancellation and enqueue.
@@ -139,6 +153,7 @@ impl RequestDispatcher {
             inner: Arc::new(Mutex::new(DispatcherInner {
                 pool,
                 pending: BTreeMap::new(),
+                spawn_parents: BTreeMap::new(),
                 closed_sessions: HashSet::new(),
                 stopped: false,
                 terminal_by_source: BTreeMap::new(),
@@ -642,7 +657,8 @@ impl RequestDispatcher {
                 reason: SpawnRejectReason::Shutdown,
             };
         }
-        let request_parent = inner.pending.contains_key(&spawn.caller_request_id);
+        let request_parent = inner.pending.contains_key(&spawn.caller_request_id)
+            || inner.spawn_parents.contains_key(&spawn.caller_request_id);
         let actor_parent = self
             .options
             .actor_spawn_control
@@ -686,6 +702,11 @@ impl RequestDispatcher {
         spawn: SpawnSubmit,
     ) -> SpawnSubmitResult {
         if !inner.pending.contains_key(&spawn.caller_request_id) {
+            // A websocketConnect spawn parent (spawn_parents only) is not an
+            // ordinary dispatcher pending: function spawns from it fail closed
+            // because no admission permit/lease backs the parent here.
+            // Actor-method spawns route through `route_request_actor_method`
+            // and are accepted (C-model-spawn request namespace).
             return SpawnSubmitResult::Rejected {
                 request_id: spawn.spawn_request_id,
                 reason: SpawnRejectReason::WrongParentKind,
@@ -863,10 +884,17 @@ impl RequestDispatcher {
     /// Captured epoch held by one pending (integration seam; pending invariant
     /// §3.3 step 6).
     pub fn pending_epoch(&self, request_id: &str) -> Option<Arc<RoutingEpoch>> {
-        self.lock()
+        let inner = self.lock();
+        inner
             .pending
             .get(request_id)
             .map(|pending| pending.epoch.clone())
+            .or_else(|| {
+                inner
+                    .spawn_parents
+                    .get(request_id)
+                    .map(|parent| parent.epoch.clone())
+            })
     }
 
     /// Registered session lease held by one pending (integration seam).
@@ -877,12 +905,66 @@ impl RequestDispatcher {
             .map(|pending| pending.lease.clone())
     }
 
+    /// Registers a lightweight spawn parent for an admitted non-ordinary
+    /// request (websocketConnect). The parent lives for the admission window
+    /// only; callers must unregister it exactly once when the admission
+    /// settles.
+    pub fn register_spawn_parent(
+        &self,
+        request_id: String,
+        session_epoch: RuntimeSessionEpoch,
+        epoch: Arc<RoutingEpoch>,
+        deadline: Option<RequestDeadline>,
+    ) -> Result<(), String> {
+        let mut inner = self.lock();
+        if inner.pending.contains_key(&request_id) || inner.spawn_parents.contains_key(&request_id)
+        {
+            return Err(format!(
+                "spawn parent request id {request_id} is already registered"
+            ));
+        }
+        inner.spawn_parents.insert(
+            request_id,
+            SpawnParent {
+                session_epoch,
+                epoch,
+                deadline,
+            },
+        );
+        Ok(())
+    }
+
+    /// Removes one lightweight spawn parent (idempotent).
+    pub fn unregister_spawn_parent(&self, request_id: &str) {
+        self.lock().spawn_parents.remove(request_id);
+    }
+
+    /// Parent facts for a lightweight spawn parent (websocketConnect), if
+    /// registered: captured routing epoch and the exact runtime session that
+    /// owns the admission.
+    pub fn spawn_parent_facts(
+        &self,
+        request_id: &str,
+    ) -> Option<(Arc<RoutingEpoch>, RuntimeSessionEpoch)> {
+        self.lock()
+            .spawn_parents
+            .get(request_id)
+            .map(|parent| (parent.epoch.clone(), parent.session_epoch.clone()))
+    }
+
     /// Deadline held by one pending (W-http timer integration seam).
     pub fn pending_deadline(&self, request_id: &str) -> Option<RequestDeadline> {
-        self.lock()
+        let inner = self.lock();
+        inner
             .pending
             .get(request_id)
             .and_then(|pending| pending.deadline.clone())
+            .or_else(|| {
+                inner
+                    .spawn_parents
+                    .get(request_id)
+                    .and_then(|parent| parent.deadline.clone())
+            })
     }
 }
 

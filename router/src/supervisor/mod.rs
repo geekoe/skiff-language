@@ -389,6 +389,7 @@ impl RouterComponents {
             Arc::clone(&ws_store),
             Arc::clone(&ws_selector),
             Arc::clone(&epoch_store),
+            Arc::clone(&dispatcher),
             config.websocket_path.clone(),
             config.request_timeout_ms,
         );

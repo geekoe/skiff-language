@@ -932,7 +932,7 @@ fn now_nanos() -> u128 {
         .as_nanos()
 }
 
-fn format_iso8601_now_plus(timeout_ms: u64) -> String {
+pub(crate) fn format_iso8601_now_plus(timeout_ms: u64) -> String {
     let instant = SystemTime::now() + Duration::from_millis(timeout_ms);
     let duration = instant.duration_since(UNIX_EPOCH).unwrap_or_default();
     let millis = duration.as_millis() as u64;

@@ -39,6 +39,8 @@ use ws_harness::{
     FakeRuntimeSessionClose, FakeRuntimeViolationSink,
 };
 
+mod dispatch_harness;
+
 fn websocket_entry() -> String {
     format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64))
 }
@@ -310,6 +312,81 @@ mod tests {
         assert!(matches!(
             rx.borrow_and_update().as_ref(),
             Some(ConnectOutcome::Accepted { .. })
+        ));
+        assert_eq!(store.pending_connect_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn connect_response_error_settles_unavailable_through_request_sink() {
+        use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
+        use skiff_router::supervisor::http::{PendingHttpRouter, RequestFrameSink};
+        use skiff_runtime_transport::protocol::{
+            encode_binary_frame, ResponseErrorFrameHeader, RuntimeErrorFramePayload,
+        };
+
+        let runtime = runtime_session("runtime-a");
+        let ws_lane = lane();
+        let writer = Arc::new(FakeWsSessionWriter::default());
+        let store = store_with(&ws_lane, &writer);
+        let (request_id, mut rx) = store
+            .connect_begin(
+                "wsconn-error-1",
+                &binding(),
+                &runtime,
+                &assembly_identity(),
+                1,
+                &skiff_router::supervisor::ws::WsConnectMetadata {
+                    url: "ws://127.0.0.1/ws".to_string(),
+                    query: Vec::new(),
+                    headers: Vec::new(),
+                    cookies: Vec::new(),
+                },
+                1000,
+            )
+            .expect("connect begin");
+
+        let epoch = dispatch_harness::corpus_epoch();
+        let candidate =
+            dispatch_harness::FakeCandidateViewSource::new(vec![dispatch_harness::session_state(
+                "s1",
+                "runtime-a",
+                1,
+            )]);
+        let options = RuntimeDispatcherOptions::new(
+            4,
+            Arc::new(dispatch_harness::FakeEpochSource { epoch: Some(epoch) }),
+            Arc::new(candidate),
+            Arc::new(dispatch_harness::FakeLeaseRevalidate::new()),
+            Arc::new(dispatch_harness::FakeRuntimePeer::new()),
+            Arc::new(dispatch_harness::FakeSessionAbort::new()),
+            Arc::new(dispatch_harness::FakeActorMethodSpawnControl::new()),
+        )
+        .expect("options");
+        let dispatcher = Arc::new(RequestDispatcher::new(options).expect("dispatcher"));
+        let sink = RequestFrameSink::new_with_ws(
+            Arc::clone(&dispatcher),
+            Arc::new(PendingHttpRouter::new()),
+            Some(store.clone()),
+        );
+
+        let header = ResponseErrorFrameHeader::control(
+            request_id.clone(),
+            RuntimeErrorFramePayload {
+                code: "UnhandledServiceError".to_string(),
+                message: "unhandled request-local user exception".to_string(),
+                status: None,
+                details: None,
+            },
+        );
+        let bytes = encode_binary_frame(&header, &[]).expect("encode response.error");
+        use skiff_router::session::InboundFrameSink;
+        sink.handle(&runtime, &bytes)
+            .expect("sink accepts response.error");
+
+        rx.changed().await.expect("connect settles on error");
+        assert!(matches!(
+            rx.borrow_and_update().as_ref(),
+            Some(ConnectOutcome::Unavailable { .. })
         ));
         assert_eq!(store.pending_connect_count(), 0);
     }

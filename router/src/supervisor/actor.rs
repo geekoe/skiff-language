@@ -118,9 +118,14 @@ impl SpawnParentLookup for DispatcherSpawnParentLookup {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()?;
-        let epoch = dispatcher.pending_epoch(caller_request_id)?;
-        let lease = dispatcher.pending_lease(caller_request_id)?;
-        let session = lease.session_epoch;
+        let (epoch, session) = match dispatcher.spawn_parent_facts(caller_request_id) {
+            Some(facts) => facts,
+            None => {
+                let epoch = dispatcher.pending_epoch(caller_request_id)?;
+                let lease = dispatcher.pending_lease(caller_request_id)?;
+                (epoch, lease.session_epoch)
+            }
+        };
         Some(SpawnParentSnapshot {
             runtime_id: session.replica_id.clone(),
             connection: format!("{}#{}", session.replica_id, session.connection_generation),

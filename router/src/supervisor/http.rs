@@ -186,6 +186,34 @@ impl InboundFrameSink for RequestFrameSink {
 
     fn handle(&self, session: &RuntimeSessionEpoch, raw: &[u8]) -> Result<(), TerminalKind> {
         if let Some(ws) = &self.ws {
+            if let Ok((header, error)) = decode_response_error_frame(raw) {
+                // A runtime-side error settles the websocketConnect
+                // correlation as unavailable (fail fast). The settle is a
+                // no-op for ordinary/JSON-RPC request ids.
+                let reason = match &error {
+                    skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::FixedService(
+                        error,
+                    ) => match error.envelope() {
+                        skiff_runtime_request_contract::service_error::ServiceErrorEnvelope::PublicTypedError {
+                            package_id,
+                            stable_schema_key,
+                            ..
+                        } => format!("service error {package_id}:{stable_schema_key}"),
+                        skiff_runtime_request_contract::service_error::ServiceErrorEnvelope::InternalError {
+                            payload,
+                            ..
+                        } => payload.message.clone(),
+                        skiff_runtime_request_contract::service_error::ServiceErrorEnvelope::PlatformError {
+                            builtin_error_identity,
+                            ..
+                        } => format!("platform error {builtin_error_identity:?}"),
+                    },
+                    skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::Control(
+                        payload,
+                    ) => payload.message.clone(),
+                };
+                ws.connect_unavailable(header.request_id(), reason);
+            }
             // WS connect admission response (E-ws): settle the connect
             // correlation; no ordinary dispatcher pending is involved.
             if let Ok(header) = decode_runtime_assembly_websocket_connect_response_end_frame(raw) {

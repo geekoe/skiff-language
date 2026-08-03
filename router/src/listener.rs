@@ -703,6 +703,7 @@ pub struct ClientWsContext {
     pub store: Arc<WsDispatchStore>,
     pub selector: Arc<dyn WsConnectSelector>,
     pub epoch_store: Arc<ActiveRoutingEpochStore>,
+    pub dispatcher: Arc<crate::dispatch::RequestDispatcher>,
     pub path: String,
     pub connect_timeout_ms: u64,
     pub tasks: Arc<WsTaskRegistry>,
@@ -716,6 +717,7 @@ impl ClientWsContext {
         store: Arc<WsDispatchStore>,
         selector: Arc<dyn WsConnectSelector>,
         epoch_store: Arc<ActiveRoutingEpochStore>,
+        dispatcher: Arc<crate::dispatch::RequestDispatcher>,
         path: String,
         connect_timeout_ms: u64,
     ) -> Arc<Self> {
@@ -725,6 +727,7 @@ impl ClientWsContext {
             store,
             selector,
             epoch_store,
+            dispatcher,
             path,
             connect_timeout_ms,
             tasks: Arc::new(WsTaskRegistry::new()),
@@ -832,6 +835,26 @@ impl GatewayUpgradeHandler for ClientWsContext {
                 return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }
         };
+        let spawn_parent_deadline = crate::dispatch::RequestDeadline {
+            timeout_ms: self.connect_timeout_ms,
+            expires_at: crate::supervisor::ws::format_iso8601_now_plus(self.connect_timeout_ms),
+        };
+        if let Err(_) = self.dispatcher.register_spawn_parent(
+            connect_request_id.clone(),
+            runtime.clone(),
+            epoch.clone(),
+            Some(spawn_parent_deadline),
+        ) {
+            // The admission cannot act as a spawn parent; fail closed so a
+            // connect handler that spawns gets a deterministic error instead
+            // of a mid-flight parent loss.
+            self.store.connect_unavailable(
+                &connect_request_id,
+                "websocket connect spawn parent registration failed".to_string(),
+            );
+            self.fail_reservation(&connection_id);
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        }
         let outcome = tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(self.connect_timeout_ms + 1000)) => {
                 self.store.connect_unavailable(
@@ -846,6 +869,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             }
         };
         self.selector.release(&connection_id);
+        self.dispatcher.unregister_spawn_parent(&connect_request_id);
         let Some(outcome) = outcome else {
             let _ = self
                 .lane
