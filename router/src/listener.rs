@@ -58,6 +58,7 @@ use crate::supervisor::ws::{
 use crate::test_dispatch::{TestDispatchHttpHandler, TEST_DISPATCH_CONTROL_PATH};
 use crate::ws::{AttachMeta, BusinessKey, ClientTerminal, PeerWriter, WebSocketLane};
 use skiff_artifact_model::AssemblyIdentity;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
 use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 
@@ -699,6 +700,11 @@ impl WsTaskRegistry {
 #[derive(Debug, Clone)]
 pub struct ClientWsContext {
     pub surface: Arc<WsGatewaySurfaceView>,
+    /// Live artifact store used to rebuild the WS surface from the current
+    /// routing epoch on every connect admission (activation swap visibility;
+    /// mirrors the HTTP live-surface resolver). `None` keeps the static
+    /// startup surface (test seams).
+    pub live_artifact_store: Option<CanonicalArtifactStore>,
     pub lane: Arc<WebSocketLane>,
     pub store: Arc<WsDispatchStore>,
     pub selector: Arc<dyn WsConnectSelector>,
@@ -713,6 +719,7 @@ pub struct ClientWsContext {
 impl ClientWsContext {
     pub fn new(
         surface: Arc<WsGatewaySurfaceView>,
+        live_artifact_store: Option<CanonicalArtifactStore>,
         lane: Arc<WebSocketLane>,
         store: Arc<WsDispatchStore>,
         selector: Arc<dyn WsConnectSelector>,
@@ -723,6 +730,7 @@ impl ClientWsContext {
     ) -> Arc<Self> {
         Arc::new(Self {
             surface,
+            live_artifact_store,
             lane,
             store,
             selector,
@@ -773,8 +781,17 @@ impl GatewayUpgradeHandler for ClientWsContext {
         if target.path != self.path {
             return Ok(empty_response(StatusCode::NOT_FOUND));
         }
-        let Some(binding) = self
-            .surface
+        let Some(epoch) = self.epoch_store.capture() else {
+            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+        };
+        let surface = match &self.live_artifact_store {
+            Some(store) => match crate::supervisor::ws::ws_surface_view_from_store(store, &epoch) {
+                Ok(surface) => surface,
+                Err(_) => return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE)),
+            },
+            None => Arc::clone(&self.surface),
+        };
+        let Some(binding) = surface
             .resolve(&selector.service_id, &target.path)
             .cloned()
         else {
@@ -786,9 +803,6 @@ impl GatewayUpgradeHandler for ClientWsContext {
             // `requiresRuntimePin == false` parity gap documented in the leaf).
             return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
         }
-        let Some(epoch) = self.epoch_store.capture() else {
-            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
-        };
         let assembly_identity = AssemblyIdentity::new(epoch.assembly_identity().to_string());
         let assembly_generation = epoch.assembly_generation();
         let connection_id = self.new_connection_id();

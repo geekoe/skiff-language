@@ -31,7 +31,7 @@ use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::http::HttpIngressResolver;
 use skiff_router::supervisor::http::load_http_surface_view;
-use skiff_router::supervisor::ws::load_ws_surface_view;
+use skiff_router::supervisor::ws::{load_ws_surface_view, ws_surface_view_from_store};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot as RuntimeConfigSnapshotValue;
 
 const SERVICE_ID: &str = "test.skiff/router-rust-ws-live";
@@ -370,6 +370,65 @@ mod tests {
         assert_eq!(ws.len(), 0, "HTTP-only deployment has no WS binding");
 
         drop(epoch);
+        drop(guard);
+    }
+
+    #[test]
+    fn generation_switch_rebuilds_ws_surface_with_current_deployment() {
+        // F9 regression: the WS connect admission resolves its binding from
+        // the live epoch. A generation switch publishes a new deployment
+        // revision; a startup-loaded static surface would keep the stale
+        // revision and the connect candidate query would fail with
+        // DeploymentNotInEpoch (WS connects 503 until router restart).
+
+        let deployment_v1 = deployment();
+        let ref_v1 = skiff_artifact_identity::service_deployment_ref(&deployment_v1);
+        let (artifact_root, guard) = temp_artifact_root();
+        let store = CanonicalArtifactStore::create(&artifact_root).expect("create artifact store");
+        store
+            .write_service_deployment(&deployment_v1)
+            .expect("write v1 deployment");
+        let epoch_v1 = epoch_with_deployment(ref_v1.clone());
+        let startup_surface =
+            load_ws_surface_view(&artifact_root, &epoch_v1).expect("startup surface");
+
+        // Generation switch: same service/path, new deployment revision.
+        let mut deployment_v2 = deployment_v1.clone();
+        deployment_v2.deployment_revision = DeploymentRevision::new("2");
+        assign_service_deployment_identity(&mut deployment_v2)
+            .expect("assign v2 deployment identity");
+        let ref_v2 = skiff_artifact_identity::service_deployment_ref(&deployment_v2);
+        store
+            .write_service_deployment(&deployment_v2)
+            .expect("write v2 deployment");
+        let epoch_v2 = epoch_with_deployment(ref_v2.clone());
+
+        // The startup surface keeps the stale revision.
+        let stale_binding = startup_surface
+            .resolve(SERVICE_ID, WS_PATH)
+            .expect("startup binding resolves");
+        assert_eq!(
+            stale_binding.deployment.deployment_revision,
+            ref_v1.deployment_revision,
+            "startup surface is pinned to the old deployment"
+        );
+
+        // The live rebuild resolves the current deployment revision.
+        let live_surface =
+            ws_surface_view_from_store(&store, &epoch_v2).expect("live WS surface rebuilds");
+        let current_binding = live_surface
+            .resolve(SERVICE_ID, WS_PATH)
+            .expect("current binding resolves");
+        assert_eq!(
+            current_binding.deployment.deployment_revision,
+            ref_v2.deployment_revision,
+            "generation switch must not leave the connect binding on a stale deployment revision"
+        );
+        assert_eq!(current_binding.methods.len(), 1);
+        assert!(current_binding.connect_handler);
+
+        drop(epoch_v1);
+        drop(epoch_v2);
         drop(guard);
     }
 

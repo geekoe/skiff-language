@@ -168,6 +168,9 @@ impl RouterComponents {
         );
         let ws_surface = load_ws_surface_view(&config.artifacts_path, &epoch)
             .map_err(SupervisorError::Surface)?;
+        let ws_live_artifact_store =
+            skiff_deployment::storage::CanonicalArtifactStore::open(&config.artifacts_path)
+                .map_err(|error| SupervisorError::Surface(error.to_string()))?;
         let session_handle = SessionHandle::new();
         let actor = assemble_actor_components(
             Arc::clone(&epoch),
@@ -385,6 +388,7 @@ impl RouterComponents {
         ));
         let client_ws = ClientWsContext::new(
             Arc::clone(&ws_surface),
+            Some(ws_live_artifact_store),
             Arc::clone(&ws_lane),
             Arc::clone(&ws_store),
             Arc::clone(&ws_selector),

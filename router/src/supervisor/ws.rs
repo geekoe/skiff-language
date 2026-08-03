@@ -119,6 +119,17 @@ pub fn load_ws_surface_view(
 ) -> Result<Arc<WsGatewaySurfaceView>, String> {
     let store = CanonicalArtifactStore::open(artifact_root)
         .map_err(|error| format!("open artifact store for WS surface: {error}"))?;
+    ws_surface_view_from_store(&store, epoch)
+}
+
+/// Builds the WS surface view from one epoch's resolved deployment records
+/// (live-surface rebuild after an activation swap; the connect admission
+/// resolves against the current epoch so a stale deployment revision never
+/// survives a generation switch).
+pub fn ws_surface_view_from_store(
+    store: &CanonicalArtifactStore,
+    epoch: &RoutingEpoch,
+) -> Result<Arc<WsGatewaySurfaceView>, String> {
     let mut by_service_path = BTreeMap::new();
     for deployment in epoch.deployment_projection() {
         let record = store.read_service_deployment(deployment).map_err(|error| {
