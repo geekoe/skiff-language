@@ -4,7 +4,21 @@
 
 状态：proposed（待实施）
 
-基线：commit `5c350fe7`。本文是 parser.rs 重构的唯一权威设计，阶段拆分、提交顺序和完成标准以此为准。
+基线：commit `af7aada1`（此前 `69413059` 已移除 too_many_lines allowlist 机制；
+`5c350fe7` 时点该机制尚未移除）。本文是 parser.rs 重构的唯一权威设计，阶段拆分、提交顺序和完成标准以此为准。
+
+## 2026-08-03 审阅修订
+
+本修订吸收独立审阅结论，只修正事实与口径，不改变目标架构和阶段划分：
+
+- 热点函数行数统一按“`fn` 签名行到闭括号行（不含尾随空行）”统计，原表整体多计 1 行；
+- `is_old_db_dotted_operation` 实际 19 行（39–57），不是 99 行，const 表化收益相应修正；
+- `looks_like_generic_call_suffix` 克隆的是 `tokens` 与 `provider_capability`，
+  `source_spans` 为 `SourceSpanTable::default()`，并非克隆；
+- “provider 死表面”收缩为状态收集本身，provider 关键字错误分支是可达路径，删除边界明确；
+- 补充跨文件 `impl Parser` 的可见性约定、`test_default_run_span` 链路、类型 golden 控制字符
+  用例和 parse 差量载体；
+- 验证命令按 AGENTS.md 口径修正为 `tests` selector。
 
 ## 1. 背景与门禁现状
 
@@ -15,7 +29,7 @@
 
 函数级门禁（`clippy.toml` `too-many-lines-threshold = 534`，`Cargo.toml` 中
 `clippy::too_many_lines = "deny"`，无白名单）目前不触发：全文件 132 个函数中最长的是
-`parse_db_operation_expr`（196 行）。重构时仍须保证任何新函数不超过 534 行，避免把文件级问题
+`parse_db_operation_expr`（195 行）。重构时仍须保证任何新函数不超过 534 行，避免把文件级问题
 转成函数级问题。
 
 ## 2. 现状诊断
@@ -64,21 +78,23 @@
 
 | 函数 | 行数 | 行区间 | 问题 |
 |---|---:|---|---|
-| `parse_db_operation_expr` | 196 | 3269–3464 | 10 种 db operation 分支全在一个 match 里，深浅嵌套，`children` 手动累积 |
-| `parse_primary` | 187 | 2736–2922 | 约 20 个关键字 arm 的巨型 match，含内联构造与错误提示 |
-| `parse_statement` | 181 | 1977–2157 | 大量关键字分派，每个分支内联构造 `StmtSourceSpans`（全文件约 15 处） |
-| `parse_source_file` | 155 | 344–498 | 顶层分派 + 三种 ParseMode 的 function 分支内联展开 |
-| `parse_postfix` | 139 | 2544–2682 | 后缀循环内混入 field/call/generic/`as`/patch/record 构造 |
-| `parse_test_effects` | 112 | 1708–1819 | 与 `parse_test_effect_sequence`（98 行）重复约 60 行 |
-| `parse_value_block_expression` | 111 | 2977–3087 | tail 判定逻辑复杂 |
-| `is_old_db_dotted_operation` | 99 | 39–137 | 一个 `matches!` 列表占 99 行，改 const 表即可 |
-| `parse_db_decl` | 97 | 856–952 | 十多个 db entry 关键字的 if-else 链 |
-| `parse_db_change_block` | 75 | 3652–3726 | 五类 change op 的手动分支 |
+| `parse_db_operation_expr` | 195 | 3269–3463 | 10 种 db operation 分支全在一个 match 里，深浅嵌套，`children` 手动累积 |
+| `parse_primary` | 186 | 2736–2921 | 约 20 个关键字 arm 的巨型 match，含内联构造与错误提示 |
+| `parse_statement` | 180 | 1977–2156 | 大量关键字分派，每个分支内联构造 `StmtSourceSpans`（全文件 20 处） |
+| `parse_source_file` | 154 | 344–497 | 顶层分派 + 三种 ParseMode 的 function 分支内联展开 |
+| `parse_postfix` | 138 | 2544–2681 | 后缀循环内混入 field/call/generic/`as`/patch/record 构造 |
+| `parse_test_effects` | 111 | 1708–1818 | 与 `parse_test_effect_sequence`（97 行）重复约 60 行 |
+| `parse_value_block_expression` | 110 | 2977–3086 | tail 判定逻辑复杂 |
+| `is_old_db_dotted_operation` | 19 | 39–57 | 一个 `matches!` 列表占 19 行，改 const 表即可 |
+| `parse_db_decl` | 96 | 856–951 | 十多个 db entry 关键字的 if-else 链 |
+| `parse_db_change_block` | 74 | 3652–3725 | 五类 change op 的手动分支 |
+
+行数口径：`fn` 签名行到闭括号行（不含尾随空行）。
 
 ### 2.4 重复模式
 
-- `let _ = self.match_symbol(";") || self.match_symbol(",");` 出现 8 次 → 抽
-  `match_statement_terminator()`。
+- `self.match_symbol(";") || self.match_symbol(",")` 表达式共出现 8 次（其中
+  `let _ = …;` 形式 4 次，其余为 `if` 条件形式）→ 抽 `match_statement_terminator()`。
 - `parse_impl_methods` / `parse_impl_methods_strict` / `parse_impl_methods_with_bodies_tolerant`
   三份几乎相同的循环骨架 → 合并为一个参数化函数。
 - `parse_db_read_block` 与 `parse_db_query_block` 几乎相同 → 共享
@@ -86,19 +102,28 @@
 - `parse_test_effects` 与 `parse_test_effect_sequence` 的字段循环重复 → 抽共享 outcome 解析器。
 - desc/asc 方向解析在 db index 与 db query 两处重复 → 抽 `parse_index_direction()`。
 - `parse_field_path` 与 `parse_patch_field_path` 逻辑相同，仅错误文案不同。
-- `StmtSourceSpans` 内联构造约 15 处、`children.push(x.spans.clone())` 约 15 处、
-  `.spans.clone()` 24 处 → span 装配 helper 化。
+- `StmtSourceSpans` 内联构造 20 处（parser.rs:148 及 2020/2034/2053/2066/2081/2100/2111/2122/
+  2141/2150/2182/2215/2238/2263/2288/2331/2357/2374/2404）、`children.push(x.spans.clone())`
+  14 处、`.spans.clone()` 24 处 → span 装配 helper 化。
 
 ### 2.5 结构性欠债
 
 1. **span 副作用通道**：`self.source_spans` 使 Parser 状态可变、装配路径不统一；
-   `SourceSpanTable` 在 AST 中是 `#[serde(skip)]`，完全可以从 Parser 移出，由
-   `parse_source_file` 局部收集。
+   `SourceFile.source_spans` 字段是 `#[serde(skip)]`（`ast.rs:34–35`；`SourceSpanTable` 本身
+   无 serde 派生），完全可以从 Parser 移出，由 `parse_source_file` 局部收集。
 2. **lookahead 克隆整个 Parser**：`looks_like_generic_call_suffix` 通过
-   `Parser { tokens: self.tokens.clone(), ... }` 做试探解析，连 tokens 和 source_spans 一起
-   克隆。`parse_primary_pattern` 已有 `snapshot/restore current` 的先例，游标快照可完全替代克隆。
-3. **死状态 / 不可达分支**：`provider_capability` 永远为 `None`；`reject_export_modifier` 三个
-   入口永远传 `true`。对应 provider 分支等约 50–70 行是死表面。
+   `Parser { tokens: self.tokens.clone(), ... }` 做试探解析，克隆的是 `tokens` 与
+   `provider_capability`；`source_spans` 为 `SourceSpanTable::default()`，并非克隆。
+   `parse_primary_pattern` 已有 `snapshot/restore current` 的先例，游标快照可完全替代克隆，
+   并顺带消除克隆中的死状态字段。
+3. **死状态 / 不可达分支**：`provider_capability` 字段与局部变量永远为 `None`（全文件无
+   `Some` 赋值）；`reject_export_modifier` 三个入口（`parse_source`/`parse_source_metadata`/
+   `parse_source_with_bodies_tolerant`）全部传 `true`。真正死的只有状态收集本身：字段、局部变量、
+   克隆和 `parser.rs:799` 的冗余条件（约十余行）。`check_provider_capability_start`
+   （3990–4004）、`parse_source_file` 的 provider 分支（403–407）、`interface_operation_start`
+   （787）、`parse_function_modifiers` 的 provider 检查（1597）是可达错误路径，且被
+   `rejects_provider_body_in_tolerant_mode`（tests.rs:1069）锁定。删除时只删状态收集，
+   保留关键字错误分支。
 4. **TypeRef 字符串化中间表示**：`parse_type/parse_primary_type/parse_record_type_name/
    parse_function_type_name/quote_string_type` 把类型拼成 `TypeRef { name: String }`，下游
    compiler 又用 `type_expr::TypeExpr::parse` 把这段文本再解析一遍。方向不是改 AST 结构，而是在
@@ -162,8 +187,11 @@ syntax/src/parser/
   `parse_source_file` 与 `parse_impl` 不再各自 match ParseMode。
 - **错误恢复原语**：`recoverable(|p| ...)` 或 `parse_or_skip(policy)` 包装“保存 → 尝试 → 回退
   跳过”，让 tolerant 语义局部化。
+- **跨文件可见性**：拆分后 `cursor.rs`、`stmt.rs`、`expr.rs`、`db.rs` 等子模块的 `impl Parser`
+  方法需要 `pub(super)` 或 `pub(crate)` 才能被兄弟模块调用；对外仍只公开
+  `parse_source`/`parse_source_metadata`/`parse_source_with_bodies_tolerant` 三个函数。
 - **移除死状态**：删 `provider_capability`、`reject_export_modifier` 配置位和不可达 provider
-  分支（错误文案不变，现有 provider 测试继续锁定行为）。
+  状态收集（错误文案不变，provider 关键字错误分支保留，现有 provider 测试继续锁定行为）。
 
 ## 4. 分阶段计划
 
@@ -178,9 +206,14 @@ syntax/src/parser/
    `a < b == c` 的 AST 形状。
 2. 类型文本 golden corpus：把现有测试和 fixtures 里出现的类型（泛型、record、fn 类型、
    `any I`、`/` 依赖路径、string literal 类型、nullable、union）收集成“输入 → 期望
-   `TypeRef.name` 文本”表。
-3. span 敏感用例：functions/impl_methods/consts/db_index_wheres 的 `SourceSpanTable` 内容。
+   `TypeRef.name` 文本”表，并明确纳入控制字符用例（`serde_json` 转义与 `quote_string_type`
+   的差异点）。
+3. span 敏感用例：functions/impl_methods/consts/db_index_wheres 的 `SourceSpanTable` 内容；
+   另含 `test_default_run_span`（`ast.rs:32–33` 同为 `#[serde(skip)]`，目前经局部变量而非
+   `self.source_spans` 收集，单通道化时不要遗漏）。
 4. tolerant 模式回退路径的精确行为（现有 827/852/1069 已覆盖部分，可补失败后游标位置断言）。
+5. parse 输出差量载体：仓库当前没有现成 fixture 差量工具，Phase 3 的“全部 `.skiff` fixtures
+   parse 输出差量”需要先落成可复现脚本或 `#[test]`，作为 Phase 0 交付的一部分。
 
 验证：`cargo test -p skiff-syntax`；`node scripts/check-rust-file-lines.mjs`。
 
@@ -190,8 +223,10 @@ syntax/src/parser/
    skip_balanced_block` 及 `import_tail_is_terminated`；新增 `snapshot()/restore()`。
 2. 用快照替换 `looks_like_generic_call_suffix` 的 Parser 克隆。
 3. 新增 span 装配 helper，替换约 15 处内联 `StmtSourceSpans`。
-4. 删除死状态：`provider_capability`、`reject_export_modifier` 字段及不可达 provider 分支；
-   `is_old_db_dotted_operation` 改为 const 表（99 行 → 约 15 行）。
+4. 删除死状态：只删 `provider_capability`、`reject_export_modifier` 状态收集与 `parser.rs:799`
+   冗余条件，保留 provider 关键字错误分支；`is_old_db_dotted_operation` 改为 const 表
+   （19 行 → 约 10 行，净省 5–9 行）。Phase 1 的净减行主力是 cursor 抽取、span helper、
+   impl methods 合并等真实重复项。
 5. 抽 `match_statement_terminator()`、`parse_index_direction()`；删 `parse_patch_field_path`，
    统一走 `parse_field_path(msg)`。
 6. 合并 `parse_impl_methods` 三胞胎为单循环 + options 参数。
@@ -251,7 +286,9 @@ cargo clippy -p skiff-syntax --all-targets
 
 ```bash
 cargo test -p skiff-compiler -p skiff-test-runner
-# 或按仓库规范展开权威命令：
+# 按 AGENTS.md，完整测试使用 tests selector；权威命令：
+node scripts/verify.mjs --only tests --list
+# 聚焦 syntax 影响面可用：
 node scripts/verify.mjs --only implementation-tests --list
 ```
 
@@ -259,7 +296,7 @@ node scripts/verify.mjs --only implementation-tests --list
 
 ```bash
 node scripts/verify.mjs --only rust-quality
-pnpm verify   # 完整非 live 验证，耗时较长
+pnpm verify   # 完整非 live 验证，耗时较长；AGENTS.md 提示不要放在关键路径上
 ```
 
 ## 7. 结论
