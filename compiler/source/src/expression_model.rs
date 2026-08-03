@@ -5,8 +5,8 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         Block, BlockSourceSpans, DbBody, DbChangeOp, DbIndexWhereSourceSpans, DbQueryBlock,
-        DbSelector, DbWhereClause, Expr, ExprSourceSpans, MatchArm, RecordFieldSourceSpans,
-        SourceFile, Stmt, StmtSourceSpans,
+        DbSelector, DbWhereClause, DispatchTiming, Expr, ExprSourceSpans, MatchArm,
+        RecordFieldSourceSpans, SourceFile, Stmt, StmtSourceSpans,
     },
     shared::error::SourceSpan,
 };
@@ -295,6 +295,15 @@ impl OwnerCollector<'_> {
             Expr::DbLeaseRead(read) => {
                 self.visit_expr(&read.key, next_expr_child(&mut children, "db lease key")?)?;
             }
+            Expr::Dispatch { call, timing } => {
+                self.visit_expr(call, next_expr_child(&mut children, "dispatch call")?)?;
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.visit_expr(
+                        expr,
+                        next_expr_child(&mut children, "dispatch timing")?,
+                    )?;
+                }
+            }
         }
         assert_no_remaining_expr_children(children, || self.error("unused expression child span"))?;
         assert_no_remaining_block_children(blocks, || self.error("unused expression block span"))?;
@@ -423,9 +432,6 @@ impl OwnerCollector<'_> {
             )?,
             Stmt::Emit(value) => {
                 self.visit_expr(value, next_stmt_expr(&mut expressions, "emit value")?)?
-            }
-            Stmt::Dispatch { call } => {
-                self.visit_expr(call, next_stmt_expr(&mut expressions, "dispatch call")?)?
             }
             Stmt::Return(value) => {
                 if let Some(value) = value {
@@ -747,6 +753,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::DbTransaction(_) => "db transaction",
         Expr::DbLeaseClaim(_) => "db lease claim",
         Expr::DbLeaseRead(_) => "db lease read",
+        Expr::Dispatch { .. } => "dispatch",
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     shared::{
-        ast::{Block, Expr, ForBinding, FunctionDecl, Stmt, ValueBlock},
+        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, Stmt, ValueBlock},
         ast_utils::{walk_expr, AstVisitor},
         error::SourceSpan,
     },
@@ -223,7 +223,6 @@ impl<'a> OwnerAnalyzer<'a> {
                     self.validate_expr(value, scope, context);
                 }
             }
-            Stmt::Dispatch { call } => self.validate_expr(call, scope, context),
             Stmt::Break | Stmt::Continue => {
                 if context.value_boundary {
                     self.diagnostic("value block control flow cannot cross the value boundary");
@@ -334,6 +333,12 @@ impl<'a> OwnerAnalyzer<'a> {
                     nested.insert(binding.clone(), BindingRoot::LaneLocalOpaque);
                 }
                 self.validate_block(&claim.body, &mut nested, context);
+            }
+            Expr::Dispatch { call, timing } => {
+                self.validate_expr(call, scope, context);
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.validate_expr(expr, scope, context);
+                }
             }
         }
     }

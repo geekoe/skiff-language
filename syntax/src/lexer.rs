@@ -155,7 +155,7 @@ impl Lexer<'_> {
             let span = SourceSpan { start, end };
             let duration = DurationLiteral { digits, unit, span };
             duration
-                .checked_milliseconds()
+                .checked_milliseconds_allow_zero()
                 .map_err(|error| CompileError::syntax(error.to_string(), start))?;
             return Ok(Token {
                 kind: TokenKind::Duration(duration),

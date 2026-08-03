@@ -88,6 +88,12 @@ fn compiler_builtin_registry_owns_identity_kind_and_arity() {
     assert_eq!(session.symbol, "std.session.ClientSessionRef");
     assert_eq!(session.arity, 0);
     assert_eq!(session.kind, CompilerBuiltinTypeKind::OpaqueHandle);
+
+    let task_ref = compiler_builtin_type("TaskRef").unwrap();
+    assert_eq!(task_ref.symbol, "std.task.TaskRef");
+    assert_eq!(task_ref.arity, 0);
+    assert_eq!(task_ref.kind, CompilerBuiltinTypeKind::OpaqueHandle);
+    assert_eq!(compiler_builtin_type(task_ref.symbol), Some(task_ref));
     assert!(compiler_builtin_type("ActorRef").is_none());
     assert!(compiler_builtin_type("NotABuiltin").is_none());
 }

@@ -2,7 +2,7 @@ use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath}
 
 use crate::shared::ast::{
     BinaryOp, DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector,
-    DbWhereClause, Expr, PatchOperation, Stmt,
+    DbWhereClause, DispatchTiming, Expr, PatchOperation, Stmt,
 };
 
 use super::{
@@ -97,6 +97,17 @@ impl Evaluator<'_, '_> {
                 value
             }
             Expr::Call { callee, args } => self.eval_call(&key, callee, args, env),
+            Expr::Dispatch { call, timing } => {
+                let start = self.next_index;
+                self.eval_expr(call, env);
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.eval_expr(expr, env);
+                }
+                let captured = self.values_in_range(start, self.next_index);
+                self.state.record_escape(&captured, EscapeLane::Dispatch);
+                self.state.effects.may_suspend = true;
+                AbstractValue::unknown(true)
+            }
             Expr::Generic { callee, .. } => self.eval_expr(callee, env),
             Expr::InterfaceBox { value, .. } => {
                 let mut value = self.eval_expr(value, env);

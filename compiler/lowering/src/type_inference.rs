@@ -274,6 +274,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             Expr::DbLeaseClaim(_) => Some("bool".to_string()),
             Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_text()),
+            Expr::Dispatch { .. } => Some("std.task.TaskRef".to_string()),
         }
     }
 

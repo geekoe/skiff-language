@@ -856,7 +856,6 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
         | Stmt::Emit(_)
         | Stmt::Break
         | Stmt::Continue
-        | Stmt::Dispatch { .. }
         | Stmt::Expr(_) => false,
     }
 }

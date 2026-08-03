@@ -455,6 +455,26 @@ impl DurationLiteral {
         }
         Ok(milliseconds)
     }
+
+    /// Lexer / dispatch timing variant: zero is representable (dispatch
+    /// `after(0ms)` is immediately eligible) while timeout durations require
+    /// a positive value and re-check via `checked_milliseconds`.
+    pub fn checked_milliseconds_allow_zero(&self) -> Result<u64, DurationLiteralError> {
+        if self.digits.is_empty() || !self.digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(DurationLiteralError::InvalidDigits);
+        }
+        let amount = self
+            .digits
+            .parse::<u64>()
+            .map_err(|_| DurationLiteralError::UnsafeMilliseconds)?;
+        let milliseconds = amount
+            .checked_mul(self.unit.milliseconds_multiplier())
+            .ok_or(DurationLiteralError::UnsafeMilliseconds)?;
+        if milliseconds > MAX_SAFE_DURATION_MILLISECONDS {
+            return Err(DurationLiteralError::UnsafeMilliseconds);
+        }
+        Ok(milliseconds)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,9 +578,6 @@ pub enum Stmt {
     },
     Emit(Expr),
     Return(Option<Expr>),
-    Dispatch {
-        call: Expr,
-    },
     Break,
     Continue,
     Expr(Expr),
@@ -974,6 +991,17 @@ pub enum Expr {
     DbTransaction(DbTransaction),
     DbLeaseClaim(DbLeaseClaim),
     DbLeaseRead(DbLeaseRead),
+    Dispatch {
+        call: Box<Expr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timing: Option<DispatchTiming>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DispatchTiming {
+    After(Box<Expr>),
+    At(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

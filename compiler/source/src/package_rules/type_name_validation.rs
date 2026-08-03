@@ -1,4 +1,5 @@
 use super::*;
+use skiff_compiler_core::prelude_registry::compiler_builtin_type;
 
 pub(super) fn collect_package_std_type_name_violations(
     path: &str,
@@ -32,9 +33,15 @@ pub(super) fn collect_package_std_type_root_violations(
     if let Some((root, _bare)) = qualified_package_std_type_parts(ty) {
         let allowed_roots = registry.root_projection_roots("std");
         if !allowed_roots.contains(root) {
-            violations.push(format!(
-                "{path}: std.{root} is not permitted as a std type module root"
-            ));
+            // Compiler-owned prelude types such as `std.task.TaskRef` are
+            // known without a std package module export.
+            if compiler_builtin_type(_bare).is_none()
+                || registry.known_type_symbol(ty).is_none()
+            {
+                violations.push(format!(
+                    "{path}: std.{root} is not permitted as a std type module root"
+                ));
+            }
         } else if registry.known_type_symbol(ty).is_none() {
             violations.push(format!("{path}: unknown standard_library type {ty}"));
         }

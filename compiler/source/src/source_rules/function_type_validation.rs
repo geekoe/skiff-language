@@ -1,5 +1,5 @@
 use crate::{
-    shared::ast::{Block, Expr, InterfaceOperation, SourceFile, Stmt},
+    shared::ast::{Block, DispatchTiming, Expr, InterfaceOperation, SourceFile, Stmt},
     shared::type_expr::TypeExpr,
 };
 
@@ -144,9 +144,6 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
         Stmt::Rethrow { exception } => {
             collect_expr_function_type_violations(path, exception, violations);
         }
-        Stmt::Dispatch { call } => {
-            collect_expr_function_type_violations(path, call, violations);
-        }
         Stmt::Break | Stmt::Continue => {}
     }
 }
@@ -244,6 +241,12 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
         Expr::DbLeaseRead(read) => {
             collect_function_type_name_violations(path, &read.target.name, violations);
             collect_expr_function_type_violations(path, &read.key, violations);
+        }
+        Expr::Dispatch { call, timing } => {
+            collect_expr_function_type_violations(path, call, violations);
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                collect_expr_function_type_violations(path, expr, violations);
+            }
         }
         Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }

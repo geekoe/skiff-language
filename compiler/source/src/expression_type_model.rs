@@ -17,7 +17,8 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
-        Expr, ForBinding, FunctionDecl, Literal, Param, SourceFile, Stmt, TypeRef, UnaryOp,
+        DispatchTiming, Expr, ForBinding, FunctionDecl, Literal, Param, SourceFile, Stmt, TypeRef,
+        UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
@@ -252,6 +253,7 @@ struct OwnerChecker<'a> {
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
     transparent_value_targets: BTreeMap<ExpressionKey, ExpressionKey>,
     test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
+    db_transaction_depth: usize,
     outputs: &'a mut CheckOutputs,
 }
 
@@ -679,8 +681,16 @@ impl<'a> OwnerChecker<'a> {
             path_refinements: BTreeMap::new(),
             transparent_value_targets: BTreeMap::new(),
             test_effect_declarations: BTreeMap::new(),
+            db_transaction_depth: 0,
             outputs,
         }
+    }
+
+    fn check_block_in_db_transaction(&mut self, block: &Block) -> bool {
+        self.db_transaction_depth += 1;
+        let exits = self.check_block(block);
+        self.db_transaction_depth -= 1;
+        exits
     }
 
     fn check_block(&mut self, block: &Block) -> bool {
@@ -741,11 +751,10 @@ impl<'a> OwnerChecker<'a> {
             } => self.check_for_stmt(binding, iterable, body),
             Stmt::While { condition, body } => self.check_while_stmt(condition, body),
             Stmt::Match { value, arms } => self.check_match_stmt(value, arms),
-            Stmt::DbTransaction { body } => self.check_block(body),
+            Stmt::DbTransaction { body } => self.check_block_in_db_transaction(body),
             Stmt::Throw { value } => self.check_throw_stmt(value),
             Stmt::Emit(value) => self.check_emit_stmt(value),
             Stmt::Expr(value) => self.check_expr_stmt(value),
-            Stmt::Dispatch { call } => self.check_task_stmt(call),
             Stmt::Rethrow { exception } => self.check_rethrow_stmt(exception),
             Stmt::Return(value) => self.check_return_stmt(value.as_ref()),
             Stmt::Break | Stmt::Continue => true,
@@ -1171,7 +1180,19 @@ impl<'a> OwnerChecker<'a> {
         ty.as_ref().is_some_and(|ty| type_ir_is_never(&ty.ir))
     }
 
-    fn check_task_stmt(&mut self, call: &Expr) -> bool {
+    fn check_dispatch_expr(
+        &mut self,
+        key: &ExpressionKey,
+        call: &Expr,
+        timing: &Option<DispatchTiming>,
+    ) -> Option<ResolvedTypeRef> {
+        if self.db_transaction_depth > 0 {
+            self.outputs.diagnostics.push(format!(
+                "{}: dispatch is not allowed inside a db transaction at {}",
+                self.module_path,
+                self.expression_span_label(key)
+            ));
+        }
         let call_key = self.peek_key();
         let actual = self.check_expr(call);
         if let Some(actual) = actual {
@@ -1184,7 +1205,27 @@ impl<'a> OwnerChecker<'a> {
                 ));
             }
         }
-        false
+        if let Some(timing) = timing {
+            let (timing_expr, expected, clause) = match timing {
+                DispatchTiming::After(expr) => (expr, "Duration", "after"),
+                DispatchTiming::At(expr) => (expr, "Instant", "at"),
+            };
+            let timing_key = self.peek_key();
+            let timing_ty = self.check_expr(timing_expr);
+            if let Some(timing_ty) = timing_ty {
+                if !dispatch_timing_type_matches(&timing_ty, expected) {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: dispatch {}(...) expects {}, found {} at {}",
+                        self.module_path,
+                        clause,
+                        expected,
+                        timing_ty,
+                        self.expression_span_label(&timing_key)
+                    ));
+                }
+            }
+        }
+        self.resolve_builtin("TaskRef")
     }
 
     fn check_rethrow_stmt(&mut self, exception: &Expr) -> bool {
@@ -1421,6 +1462,7 @@ impl<'a> OwnerChecker<'a> {
                 Expr::DbTransaction(transaction) => self.check_db_transaction_expr(transaction),
                 Expr::DbLeaseClaim(claim) => self.check_db_lease_claim_expr(claim),
                 Expr::DbLeaseRead(read) => self.check_db_lease_read_expr(read),
+                Expr::Dispatch { call, timing } => self.check_dispatch_expr(&key, call, timing),
             }
         };
         let ty = refined_ty.clone().or(ty);
@@ -1935,7 +1977,8 @@ impl<'a> OwnerChecker<'a> {
             | Expr::DbQuery(_)
             | Expr::DbTransaction(_)
             | Expr::DbLeaseClaim(_)
-            | Expr::DbLeaseRead(_) => {}
+            | Expr::DbLeaseRead(_)
+            | Expr::Dispatch { .. } => {}
         }
     }
 
@@ -2453,6 +2496,32 @@ fn type_ir_is_void_or_null(ty: &TypeRefIr) -> bool {
 
 fn type_ir_is_never(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::Builtin { name, args } if args.is_empty() && matches!(BuiltinShape::of_name(name), Some(BuiltinShape::Never)))
+}
+
+/// `after(...)` requires `Duration` (`std.time.Duration`); `at(...)` requires
+/// `Instant` (`std.time.Instant`). The std `Instant` type is not defined yet,
+/// so a bare user/package type spelled `Instant` is accepted as well; the
+/// canonical spelling is restored when `std.time.Instant` lands.
+fn dispatch_timing_type_matches(ty: &ResolvedTypeRef, expected: &str) -> bool {
+    let canonical = format!("std.time.{expected}");
+    let matches_name = |name: &str| {
+        let name = name.trim();
+        name == expected || name == canonical
+    };
+    if let Some(text) = &ty.source_text {
+        if matches_name(text) {
+            return true;
+        }
+    }
+    match &ty.ir {
+        TypeRefIr::Builtin { name, args } if args.is_empty() => {
+            matches_name(name) || prelude_registry().known_type_symbol(name).as_deref() == Some(canonical.as_str())
+        }
+        other => {
+            let text = debug_text(other);
+            matches_name(&text) || text == canonical
+        }
+    }
 }
 
 #[cfg(test)]

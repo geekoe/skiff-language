@@ -4,7 +4,7 @@ use skiff_artifact_model::{AssignTargetIr, CallTargetIr, ExprIr, FileIrUnit, Stm
 use skiff_syntax::{
     ast::{
         ActorDecl, Block, DbBody, DbChangeOp, DbOperation, DbSelector, DbWhereClause, Expr,
-        SourceFile, Stmt,
+        SourceFile, Stmt, DispatchTiming,
     },
     error::{CompileError, Result},
 };
@@ -301,10 +301,6 @@ impl CreateValidator<'_> {
                     self.require_all_assigned(&current)?;
                     return Ok(None);
                 }
-                Stmt::Dispatch { call } => {
-                    self.check_reads(call, &current)?;
-                    self.check_self_calls(call)?;
-                }
                 Stmt::Break | Stmt::Continue => return Ok(Some(current)),
             }
         }
@@ -428,6 +424,12 @@ impl CreateValidator<'_> {
             Expr::DbLeaseRead(read) => {
                 self.check_reads(&read.key, assigned)?;
             }
+            Expr::Dispatch { call, timing } => {
+                self.check_reads(call, assigned)?;
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.check_reads(expr, assigned)?;
+                }
+            }
             Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
         }
         Ok(())
@@ -516,6 +518,12 @@ impl CreateValidator<'_> {
             Expr::DbLeaseRead(read) => {
                 self.check_self_calls(&read.key)?;
             }
+            Expr::Dispatch { call, timing } => {
+                self.check_self_calls(call)?;
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.check_self_calls(expr)?;
+                }
+            }
             Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
         }
         Ok(())
@@ -568,7 +576,6 @@ impl CreateValidator<'_> {
                         self.check_self_calls(value)?;
                     }
                 }
-                Stmt::Dispatch { call } => self.check_self_calls(call)?,
                 Stmt::Break | Stmt::Continue => {}
             }
         }

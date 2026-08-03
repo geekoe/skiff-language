@@ -29,6 +29,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         transaction: &crate::shared::ast::DbTransaction,
     ) -> Option<ResolvedTypeRef> {
+        self.db_transaction_depth += 1;
         let mut last = None;
         for stmt in &transaction.body.statements {
             if let Stmt::Expr(value) = stmt {
@@ -37,6 +38,7 @@ impl<'a> OwnerChecker<'a> {
                 self.check_stmt(stmt);
             }
         }
+        self.db_transaction_depth -= 1;
         match transaction.mode {
             DbBlockMode::Effect => self.resolve_builtin(BuiltinShape::Null.name()),
             DbBlockMode::Value => last,

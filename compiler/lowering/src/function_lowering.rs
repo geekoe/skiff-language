@@ -17,7 +17,7 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
-        PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
+        PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp, DispatchTiming,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -549,9 +549,15 @@ impl<'a> FunctionLowerer<'a> {
                         .transpose()?,
                 }
             }
-            Stmt::Expr(value) => StmtIr::Expr {
-                value: self.lower_expr(value)?,
-            },
+            Stmt::Expr(value) => {
+                if let Expr::Dispatch { call, timing } = value {
+                    self.lower_task_stmt(call, timing.as_ref())?
+                } else {
+                    StmtIr::Expr {
+                        value: self.lower_expr(value)?,
+                    }
+                }
+            }
             Stmt::If {
                 condition,
                 then_block,
@@ -681,14 +687,42 @@ impl<'a> FunctionLowerer<'a> {
                 self.consume_expression_key();
                 StmtIr::Rethrow { exception_slot }
             }
-            Stmt::Dispatch { call } => self.lower_task_stmt(call)?,
         };
         Ok(self.push_stmt(lowered))
     }
 
-    fn lower_task_stmt(&mut self, call: &Expr) -> Result<StmtIr> {
+    fn lower_task_stmt(
+        &mut self,
+        call: &Expr,
+        timing: Option<&DispatchTiming>,
+    ) -> Result<StmtIr> {
+        self.consume_expression_key();
+        let call_ref = self.lower_task_call(call, timing)?;
+        Ok(StmtIr::Dispatch { call: call_ref })
+    }
+
+    fn lower_task_expr(
+        &mut self,
+        call: &Expr,
+        timing: Option<&DispatchTiming>,
+    ) -> Result<ExprRefIr> {
+        self.lower_task_call(call, timing)
+    }
+
+    fn lower_task_call(
+        &mut self,
+        call: &Expr,
+        timing: Option<&DispatchTiming>,
+    ) -> Result<ExprRefIr> {
         let call_ref = self.lower_expr(call)?;
-        let metadata = self.task_function_target_metadata(call_ref)?;
+        let timing_ref = match timing {
+            None => None,
+            Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) => {
+                Some(self.lower_expr(expr)?)
+            }
+        };
+        let mut metadata = self.task_function_target_metadata(call_ref)?;
+        self.insert_task_timing_metadata(&mut metadata, timing, timing_ref)?;
         let Some(ExprIr::Call { call }) =
             self.body.expressions.get_mut(call_ref.expression as usize)
         else {
@@ -698,7 +732,54 @@ impl<'a> FunctionLowerer<'a> {
         };
         call.metadata
             .insert(TASK_SUBMIT_METADATA_KEY.to_string(), metadata);
-        Ok(StmtIr::Dispatch { call: call_ref })
+        Ok(call_ref)
+    }
+
+    fn insert_task_timing_metadata(
+        &self,
+        metadata: &mut MetadataValue,
+        timing: Option<&DispatchTiming>,
+        timing_ref: Option<ExprRefIr>,
+    ) -> Result<()> {
+        let MetadataValue::Object(object) = metadata else {
+            return Err(CompileError::Semantic(
+                "dispatchSubmit metadata must be an object".to_string(),
+            ));
+        };
+        let mut timing_metadata = BTreeMap::new();
+        match (timing, timing_ref) {
+            (None, _) => {
+                timing_metadata.insert(
+                    "kind".to_string(),
+                    MetadataValue::String("immediate".to_string()),
+                );
+            }
+            (Some(DispatchTiming::After(_)), Some(timing_ref))
+            | (Some(DispatchTiming::At(_)), Some(timing_ref)) => {
+                let kind = match timing {
+                    Some(DispatchTiming::After(_)) => "after",
+                    _ => "at",
+                };
+                timing_metadata.insert(
+                    "kind".to_string(),
+                    MetadataValue::String(kind.to_string()),
+                );
+                timing_metadata.insert(
+                    "expr".to_string(),
+                    MetadataValue::Number(serde_json::Number::from(timing_ref.expression)),
+                );
+            }
+            (Some(_), None) => {
+                return Err(CompileError::Semantic(
+                    "dispatch timing expression did not lower".to_string(),
+                ));
+            }
+        }
+        object.insert(
+            "timing".to_string(),
+            MetadataValue::Object(timing_metadata),
+        );
+        Ok(())
     }
 
     fn task_function_target_metadata(&self, call_ref: ExprRefIr) -> Result<MetadataValue> {
@@ -1405,6 +1486,9 @@ impl<'a> FunctionLowerer<'a> {
                     return Ok(payload);
                 }
                 self.lower_call(expression_key.as_ref(), callee, args)?
+            }
+            Expr::Dispatch { call, timing } => {
+                return self.lower_task_expr(call, timing.as_ref());
             }
             Expr::Generic { .. } => {
                 return Err(unsupported(
@@ -2771,6 +2855,14 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
             1 + expr_preorder_node_count(callee)
                 + args.iter().map(expr_preorder_node_count).sum::<u32>()
         }
+        Expr::Dispatch { call, timing } => {
+            1 + expr_preorder_node_count(call)
+                + timing.as_ref().map_or(0, |timing| match timing {
+                    DispatchTiming::After(expr) | DispatchTiming::At(expr) => {
+                        expr_preorder_node_count(expr)
+                    }
+                })
+        }
         Expr::Record { fields, .. } => {
             1 + fields
                 .iter()
@@ -2860,7 +2952,6 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
         | Stmt::Emit(value)
-        | Stmt::Dispatch { call: value }
         | Stmt::Expr(value) => expr_preorder_node_count(value),
         Stmt::Return(value) => value
             .as_ref()
@@ -2938,7 +3029,6 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
         | Stmt::Emit(_)
         | Stmt::Break
         | Stmt::Continue
-        | Stmt::Dispatch { .. }
         | Stmt::Expr(_) => false,
     }
 }

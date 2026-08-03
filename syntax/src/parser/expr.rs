@@ -1,4 +1,4 @@
-use super::span::{expr_source_spans, parsed_leaf_expr, ParsedExpr};
+use super::span::{expr_source_spans, expr_source_spans_from_span, parsed_leaf_expr, ParsedExpr};
 use super::*;
 
 fn object_literal_key_name(key: &crate::ast::ObjectLiteralKey) -> Option<String> {
@@ -420,10 +420,9 @@ impl Parser {
                 "process has been removed; use actors and dispatch instead",
                 token.span.start,
             )),
-            TokenKind::Ident(value) if value == "dispatch" => Err(CompileError::syntax(
-                "dispatch is a statement and cannot be used as an expression",
-                token.span.start,
-            )),
+            TokenKind::Ident(value) if value == "dispatch" => {
+                self.parse_dispatch_expression(start)
+            }
             TokenKind::Ident(value) => {
                 if self.check_symbol("{") && !self.in_statement_header {
                     self.advance();
@@ -469,6 +468,89 @@ impl Parser {
                 token.span.start,
             )),
         }
+    }
+
+    pub(super) fn parse_dispatch_expression(
+        &mut self,
+        start: SourceLocation,
+    ) -> Result<ParsedExpr> {
+        let call = self.parse_expression()?;
+        if !matches!(call.expr, Expr::Call { .. }) {
+            return Err(CompileError::syntax(
+                "dispatch expects a call expression",
+                call.spans.span.start,
+            ));
+        }
+        let mut children = vec![call.spans];
+        let mut timing = None;
+        if self.match_ident("after") {
+            self.expect_symbol("(")?;
+            let (timing_expr, timing_spans) = self.parse_dispatch_timing_operand()?;
+            self.expect_symbol(")")?;
+            children.push(timing_spans);
+            timing = Some(DispatchTiming::After(Box::new(timing_expr)));
+        } else if self.match_ident("at") {
+            self.expect_symbol("(")?;
+            let (timing_expr, timing_spans) = self.parse_dispatch_timing_operand()?;
+            self.expect_symbol(")")?;
+            children.push(timing_spans);
+            timing = Some(DispatchTiming::At(Box::new(timing_expr)));
+        }
+        if timing.is_some() && (self.check_ident("after") || self.check_ident("at")) {
+            return Err(CompileError::syntax(
+                "dispatch accepts at most one timing clause",
+                self.peek().span.start,
+            ));
+        }
+        let end = children
+            .last()
+            .map(|child| child.span.end)
+            .unwrap_or(start);
+        Ok(ParsedExpr::new(
+            Expr::Dispatch {
+                call: Box::new(call.expr),
+                timing,
+            },
+            SourceSpan { start, end },
+            children,
+        ))
+    }
+
+    fn parse_dispatch_timing_operand(&mut self) -> Result<(Expr, ExprSourceSpans)> {
+        if self.check_duration_literal() {
+            let token = self.advance().clone();
+            let TokenKind::Duration(duration) = token.kind else {
+                unreachable!("checked duration literal token");
+            };
+            let milliseconds = duration
+                .checked_milliseconds_allow_zero()
+                .map_err(|error| CompileError::syntax(error.to_string(), duration.span.start))?;
+            let span = duration.span;
+            let callee = ParsedExpr::new(
+                Expr::Field {
+                    object: Box::new(Expr::Identifier("Duration".to_string())),
+                    field: "milliseconds".to_string(),
+                },
+                span,
+                vec![expr_source_spans_from_span(span)],
+            );
+            let argument = ParsedExpr::new(
+                Expr::Literal(Literal::Number(milliseconds as f64)),
+                span,
+                Vec::new(),
+            );
+            let call = ParsedExpr::new(
+                Expr::Call {
+                    callee: Box::new(callee.expr),
+                    args: vec![argument.expr],
+                },
+                span,
+                vec![callee.spans, argument.spans],
+            );
+            return Ok(call.into_parts());
+        }
+        let value = self.parse_slot_expression()?;
+        Ok(value.into_parts())
     }
 
     pub(super) fn parse_timeout_duration(&mut self) -> Result<DurationLiteral> {

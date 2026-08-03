@@ -1,4 +1,4 @@
-use crate::shared::ast::Expr;
+use crate::shared::ast::{DispatchTiming, Expr};
 
 use super::*;
 
@@ -336,6 +336,26 @@ pub(super) fn collect_package_expr_std_type_violations(
                 package_type_names,
                 violations,
             );
+        }
+        Expr::Dispatch { call, timing } => {
+            collect_package_expr_std_type_violations(
+                path,
+                call,
+                imported_std_roots,
+                dependency_roots,
+                package_type_names,
+                violations,
+            );
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                collect_package_expr_std_type_violations(
+                    path,
+                    expr,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
         }
         Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }

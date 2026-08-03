@@ -154,13 +154,6 @@ impl Evaluator<'_, '_> {
                 self.state.record_escape(&value, EscapeLane::Stream);
                 self.state.effects.may_suspend = true;
             }
-            Stmt::Dispatch { call } => {
-                let start = self.next_index;
-                self.eval_expr(call, env);
-                let captured = self.values_in_range(start, self.next_index);
-                self.state.record_escape(&captured, EscapeLane::Dispatch);
-                self.state.effects.may_suspend = true;
-            }
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let value = self.eval_expr(value, env);

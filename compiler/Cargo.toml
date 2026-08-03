@@ -35,6 +35,10 @@ name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
 
 [[test]]
+name = "dispatch_grammar"
+path = "tests/dispatch_grammar.rs"
+
+[[test]]
 name = "file_ir_execution_type_representation"
 path = "tests/file_ir_execution_type_representation.rs"
 
