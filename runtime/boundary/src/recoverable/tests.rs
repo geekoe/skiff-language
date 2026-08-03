@@ -561,6 +561,78 @@ impl RecoverableArtifactRetentionRootStore for TestRootStore {
 }
 
 #[test]
+fn task_ref_roundtrips_through_recoverable_codec() {
+    let context = recoverable_context();
+    let task_ref_expected = expected("taskRef", RuntimeRecoverableExpectedTypeNode::TaskRef);
+    let mut heap = RequestHeap::default();
+    let canonical = "skiff-task-v1:b3duZXI.dGFzay0x";
+
+    let bytes = RecoverableBoundaryCodec::encode(
+        &RuntimeValue::String(canonical.to_string()),
+        &task_ref_expected,
+        &context,
+        &heap,
+    )
+    .expect("canonical taskRef should encode through the recoverable boundary");
+    let mut decode_heap = RequestHeap::default();
+    let decoded = RecoverableBoundaryCodec::decode(
+        &bytes,
+        &task_ref_expected,
+        &context,
+        &mut decode_heap,
+    )
+    .expect("canonical taskRef should decode through the recoverable boundary");
+    assert_eq!(decoded, RuntimeValue::String(canonical.to_string()));
+}
+
+#[test]
+fn task_ref_rejects_plain_strings_and_malformed_refs() {
+    let context = recoverable_context();
+    let task_ref_expected = expected("taskRef", RuntimeRecoverableExpectedTypeNode::TaskRef);
+    let mut heap = RequestHeap::default();
+
+    for malformed in [
+        "not-a-task-ref",
+        "skiff-task-v1:",
+        "skiff-task-v1:b3duZXI.",
+        "skiff-task-v1:.dGFzay0x",
+        "skiff-task-v1:!!!!.dGFzay0x",
+        "skiff-task-v1:b3duZXI.bm90IGJhc2U2NA==",
+    ] {
+        let error = RecoverableBoundaryCodec::encode(
+            &RuntimeValue::String(malformed.to_string()),
+            &task_ref_expected,
+            &context,
+            &heap,
+        )
+        .expect_err("non-canonical taskRef must fail closed on encode");
+        assert!(
+            error.to_string().contains("taskRef"),
+            "{malformed}: {error}"
+        );
+    }
+
+    // A plain string encoded against a String plan must also fail closed when
+    // decoded against the TaskRef plan (decode-side precheck).
+    let plain_bytes = RecoverableBoundaryCodec::encode(
+        &RuntimeValue::String("plain".to_string()),
+        &string_expected(),
+        &context,
+        &heap,
+    )
+    .expect("plain string should encode against a string plan");
+    let mut decode_heap = RequestHeap::default();
+    let error = RecoverableBoundaryCodec::decode(
+        &plain_bytes,
+        &task_ref_expected,
+        &context,
+        &mut decode_heap,
+    )
+    .expect_err("plain string must fail closed on TaskRef decode");
+    assert!(error.to_string().contains("taskRef"));
+}
+
+#[test]
 fn plain_record_array_map_roundtrips_through_recoverable_codec() {
     let context = recoverable_context();
     let expected = record_expected(vec![

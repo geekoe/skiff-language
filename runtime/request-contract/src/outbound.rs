@@ -7,5 +7,5 @@ pub use crate::outbound_control::{
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
     RequestCancelControl, RuntimeDeadlineControl, TaskCallerKind, TaskSubmitControlRequest,
-    TaskSubmitTimingControl,
+    TaskSubmitResponseControl, TaskSubmitTimingControl,
 };

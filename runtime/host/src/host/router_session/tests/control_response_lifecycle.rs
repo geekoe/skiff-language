@@ -122,7 +122,12 @@ async fn scoped_task_submit_response_dispatch_reaches_the_caller() {
         .await
         .expect("dispatcher must release the scoped task waiter")
         .expect("task submit response must reach its caller");
-    assert_eq!(response.rpc_id, rpc_id);
+    assert_eq!(
+        response.task_ref.as_str(),
+        TaskRef::new("task-7", "example.com/docs")
+            .expect("task ref")
+            .as_str()
+    );
     assert_eq!(response.task_id, "task-7");
     assert_eq!(response.request_id, "task-request-11");
     assert_eq!(host.outbound_requests.pending_count(), 0);

@@ -1095,6 +1095,7 @@ mod plan_input_forms_tests {
             RuntimeTypeNode::Bytes => "bytes".to_string(),
             RuntimeTypeNode::Date => "date".to_string(),
             RuntimeTypeNode::String => "string".to_string(),
+            RuntimeTypeNode::TaskRef => "taskRef".to_string(),
             RuntimeTypeNode::Bool => "bool".to_string(),
             RuntimeTypeNode::Integer => "integer".to_string(),
             RuntimeTypeNode::Number => "number".to_string(),

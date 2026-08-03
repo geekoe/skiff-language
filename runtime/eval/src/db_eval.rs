@@ -909,6 +909,7 @@ fn expected_contains_any_interface(expected: &RuntimeRecoverableExpectedTypePlan
         | RuntimeRecoverableExpectedTypeNode::Bytes
         | RuntimeRecoverableExpectedTypeNode::Date
         | RuntimeRecoverableExpectedTypeNode::String
+        | RuntimeRecoverableExpectedTypeNode::TaskRef
         | RuntimeRecoverableExpectedTypeNode::Bool
         | RuntimeRecoverableExpectedTypeNode::Number
         | RuntimeRecoverableExpectedTypeNode::Integer

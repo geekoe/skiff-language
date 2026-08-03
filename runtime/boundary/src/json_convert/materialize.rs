@@ -82,6 +82,9 @@ pub(super) fn to_wire_inner(
             RuntimeValue::String(value) => Ok(Value::String(value.clone())),
             _ => Err(RuntimeError::Decode("expected runtime string".to_string())),
         },
+        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
+            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+        )),
         RuntimeTypeNode::Bool => match value {
             RuntimeValue::Bool(value) => Ok(Value::Bool(*value)),
             _ => Err(RuntimeError::Decode("expected runtime bool".to_string())),

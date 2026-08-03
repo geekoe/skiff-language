@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+
 use skiff_runtime_model::{
     recoverable::{
         InterfaceValueState, NativeHandleState, NominalObjectState, RecoverableArtifactRef,
@@ -1372,6 +1375,14 @@ fn precheck_expected_type_with_policy(
         RuntimeRecoverableExpectedTypeNode::String => {
             require_kind(node, path, RecoverableValueKind::String, "string")
         }
+        RuntimeRecoverableExpectedTypeNode::TaskRef => match &node.state {
+            RecoverableState::String(value) if is_canonical_task_ref_string(value) => Ok(()),
+            RecoverableState::String(_) => Err(ExpectedTypePrecheckError::new(
+                path,
+                "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)",
+            )),
+            _ => kind_mismatch(path, "taskRef", node.value_kind),
+        },
         RuntimeRecoverableExpectedTypeNode::Bool => {
             require_kind(node, path, RecoverableValueKind::Bool, "bool")
         }
@@ -2082,6 +2093,30 @@ fn kind_mismatch(
             recoverable_value_kind_label(actual)
         ),
     ))
+}
+
+/// Canonical `taskRef` string check mirroring the wire `TaskRef` format
+/// (`skiff-task-v1:<base64url-nopad(owner)>.<base64url-nopad(taskId)>`).
+/// The recoverable boundary owns this check so opaque task references can be
+/// restored from durable payloads without a transport dependency.
+fn is_canonical_task_ref_string(raw: &str) -> bool {
+    let Some(rest) = raw.strip_prefix("skiff-task-v1:") else {
+        return false;
+    };
+    let Some((owner_encoded, task_encoded)) = rest.split_once('.') else {
+        return false;
+    };
+    if owner_encoded.is_empty() || task_encoded.is_empty() {
+        return false;
+    }
+    decode_task_ref_segment(owner_encoded).is_some()
+        && decode_task_ref_segment(task_encoded).is_some()
+}
+
+fn decode_task_ref_segment(encoded: &str) -> Option<String> {
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    let decoded = String::from_utf8(bytes).ok()?;
+    (!decoded.trim().is_empty()).then_some(decoded)
 }
 
 fn recoverable_value_kind_label(kind: RecoverableValueKind) -> &'static str {

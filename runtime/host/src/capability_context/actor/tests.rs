@@ -160,7 +160,10 @@ async fn task_submit_accepts_correlated_receipt_and_preserves_activation_identit
     let response = result.expect("canonical submitted receipt should succeed");
     assert_eq!(response.task_id, "task-7");
     assert_eq!(response.request_id, "task-request-11");
-    assert_eq!(sent_request.rpc_id, response.rpc_id);
+    assert_eq!(
+        response.task_ref,
+        "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x"
+    );
     assert_eq!(sent_request.runtime_id, "runtime-test");
     assert_eq!(sent_request.activation_identity, expected_activation);
 }
@@ -294,7 +297,7 @@ async fn task_submit_preserves_typed_router_error_as_failure() {
 async fn submit_with_response(
     response: impl FnOnce(&str) -> OutboundResponse,
 ) -> (
-    Result<TaskSubmitResponseFrameHeader>,
+    Result<skiff_runtime_capability_context::TaskSubmitResponseControl>,
     TaskSubmitControlRequest,
 ) {
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();

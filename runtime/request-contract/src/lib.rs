@@ -31,7 +31,7 @@ pub use outbound::{
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
     RequestCancelControl, RuntimeDeadlineControl, TaskCallerKind, TaskSubmitControlRequest,
-    TaskSubmitTimingControl,
+    TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

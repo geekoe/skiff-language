@@ -7,7 +7,7 @@ use skiff_runtime_capability_context::{
     InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
     OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
     OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, TaskCallerKind,
-    TaskSubmitControlMessage, TaskSubmitControlRequest,
+    TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitResponseControl,
 };
 use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -18,7 +18,7 @@ use skiff_runtime_model::runtime_value::ActorRef;
 use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
-    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
+    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskSubmitRejectionCode,
     TaskSubmitResponseFrameHeader,
 };
 
@@ -212,7 +212,7 @@ impl<'a> RequestClient<'a> {
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         caller_kind: TaskCallerKind,
-    ) -> Result<TaskSubmitResponseFrameHeader> {
+    ) -> Result<TaskSubmitResponseControl> {
         self.submit_task_with_scope(request, args_payload, None, caller_kind)
             .await
     }
@@ -223,7 +223,7 @@ impl<'a> RequestClient<'a> {
         args_payload: Vec<u8>,
         scope: ExecutionScope,
         caller_kind: TaskCallerKind,
-    ) -> Result<TaskSubmitResponseFrameHeader> {
+    ) -> Result<TaskSubmitResponseControl> {
         self.submit_task_with_scope(request, args_payload, Some(scope), caller_kind)
             .await
     }
@@ -234,7 +234,7 @@ impl<'a> RequestClient<'a> {
         args_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
         caller_kind: TaskCallerKind,
-    ) -> Result<TaskSubmitResponseFrameHeader> {
+    ) -> Result<TaskSubmitResponseControl> {
         request.rpc_id = control_rpc_id(&self.context, TASK_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
@@ -250,7 +250,11 @@ impl<'a> RequestClient<'a> {
             send_task_submit_request(&self.context, TASK_SUBMIT_TARGET, &rpc_id, message, scope)
                 .await?;
         validate_task_submit_response(&response, &rpc_id)?;
-        Ok(response)
+        Ok(TaskSubmitResponseControl {
+            task_ref: response.task_ref.into_string(),
+            task_id: response.task_id,
+            request_id: response.request_id,
+        })
     }
 }
 
@@ -832,10 +836,17 @@ fn finish_control_response(
         }
         Some(OutboundResponse::Error(error)) => {
             lease.complete();
-            Err(RuntimeError::ProviderUnavailable {
-                target: target.to_string(),
-                reason: error.message,
-            })
+            if let Some(code) = TaskSubmitRejectionCode::parse(&error.code) {
+                Err(RuntimeError::TaskSubmitRejected {
+                    code: code.as_str().to_string(),
+                    message: error.message,
+                })
+            } else {
+                Err(RuntimeError::ProviderUnavailable {
+                    target: target.to_string(),
+                    reason: error.message,
+                })
+            }
         }
         None => {
             let _ = lease.cancel("response_channel_closed");

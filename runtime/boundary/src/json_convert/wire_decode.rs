@@ -74,6 +74,9 @@ fn from_wire_carrier_with_stream_scope(
             .map(|value| RuntimeValue::String(value.to_string()))
             .ok_or_else(|| RuntimeError::Decode("expected string".to_string()))
             .map(Into::into),
+        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
+            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+        )),
         RuntimeTypeNode::Bool => json
             .as_bool()
             .map(RuntimeValue::Bool)

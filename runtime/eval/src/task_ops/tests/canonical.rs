@@ -1,16 +1,20 @@
 use crate::heap_access::HeapAccess;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use skiff_artifact_model::{
     AssemblyIdentity, BlockIr, CanonicalPackageLinkPlan, DeploymentArtifactIdentity,
     DeploymentRevision, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr, FileIrRef,
-    FileIrUnit, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    FileIrUnit, MetadataValue, NativeTarget, PackageArtifact, PackageArtifactRef, PackageBuildId,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexRef, RuntimeAssembly, ServiceContract,
     ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr, StmtRefIr,
+    TypeRefIr,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
@@ -21,11 +25,11 @@ use skiff_runtime_capability_context::{
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
     CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, OwnedExecutionControl,
     OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
-    TaskSubmitControlRequest,
+    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::ActorRef,
+    runtime_value::{ActorRef, RuntimeValue},
 };
 
 use crate::{
@@ -44,6 +48,35 @@ struct RecordingActor {
     activation_identity: ActivationIdentityControl,
     submissions: Arc<Mutex<Vec<(TaskSubmitControlRequest, Vec<u8>)>>>,
     execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+    replies: Arc<Mutex<VecDeque<Result<TaskSubmitResponseControl, CapabilityError>>>>,
+    task_seq: Arc<AtomicU64>,
+}
+
+impl RecordingActor {
+    fn new(
+        activation_identity: ActivationIdentityControl,
+        submissions: Arc<Mutex<Vec<(TaskSubmitControlRequest, Vec<u8>)>>>,
+        execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+    ) -> Self {
+        Self {
+            activation_identity,
+            submissions,
+            execution_receipts,
+            replies: Arc::new(Mutex::new(VecDeque::new())),
+            task_seq: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn scripted(
+        self,
+        replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>,
+    ) -> Self {
+        self.replies
+            .lock()
+            .expect("task reply script should remain available")
+            .extend(replies);
+        self
+    }
 }
 
 impl ActorCapabilityApi for RecordingActor {
@@ -172,9 +205,11 @@ impl RequestCapabilityApi for RecordingActor {
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()> {
+    ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
         let submissions = Arc::clone(&self.submissions);
         let execution_receipts = Arc::clone(&self.execution_receipts);
+        let replies = Arc::clone(&self.replies);
+        let task_seq = Arc::clone(&self.task_seq);
         Box::pin(async move {
             execution_receipts
                 .lock()
@@ -183,10 +218,35 @@ impl RequestCapabilityApi for RecordingActor {
             submissions
                 .lock()
                 .expect("task recorder lock should remain available")
-                .push((request, args_payload));
-            Ok(())
+                .push((request.clone(), args_payload));
+            let reply = {
+                let mut replies = replies
+                    .lock()
+                    .expect("task reply script should remain available");
+                replies.pop_front().unwrap_or_else(|| {
+                    let seq = task_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                    let task_id = request
+                        .task_id
+                        .clone()
+                        .unwrap_or_else(|| format!("task-{seq}"));
+                    Ok(TaskSubmitResponseControl {
+                        task_ref: task_ref_for(&request.service_id, &task_id),
+                        task_id: task_id.clone(),
+                        request_id: format!("request-{seq}"),
+                    })
+                })
+            };
+            reply
         })
     }
+}
+
+fn task_ref_for(owner: &str, task_id: &str) -> String {
+    format!(
+        "skiff-task-v1:{}.{}",
+        URL_SAFE_NO_PAD.encode(owner),
+        URL_SAFE_NO_PAD.encode(task_id)
+    )
 }
 
 struct TestResolver {
@@ -245,7 +305,7 @@ async fn f445h_i6_actor_scope_task_uses_current_projection_and_exact_target() {
     );
     let heap = RequestHeap::default();
 
-    interpreter
+    let value = interpreter
         .execute_runtime_assembly_addr(
             context,
             &mut HeapAccess::private(heap),
@@ -254,6 +314,11 @@ async fn f445h_i6_actor_scope_task_uses_current_projection_and_exact_target() {
         )
         .await
         .expect("canonical task should submit from the admitted in-memory execution image");
+    assert_eq!(
+        value,
+        RuntimeValue::Null,
+        "statement-position dispatch discards the TaskRef"
+    );
 
     let submissions = fixture
         .submissions
@@ -264,6 +329,11 @@ async fn f445h_i6_actor_scope_task_uses_current_projection_and_exact_target() {
     };
     assert_eq!(request.target_kind, "function");
     assert_eq!(request.target, format!("function:{TARGET_SYMBOL}"));
+    assert_eq!(request.timing, TaskSubmitTimingControl::Immediate);
+    assert!(
+        request.task_id.is_some(),
+        "durable submit must carry a runtime-generated TaskId"
+    );
     assert_eq!(request.activation_identity, fixture.activation_identity);
     assert_eq!(
         request.caller_request_id.as_deref(),
@@ -348,6 +418,331 @@ async fn canonical_task_missing_execution_projection_fails_before_actor_capabili
         .is_empty());
 }
 
+#[tokio::test]
+async fn canonical_task_statement_after_timing_evaluates_expression_once() {
+    let fixture = canonical_task_fixture_with(
+        vec![
+            caller_executable_with_timing(
+                Some(TARGET_SYMBOL),
+                Some(("after".to_string(), Some(ExprRefIr { expression: 1 }))),
+                vec![ExprIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::Number {
+                        value: serde_json::Number::from(500u64),
+                    },
+                }],
+            ),
+            target_executable(),
+        ],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("canonical task after() should submit");
+
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("canonical task after() should submit exactly once");
+    };
+    assert_eq!(
+        request.timing,
+        TaskSubmitTimingControl::After { duration_ms: 500 }
+    );
+}
+
+#[tokio::test]
+async fn canonical_task_statement_at_timing_evaluates_expression_once() {
+    let fixture = canonical_task_fixture_with(
+        vec![
+            caller_executable_with_timing(
+                Some(TARGET_SYMBOL),
+                Some(("at".to_string(), Some(ExprRefIr { expression: 1 }))),
+                vec![
+                    ExprIr::Call {
+                        call: skiff_artifact_model::CallIr {
+                            target: skiff_artifact_model::CallTargetIr::Native {
+                                target: NativeTarget {
+                                    namespace: "core.date".to_string(),
+                                    symbol: "fromEpochMilliseconds".to_string(),
+                                    binding_key: Some("core.date.fromEpochMilliseconds".to_string()),
+                                    metadata: BTreeMap::new(),
+                                },
+                            },
+                            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                            },
+                            args: vec![ExprRefIr { expression: 2 }],
+                            type_args: BTreeMap::new(),
+                            metadata: BTreeMap::new(),
+                        },
+                    },
+                    ExprIr::Literal {
+                        value: skiff_artifact_model::LiteralIr::Number {
+                            value: serde_json::Number::from(1_728_000_000u64),
+                        },
+                    },
+                ],
+            ),
+            target_executable(),
+        ],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("canonical task at() should submit");
+
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("canonical task at() should submit exactly once");
+    };
+    assert_eq!(
+        request.timing,
+        TaskSubmitTimingControl::At {
+            utc_millis: 1_728_000_000
+        }
+    );
+}
+
+#[tokio::test]
+async fn canonical_task_expression_position_returns_task_ref() {
+    let fixture = canonical_task_fixture_with(
+        vec![
+            caller_expression_return_executable(TARGET_SYMBOL),
+            target_executable(),
+        ],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let value = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("canonical dispatch expression should return a TaskRef");
+    let RuntimeValue::String(task_ref) = value else {
+        panic!("dispatch expression must produce an opaque taskRef string");
+    };
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("canonical dispatch expression should submit exactly once");
+    };
+    let task_id = request.task_id.as_deref().expect("TaskId must be generated");
+    assert_eq!(task_ref.as_str(), task_ref_for(&request.service_id, task_id));
+}
+
+#[tokio::test]
+async fn canonical_task_arguments_evaluate_once_with_nested_dispatch() {
+    const INNER_SYMBOL: &str = "task.fixture.inner";
+    const OUTER_SYMBOL: &str = "task.fixture.outer";
+    let fixture = canonical_task_fixture_with(
+        vec![
+            caller_nested_arg_executable(INNER_SYMBOL, OUTER_SYMBOL),
+            target_executable_named(INNER_SYMBOL),
+            target_executable_with_param(OUTER_SYMBOL, TypeRefIr::builtin("TaskRef")),
+        ],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("canonical nested dispatch should submit");
+
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    assert_eq!(
+        submissions.len(),
+        2,
+        "dispatch argument must be evaluated exactly once (inner submission + outer submission)"
+    );
+    assert_eq!(submissions[0].0.target, format!("function:{INNER_SYMBOL}"));
+    assert_eq!(submissions[1].0.target, format!("function:{OUTER_SYMBOL}"));
+    assert!(!submissions[1].1.is_empty());
+}
+
+#[tokio::test]
+async fn canonical_task_transient_store_unavailable_retries_same_task_id() {
+    let fixture = canonical_task_fixture_with(
+        vec![caller_executable(Some(TARGET_SYMBOL)), target_executable()],
+        vec![
+            Err(CapabilityError::task_submit_rejected(
+                "storeUnavailable",
+                "store is down",
+            )),
+            Ok(TaskSubmitResponseControl {
+                task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+                task_id: "task-1".to_string(),
+                request_id: "request-1".to_string(),
+            }),
+        ],
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("transient storeUnavailable must recover on a bounded retry");
+
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    assert_eq!(submissions.len(), 2);
+    assert!(submissions[0].0.task_id.is_some());
+    assert_eq!(submissions[0].0.task_id, submissions[1].0.task_id);
+}
+
+#[tokio::test]
+async fn canonical_task_definite_rejection_throws_without_task() {
+    let fixture = canonical_task_fixture_with(
+        vec![caller_executable(Some(TARGET_SYMBOL)), target_executable()],
+        vec![Err(CapabilityError::task_submit_rejected(
+            "rejected",
+            "control plane refused the submission",
+        ))],
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect_err("definite rejection must surface as a platform error");
+    assert!(error
+        .to_string()
+        .contains("task.submit rejected (rejected)"));
+    assert_eq!(
+        fixture
+            .submissions
+            .lock()
+            .expect("task submissions should be readable")
+            .len(),
+        1,
+        "definite rejection must not be retried"
+    );
+}
+
+#[tokio::test]
+async fn canonical_task_ambiguous_result_after_bounded_retries() {
+    let fixture = canonical_task_fixture_with(
+        vec![caller_executable(Some(TARGET_SYMBOL)), target_executable()],
+        vec![
+            Err(CapabilityError::task_submit_rejected(
+                "storeUnavailable",
+                "store down 1",
+            )),
+            Err(CapabilityError::task_submit_rejected(
+                "storeUnavailable",
+                "store down 2",
+            )),
+            Err(CapabilityError::task_submit_rejected(
+                "storeUnavailable",
+                "store down 3",
+            )),
+        ],
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect_err("exhausted ambiguous retries must surface as uncertain");
+    assert!(error.to_string().contains("result is uncertain"));
+    let submissions = fixture
+        .submissions
+        .lock()
+        .expect("task submissions should be readable");
+    assert_eq!(submissions.len(), super::TASK_SUBMIT_MAX_ATTEMPTS);
+    for submission in submissions.iter().skip(1) {
+        assert_eq!(submission.0.task_id, submissions[0].0.task_id);
+    }
+}
+
 #[test]
 fn canonical_task_function_target_rejects_mismatched_metadata_defensively() {
     let call = skiff_runtime_linked_program::CallIr {
@@ -382,8 +777,18 @@ fn canonical_task_function_target_rejects_mismatched_metadata_defensively() {
 }
 
 fn canonical_task_fixture(metadata_symbol: Option<&str>) -> CanonicalTaskFixture {
+    canonical_task_fixture_with(
+        vec![caller_executable(metadata_symbol), target_executable()],
+        Vec::new(),
+    )
+}
+
+fn canonical_task_fixture_with(
+    executables: Vec<ExecutableIr>,
+    replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>,
+) -> CanonicalTaskFixture {
     let mut file = FileIrUnit::empty("task.fixture", "source:canonical-task");
-    file.executables = vec![caller_executable(metadata_symbol), target_executable()];
+    file.executables = executables;
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
         .expect("canonical task File IR should receive an identity");
     let mut package = private_package(&file);
@@ -429,11 +834,12 @@ fn canonical_task_fixture(metadata_symbol: Option<&str>) -> CanonicalTaskFixture
     };
     let submissions = Arc::new(Mutex::new(Vec::new()));
     let execution_receipts = Arc::new(Mutex::new(Vec::new()));
-    let recording_actor = RecordingActor {
-        activation_identity: activation_identity.clone(),
-        submissions: Arc::clone(&submissions),
-        execution_receipts: Arc::clone(&execution_receipts),
-    };
+    let recording_actor = RecordingActor::new(
+        activation_identity.clone(),
+        Arc::clone(&submissions),
+        Arc::clone(&execution_receipts),
+    )
+    .scripted(replies);
     let actor = ActorCapabilityContext::new(recording_actor.clone());
     let request = RequestCapabilityContext::new(recording_actor);
     CanonicalTaskFixture {
@@ -448,22 +854,53 @@ fn canonical_task_fixture(metadata_symbol: Option<&str>) -> CanonicalTaskFixture
 }
 
 fn caller_executable(metadata_symbol: Option<&str>) -> ExecutableIr {
+    caller_executable_with_timing(metadata_symbol, None, Vec::new())
+}
+
+fn caller_executable_with_timing(
+    metadata_symbol: Option<&str>,
+    timing: Option<(String, Option<ExprRefIr>)>,
+    extra_expressions: Vec<ExprIr>,
+) -> ExecutableIr {
     let mut metadata = BTreeMap::new();
     if let Some(symbol) = metadata_symbol {
-        metadata.insert(
-            "dispatchSubmit".to_string(),
-            MetadataValue::Object(BTreeMap::from([
-                (
-                    "targetKind".to_string(),
-                    MetadataValue::String("function".to_string()),
-                ),
-                (
-                    "target".to_string(),
-                    MetadataValue::String(format!("function:{symbol}")),
-                ),
-            ])),
-        );
+        let mut dispatch = BTreeMap::from([
+            (
+                "targetKind".to_string(),
+                MetadataValue::String("function".to_string()),
+            ),
+            (
+                "target".to_string(),
+                MetadataValue::String(format!("function:{symbol}")),
+            ),
+        ]);
+        if let Some((kind, expr)) = timing {
+            let mut timing_metadata = BTreeMap::new();
+            timing_metadata.insert("kind".to_string(), MetadataValue::String(kind));
+            if let Some(expr) = expr {
+                timing_metadata.insert(
+                    "expr".to_string(),
+                    MetadataValue::Number(expr.expression.into()),
+                );
+            }
+            dispatch.insert("timing".to_string(), MetadataValue::Object(timing_metadata));
+        }
+        metadata.insert("dispatchSubmit".to_string(), MetadataValue::Object(dispatch));
     }
+    let mut expressions = vec![ExprIr::Call {
+        call: skiff_artifact_model::CallIr {
+            target: skiff_artifact_model::CallTargetIr::LocalExecutable {
+                executable_index: 1,
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata,
+        },
+    }];
+    expressions.extend(extra_expressions);
     ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: "task.fixture.submit".to_string(),
@@ -484,6 +921,94 @@ fn caller_executable(metadata_symbol: Option<&str>) -> ExecutableIr {
                 },
                 StmtIr::Return { value: None },
             ],
+            expressions,
+        },
+        source_span: None,
+    }
+}
+
+fn target_executable() -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: TARGET_SYMBOL.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    }
+}
+
+fn target_executable_named(symbol: &str) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: symbol.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("null"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    }
+}
+
+fn target_executable_with_param(symbol: &str, param_type: TypeRefIr) -> ExecutableIr {
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: symbol.to_string(),
+        type_params: Vec::new(),
+        params: vec![skiff_artifact_model::ParamIr {
+            name: "ref".to_string(),
+            slot: 0,
+            ty: param_type,
+        }],
+        return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    }
+}
+
+/// Expression-position dispatch: the caller returns the dispatch expression
+/// value (a TaskRef) instead of discarding it.
+fn caller_expression_return_executable(metadata_symbol: &str) -> ExecutableIr {
+    let metadata = BTreeMap::from([(
+        "dispatchSubmit".to_string(),
+        MetadataValue::Object(BTreeMap::from([
+            (
+                "targetKind".to_string(),
+                MetadataValue::String("function".to_string()),
+            ),
+            (
+                "target".to_string(),
+                MetadataValue::String(format!("function:{metadata_symbol}")),
+            ),
+        ])),
+    )]);
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "task.fixture.submit".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("TaskRef"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
+            }],
             expressions: vec![ExprIr::Call {
                 call: skiff_artifact_model::CallIr {
                     target: skiff_artifact_model::CallTargetIr::LocalExecutable {
@@ -502,17 +1027,76 @@ fn caller_executable(metadata_symbol: Option<&str>) -> ExecutableIr {
     }
 }
 
-fn target_executable() -> ExecutableIr {
+/// Statement dispatch whose argument is itself a dispatch expression. The
+/// inner dispatch must be evaluated exactly once; double evaluation would
+/// produce a third submission.
+fn caller_nested_arg_executable(inner_symbol: &str, outer_symbol: &str) -> ExecutableIr {
+    let dispatch_metadata = |symbol: &str| {
+        MetadataValue::Object(BTreeMap::from([
+            (
+                "targetKind".to_string(),
+                MetadataValue::String("function".to_string()),
+            ),
+            (
+                "target".to_string(),
+                MetadataValue::String(format!("function:{symbol}")),
+            ),
+        ]))
+    };
+    let inner_call = ExprIr::Call {
+        call: skiff_artifact_model::CallIr {
+            target: skiff_artifact_model::CallTargetIr::LocalExecutable {
+                executable_index: 1,
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::from([(
+                "dispatchSubmit".to_string(),
+                dispatch_metadata(inner_symbol),
+            )]),
+        },
+    };
+    let outer_call = ExprIr::Call {
+        call: skiff_artifact_model::CallIr {
+            target: skiff_artifact_model::CallTargetIr::LocalExecutable {
+                executable_index: 2,
+            },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+            args: vec![ExprRefIr { expression: 1 }],
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::from([(
+                "dispatchSubmit".to_string(),
+                dispatch_metadata(outer_symbol),
+            )]),
+        },
+    };
     ExecutableIr {
         kind: ExecutableKind::Function,
-        symbol: TARGET_SYMBOL.to_string(),
+        symbol: "task.fixture.submit".to_string(),
         type_params: Vec::new(),
         params: Vec::new(),
-        return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
+        return_type: TypeRefIr::builtin("null"),
         self_type: None,
         slots: SlotLayout::default(),
-        may_suspend: false,
-        body: ExecutableBody::default(),
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }, StmtRefIr { statement: 1 }],
+            }],
+            statements: vec![
+                StmtIr::Dispatch {
+                    call: ExprRefIr { expression: 0 },
+                },
+                StmtIr::Return { value: None },
+            ],
+            expressions: vec![outer_call, inner_call],
+        },
         source_span: None,
     }
 }

@@ -12,6 +12,11 @@ pub enum CapabilityError {
     Unsupported(String),
     ProviderUnavailable { target: String, reason: String },
     Protocol { target: String, message: String },
+    /// A `task.submit.error` rejection projected from the router control
+    /// plane. `code` is the canonical `TaskSubmitRejectionCode` string;
+    /// `storeUnavailable` is transient, every other code is a definite
+    /// rejection that guarantees no task was created.
+    TaskSubmitRejected { code: String, message: String },
     Opaque(Box<dyn WirePayload>),
 }
 
@@ -38,6 +43,13 @@ impl CapabilityError {
         }
     }
 
+    pub fn task_submit_rejected(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::TaskSubmitRejected {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
     pub fn opaque(error: impl WirePayload) -> Self {
         Self::Opaque(Box::new(error))
     }
@@ -53,6 +65,9 @@ impl fmt::Display for CapabilityError {
             Self::Protocol { target, message } => {
                 write!(formatter, "protocol error for {target}: {message}")
             }
+            Self::TaskSubmitRejected { code, message } => {
+                write!(formatter, "task.submit rejected ({code}): {message}")
+            }
             Self::Opaque(error) => error.fmt(formatter),
         }
     }
@@ -65,7 +80,8 @@ impl Error for CapabilityError {
             Self::Decode(_)
             | Self::Unsupported(_)
             | Self::ProviderUnavailable { .. }
-            | Self::Protocol { .. } => None,
+            | Self::Protocol { .. }
+            | Self::TaskSubmitRejected { .. } => None,
         }
     }
 }
@@ -97,6 +113,15 @@ impl WirePayload for CapabilityError {
                     "message": message,
                 })),
             },
+            Self::TaskSubmitRejected { code, message } => RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(json!({
+                    "rejectionCode": code,
+                    "message": message,
+                })),
+            },
             Self::Opaque(error) => error.payload(),
         }
     }
@@ -117,6 +142,13 @@ impl WirePayload for CapabilityError {
                     "message": message,
                 }),
             )),
+            Self::TaskSubmitRejected { code, message } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                json!({
+                    "rejectionCode": code,
+                    "message": message,
+                })),
+            ),
             Self::Opaque(error) => error.catch_projection(),
             Self::Decode(_) | Self::Unsupported(_) => None,
         }

@@ -58,6 +58,9 @@ pub(crate) fn root_error_into_eval(error: root_error::RuntimeError) -> RuntimeEr
 pub(super) fn ordinary_root_error_into_capability(
     error: root_error::RuntimeError,
 ) -> capability_contract::CapabilityError {
+    if let root_error::RuntimeError::TaskSubmitRejected { code, message } = error {
+        return capability_contract::CapabilityError::task_submit_rejected(code, message);
+    }
     capability_contract::CapabilityError::opaque(
         root_error::OrdinaryRuntimeError::try_new(error)
             .expect("synchronous capability adapter cannot carry cancellation"),
