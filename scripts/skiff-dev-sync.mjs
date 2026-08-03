@@ -22,6 +22,11 @@ import {
   readStoredDevRegistry,
   writeStoredDevRegistry,
 } from './lib/dev-registry-store.mjs';
+import {
+  defaultBuildStatusPath,
+  summarizeBuildError,
+  writeBuildStatus,
+} from './lib/dev-sync-build-status.mjs';
 import { parseServiceManifestIdentity } from './lib/service-manifest-identity.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -76,6 +81,10 @@ export async function runDevWatch(options, dependencies = {}) {
   const now = dependencies.now ?? Date.now;
   const reportError = dependencies.reportError
     ?? ((error) => console.error(`dev sync rejected: ${formatError(error)}`));
+  const buildStatusPath = dependencies.buildStatusPath
+    ?? defaultBuildStatusPath(options.config);
+  const writeBuildStatusFile = dependencies.writeBuildStatusFile
+    ?? writeBuildStatus;
   const syncRunner = dependencies.syncRunner ?? runDevSyncOnce;
   const buildStateFromResult =
     dependencies.buildStateFromResult ?? reusableDevBuildState;
@@ -84,10 +93,15 @@ export async function runDevWatch(options, dependencies = {}) {
   let lastRegistryError;
   let successful;
   let pending;
+  let attempt = 0;
   let retryDelayMs = 1000;
   let retryAt = 0;
   let registryRetryDelayMs = 1000;
   let registryRetryAt = 0;
+  console.error(
+    `[dev-sync] watch mode: staying alive and retrying build failures with backoff; `
+      + `build status: ${buildStatusPath}`,
+  );
   const deferUntilFirstValidRegistry = (error) => {
     const signature = formatError(error);
     const shouldReport = signature !== lastRegistryError;
@@ -195,13 +209,29 @@ export async function runDevWatch(options, dependencies = {}) {
         buildState: buildStateFromResult(result),
       };
       pending = undefined;
+      attempt = 0;
       retryDelayMs = 1000;
       retryAt = 0;
+      await writeBuildStatusFile({
+        path: buildStatusPath,
+        state: 'ok',
+        updatedAt: new Date(now()).toISOString(),
+        attempt,
+      });
       emitResult(result, options.json);
     } catch (error) {
       reportError(error);
+      attempt += 1;
       retryAt = now() + retryDelayMs;
       retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+      await writeBuildStatusFile({
+        path: buildStatusPath,
+        state: 'failed',
+        updatedAt: new Date(now()).toISOString(),
+        nextRetryAt: new Date(retryAt).toISOString(),
+        error: summarizeBuildError(error),
+        attempt,
+      });
     }
   }
 }

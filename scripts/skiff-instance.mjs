@@ -22,6 +22,11 @@ import {
   renderDevSyncArgs,
 } from './lib/dev-sync-args.mjs';
 import {
+  defaultBuildStatusPath,
+  formatBuildStatusSuffix,
+  readBuildStatus,
+} from './lib/dev-sync-build-status.mjs';
+import {
   resolveRouterProcessSpec,
   routerProcessInvocation,
 } from './lib/dev-runtime-paths.mjs';
@@ -91,7 +96,9 @@ const usage = `usage:
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
   skiff instance sync <config> [root] [--environment <name>] [--activation-id <id>] [--build-only] [--json]
-  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+      # one-shot build/publish; exits non-zero on build failure
+  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
+      # long-running watcher; retries build failures with backoff (status: dev-home/last-build.json)`;
 
 try {
   await main(process.argv.slice(2));
@@ -198,7 +205,15 @@ async function printStatus(rawArgs, configPath) {
   }
   const config = await loadInstance(configPath);
   const result = await instanceStatus(config);
+  const watchBuildStatus = await readWatchBuildStatus(config);
   if (args.flags.has('--json')) {
+    if (watchBuildStatus !== null) {
+      for (const processStatus of result.processes) {
+        if (processStatus.name === 'watch') {
+          processStatus.buildStatus = watchBuildStatus;
+        }
+      }
+    }
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -206,7 +221,10 @@ async function printStatus(rawArgs, configPath) {
   console.log(`routerHttpUrl: ${config.urls.routerHttp}`);
   console.log(`telemetryUrl: ${config.urls.telemetry}`);
   for (const processStatus of result.processes) {
-    console.log(renderProcessStatusLine(processStatus));
+    const suffix = processStatus.name === 'watch'
+      ? formatBuildStatusSuffix(watchBuildStatus)
+      : '';
+    console.log(`${renderProcessStatusLine(processStatus)}${suffix}`);
     for (const port of processStatus.ports) {
       const listeners = port.listeners.length === 0
         ? 'no listeners'
@@ -226,13 +244,21 @@ async function doctorInstance(rawArgs, configPath) {
   }
   const config = await loadInstance(configPath);
   const result = await instanceStatus(config);
+  const watchBuildStatus = await readWatchBuildStatus(config);
   console.log(`configPath: ${config.paths.configPath}`);
   for (const processStatus of result.processes) {
-    console.log(renderProcessStatusLine(processStatus));
+    const suffix = processStatus.name === 'watch'
+      ? formatBuildStatusSuffix(watchBuildStatus)
+      : '';
+    console.log(`${renderProcessStatusLine(processStatus)}${suffix}`);
     for (const recommendation of recommendationsForProcess(processStatus)) {
       console.log(`  fix: ${recommendation}`);
     }
   }
+}
+
+async function readWatchBuildStatus(config) {
+  return readBuildStatus(defaultBuildStatusPath(config.paths.watchConfig));
 }
 
 async function buildInstance(rawArgs, configPath) {
