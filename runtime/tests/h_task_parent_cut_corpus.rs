@@ -13,18 +13,38 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
+    decode_task_cancel_request_frame, decode_task_cancel_response_frame,
+    decode_task_status_request_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_request_frame,
-    decode_task_submit_response_frame, encode_task_submit_error_frame,
+    decode_task_submit_response_frame, encode_binary_frame, encode_task_cancel_request_frame,
+    encode_task_cancel_response_frame, encode_task_status_request_frame,
+    encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_request_frame, encode_task_submit_response_frame,
     TaskSubmitRequestFrameHeaderV2,
 };
+use skiff_runtime_transport::runtime_assembly_request::{
+    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+};
 
-const REQUIRED_FRAMES: [&str; 5] = [
+const REQUIRED_FRAMES: [&str; 18] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
     "task.submit.request.legacy-no-caller-kind",
+    "task.submit.request.timing.after",
+    "task.submit.request.timing.at",
     "task.submit.response",
     "task.submit.error.parentNotFound",
+    "task.submit.error.invalidTiming",
+    "task.submit.error.payloadInvalid",
+    "task.submit.error.quotaExceeded",
+    "task.submit.error.storeUnavailable",
+    "task.submit.error.rejected",
+    "task.status.request",
+    "task.status.response.scheduled",
+    "task.cancel.request",
+    "task.cancel.response.canceled",
+    "request.start.task.without-attempt",
+    "request.start.task.with-attempt",
 ];
 
 const REQUIRED_SCENARIOS: [&str; 10] = [
@@ -376,6 +396,8 @@ mod tests {
         for name in [
             "task.submit.request.function",
             "task.submit.request.actorMethod",
+            "task.submit.request.timing.after",
+            "task.submit.request.timing.at",
         ] {
             let entry = &catalog.frames[name];
             let bytes = hex_bytes(&entry.frame_hex);
@@ -402,16 +424,88 @@ mod tests {
             "task.submit.response must be byte-exact"
         );
         assert_eq!(header.status, "submitted");
+        assert_eq!(header.task_ref.task_id(), "task-1");
+        assert_eq!(header.task_ref.owner(), "example.com/docs");
 
-        let error = &catalog.frames["task.submit.error.parentNotFound"];
-        let header = decode_task_submit_error_frame(&hex_bytes(&error.frame_hex))
-            .expect("task.submit.error must decode");
+        for name in [
+            "task.submit.error.parentNotFound",
+            "task.submit.error.invalidTiming",
+            "task.submit.error.payloadInvalid",
+            "task.submit.error.quotaExceeded",
+            "task.submit.error.storeUnavailable",
+            "task.submit.error.rejected",
+        ] {
+            let error = &catalog.frames[name];
+            let header = decode_task_submit_error_frame(&hex_bytes(&error.frame_hex))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(
+                encode_task_submit_error_frame(&header).expect("error re-encode"),
+                hex_bytes(&error.frame_hex),
+                "{name} must be byte-exact"
+            );
+        }
         assert_eq!(
-            encode_task_submit_error_frame(&header).expect("error re-encode"),
-            hex_bytes(&error.frame_hex),
-            "task.submit.error must be byte-exact"
+            catalog.frames["task.submit.error.parentNotFound"]
+                .header["error"]["code"],
+            "ParentNotFound"
         );
-        assert_eq!(header.error.code, "ParentNotFound");
+    }
+
+    #[test]
+    fn runtime_consumer_roundtrips_status_cancel_and_request_start_frames() {
+        let catalog = catalog();
+        for name in [
+            "task.status.request",
+            "task.status.response.scheduled",
+            "task.cancel.request",
+            "task.cancel.response.canceled",
+        ] {
+            let entry = &catalog.frames[name];
+            let bytes = hex_bytes(&entry.frame_hex);
+            let reencoded = match entry.decode_as.as_str() {
+                "TaskStatusRequest" => encode_task_status_request_frame(
+                    &decode_task_status_request_frame(&bytes).expect(name),
+                )
+                .expect("status request re-encode"),
+                "TaskStatusResponse" => encode_task_status_response_frame(
+                    &decode_task_status_response_frame(&bytes).expect(name),
+                )
+                .expect("status response re-encode"),
+                "TaskCancelRequest" => encode_task_cancel_request_frame(
+                    &decode_task_cancel_request_frame(&bytes).expect(name),
+                )
+                .expect("cancel request re-encode"),
+                "TaskCancelResponse" => encode_task_cancel_response_frame(
+                    &decode_task_cancel_response_frame(&bytes).expect(name),
+                )
+                .expect("cancel response re-encode"),
+                other => panic!("{name}: unexpected decodeAs {other}"),
+            };
+            assert_eq!(reencoded, bytes, "{name} must be byte-exact");
+        }
+
+        for name in [
+            "request.start.task.without-attempt",
+            "request.start.task.with-attempt",
+        ] {
+            let entry = &catalog.frames[name];
+            let bytes = hex_bytes(&entry.frame_hex);
+            let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+                panic!("{name}: must decode as task request.start")
+            };
+            assert_eq!(
+                encode_binary_frame(&header, &payload).expect("re-encode"),
+                bytes,
+                "{name} must be byte-exact"
+            );
+            assert_eq!(
+                header.task_attempt.is_some(),
+                name == "request.start.task.with-attempt",
+                "{name}: taskAttempt presence"
+            );
+        }
     }
 
     #[test]
@@ -457,8 +551,22 @@ mod tests {
         match name {
             "task.submit.request.function"
             | "task.submit.request.actorMethod"
-            | "task.submit.request.legacy-no-caller-kind" => "RuntimeToRouter",
-            "task.submit.response" | "task.submit.error.parentNotFound" => "RouterToRuntime",
+            | "task.submit.request.legacy-no-caller-kind"
+            | "task.submit.request.timing.after"
+            | "task.submit.request.timing.at"
+            | "task.status.request"
+            | "task.cancel.request" => "RuntimeToRouter",
+            "task.submit.response"
+            | "task.submit.error.parentNotFound"
+            | "task.submit.error.invalidTiming"
+            | "task.submit.error.payloadInvalid"
+            | "task.submit.error.quotaExceeded"
+            | "task.submit.error.storeUnavailable"
+            | "task.submit.error.rejected"
+            | "task.status.response.scheduled"
+            | "task.cancel.response.canceled"
+            | "request.start.task.without-attempt"
+            | "request.start.task.with-attempt" => "RouterToRuntime",
             _ => panic!("unexpected task frame {name}"),
         }
     }

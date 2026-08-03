@@ -3,6 +3,6 @@ pub use skiff_runtime_capability_context::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, RuntimeDeadlineControl,
-    TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest,
+    TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 pub use skiff_runtime_request_contract::OutboundResponse;

@@ -78,7 +78,8 @@ pub use outbound_control::{
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
     RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
-    TaskSubmitControlMessage, TaskSubmitControlRequest, WebSocketConnectionPolicyControl,
+    TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitTimingControl,
+    WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{

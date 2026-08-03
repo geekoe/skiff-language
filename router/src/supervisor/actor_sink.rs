@@ -32,7 +32,7 @@ use skiff_runtime_transport::protocol::{
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
     ActorTaskRuntimeErrorFrameHeader, RuntimeErrorFramePayload, RuntimeFrameFamily, TaskCallerKind,
-    TaskSubmitRequestFrame, TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader,
+    TaskRef, TaskSubmitRequestFrame, TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader,
     TaskTargetKind as WireTaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
     TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
@@ -1194,11 +1194,14 @@ impl ActorTaskFrameSink {
         rpc_id: &str,
         task_id: &str,
         request_id: &str,
+        owner: &str,
     ) -> Result<Vec<u8>, TerminalKind> {
         let header = TaskSubmitResponseFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "task.submit.response".to_string(),
             rpc_id: rpc_id.to_string(),
+            task_ref: TaskRef::new(task_id.to_string(), owner.to_string())
+                .map_err(|_| TerminalKind::MalformedFrame)?,
             task_id: task_id.to_string(),
             request_id: request_id.to_string(),
             status: TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED.to_string(),
@@ -1486,7 +1489,9 @@ impl InboundFrameSink for ActorTaskFrameSink {
         let result = self.route_task(session, &frame, &task_request_id);
         let rpc_id = frame.header.rpc_id.clone();
         let outcome = match result {
-            Ok((task_id, request_id)) => Self::response_frame(&rpc_id, &task_id, &request_id),
+            Ok((task_id, request_id)) => {
+                Self::response_frame(&rpc_id, &task_id, &request_id, &frame.header.service_id)
+            }
             Err((code, message)) => Self::error_frame(&rpc_id, &code, &message),
         };
         self.components.task_wire_store.remove(&task_request_id);

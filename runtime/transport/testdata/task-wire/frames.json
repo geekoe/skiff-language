@@ -8,11 +8,12 @@
       "decodeAs": "TaskSubmitResponse",
       "payloadPresence": "empty",
       "payloadBase64": "",
-      "frameHex": "534b424601010000009d000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e726573706f6e7365222c227270634964223a227270633a7461736b2d31222c227461736b4964223a227461736b2d31222c22726571756573744964223a227265713a7461736b2d31222c22737461747573223a227375626d6974746564227d",
+      "frameHex": "534b42460101000000d7000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e726573706f6e7365222c227270634964223a227270633a7461736b2d31222c227461736b526566223a22736b6966662d7461736b2d76313a5a586868625842735a53356a623230765a47396a63772e6447467a61793078222c227461736b4964223a227461736b2d31222c22726571756573744964223a227265713a7461736b2d31222c22737461747573223a227375626d6974746564227d",
       "header": {
         "schemaVersion": "skiff-runtime-frame-v3",
         "type": "task.submit.response",
         "rpcId": "rpc:task-1",
+        "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
         "taskId": "task-1",
         "requestId": "req:task-1",
         "status": "submitted"
@@ -147,6 +148,299 @@
         }
       },
       "legacyCut": true
+    },
+    "task.submit.request.timing.after": {
+      "direction": "RuntimeToRouter",
+      "frameType": "task.submit.request",
+      "decodeAs": "TaskSubmitRequest",
+      "payloadPresence": "required",
+      "payloadBase64": "AQI=",
+      "frameHex": "534b424601010000025d000000027b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e72657175657374222c227270634964223a227270633a7461736b2d31222c2272756e74696d654964223a2272756e74696d652d61222c2263616c6c65724b696e64223a2272657175657374222c2263616c6c6572526571756573744964223a22706172656e742d31222c227461726765744b696e64223a2266756e6374696f6e222c22736572766963654964223a226578616d706c652e636f6d2f646f6373222c227365727669636556657273696f6e223a22312e302e30222c227365727669636550726f746f636f6c4964656e74697479223a226578616d706c652e636f6d2f646f63733a312e302e30222c22746172676574223a226578616d706c652e636f6d2f666e222c2274696d696e67223a7b226b696e64223a226166746572222c226475726174696f6e4d73223a353030307d2c227461736b4964223a227461736b2d31222c2261637469766174696f6e4964656e74697479223a7b22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76333a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2267656e65726174696f6e223a34322c2272756e74696d655265706c6963614964223a2272756e74696d652d61222c226465706c6f796d656e745265766973696f6e223a227265762d31227d7d0102",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.request",
+        "rpcId": "rpc:task-1",
+        "runtimeId": "runtime-a",
+        "callerKind": "request",
+        "callerRequestId": "parent-1",
+        "targetKind": "function",
+        "serviceId": "example.com/docs",
+        "serviceVersion": "1.0.0",
+        "serviceProtocolIdentity": "example.com/docs:1.0.0",
+        "target": "example.com/fn",
+        "timing": { "kind": "after", "durationMs": 5000 },
+        "taskId": "task-1",
+        "activationIdentity": {
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "generation": 42,
+          "runtimeReplicaId": "runtime-a",
+          "deploymentRevision": "rev-1"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.request.timing.at": {
+      "direction": "RuntimeToRouter",
+      "frameType": "task.submit.request",
+      "decodeAs": "TaskSubmitRequest",
+      "payloadPresence": "required",
+      "payloadBase64": "AQI=",
+      "frameHex": "534b4246010100000262000000027b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e72657175657374222c227270634964223a227270633a7461736b2d31222c2272756e74696d654964223a2272756e74696d652d61222c2263616c6c65724b696e64223a2272657175657374222c2263616c6c6572526571756573744964223a22706172656e742d31222c227461726765744b696e64223a2266756e6374696f6e222c22736572766963654964223a226578616d706c652e636f6d2f646f6373222c227365727669636556657273696f6e223a22312e302e30222c227365727669636550726f746f636f6c4964656e74697479223a226578616d706c652e636f6d2f646f63733a312e302e30222c22746172676574223a226578616d706c652e636f6d2f666e222c2274696d696e67223a7b226b696e64223a226174222c227574634d696c6c6973223a313730303030303030303030307d2c227461736b4964223a227461736b2d31222c2261637469766174696f6e4964656e74697479223a7b22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76333a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2267656e65726174696f6e223a34322c2272756e74696d655265706c6963614964223a2272756e74696d652d61222c226465706c6f796d656e745265766973696f6e223a227265762d31227d7d0102",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.request",
+        "rpcId": "rpc:task-1",
+        "runtimeId": "runtime-a",
+        "callerKind": "request",
+        "callerRequestId": "parent-1",
+        "targetKind": "function",
+        "serviceId": "example.com/docs",
+        "serviceVersion": "1.0.0",
+        "serviceProtocolIdentity": "example.com/docs:1.0.0",
+        "target": "example.com/fn",
+        "timing": { "kind": "at", "utcMillis": 1700000000000 },
+        "taskId": "task-1",
+        "activationIdentity": {
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "generation": 42,
+          "runtimeReplicaId": "runtime-a",
+          "deploymentRevision": "rev-1"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.error.invalidTiming": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.submit.error",
+      "decodeAs": "TaskSubmitError",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b424601010000009e000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e6572726f72222c227270634964223a227270633a7461736b2d31222c226572726f72223a7b22636f6465223a22696e76616c696454696d696e67222c226d657373616765223a22646973706174636820696e76616c696454696d696e67227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.error",
+        "rpcId": "rpc:task-1",
+        "error": {
+          "code": "invalidTiming",
+          "message": "dispatch invalidTiming"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.error.payloadInvalid": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.submit.error",
+      "decodeAs": "TaskSubmitError",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b42460101000000a0000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e6572726f72222c227270634964223a227270633a7461736b2d31222c226572726f72223a7b22636f6465223a227061796c6f6164496e76616c6964222c226d657373616765223a226469737061746368207061796c6f6164496e76616c6964227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.error",
+        "rpcId": "rpc:task-1",
+        "error": {
+          "code": "payloadInvalid",
+          "message": "dispatch payloadInvalid"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.error.quotaExceeded": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.submit.error",
+      "decodeAs": "TaskSubmitError",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b424601010000009e000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e6572726f72222c227270634964223a227270633a7461736b2d31222c226572726f72223a7b22636f6465223a2271756f74614578636565646564222c226d657373616765223a2264697370617463682071756f74614578636565646564227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.error",
+        "rpcId": "rpc:task-1",
+        "error": {
+          "code": "quotaExceeded",
+          "message": "dispatch quotaExceeded"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.error.storeUnavailable": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.submit.error",
+      "decodeAs": "TaskSubmitError",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b42460101000000a4000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e6572726f72222c227270634964223a227270633a7461736b2d31222c226572726f72223a7b22636f6465223a2273746f7265556e617661696c61626c65222c226d657373616765223a2264697370617463682073746f7265556e617661696c61626c65227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.error",
+        "rpcId": "rpc:task-1",
+        "error": {
+          "code": "storeUnavailable",
+          "message": "dispatch storeUnavailable"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.submit.error.rejected": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.submit.error",
+      "decodeAs": "TaskSubmitError",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b4246010100000094000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7375626d69742e6572726f72222c227270634964223a227270633a7461736b2d31222c226572726f72223a7b22636f6465223a2272656a6563746564222c226d657373616765223a2264697370617463682072656a6563746564227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.submit.error",
+        "rpcId": "rpc:task-1",
+        "error": {
+          "code": "rejected",
+          "message": "dispatch rejected"
+        }
+      },
+      "legacyCut": false
+    },
+    "task.status.request": {
+      "direction": "RuntimeToRouter",
+      "frameType": "task.status.request",
+      "decodeAs": "TaskStatusRequest",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b4246010100000098000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7374617475732e72657175657374222c227270634964223a227270633a7374617475732d31222c227461736b526566223a22736b6966662d7461736b2d76313a5a586868625842735a53356a623230765a47396a63772e6447467a61793078227d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.status.request",
+        "rpcId": "rpc:status-1",
+        "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x"
+      },
+      "legacyCut": false
+    },
+    "task.status.response.scheduled": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.status.response",
+      "decodeAs": "TaskStatusResponse",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b42460101000000b7000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e7374617475732e726573706f6e7365222c227270634964223a227270633a7374617475732d31222c227461736b526566223a22736b6966662d7461736b2d76313a5a586868625842735a53356a623230765a47396a63772e6447467a61793078222c22737461747573223a7b226b696e64223a227363686564756c6564227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.status.response",
+        "rpcId": "rpc:status-1",
+        "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
+        "status": { "kind": "scheduled" }
+      },
+      "legacyCut": false
+    },
+    "task.cancel.request": {
+      "direction": "RuntimeToRouter",
+      "frameType": "task.cancel.request",
+      "decodeAs": "TaskCancelRequest",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b4246010100000098000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e63616e63656c2e72657175657374222c227270634964223a227270633a63616e63656c2d31222c227461736b526566223a22736b6966662d7461736b2d76313a5a586868625842735a53356a623230765a47396a63772e6447467a61793078227d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.cancel.request",
+        "rpcId": "rpc:cancel-1",
+        "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x"
+      },
+      "legacyCut": false
+    },
+    "task.cancel.response.canceled": {
+      "direction": "RouterToRuntime",
+      "frameType": "task.cancel.response",
+      "decodeAs": "TaskCancelResponse",
+      "payloadPresence": "empty",
+      "payloadBase64": "",
+      "frameHex": "534b42460101000000b6000000007b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a227461736b2e63616e63656c2e726573706f6e7365222c227270634964223a227270633a63616e63656c2d31222c227461736b526566223a22736b6966662d7461736b2d76313a5a586868625842735a53356a623230765a47396a63772e6447467a61793078222c22726573756c74223a7b226b696e64223a2263616e63656c6564227d7d",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "task.cancel.response",
+        "rpcId": "rpc:cancel-1",
+        "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
+        "result": { "kind": "canceled" }
+      },
+      "legacyCut": false
+    },
+    "request.start.task.without-attempt": {
+      "direction": "RouterToRuntime",
+      "frameType": "request.start",
+      "decodeAs": "RuntimeAssemblyTaskRequestStart",
+      "payloadPresence": "required",
+      "payloadBase64": "gQ==",
+      "frameHex": "534b42460101000002e2000000017b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227461736b2d726571756573742d31222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2273657276696365227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76333a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c226465706c6f796d656e74223a7b22736572766963654964223a226578616d706c652e636f6d2f776f726b6572222c22636f6e747261637456657273696f6e223a22312e302e30222c226465706c6f796d656e745265766973696f6e223a226465706c6f796d656e742d31222c226465706c6f796d656e7441727469666163744964656e74697479223a22736b6966662d6465706c6f796d656e742d61727469666163742d76343a7368613235363a64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d7d2c22696e766f636174696f6e223a7b226b696e64223a227461736b222c227461726765744b696e64223a2266756e6374696f6e222c22746172676574223a2266756e6374696f6e3a776f726b65722e72756e227d2c227472616365223a7b2274726163654964223a2274726163652d7461736b222c227370616e4964223a227370616e2d7461736b222c2273616d706c6564223a747275657d2c227465737445666665637473456e61626c6564223a66616c73657d81",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "task-request-1",
+        "mode": "unary",
+        "caller": { "kind": "service" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 7,
+          "deployment": {
+            "serviceId": "example.com/worker",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        },
+        "invocation": {
+          "kind": "task",
+          "targetKind": "function",
+          "target": "function:worker.run"
+        },
+        "trace": {
+          "traceId": "trace-task",
+          "spanId": "span-task",
+          "sampled": true
+        },
+        "testEffectsEnabled": false
+      },
+      "legacyCut": false
+    },
+    "request.start.task.with-attempt": {
+      "direction": "RouterToRuntime",
+      "frameType": "request.start",
+      "decodeAs": "RuntimeAssemblyTaskRequestStart",
+      "payloadPresence": "required",
+      "payloadBase64": "gQ==",
+      "frameHex": "534b4246010100000330000000017b22736368656d6156657273696f6e223a22736b6966662d72756e74696d652d6672616d652d7633222c2274797065223a22726571756573742e7374617274222c22726571756573744964223a227461736b2d726571756573742d31222c226d6f6465223a22756e617279222c2263616c6c6572223a7b226b696e64223a2273657276696365227d2c22726f7574696e67223a7b226b696e64223a2272756e74696d65417373656d626c79222c22617373656d626c794964656e74697479223a22736b6966662d72756e74696d652d617373656d626c792d76333a7368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22617373656d626c7947656e65726174696f6e223a372c226465706c6f796d656e74223a7b22736572766963654964223a226578616d706c652e636f6d2f776f726b6572222c22636f6e747261637456657273696f6e223a22312e302e30222c226465706c6f796d656e745265766973696f6e223a226465706c6f796d656e742d31222c226465706c6f796d656e7441727469666163744964656e74697479223a22736b6966662d6465706c6f796d656e742d61727469666163742d76343a7368613235363a64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d7d2c22696e766f636174696f6e223a7b226b696e64223a227461736b222c227461726765744b696e64223a2266756e6374696f6e222c22746172676574223a2266756e6374696f6e3a776f726b65722e72756e227d2c227472616365223a7b2274726163654964223a2274726163652d7461736b222c227370616e4964223a227370616e2d7461736b222c2273616d706c6564223a747275657d2c227465737445666665637473456e61626c6564223a66616c73652c227461736b417474656d7074223a7b227461736b4964223a227461736b2d31222c22617474656d70744964223a22617474656d70742d31222c226c656173654964223a226c656173652d31227d7d81",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v3",
+        "type": "request.start",
+        "requestId": "task-request-1",
+        "mode": "unary",
+        "caller": { "kind": "service" },
+        "routing": {
+          "kind": "runtimeAssembly",
+          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assemblyGeneration": 7,
+          "deployment": {
+            "serviceId": "example.com/worker",
+            "contractVersion": "1.0.0",
+            "deploymentRevision": "deployment-1",
+            "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        },
+        "invocation": {
+          "kind": "task",
+          "targetKind": "function",
+          "target": "function:worker.run"
+        },
+        "trace": {
+          "traceId": "trace-task",
+          "spanId": "span-task",
+          "sampled": true
+        },
+        "testEffectsEnabled": false,
+        "taskAttempt": {
+          "taskId": "task-1",
+          "attemptId": "attempt-1",
+          "leaseId": "lease-1"
+        }
+      },
+      "legacyCut": false
     }
   }
 }

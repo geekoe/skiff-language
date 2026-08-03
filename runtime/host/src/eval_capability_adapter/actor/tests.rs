@@ -8,6 +8,7 @@ use skiff_runtime_capability_context::{
     ActorInvocationIdentity, ActorInvocationOutcome, ActorInvocationOwnerFile,
     ActorInvocationOwnerUnit, ActorInvocationRequest, ActorKeyControlMetadata,
     OutboundControlMessage, RouterWriterMessage, TaskCallerKind, TaskSubmitControlMessage,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, ActorMethodCancelReason, ActorMethodFrame,
@@ -452,6 +453,7 @@ fn task_submit_request_with_untrusted_caller() -> TaskSubmitControlRequest {
         build_id: Some(BUILD_ID.to_string()),
         activation_identity: test_activation_identity(),
         caller_request_id: Some("request:caller-must-not-authorize".to_string()),
+        timing: TaskSubmitTimingControl::Immediate,
         trace_id: None,
         caller_target: Some("program.test".to_string()),
         max_queue_wait_ms: None,

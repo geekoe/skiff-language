@@ -68,6 +68,7 @@ pub use outbound::{
     ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage,
     RuntimeDeadlineControl, TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest,
+    TaskSubmitTimingControl,
 };
 pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,

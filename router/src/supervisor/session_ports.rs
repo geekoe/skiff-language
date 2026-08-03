@@ -334,6 +334,7 @@ impl RuntimePeer for SessionRuntimePeer {
             },
             test_effects_enabled: false,
             test_case_capability: None,
+            task_attempt: None,
         };
         let bytes = encode_binary_frame(&header, &wire.frame.payload)
             .map_err(|error| format!("derived task request.start encode failed: {error}"))?;

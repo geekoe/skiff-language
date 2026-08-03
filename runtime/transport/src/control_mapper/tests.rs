@@ -14,7 +14,7 @@ use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorControlDeadline, ActorGetOrCreateControlRequest,
     ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
     ActorKeyControlMetadata, ActorReplaceControlRequest, OutboundControlMessage,
-    RequestCancelControl, TaskSubmitControlRequest,
+    RequestCancelControl, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 
 #[test]
@@ -164,6 +164,7 @@ fn task_submit_request_frame_maps_header_and_opaque_payload() {
         build_id: Some("build-1".to_string()),
         activation_identity: activation_identity_frame(),
         caller_request_id: Some("request-1".to_string()),
+        timing: None,
         trace_id: Some("trace-1".to_string()),
         caller_target: Some("Caller.start".to_string()),
         max_queue_wait_ms: Some(250.0),
@@ -491,6 +492,7 @@ fn task_submit_control_request(service_id: &str) -> TaskSubmitControlRequest {
         build_id: Some("build-1".to_string()),
         activation_identity: activation_identity_control(),
         caller_request_id: Some("request-1".to_string()),
+        timing: TaskSubmitTimingControl::Immediate,
         trace_id: Some("trace-1".to_string()),
         caller_target: Some("Caller.start".to_string()),
         max_queue_wait_ms: Some(250.0),

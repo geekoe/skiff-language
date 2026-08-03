@@ -920,6 +920,7 @@ async fn writer_sends_no_websocket_frame_for_invalid_task_service_id() {
                     ),
                 },
                 caller_request_id: Some("request-1".to_string()),
+                timing: skiff_runtime_request::TaskSubmitTimingControl::Immediate,
                 trace_id: Some("trace-1".to_string()),
                 caller_target: Some("Caller.start".to_string()),
                 max_queue_wait_ms: Some(250.0),

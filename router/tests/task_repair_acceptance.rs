@@ -122,6 +122,8 @@ mod tests {
         assert_eq!(response.task_id, "task-1");
         assert_eq!(response.request_id, "req:task-1");
         assert_eq!(response.status, "submitted");
+        assert_eq!(response.task_ref.task_id(), "task-1");
+        assert_eq!(response.task_ref.owner(), "example.com/docs");
         let response_bytes =
             encode_task_submit_response_frame(&response).expect("acceptance response must encode");
         assert_eq!(
@@ -147,22 +149,55 @@ mod tests {
             let (frame_type, expected) = match name.as_str() {
                 "task.submit.request.function"
                 | "task.submit.request.actorMethod"
-                | "task.submit.request.legacy-no-caller-kind" => {
+                | "task.submit.request.legacy-no-caller-kind"
+                | "task.submit.request.timing.after"
+                | "task.submit.request.timing.at" => {
                     ("task.submit.request", FrameDirection::RuntimeToRouter)
                 }
                 "task.submit.response" => {
                     ("task.submit.response", FrameDirection::RouterToRuntime)
                 }
-                "task.submit.error.parentNotFound" => {
+                "task.submit.error.parentNotFound"
+                | "task.submit.error.invalidTiming"
+                | "task.submit.error.payloadInvalid"
+                | "task.submit.error.quotaExceeded"
+                | "task.submit.error.storeUnavailable"
+                | "task.submit.error.rejected" => {
                     ("task.submit.error", FrameDirection::RouterToRuntime)
+                }
+                "task.status.request" => {
+                    ("task.status.request", FrameDirection::RuntimeToRouter)
+                }
+                "task.status.response.scheduled" => {
+                    ("task.status.response", FrameDirection::RouterToRuntime)
+                }
+                "task.cancel.request" => {
+                    ("task.cancel.request", FrameDirection::RuntimeToRouter)
+                }
+                "task.cancel.response.canceled" => {
+                    ("task.cancel.response", FrameDirection::RouterToRuntime)
+                }
+                "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
+                    ("request.start", FrameDirection::RouterToRuntime)
                 }
                 _ => panic!("unexpected task frame {name}"),
             };
-            assert_eq!(
-                task_submit_frame_direction(frame_type),
-                Some(expected),
-                "{name}: frame-level direction table"
-            );
+            if matches!(name.as_str(), "request.start.task.without-attempt" | "request.start.task.with-attempt") {
+                // `request.start` belongs to the request family; the task
+                // direction table deliberately does not own it. The corpus
+                // direction is still frozen and asserted below.
+                assert_eq!(
+                    task_submit_frame_direction(frame_type),
+                    None,
+                    "{name}: request.start is not a task-family frame type"
+                );
+            } else {
+                assert_eq!(
+                    task_submit_frame_direction(frame_type),
+                    Some(expected),
+                    "{name}: frame-level direction table"
+                );
+            }
             let corpus_direction = match entry.direction.as_str() {
                 "RuntimeToRouter" => FrameDirection::RuntimeToRouter,
                 "RouterToRuntime" => FrameDirection::RouterToRuntime,

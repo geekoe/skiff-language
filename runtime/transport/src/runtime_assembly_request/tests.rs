@@ -175,6 +175,46 @@ fn runtime_assembly_task_request_rejects_authority_mismatch_and_empty_payload() 
 }
 
 #[test]
+fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
+    let mut with_attempt = canonical_task_header(false);
+    with_attempt["taskAttempt"] = json!({
+        "taskId": "task-1",
+        "attemptId": "attempt-1",
+        "leaseId": "lease-1"
+    });
+    let frame = encode_binary_frame(&with_attempt, &[0x81]).unwrap();
+    let (header, payload) = decode_runtime_assembly_request_start_frame(&frame)
+        .expect("valid taskAttempt must decode");
+    let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+        panic!("task invocation must select the closed task union branch")
+    };
+    let attempt = header
+        .task_attempt
+        .expect("taskAttempt must be present");
+    assert_eq!(attempt.task_id, "task-1");
+    assert_eq!(attempt.attempt_id, "attempt-1");
+    assert_eq!(attempt.lease_id, "lease-1");
+    assert_eq!(payload, vec![0x81]);
+
+    for field in ["taskId", "attemptId", "leaseId"] {
+        let mut invalid = canonical_task_header(false);
+        invalid["taskAttempt"] = json!({
+            "taskId": "task-1",
+            "attemptId": "attempt-1",
+            "leaseId": "lease-1"
+        });
+        invalid["taskAttempt"][field] = json!("");
+        let frame = encode_binary_frame(&invalid, &[0x81]).unwrap();
+        let error = decode_runtime_assembly_request_start_frame(&frame)
+            .expect_err("empty taskAttempt field must be a wire error");
+        assert!(
+            error.to_string().contains("taskAttempt"),
+            "wire error must name taskAttempt, got {error}"
+        );
+    }
+}
+
+#[test]
 fn runtime_assembly_request_start_corpus_is_nonempty_and_uniquely_named() {
     let corpus = corpus();
     assert!(!corpus.request_start_headers.is_empty());

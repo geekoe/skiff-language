@@ -127,10 +127,24 @@ pub struct TaskSubmitControlRequest {
     pub build_id: Option<String>,
     pub activation_identity: ActivationIdentityControl,
     pub caller_request_id: Option<String>,
+    pub timing: TaskSubmitTimingControl,
     pub trace_id: Option<String>,
     pub caller_target: Option<String>,
     pub max_queue_wait_ms: Option<f64>,
     pub actor_method: Option<ActorMethodTaskTargetControl>,
+}
+
+/// Submission timing for one `task.submit` (D1 wire/control contract).
+///
+/// `Immediate` is the default/legacy value; the wire codec omits it so old
+/// corpora and construction points keep byte-exact behavior. `after` and
+/// `at` values are carried verbatim on the wire; negative / overflow
+/// rejection is the compiler/runtime responsibility, not the wire's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskSubmitTimingControl {
+    Immediate,
+    After { duration_ms: u64 },
+    At { utc_millis: i64 },
 }
 
 /// Closed parent-kind namespace for the canonical task wire generation

@@ -1505,6 +1505,11 @@ mod tests {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
                 envelope_type: "task.submit.response".to_string(),
                 rpc_id: "direction-violation-rpc".to_string(),
+                task_ref: skiff_runtime_transport::protocol::TaskRef::new(
+                    "task-direction",
+                    "example.com/docs",
+                )
+                .expect("task ref"),
                 task_id: "task-direction".to_string(),
                 request_id: "request-direction".to_string(),
                 status: "submitted".to_string(),

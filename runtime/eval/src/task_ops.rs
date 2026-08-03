@@ -6,6 +6,7 @@ use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
     ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, TaskSubmitControlRequest,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorMethodImplementation,
@@ -170,6 +171,7 @@ pub async fn submit_task_statement(
                 request_context.activation_identity(),
             )?,
             caller_request_id: Some(request_context.request_id().to_string()),
+            timing: TaskSubmitTimingControl::Immediate,
             trace_id: request_context.trace_id().map(str::to_string),
             caller_target: Some(request_context.request_target().to_string()),
             max_queue_wait_ms: None,

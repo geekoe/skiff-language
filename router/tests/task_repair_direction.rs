@@ -207,4 +207,54 @@ mod tests {
             "unknown task frame type must not dispatch"
         );
     }
+
+    #[test]
+    fn task_repair_direction_status_and_cancel_frames_are_declared_and_fail_closed_before_d2() {
+        let demux = RuntimeFrameDemux;
+        // RuntimeToRouter control requests are declared by the D1 direction
+        // table. Without an installed handler they route to the task sink
+        // owner; the D1 sink only accepts task.submit.request, so the exact
+        // session fails closed (D2 installs the real handler).
+        for name in ["task.status.request", "task.cancel.request"] {
+            let bytes = corpus_frame(name);
+            assert_eq!(
+                demux.classify(&bytes),
+                DemuxOutcome::Handled(DemuxEvent::Unimplemented {
+                    family: RuntimeFrameFamily::Task
+                }),
+                "{name}: RuntimeToRouter task control request must reach the task lane"
+            );
+            let sink = Arc::new(TaskSinkProbe {
+                seen: Mutex::new(Vec::new()),
+            });
+            let sink_trait: Arc<dyn InboundFrameSink> = sink.clone();
+            let sinks = InboundSinkSet {
+                task: Some(sink_trait.clone()),
+                ..Default::default()
+            };
+            match demux.classify_with_sinks(&bytes, &sinks) {
+                DemuxOutcome::Handled(DemuxEvent::Sink { family, raw }) => {
+                    assert_eq!(family, RuntimeFrameFamily::Task);
+                    assert_eq!(raw, bytes);
+                    assert_eq!(
+                        sink_trait.handle(&session(), &raw),
+                        Err(TerminalKind::MalformedFrame),
+                        "{name}: D1 sink has no status/cancel handler (D2)"
+                    );
+                }
+                other => panic!("{name}: expected Sink dispatch, got {other:?}"),
+            }
+        }
+
+        // RouterToRuntime responses remain direction violations when sent by
+        // the Runtime, exactly like task.submit.response/error.
+        for name in ["task.status.response.scheduled", "task.cancel.response.canceled"] {
+            let bytes = corpus_frame(name);
+            assert_eq!(
+                demux.classify(&bytes),
+                DemuxOutcome::Terminal(TerminalKind::MalformedFrame),
+                "{name}: outbound-only task frame must be a direction violation"
+            );
+        }
+    }
 }

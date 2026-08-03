@@ -18,18 +18,38 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
+    decode_task_cancel_request_frame, decode_task_cancel_response_frame,
+    decode_task_status_request_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_request_frame,
-    decode_task_submit_response_frame, encode_task_submit_error_frame,
+    decode_task_submit_response_frame, encode_task_cancel_request_frame,
+    encode_task_cancel_response_frame, encode_task_status_request_frame,
+    encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_request_frame, encode_task_submit_response_frame,
-    TaskSubmitRequestFrameHeaderV2,
+    TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
+};
+use skiff_runtime_transport::runtime_assembly_request::{
+    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 5] = [
+const REQUIRED_FRAMES: [&str; 18] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
     "task.submit.request.legacy-no-caller-kind",
+    "task.submit.request.timing.after",
+    "task.submit.request.timing.at",
     "task.submit.response",
     "task.submit.error.parentNotFound",
+    "task.submit.error.invalidTiming",
+    "task.submit.error.payloadInvalid",
+    "task.submit.error.quotaExceeded",
+    "task.submit.error.storeUnavailable",
+    "task.submit.error.rejected",
+    "task.status.request",
+    "task.status.response.scheduled",
+    "task.cancel.request",
+    "task.cancel.response.canceled",
+    "request.start.task.without-attempt",
+    "request.start.task.with-attempt",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -437,6 +457,8 @@ mod tests {
         use skiff_runtime_transport::protocol::{
             FrameDirection, PayloadPresenceRule, RuntimeFrameFamily, TASK_SUBMIT_ERROR_FRAME_TYPE,
             TASK_SUBMIT_REQUEST_FRAME_TYPE, TASK_SUBMIT_RESPONSE_FRAME_TYPE,
+            TASK_CANCEL_REQUEST_FRAME_TYPE, TASK_CANCEL_RESPONSE_FRAME_TYPE,
+            TASK_STATUS_REQUEST_FRAME_TYPE, TASK_STATUS_RESPONSE_FRAME_TYPE,
         };
         assert_eq!(
             RuntimeFrameFamily::Task.direction(),
@@ -460,6 +482,22 @@ mod tests {
             task_submit_frame_direction(TASK_SUBMIT_ERROR_FRAME_TYPE),
             Some(FrameDirection::RouterToRuntime)
         );
+        assert_eq!(
+            task_submit_frame_direction(TASK_STATUS_REQUEST_FRAME_TYPE),
+            Some(FrameDirection::RuntimeToRouter)
+        );
+        assert_eq!(
+            task_submit_frame_direction(TASK_STATUS_RESPONSE_FRAME_TYPE),
+            Some(FrameDirection::RouterToRuntime)
+        );
+        assert_eq!(
+            task_submit_frame_direction(TASK_CANCEL_REQUEST_FRAME_TYPE),
+            Some(FrameDirection::RuntimeToRouter)
+        );
+        assert_eq!(
+            task_submit_frame_direction(TASK_CANCEL_RESPONSE_FRAME_TYPE),
+            Some(FrameDirection::RouterToRuntime)
+        );
     }
 
     #[test]
@@ -474,14 +512,36 @@ mod tests {
             let (frame_type, decode_as, presence) = match name.as_str() {
                 "task.submit.request.function"
                 | "task.submit.request.actorMethod"
-                | "task.submit.request.legacy-no-caller-kind" => {
+                | "task.submit.request.legacy-no-caller-kind"
+                | "task.submit.request.timing.after"
+                | "task.submit.request.timing.at" => {
                     ("task.submit.request", "TaskSubmitRequest", "required")
                 }
                 "task.submit.response" => {
                     ("task.submit.response", "TaskSubmitResponse", "empty")
                 }
-                "task.submit.error.parentNotFound" => {
+                "task.submit.error.parentNotFound"
+                | "task.submit.error.invalidTiming"
+                | "task.submit.error.payloadInvalid"
+                | "task.submit.error.quotaExceeded"
+                | "task.submit.error.storeUnavailable"
+                | "task.submit.error.rejected" => {
                     ("task.submit.error", "TaskSubmitError", "empty")
+                }
+                "task.status.request" => {
+                    ("task.status.request", "TaskStatusRequest", "empty")
+                }
+                "task.status.response.scheduled" => {
+                    ("task.status.response", "TaskStatusResponse", "empty")
+                }
+                "task.cancel.request" => {
+                    ("task.cancel.request", "TaskCancelRequest", "empty")
+                }
+                "task.cancel.response.canceled" => {
+                    ("task.cancel.response", "TaskCancelResponse", "empty")
+                }
+                "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
+                    ("request.start", "RuntimeAssemblyTaskRequestStart", "required")
                 }
                 _ => panic!("unexpected task frame {name}"),
             };
@@ -495,8 +555,22 @@ mod tests {
         match name {
             "task.submit.request.function"
             | "task.submit.request.actorMethod"
-            | "task.submit.request.legacy-no-caller-kind" => "RuntimeToRouter",
-            "task.submit.response" | "task.submit.error.parentNotFound" => "RouterToRuntime",
+            | "task.submit.request.legacy-no-caller-kind"
+            | "task.submit.request.timing.after"
+            | "task.submit.request.timing.at"
+            | "task.status.request"
+            | "task.cancel.request" => "RuntimeToRouter",
+            "task.submit.response"
+            | "task.submit.error.parentNotFound"
+            | "task.submit.error.invalidTiming"
+            | "task.submit.error.payloadInvalid"
+            | "task.submit.error.quotaExceeded"
+            | "task.submit.error.storeUnavailable"
+            | "task.submit.error.rejected"
+            | "task.status.response.scheduled"
+            | "task.cancel.response.canceled"
+            | "request.start.task.without-attempt"
+            | "request.start.task.with-attempt" => "RouterToRuntime",
             _ => panic!("unexpected task frame {name}"),
         }
     }
@@ -507,6 +581,8 @@ mod tests {
         for name in [
             "task.submit.request.function",
             "task.submit.request.actorMethod",
+            "task.submit.request.timing.after",
+            "task.submit.request.timing.at",
         ] {
             let entry = &catalog.frames[name];
             let bytes = hex_bytes(&entry.frame_hex);
@@ -521,6 +597,28 @@ mod tests {
             assert_eq!(payload, payload_of(entry), "{name} payload mismatch");
             assert!(!entry.legacy_cut, "{name} is not legacy cut");
         }
+        let after = decode_task_submit_request_frame(&hex_bytes(
+            &catalog.frames["task.submit.request.timing.after"].frame_hex,
+        ))
+        .expect("after timing request")
+        .0;
+        assert_eq!(
+            after.timing,
+            Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After {
+                duration_ms: 5_000
+            })
+        );
+        let at = decode_task_submit_request_frame(&hex_bytes(
+            &catalog.frames["task.submit.request.timing.at"].frame_hex,
+        ))
+        .expect("at timing request")
+        .0;
+        assert_eq!(
+            at.timing,
+            Some(skiff_runtime_transport::protocol::TaskSubmitTiming::At {
+                utc_millis: 1_700_000_000_000
+            })
+        );
     }
 
     #[test]
@@ -574,19 +672,143 @@ mod tests {
         let entry = &catalog.frames["task.submit.response"];
         let header = decode_task_submit_response_frame(&hex_bytes(&entry.frame_hex))
             .expect("task.submit.response must decode");
+        assert_eq!(header.task_id, "task-1");
+        assert_eq!(header.task_ref.task_id(), "task-1");
+        assert_eq!(header.task_ref.owner(), "example.com/docs");
         assert_eq!(
             bytes_hex(&encode_task_submit_response_frame(&header).expect("re-encode")),
             entry.frame_hex,
             "task.submit.response must be byte-exact"
         );
 
-        let entry = &catalog.frames["task.submit.error.parentNotFound"];
-        let header = decode_task_submit_error_frame(&hex_bytes(&entry.frame_hex))
-            .expect("task.submit.error must decode");
+        for name in [
+            "task.submit.error.parentNotFound",
+            "task.submit.error.invalidTiming",
+            "task.submit.error.payloadInvalid",
+            "task.submit.error.quotaExceeded",
+            "task.submit.error.storeUnavailable",
+            "task.submit.error.rejected",
+        ] {
+            let entry = &catalog.frames[name];
+            let header = decode_task_submit_error_frame(&hex_bytes(&entry.frame_hex))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(
+                bytes_hex(&encode_task_submit_error_frame(&header).expect("re-encode")),
+                entry.frame_hex,
+                "{name} must be byte-exact"
+            );
+            assert_eq!(
+                TaskSubmitRejectionCode::parse(&header.error.code).is_some(),
+                name != "task.submit.error.parentNotFound",
+                "{name}: D1 rejection-code projection"
+            );
+        }
+        assert!(TaskSubmitRejectionCode::StoreUnavailable.is_transient());
+        for code in [
+            TaskSubmitRejectionCode::InvalidTiming,
+            TaskSubmitRejectionCode::PayloadInvalid,
+            TaskSubmitRejectionCode::QuotaExceeded,
+            TaskSubmitRejectionCode::Rejected,
+        ] {
+            assert!(code.is_definite(), "{} must be definite", code.as_str());
+        }
+    }
+
+    #[test]
+    fn status_and_cancel_frames_round_trip_through_canonical_dtos() {
+        use skiff_runtime_transport::protocol::{
+            TaskCancelResultKindWire, TaskCancelResultWire, TaskStatusKindWire, TaskStatusWire,
+        };
+
+        let catalog = catalog();
+        let entry = &catalog.frames["task.status.request"];
+        let header = decode_task_status_request_frame(&hex_bytes(&entry.frame_hex))
+            .expect("task.status.request must decode");
         assert_eq!(
-            bytes_hex(&encode_task_submit_error_frame(&header).expect("re-encode")),
+            bytes_hex(&encode_task_status_request_frame(&header).expect("re-encode")),
             entry.frame_hex,
-            "task.submit.error must be byte-exact"
+            "task.status.request must be byte-exact"
+        );
+        assert_eq!(header.task_ref.task_id(), "task-1");
+
+        let entry = &catalog.frames["task.status.response.scheduled"];
+        let header = decode_task_status_response_frame(&hex_bytes(&entry.frame_hex))
+            .expect("task.status.response must decode");
+        assert_eq!(
+            bytes_hex(&encode_task_status_response_frame(&header).expect("re-encode")),
+            entry.frame_hex,
+            "task.status.response must be byte-exact"
+        );
+        assert_eq!(
+            header.status,
+            TaskStatusWire {
+                kind: TaskStatusKindWire::Scheduled
+            }
+        );
+
+        let entry = &catalog.frames["task.cancel.request"];
+        let header = decode_task_cancel_request_frame(&hex_bytes(&entry.frame_hex))
+            .expect("task.cancel.request must decode");
+        assert_eq!(
+            bytes_hex(&encode_task_cancel_request_frame(&header).expect("re-encode")),
+            entry.frame_hex,
+            "task.cancel.request must be byte-exact"
+        );
+        assert_eq!(header.task_ref.owner(), "example.com/docs");
+
+        let entry = &catalog.frames["task.cancel.response.canceled"];
+        let header = decode_task_cancel_response_frame(&hex_bytes(&entry.frame_hex))
+            .expect("task.cancel.response must decode");
+        assert_eq!(
+            bytes_hex(&encode_task_cancel_response_frame(&header).expect("re-encode")),
+            entry.frame_hex,
+            "task.cancel.response must be byte-exact"
+        );
+        assert_eq!(
+            header.result,
+            TaskCancelResultWire {
+                kind: TaskCancelResultKindWire::Canceled
+            }
+        );
+    }
+
+    #[test]
+    fn task_request_start_frames_carry_optional_task_attempt_header() {
+        let catalog = catalog();
+        let entry = &catalog.frames["request.start.task.without-attempt"];
+        let bytes = hex_bytes(&entry.frame_hex);
+        let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+            .expect("task request.start without attempt must decode");
+        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+            panic!("request.start.task must decode as the task union branch")
+        };
+        assert!(header.task_attempt.is_none());
+        assert_eq!(
+            skiff_runtime_transport::protocol::encode_binary_frame(&header, &payload)
+                .expect("re-encode"),
+            bytes,
+            "request.start.task.without-attempt must be byte-exact"
+        );
+
+        let entry = &catalog.frames["request.start.task.with-attempt"];
+        let bytes = hex_bytes(&entry.frame_hex);
+        let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+            .expect("task request.start with attempt must decode");
+        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+            panic!("request.start.task must decode as the task union branch")
+        };
+        let attempt = header
+            .task_attempt
+            .as_ref()
+            .expect("taskAttempt must be present");
+        assert_eq!(attempt.task_id, "task-1");
+        assert_eq!(attempt.attempt_id, "attempt-1");
+        assert_eq!(attempt.lease_id, "lease-1");
+        assert_eq!(
+            skiff_runtime_transport::protocol::encode_binary_frame(&header, &payload)
+                .expect("re-encode"),
+            bytes,
+            "request.start.task.with-attempt must be byte-exact"
         );
     }
 

@@ -158,6 +158,24 @@ pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub test_case_capability: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub task_attempt: Option<RuntimeAssemblyTaskAttemptFrameHeader>,
+}
+
+/// Optional task-attempt association on a task `request.start` (D1 wire
+/// contract §5). When present it carries the durable task identity, the
+/// current claim's `AttemptId` and the lease id so the Router can map a
+/// terminal outcome back to task settlement. Settlement itself is D2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyTaskAttemptFrameHeader {
+    pub task_id: String,
+    pub attempt_id: String,
+    pub lease_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,6 +576,16 @@ pub fn decode_runtime_assembly_request_start_frame(
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly task request.start frame: requestId must be non-empty",
                 ));
+            }
+            if let Some(attempt) = &task.task_attempt {
+                if attempt.task_id.trim().is_empty()
+                    || attempt.attempt_id.trim().is_empty()
+                    || attempt.lease_id.trim().is_empty()
+                {
+                    return Err(TransportError::decode(
+                        "invalid runtimeAssembly task request.start frame: taskAttempt taskId/attemptId/leaseId must be non-empty",
+                    ));
+                }
             }
             if task.test_effects_enabled != task.test_case_capability.is_some() {
                 return Err(TransportError::decode(
