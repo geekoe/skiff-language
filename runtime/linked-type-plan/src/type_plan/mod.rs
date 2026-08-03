@@ -34,10 +34,7 @@ pub(crate) use address::{
 };
 pub(crate) use builtins::native_builtin_plan;
 pub(crate) use builtins::RuntimeBuiltinShape;
-pub(crate) use builtins::{
-    db_result_node_from_artifact_parts_in_program, db_result_node_from_linked_parts,
-    db_result_node_from_parts,
-};
+pub(crate) use builtins::{db_result_node, structural_builtin_node, PlanInput};
 pub use context::{PlanContext, ProgramTypeView};
 pub(crate) use labels::{
     artifact_type_ref_label, artifact_type_ref_named_type_name, linked_type_descriptor_label,

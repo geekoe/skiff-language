@@ -1044,3 +1044,178 @@ mod builtin_catalog_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod plan_input_forms_tests {
+    use super::super::*;
+
+    fn with_empty_ctx<T>(test: impl FnOnce(&PlanContext<'_>) -> T) -> T {
+        let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
+        let overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let current = ExecutableAddr::service(0, 0);
+        let ctx = PlanContext::from_type_view(
+            ProgramTypeView::new(&service_files, &packages, &overlay, &types),
+            &current,
+        );
+        test(&ctx)
+    }
+
+    fn node_key(node: &RuntimeTypeNode) -> String {
+        match node {
+            RuntimeTypeNode::Array(inner) => format!("array({})", node_key(&inner.node)),
+            RuntimeTypeNode::Map { key, value } => {
+                format!("map({}, {})", node_key(&key.node), node_key(&value.node))
+            }
+            RuntimeTypeNode::Stream(inner) => format!("stream({})", node_key(&inner.node)),
+            RuntimeTypeNode::Record { fields, .. } => format!(
+                "record({})",
+                fields
+                    .iter()
+                    .map(|field| format!("{}={}", field.name, node_key(&field.ty.node)))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            RuntimeTypeNode::Union(items) => format!(
+                "union({})",
+                items
+                    .iter()
+                    .map(|plan| node_key(&plan.node))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            RuntimeTypeNode::Nullable(inner) => format!("nullable({})", node_key(&inner.node)),
+            RuntimeTypeNode::Alias(inner) => format!("alias({})", node_key(&inner.node)),
+            RuntimeTypeNode::Representation { .. } => "representation".to_string(),
+            RuntimeTypeNode::LiteralString(_) => "literal".to_string(),
+            RuntimeTypeNode::Json => "json".to_string(),
+            RuntimeTypeNode::JsonObject => "jsonObject".to_string(),
+            RuntimeTypeNode::Bytes => "bytes".to_string(),
+            RuntimeTypeNode::Date => "date".to_string(),
+            RuntimeTypeNode::String => "string".to_string(),
+            RuntimeTypeNode::Bool => "bool".to_string(),
+            RuntimeTypeNode::Integer => "integer".to_string(),
+            RuntimeTypeNode::Number => "number".to_string(),
+            RuntimeTypeNode::Null => "null".to_string(),
+            RuntimeTypeNode::Unknown => "unknown".to_string(),
+        }
+    }
+
+    fn artifact_builtin(
+        name: &str,
+        args: Vec<skiff_artifact_model::TypeRefIr>,
+    ) -> skiff_artifact_model::TypeRefIr {
+        skiff_artifact_model::TypeRefIr::Builtin {
+            name: name.to_string(),
+            args,
+        }
+    }
+
+    fn linked_builtin(name: &str, args: Vec<LinkedTypeRef>) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args,
+        }
+    }
+
+    fn linked_leaf(name: &str) -> LinkedTypeRef {
+        linked_builtin(name, Vec::new())
+    }
+
+    fn artifact_leaf(name: &str) -> skiff_artifact_model::TypeRefIr {
+        artifact_builtin(name, Vec::new())
+    }
+
+    #[test]
+    fn db_result_shapes_match_across_three_input_forms() {
+        with_empty_ctx(|ctx| {
+            for name in [
+                "DbInsertManyResult",
+                "DbUpdateManyResult",
+                "DbDeleteManyResult",
+                "DbUpsertResult",
+            ] {
+                let artifact = artifact_builtin(name, vec![artifact_leaf("string")]);
+                let linked = linked_builtin(name, vec![linked_leaf("string")]);
+                let artifact_key = RuntimeTypePlan::from_artifact_type_ref(&artifact).unwrap();
+                let artifact_in_program_key =
+                    RuntimeTypePlan::from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
+                let linked_key = RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap();
+                assert_eq!(
+                    node_key(&artifact_key.node),
+                    node_key(&linked_key.node),
+                    "{name}"
+                );
+                assert_eq!(
+                    node_key(&artifact_in_program_key.node),
+                    node_key(&linked_key.node),
+                    "{name}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn structural_builtin_shapes_match_across_three_input_forms() {
+        with_empty_ctx(|ctx| {
+            for (name, artifact_args, linked_args) in [
+                (
+                    "Array",
+                    vec![artifact_leaf("string")],
+                    vec![linked_leaf("string")],
+                ),
+                (
+                    "Stream",
+                    vec![artifact_leaf("string")],
+                    vec![linked_leaf("string")],
+                ),
+                (
+                    "Map",
+                    vec![artifact_leaf("string"), artifact_leaf("integer")],
+                    vec![linked_leaf("string"), linked_leaf("integer")],
+                ),
+            ] {
+                let artifact = artifact_builtin(name, artifact_args);
+                let linked = linked_builtin(name, linked_args);
+                let artifact_key = RuntimeTypePlan::from_artifact_type_ref(&artifact).unwrap();
+                let artifact_in_program_key =
+                    RuntimeTypePlan::from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
+                let linked_key = RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap();
+                assert_eq!(
+                    node_key(&artifact_key.node),
+                    node_key(&linked_key.node),
+                    "{name}"
+                );
+                assert_eq!(
+                    node_key(&artifact_in_program_key.node),
+                    node_key(&linked_key.node),
+                    "{name}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn full_spelling_container_matching_preserves_historical_entry_difference() {
+        // Historical difference locked by the three entries:
+        // linked matches Array/Map only by the exact spelling, artifact entries
+        // match through `bare_type_name`. The unified view keeps both rules.
+        with_empty_ctx(|ctx| {
+            let artifact = artifact_builtin("std.collection.Array", vec![artifact_leaf("string")]);
+            let linked = linked_builtin("std.collection.Array", vec![linked_leaf("string")]);
+            assert_eq!(
+                node_key(
+                    &RuntimeTypePlan::from_artifact_type_ref(&artifact)
+                        .unwrap()
+                        .node
+                ),
+                "array(string)"
+            );
+            assert_eq!(
+                node_key(&RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap().node),
+                "unknown"
+            );
+        });
+    }
+}

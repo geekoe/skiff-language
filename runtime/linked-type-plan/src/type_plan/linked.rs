@@ -479,26 +479,11 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         args: &[LinkedTypeRef],
         ctx: &PlanContext,
     ) -> Result<RuntimeTypeNode> {
-        if name == "Array" && args.len() == 1 {
-            // builtin object -> `args` array -> element value.
-            return Ok(RuntimeTypeNode::Array(Box::new(Self::from_linked_ref(
-                &args[0],
-                &ctx.deeper_by(2),
-            )?)));
+        let input = PlanInput::Linked { name, args };
+        if let Some(node) = structural_builtin_node(&input, Some(ctx)) {
+            return node;
         }
-        if name == "Map" && args.len() == 2 {
-            return Ok(RuntimeTypeNode::Map {
-                key: Box::new(Self::from_linked_ref(&args[0], &ctx.deeper_by(2))?),
-                value: Box::new(Self::from_linked_ref(&args[1], &ctx.deeper_by(2))?),
-            });
-        }
-        if bare_type_name(name) == "Stream" && args.len() == 1 {
-            return Ok(RuntimeTypeNode::Stream(Box::new(Self::from_linked_ref(
-                &args[0],
-                &ctx.deeper_by(2),
-            )?)));
-        }
-        if let Some(node) = db_result_node_from_linked_parts(name, args, ctx) {
+        if let Some(node) = db_result_node(&input, Some(ctx)) {
             return node;
         }
         if let Some(node) = std_runtime_builtin_node(name, args.len()) {
@@ -513,23 +498,11 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         name: &str,
         args: &[skiff_artifact_model::TypeRefIr],
     ) -> Result<RuntimeTypeNode> {
-        if bare_type_name(name) == "Array" && args.len() == 1 {
-            return Ok(RuntimeTypeNode::Array(Box::new(
-                Self::from_artifact_type_ref(&args[0])?,
-            )));
+        let input = PlanInput::Artifact { name, args };
+        if let Some(node) = structural_builtin_node(&input, None) {
+            return node;
         }
-        if bare_type_name(name) == "Map" && args.len() == 2 {
-            return Ok(RuntimeTypeNode::Map {
-                key: Box::new(Self::from_artifact_type_ref(&args[0])?),
-                value: Box::new(Self::from_artifact_type_ref(&args[1])?),
-            });
-        }
-        if bare_type_name(name) == "Stream" && args.len() == 1 {
-            return Ok(RuntimeTypeNode::Stream(Box::new(
-                Self::from_artifact_type_ref(&args[0])?,
-            )));
-        }
-        if let Some(node) = db_result_node_from_parts(name, args) {
+        if let Some(node) = db_result_node(&input, None) {
             return node;
         }
         if let Some(node) = std_runtime_builtin_node(name, args.len()) {
@@ -545,23 +518,11 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         args: &[skiff_artifact_model::TypeRefIr],
         ctx: &PlanContext<'_>,
     ) -> Result<RuntimeTypeNode> {
-        if bare_type_name(name) == "Array" && args.len() == 1 {
-            return Ok(RuntimeTypeNode::Array(Box::new(
-                Self::from_artifact_type_ref_in_program_ref(&args[0], ctx)?,
-            )));
+        let input = PlanInput::ArtifactInProgram { name, args };
+        if let Some(node) = structural_builtin_node(&input, Some(ctx)) {
+            return node;
         }
-        if bare_type_name(name) == "Map" && args.len() == 2 {
-            return Ok(RuntimeTypeNode::Map {
-                key: Box::new(Self::from_artifact_type_ref_in_program_ref(&args[0], ctx)?),
-                value: Box::new(Self::from_artifact_type_ref_in_program_ref(&args[1], ctx)?),
-            });
-        }
-        if bare_type_name(name) == "Stream" && args.len() == 1 {
-            return Ok(RuntimeTypeNode::Stream(Box::new(
-                Self::from_artifact_type_ref_in_program_ref(&args[0], ctx)?,
-            )));
-        }
-        if let Some(node) = db_result_node_from_artifact_parts_in_program(name, args, ctx) {
+        if let Some(node) = db_result_node(&input, Some(ctx)) {
             return node;
         }
         if let Some(node) = std_runtime_builtin_node(name, args.len()) {
