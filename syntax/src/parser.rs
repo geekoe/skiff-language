@@ -24,6 +24,8 @@ const IMPORT_NAME_RULE: &str =
 const LEGACY_PROVIDER_REMOVED_MESSAGE: &str =
     "legacy provider syntax has been removed; use native std APIs or package APIs instead";
 
+mod cursor;
+
 pub fn parse_source(source: &str) -> Result<SourceFile> {
     Parser::new(lex(source)?, ParseMode::Full, true).parse_source_file()
 }
@@ -537,23 +539,6 @@ impl Parser {
             local_binding,
             span: SourceSpan { start, end },
         })
-    }
-
-    fn import_tail_is_terminated(&self) -> bool {
-        self.is_at_end()
-            || self.check_symbol(";")
-            || self.check_ident("export")
-            || self.check_ident("test")
-            || self.check_ident("import")
-            || self.check_ident("provider")
-            || self.check_ident("const")
-            || self.check_ident("type")
-            || self.check_ident("actor")
-            || self.check_ident("alias")
-            || self.check_ident("interface")
-            || self.check_ident("impl")
-            || self.check_ident("db")
-            || self.check_function_start()
     }
 
     fn parse_type_decl(&mut self, exported: bool) -> Result<TypeDecl> {
@@ -1354,7 +1339,7 @@ impl Parser {
         exported: bool,
         keep_signature_on_failure: bool,
     ) -> Result<CallableParseResult> {
-        let body_start = self.current;
+        let body_start = self.snapshot();
         match self.parse_block(false) {
             Ok(body) => {
                 let spans = body.spans.clone();
@@ -1368,7 +1353,7 @@ impl Parser {
                 })
             }
             Err(_) => {
-                self.current = body_start;
+                self.restore(body_start);
                 if self.check_symbol("{") {
                     self.skip_balanced_block("unterminated function body")?;
                 } else {
@@ -1640,23 +1625,6 @@ impl Parser {
         }
         self.expect_symbol(">")?;
         Ok(params)
-    }
-
-    fn skip_balanced_block(&mut self, unterminated_message: &str) -> Result<()> {
-        self.expect_symbol("{")?;
-        let mut depth = 1usize;
-        while depth > 0 {
-            let token = self.advance().clone();
-            match token.kind {
-                TokenKind::Symbol(value) if value == "{" => depth += 1,
-                TokenKind::Symbol(value) if value == "}" => depth -= 1,
-                TokenKind::Eof => {
-                    return Err(CompileError::syntax(unterminated_message, token.span.start))
-                }
-                _ => {}
-            }
-        }
-        Ok(())
     }
 
     fn parse_test_default_run_declaration(
@@ -2453,12 +2421,12 @@ impl Parser {
         }
 
         let name = self.expect_ident("expected pattern")?;
-        let snapshot = self.current;
+        let snapshot = self.snapshot();
         let type_args = if self.check_symbol("<") {
             match self.parse_generic_args() {
                 Ok(type_args) => type_args,
                 Err(_) => {
-                    self.current = snapshot;
+                    self.restore(snapshot);
                     Vec::new()
                 }
             }
@@ -2472,7 +2440,7 @@ impl Parser {
                 fields: self.parse_pattern_fields_after_open_brace()?,
             });
         }
-        self.current = snapshot;
+        self.restore(snapshot);
         Ok(Pattern::Binding(name))
     }
 
@@ -2693,16 +2661,12 @@ impl Parser {
         type_args.first().cloned()
     }
 
-    fn looks_like_generic_call_suffix(&self) -> bool {
-        let mut probe = Parser {
-            tokens: self.tokens.clone(),
-            current: self.current,
-            mode: self.mode,
-            provider_capability: self.provider_capability.clone(),
-            source_spans: SourceSpanTable::default(),
-            reject_export_modifier: self.reject_export_modifier,
-        };
-        probe.parse_generic_args().is_ok() && (probe.check_symbol("(") || probe.check_symbol("{"))
+    fn looks_like_generic_call_suffix(&mut self) -> bool {
+        let snapshot = self.snapshot();
+        let result =
+            self.parse_generic_args().is_ok() && (self.check_symbol("(") || self.check_symbol("{"));
+        self.restore(snapshot);
+        result
     }
 
     fn nominal_construct_parts(expr: &Expr) -> Option<(String, Vec<TypeRef>)> {
@@ -3505,7 +3469,7 @@ impl Parser {
         let mut projection = None;
         let mut children = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") || self.match_symbol(",") {
+            if self.match_statement_terminator() {
                 continue;
             }
             if self.match_ident("fields") {
@@ -3536,7 +3500,7 @@ impl Parser {
         let mut query = DbQueryBlock::default();
         let mut children = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") || self.match_symbol(",") {
+            if self.match_statement_terminator() {
                 continue;
             }
             if self.check_ident("fields") {
@@ -3609,7 +3573,7 @@ impl Parser {
                 self.peek().span.start,
             ));
         }
-        let _ = self.match_symbol(";") || self.match_symbol(",");
+        let _ = self.match_statement_terminator();
         Ok(())
     }
 
@@ -3617,11 +3581,11 @@ impl Parser {
         self.expect_symbol("{")?;
         let mut fields = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(",") || self.match_symbol(";") {
+            if self.match_statement_terminator() {
                 continue;
             }
             fields.push(self.parse_db_field_path("expected db fields entry")?);
-            let _ = self.match_symbol(",") || self.match_symbol(";");
+            let _ = self.match_statement_terminator();
         }
         self.expect_symbol("}")?;
         Ok(fields)
@@ -3632,7 +3596,7 @@ impl Parser {
         let mut fields = Vec::new();
         let mut children = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") || self.match_symbol(",") {
+            if self.match_statement_terminator() {
                 continue;
             }
             let field = self.expect_ident("expected db object body field")?;
@@ -3643,7 +3607,7 @@ impl Parser {
                 field,
                 value: value.expr,
             });
-            let _ = self.match_symbol(";") || self.match_symbol(",");
+            let _ = self.match_statement_terminator();
         }
         self.expect_symbol("}")?;
         Ok((fields, children))
@@ -3654,7 +3618,7 @@ impl Parser {
         let mut ops = Vec::new();
         let mut children = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") || self.match_symbol(",") {
+            if self.match_statement_terminator() {
                 continue;
             }
             if self.match_ident("unset") {
@@ -3718,7 +3682,7 @@ impl Parser {
                     ));
                 }
             }
-            let _ = self.match_symbol(";") || self.match_symbol(",");
+            let _ = self.match_statement_terminator();
         }
         self.expect_symbol("}")?;
         Ok((DbChange { ops }, children))
@@ -3823,7 +3787,7 @@ impl Parser {
                     ));
                 }
             }
-            let _ = self.match_symbol(";") || self.match_symbol(",");
+            let _ = self.match_statement_terminator();
         }
         self.expect_symbol("}")?;
         Ok((operations, spans))
@@ -3891,149 +3855,6 @@ impl Parser {
                 token.span.start,
             )),
         }
-    }
-
-    fn peek_binary_op(&self) -> Option<(BinaryOp, u8)> {
-        let TokenKind::Symbol(value) = &self.peek().kind else {
-            return None;
-        };
-        Some(match value.as_str() {
-            "||" => (BinaryOp::Or, 1),
-            "&&" => (BinaryOp::And, 2),
-            "==" => (BinaryOp::Eq, 3),
-            "!=" => (BinaryOp::Ne, 3),
-            "<" => (BinaryOp::Lt, 4),
-            "<=" => (BinaryOp::Le, 4),
-            ">" => (BinaryOp::Gt, 4),
-            ">=" => (BinaryOp::Ge, 4),
-            "+" => (BinaryOp::Add, 5),
-            "-" => (BinaryOp::Sub, 5),
-            "*" => (BinaryOp::Mul, 6),
-            "/" => (BinaryOp::Div, 6),
-            _ => return None,
-        })
-    }
-
-    fn expect_ident(&mut self, message: &str) -> Result<String> {
-        let token = self.advance().clone();
-        match token.kind {
-            TokenKind::Ident(value) => Ok(value),
-            _ => Err(CompileError::syntax(message, token.span.start)),
-        }
-    }
-
-    fn expect_ident_value(&mut self, expected: &str) -> Result<Token> {
-        let token = self.advance().clone();
-        match &token.kind {
-            TokenKind::Ident(value) if value == expected => Ok(token),
-            _ => Err(CompileError::syntax(
-                format!("expected {expected}"),
-                token.span.start,
-            )),
-        }
-    }
-
-    fn expect_string(&mut self, message: &str) -> Result<String> {
-        let token = self.advance().clone();
-        match token.kind {
-            TokenKind::String(value) => Ok(value),
-            _ => Err(CompileError::syntax(message, token.span.start)),
-        }
-    }
-
-    fn expect_positive_integer(&mut self, message: &str) -> Result<u64> {
-        let token = self.advance().clone();
-        match token.kind {
-            TokenKind::Number(value)
-                if value.is_finite()
-                    && value.fract() == 0.0
-                    && value > 0.0
-                    && value <= u64::MAX as f64 =>
-            {
-                Ok(value as u64)
-            }
-            _ => Err(CompileError::syntax(message, token.span.start)),
-        }
-    }
-
-    fn expect_symbol(&mut self, expected: &str) -> Result<()> {
-        let token = self.advance().clone();
-        match &token.kind {
-            TokenKind::Symbol(value) if value == expected => Ok(()),
-            _ => Err(CompileError::syntax(
-                format!("expected symbol {expected}"),
-                token.span.start,
-            )),
-        }
-    }
-
-    fn match_ident(&mut self, expected: &str) -> bool {
-        if self.check_ident(expected) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn check_ident(&self, expected: &str) -> bool {
-        matches!(&self.peek().kind, TokenKind::Ident(value) if value == expected)
-    }
-
-    fn check_function_start(&self) -> bool {
-        self.check_ident("function")
-            || self.check_ident("native")
-            || self.check_ident("provider")
-            || self.check_ident("static")
-    }
-
-    fn check_provider_capability_start(&self) -> bool {
-        if !self.check_ident("provider") {
-            return false;
-        }
-        let Some(token) = self.tokens.get(self.current + 1) else {
-            return false;
-        };
-        matches!(
-            &token.kind,
-            TokenKind::Ident(value)
-                if value != "function"
-                    && value != "native"
-                    && value != "provider"
-                    && value != "static"
-        )
-    }
-
-    fn match_symbol(&mut self, expected: &str) -> bool {
-        if self.check_symbol(expected) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn check_symbol(&self, expected: &str) -> bool {
-        matches!(&self.peek().kind, TokenKind::Symbol(value) if value == expected)
-    }
-
-    fn is_at_end(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Eof)
-    }
-
-    fn peek(&self) -> &Token {
-        &self.tokens[self.current]
-    }
-
-    fn previous(&self) -> &Token {
-        &self.tokens[self.current - 1]
-    }
-
-    fn advance(&mut self) -> &Token {
-        if !self.is_at_end() {
-            self.current += 1;
-        }
-        self.previous()
     }
 }
 
