@@ -20,6 +20,13 @@
   （`syntax/src/ast.rs`），本节点用 serde round-trip 断言锁定该契约。
 - parse 输出差量载体在 baseline 数据文件中的失败差量用逐条对比输出，便于 Phase 3 直接
   复用并 diff。
+- 预检发现现有 production 缺陷（不修改）：`advance()` 在 EOF 时不前进并返回
+  `previous()`（parser.rs:4032），因此 `skip_balanced_block` 的 `TokenKind::Eof`
+  分支不可达；tolerant 模式下未闭合函数体会在 `parse_callable_decl_body_tolerant`
+  回退路径死循环。Phase 0 是 test-only 节点，无法在不改 production 的情况下覆盖该
+  用例，已从测试集中移除并记录，交由 Phase 1 游标抽取时处理。
+- 仓库 `.cargo/config.toml` 配置 `build/cargo-target` 为 target-dir；carrier walker
+  与 line-gate 扫描口径一致，跳过 `target`/`cargo-target`/`.git`/`node_modules`。
 
 ## 写入范围（全部 test-only）
 

@@ -9,7 +9,12 @@ use super::{
     PackageId,
 };
 
+mod binary_precedence;
+mod parse_output_carrier;
+mod span_sensitive;
 mod spawn;
+mod tolerant_recovery;
+mod type_golden;
 
 #[test]
 fn parses_single_and_entry_for_bindings() {
