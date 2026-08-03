@@ -10,8 +10,21 @@ use crate::model::{
     AttemptId, DurableUtcTimestamp, LeaseId, TaskLease, TaskRecord, TaskState, TaskTerminal,
 };
 use crate::store::{
-    ClaimInput, ClaimRejection, RenewInput, RenewRejection, SettleInput, SettleTransition,
+    ClaimInput, ClaimRejection, ReleaseInput, RenewInput, RenewRejection, SettleInput,
+    SettleTransition,
 };
+
+/// Monotonic merge for the scheduler-owned retry not-before: concurrent
+/// recoveries / releases converge on the latest value, never an earlier one.
+pub(crate) fn merge_retry_not_before(
+    existing: Option<DurableUtcTimestamp>,
+    next: DurableUtcTimestamp,
+) -> Option<DurableUtcTimestamp> {
+    Some(match existing {
+        Some(current) if current > next => current,
+        _ => next,
+    })
+}
 
 /// `scheduled` -> `ready` when the durable not-before time has arrived.
 /// Idempotent: a record already `ready` is returned unchanged.
@@ -168,6 +181,7 @@ pub fn cancel(
 pub fn recover_expired_lease(
     record: &TaskRecord,
     now: DurableUtcTimestamp,
+    retry_not_before: DurableUtcTimestamp,
 ) -> Result<TaskRecord, RecoveryRejection> {
     match record.state {
         TaskState::Leased => {
@@ -178,11 +192,44 @@ pub fn recover_expired_lease(
             Ok(TaskRecord {
                 state: TaskState::Ready,
                 active_lease: None,
+                retry_not_before: merge_retry_not_before(record.retry_not_before, retry_not_before),
                 ..record.clone()
             })
         }
         TaskState::Scheduled | TaskState::Ready => Err(RecoveryRejection::NotLeased),
         _ => Err(RecoveryRejection::Terminal),
+    }
+}
+
+/// Provable-rejection release: `leased` with the current lease and an
+/// unexpired lease returns to `ready` and atomically applies the
+/// scheduler-owned retry not-before. Expired leases lose to recovery.
+pub fn release(
+    record: &TaskRecord,
+    input: &ReleaseInput,
+    now: DurableUtcTimestamp,
+) -> Result<TaskRecord, ReleaseRejection> {
+    match record.state {
+        TaskState::Leased => {
+            let lease = record.active_lease.as_ref().expect("leased lease");
+            if lease.lease_id != input.lease_id {
+                return Err(ReleaseRejection::StaleLease);
+            }
+            if lease.expiry <= now {
+                return Err(ReleaseRejection::ExpiredLease);
+            }
+            Ok(TaskRecord {
+                state: TaskState::Ready,
+                active_lease: None,
+                retry_not_before: merge_retry_not_before(
+                    record.retry_not_before,
+                    input.retry_not_before,
+                ),
+                ..record.clone()
+            })
+        }
+        TaskState::Scheduled | TaskState::Ready => Err(ReleaseRejection::NotLeased),
+        _ => Err(ReleaseRejection::Terminal),
     }
 }
 
@@ -195,6 +242,14 @@ pub enum CancelRejection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryRejection {
     NotExpired,
+    NotLeased,
+    Terminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseRejection {
+    StaleLease,
+    ExpiredLease,
     NotLeased,
     Terminal,
 }
@@ -385,12 +440,117 @@ pub(crate) mod tests {
             settle(&record, &settle_input, now),
             SettleTransition::ExpiredLease
         );
-        let recovered = recover_expired_lease(&record, now).expect("recovery wins");
+        let recovered = recover_expired_lease(&record, now, now).expect("recovery wins");
         assert_eq!(recovered.state, TaskState::Ready);
         assert!(recovered.active_lease.is_none());
         assert_eq!(
+            recovered.retry_not_before,
+            Some(now),
+            "recovery applies the scheduler-owned retry not-before"
+        );
+        assert_eq!(
             settle(&recovered, &settle_input, now),
             SettleTransition::NotLeased
+        );
+    }
+
+    #[test]
+    fn release_returns_ready_with_monotonic_retry_not_before() {
+        let mut record = fixtures::record(1, 10);
+        record.state = TaskState::Leased;
+        record.attempt_generation = 1;
+        record.active_lease = Some(TaskLease {
+            lease_id: LeaseId::new("lease-1"),
+            attempt_id: AttemptId::new("attempt-1"),
+            owner: "s".to_string(),
+            expiry: DurableUtcTimestamp::from_millis(100),
+        });
+        let now = DurableUtcTimestamp::from_millis(20);
+
+        // Wrong lease is stale.
+        assert_eq!(
+            release(
+                &record,
+                &ReleaseInput {
+                    task_id: record.task_id.clone(),
+                    lease_id: LeaseId::new("lease-other"),
+                    retry_not_before: DurableUtcTimestamp::from_millis(50),
+                },
+                now
+            ),
+            Err(ReleaseRejection::StaleLease)
+        );
+        // Expired lease loses to recovery.
+        assert_eq!(
+            release(
+                &record,
+                &ReleaseInput {
+                    task_id: record.task_id.clone(),
+                    lease_id: LeaseId::new("lease-1"),
+                    retry_not_before: DurableUtcTimestamp::from_millis(50),
+                },
+                DurableUtcTimestamp::from_millis(100)
+            ),
+            Err(ReleaseRejection::ExpiredLease)
+        );
+
+        let released = release(
+            &record,
+            &ReleaseInput {
+                task_id: record.task_id.clone(),
+                lease_id: LeaseId::new("lease-1"),
+                retry_not_before: DurableUtcTimestamp::from_millis(50),
+            },
+            now,
+        )
+        .expect("release");
+        assert_eq!(released.state, TaskState::Ready);
+        assert!(released.active_lease.is_none());
+        assert_eq!(
+            released.retry_not_before,
+            Some(DurableUtcTimestamp::from_millis(50))
+        );
+
+        // A later concurrent release keeps the later value, never rewinds it.
+        let re_released = release(
+            &released,
+            &ReleaseInput {
+                task_id: released.task_id.clone(),
+                lease_id: LeaseId::new("lease-1"),
+                retry_not_before: DurableUtcTimestamp::from_millis(40),
+            },
+            now,
+        )
+        .expect_err("ready task cannot be released again");
+        assert_eq!(re_released, ReleaseRejection::NotLeased);
+        assert_eq!(
+            released.retry_not_before,
+            Some(DurableUtcTimestamp::from_millis(50))
+        );
+
+        let mut re_claimed = released.clone();
+        re_claimed.state = TaskState::Leased;
+        re_claimed.attempt_generation = 2;
+        re_claimed.active_lease = Some(TaskLease {
+            lease_id: LeaseId::new("lease-2"),
+            attempt_id: AttemptId::new("attempt-2"),
+            owner: "s".to_string(),
+            expiry: DurableUtcTimestamp::from_millis(200),
+        });
+        let re_released = release(
+            &re_claimed,
+            &ReleaseInput {
+                task_id: re_claimed.task_id.clone(),
+                lease_id: LeaseId::new("lease-2"),
+                retry_not_before: DurableUtcTimestamp::from_millis(40),
+            },
+            now,
+        )
+        .expect("second release");
+        assert_eq!(
+            re_released.retry_not_before,
+            Some(DurableUtcTimestamp::from_millis(50)),
+            "release never rewinds an existing later not-before"
         );
     }
 
@@ -511,7 +671,7 @@ pub(crate) mod tests {
         );
         assert_eq!(cancel(&record, now), Err(CancelRejection::AlreadyTerminal));
         assert_eq!(
-            recover_expired_lease(&record, now),
+            recover_expired_lease(&record, now, now),
             Err(RecoveryRejection::Terminal)
         );
     }
@@ -610,6 +770,7 @@ pub(crate) mod tests {
                     span_id: None,
                 },
                 created_at: DurableUtcTimestamp::from_millis(1),
+                retry_not_before: None,
             }
         }
 
@@ -665,6 +826,7 @@ pub(crate) mod tests {
         };
         let _ = LeaseRecoveryInput {
             task_id: TaskId::new("x"),
+            retry_not_before: DurableUtcTimestamp::from_millis(1),
         };
     }
 }

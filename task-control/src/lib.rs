@@ -9,7 +9,8 @@
 //! wall clock.
 //!
 //! The crate deliberately has no dependency on runtime execution or router
-//! business code: it is consumed by the router and by future scheduler work.
+//! business code: it is consumed by the router and hosts the scheduler core
+//! (stage C2) behind a pluggable admission seam.
 
 pub mod clock;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod model;
 pub mod mongo;
 pub mod reducer;
 pub mod retry;
+pub mod scheduler;
 pub mod store;
 
 pub use clock::{SystemClock, TaskClock};
@@ -30,6 +32,6 @@ pub use mongo::{
 pub use retry::{TaskRetryOutcome, TaskRetryPolicy};
 pub use store::{
     CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection, SettleInput, SettleOutcome,
-    SettleTransition, StatusInput, TaskStore,
+    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
+    ScanExpiredLeasesInput, SettleInput, SettleOutcome, SettleTransition, StatusInput, TaskStore,
 };

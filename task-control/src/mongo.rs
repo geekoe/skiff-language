@@ -36,8 +36,8 @@ use crate::model::{
 use crate::retry::TaskRetryPolicy;
 use crate::store::{
     CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection, SettleInput, SettleOutcome,
-    StatusInput, TaskStore,
+    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
+    ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput, TaskStore,
 };
 
 pub const DEFAULT_TASK_DATABASE: &str = "skiff-router";
@@ -130,6 +130,42 @@ impl MongoTaskStore {
     {
         let (result, _outcome) = self.options.retry.run(self.clock.as_ref(), operation).await;
         result
+    }
+
+    async fn now_once(&self) -> Result<DurableUtcTimestamp, TaskStoreError> {
+        self.check_open()?;
+        let database = self.client.database(&self.options.database);
+        // `hello` is the canonical handshake command on modern servers;
+        // older servers reject it with UnknownCommand and accept `isMaster`.
+        let mut response = None;
+        let mut last_error = None;
+        for command in [doc! { "hello": 1 }, doc! { "isMaster": 1 }] {
+            match database.run_command(command).await {
+                Ok(document) => {
+                    response = Some(document);
+                    break;
+                }
+                Err(error) if is_unknown_command(&error) => {
+                    last_error = Some(map_driver_error(error))
+                }
+                Err(error) => return Err(map_driver_error(error)),
+            }
+        }
+        let response = response.ok_or_else(|| {
+            last_error.unwrap_or(TaskStoreError::Transient {
+                message: "server time command unavailable".to_string(),
+            })
+        })?;
+        let local_time = response
+            .get("localTime")
+            .and_then(Bson::as_datetime)
+            .cloned()
+            .ok_or_else(|| TaskStoreError::Transient {
+                message: "isMaster response missing server localTime".to_string(),
+            })?;
+        Ok(DurableUtcTimestamp::from_millis(
+            local_time.timestamp_millis(),
+        ))
     }
 
     async fn find_record(&self, task_id: &TaskId) -> Result<Option<TaskRecord>, TaskStoreError> {
@@ -420,6 +456,7 @@ impl MongoTaskStore {
         };
         let update = doc! {
             "$set": { "state": "ready" },
+            "$max": { "retryNotBefore": DateTime::from_millis(input.retry_not_before.millis()) },
             "$unset": { "activeLease": "" },
         };
         let updated = self
@@ -460,6 +497,89 @@ impl MongoTaskStore {
                 }
             }
         }
+    }
+
+    async fn release_once(&self, input: ReleaseInput) -> Result<ReleaseOutcome, TaskStoreError> {
+        self.check_open()?;
+        let filter = doc! {
+            "_id": input.task_id.as_str(),
+            "state": "leased",
+            "activeLease.leaseId": input.lease_id.as_str(),
+            "$and": [
+                { "$expr": { "$gt": [ "$activeLease.expiry", "$$NOW" ] } },
+            ],
+        };
+        let update = doc! {
+            "$set": { "state": "ready" },
+            "$max": { "retryNotBefore": DateTime::from_millis(input.retry_not_before.millis()) },
+            "$unset": { "activeLease": "" },
+        };
+        let updated = self
+            .tasks
+            .find_one_and_update(filter, update)
+            .return_document(ReturnDocument::After)
+            .await
+            .map_err(map_driver_error)?;
+        match updated {
+            Some(document) => Ok(ReleaseOutcome::Released(document_to_record(document)?)),
+            None => self.classify_release_rejection(&input).await,
+        }
+    }
+
+    async fn classify_release_rejection(
+        &self,
+        input: &ReleaseInput,
+    ) -> Result<ReleaseOutcome, TaskStoreError> {
+        let Some(record) = self.find_record(&input.task_id).await? else {
+            return Ok(ReleaseOutcome::NotFound);
+        };
+        match &record.state {
+            TaskState::Leased => {
+                let lease = record.active_lease.as_ref().expect("leased lease");
+                if lease.lease_id != input.lease_id {
+                    return Ok(ReleaseOutcome::StaleLease);
+                }
+                let still_valid = self
+                    .tasks
+                    .find_one(doc! {
+                        "_id": input.task_id.as_str(),
+                        "state": "leased",
+                        "activeLease.leaseId": input.lease_id.as_str(),
+                        "$expr": { "$gt": [ "$activeLease.expiry", "$$NOW" ] },
+                    })
+                    .await
+                    .map_err(map_driver_error)?;
+                if still_valid.is_some() {
+                    Ok(ReleaseOutcome::NotLeased)
+                } else {
+                    Ok(ReleaseOutcome::ExpiredLease)
+                }
+            }
+            TaskState::Scheduled | TaskState::Ready => Ok(ReleaseOutcome::NotLeased),
+            _ => Ok(ReleaseOutcome::Terminal),
+        }
+    }
+
+    async fn scan_expired_leases_once(
+        &self,
+        input: ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.check_open()?;
+        let mut cursor = self
+            .tasks
+            .find(doc! {
+                "state": "leased",
+                "$expr": { "$lte": [ "$activeLease.expiry", "$$NOW" ] },
+            })
+            .sort(doc! { "activeLease.expiry": 1 })
+            .limit(input.limit as i64)
+            .await
+            .map_err(map_driver_error)?;
+        let mut records = Vec::new();
+        while let Some(document) = cursor.try_next().await.map_err(map_driver_error)? {
+            records.push(document_to_record(document)?);
+        }
+        Ok(records)
     }
 
     async fn scan_due_once(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError> {
@@ -524,6 +644,10 @@ impl MongoTaskStore {
 
 #[async_trait]
 impl TaskStore for MongoTaskStore {
+    async fn now(&self) -> Result<DurableUtcTimestamp, TaskStoreError> {
+        self.with_retry(|| self.now_once()).await
+    }
+
     async fn create(&self, record: TaskRecord) -> Result<TaskRecord, TaskStoreError> {
         self.with_retry(|| self.create_once(record.clone())).await
     }
@@ -551,8 +675,20 @@ impl TaskStore for MongoTaskStore {
         self.with_retry(|| self.recover_once(input.clone())).await
     }
 
+    async fn release(&self, input: ReleaseInput) -> Result<ReleaseOutcome, TaskStoreError> {
+        self.with_retry(|| self.release_once(input.clone())).await
+    }
+
     async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError> {
         self.with_retry(|| self.scan_due_once(input.clone())).await
+    }
+
+    async fn scan_expired_leases(
+        &self,
+        input: ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.with_retry(|| self.scan_expired_leases_once(input.clone()))
+            .await
     }
 
     async fn status(&self, input: StatusInput) -> Result<TaskStatus, TaskStoreError> {
@@ -585,6 +721,13 @@ fn is_duplicate_key(error: &MongoError) -> bool {
     )
 }
 
+fn is_unknown_command(error: &MongoError) -> bool {
+    matches!(
+        error.kind.as_ref(),
+        ErrorKind::Command(command_error) if command_error.code == 59
+    )
+}
+
 fn map_driver_error(error: MongoError) -> TaskStoreError {
     TaskStoreError::Transient {
         message: format!("mongo task store failure: {error}"),
@@ -610,6 +753,10 @@ fn record_document(record: &TaskRecord) -> Result<Document, TaskStoreError> {
         "trace": to_document(&record.trace)
             .map_err(|error| invalid_record(&record.task_id, format!("trace encode: {error}")))?,
         "createdAt": DateTime::from_millis(record.created_at.millis()),
+        "retryNotBefore": record
+            .retry_not_before
+            .as_ref()
+            .map(|timestamp| DateTime::from_millis(timestamp.millis())),
     })
 }
 
@@ -653,6 +800,10 @@ fn document_to_record(document: Document) -> Result<TaskRecord, TaskStoreError> 
     let created_at = DurableUtcTimestamp::from_millis(
         get_datetime(&task_id, &document, "createdAt")?.timestamp_millis(),
     );
+    let retry_not_before = document
+        .get("retryNotBefore")
+        .and_then(Bson::as_datetime)
+        .map(|timestamp| DurableUtcTimestamp::from_millis(timestamp.timestamp_millis()));
     Ok(TaskRecord {
         task_id,
         owner,
@@ -666,6 +817,7 @@ fn document_to_record(document: Document) -> Result<TaskRecord, TaskStoreError> 
         terminal,
         trace,
         created_at,
+        retry_not_before,
     })
 }
 
@@ -938,8 +1090,14 @@ mod tests {
                 error: "boom".to_string(),
             },
         });
+        record.retry_not_before = Some(DurableUtcTimestamp::from_millis(700_000));
         let decoded =
             document_to_record(record_document(&record).expect("encode")).expect("decode");
         assert_eq!(decoded, record);
+        assert_eq!(
+            decoded.retry_not_before,
+            Some(DurableUtcTimestamp::from_millis(700_000)),
+            "scheduler-owned retry not-before must round trip"
+        );
     }
 }

@@ -21,8 +21,8 @@ use crate::model::{
 use crate::reducer;
 use crate::store::{
     CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput, LeaseRecoveryInput,
-    LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection, SettleInput, SettleOutcome,
-    SettleTransition, StatusInput, TaskStore,
+    LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput, RenewOutcome, RenewRejection,
+    ScanExpiredLeasesInput, SettleInput, SettleOutcome, SettleTransition, StatusInput, TaskStore,
 };
 
 #[derive(Debug)]
@@ -95,6 +95,11 @@ impl MemoryTaskStore {
 
 #[async_trait]
 impl TaskStore for MemoryTaskStore {
+    async fn now(&self) -> Result<DurableUtcTimestamp, TaskStoreError> {
+        self.gate().await?;
+        Ok(self.now())
+    }
+
     async fn create(&self, record: TaskRecord) -> Result<TaskRecord, TaskStoreError> {
         self.gate().await?;
         record
@@ -202,7 +207,7 @@ impl TaskStore for MemoryTaskStore {
         let Some(record) = state.records.get(&input.task_id).cloned() else {
             return Ok(LeaseRecoveryOutcome::NotFound);
         };
-        match reducer::recover_expired_lease(&record, self.now()) {
+        match reducer::recover_expired_lease(&record, self.now(), input.retry_not_before) {
             Ok(next) => {
                 state.records.insert(input.task_id, next.clone());
                 Ok(LeaseRecoveryOutcome::Recovered(next))
@@ -210,6 +215,24 @@ impl TaskStore for MemoryTaskStore {
             Err(reducer::RecoveryRejection::NotExpired) => Ok(LeaseRecoveryOutcome::NotExpired),
             Err(reducer::RecoveryRejection::NotLeased) => Ok(LeaseRecoveryOutcome::NotLeased),
             Err(reducer::RecoveryRejection::Terminal) => Ok(LeaseRecoveryOutcome::Terminal),
+        }
+    }
+
+    async fn release(&self, input: ReleaseInput) -> Result<ReleaseOutcome, TaskStoreError> {
+        self.gate().await?;
+        let mut state = self.inner.write().await;
+        let Some(record) = state.records.get(&input.task_id).cloned() else {
+            return Ok(ReleaseOutcome::NotFound);
+        };
+        match reducer::release(&record, &input, self.now()) {
+            Ok(next) => {
+                state.records.insert(input.task_id, next.clone());
+                Ok(ReleaseOutcome::Released(next))
+            }
+            Err(reducer::ReleaseRejection::StaleLease) => Ok(ReleaseOutcome::StaleLease),
+            Err(reducer::ReleaseRejection::ExpiredLease) => Ok(ReleaseOutcome::ExpiredLease),
+            Err(reducer::ReleaseRejection::NotLeased) => Ok(ReleaseOutcome::NotLeased),
+            Err(reducer::ReleaseRejection::Terminal) => Ok(ReleaseOutcome::Terminal),
         }
     }
 
@@ -229,6 +252,36 @@ impl TaskStore for MemoryTaskStore {
         due.sort_by_key(|record| record.due_at);
         due.truncate(input.limit);
         Ok(due)
+    }
+
+    async fn scan_expired_leases(
+        &self,
+        input: ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.gate().await?;
+        let state = self.inner.read().await;
+        let now = self.now();
+        let mut expired: Vec<TaskRecord> = state
+            .records
+            .values()
+            .filter(|record| {
+                record.state == TaskState::Leased
+                    && record
+                        .active_lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.expiry <= now)
+            })
+            .cloned()
+            .collect();
+        expired.sort_by_key(|record| {
+            record
+                .active_lease
+                .as_ref()
+                .map(|lease| lease.expiry)
+                .unwrap_or(DurableUtcTimestamp::from_millis(0))
+        });
+        expired.truncate(input.limit);
+        Ok(expired)
     }
 
     async fn status(&self, input: StatusInput) -> Result<TaskStatus, TaskStoreError> {

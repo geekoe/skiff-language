@@ -10,12 +10,16 @@ use async_trait::async_trait;
 
 use crate::error::TaskStoreError;
 use crate::model::{
-    DurableDuration, DurableUtcTimestamp, TaskCancelResult, TaskId, TaskRecord, TaskStatus,
-    TaskTerminal,
+    DurableDuration, DurableUtcTimestamp, LeaseId, TaskCancelResult, TaskId, TaskRecord,
+    TaskStatus, TaskTerminal,
 };
 
 #[async_trait]
 pub trait TaskStore: Send + Sync {
+    /// Store authority UTC now. Scheduler timing decisions (lease expiry,
+    /// retry not-before) must use this clock, never a local wall clock.
+    async fn now(&self) -> Result<DurableUtcTimestamp, TaskStoreError>;
+
     /// Durable TaskId-idempotent create. Retrying the exact canonical record
     /// returns the existing record; the same TaskId with a different canonical
     /// record is rejected with `DuplicateTaskId`.
@@ -48,10 +52,24 @@ pub trait TaskStore: Send + Sync {
         input: LeaseRecoveryInput,
     ) -> Result<LeaseRecoveryOutcome, TaskStoreError>;
 
+    /// Provable-rejection release CAS: only the current, unexpired lease may
+    /// be returned to `ready`. The scheduler-owned retry not-before is set
+    /// atomically (monotonic max) so concurrent replicas converge on the
+    /// latest backoff. An expired lease loses to lease-expiry recovery.
+    async fn release(&self, input: ReleaseInput) -> Result<ReleaseOutcome, TaskStoreError>;
+
     /// Due scan: advances `scheduled` tasks whose `due_at` has arrived to
     /// `ready` (store authority time) and returns due `ready` records ordered
     /// by `due_at`. Duplicate scans never create a second logical task.
     async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError>;
+
+    /// Scan for leased records whose lease has expired at store authority
+    /// time, ordered by lease expiry (oldest first) and capped by `limit`.
+    /// Feeds the scheduler's lease-expiry recovery loop across all replicas.
+    async fn scan_expired_leases(
+        &self,
+        input: ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError>;
 
     /// Status query. Missing records and records past their retention horizon
     /// return `expired`; terminal records never reopen.
@@ -97,11 +115,26 @@ pub struct CancelInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRecoveryInput {
     pub task_id: TaskId,
+    /// Scheduler-owned pacing: no future attempt may be claimed before this
+    /// durable store-authority timestamp. Recovery writes it atomically.
+    pub retry_not_before: DurableUtcTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueScanInput {
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanExpiredLeasesInput {
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseInput {
+    pub task_id: TaskId,
+    pub lease_id: LeaseId,
+    pub retry_not_before: DurableUtcTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +220,21 @@ pub enum LeaseRecoveryOutcome {
     Recovered(TaskRecord),
     /// Lease is still valid at store authority time.
     NotExpired,
+    /// Not leased (scheduled / ready).
+    NotLeased,
+    Terminal,
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReleaseOutcome {
+    /// Release won the CAS; lease cleared and task is `ready` with the
+    /// scheduler-owned retry not-before applied.
+    Released(TaskRecord),
+    /// Lease id does not match the current lease.
+    StaleLease,
+    /// Lease already expired at store authority time; recovery owns it.
+    ExpiredLease,
     /// Not leased (scheduled / ready).
     NotLeased,
     Terminal,
