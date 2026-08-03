@@ -1006,6 +1006,7 @@ fn http_adapter_for_test(
         connection_requests: Arc::clone(&host.connection_requests),
         router_session: ConnectionRequestSession::new(router_session_id.to_string())
             .expect("router session"),
+        actor_instance_store: Arc::clone(host.actor_instances.store()),
         http_response_max_bytes: 1024,
         test_http_entries: host.test_http_entries.clone(),
     };

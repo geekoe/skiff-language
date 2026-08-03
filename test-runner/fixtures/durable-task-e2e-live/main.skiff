@@ -161,6 +161,17 @@ function submitActorAfter(body: SubmitInput) -> string {
   return "submitted"
 }
 
+// F0b: dispatch actor.method(...) directly from an ordinary HTTP handler. The
+// receiver handle is authenticated by std.actor.get, and the Runtime freezes
+// the activation snapshot from its local live incarnation of the same actor
+// (no actor execution frame involved).
+function submitActorDirect(body: SubmitInput) -> string {
+  const actor = std.actor.get<Counter>(body.tag)
+  const task = dispatch actor.increment()
+  db insert TaskEntry { id = body.id task = task }
+  return "submitted"
+}
+
 function actorCount(body: IdInput) -> number {
   const actor = std.actor.get<Counter>(body.id)
   return actor.count()

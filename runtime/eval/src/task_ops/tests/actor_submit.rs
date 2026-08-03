@@ -14,6 +14,7 @@ use skiff_artifact_model::{
     InstructionSourceSite, LiteralIr, MetadataValue, SyntheticInstructionSiteReason,
     ACTOR_RUNTIME_ABI_VERSION_V1,
 };
+use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
     ActorGetOrCreateControlRequest, ActorInvocationRequest, ActorRemoveControlRequest,
@@ -23,13 +24,12 @@ use skiff_runtime_capability_context::{
     TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlRequest,
     TaskSubmitResponseControl,
 };
-use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_linked_program::{
     BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, FileDeclarations,
-    FileLinkTargets, LinkedActorCreateMethod, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedActorField, LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation,
-    LinkedActorPublicMethod, LinkedCallTarget, LinkedExecutable, LinkedExecutableBody,
-    LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr, LinkOverlay,
+    FileLinkTargets, LinkOverlay, LinkedActorCreateMethod, LinkedActorDeclaration,
+    LinkedActorDeclarationOwner, LinkedActorField, LinkedActorMethodDispatchPlan,
+    LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedCallTarget, LinkedExecutable,
+    LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr,
     RuntimeTypeContext, SourceMapDto, StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::{
@@ -56,8 +56,7 @@ const FILE_ID: &str = "file:actor-task-submit";
 const SERVICE_ID: &str = "example.com/actor-task-submit";
 const ACTOR_TYPE_ID: &str = "svc.main.Counter";
 const ACTOR_ABI: &str = "skiff-actor-abi-v1:sha256:actor-task-submit";
-const ACTOR_IMPLEMENTATION: &str =
-    "skiff-actor-implementation-v1:sha256:actor-task-submit";
+const ACTOR_IMPLEMENTATION: &str = "skiff-actor-implementation-v1:sha256:actor-task-submit";
 const ACTOR_METHOD: &str = "skiff-actor-method-v1:sha256:actor-task-run";
 
 fn actor_abi() -> ActorAbiIdentity {
@@ -119,7 +118,9 @@ fn null_type() -> skiff_runtime_linked_program::LinkedTypeRef {
     }
 }
 
-fn linked_fixture(create_param_type: skiff_runtime_linked_program::LinkedTypeRef) -> Arc<LinkedFileUnit> {
+fn linked_fixture(
+    create_param_type: skiff_runtime_linked_program::LinkedTypeRef,
+) -> Arc<LinkedFileUnit> {
     let mut declarations = FileDeclarations::default();
     let _ = declarations.types.insert(
         "Counter".to_string(),
@@ -345,9 +346,7 @@ impl ActorCapabilityApi for RecordingTaskActor {
         _request: ActorFindControlRequest,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, Option<ActorRef>> {
-        Box::pin(async {
-            Err(CapabilityError::unsupported("actor find is not under test"))
-        })
+        Box::pin(async { Err(CapabilityError::unsupported("actor find is not under test")) })
     }
 
     fn remove_actor<'a>(
@@ -629,6 +628,14 @@ impl ActorSubmitFixture {
         context
     }
 
+    /// External-context view: no actor execution frame, but the Runtime's
+    /// actor instance store is installed exactly like ordinary host request
+    /// contexts (F0b).
+    fn context_with_actor_store(&self) -> ProgramExecutionContext<'static> {
+        self.context()
+            .with_actor_instance_store(Arc::new(self.store.clone()))
+    }
+
     async fn run_submit(&self) -> Result<RuntimeValue, crate::error::RuntimeError> {
         let context = self.context();
         let mut heap = HeapAccess::private(RequestHeap::default());
@@ -645,6 +652,98 @@ impl ActorSubmitFixture {
             )
             .await
     }
+}
+
+#[tokio::test]
+async fn actor_method_submit_external_context_freezes_snapshot_and_submits_once() {
+    let fixture = ActorSubmitFixture::new(string_type(), false).await;
+    let context = fixture.context_with_actor_store();
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = fixture
+        .interpreter
+        .call_program_executable_with_self_direct(
+            context,
+            &mut heap,
+            &Env::new(),
+            &fixture.caller_addr,
+            &fixture.caller_addr,
+            &Default::default(),
+            RuntimeValue::ActorRef(fixture.actor_ref.clone()),
+            Vec::new(),
+        )
+        .await
+        .expect("external-context actor method dispatch should submit");
+    assert_eq!(value, RuntimeValue::Null);
+
+    let submissions = fixture
+        .recording
+        .submissions
+        .lock()
+        .expect("task submissions lock");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("external-context actor method dispatch should submit exactly once");
+    };
+    assert_eq!(request.target_kind, "actorMethod");
+    let actor_method = request
+        .actor_method
+        .as_ref()
+        .expect("actor method target metadata");
+    assert_eq!(actor_method.actor_ref.epoch(), Some(1));
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(&actor_method.activation.key)
+        .expect("snapshot key base64");
+    let key_value: serde_json::Value =
+        serde_json::from_slice(&key).expect("snapshot key canonical JSON");
+    assert_eq!(key_value["serviceId"], SERVICE_ID);
+    assert_eq!(key_value["actorTypeIdentity"], ACTOR_TYPE_ID);
+    assert_eq!(
+        actor_method.activation.create_input,
+        base64::engine::general_purpose::STANDARD.encode(br#"["account-1"]"#)
+    );
+    let plan = &actor_method.activation.expected_type_plan;
+    assert_eq!(plan["label"], "record");
+    assert_eq!(plan["node"]["kind"], "record");
+    let fields = plan["node"]["fields"].as_array().expect("plan fields");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0]["name"], "accountId");
+    assert_eq!(fields[0]["ty"]["node"]["kind"], "string");
+}
+
+#[tokio::test]
+async fn actor_method_submit_external_context_missing_incarnation_rejects_before_task() {
+    let fixture = ActorSubmitFixture::new(string_type(), false).await;
+    let context = fixture.context_with_actor_store();
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let unknown_ref = actor_ref_for(br#""actor-unknown""#, 1);
+    let error = fixture
+        .interpreter
+        .call_program_executable_with_self_direct(
+            context,
+            &mut heap,
+            &Env::new(),
+            &fixture.caller_addr,
+            &fixture.caller_addr,
+            &Default::default(),
+            RuntimeValue::ActorRef(unknown_ref),
+            Vec::new(),
+        )
+        .await
+        .expect_err("external actor handle without a local incarnation must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("no authenticated actor registry entry"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        fixture
+            .recording
+            .submissions
+            .lock()
+            .expect("task submissions lock")
+            .is_empty(),
+        "definite rejection must not produce a task"
+    );
 }
 
 #[tokio::test]
@@ -665,7 +764,10 @@ async fn actor_method_submit_freezes_snapshot_and_submits_once() {
         panic!("actor method dispatch should submit exactly once");
     };
     assert_eq!(request.target_kind, "actorMethod");
-    assert_eq!(request.target, format!("actorMethod:Counter:{ACTOR_METHOD}"));
+    assert_eq!(
+        request.target,
+        format!("actorMethod:Counter:{ACTOR_METHOD}")
+    );
     let actor_method = request
         .actor_method
         .as_ref()
@@ -680,7 +782,11 @@ async fn actor_method_submit_freezes_snapshot_and_submits_once() {
     assert_eq!(key_value["actorTypeIdentity"], ACTOR_TYPE_ID);
     assert_eq!(
         base64::engine::general_purpose::STANDARD
-            .decode(key_value["canonicalActorIdKeyBytesBase64"].as_str().unwrap())
+            .decode(
+                key_value["canonicalActorIdKeyBytesBase64"]
+                    .as_str()
+                    .unwrap()
+            )
             .expect("actor id base64"),
         br#""actor-1""#
     );
@@ -705,7 +811,9 @@ async fn actor_method_submit_without_frame_rejects_before_task() {
         .await
         .expect_err("actor method dispatch without a frame must fail closed");
     assert!(
-        error.to_string().contains("no authenticated actor registry entry"),
+        error
+            .to_string()
+            .contains("no authenticated actor registry entry"),
         "unexpected error: {error}"
     );
     assert!(

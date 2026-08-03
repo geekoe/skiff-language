@@ -30,6 +30,7 @@ export const DURABLE_TASK_LIVE_ENTRYPOINTS = Object.freeze({
   'submit-slow': { path: '/submit-slow' },
   'submit-actor': { path: '/submit-actor' },
   'submit-actor-after': { path: '/submit-actor-after' },
+  'submit-actor-direct': { path: '/submit-actor-direct' },
   status: { path: '/status' },
   cancel: { path: '/cancel' },
   effect: { path: '/effect' },

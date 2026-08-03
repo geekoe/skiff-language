@@ -843,8 +843,10 @@ async fn encode_task_actor_method_payload(
 ///
 /// The only trusted submission-side source is this Runtime's actor instance
 /// store: `self` uses the current execution frame; explicit Actor references
-/// must resolve to a live, admitted incarnation in the same store. Absence is
-/// a definite rejection (no `task.submit.request` is produced).
+/// must resolve to a live, admitted incarnation in the same store. External
+/// contexts (HTTP handlers, task attempts, ...) reach the same store through
+/// the request execution context. Absence is a definite rejection (no
+/// `task.submit.request` is produced).
 fn actor_activation_snapshot(
     context: &mut EvalContext<'_>,
     projection: &RuntimeExecutionProjection<'_>,
@@ -896,26 +898,34 @@ fn authenticated_actor_handle(
     context: &mut EvalContext<'_>,
     actor_ref: &ActorRef,
 ) -> Result<ActorInstanceHandle> {
-    let Some(frame) = context.context.actor_execution_frame() else {
-        return Err(RuntimeError::ProviderUnavailable {
+    if let Some(frame) = context.context.actor_execution_frame() {
+        let current = frame.current_handle();
+        if actor_ref_matches_fence(actor_ref, current.fence()) {
+            return Ok(current);
+        }
+        return frame.find_handle(actor_ref).ok_or_else(|| {
+            RuntimeError::ProviderUnavailable {
+                target: TASK_SUBMIT_TARGET.to_string(),
+                reason:
+                    "actor method dispatch target registry entry is not available in this Runtime; no task was created"
+                        .to_string(),
+            }
+        });
+    }
+    // External context: the only submission-side trusted copy of the registry
+    // entry's activation facts is this Runtime's actor instance store. The
+    // reference must resolve to a live, admitted incarnation (materialized
+    // through a router-authenticated activation path); absence is a definite
+    // rejection and no task is created.
+    let store = context.context.actor_instance_store();
+    store
+        .and_then(|store| store.handle_for_actor_ref(actor_ref))
+        .ok_or_else(|| RuntimeError::ProviderUnavailable {
             target: TASK_SUBMIT_TARGET.to_string(),
             reason:
                 "actor method dispatch target has no authenticated actor registry entry in this Runtime; no task was created"
                     .to_string(),
-        });
-    };
-    let current = frame.current_handle();
-    if actor_ref_matches_fence(actor_ref, current.fence()) {
-        return Ok(current);
-    }
-    frame.find_handle(actor_ref).ok_or_else(|| {
-        RuntimeError::ProviderUnavailable {
-            target: TASK_SUBMIT_TARGET.to_string(),
-            reason:
-                "actor method dispatch target registry entry is not available in this Runtime; no task was created"
-                    .to_string(),
-        }
-    })
+        })
 }
 
 fn actor_ref_matches_fence(actor_ref: &ActorRef, fence: &ActorInstanceFence) -> bool {

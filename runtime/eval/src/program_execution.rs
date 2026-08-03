@@ -46,6 +46,7 @@ use super::{
     type_projection::EvalTypeProjection,
     *,
 };
+use crate::actor_instance::ActorInstanceStore;
 use crate::assembly_execution::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
 use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 
@@ -164,6 +165,12 @@ pub struct ProgramExecutionContext<'a> {
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
     actor_execution_frame: Option<crate::actor_executor::ActorExecutionFrame>,
+    /// The per-Runtime actor instance store (the submission-side trusted copy
+    /// of registry activation facts) for ordinary host request contexts.
+    /// Actor execution frames carry their own store reference; this field lets
+    /// external contexts (HTTP handlers, task attempts, ...) freeze an actor
+    /// activation snapshot without an execution frame.
+    actor_instance_store: Option<Arc<ActorInstanceStore>>,
     exception_trace_id: Option<String>,
     exception_error_sequence: Arc<AtomicU64>,
     local_call_stack: Vec<ExceptionStackFrame>,
@@ -314,6 +321,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
             request_heap_limits: self.request_heap_limits.clone(),
             runtime_assembly_target: self.runtime_assembly_target.clone(),
             actor_execution_frame: self.actor_execution_frame.clone(),
+            actor_instance_store: self.actor_instance_store.clone(),
             exception_trace_id: self.exception_trace_id.clone(),
             exception_error_sequence: self.exception_error_sequence.clone(),
             local_call_stack: self.local_call_stack.clone(),
@@ -348,6 +356,7 @@ impl<'a> ProgramExecutionContext<'a> {
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
             actor_execution_frame: None,
+            actor_instance_store: None,
             exception_trace_id,
             exception_error_sequence: Arc::new(AtomicU64::new(0)),
             local_call_stack: Vec::new(),
@@ -440,6 +449,19 @@ impl<'a> ProgramExecutionContext<'a> {
     ) -> Self {
         self.actor_execution_frame = Some(frame);
         self
+    }
+
+    /// Installs the per-Runtime actor instance store for ordinary host request
+    /// contexts. Actor-method task submission uses it to resolve the
+    /// authenticated live incarnation of an explicit Actor reference when no
+    /// actor execution frame is active.
+    pub fn with_actor_instance_store(mut self, store: Arc<ActorInstanceStore>) -> Self {
+        self.actor_instance_store = Some(store);
+        self
+    }
+
+    pub(crate) fn actor_instance_store(&self) -> Option<&Arc<ActorInstanceStore>> {
+        self.actor_instance_store.as_ref()
     }
 
     pub(crate) fn with_local_call_site(mut self, site: InstructionSourceSite) -> Self {

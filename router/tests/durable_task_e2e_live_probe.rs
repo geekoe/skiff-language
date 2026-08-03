@@ -1464,6 +1464,60 @@ mod tests {
     );
 
     // ---------------------------------------------------------------------
+    // Scenario 9 (F0b): an ordinary HTTP handler submits
+    // `dispatch actor.method(...)` directly (no actor execution frame). The
+    // Runtime freezes the ActorActivationSnapshot from the local live
+    // incarnation resolved through the request context's actor instance
+    // store; the task then executes through the actor owner lane.
+    // ---------------------------------------------------------------------
+    assert_eq!(actor_count(&live, &live.effect_tag("actor-direct")).await, 0);
+    let submits_before = count_frames(
+        &state,
+        branch3_connection,
+        Direction::ToRouter,
+        "task.submit.request",
+    );
+    let invokes_before = count_frames(
+        &state,
+        branch3_connection,
+        Direction::ToRuntime,
+        "actor.owner.invoke",
+    );
+    submit_task(
+        &live,
+        "submit-actor-direct",
+        &live.task_id("task-actor-direct"),
+        &live.effect_tag("actor-direct"),
+    )
+    .await;
+    wait_status_kind(
+        &live,
+        &live.task_id("task-actor-direct"),
+        "succeeded",
+        CLIENT_TIMEOUT,
+    )
+    .await;
+    assert_eq!(actor_count(&live, &live.effect_tag("actor-direct")).await, 1);
+    assert!(
+        count_frames(
+            &state,
+            branch3_connection,
+            Direction::ToRouter,
+            "task.submit.request",
+        ) > submits_before,
+        "HTTP-context dispatch must emit task.submit.request from the handler"
+    );
+    assert!(
+        count_frames(
+            &state,
+            branch3_connection,
+            Direction::ToRuntime,
+            "actor.owner.invoke",
+        ) > invokes_before,
+        "HTTP-context actor task must execute through the actor owner lane"
+    );
+
+    // ---------------------------------------------------------------------
     // TaskRef across requests: every status/cancel above recovered the TaskRef
     // from the DB stored field; the router-restart scenario additionally
     // proves the TaskRef remains usable after the router came back.

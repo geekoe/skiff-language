@@ -38,6 +38,14 @@ submit-actor-after:
   adapterArgs:
     - param: body
       source: { kind: http.body }
+submit-actor-direct:
+  method: POST
+  path: /submit-actor-direct
+  kind: typedJson
+  handler: main.submitActorDirect
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
 status:
   method: POST
   path: /status
