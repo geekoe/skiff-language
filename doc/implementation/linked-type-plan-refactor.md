@@ -2,11 +2,23 @@
 
 日期：2026-08-03
 
-状态：draft（review 后修订，2026-08-03）
+状态：定稿（2026-08-03，review 后修订；无阻塞性待决策）
 
 本文是阶段性实现方案，不是长期架构契约。目标是消除 `runtime/linked-type-plan/src/type_plan.rs`
 里的职责混杂、重复目录和三份同构实现，并把公共 API 面收敛到外部实际使用的入口。
 文件行数不是目标；行数下降是去重与职责归位的副产品。
+
+## 0. 定稿说明
+
+- 无阻塞性待决策：Phase 4 的 `from_linked_nested_ref` 去留按 2.3/4.4 的调用面证据在执行时决定；
+  Phase 5 的目录落点（runtime-model vs boundary）按 §5 的前置条件在执行前单独决策，不阻塞
+  Phase 0–4。
+- 执行批次（调度边界，不改变设计）：批次 1 = Phase 0（基线锁定 + 调用面审计 + 差分测试）；
+  批次 2 = Phase 1–3（同一 crate 串行实现，一个开发 Agent）；批次 3 = Phase 4–5（共享检查点 +
+  consumer 扇出；Phase 5 需先确认依赖方向）。
+- 每个 Phase 的验收都包含同一条真实纵向探针：`runtime/driver/eval` 中覆盖 `from_linked` /
+  recoverable 的端到端用例（Phase 0 先建立用例清单与差分基线）；不允许只用结构断言
+  （rg / 单元测试）通过阶段验收。
 
 ## 1. 背景
 
@@ -224,11 +236,16 @@ trait PlanInputView<'a> {
 
 ### Phase 0：基线锁定（不改行为）
 
-- 运行 runtime 组的 verify（`skiff-runtime-linked-type-plan` 包 + eval/driver 依赖方），记录基线；
-- 审计 trait 方法外部调用面（输出 2.3 表的最终版本）；
-- 补差分测试：from_linked 与 legacy JSON 路径在 label/named_type_name/depth-32 截断上的一致性。
+- 运行聚焦测试基线（`cargo test`：`skiff-runtime-linked-type-plan` 包 + 受影响依赖方的聚焦用例），
+  记录结果；完整 `pnpm verify` 不放上关键路径（仓库 AGENTS.md 约定）；
+- 审计 trait 方法外部调用面（输出 2.3 表的最终版本），含 driver/value_codec 临时 adapter；
+- 补差分测试：from_linked 与 legacy JSON 路径在 label/named_type_name/depth-32 截断上的一致性
+  （legacy 基准是 test-support 门控，差分测试在 cfg(test) 下运行）；
+- 建立真实纵向探针清单：`runtime/driver/eval` 中覆盖 `from_linked` / recoverable 的端到端用例，
+  作为后续每个 Phase 的固定可观察探针。
 
-验收：全部测试绿；调用面清单入库（写在 4.4 对应位置）。
+验收：聚焦测试全绿；调用面清单入库（写在 4.4 对应位置）；纵向探针清单在 Phase 0 result 文档中
+可执行。
 
 ### Phase 1：纯搬迁（低风险）
 
