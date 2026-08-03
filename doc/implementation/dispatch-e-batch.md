@@ -33,7 +33,7 @@ dispatch 用户面收尾：
 | E2b actor_task_execute | actor-method durable target 执行侧（get-or-activate + settlement 映射 + store 扩展） | integration@6f05572c（E2a 合并点） | actor-task-execute / skiff-e2b-actor-exec | f571d0de（tree a9e5c8f2） | 见交接 + 集成探针 | merged |
 | E3a e2e_vertical | durable task dispatch E2E 纵向链路 + TaskRef DB stored field 往返 + live 探针注册 | integration@b9614c25（E2 合并点） | e2e-vertical / skiff-e3a-e2e | 578d23c4（tree ac85ab4b） | 见交接 + 集成探针 | merged |
 | E3b obs_docs | 观测事件面（router telemetry / SchedulerObservation / host submit events）+ 文档收敛 | integration@b9614c25（E2 合并点） | obs-docs / skiff-e3b-obs-docs | 4bd88f01（tree 7b76fa73） | 见交接 + 集成探针 | merged |
-| F0a pattern_match_fix | compiler record-pattern match 降级修复（E3a 记录的已知项 1） | integration@62d8ee99 | 待交接 | 待交接 | 见交接 + 集成探针 | pending |
+| F0a pattern_match_fix | compiler record-pattern match 降级修复（E3a 记录的已知项 1） | integration@62d8ee99 | pattern-match-fix / skiff-f0a-pattern | 1ac1700e（tree 87b53b4b） | 见交接 + 集成探针 | merged |
 | F0b actor_submit_context | actor-method dispatch 提交上下文（E2a 记录的 HTTP 内 dispatch 限制） | integration@62d8ee99 | actor-submit-context / skiff-f0b-actor-ctx | f7da8cfb（tree 22e30f50） | 见交接 + 集成探针 | merged |
 
 节点串行；集成 Agent 每轮核对 branch/worktree/commit/tree/写集后合并。
@@ -64,7 +64,7 @@ dispatch 用户面收尾：
 | 3 | E2b actor_task_execute | actor-task-execute | b9614c25（tree a9e5c8f2） | PASS：cargo check task-control/router/transport/eval/host/request-contract/capability-context；task-control 25+3+9、router task_actor_method_execution 10/10 + task_control_unit 18/18、transport lib 141/141 + task_wire_corpus 11/11 + w_model_task_corpus 7/7；零冲突（探针在代码一致的 E2b worktree 温缓存执行） | 已清理 | merged |
 | 4 | E3b obs_docs | obs-docs | d5adc522（tree 7b76fa73） | PASS：cargo check task-control/router/transport/eval/host；task-control 25+3+10、router lib 69/69 + task_telemetry 5/5 + task_control_unit 18/18 + task_actor_method_execution 10/10 + w_model_task_consumer 4/4 + task_repair_direction 6/6、host lib 429/429；零冲突（探针在代码一致的 E3b worktree 温缓存执行） | 已清理 | merged |
 | 5 | E3a e2e_vertical | e2e-vertical | 3564a217（tree f31568d5） | PASS：cargo check boundary/service-db/router；boundary lib 174/174、service-db lib 145/145（+6 ignored）、router lib 69/69 + task_control_unit 18/18 + task_actor_method_execution 10/10 + dispatch_admission_corpus 2/2；supervisor/mod.rs 自动合并零冲突；verify-live-registry 18/20（两个 loop-risk 失败在 pre-E3a 基线 bd8aa252 复现，既有问题与本节点无关） | 已清理 | merged |
-| 6 | F0a pattern_match_fix | 待交接 | 待交接 | 待交接 | 待交接 | pending |
+| 6 | F0a pattern_match_fix | pattern-match-fix | 1cba477f（tree 45a35485） | PASS：cargo check artifact-model/syntax/compiler-lowering/linked-program/linker/eval；lowering record_pattern 2/2 + lib 79/79、eval record_pattern 6/6 + lib 471/471（含 F0b 2 例）、linker linked_pattern 1/1 + lib 89/89、syntax match_record 1/1、dispatch_grammar 5/5、runtime_slots 40/40；main.skiff 与 F0b 自动合并零冲突 | 已清理 | merged |
 | 7 | F0b actor_submit_context | actor-submit-context | 63e0f17e（tree f456ebec） | PASS：cargo check eval/host/router；eval lib 465/465（actor_submit 7/7）、host lib 429/429、router task_control_unit 18/18 + task_actor_method_execution 10/10 + dispatch_admission_corpus 2/2；零冲突（探针在代码一致的 F0b worktree 温缓存执行） | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新
