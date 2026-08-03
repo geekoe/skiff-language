@@ -138,20 +138,104 @@ enum CallableParseResult {
 }
 
 fn parsed_leaf_expr(expr: Expr, span: SourceSpan) -> ParsedExpr {
-    ParsedExpr {
-        expr,
-        spans: expr_source_spans(span, Vec::new()),
+    ParsedExpr::new(expr, span, Vec::new())
+}
+
+impl ParsedExpr {
+    fn new(expr: Expr, span: SourceSpan, children: Vec<ExprSourceSpans>) -> ParsedExpr {
+        ParsedExpr {
+            expr,
+            spans: expr_source_spans(span, children),
+        }
+    }
+
+    fn into_parts(self) -> (Expr, ExprSourceSpans) {
+        (self.expr, self.spans)
+    }
+
+    fn with_children_and_parts(
+        expr: Expr,
+        span: SourceSpan,
+        children: Vec<ExprSourceSpans>,
+        blocks: Vec<BlockSourceSpans>,
+        record_fields: Vec<RecordFieldSourceSpans>,
+    ) -> ParsedExpr {
+        ParsedExpr {
+            expr,
+            spans: ExprSourceSpans {
+                span,
+                children,
+                blocks,
+                record_fields,
+            },
+        }
     }
 }
 
-fn parsed_expression_statement(expression: ParsedExpr) -> ParsedStmt {
-    ParsedStmt {
-        stmt: Stmt::Expr(expression.expr),
-        spans: StmtSourceSpans {
-            span: expression.spans.span,
-            expressions: vec![expression.spans],
-            blocks: Vec::new(),
-        },
+impl ParsedBlock {
+    fn from_stmt(stmt: ParsedStmt) -> ParsedBlock {
+        let ParsedStmt { stmt, spans } = stmt;
+        ParsedBlock {
+            spans: BlockSourceSpans {
+                span: spans.span,
+                statements: vec![spans],
+            },
+            block: Block {
+                statements: vec![stmt],
+            },
+        }
+    }
+
+    fn into_parts(self) -> (Block, BlockSourceSpans) {
+        (self.block, self.spans)
+    }
+}
+
+impl ParsedStmt {
+    fn new(
+        stmt: Stmt,
+        span: SourceSpan,
+        expressions: Vec<ExprSourceSpans>,
+        blocks: Vec<BlockSourceSpans>,
+    ) -> ParsedStmt {
+        ParsedStmt {
+            stmt,
+            spans: StmtSourceSpans {
+                span,
+                expressions,
+                blocks,
+            },
+        }
+    }
+
+    fn expr(expression: ParsedExpr) -> ParsedStmt {
+        Self::new(
+            Stmt::Expr(expression.expr),
+            expression.spans.span,
+            vec![expression.spans],
+            Vec::new(),
+        )
+    }
+
+    fn leaf(stmt: Stmt, span: SourceSpan) -> ParsedStmt {
+        Self::new(stmt, span, Vec::new(), Vec::new())
+    }
+
+    fn with_expression(stmt: Stmt, span: SourceSpan, expression: ExprSourceSpans) -> ParsedStmt {
+        Self::new(stmt, span, vec![expression], Vec::new())
+    }
+
+    fn with_block(stmt: Stmt, span: SourceSpan, block: BlockSourceSpans) -> ParsedStmt {
+        Self::new(stmt, span, Vec::new(), vec![block])
+    }
+
+    fn with_expression_and_block(
+        stmt: Stmt,
+        span: SourceSpan,
+        expression: ExprSourceSpans,
+        block: BlockSourceSpans,
+    ) -> ParsedStmt {
+        Self::new(stmt, span, vec![expression], vec![block])
     }
 }
 
@@ -1167,7 +1251,7 @@ impl Parser {
         };
         self.expect_symbol("=")?;
         let value = self.parse_expression()?;
-        self.source_spans.consts.push(value.spans.clone());
+        self.source_spans.consts.push(value.spans);
         self.match_symbol(";");
         let end = self.previous().span.end;
         Ok(ConstDecl {
@@ -1322,13 +1406,12 @@ impl Parser {
         exported: bool,
     ) -> Result<CallableParseResult> {
         let body = self.parse_block(false)?;
-        let spans = body.spans.clone();
         let end = self.previous().span.end;
         Ok(CallableParseResult::Decl {
             decl: self.build_function_decl(exported, signature, body.block, end),
             spans: Some(ExecutableSourceSpans {
                 effects: Vec::new(),
-                body: spans,
+                body: body.spans,
             }),
         })
     }
@@ -1342,13 +1425,12 @@ impl Parser {
         let body_start = self.snapshot();
         match self.parse_block(false) {
             Ok(body) => {
-                let spans = body.spans.clone();
                 let end = self.previous().span.end;
                 Ok(CallableParseResult::Decl {
                     decl: self.build_function_decl(exported, signature, body.block, end),
                     spans: Some(ExecutableSourceSpans {
                         effects: Vec::new(),
-                        body: spans,
+                        body: body.spans,
                     }),
                 })
             }
@@ -1663,7 +1745,7 @@ impl Parser {
         let end = self.previous().span.end;
         self.source_spans.tests.push(ExecutableSourceSpans {
             effects: effect_spans,
-            body: body.spans.clone(),
+            body: body.spans,
         });
         Ok(crate::ast::TestDeclaration {
             name,
@@ -1983,28 +2065,21 @@ impl Parser {
         if self.match_ident("return") {
             let start = self.previous().span.start;
             if self.check_symbol("}") || self.check_symbol(";") {
-                return Ok(ParsedStmt {
-                    stmt: Stmt::Return(None),
-                    spans: StmtSourceSpans {
-                        span: SourceSpan {
-                            start,
-                            end: self.previous().span.end,
-                        },
-                        expressions: Vec::new(),
-                        blocks: Vec::new(),
+                return Ok(ParsedStmt::leaf(
+                    Stmt::Return(None),
+                    SourceSpan {
+                        start,
+                        end: self.previous().span.end,
                     },
-                });
+                ));
             }
-            let value = self.parse_expression()?;
-            let end = value.spans.span.end;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Return(Some(value.expr)),
-                spans: StmtSourceSpans {
-                    span: SourceSpan { start, end },
-                    expressions: vec![value.spans],
-                    blocks: Vec::new(),
-                },
-            });
+            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+            let end = value_spans.span.end;
+            return Ok(ParsedStmt::with_expression(
+                Stmt::Return(Some(value_expr)),
+                SourceSpan { start, end },
+                value_spans,
+            ));
         }
         if self.match_ident("spawn") {
             let start = self.previous().span.start;
@@ -2015,43 +2090,35 @@ impl Parser {
                     call.spans.span.start,
                 ));
             }
-            let end = call.spans.span.end;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Spawn { call: call.expr },
-                spans: StmtSourceSpans {
-                    span: SourceSpan { start, end },
-                    expressions: vec![call.spans],
-                    blocks: Vec::new(),
-                },
-            });
+            let (call_expr, call_spans) = call.into_parts();
+            let end = call_spans.span.end;
+            return Ok(ParsedStmt::with_expression(
+                Stmt::Spawn { call: call_expr },
+                SourceSpan { start, end },
+                call_spans,
+            ));
         }
         if self.match_ident("throw") {
             let start = self.previous().span.start;
-            let value = self.parse_expression()?;
-            let end = value.spans.span.end;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Throw { value: value.expr },
-                spans: StmtSourceSpans {
-                    span: SourceSpan { start, end },
-                    expressions: vec![value.spans],
-                    blocks: Vec::new(),
-                },
-            });
+            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+            let end = value_spans.span.end;
+            return Ok(ParsedStmt::with_expression(
+                Stmt::Throw { value: value_expr },
+                SourceSpan { start, end },
+                value_spans,
+            ));
         }
         if self.match_ident("rethrow") {
             let start = self.previous().span.start;
-            let exception = self.parse_expression()?;
-            let end = exception.spans.span.end;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Rethrow {
-                    exception: exception.expr,
+            let (exception_expr, exception_spans) = self.parse_expression()?.into_parts();
+            let end = exception_spans.span.end;
+            return Ok(ParsedStmt::with_expression(
+                Stmt::Rethrow {
+                    exception: exception_expr,
                 },
-                spans: StmtSourceSpans {
-                    span: SourceSpan { start, end },
-                    expressions: vec![exception.spans],
-                    blocks: Vec::new(),
-                },
-            });
+                SourceSpan { start, end },
+                exception_spans,
+            ));
         }
         if self.match_ident("emit") {
             let start = self.previous().span.start;
@@ -2062,65 +2129,41 @@ impl Parser {
             } else {
                 self.parse_expression()?
             };
+            let (value_expr, value_spans) = value.into_parts();
             let end = self.previous().span.end;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Emit(value.expr),
-                spans: StmtSourceSpans {
-                    span: SourceSpan { start, end },
-                    expressions: vec![value.spans],
-                    blocks: Vec::new(),
-                },
-            });
+            return Ok(ParsedStmt::with_expression(
+                Stmt::Emit(value_expr),
+                SourceSpan { start, end },
+                value_spans,
+            ));
         }
         if self.match_ident("break") {
             let span = self.previous().span;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Break,
-                spans: StmtSourceSpans {
-                    span,
-                    expressions: Vec::new(),
-                    blocks: Vec::new(),
-                },
-            });
+            return Ok(ParsedStmt::leaf(Stmt::Break, span));
         }
         if self.match_ident("continue") {
             let span = self.previous().span;
-            return Ok(ParsedStmt {
-                stmt: Stmt::Continue,
-                spans: StmtSourceSpans {
-                    span,
-                    expressions: Vec::new(),
-                    blocks: Vec::new(),
-                },
-            });
+            return Ok(ParsedStmt::leaf(Stmt::Continue, span));
         }
         let expr = self.parse_expression()?;
         if self.match_symbol("=") {
-            let value = self.parse_expression()?;
+            let (target_expr, target_spans) = expr.into_parts();
+            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
             let span = SourceSpan {
-                start: expr.spans.span.start,
-                end: value.spans.span.end,
+                start: target_spans.span.start,
+                end: value_spans.span.end,
             };
-            return Ok(ParsedStmt {
-                stmt: Stmt::Assign {
-                    target: expr.expr,
-                    value: value.expr,
+            return Ok(ParsedStmt::new(
+                Stmt::Assign {
+                    target: target_expr,
+                    value: value_expr,
                 },
-                spans: StmtSourceSpans {
-                    span,
-                    expressions: vec![expr.spans, value.spans],
-                    blocks: Vec::new(),
-                },
-            });
+                span,
+                vec![target_spans, value_spans],
+                Vec::new(),
+            ));
         }
-        Ok(ParsedStmt {
-            stmt: Stmt::Expr(expr.expr),
-            spans: StmtSourceSpans {
-                span: expr.spans.span,
-                expressions: vec![expr.spans],
-                blocks: Vec::new(),
-            },
-        })
+        Ok(ParsedStmt::expr(expr))
     }
 
     fn parse_timeout_statement(
@@ -2132,7 +2175,7 @@ impl Parser {
         if self.check_ident("value") || self.check_ident("concurrent") {
             return self
                 .parse_timeout_value_after_duration(start, duration)
-                .map(parsed_expression_statement);
+                .map(ParsedStmt::expr);
         }
         if !self.check_symbol("{") {
             return Err(CompileError::syntax(
@@ -2140,19 +2183,16 @@ impl Parser {
                 self.peek().span.start,
             ));
         }
-        let body = self.parse_block(in_test)?;
-        let end = body.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::Timeout {
+        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
+        let end = body_spans.span.end;
+        Ok(ParsedStmt::with_block(
+            Stmt::Timeout {
                 duration,
-                body: body.block,
+                body: body_expr,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: Vec::new(),
-                blocks: vec![body.spans],
-            },
-        })
+            SourceSpan { start, end },
+            body_spans,
+        ))
     }
 
     fn parse_concurrent_statement(
@@ -2163,7 +2203,7 @@ impl Parser {
         if self.match_ident("value") {
             return self
                 .parse_value_block_expression(start, true)
-                .map(parsed_expression_statement);
+                .map(ParsedStmt::expr);
         }
         if !self.check_symbol("{") {
             let message = if self.check_ident("timeout")
@@ -2176,16 +2216,13 @@ impl Parser {
             };
             return Err(CompileError::syntax(message, self.peek().span.start));
         }
-        let body = self.parse_block(in_test)?;
-        let end = body.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::Concurrent { body: body.block },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: Vec::new(),
-                blocks: vec![body.spans],
-            },
-        })
+        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
+        let end = body_spans.span.end;
+        Ok(ParsedStmt::with_block(
+            Stmt::Concurrent { body: body_expr },
+            SourceSpan { start, end },
+            body_spans,
+        ))
     }
 
     fn parse_serial_statement(
@@ -2199,20 +2236,17 @@ impl Parser {
                 self.peek().span.start,
             ));
         }
-        let body = self.parse_block(in_test)?;
-        let end = body.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::Serial { body: body.block },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: Vec::new(),
-                blocks: vec![body.spans],
-            },
-        })
+        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
+        let end = body_spans.span.end;
+        Ok(ParsedStmt::with_block(
+            Stmt::Serial { body: body_expr },
+            SourceSpan { start, end },
+            body_spans,
+        ))
     }
 
     fn parse_assert_statement(&mut self, start: SourceLocation) -> Result<ParsedStmt> {
-        let condition = self.parse_expression()?;
+        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
         let message = if self.match_symbol(",") {
             Some(self.expect_string("expected assert message string")?)
         } else {
@@ -2221,19 +2255,16 @@ impl Parser {
         let end = if message.is_some() {
             self.previous().span.end
         } else {
-            condition.spans.span.end
+            condition_spans.span.end
         };
-        Ok(ParsedStmt {
-            stmt: Stmt::Assert {
-                condition: condition.expr,
+        Ok(ParsedStmt::with_expression(
+            Stmt::Assert {
+                condition: condition_expr,
                 message,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![condition.spans],
-                blocks: Vec::new(),
-            },
-        })
+            SourceSpan { start, end },
+            condition_spans,
+        ))
     }
 
     fn parse_let(&mut self, mutable: bool, start: SourceLocation) -> Result<ParsedStmt> {
@@ -2244,38 +2275,27 @@ impl Parser {
             None
         };
         self.expect_symbol("=")?;
-        let value = self.parse_expression()?;
-        let end = value.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::Let {
+        let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+        let end = value_spans.span.end;
+        Ok(ParsedStmt::with_expression(
+            Stmt::Let {
                 mutable,
                 name,
                 ty,
-                value: value.expr,
+                value: value_expr,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![value.spans],
-                blocks: Vec::new(),
-            },
-        })
+            SourceSpan { start, end },
+            value_spans,
+        ))
     }
 
     fn parse_if(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let condition = self.parse_expression()?;
+        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
         let then_block = self.parse_block(in_test)?;
         let else_block = if self.match_ident("else") {
             if self.match_ident("if") {
                 let nested_if = self.parse_if(in_test, self.previous().span.start)?;
-                Some(ParsedBlock {
-                    spans: BlockSourceSpans {
-                        span: nested_if.spans.span,
-                        statements: vec![nested_if.spans],
-                    },
-                    block: Block {
-                        statements: vec![nested_if.stmt],
-                    },
-                })
+                Some(ParsedBlock::from_stmt(nested_if))
             } else {
                 Some(self.parse_block(in_test)?)
             }
@@ -2286,22 +2306,24 @@ impl Parser {
             .as_ref()
             .map(|block| block.spans.span.end)
             .unwrap_or(then_block.spans.span.end);
-        let mut blocks = vec![then_block.spans.clone()];
-        if let Some(else_block) = &else_block {
-            blocks.push(else_block.spans.clone());
-        }
-        Ok(ParsedStmt {
-            stmt: Stmt::If {
-                condition: condition.expr,
-                then_block: then_block.block,
-                else_block: else_block.map(|block| block.block),
+        let (then_expr, then_spans) = then_block.into_parts();
+        let (else_expr, blocks) = match else_block {
+            Some(block) => {
+                let (block_expr, block_spans) = block.into_parts();
+                (Some(block_expr), vec![then_spans, block_spans])
+            }
+            None => (None, vec![then_spans]),
+        };
+        Ok(ParsedStmt::new(
+            Stmt::If {
+                condition: condition_expr,
+                then_block: then_expr,
+                else_block: else_expr,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![condition.spans],
-                blocks,
-            },
-        })
+            SourceSpan { start, end },
+            vec![condition_spans],
+            blocks,
+        ))
     }
 
     fn parse_for(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
@@ -2313,42 +2335,38 @@ impl Parser {
             ForBinding::Item { item: first }
         };
         self.expect_ident_value("in")?;
-        let iterable = self.parse_expression()?;
-        let body = self.parse_block(in_test)?;
-        let end = body.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::For {
+        let (iterable_expr, iterable_spans) = self.parse_expression()?.into_parts();
+        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
+        let end = body_spans.span.end;
+        Ok(ParsedStmt::with_expression_and_block(
+            Stmt::For {
                 binding,
-                iterable: iterable.expr,
-                body: body.block,
+                iterable: iterable_expr,
+                body: body_expr,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![iterable.spans],
-                blocks: vec![body.spans],
-            },
-        })
+            SourceSpan { start, end },
+            iterable_spans,
+            body_spans,
+        ))
     }
 
     fn parse_while(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let condition = self.parse_expression()?;
-        let body = self.parse_block(in_test)?;
-        let end = body.spans.span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::While {
-                condition: condition.expr,
-                body: body.block,
+        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
+        let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
+        let end = body_spans.span.end;
+        Ok(ParsedStmt::with_expression_and_block(
+            Stmt::While {
+                condition: condition_expr,
+                body: body_expr,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![condition.spans],
-                blocks: vec![body.spans],
-            },
-        })
+            SourceSpan { start, end },
+            condition_spans,
+            body_spans,
+        ))
     }
 
     fn parse_match(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let value = self.parse_expression()?;
+        let (value_expr, value_spans) = self.parse_expression()?.into_parts();
         let mut arms = Vec::new();
         let mut blocks = Vec::new();
         self.expect_symbol("{")?;
@@ -2364,17 +2382,15 @@ impl Parser {
         }
         self.expect_symbol("}")?;
         let end = self.previous().span.end;
-        Ok(ParsedStmt {
-            stmt: Stmt::Match {
-                value: value.expr,
+        Ok(ParsedStmt::new(
+            Stmt::Match {
+                value: value_expr,
                 arms,
             },
-            spans: StmtSourceSpans {
-                span: SourceSpan { start, end },
-                expressions: vec![value.spans],
-                blocks,
-            },
-        })
+            SourceSpan { start, end },
+            vec![value_spans],
+            blocks,
+        ))
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern> {
@@ -2476,14 +2492,15 @@ impl Parser {
                 start: left.spans.span.start,
                 end: right.spans.span.end,
             };
-            left = ParsedExpr {
-                expr: Expr::Binary {
+            left = ParsedExpr::new(
+                Expr::Binary {
                     op,
                     left: Box::new(left.expr),
                     right: Box::new(right.expr),
                 },
-                spans: expr_source_spans(span, vec![left.spans, right.spans]),
-            };
+                span,
+                vec![left.spans, right.spans],
+            );
         }
         Ok(left)
     }
@@ -2492,19 +2509,17 @@ impl Parser {
         if self.match_symbol("!") {
             let start = self.previous().span.start;
             let expr = self.parse_unary()?;
-            return Ok(ParsedExpr {
-                expr: Expr::Unary {
+            return Ok(ParsedExpr::new(
+                Expr::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(expr.expr),
                 },
-                spans: expr_source_spans(
-                    SourceSpan {
-                        start,
-                        end: expr.spans.span.end,
-                    },
-                    vec![expr.spans],
-                ),
-            });
+                SourceSpan {
+                    start,
+                    end: expr.spans.span.end,
+                },
+                vec![expr.spans],
+            ));
         }
         self.parse_postfix()
     }
@@ -2522,13 +2537,14 @@ impl Parser {
                     start: expr.spans.span.start,
                     end: self.previous().span.end,
                 };
-                expr = ParsedExpr {
-                    expr: Expr::Field {
+                expr = ParsedExpr::new(
+                    Expr::Field {
                         object: Box::new(expr.expr),
                         field,
                     },
-                    spans: expr_source_spans(span, vec![expr.spans]),
-                };
+                    span,
+                    vec![expr.spans],
+                );
                 continue;
             }
             if self.check_symbol("<") && self.looks_like_generic_call_suffix() {
@@ -2537,13 +2553,14 @@ impl Parser {
                     start: expr.spans.span.start,
                     end: self.previous().span.end,
                 };
-                expr = ParsedExpr {
-                    expr: Expr::Generic {
+                expr = ParsedExpr::new(
+                    Expr::Generic {
                         callee: Box::new(expr.expr),
                         type_args,
                     },
-                    spans: expr_source_spans(span, vec![expr.spans]),
-                };
+                    span,
+                    vec![expr.spans],
+                );
                 continue;
             }
             if self.match_symbol("(") {
@@ -2564,13 +2581,14 @@ impl Parser {
                     start: children[0].span.start,
                     end: self.previous().span.end,
                 };
-                expr = ParsedExpr {
-                    expr: Expr::Call {
+                expr = ParsedExpr::new(
+                    Expr::Call {
                         callee: Box::new(expr.expr),
                         args,
                     },
-                    spans: expr_source_spans(span, children),
-                };
+                    span,
+                    children,
+                );
                 continue;
             }
             if self.match_ident("as") {
@@ -2592,13 +2610,14 @@ impl Parser {
                         as_start,
                     ));
                 }
-                expr = ParsedExpr {
-                    expr: Expr::InterfaceBox {
+                expr = ParsedExpr::new(
+                    Expr::InterfaceBox {
                         value: Box::new(expr.expr),
                         interface,
                     },
-                    spans: expr_source_spans(span, vec![expr.spans]),
-                };
+                    span,
+                    vec![expr.spans],
+                );
                 continue;
             }
             if self.check_symbol("{") {
@@ -2611,10 +2630,7 @@ impl Parser {
                         start: children[0].span.start,
                         end: self.previous().span.end,
                     };
-                    expr = ParsedExpr {
-                        expr: Expr::Patch { target, operations },
-                        spans: expr_source_spans(span, children),
-                    };
+                    expr = ParsedExpr::new(Expr::Patch { target, operations }, span, children);
                     continue;
                 }
                 if let Some((type_name, type_args)) = Self::nominal_construct_parts(&expr.expr) {
@@ -2627,19 +2643,17 @@ impl Parser {
                         start: children[0].span.start,
                         end: self.previous().span.end,
                     };
-                    expr = ParsedExpr {
-                        expr: Expr::Record {
+                    expr = ParsedExpr::with_children_and_parts(
+                        Expr::Record {
                             type_name,
                             type_args,
                             fields,
                         },
-                        spans: ExprSourceSpans {
-                            span,
-                            children,
-                            blocks: Vec::new(),
-                            record_fields,
-                        },
-                    };
+                        span,
+                        children,
+                        Vec::new(),
+                        record_fields,
+                    );
                     continue;
                 }
             }
@@ -2795,33 +2809,29 @@ impl Parser {
             }
             TokenKind::Ident(value) if value == "throw" => {
                 let value = self.parse_expression()?;
-                Ok(ParsedExpr {
-                    expr: Expr::Throw {
+                Ok(ParsedExpr::new(
+                    Expr::Throw {
                         value: Box::new(value.expr),
                     },
-                    spans: expr_source_spans(
-                        SourceSpan {
-                            start,
-                            end: value.spans.span.end,
-                        },
-                        vec![value.spans],
-                    ),
-                })
+                    SourceSpan {
+                        start,
+                        end: value.spans.span.end,
+                    },
+                    vec![value.spans],
+                ))
             }
             TokenKind::Ident(value) if value == "rethrow" => {
                 let exception = self.parse_expression()?;
-                Ok(ParsedExpr {
-                    expr: Expr::Rethrow {
+                Ok(ParsedExpr::new(
+                    Expr::Rethrow {
                         exception: Box::new(exception.expr),
                     },
-                    spans: expr_source_spans(
-                        SourceSpan {
-                            start,
-                            end: exception.spans.span.end,
-                        },
-                        vec![exception.spans],
-                    ),
-                })
+                    SourceSpan {
+                        start,
+                        end: exception.spans.span.end,
+                    },
+                    vec![exception.spans],
+                ))
             }
             TokenKind::Ident(value) if value == "catch" => self.parse_catch_expression(start),
             TokenKind::Ident(value) if value == "db" => self.parse_db_expression(token.span),
@@ -2837,22 +2847,20 @@ impl Parser {
                 if self.check_symbol("{") && value.chars().next().is_some_and(char::is_uppercase) {
                     self.advance();
                     let (fields, children, record_fields) = self.parse_record_construct_fields()?;
-                    Ok(ParsedExpr {
-                        expr: Expr::Record {
+                    Ok(ParsedExpr::with_children_and_parts(
+                        Expr::Record {
                             type_name: value,
                             type_args: Vec::new(),
                             fields,
                         },
-                        spans: ExprSourceSpans {
-                            span: SourceSpan {
-                                start,
-                                end: self.previous().span.end,
-                            },
-                            children,
-                            blocks: Vec::new(),
-                            record_fields,
+                        SourceSpan {
+                            start,
+                            end: self.previous().span.end,
                         },
-                    })
+                        children,
+                        Vec::new(),
+                        record_fields,
+                    ))
                 } else {
                     Ok(parsed_leaf_expr(Expr::Identifier(value), token.span))
                 }
@@ -2864,18 +2872,16 @@ impl Parser {
             }
             TokenKind::Symbol(value) if value == "{" => {
                 let (entries, children, record_fields) = self.parse_object_literal_entries()?;
-                Ok(ParsedExpr {
-                    expr: Expr::ObjectLiteral { entries },
-                    spans: ExprSourceSpans {
-                        span: SourceSpan {
-                            start,
-                            end: self.previous().span.end,
-                        },
-                        children,
-                        blocks: Vec::new(),
-                        record_fields,
+                Ok(ParsedExpr::with_children_and_parts(
+                    Expr::ObjectLiteral { entries },
+                    SourceSpan {
+                        start,
+                        end: self.previous().span.end,
                     },
-                })
+                    children,
+                    Vec::new(),
+                    record_fields,
+                ))
             }
             _ => Err(CompileError::syntax(
                 "expected expression",
@@ -2929,13 +2935,14 @@ impl Parser {
             ));
         };
         let end = value.spans.span.end;
-        Ok(ParsedExpr {
-            expr: Expr::Timeout {
+        Ok(ParsedExpr::new(
+            Expr::Timeout {
                 duration,
                 value: Box::new(value.expr),
             },
-            spans: expr_source_spans(SourceSpan { start, end }, vec![value.spans]),
-        })
+            SourceSpan { start, end },
+            vec![value.spans],
+        ))
     }
 
     fn parse_value_block_expression(
@@ -3031,22 +3038,20 @@ impl Parser {
             body: Block { statements },
             tail: Box::new(tail),
         };
-        Ok(ParsedExpr {
-            expr: if concurrent {
+        Ok(ParsedExpr::with_children_and_parts(
+            if concurrent {
                 Expr::ConcurrentValue(value)
             } else {
                 Expr::ValueBlock(value)
             },
-            spans: ExprSourceSpans {
-                span: SourceSpan {
-                    start,
-                    end: block_end,
-                },
-                children: vec![tail_spans],
-                blocks: vec![body_spans],
-                record_fields: Vec::new(),
+            SourceSpan {
+                start,
+                end: block_end,
             },
-        })
+            vec![tail_spans],
+            vec![body_spans],
+            Vec::new(),
+        ))
     }
 
     fn check_dependency_source_address_suffix(&self, expr: &ParsedExpr) -> bool {
@@ -3092,13 +3097,14 @@ impl Parser {
             start: expr.spans.span.start,
             end,
         };
-        Ok(ParsedExpr {
-            expr: Expr::DependencySourceAddress(DependencySourceAddress {
+        Ok(ParsedExpr::new(
+            Expr::DependencySourceAddress(DependencySourceAddress {
                 dependency_ref,
                 public_path: segments.join("."),
             }),
-            spans: expr_source_spans(span, Vec::new()),
-        })
+            span,
+            Vec::new(),
+        ))
     }
 
     fn parse_db_expression(&mut self, span: SourceSpan) -> Result<ParsedExpr> {
@@ -3137,39 +3143,34 @@ impl Parser {
         } else {
             DbBlockMode::Effect
         };
-        let body = self.parse_block(false)?;
-        let body_end = body.spans.span.end;
-        let body_spans = body.spans.clone();
-        Ok(ParsedExpr {
-            expr: Expr::DbTransaction(DbTransaction {
+        let (body_expr, body_spans) = self.parse_block(false)?.into_parts();
+        let body_end = body_spans.span.end;
+        Ok(ParsedExpr::with_children_and_parts(
+            Expr::DbTransaction(DbTransaction {
                 mode,
-                body: body.block,
+                body: body_expr,
             }),
-            spans: ExprSourceSpans {
-                blocks: vec![body_spans],
-                record_fields: Vec::new(),
-                children: Vec::new(),
-                span: SourceSpan {
-                    start,
-                    end: body_end,
-                },
+            SourceSpan {
+                start,
+                end: body_end,
             },
-        })
+            Vec::new(),
+            vec![body_spans],
+            Vec::new(),
+        ))
     }
 
     fn parse_db_query_expr(&mut self, start: SourceLocation) -> Result<ParsedExpr> {
         let target = self.parse_db_operation_target()?;
         let (query, children) = self.parse_db_query_block()?;
-        Ok(ParsedExpr {
-            expr: Expr::DbQuery(DbQuery { target, query }),
-            spans: expr_source_spans(
-                SourceSpan {
-                    start,
-                    end: self.previous().span.end,
-                },
-                children,
-            ),
-        })
+        Ok(ParsedExpr::new(
+            Expr::DbQuery(DbQuery { target, query }),
+            SourceSpan {
+                start,
+                end: self.previous().span.end,
+            },
+            children,
+        ))
     }
 
     fn parse_db_lease_claim_expr(&mut self, start: SourceLocation) -> Result<ParsedExpr> {
@@ -3179,45 +3180,40 @@ impl Parser {
         } else {
             None
         };
-        let body = self.parse_block(false)?;
-        let body_end = body.spans.span.end;
-        let body_spans = body.spans.clone();
-        Ok(ParsedExpr {
-            expr: Expr::DbLeaseClaim(DbLeaseClaim {
+        let (body_expr, body_spans) = self.parse_block(false)?.into_parts();
+        let body_end = body_spans.span.end;
+        Ok(ParsedExpr::with_children_and_parts(
+            Expr::DbLeaseClaim(DbLeaseClaim {
                 target,
                 key: Box::new(key),
                 slot,
                 binding,
-                body: body.block,
+                body: body_expr,
             }),
-            spans: ExprSourceSpans {
-                blocks: vec![body_spans],
-                record_fields: Vec::new(),
-                children: vec![key_spans],
-                span: SourceSpan {
-                    start,
-                    end: body_end,
-                },
+            SourceSpan {
+                start,
+                end: body_end,
             },
-        })
+            vec![key_spans],
+            vec![body_spans],
+            Vec::new(),
+        ))
     }
 
     fn parse_db_lease_read_expr(&mut self, start: SourceLocation) -> Result<ParsedExpr> {
         let (target, key, slot, key_spans) = self.parse_db_lease_access()?;
-        Ok(ParsedExpr {
-            expr: Expr::DbLeaseRead(DbLeaseRead {
+        Ok(ParsedExpr::new(
+            Expr::DbLeaseRead(DbLeaseRead {
                 target,
                 key: Box::new(key),
                 slot,
             }),
-            spans: expr_source_spans(
-                SourceSpan {
-                    start,
-                    end: self.previous().span.end,
-                },
-                vec![key_spans],
-            ),
-        })
+            SourceSpan {
+                start,
+                end: self.previous().span.end,
+            },
+            vec![key_spans],
+        ))
     }
 
     fn parse_db_lease_access(&mut self) -> Result<(TypeRef, Expr, String, ExprSourceSpans)> {
@@ -3291,11 +3287,11 @@ impl Parser {
                             self.previous().span.start,
                         ));
                     }
-                    let key = self.parse_expression()?;
+                    let (key_expr, key_spans) = self.parse_expression()?.into_parts();
                     self.expect_symbol(")")?;
-                    children.push(key.spans.clone());
+                    children.push(key_spans);
                     selector = Some(DbSelector::Key {
-                        value: Box::new(key.expr),
+                        value: Box::new(key_expr),
                     });
                 }
                 if self.check_symbol("{") {
@@ -3316,11 +3312,11 @@ impl Parser {
             }
             DbOperationKind::Count | DbOperationKind::Exists => {
                 if self.match_symbol("(") {
-                    let key = self.parse_expression()?;
+                    let (key_expr, key_spans) = self.parse_expression()?.into_parts();
                     self.expect_symbol(")")?;
-                    children.push(key.spans.clone());
+                    children.push(key_spans);
                     selector = Some(DbSelector::Key {
-                        value: Box::new(key.expr),
+                        value: Box::new(key_expr),
                     });
                 } else if self.check_symbol("{") {
                     let (parsed_query, query_children) = self.parse_db_query_block()?;
@@ -3333,10 +3329,10 @@ impl Parser {
             }
             DbOperationKind::Insert if many => {
                 self.expect_ident_value("values")?;
-                let values = self.parse_expression()?;
-                children.push(values.spans.clone());
+                let (values_expr, values_spans) = self.parse_expression()?.into_parts();
+                children.push(values_spans);
                 body = Some(DbBody::Values {
-                    value: Box::new(values.expr),
+                    value: Box::new(values_expr),
                 });
             }
             DbOperationKind::Insert => {
@@ -3404,8 +3400,8 @@ impl Parser {
             }
         }
 
-        Ok(ParsedExpr {
-            expr: Expr::DbOperation(DbOperation {
+        Ok(ParsedExpr::new(
+            Expr::DbOperation(DbOperation {
                 op,
                 many,
                 target,
@@ -3416,14 +3412,12 @@ impl Parser {
                 insert_body,
                 change,
             }),
-            spans: expr_source_spans(
-                SourceSpan {
-                    start,
-                    end: self.previous().span.end,
-                },
-                children,
-            ),
-        })
+            SourceSpan {
+                start,
+                end: self.previous().span.end,
+            },
+            children,
+        ))
     }
 
     fn parse_db_operation_target(&mut self) -> Result<TypeRef> {
@@ -3528,21 +3522,21 @@ impl Parser {
     ) -> Result<()> {
         if self.match_ident("where") {
             if self.match_ident("if") {
-                let condition = self.parse_expression()?;
+                let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
                 self.expect_symbol("{")?;
-                let predicate = self.parse_expression()?;
+                let (predicate_expr, predicate_spans) = self.parse_expression()?.into_parts();
                 self.expect_symbol("}")?;
-                children.push(condition.spans.clone());
-                children.push(predicate.spans.clone());
+                children.push(condition_spans);
+                children.push(predicate_spans);
                 query.where_clauses.push(DbWhereClause::Conditional {
-                    condition: condition.expr,
-                    predicate: predicate.expr,
+                    condition: condition_expr,
+                    predicate: predicate_expr,
                 });
             } else {
-                let predicate = self.parse_expression()?;
-                children.push(predicate.spans.clone());
+                let (predicate_expr, predicate_spans) = self.parse_expression()?.into_parts();
+                children.push(predicate_spans);
                 query.where_clauses.push(DbWhereClause::Predicate {
-                    predicate: predicate.expr,
+                    predicate: predicate_expr,
                 });
             }
         } else if self.match_ident("order") {
@@ -3555,13 +3549,13 @@ impl Parser {
             };
             query.order.push(DbOrderEntry { field, direction });
         } else if self.match_ident("limit") {
-            let limit = self.parse_expression()?;
-            children.push(limit.spans.clone());
-            query.limit = Some(Box::new(limit.expr));
+            let (limit_expr, limit_spans) = self.parse_expression()?.into_parts();
+            children.push(limit_spans);
+            query.limit = Some(Box::new(limit_expr));
         } else if self.match_ident("offset") {
-            let offset = self.parse_expression()?;
-            children.push(offset.spans.clone());
-            query.offset = Some(Box::new(offset.expr));
+            let (offset_expr, offset_spans) = self.parse_expression()?.into_parts();
+            children.push(offset_spans);
+            query.offset = Some(Box::new(offset_expr));
         } else if self.check_ident("after") {
             return Err(CompileError::syntax(
                 "db query after is not supported; use offset",
@@ -3601,11 +3595,11 @@ impl Parser {
             }
             let field = self.expect_ident("expected db object body field")?;
             self.expect_symbol("=")?;
-            let value = self.parse_expression()?;
-            children.push(value.spans.clone());
+            let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+            children.push(value_spans);
             fields.push(DbObjectFieldValue {
                 field,
-                value: value.expr,
+                value: value_expr,
             });
             let _ = self.match_statement_terminator();
         }
@@ -3626,19 +3620,19 @@ impl Parser {
                 ops.push(DbChangeOp::Unset { path });
             } else if self.match_ident("add") || self.match_ident("addToSet") {
                 let path = self.parse_db_field_path("expected db add field")?;
-                let value = self.parse_expression()?;
-                children.push(value.spans.clone());
+                let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                children.push(value_spans);
                 ops.push(DbChangeOp::AddToSet {
                     path,
-                    value: value.expr,
+                    value: value_expr,
                 });
             } else if self.match_ident("remove") {
                 let path = self.parse_db_field_path("expected db remove field")?;
-                let value = self.parse_expression()?;
-                children.push(value.spans.clone());
+                let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                children.push(value_spans);
                 ops.push(DbChangeOp::Remove {
                     path,
-                    value: value.expr,
+                    value: value_expr,
                 });
             } else {
                 let path = self.parse_db_field_path("expected db change field")?;
@@ -3649,30 +3643,30 @@ impl Parser {
                     ));
                 }
                 if self.match_symbol("=") {
-                    let value = self.parse_expression()?;
-                    children.push(value.spans.clone());
+                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    children.push(value_spans);
                     ops.push(DbChangeOp::Set {
                         path,
-                        value: value.expr,
+                        value: value_expr,
                     });
                 } else if self.match_symbol("+") {
                     self.expect_symbol("=")?;
-                    let value = self.parse_expression()?;
-                    children.push(value.spans.clone());
+                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    children.push(value_spans);
                     ops.push(DbChangeOp::Inc {
                         path,
-                        value: value.expr,
+                        value: value_expr,
                     });
                 } else if self.match_symbol("-") {
                     self.expect_symbol("=")?;
-                    let value = self.parse_expression()?;
-                    children.push(value.spans.clone());
+                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    children.push(value_spans);
                     ops.push(DbChangeOp::Inc {
                         path,
                         value: Expr::Binary {
                             op: BinaryOp::Sub,
                             left: Box::new(Expr::Literal(Literal::Number(0.0))),
-                            right: Box::new(value.expr),
+                            right: Box::new(value_expr),
                         },
                     });
                 } else {
@@ -3703,19 +3697,17 @@ impl Parser {
         self.expect_symbol("(")?;
         let try_expr = self.parse_expression()?;
         self.expect_symbol(")")?;
-        Ok(ParsedExpr {
-            expr: Expr::Catch {
+        Ok(ParsedExpr::new(
+            Expr::Catch {
                 catch_type,
                 try_expr: Box::new(try_expr.expr),
             },
-            spans: expr_source_spans(
-                SourceSpan {
-                    start,
-                    end: self.previous().span.end,
-                },
-                vec![try_expr.spans],
-            ),
-        })
+            SourceSpan {
+                start,
+                end: self.previous().span.end,
+            },
+            vec![try_expr.spans],
+        ))
     }
 
     fn parse_record_construct_fields(
@@ -3764,20 +3756,20 @@ impl Parser {
             match op.as_str() {
                 "set" => {
                     self.expect_symbol("=")?;
-                    let value = self.parse_expression()?;
-                    spans.push(value.spans.clone());
+                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    spans.push(value_spans);
                     operations.push(crate::ast::PatchOperation::Set {
                         path,
-                        value: value.expr,
+                        value: value_expr,
                     });
                 }
                 "inc" => {
                     self.expect_ident_value("by")?;
-                    let value = self.parse_expression()?;
-                    spans.push(value.spans.clone());
+                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    spans.push(value_spans);
                     operations.push(crate::ast::PatchOperation::Inc {
                         path,
-                        value: value.expr,
+                        value: value_expr,
                     });
                 }
                 _ => {
