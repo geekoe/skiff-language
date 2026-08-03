@@ -14,6 +14,7 @@ pub mod routing;
 pub mod session;
 pub mod supervisor;
 pub mod task;
+pub mod telemetry;
 pub mod test_dispatch;
 pub mod ws;
 
@@ -80,6 +81,11 @@ pub use session::{
     RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
 };
 pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
+pub use telemetry::{
+    router_telemetry_event, task_event, telemetry_timestamp_now, NoopTaskTelemetrySink,
+    RouterTelemetryExporter, RouterTelemetryExporterHandle, RouterTelemetryProducer,
+    TaskTelemetrySink, EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
+};
 pub use test_dispatch::{
     TestDispatchHttpHandler, TestDispatchHttpHandlerOptions, TestDispatchHttpResponse,
     TEST_DISPATCH_CONTROL_PATH, TEST_DISPATCH_REQUEST_BODY_CAP,

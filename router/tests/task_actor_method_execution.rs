@@ -39,6 +39,7 @@ use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
     DurableTaskControl, RouterTaskAttemptAdmission, TaskActorOwnerPort, TaskControlCounters,
 };
+use skiff_router::telemetry::{NoopTaskTelemetrySink, TaskTelemetrySink};
 use skiff_router::ws::Clock;
 use skiff_runtime_transport::actor_method::{
     encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
@@ -355,6 +356,7 @@ fn rig() -> Rig {
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&clock) as Arc<dyn Clock>,
         Arc::clone(&counters),
+        Arc::new(NoopTaskTelemetrySink) as Arc<dyn TaskTelemetrySink>,
         Duration::from_millis(20),
     ));
     let worker = control.spawn_worker();
@@ -419,6 +421,7 @@ fn rig() -> Rig {
         Arc::clone(&clock) as Arc<dyn Clock>,
         5_000,
         Arc::clone(&counters),
+        Arc::new(NoopTaskTelemetrySink) as Arc<dyn TaskTelemetrySink>,
         Arc::clone(&actor),
         Arc::clone(&port) as Arc<dyn TaskActorOwnerPort>,
         30_000,

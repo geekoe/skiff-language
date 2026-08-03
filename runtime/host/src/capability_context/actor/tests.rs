@@ -10,6 +10,8 @@ use skiff_runtime_capability_context::{
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationSource, ExecutionScope,
     OutboundResponse, ResponseError, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
+use skiff_runtime_transport::protocol::TelemetryEvent;
+use crate::telemetry::{RequestTelemetryContext, TelemetryEmitter};
 
 use super::*;
 
@@ -168,6 +170,99 @@ async fn task_submit_accepts_correlated_receipt_and_preserves_activation_identit
     assert_eq!(sent_request.activation_identity, expected_activation);
 }
 
+#[derive(Debug, Default)]
+struct RecordingEmitter {
+    events: Arc<std::sync::Mutex<Vec<TelemetryEvent>>>,
+}
+
+impl TelemetryEmitter for RecordingEmitter {
+    fn emit(&self, event: TelemetryEvent) -> bool {
+        self.events.lock().expect("recording emitter lock").push(event);
+        true
+    }
+}
+
+#[tokio::test]
+async fn task_submit_emits_accepted_event_with_task_id_correlation() {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let telemetry = RequestTelemetryContext::new(RecordingEmitter {
+        events: Arc::clone(&events),
+    });
+    let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
+    let outbound_requests = Arc::new(OutboundRequestRegistry::default());
+    let activation_identity = activation_identity();
+    let context = RequestClientContext::from_parts(
+        "runtime-test",
+        "service-test",
+        "v1",
+        "request-test",
+        "program.test",
+        BUILD_ID,
+        "protocol-test",
+        Some("protocol-test"),
+        Some(&activation_identity),
+        Some("trace:submit"),
+        Some(telemetry),
+        Some(&router_sender),
+        outbound_requests.as_ref(),
+        CancellationToken::new(),
+    );
+    let client = RequestClient::new(context);
+    let mut request = task_submit_request();
+    request.task_id = Some("task-telemetry-1".to_string());
+    let submit = client.submit_task(
+        request,
+        Vec::new(),
+        skiff_runtime_capability_context::TaskCallerKind::Request,
+    );
+    tokio::pin!(submit);
+
+    let sent_request = tokio::select! {
+        result = &mut submit => panic!("task submit completed before response: {result:?}"),
+        message = router_receiver.recv() => match message.expect("task.submit request should be sent") {
+            RouterWriterMessage::TaskSubmit(message) => message.request,
+            other => panic!("unexpected router message: {other:?}"),
+        }
+    };
+    outbound_requests
+        .take_terminal_sender(&sent_request.rpc_id)
+        .expect("task submit response should be pending")
+        .send(typed_response(json!({
+            "schemaVersion": "skiff-runtime-frame-v1",
+            "type": "task.submit.response",
+            "rpcId": sent_request.rpc_id,
+            "taskRef": "skiff-task-v1:ZXhhbXBsZS5jb20vZG9jcw.dGFzay0x",
+            "taskId": "task-telemetry-1",
+            "requestId": "task-request-11",
+            "status": "submitted"
+        })))
+        .expect("task submit response should be delivered");
+    submit
+        .await
+        .expect("canonical submitted receipt should succeed");
+
+    let recorded = events.lock().expect("recording emitter lock").clone();
+    let accepted = recorded
+        .iter()
+        .find(|event| event.name.as_deref() == Some("task.submit.accepted"))
+        .expect("accepted telemetry event must be emitted");
+    assert_eq!(
+        accepted
+            .attrs
+            .as_ref()
+            .and_then(|attrs| attrs.get("taskId"))
+            .and_then(|value| value.as_str()),
+        Some("task-telemetry-1"),
+        "accepted event must carry the TaskId"
+    );
+    assert_eq!(
+        accepted.request_id.as_deref(),
+        Some("request-test"),
+        "caller requestId must correlate"
+    );
+    assert_eq!(accepted.trace_id.as_deref(), Some("trace:submit"));
+}
+
 async fn assert_scoped_control_cancel<T, F>(
     future: F,
     expected_target: &str,
@@ -313,6 +408,7 @@ async fn submit_with_response(
         "protocol-test",
         Some("protocol-test"),
         Some(&activation_identity),
+        None,
         None,
         Some(&router_sender),
         outbound_requests.as_ref(),

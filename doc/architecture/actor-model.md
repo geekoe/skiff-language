@@ -98,11 +98,19 @@ const hub = std.actor.get<DocHub>("room-1", 0)
 
 ### dispatch 到 actor 方法（自消息 / 异步推进）
 
-`dispatch` 可以以 actor 方法为 target：提交的调用作为该 actor 的一次独立方法调用，按 identity
-路由、在单线程 executor 上排队执行；调用方不等结果（fire-and-forget，只等“已接收”）。
+`dispatch` 可以以 actor 方法为 target：提交的调用是 durable actor-method task（权威契约：
+[`durable-task-dispatch.md`](durable-task-dispatch.md) "Actor-method target"）。提交时冻结
+`ActorActivationSnapshot`（key / create 输入 / expected-type plan），TaskStore 接受后作为该
+actor 的一次独立方法调用，按 identity 路由、在单线程 executor 上执行；调用方不等结果
+（fire-and-forget，只等 durable “已接收”）。
 
-- actor 不在 live 时，dispatch 按 entry 保存的创建输入激活实例后排队目标方法。
+- actor 不在 live 时，task control plane 执行 **get-or-activate**：registry entry 存在时按
+  entry 保存的创建输入激活实例；entry 因 Router 重启等原因丢失时，用 task 持久保存的
+  `ActorActivationSnapshot` 恢复最小 entry（put-if-absent，首次恢复获胜）后执行 `create` 再调用
+  目标方法。actor-method task 不保存 Actor 内存字段，也没有独立易失 `spawn` 队列。
 - dispatched 调用与 caller request 生命周期分离；同一实例的多个 dispatched 调用串行执行。
+- task lease 不替代 actor owner lease；task 执行仍遵守 actor 的 admission、升级与旧实现拒绝
+  （`ActorVersionRejectedError` → 该 attempt 以 platform failure 收敛，不切回旧实现）。
 - 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
   `dispatch actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
 - 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `dispatch` 目标方法。
@@ -221,7 +229,9 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 - 正常 idle 逐出只清理 live 内存，不删除 registry entry；下次调用按 entry 保存的创建输入重新激活。
 - `upgrading` incarnation 即使有 suspended method 也会在这些方法到达安全点并退出后逐出。
 - owner runtime 断连或 crash：排队与执行中的调用以平台错误返回调用方；实例状态丢失；下一个调用按创建输入重新激活。
-- 平台不持久化待执行调用队列。可靠投递、重试和补偿属于数据面。
+- actor 面本身不持久化待执行调用队列；actor-method `dispatch` 的可靠投递、基础设施恢复与
+  at-least-once attempt 由 durable task dispatch 承载（见
+  [`durable-task-dispatch.md`](durable-task-dispatch.md)），业务补偿属于数据面。
 - 身份删除（移除 registry entry 并清理持久状态）不在 v1 提供，需要显式操作：quiescence 只是必要条件——句柄仍可能被持有、dispatched call 可能还在路上、持久状态需要业务清理，这些都不能从实例状态推导。
 
 ## 边界规则

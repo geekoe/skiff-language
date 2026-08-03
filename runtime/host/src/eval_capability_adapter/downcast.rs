@@ -23,6 +23,7 @@ pub(super) fn concrete_request_context_from_owned(
         parts.operation_service_protocol_identity.as_deref(),
         parts.activation_identity.as_ref(),
         parts.trace_id.as_deref(),
+        parts.telemetry_context.clone(),
         parts.router_sender.as_ref(),
         parts.outbound_requests.as_ref(),
         parts.cancellation.clone(),

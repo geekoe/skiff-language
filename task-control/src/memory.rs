@@ -310,6 +310,7 @@ impl TaskStore for MemoryTaskStore {
         self.gate().await?;
         let state = self.inner.read().await;
         let mut observation = BacklogObservation::default();
+        observation.observed_at = Some(self.now());
         for record in state.records.values() {
             match record.state {
                 TaskState::Scheduled => {
@@ -323,6 +324,15 @@ impl TaskStore for MemoryTaskStore {
                         Some(older(observation.oldest_due_at, record.due_at));
                 }
                 TaskState::Leased => observation.leased += 1,
+                _ if record.state.is_terminal() => {
+                    observation.terminal_count += 1;
+                    if let Some(terminal) = &record.terminal {
+                        observation.oldest_terminal_at = Some(older(
+                            observation.oldest_terminal_at,
+                            terminal.settled_at,
+                        ));
+                    }
+                }
                 _ => {}
             }
         }

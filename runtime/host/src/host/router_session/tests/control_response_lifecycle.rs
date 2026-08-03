@@ -225,6 +225,7 @@ fn actor_context<'a>(
         Some("protocol-test"),
         Some(activation),
         None,
+        None,
         Some(router_sender),
         host.outbound_requests.as_ref(),
         CancellationToken::new(),

@@ -87,8 +87,9 @@ deployment和该capability把self-ingress子请求附着到仍active的父test e
 registry，子请求不finalize，父case结束时唯一finalize。assembly/generation不能充当case identity。
 
 `testCaseCapability`是Router/Runtime Host间的不透明私有authority，不进入Eval value、config或业务
-effect surface。direct dispatch、任意深度recursive dispatch与Actor method dispatch使用的`spawn.submit`
-wire只携带`callerRequestId`；它不得重复携带`testCaseCapability`或test parent id。Router只从发送
+effect surface。direct dispatch、任意深度recursive dispatch与Actor method dispatch使用的
+`task.submit.request` wire只携带`callerRequestId`与`TaskId`；它不得重复携带
+`testCaseCapability`或test parent id。Router只从发送
 frame的同一Runtime WebSocket session上的active parent request派生authority：父可以是root/derived
 runtime-assembly request，也可以是已admit且尚未terminal的Actor invocation。同步Actor method call、
 Actor get-or-create与self-ingress仍在各自的私有控制边界携带精确派生authority。Router不信任Runtime

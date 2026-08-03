@@ -16,6 +16,7 @@ use serde_json::{to_value, Value};
 use crate::actor::ActorHealthSnapshot;
 use crate::http::HttpGatewayHealth;
 use crate::supervisor::RouterComponents;
+use crate::telemetry::backlog_metric_event;
 
 use super::counters::{
     ActivationCounters, ActiveRoutingEpochCounters, ActorCounters, AdmissionCounters,
@@ -189,6 +190,9 @@ impl HealthAggregator {
             None => None,
         };
         let task_backlog = components.task_control.backlog().await;
+        components
+            .task_telemetry
+            .emit(backlog_metric_event(&task_backlog));
 
         let counters = HealthCounters {
             active_routing_epoch: ActiveRoutingEpochCounters::from(&epoch_store_health),

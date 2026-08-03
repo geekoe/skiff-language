@@ -644,6 +644,7 @@ impl MongoTaskStore {
 
     async fn observe_backlog_once(&self) -> Result<BacklogObservation, TaskStoreError> {
         self.check_open()?;
+        let observed_at = self.now_once().await?;
         let scheduled = self
             .tasks
             .count_documents(doc! { "state": "scheduled" })
@@ -673,11 +674,40 @@ impl MongoTaskStore {
             .and_then(|document| document.get("dueAt"))
             .and_then(Bson::as_datetime)
             .map(|timestamp| DurableUtcTimestamp::from_millis(timestamp.timestamp_millis()));
+        let terminal = self
+            .tasks
+            .count_documents(doc! {
+                "state": { "$in": ["succeeded", "failed", "platformFailed", "canceled"] },
+            })
+            .await
+            .map_err(map_driver_error)?;
+        let oldest_terminal = self
+            .tasks
+            .find_one(doc! {
+                "state": { "$in": ["succeeded", "failed", "platformFailed", "canceled"] },
+            })
+            .sort(doc! { "terminal.settledAt": 1 })
+            .projection(doc! { "terminal.settledAt": 1 })
+            .await
+            .map_err(map_driver_error)?;
+        let oldest_terminal_at = oldest_terminal
+            .as_ref()
+            .and_then(|document| {
+                document
+                    .get("terminal")
+                    .and_then(Bson::as_document)
+                    .and_then(|terminal| terminal.get("settledAt"))
+                    .and_then(Bson::as_datetime)
+            })
+            .map(|timestamp| DurableUtcTimestamp::from_millis(timestamp.timestamp_millis()));
         Ok(BacklogObservation {
             scheduled: usize::try_from(scheduled).unwrap_or(usize::MAX),
             ready: usize::try_from(ready).unwrap_or(usize::MAX),
             leased: usize::try_from(leased).unwrap_or(usize::MAX),
             oldest_due_at,
+            terminal_count: usize::try_from(terminal).unwrap_or(usize::MAX),
+            oldest_terminal_at,
+            observed_at: Some(observed_at),
         })
     }
 }

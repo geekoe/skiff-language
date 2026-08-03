@@ -122,6 +122,30 @@ call、actor恢复、dispatched request start和native helper只能恢复或创�
 改变owner。Service stream跨generation存活时继续pin原exact set；每个后续item/callback都使用旧generation，
 直到end/error/drop释放pin，不回退到当前active/latest context。
 
+## Retained Task Image 冷激活通道
+
+durable task dispatch 的已接受 task 是其 frozen execution image 的 retention root（权威契约：
+[`durable-task-dispatch.md`](durable-task-dispatch.md) "Execution Image And Target Pinning"）。
+task 提交时冻结完整 `TaskExecutionImageRef`（target environment、exact PackageVersion label、
+`RuntimeAssemblyRef`、`RuntimeConfigSnapshotRef`、`ServiceDeploymentRef`），并把该 image 登记为
+artifact / config retention；到期 attempt 由 task control plane 针对 frozen image 冷激活，或选择
+已经 admission 同一 image 的 Runtime。这个 cold activation lane 与 active / draining generation
+pin 分开，遵守以下条款：
+
+- task 冷激活建立的是该 frozen image 自己的 activation generation，并继续服从普通 Runtime
+  admission、drain 与 generation CAS 规则；它不是 active / draining generation pin 的扩展，
+  也不为旧 image 保留任何常驻进程。
+- 已接受 task 不能为了未来到期而阻止旧 Runtime replica 正常退出。发布与 drain 只约束
+  active / draining generation 生命周期；旧 Runtime 退出后，后续 attempt 由 task control plane
+  对 retention root 上的 frozen image 重新激活。
+- 到期 attempt 不得解析 latest assembly 或 latest config snapshot，也不得从 ambient
+  environment / 当前 active generation 补齐执行 identity；必须使用 task record 中持久保存的
+  `RuntimeAssemblyRef` / `RuntimeConfigSnapshotRef` / `ServiceDeploymentRef` 重新激活。
+- 非 terminal task 是 image / config snapshot 与必要 artifact 的 retention root；operator
+  显式破坏 retention 时 task 以可观察的平台失败收敛，不能 fallback 到 latest build。
+  terminal transition 原子释放 execution image / artifact retention root；后续 status / audit
+  tombstone retention 不继续 pin executable artifact。
+
 ## Artifact Filesystem Bootstrap
 
 Router与Runtime通过共享artifact filesystem装载immutable records，不依赖或感知registry service：
