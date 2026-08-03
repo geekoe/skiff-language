@@ -27,35 +27,36 @@ const LEGACY_PROVIDER_REMOVED_MESSAGE: &str =
 mod cursor;
 
 pub fn parse_source(source: &str) -> Result<SourceFile> {
-    Parser::new(lex(source)?, ParseMode::Full, true).parse_source_file()
+    Parser::new(lex(source)?, ParseMode::Full).parse_source_file()
 }
 
 pub fn parse_source_metadata(source: &str) -> Result<SourceFile> {
-    Parser::new(lex(source)?, ParseMode::Metadata, true).parse_source_file()
+    Parser::new(lex(source)?, ParseMode::Metadata).parse_source_file()
 }
 
 pub fn parse_source_with_bodies_tolerant(source: &str) -> Result<SourceFile> {
-    Parser::new(lex(source)?, ParseMode::BodiesTolerant, true).parse_source_file()
+    Parser::new(lex(source)?, ParseMode::BodiesTolerant).parse_source_file()
 }
 
+const OLD_DB_DOTTED_OPERATIONS: &[&str] = &[
+    "get",
+    "require",
+    "exists",
+    "create",
+    "createMany",
+    "create_many",
+    "append",
+    "appendMany",
+    "append_many",
+    "upsert",
+    "findMany",
+    "find_many",
+    "count",
+    "transaction",
+];
+
 fn is_old_db_dotted_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "get"
-            | "require"
-            | "exists"
-            | "create"
-            | "createMany"
-            | "create_many"
-            | "append"
-            | "appendMany"
-            | "append_many"
-            | "upsert"
-            | "findMany"
-            | "find_many"
-            | "count"
-            | "transaction"
-    )
+    OLD_DB_DOTTED_OPERATIONS.contains(&operation)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,9 +78,7 @@ struct Parser {
     tokens: Vec<Token>,
     current: usize,
     mode: ParseMode,
-    provider_capability: Option<Vec<String>>,
     source_spans: SourceSpanTable,
-    reject_export_modifier: bool,
 }
 
 struct ParsedBlock {
@@ -416,14 +415,12 @@ fn parser_record_type_fields(ty: &str) -> Option<Vec<(String, String)>> {
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>, mode: ParseMode, reject_export_modifier: bool) -> Self {
+    fn new(tokens: Vec<Token>, mode: ParseMode) -> Self {
         Self {
             tokens,
             current: 0,
             mode,
-            provider_capability: None,
             source_spans: SourceSpanTable::default(),
-            reject_export_modifier,
         }
     }
 
@@ -439,7 +436,6 @@ impl Parser {
         let mut dbs = Vec::new();
         let mut consts = Vec::new();
         let mut tests = Vec::new();
-        let provider_capability = None;
         let mut test_default_run = None;
         let mut test_default_run_span = None;
         while !self.is_at_end() {
@@ -564,7 +560,7 @@ impl Parser {
         }
         validate_actor_declarations(&actors, &types, &dbs)?;
         Ok(SourceFile {
-            provider_capability,
+            provider_capability: None,
             functions,
             function_signatures,
             imports,
@@ -587,7 +583,7 @@ impl Parser {
         exported: bool,
         export_start: SourceLocation,
     ) -> Result<()> {
-        if exported && self.reject_export_modifier {
+        if exported {
             return Err(CompileError::syntax(
                 "the export modifier has been removed; declare public API in api.yml",
                 export_start,
@@ -865,7 +861,7 @@ impl Parser {
                 modifiers.start.unwrap_or(self.peek().span.start),
             ));
         }
-        if modifiers.is_provider && self.provider_capability.is_none() {
+        if modifiers.is_provider {
             return Err(CompileError::syntax(
                 LEGACY_PROVIDER_REMOVED_MESSAGE,
                 modifiers.start.unwrap_or(self.peek().span.start),
@@ -1067,12 +1063,7 @@ impl Parser {
         if !self.check_symbol(")") {
             loop {
                 let field_path = self.parse_field_path("expected db index field")?;
-                let direction = if self.match_ident("desc") {
-                    DbIndexDirection::Desc
-                } else {
-                    self.match_ident("asc");
-                    DbIndexDirection::Asc
-                };
+                let direction = self.parse_index_direction();
                 fields.push(DbIndexField {
                     field_path,
                     direction,
@@ -1104,6 +1095,15 @@ impl Parser {
         })
     }
 
+    fn parse_index_direction(&mut self) -> DbIndexDirection {
+        if self.match_ident("desc") {
+            DbIndexDirection::Desc
+        } else {
+            self.match_ident("asc");
+            DbIndexDirection::Asc
+        }
+    }
+
     fn parse_field_path(&mut self, message: &str) -> Result<Vec<String>> {
         let mut path = vec![self.expect_ident(message)?];
         while self.match_symbol(".") {
@@ -1113,30 +1113,16 @@ impl Parser {
     }
 
     fn parse_impl_methods(&mut self, target: &str) -> Result<Vec<InterfaceOperation>> {
-        self.expect_symbol("{")?;
-        let mut methods = Vec::new();
-        while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") {
-                continue;
-            }
-            let exported = self.match_ident("export");
-            if exported {
-                return Err(CompileError::syntax(
-                    "impl methods cannot be exported",
-                    self.previous().span.start,
-                ));
-            }
-            if !self.check_function_start() {
-                return Err(CompileError::syntax(
-                    "expected impl method declaration",
-                    self.peek().span.start,
-                ));
-            }
-            let signature = self.parse_function_signature_and_skip_body(true)?;
-            methods.push(with_impl_receiver(target, signature));
-            self.match_symbol(";");
-        }
-        self.expect_symbol("}")?;
+        let (methods, _method_bodies) = self.parse_impl_methods_with_options(
+            target,
+            CallableParseOptions {
+                exported: false,
+                provider_without_body: CallableNoBodyPolicy::SignatureOnly,
+                native_without_body: CallableNoBodyPolicy::SignatureOnly,
+                native_with_body: NativeBodyPolicy::SkipAndKeepSignature,
+                body_policy: CallableBodyPolicy::SkipAndKeepSignature,
+            },
+        )?;
         Ok(methods)
     }
 
@@ -1144,58 +1130,40 @@ impl Parser {
         &mut self,
         target: &str,
     ) -> Result<(Vec<InterfaceOperation>, Vec<FunctionDecl>)> {
-        self.expect_symbol("{")?;
-        let mut methods = Vec::new();
-        let mut method_bodies = Vec::new();
-        while !self.check_symbol("}") && !self.is_at_end() {
-            if self.match_symbol(";") {
-                continue;
-            }
-            let exported = self.match_ident("export");
-            if exported {
-                return Err(CompileError::syntax(
-                    "impl methods cannot be exported",
-                    self.previous().span.start,
-                ));
-            }
-            if !self.check_function_start() {
-                return Err(CompileError::syntax(
-                    "expected impl method declaration",
-                    self.peek().span.start,
-                ));
-            }
-            let signature = with_impl_receiver(target, self.parse_function_signature(true)?);
-            methods.push(signature.clone());
-
-            match self.parse_callable_body(
-                signature,
-                CallableParseOptions {
-                    exported: false,
-                    provider_without_body: CallableNoBodyPolicy::EmptyDecl,
-                    native_without_body: CallableNoBodyPolicy::EmptyDecl,
-                    native_with_body: NativeBodyPolicy::Error(
-                        "native functions cannot have a Skiff body",
-                    ),
-                    body_policy: CallableBodyPolicy::ParseStrict,
-                },
-            )? {
-                CallableParseResult::Decl { decl, spans } => {
-                    if let Some(spans) = spans {
-                        self.source_spans.impl_methods.push(spans);
-                    }
-                    method_bodies.push(decl);
-                }
-                CallableParseResult::Signature(_) | CallableParseResult::None => unreachable!(),
-            }
-            self.match_symbol(";");
-        }
-        self.expect_symbol("}")?;
-        Ok((methods, method_bodies))
+        self.parse_impl_methods_with_options(
+            target,
+            CallableParseOptions {
+                exported: false,
+                provider_without_body: CallableNoBodyPolicy::EmptyDecl,
+                native_without_body: CallableNoBodyPolicy::EmptyDecl,
+                native_with_body: NativeBodyPolicy::Error(
+                    "native functions cannot have a Skiff body",
+                ),
+                body_policy: CallableBodyPolicy::ParseStrict,
+            },
+        )
     }
 
     fn parse_impl_methods_with_bodies_tolerant(
         &mut self,
         target: &str,
+    ) -> Result<(Vec<InterfaceOperation>, Vec<FunctionDecl>)> {
+        self.parse_impl_methods_with_options(
+            target,
+            CallableParseOptions {
+                exported: false,
+                provider_without_body: CallableNoBodyPolicy::EmptyDecl,
+                native_without_body: CallableNoBodyPolicy::SignatureOnly,
+                native_with_body: NativeBodyPolicy::SkipAndDrop,
+                body_policy: CallableBodyPolicy::ParseTolerantDrop,
+            },
+        )
+    }
+
+    fn parse_impl_methods_with_options(
+        &mut self,
+        target: &str,
+        options: CallableParseOptions,
     ) -> Result<(Vec<InterfaceOperation>, Vec<FunctionDecl>)> {
         self.expect_symbol("{")?;
         let mut methods = Vec::new();
@@ -1219,17 +1187,9 @@ impl Parser {
             }
             let signature = with_impl_receiver(target, self.parse_function_signature(true)?);
             methods.push(signature.clone());
-
-            if let CallableParseResult::Decl { decl, spans } = self.parse_callable_body(
-                signature,
-                CallableParseOptions {
-                    exported: false,
-                    provider_without_body: CallableNoBodyPolicy::EmptyDecl,
-                    native_without_body: CallableNoBodyPolicy::SignatureOnly,
-                    native_with_body: NativeBodyPolicy::SkipAndDrop,
-                    body_policy: CallableBodyPolicy::ParseTolerantDrop,
-                },
-            )? {
+            if let CallableParseResult::Decl { decl, spans } =
+                self.parse_callable_body(signature, options)?
+            {
                 if let Some(spans) = spans {
                     self.source_spans.impl_methods.push(spans);
                 }
@@ -3541,12 +3501,7 @@ impl Parser {
             }
         } else if self.match_ident("order") {
             let field = self.parse_db_field_path("expected db order field")?;
-            let direction = if self.match_ident("desc") {
-                DbIndexDirection::Desc
-            } else {
-                self.match_ident("asc");
-                DbIndexDirection::Asc
-            };
+            let direction = self.parse_index_direction();
             query.order.push(DbOrderEntry { field, direction });
         } else if self.match_ident("limit") {
             let (limit_expr, limit_spans) = self.parse_expression()?.into_parts();
@@ -3752,7 +3707,7 @@ impl Parser {
         let mut spans = Vec::new();
         while !self.check_symbol("}") {
             let op = self.expect_ident("expected patch operation")?;
-            let path = self.parse_patch_field_path()?;
+            let path = self.parse_field_path("expected patch field path")?;
             match op.as_str() {
                 "set" => {
                     self.expect_symbol("=")?;
@@ -3783,14 +3738,6 @@ impl Parser {
         }
         self.expect_symbol("}")?;
         Ok((operations, spans))
-    }
-
-    fn parse_patch_field_path(&mut self) -> Result<Vec<String>> {
-        let mut path = vec![self.expect_ident("expected patch field path")?];
-        while self.match_symbol(".") {
-            path.push(self.expect_ident("expected patch field path segment")?);
-        }
-        Ok(path)
     }
 
     fn parse_object_literal_entries(
