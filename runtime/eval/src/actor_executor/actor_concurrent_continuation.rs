@@ -233,7 +233,7 @@ impl ActorExecutionFrame {
     where
         F: Future,
     {
-        tokio::pin!(future);
+        let mut future = Box::pin(future);
         if let Some(output) = poll_once_without_yield(future.as_mut()).await {
             return Ok(output);
         }

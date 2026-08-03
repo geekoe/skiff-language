@@ -445,7 +445,7 @@ where
     };
     Box::pin(async move {
         let receiver = interpreter
-            .eval_program_const_addr(context.clone(), heap, env, receiver_const)
+            .eval_program_const_addr_ctx(context.clone(), heap, env, receiver_const)
             .await?;
         interpreter
             .call_program_executable_with_self_direct_carriers(

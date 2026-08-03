@@ -91,6 +91,22 @@ fn runtime_program_non_tail_recursion_deep_chain_hits_raised_guard() {
     run_deep_non_tail_scenarios(stack_bytes, probe_depth);
 }
 
+/// F8 frame-diet regression: the evaluator's boxed recursion and boxed
+/// dispatch futures must keep the 128-layer non-tail chain far below the
+/// 384 MiB debug worker stack. Before F8 the same chain needed ~136 MiB
+/// (~1.03 MiB/layer); after the frame diet the measured minimum is ~40 MiB
+/// (~315 KiB/layer), so a 48 MiB stack pins the diet with margin while still
+/// catching any regression back to the pre-diet frame sizes.
+#[test]
+fn runtime_program_non_tail_recursion_128_layers_fit_diet_stack() {
+    let stack_bytes: usize = std::env::var("SKIFF_NON_TAIL_DEPTH_STACK_KIB")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(|kib: usize| kib * 1024)
+        .unwrap_or(48 * 1024 * 1024);
+    run_deep_non_tail_scenarios(stack_bytes, NON_TAIL_DEPTH_LIMIT);
+}
+
 /// Release-only production evidence: 128 non-tail layers complete on 40 MiB,
 /// well below the 64 MiB production worker stack (measured minimum ~34 MiB).
 /// Debug builds are excluded because their unoptimized evaluator frames are far

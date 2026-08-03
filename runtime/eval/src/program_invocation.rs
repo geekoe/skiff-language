@@ -160,7 +160,12 @@ impl<'a> PreparedProgramInvocation<'a> {
         context: impl crate::program_execution::IntoProgramExecutionContext<'ctx> + Send,
     ) -> Result<Flow> {
         self.executable_invocation
-            .exec(interpreter, context, &mut self.heap, &mut self.env)
+            .exec(
+                interpreter,
+                context.into_program_execution_context(),
+                &mut self.heap,
+                &mut self.env,
+            )
             .await
     }
 
@@ -297,7 +302,7 @@ impl Interpreter {
         if let Some(receiver_const) = receiver_const {
             let caller_env = invocation.env.clone();
             let receiver_value = self
-                .eval_program_const_addr(
+                .eval_program_const_addr_ctx(
                     context.execution_context(),
                     &mut invocation.heap,
                     &caller_env,

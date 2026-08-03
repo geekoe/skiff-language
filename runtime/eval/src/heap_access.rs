@@ -125,11 +125,15 @@ where
 
 /// Unified funnel body: poll once; a `Ready` keeps the guard, a `Pending`
 /// releases the guard before awaiting and reacquires after wake.
+///
+/// The awaited future is boxed rather than `tokio::pin!`ed on the stack so a
+/// large evaluator future never gets inlined into the funnel's (and therefore
+/// the caller's) state machine.
 pub(crate) async fn await_with_release<F>(heap: &mut HeapAccess, future: F) -> F::Output
 where
     F: Future,
 {
-    tokio::pin!(future);
+    let mut future = Box::pin(future);
     if let Some(output) = poll_once(future.as_mut()).await {
         return output;
     }

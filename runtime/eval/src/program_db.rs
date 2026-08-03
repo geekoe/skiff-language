@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use async_recursion::async_recursion;
 use skiff_runtime_boundary::plan::BoundaryUse;
 use skiff_runtime_capability_context::{DbKey, DbOneSelector};
 use skiff_runtime_model::{
@@ -77,9 +78,10 @@ pub fn is_db_builtin_op(op: &str) -> bool {
 
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn eval_program_db_operation(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -102,9 +104,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     async fn eval_program_db_operation_with_context(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         db_context: &DbCapabilityContext,
         heap: &mut HeapAccess,
         env: &mut Env,
@@ -137,10 +140,11 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     async fn eval_program_db_transaction(
         &self,
         db_context: &DbCapabilityContext,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -162,7 +166,7 @@ impl Interpreter {
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
         let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap.heap_mut(), env);
         let result = self
-            .eval_program_expr_ref(
+            .eval_program_expr_ref_ctx(
                 program_context.clone(),
                 heap,
                 env,
@@ -175,13 +179,8 @@ impl Interpreter {
         match result {
             Ok(value) => {
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error = rollback_after_transaction(
-                        &program_context,
-                        heap,
-                        env,
-                        checkpoint,
-                        error,
-                    )?;
+                    let error =
+                        rollback_after_transaction(&program_context, heap, env, checkpoint, error)?;
                     return Err(error);
                 }
                 Ok(value.into_value())
@@ -202,9 +201,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn eval_program_explicit_db_transaction(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -227,9 +227,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     async fn eval_program_explicit_db_transaction_with_context(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         db_context: &DbCapabilityContext,
         heap: &mut HeapAccess,
         env: &mut Env,
@@ -243,7 +244,7 @@ impl Interpreter {
             transaction::TransactionLifecycle::begin(store, &program_context, heap).await?;
         let checkpoint = rollback::TransactionRollbackCheckpoint::capture(heap.heap_mut(), env);
         let flow = self
-            .exec_program_block(
+            .exec_program_block_ctx(
                 program_context.clone(),
                 heap,
                 env,
@@ -259,7 +260,7 @@ impl Interpreter {
                     DbTransactionModeIr::Effect => Ok(RuntimeValue::Null.into()),
                     DbTransactionModeIr::Value => match transaction.result {
                         Some(result) => {
-                            self.eval_program_expr_ref(
+                            self.eval_program_expr_ref_ctx(
                                 program_context.clone(),
                                 heap,
                                 env,
@@ -359,9 +360,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn eval_program_db_query_value(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -377,9 +379,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn eval_program_db_lease_claim(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -389,7 +392,7 @@ impl Interpreter {
     ) -> Result<RuntimeValue> {
         let store = require_db_store(&program_context.db_context(), "db claim")?;
         let key = self
-            .eval_program_expr_ref(
+            .eval_program_expr_ref_ctx(
                 program_context.clone(),
                 heap,
                 env,
@@ -426,7 +429,7 @@ impl Interpreter {
         });
         let flow = match binding {
             Ok(()) => {
-                self.exec_program_block(
+                self.exec_program_block_ctx(
                     program_context.clone(),
                     heap,
                     env,
@@ -477,9 +480,10 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn eval_program_db_lease_read(
         &self,
-        program_context: ProgramExecutionContext<'_>,
+        program_context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -489,7 +493,7 @@ impl Interpreter {
     ) -> Result<RuntimeValue> {
         let store = require_db_store(&program_context.db_context(), "db lease")?;
         let key = self
-            .eval_program_expr_ref(
+            .eval_program_expr_ref_ctx(
                 program_context.clone(),
                 heap,
                 env,
