@@ -90,6 +90,7 @@ mod tests {
         for name in [
             "task.submit.request.function",
             "task.submit.request.actorMethod",
+            "task.submit.request.actorMethod.snapshot",
         ] {
             let bytes = corpus_frame(name);
             let sink = Arc::new(TaskSinkProbe {

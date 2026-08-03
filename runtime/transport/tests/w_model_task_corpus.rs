@@ -25,9 +25,10 @@ use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 22] = [
+const REQUIRED_FRAMES: [&str; 23] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
+    "task.submit.request.actorMethod.snapshot",
     "task.submit.request.legacy-no-caller-kind",
     "task.submit.request.timing.after",
     "task.submit.request.timing.at",
@@ -162,6 +163,7 @@ mod tests {
         for name in [
             "task.submit.request.function",
             "task.submit.request.actorMethod",
+            "task.submit.request.actorMethod.snapshot",
             "task.submit.request.timing.after",
             "task.submit.request.timing.at",
         ] {
@@ -307,7 +309,15 @@ mod tests {
                 "skiff-actor-implementation-v1:sha256:{}",
                 "b".repeat(64)
             ),
-            "methodIdentity": format!("skiff-actor-method-v1:sha256:{}", "c".repeat(64))
+            "methodIdentity": format!("skiff-actor-method-v1:sha256:{}", "c".repeat(64)),
+            "activation": {
+                "key": "eyJhY3RvcklkRW5jb2RpbmdWZXJzaW9uIjoic2tpZmYtYWN0b3ItaWQtZW5jb2RpbmctdjEiLCJhY3RvcklkSGFzaCI6InNoYTI1NjoxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwiYWN0b3JJZFR5cGVJZGVudGl0eSI6IkNvdW50ZXJJZCIsImFjdG9yVHlwZUlkZW50aXR5IjoiQ291bnRlckFjdG9yIiwiY2Fub25pY2FsQWN0b3JJZEtleUJ5dGVzQmFzZTY0IjoiQVFJRCIsInNlcnZpY2VJZCI6ImV4YW1wbGUuY29tL2RvY3MifQ==",
+                "createInput": "W10=",
+                "expectedTypePlan": {
+                    "label": "record",
+                    "node": { "kind": "record", "fields": [] }
+                }
+            }
         });
 
         let mut function_with_actor_method = base.clone();
@@ -419,7 +429,7 @@ mod tests {
     fn expected_frame_type(name: &str) -> &str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at" => "task.submit.request",
@@ -450,7 +460,7 @@ mod tests {
     fn expected_direction(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at"
@@ -478,7 +488,7 @@ mod tests {
     fn expected_decode_as(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at" => "TaskSubmitRequest",

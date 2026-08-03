@@ -291,7 +291,18 @@ fn actor_method_metadata() -> TaskActorMethodTargetFrameMetadata {
             "skiff-actor-implementation-v1:sha256:{}",
             "b".repeat(64)
         ),
-        "methodIdentity": format!("skiff-actor-method-v1:sha256:{}", "c".repeat(64))
+        "methodIdentity": format!("skiff-actor-method-v1:sha256:{}", "c".repeat(64)),
+        "activation": {
+            "key": "eyJhY3RvcklkRW5jb2RpbmdWZXJzaW9uIjoic2tpZmYtYWN0b3ItaWQtZW5jb2RpbmctdjEiLCJhY3RvcklkSGFzaCI6InNoYTI1NjoxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwiYWN0b3JJZFR5cGVJZGVudGl0eSI6IkNvdW50ZXJJZCIsImFjdG9yVHlwZUlkZW50aXR5IjoiQ291bnRlckFjdG9yIiwiY2Fub25pY2FsQWN0b3JJZEtleUJ5dGVzQmFzZTY0IjoiQVFJRCIsInNlcnZpY2VJZCI6ImV4YW1wbGUuY29tL2RvY3MifQ==",
+            "createInput": "W10=",
+            "expectedTypePlan": {
+                "label": "record",
+                "node": {
+                    "kind": "record",
+                    "fields": []
+                }
+            }
+        }
     }))
     .expect("actor method metadata fixture")
 }

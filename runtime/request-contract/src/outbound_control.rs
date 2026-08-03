@@ -223,13 +223,33 @@ impl TaskCallerKind {
 /// `actorMethod`. The receiver travels as identity metadata (never inside the
 /// recoverable args payload); the owner runtime routes by it and re-activates
 /// the instance from the registry entry when it is not live.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ActorMethodTaskTargetControl {
     pub actor_ref: ActorRef,
     pub declaration_owner: ActorInvocationDeclarationOwner,
     pub actor_abi_identity: ActorAbiIdentity,
     pub actor_implementation_identity: ActorImplementationIdentity,
     pub method_identity: ActorMethodIdentity,
+    /// Frozen actor activation facts needed to rebuild a minimal registry
+    /// entry and run `create` when no live incarnation exists at attempt
+    /// time (authoritative design Actor-method target). The evaluator freezes
+    /// this from the authenticated actor handle before any
+    /// `task.submit.request` is sent.
+    pub activation: ActorActivationSnapshotControl,
+}
+
+/// Wire-projection control facts of
+/// `skiff_task_control::model::ActorActivationSnapshot`.
+///
+/// `key` / `create_input` are canonical payload bytes in base64. The expected
+/// type plan is the runtime recoverable plan (the only plan form the
+/// submission side can freeze from the linked program); the E2b execution
+/// lane owns bridging it to the task-control store model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorActivationSnapshotControl {
+    pub key: String,
+    pub create_input: String,
+    pub expected_type_plan: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

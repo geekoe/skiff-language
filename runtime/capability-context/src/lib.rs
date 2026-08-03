@@ -73,16 +73,15 @@ pub use native_projection::{
     NativeHttpResponseStreamCapabilityContext, NativeTelemetryCapabilityContext,
 };
 pub use outbound_control::{
-    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
-    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
-    ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
-    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
-    TaskStatusControlResponse, TaskSubmitControlMessage, TaskSubmitControlRequest,
-    TaskSubmitResponseControl, TaskSubmitTimingControl,
-    WebSocketConnectionPolicyControl,
-    WebSocketConnectionPolicyOverflowControl,
+    ActivationIdentityControl, ActorActivationSnapshotControl, ActorControlDeadline,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
+    ActorMethodTaskTargetControl, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RouterWriterMessage, RuntimeClientSessionControl,
+    RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest, TaskCancelControlResponse,
+    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlMessage,
+    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
+    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,

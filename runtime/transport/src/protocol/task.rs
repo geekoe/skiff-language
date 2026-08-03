@@ -496,7 +496,7 @@ impl<'de> Deserialize<'de> for TaskSubmitRequestFrameHeaderV2 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskActorMethodTargetFrameMetadata {
     pub actor_ref: ActorLogicalRefFrameHeader,
@@ -504,6 +504,24 @@ pub struct TaskActorMethodTargetFrameMetadata {
     pub actor_abi_identity: skiff_artifact_model::ActorAbiIdentity,
     pub actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity,
     pub method_identity: skiff_artifact_model::ActorMethodIdentity,
+    /// Frozen actor activation snapshot (E2a wire projection of
+    /// `ActorActivationSnapshot`): canonical payload bytes plus the runtime
+    /// recoverable expected-type plan for `create`.
+    pub activation: TaskActorActivationSnapshotFrameMetadata,
+}
+
+/// Wire projection of the frozen actor activation snapshot carried by
+/// actor-method `task.submit.request` targets.
+///
+/// `key` and `createInput` are canonical payload bytes in standard base64;
+/// `expectedTypePlan` is the JSON projection of the runtime recoverable
+/// expected-type plan for the `create` parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskActorActivationSnapshotFrameMetadata {
+    pub key: String,
+    pub create_input: String,
+    pub expected_type_plan: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -842,7 +860,33 @@ fn validate_task_submit_request(header: &TaskSubmitRequestFrameHeaderV2) -> Resu
                 actor_method.method_identity.as_str(),
                 "skiff-actor-method-v1:sha256",
             )?;
+            validate_activation_snapshot(&actor_method.activation)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_activation_snapshot(
+    snapshot: &TaskActorActivationSnapshotFrameMetadata,
+) -> Result<(), String> {
+    for (value, label) in [
+        (&snapshot.key, "activation.key"),
+        (&snapshot.create_input, "activation.createInput"),
+    ] {
+        if value.is_empty() {
+            return Err(format!("{label} must be non-empty base64 payload bytes"));
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|_| format!("{label} must be canonical base64"))?;
+        if base64::engine::general_purpose::STANDARD.encode(decoded) != *value {
+            return Err(format!("{label} must be canonical base64"));
+        }
+    }
+    if !snapshot.expected_type_plan.is_object() {
+        return Err(
+            "activation.expectedTypePlan must be a JSON object".to_string(),
+        );
     }
     Ok(())
 }
