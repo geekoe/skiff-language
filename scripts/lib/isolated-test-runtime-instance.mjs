@@ -88,7 +88,13 @@ export function bootstrapCanonicalArgs({
     '--bin',
     'skiff-package-service-smoke-fixture',
     '--',
-    '--bootstrap-only',
+    // The W-activation coordinator freezes exact runtime candidates against
+    // the committed epoch's deployment projection and fails closed when it is
+    // empty, so an isolated instance cannot activate from an empty bootstrap.
+    // Seed the committed generation-0 epoch with the dedicated bootstrap
+    // fixture's real service deployment instead.
+    '--seed-committed',
+    join(skiffRoot, 'test-runner', 'fixtures', 'isolated-test-bootstrap'),
     '--artifact-root',
     artifactRoot,
     '--platform-source-root',

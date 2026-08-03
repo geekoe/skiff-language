@@ -1080,12 +1080,25 @@ fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
         .iter()
         .find(|block| &block.label == body_label)
         .expect("ternary body block should be emitted");
-    assert_eq!(body_block.statements.len(), 1);
+    assert_eq!(body_block.statements.len(), 2);
+    let skiff_artifact_model::StmtIr::Let {
+        slot: init_slot,
+        value: init_value,
+    } = &executable.body.statements[body_block.statements[0].statement as usize]
+    else {
+        panic!("expected Let statement initializing the ternary temp slot");
+    };
+    assert_eq!(init_slot, result_slot);
+    assert!(matches!(
+        &executable.body.expressions[init_value.expression as usize],
+        ExprIr::Literal { .. }
+    ));
+
     let skiff_artifact_model::StmtIr::If {
         condition,
         then_block,
         else_block,
-    } = &executable.body.statements[body_block.statements[0].statement as usize]
+    } = &executable.body.statements[body_block.statements[1].statement as usize]
     else {
         panic!("expected If statement inside the ternary body block");
     };

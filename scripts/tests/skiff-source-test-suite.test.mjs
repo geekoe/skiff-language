@@ -40,6 +40,7 @@ test('checked-in test-service source inventory remains exact', async () => {
     'package-direct-http-stream-registry/argument-tests/entry.test.skiff',
     'actor-full-chain-acceptance/main.test.skiff',
     'package-service-i02-spawn-submit/main.test.skiff',
+    'isolated-test-bootstrap/bootstrap.test.skiff',
     'package-service-websocket-generation-a/main.test.skiff',
     'package-service-websocket-generation-b/main.test.skiff',
     'package-service-websocket-smoke/main.test.skiff',
@@ -337,7 +338,7 @@ test('runner failure stops later entries while the isolated runtime owner retain
         }
       },
       runCommand: async (_command, args) => {
-        if (args.includes('--bootstrap-only')) {
+        if (args.includes('--seed-committed')) {
           actions.push('source-bootstrap');
           return;
         }
@@ -388,7 +389,7 @@ test('non-advancing health generation stops before the next source-test child', 
         }
       },
       runCommand: async (_command, args) => {
-        actions.push(args.includes('--bootstrap-only') ? 'source-bootstrap' : args.at(7));
+        actions.push(args.includes('--seed-committed') ? 'source-bootstrap' : args.at(7));
       },
       readActiveGeneration: async () => {
         actions.push('health');
