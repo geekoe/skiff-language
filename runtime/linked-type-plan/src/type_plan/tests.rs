@@ -55,7 +55,6 @@ pub(crate) fn test_runtime_package(
     )
 }
 
-#[allow(dead_code)]
 #[cfg(test)]
 mod recoverable_expected_plan_tests {
     use std::{collections::BTreeMap, sync::Arc};
@@ -1047,6 +1046,7 @@ mod builtin_catalog_tests {
 
 #[cfg(test)]
 mod plan_input_forms_tests {
+    use super::super::linked::{from_artifact_type_ref_in_program_ref, from_linked_ref};
     use super::super::*;
 
     fn with_empty_ctx<T>(test: impl FnOnce(&PlanContext<'_>) -> T) -> T {
@@ -1140,8 +1140,8 @@ mod plan_input_forms_tests {
                 let linked = linked_builtin(name, vec![linked_leaf("string")]);
                 let artifact_key = RuntimeTypePlan::from_artifact_type_ref(&artifact).unwrap();
                 let artifact_in_program_key =
-                    RuntimeTypePlan::from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
-                let linked_key = RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap();
+                    from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
+                let linked_key = from_linked_ref(&linked, ctx).unwrap();
                 assert_eq!(
                     node_key(&artifact_key.node),
                     node_key(&linked_key.node),
@@ -1180,8 +1180,8 @@ mod plan_input_forms_tests {
                 let linked = linked_builtin(name, linked_args);
                 let artifact_key = RuntimeTypePlan::from_artifact_type_ref(&artifact).unwrap();
                 let artifact_in_program_key =
-                    RuntimeTypePlan::from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
-                let linked_key = RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap();
+                    from_artifact_type_ref_in_program_ref(&artifact, ctx).unwrap();
+                let linked_key = from_linked_ref(&linked, ctx).unwrap();
                 assert_eq!(
                     node_key(&artifact_key.node),
                     node_key(&linked_key.node),
@@ -1213,7 +1213,7 @@ mod plan_input_forms_tests {
                 "array(string)"
             );
             assert_eq!(
-                node_key(&RuntimeTypePlan::from_linked_ref(&linked, ctx).unwrap().node),
+                node_key(&from_linked_ref(&linked, ctx).unwrap().node),
                 "unknown"
             );
         });

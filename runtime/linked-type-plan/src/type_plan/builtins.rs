@@ -1,3 +1,4 @@
+use super::linked::{from_artifact_type_ref_in_program_ref, from_linked_ref};
 use super::*;
 
 /// Canonical runtime builtin shape classification. Layer 1 of the builtin
@@ -18,7 +19,6 @@ pub(crate) enum RuntimeBuiltinShape {
     Bool,
     Bytes,
     Null,
-    Void,
     DbInsertManyResult,
     DbUpdateManyResult,
     DbDeleteManyResult,
@@ -62,7 +62,7 @@ impl RuntimeBuiltinShape {
             Self::Number => RuntimeTypeNode::Number,
             Self::Bool => RuntimeTypeNode::Bool,
             Self::Bytes => RuntimeTypeNode::Bytes,
-            Self::Null | Self::Void => RuntimeTypeNode::Null,
+            Self::Null => RuntimeTypeNode::Null,
             _ => return None,
         })
     }
@@ -286,13 +286,11 @@ impl<'a> PlanInput<'a> {
     ) -> Result<RuntimeTypePlan> {
         match self {
             Self::Artifact { args, .. } => RuntimeTypePlan::from_artifact_type_ref(&args[index]),
-            Self::ArtifactInProgram { args, .. } => {
-                RuntimeTypePlan::from_artifact_type_ref_in_program_ref(
-                    &args[index],
-                    ctx.expect("artifact-in-program input requires a plan context"),
-                )
-            }
-            Self::Linked { args, .. } => RuntimeTypePlan::from_linked_ref(
+            Self::ArtifactInProgram { args, .. } => from_artifact_type_ref_in_program_ref(
+                &args[index],
+                ctx.expect("artifact-in-program input requires a plan context"),
+            ),
+            Self::Linked { args, .. } => from_linked_ref(
                 &args[index],
                 &ctx.expect("linked input requires a plan context")
                     .deeper_by(2),

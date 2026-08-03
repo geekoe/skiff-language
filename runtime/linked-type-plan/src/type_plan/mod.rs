@@ -57,58 +57,9 @@ pub(crate) use tests::test_runtime_package;
 pub trait RuntimeTypePlanLinkedExt: Sized {
     fn from_artifact_type_ref(type_ref: &skiff_artifact_model::TypeRefIr) -> Result<Self>;
 
-    fn from_artifact_type_ref_in_program(
-        type_ref: &skiff_artifact_model::TypeRefIr,
-        program: &LinkedProgramImage,
-        current_addr: &ExecutableAddr,
-    ) -> Result<Self>;
-
-    fn from_artifact_type_ref_in_type_view(
-        type_ref: &skiff_artifact_model::TypeRefIr,
-        program: ProgramTypeView<'_>,
-        current_addr: &ExecutableAddr,
-    ) -> Result<Self>;
-
-    fn from_artifact_type_ref_in_program_ref(
-        type_ref: &skiff_artifact_model::TypeRefIr,
-        ctx: &PlanContext<'_>,
-    ) -> Result<Self>;
-
     fn from_linked(type_ref: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self>;
 
     fn from_linked_nested_ref(type_ref: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self>;
-
-    fn from_linked_ref(type_ref: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self>;
-
-    fn from_linked_substituted(bound: &LinkedTypeRef, ctx: &PlanContext) -> Result<Self>;
-
-    fn resolve_addr_or_bridge(
-        type_ref: &LinkedTypeRef,
-        addr: TypeAddr,
-        ctx: &PlanContext,
-    ) -> Result<Self>;
-
-    fn from_linked_declaration(declaration: &TypeDeclIr, ctx: &PlanContext) -> Result<Self>;
-
-    fn from_linked_descriptor(descriptor: &LinkedTypeDescriptor, ctx: &PlanContext)
-        -> Result<Self>;
-
-    fn builtin_node(
-        name: &str,
-        args: &[LinkedTypeRef],
-        ctx: &PlanContext,
-    ) -> Result<RuntimeTypeNode>;
-
-    fn artifact_builtin_node(
-        name: &str,
-        args: &[skiff_artifact_model::TypeRefIr],
-    ) -> Result<RuntimeTypeNode>;
-
-    fn artifact_builtin_node_in_program(
-        name: &str,
-        args: &[skiff_artifact_model::TypeRefIr],
-        ctx: &PlanContext<'_>,
-    ) -> Result<RuntimeTypeNode>;
 }
 
 pub trait RuntimeRecoverableExpectedTypePlanLinkedExt: Sized {

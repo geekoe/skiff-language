@@ -78,7 +78,6 @@ pub struct PlanContext<'a> {
     pub substitutions: Option<&'a BTreeMap<String, LinkedTypeRef>>,
 }
 
-#[allow(dead_code)]
 impl<'a> PlanContext<'a> {
     pub fn new(program: &'a LinkedProgramImage, current_addr: &'a ExecutableAddr) -> Self {
         Self::from_type_view(ProgramTypeView::from_linked_image(program), current_addr)

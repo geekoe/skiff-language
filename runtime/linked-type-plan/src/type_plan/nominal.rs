@@ -1,3 +1,4 @@
+use super::linked::{from_linked_descriptor, from_linked_ref};
 use super::*;
 
 pub(crate) fn applied_nominal_plan(
@@ -71,8 +72,7 @@ pub(crate) fn applied_nominal_plan(
         declaration.name,
         linked_type_ref_runtime_key(&applied)
     );
-    let mut plan =
-        RuntimeTypePlan::from_linked_descriptor(&descriptor, &ctx.without_substitutions())?;
+    let mut plan = from_linked_descriptor(&descriptor, &ctx.without_substitutions())?;
     apply_nominal_owner_context(&mut plan, &owner_context);
     Ok(plan)
 }
@@ -269,7 +269,7 @@ pub(crate) fn linked_named_union_branch_plan(
 ) -> Result<RuntimeTypePlan> {
     let (mut plan, branch_context) = match branch {
         LinkedNamedUnionBranch::ConcreteNominal { nominal_type } => (
-            RuntimeTypePlan::from_linked_ref(nominal_type, ctx)?,
+            from_linked_ref(nominal_type, ctx)?,
             "concreteNominal".to_string(),
         ),
         LinkedNamedUnionBranch::SyntheticDiscriminator {
@@ -277,11 +277,11 @@ pub(crate) fn linked_named_union_branch_plan(
             discriminator_field,
             discriminator_value,
         } => (
-            RuntimeTypePlan::from_linked_ref(payload_type, ctx)?,
+            from_linked_ref(payload_type, ctx)?,
             format!("syntheticDiscriminator:{discriminator_field}={discriminator_value}"),
         ),
         LinkedNamedUnionBranch::Literal { value } => (
-            RuntimeTypePlan::from_linked_ref(
+            from_linked_ref(
                 &LinkedTypeRef::Literal {
                     value: value.clone(),
                 },

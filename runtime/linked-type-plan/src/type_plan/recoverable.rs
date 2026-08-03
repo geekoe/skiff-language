@@ -1,3 +1,4 @@
+use super::linked::from_linked_descriptor;
 use super::*;
 
 impl RuntimeRecoverableExpectedTypePlanLinkedExt for RuntimeRecoverableExpectedTypePlan {
@@ -185,7 +186,7 @@ fn recoverable_expected_from_linked_descriptor(
             boundary_record_kind: None,
         },
         LinkedTypeDescriptor::Representation { .. } => {
-            let runtime_plan = RuntimeTypePlan::from_linked_descriptor(descriptor, ctx)?;
+            let runtime_plan = from_linked_descriptor(descriptor, ctx)?;
             return Ok(
                 RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
                     &runtime_plan,
