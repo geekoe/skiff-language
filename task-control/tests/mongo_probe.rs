@@ -12,11 +12,16 @@ mod tests {
     use futures_util::TryStreamExt;
     use mongodb::{options::ClientOptions, Client};
 
+    use skiff_task_control::model::{DurableUtcTimestamp, TaskId, TaskState};
+    use skiff_task_control::store::{
+        ClaimInput, ClaimOutcome, DueScanInput, LeaseRecoveryInput, LeaseRecoveryOutcome,
+        ReleaseInput, ReleaseOutcome, ScanExpiredLeasesInput,
+    };
     use skiff_task_control::{
         MongoTaskStore, MongoTaskStoreOptions, TaskStore, TASK_STATE_DUE_AT_INDEX,
     };
 
-    use super::support::{contract, TestTime};
+    use super::support::{contract, fixtures, TestTime};
 
     fn required(name: &str) -> String {
         std::env::var(name).unwrap_or_else(|_| {
@@ -75,6 +80,86 @@ mod tests {
         }
         assert!(found, "{TASK_STATE_DUE_AT_INDEX} index must exist");
         contract::run_contract(&store, &TestTime::WallClock).await;
+        scheduler_store_extensions(&store).await;
         store.close().await.expect("close");
+    }
+
+    /// Scheduler-owned store extensions driven by the real server clock:
+    /// authority `now`, provable-rejection `release` with atomic retry
+    /// not-before, and the expired-lease scan feeding recovery.
+    async fn scheduler_store_extensions(store: &MongoTaskStore) {
+        let task_id = TaskId::new("task-scheduler-ext");
+        let now = store.now().await.expect("store authority now");
+        let mut record = fixtures::record(9_001, now.millis() - 1_000);
+        record.task_id = task_id.clone();
+        store.create(record).await.expect("create extension task");
+        store
+            .scan_due(DueScanInput { limit: 10 })
+            .await
+            .expect("scan due extension task");
+
+        let claimed = match store
+            .claim(ClaimInput {
+                task_id: task_id.clone(),
+                owner: "probe-scheduler".to_string(),
+                lease_expiry: now.checked_add_millis(2_000).expect("expiry"),
+                image_activatable: true,
+            })
+            .await
+            .expect("claim extension task")
+        {
+            ClaimOutcome::Claimed(record) => record,
+            other => panic!("claim failed: {other:?}"),
+        };
+        let lease_id = claimed.active_lease.expect("lease").lease_id.clone();
+        let retry = now.checked_add_millis(5_000).expect("retry");
+        let released = match store
+            .release(ReleaseInput {
+                task_id: task_id.clone(),
+                lease_id,
+                retry_not_before: retry,
+            })
+            .await
+            .expect("release")
+        {
+            ReleaseOutcome::Released(record) => record,
+            other => panic!("release failed: {other:?}"),
+        };
+        assert_eq!(released.state, TaskState::Ready);
+        assert_eq!(released.retry_not_before, Some(retry));
+
+        // Expired-lease scan finds the lease after the server clock passes it.
+        store
+            .claim(ClaimInput {
+                task_id: task_id.clone(),
+                owner: "probe-scheduler".to_string(),
+                lease_expiry: now.checked_add_millis(1_500).expect("expiry"),
+                image_activatable: true,
+            })
+            .await
+            .expect("reclaim for expiry scan");
+        tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
+        let expired = store
+            .scan_expired_leases(ScanExpiredLeasesInput { limit: 10 })
+            .await
+            .expect("scan expired leases");
+        assert!(
+            expired.iter().any(|record| record.task_id == task_id),
+            "expired lease must be visible to the recovery loop"
+        );
+        let recovered = store
+            .recover_expired_lease(LeaseRecoveryInput {
+                task_id: task_id.clone(),
+                retry_not_before: retry,
+            })
+            .await
+            .expect("recover expired extension task");
+        match recovered {
+            LeaseRecoveryOutcome::Recovered(record) => {
+                assert_eq!(record.state, TaskState::Ready);
+                assert_eq!(record.retry_not_before, Some(retry));
+            }
+            other => panic!("recovery failed: {other:?}"),
+        }
     }
 }

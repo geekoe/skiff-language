@@ -335,6 +335,12 @@ pub struct TaskRecord {
     pub terminal: Option<TaskTerminal>,
     pub trace: TaskTraceContext,
     pub created_at: DurableUtcTimestamp,
+    /// Scheduler-owned platform backoff: when set, no new attempt may be
+    /// claimed before this durable store-authority timestamp. It is written
+    /// atomically by lease-expiry recovery and provable-rejection release;
+    /// submission leaves it `None`, and `claim` does not clear it (a past
+    /// value is inert). It is not a user-facing retry policy.
+    pub retry_not_before: Option<DurableUtcTimestamp>,
 }
 
 impl TaskRecord {

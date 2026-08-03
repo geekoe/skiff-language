@@ -50,5 +50,6 @@ pub fn record(seed: u64, due_at_millis: i64) -> TaskRecord {
             span_id: None,
         },
         created_at: DurableUtcTimestamp::from_millis(1),
+        retry_not_before: None,
     }
 }

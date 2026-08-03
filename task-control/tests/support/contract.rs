@@ -199,7 +199,8 @@ async fn lease_expiry_settlement_race(store: &dyn TaskStore, time: &TestTime) {
         matches!(
             store
                 .recover_expired_lease(LeaseRecoveryInput {
-                    task_id: task_id(105)
+                    task_id: task_id(105),
+                    retry_not_before: DurableUtcTimestamp::from_millis(0),
                 })
                 .await
                 .expect("recover after settle"),
@@ -234,6 +235,7 @@ async fn lease_expiry_settlement_race(store: &dyn TaskStore, time: &TestTime) {
     let recovered = match store
         .recover_expired_lease(LeaseRecoveryInput {
             task_id: task_id(106),
+            retry_not_before: DurableUtcTimestamp::from_millis(0),
         })
         .await
         .expect("recover expired")
@@ -370,7 +372,8 @@ async fn renew_heartbeat(store: &dyn TaskStore, time: &TestTime) {
     assert!(matches!(
         store
             .recover_expired_lease(LeaseRecoveryInput {
-                task_id: task_id(108)
+                task_id: task_id(108),
+                retry_not_before: DurableUtcTimestamp::from_millis(0),
             })
             .await
             .expect("recover 108"),
@@ -745,7 +748,8 @@ async fn state_machine_illegal_transitions(store: &dyn TaskStore, time: &TestTim
         matches!(
             store
                 .recover_expired_lease(LeaseRecoveryInput {
-                    task_id: task_id(115)
+                    task_id: task_id(115),
+                    retry_not_before: DurableUtcTimestamp::from_millis(0),
                 })
                 .await
                 .expect("recover ready"),
@@ -800,7 +804,8 @@ async fn state_machine_illegal_transitions(store: &dyn TaskStore, time: &TestTim
         matches!(
             store
                 .recover_expired_lease(LeaseRecoveryInput {
-                    task_id: task_id(116)
+                    task_id: task_id(116),
+                    retry_not_before: DurableUtcTimestamp::from_millis(0),
                 })
                 .await
                 .expect("recover terminal"),
