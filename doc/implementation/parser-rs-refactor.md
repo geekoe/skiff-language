@@ -20,6 +20,47 @@
   用例和 parse 差量载体；
 - 验证命令按 AGENTS.md 口径修正为 `tests` selector。
 
+## 2026-08-03 实施记录
+
+本记录由主 Agent 直接实施后补写，说明 Phase 0–3 的落地情况与决策。
+
+### 已完成
+
+- **Phase 0**：测试基线已落地（commit `55833239` 合入 `d32aef8f`）：表达式结合性/优先级 5 个测试、
+  类型 golden corpus（含控制字符）、span 敏感用例（含 `test_default_run_span`）、tolerant 回退精确
+  断言、`git ls-files` 限定的 74 条 fixture parse 输出基线 + 差量载体。载体发现并修复了全目录扫描
+  会混入 `.skiff-instance/dev-home` 生成产物的问题（`2feb44d6`）。
+- **Phase 1**：全部完成。游标层（`cursor.rs`）+ snapshot/restore 替代 Parser 克隆（`a341f696`）、
+  span 装配 helper 收敛 20 处内联构造（`a8f4f1b5`）、死状态清理 + `is_old_db_dotted_operation`
+  const 表 + `parse_index_direction` + `parse_field_path` 统一 + impl methods 三胞胎合并
+  （`2d007092`）。
+- **Phase 2**：全部完成。`parser.rs` 拆为 `parser/mod.rs`（入口/编排/共享类型，292 行）+
+  `cursor.rs` + `span.rs` + `validate.rs` + `stmt.rs` + `pattern.rs` + `expr.rs` + `db.rs` +
+  `decl.rs` + `callable.rs` + `type.rs` + `test.rs`（`602eebe8`、`f12bb657`、`d37bc53f`）。
+  各模块 87–810 行，全部远低于 4073 门禁；跨模块方法统一 `pub(super)`，公开 API 保持
+  `parse_source`/`parse_source_metadata`/`parse_source_with_bodies_tolerant` 三个函数不变。
+- **Phase 3 第 2 项**：precedence 表形式化（`BINARY_OPS` const 表，`f42ad529`），保持全左结合语义。
+
+### 未实施项的决策
+
+- **Phase 3 第 3 项（recoverable 原语）**：不新增通用组合器。Phase 1 已提供 `snapshot()/restore()`
+  与 `skip_balanced_block`，tolerant 回退（`parse_callable_decl_body_tolerant`）已收敛为
+  “保存游标 → 尝试 → 失败回退并跳过”的单一实现；再抽通用闭包组合器只服务一个调用点，违反本文
+  “只抽明确重复 ≥2–3 处的 helper；不建宏、不建 trait 泛化”的约束。
+- **Phase 3 第 1 项（类型结构化 IR）**：不实施。Phase 0 的 golden corpus 与 fixture 差量载体已经
+  以字节级契约锁定 `TypeRef.name`；`compiler-type-ref-unification-plan.md` 明确 `ast::TypeRef` 是
+  parse 层输入、不纳入统一计划。引入 token → IR → 渲染两层只会增加机制，当前没有任何消费者需要
+  结构化中间表示，符合反事实检查“删除该机制后现有能力仍满足需求”的判定。
+
+### 验证记录
+
+- `cargo test -p skiff-syntax`：149/149 通过（含 Phase 0 基线）。
+- `cargo test -p skiff-compiler -p skiff-test-runner`：全部通过（消费 parse API 的下游）。
+- `node scripts/check-rust-file-lines.mjs`：通过（parser 各模块最大 810 行）。
+- `cargo fmt --check -p skiff-syntax`：通过。
+- `cargo clippy -p skiff-syntax --all-targets`：exit 0，仅有 3 个既有的 `ast.rs` warning。
+- fixture 差量：74 条基线在 Phase 1/2/3 全过程中逐字节一致（行为等价）。
+
 ## 1. 背景与门禁现状
 
 `syntax/src/parser.rs` 当前为 4073 行，是全仓库最长的 Rust 文件，恰好等于
