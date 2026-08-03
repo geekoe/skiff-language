@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const MAX_FILE_LINES = 4073; // current maximum; no exceptions
+const MAX_FILE_LINES = 3151; // current maximum; no exceptions
 
 function runFileLineGate() {
   // child-process-owner: rust-file-line-gate
