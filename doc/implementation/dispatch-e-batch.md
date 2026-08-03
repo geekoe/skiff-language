@@ -28,8 +28,8 @@ dispatch 用户面收尾：
 
 | 节点 | 职责 | 基线 | 分支 / worktree | commit/tree | 自验收矩阵 | 合并状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 std_task_surface | 标准库 task surface | main@033391ba（待核对） | 待交接 | 待交接 | 见交接 + 集成探针 | pending |
-| E2 actor_task_target | actor task target 接入 | integration@E1 合并点（待核对） | 待交接 | 待交接 | 见交接 + 集成探针 | pending |
+| E1 std_task_surface | std.task status/cancel 用户面（error 帧 / router / compiler / runtime 映射） | main@033391ba | std-task-surface / skiff-e1-std-task | 2fab6d66（tree b95016ad） | 见交接 + 集成探针 | merged |
+| E2 actor_task_target | actor task target 接入 | integration@6e67b216（E1 合并点） | 待交接 | 待交接 | 见交接 + 集成探针 | pending |
 | E3 e2e_observability | 端到端可观测性 | integration@E2 合并点（待核对） | 待交接 | 待交接 | 见交接 + 集成探针 | pending |
 
 节点串行；集成 Agent 每轮核对 branch/worktree/commit/tree/写集后合并。
@@ -55,7 +55,7 @@ dispatch 用户面收尾：
 
 | 顺序 | 任务 | 分支 | 合并 commit/tree | 集成探针 | 清理 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | E1 std_task_surface | 待交接 | 待交接 | 待交接 | 待交接 | pending |
+| 1 | E1 std_task_surface | std-task-surface | 6e67b216（tree 1b37e6b6） | PASS：cargo check transport/router/compiler-core/source/lowering/eval/host/boundary/model/native/native-contract/request-contract/request/capability-context/linked-type-plan/artifact-model/test-runner；task_wire_corpus 11/11、w_model_task_corpus 7/7、router task_control_unit 18/18 + task_repair_direction 6/6 + w_model_task_consumer 4/4、dispatch_grammar 5/5、compiler-source lib 371/371、eval lib 458/458、boundary lib 172/172、host lib 427/427、test_service_flow 16/16；零冲突 | 已清理 | merged |
 | 2 | E2 actor_task_target | 待交接 | 待交接 | 待交接 | 待交接 | pending |
 | 3 | E3 e2e_observability | 待交接 | 待交接 | 待交接 | 待交接 | pending |
 
