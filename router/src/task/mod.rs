@@ -9,6 +9,10 @@
 //! narrow ports defined here and in the dispatcher.
 
 pub mod admission;
+pub mod actor_attempt;
+pub mod actor_plan;
+pub mod actor_ports;
+pub mod actor_target;
 pub mod control;
 pub mod health;
 pub mod sink;
@@ -16,6 +20,13 @@ pub mod sink;
 use std::time::{Duration, SystemTime};
 
 pub use admission::RouterTaskAttemptAdmission;
+pub use actor_attempt::{
+    ActorAttemptTerminal, ActorAttemptTerminalSink, NoopActorAttemptTerminalSink,
+    TaskAttemptInvocationCorrelation,
+};
+pub use actor_plan::project_runtime_expected_type_plan;
+pub use actor_ports::{SessionTaskActorOwnerPort, TaskActorOwnerPort};
+pub use actor_target::{snapshot_actor_key, store_declaration_owner_to_frame};
 pub use control::DurableTaskControl;
 pub use health::{TaskControlCounters, TaskControlHealth};
 pub use sink::{DurableTaskFrameSink, EpochTaskExecutionImageSource, TaskExecutionImageSource};

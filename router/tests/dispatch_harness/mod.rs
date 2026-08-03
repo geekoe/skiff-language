@@ -17,7 +17,7 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    ActorRoutingMethod, ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
@@ -253,6 +253,26 @@ pub fn build_epoch(
     config_snapshot_id: &str,
     deployment: ServiceDeploymentRef,
 ) -> Arc<RoutingEpoch> {
+    build_epoch_with_actor_methods(
+        environment,
+        generation,
+        assembly_identity,
+        config_snapshot_id,
+        deployment,
+        Vec::new(),
+    )
+}
+
+/// Builds a real immutable `RoutingEpoch` with an explicit actor routing
+/// projection (E2b actor-method task tests).
+pub fn build_epoch_with_actor_methods(
+    environment: &str,
+    generation: u64,
+    assembly_identity: &str,
+    config_snapshot_id: &str,
+    deployment: ServiceDeploymentRef,
+    methods: Vec<ActorRoutingMethod>,
+) -> Arc<RoutingEpoch> {
     let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
     assembly.assembly_identity = AssemblyIdentity::new(assembly_identity);
     assembly.resolved_deployments = vec![deployment];
@@ -270,7 +290,7 @@ pub fn build_epoch(
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(
         ActorRoutingProjection::new(
             ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-            Vec::new(),
+            methods,
         )
         .expect("empty projection"),
     )));

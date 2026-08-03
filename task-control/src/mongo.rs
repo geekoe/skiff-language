@@ -879,21 +879,37 @@ fn target_document(
             activation,
             implementation,
             method,
-        } => Ok(doc! {
-            "kind": "actorMethod",
-            "actor": to_document(actor).map_err(|error| {
-                invalid_record(task_id, format!("actor encode: {error}"))
-            })?,
-            "activation": {
-                "key": payload_binary(&activation.key),
-                "createInput": payload_binary(&activation.create_input),
-                "expectedTypePlan": to_document(&activation.expected_type_plan).map_err(
-                    |error| invalid_record(task_id, format!("expected type plan encode: {error}")),
-                )?,
-            },
-            "implementation": implementation.as_str(),
-            "method": method.as_str(),
-        }),
+            declaration_owner,
+        } => {
+            let expected_type_plan_runtime = match &activation.expected_type_plan_runtime {
+                Some(plan) => mongodb::bson::to_bson(plan).map_err(|error| {
+                    invalid_record(
+                        task_id,
+                        format!("expected type plan runtime encode: {error}"),
+                    )
+                })?,
+                None => Bson::Null,
+            };
+            Ok(doc! {
+                "kind": "actorMethod",
+                "actor": to_document(actor).map_err(|error| {
+                    invalid_record(task_id, format!("actor encode: {error}"))
+                })?,
+                "activation": {
+                    "key": payload_binary(&activation.key),
+                    "createInput": payload_binary(&activation.create_input),
+                    "expectedTypePlan": to_document(&activation.expected_type_plan).map_err(
+                        |error| invalid_record(task_id, format!("expected type plan encode: {error}")),
+                    )?,
+                    "expectedTypePlanRuntime": expected_type_plan_runtime,
+                },
+                "implementation": implementation.as_str(),
+                "method": method.as_str(),
+                "declarationOwner": to_document(declaration_owner).map_err(|error| {
+                    invalid_record(task_id, format!("declaration owner encode: {error}"))
+                })?,
+            })
+        }
     }
 }
 
@@ -914,6 +930,20 @@ fn decode_target(
                 )
                 .map_err(|error| invalid_record(task_id, format!("actor decode: {error}")))?;
             let activation_document = get_document(task_id, &document, "activation")?;
+            let expected_type_plan_runtime =
+                match activation_document.get("expectedTypePlanRuntime") {
+                    Some(Bson::Null) | None => None,
+                    Some(value) => Some(
+                        mongodb::bson::from_bson::<serde_json::Value>(value.clone()).map_err(
+                            |error| {
+                                invalid_record(
+                                    task_id,
+                                    format!("expected type plan runtime decode: {error}"),
+                                )
+                            },
+                        )?,
+                    ),
+                };
             let activation = ActorActivationSnapshot {
                 key: RecoverablePayload::new(get_binary(task_id, &activation_document, "key")?),
                 create_input: RecoverablePayload::new(get_binary(
@@ -929,6 +959,7 @@ fn decode_target(
                 .map_err(|error| {
                     invalid_record(task_id, format!("expected type plan decode: {error}"))
                 })?,
+                expected_type_plan_runtime,
             };
             Ok(DetachedCallTarget::ActorMethod {
                 actor,
@@ -941,6 +972,14 @@ fn decode_target(
                 method: skiff_artifact_model::ActorMethodIdentity::new(get_string(
                     task_id, &document, "method",
                 )?),
+                declaration_owner: from_document(get_document(
+                    task_id,
+                    &document,
+                    "declarationOwner",
+                )?)
+                .map_err(|error| {
+                    invalid_record(task_id, format!("declaration owner decode: {error}"))
+                })?,
             })
         }
         other => Err(invalid_record(

@@ -253,8 +253,9 @@ pub struct TaskCancelResultWire {
 /// guarantee no task was created by that submission. Existing router parent /
 /// authority error strings remain accepted by the wire so current runtime
 /// behavior is unchanged; the control plane (D2) emits this vocabulary.
-/// `unsupportedTarget` (D2) rejects target kinds the control plane cannot
-/// yet execute (actor-method before stage E) and is definite.
+/// `unsupportedTarget` (D2) is definite and remains reserved for target
+/// kinds the control plane cannot execute (the Router actor-method lane is
+/// wired by E2b, so the Router no longer emits it for actor-method targets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskSubmitRejectionCode {

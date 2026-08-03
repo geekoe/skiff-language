@@ -259,10 +259,16 @@ impl RouterComponents {
             Arc::new(Mutex::new(None));
         let deferred_task_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> =
             Arc::new(Mutex::new(None));
+        let deferred_task_actor_sink: Arc<
+            Mutex<Option<Arc<crate::supervisor::actor_sink::ActorFrameSink>>>,
+        > =
+            Arc::new(Mutex::new(None));
         let task_counters = Arc::new(TaskControlCounters::default());
         let task_clock: Arc<dyn skiff_task_control::TaskClock> =
             Arc::new(skiff_task_control::SystemClock);
         let ws_clock: Arc<dyn crate::ws::Clock> = Arc::new(WsSystemClock);
+        let session_writer: Arc<dyn WsSessionWriter> =
+            Arc::new(LayerWsSessionWriter::new(session_handle.clone()));
         let task_control = Arc::new(DurableTaskControl::new(
             Arc::clone(&task_store),
             Arc::clone(&deferred_task_scheduler),
@@ -273,6 +279,11 @@ impl RouterComponents {
         ));
         let mut task_tasks = Vec::new();
         task_tasks.push(task_control.spawn_worker());
+        let task_actor_port: Arc<dyn crate::task::TaskActorOwnerPort> =
+            Arc::new(crate::task::SessionTaskActorOwnerPort::new(
+                session_handle.clone(),
+                Arc::clone(&session_writer),
+            ));
         let scheduler = Arc::new(Scheduler::new(
             Arc::clone(&task_store),
             Arc::new(RouterTaskAttemptAdmission::new(
@@ -282,6 +293,10 @@ impl RouterComponents {
                 Arc::clone(&ws_clock),
                 config.request_timeout_ms,
                 Arc::clone(&task_counters),
+                Arc::clone(&actor),
+                Arc::clone(&task_actor_port),
+                crate::actor::DEFAULT_ACTIVATION_DEADLINE_MS,
+                Arc::clone(&deferred_task_actor_sink),
             )),
             task_clock,
             SchedulerConfig::default(),
@@ -319,8 +334,6 @@ impl RouterComponents {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&dispatcher));
 
-        let session_writer: Arc<dyn WsSessionWriter> =
-            Arc::new(LayerWsSessionWriter::new(session_handle.clone()));
         let ws_lane_handle = WsLaneHandle::new();
         let production_selector = Arc::new(ProductionWsConnectSelector::new(
             Arc::clone(&epoch_store),
@@ -454,7 +467,11 @@ impl RouterComponents {
             Arc::clone(&epoch_store),
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
+            Arc::clone(&task_control) as Arc<dyn crate::task::ActorAttemptTerminalSink>,
         ));
+        *deferred_task_actor_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&actor_sink));
         let task_sink = Arc::new(DurableTaskFrameSink::new(
             Arc::clone(&task_store),
             Arc::clone(&scheduler),

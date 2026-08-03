@@ -132,6 +132,7 @@ fn broker_pair(
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(

@@ -126,6 +126,7 @@ fn run_ownership_scenario(raw: &str) {
         abi(),
         actor_implementation_identity(),
         declaration_owner(),
+        &[],
     );
     let mut tokens: BTreeMap<String, ActorClaimToken> = BTreeMap::new();
     for event in &events {
@@ -243,6 +244,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -279,6 +281,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -301,6 +304,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -335,6 +339,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -359,6 +364,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -387,6 +393,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let error = registry
             .reserve(&key, 7, "runtime-b", &route_authority(), 0)

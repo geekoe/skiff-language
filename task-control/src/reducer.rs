@@ -716,7 +716,8 @@ pub(crate) mod tests {
     pub(crate) mod fixtures {
         use super::*;
         use crate::model::{
-            ActorActivationSnapshot, DetachedCallTarget, RecoverablePayload, ServiceOwner,
+            ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
+            ActorDeclarationOwnerUnit, DetachedCallTarget, RecoverablePayload, ServiceOwner,
             TaskExecutionImageRef, TaskId, TaskTraceContext,
         };
         use skiff_artifact_model::{
@@ -799,9 +800,15 @@ pub(crate) mod tests {
                         field_refs: Vec::new(),
                         union_branch_refs: Vec::new(),
                     },
+                    expected_type_plan_runtime: None,
                 },
                 implementation: ActorImplementationIdentity::new(format!("implementation-{seed}")),
                 method: ActorMethodIdentity::new(format!("method-{seed}")),
+                declaration_owner: ActorDeclarationOwner {
+                    unit: ActorDeclarationOwnerUnit::Service,
+                    file: ActorDeclarationOwnerFile::LoadedFileIndex(0),
+                    actor_symbol: format!("actor-{seed}"),
+                },
             };
             record
         }

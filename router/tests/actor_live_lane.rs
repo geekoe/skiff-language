@@ -43,6 +43,7 @@ mod tests {
                 file: skiff_runtime_transport::actor_method::ActorOwnerFileFrameHeader::LoadedFileIndex(0),
                 actor_symbol: "Actor".to_string(),
             },
+            &[],
         );
         let token = registry
             .reserve(

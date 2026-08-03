@@ -6,31 +6,41 @@
 mod dispatch_harness;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use skiff_artifact_model::{
-    AssemblyIdentity, PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
-    RuntimeConfigSnapshotRef,
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
+    PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
 use skiff_router::dispatch::{
     RequestDispatcher, RuntimeDispatcherOptions,
 };
 use skiff_router::session::demux::InboundFrameSink;
-use skiff_router::session::identity::RuntimeSessionEpoch;
+use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::supervisor::actor::{assemble_actor_components, ActorComponents};
+use skiff_router::supervisor::actor_sink::ActorFrameSink;
+use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
-    DurableTaskControl, DurableTaskFrameSink, RouterTaskAttemptAdmission, TaskControlCounters,
-    TaskExecutionImageSource,
+    DurableTaskControl, DurableTaskFrameSink, NoopActorAttemptTerminalSink,
+    RouterTaskAttemptAdmission, TaskActorOwnerPort, TaskControlCounters, TaskExecutionImageSource,
 };
 use skiff_router::ws::Clock;
+use skiff_runtime_transport::actor_method::{
+    ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader, ActorOwnerFileFrameHeader,
+    ActorOwnerUnitFrameHeader,
+};
 use skiff_runtime_transport::protocol::{
     decode_task_cancel_error_frame, decode_task_cancel_response_frame,
     decode_task_status_error_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_response_frame,
     encode_task_cancel_request_frame, encode_task_status_request_frame,
     encode_task_submit_request_frame, ActivationIdentityFrameMetadata, TaskCallerKind,
+    TaskActorActivationSnapshotFrameMetadata, TaskActorMethodTargetFrameMetadata,
     TaskCancelRequestFrameHeader, TaskCancelResultKindWire, TaskControlRejectionCode,
     TaskStatusKindWire, TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind,
     RUNTIME_FRAME_SCHEMA_VERSION,
@@ -82,6 +92,66 @@ impl WsSessionWriter for FakeWriter {
         self.frames.lock().expect("writer frames").push(bytes);
         Ok(())
     }
+}
+
+#[derive(Debug, Default)]
+struct FakeTaskActorOwnerPort {
+    candidates: Arc<Mutex<Vec<RuntimeSessionEpoch>>>,
+    sessions: Arc<Mutex<HashMap<String, RuntimeSessionEpoch>>>,
+    frames: Arc<Mutex<Vec<(RuntimeSessionEpoch, Vec<u8>)>>>,
+}
+
+impl TaskActorOwnerPort for FakeTaskActorOwnerPort {
+    fn candidates(&self, _tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
+        self.candidates.lock().expect("candidates lock").clone()
+    }
+
+    fn current_session_by_replica(&self, replica_id: &str) -> Option<RuntimeSessionEpoch> {
+        self.sessions
+            .lock()
+            .expect("sessions lock")
+            .get(replica_id)
+            .cloned()
+    }
+
+    fn write(&self, session: &RuntimeSessionEpoch, bytes: Vec<u8>) -> Result<(), String> {
+        self.frames
+            .lock()
+            .expect("frames lock")
+            .push((session.clone(), bytes));
+        Ok(())
+    }
+}
+
+/// Minimal real actor lane for the task admission seam (function-target tests
+/// never exercise it; actor-method tests build their own richer rig).
+fn actor_lane_stub() -> (
+    Arc<ActorComponents>,
+    Arc<FakeTaskActorOwnerPort>,
+    Arc<Mutex<Option<Arc<ActorFrameSink>>>>,
+) {
+    let epoch = dispatch_harness::corpus_epoch();
+    let epoch_store = Arc::new(skiff_router::bootstrap::ActiveRoutingEpochStore::new());
+    epoch_store.publish(Arc::clone(&epoch));
+    let session = SessionHandle::new();
+    let components = assemble_actor_components(
+        epoch,
+        Arc::clone(&epoch_store),
+        session.clone(),
+    )
+    .expect("actor components");
+    let writer = Arc::new(FakeWriter::default());
+    let sink = Arc::new(ActorFrameSink::new(
+        Arc::clone(&components),
+        session,
+        epoch_store,
+        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+        Arc::new(TestClock::default()),
+        Arc::new(NoopActorAttemptTerminalSink),
+    ));
+    let port = Arc::new(FakeTaskActorOwnerPort::default());
+    let deferred = Arc::new(Mutex::new(Some(sink)));
+    (components, port, deferred)
 }
 
 #[derive(Debug, Clone)]
@@ -498,6 +568,49 @@ fn submit_header(
     }
 }
 
+fn actor_method_submit_header(task_id: Option<&str>) -> TaskSubmitRequestFrameHeaderV2 {
+    let mut header = submit_header(task_id, TaskTargetKind::ActorMethod, None);
+    let key_payload = serde_json::json!({
+        "serviceId": SERVICE_ID,
+        "actorTypeIdentity": "skiff-actor-type-v1:sha256:aaa",
+        "actorIdTypeIdentity": "skiff-actor-id-type-v1:sha256:aaa",
+        "actorIdEncodingVersion": "v1",
+        "canonicalActorIdKeyBytesBase64": "a2V5",
+        "actorIdHash": "sha256:aaa",
+    });
+    header.actor_method = Some(TaskActorMethodTargetFrameMetadata {
+        actor_ref: ActorLogicalRefFrameHeader {
+            service_id: SERVICE_ID.to_string(),
+            actor_type_identity: "skiff-actor-type-v1:sha256:aaa".to_string(),
+            actor_id_type_identity: "skiff-actor-id-type-v1:sha256:aaa".to_string(),
+            actor_id_encoding_version: "v1".to_string(),
+            canonical_actor_id_key_bytes_base64: "a2V5".to_string(),
+            actor_id_hash: "sha256:aaa".to_string(),
+            epoch: 1,
+        },
+        declaration_owner: ActorDeclarationOwnerFrameHeader {
+            unit: ActorOwnerUnitFrameHeader::Service,
+            file: ActorOwnerFileFrameHeader::LoadedFileIndex(0),
+            actor_symbol: "Actor".to_string(),
+        },
+        actor_abi_identity: ActorAbiIdentity::new("skiff-actor-abi-v1:sha256:aaa"),
+        actor_implementation_identity: ActorImplementationIdentity::new(
+            "skiff-actor-implementation-v1:sha256:aaa",
+        ),
+        method_identity: ActorMethodIdentity::new("skiff-actor-method-v1:sha256:aaa"),
+        activation: TaskActorActivationSnapshotFrameMetadata {
+            key: base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(&key_payload).expect("key payload json")),
+            create_input: base64::engine::general_purpose::STANDARD.encode(b"[]"),
+            expected_type_plan: serde_json::json!({
+                "label": "record",
+                "node": { "kind": "record", "fields": [] }
+            }),
+        },
+    });
+    header
+}
+
 fn status_request(task_ref: &str) -> skiff_runtime_transport::protocol::TaskStatusRequestFrameHeader {
     skiff_runtime_transport::protocol::TaskStatusRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -640,26 +753,49 @@ async fn submit_success_creates_record_and_returns_task_ref() {
 }
 
 #[tokio::test]
-async fn submit_actor_method_target_is_definite_unsupported_target() {
+async fn submit_actor_method_target_creates_durable_actor_record() {
     let (_store, _scheduler, sink, writer, counters) = sink_rig();
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::ActorMethod, None);
-    // The canonical codec requires actorMethod metadata; D2's rejection is a
-    // control-plane decision, so drive the async handler directly (the wire
-    // decode path is covered by transport codec tests).
+    let header = actor_method_submit_header(Some(TASK_ID));
     sink.handle_submit(
         RuntimeSessionEpoch {
             replica_id: "runtime-a".to_string(),
             connection_generation: 1,
         },
         header,
-        Vec::new(),
+        vec![1, 2, 3],
     )
     .await
     .expect("handler");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_error_frame(&error).expect("error");
-    assert_eq!(decoded.error.code, "unsupportedTarget");
-    assert_eq!(counters.submissions_rejected.load(Ordering::Relaxed), 1);
+    let response = poll_writer(&writer, 1).await;
+    let decoded = decode_task_submit_response_frame(&response).expect("response");
+    assert_eq!(decoded.task_id, TASK_ID);
+    assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
+    let records = _store.records().await;
+    assert_eq!(records.len(), 1);
+    match &records[0].target {
+        DetachedCallTarget::ActorMethod {
+            activation,
+            implementation,
+            method,
+            declaration_owner,
+            ..
+        } => {
+            assert_eq!(
+                implementation.as_str(),
+                "skiff-actor-implementation-v1:sha256:aaa"
+            );
+            assert_eq!(method.as_str(), "skiff-actor-method-v1:sha256:aaa");
+            assert_eq!(declaration_owner.actor_symbol, "Actor");
+            assert!(!activation.key.as_bytes().is_empty());
+            assert_eq!(activation.create_input.as_bytes(), b"[]");
+            assert!(activation.expected_type_plan_runtime.is_some());
+            assert!(matches!(
+                activation.expected_type_plan.root,
+                skiff_artifact_model::RecoverableExpectedTypeRoot::TypeRef { .. }
+            ));
+        }
+        other => panic!("expected actor-method target, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -870,6 +1006,7 @@ fn control_rig() -> ControlRig {
     let candidate = dispatch_harness::FakeCandidateViewSource::new(vec![
         dispatch_harness::session_state("s1", "runtime-a", 1),
     ]);
+    let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
     let admission = Arc::new(RouterTaskAttemptAdmission::new(
         Arc::new(dispatch_harness::FakeEpochSource {
             epoch: Some(epoch.clone()),
@@ -879,6 +1016,10 @@ fn control_rig() -> ControlRig {
         Arc::clone(&clock) as Arc<dyn Clock>,
         5_000,
         Arc::clone(&counters),
+        actor,
+        actor_port as Arc<dyn TaskActorOwnerPort>,
+        30_000,
+        deferred_actor_sink,
     ));
     let scheduler = Arc::new(Scheduler::new(
         Arc::clone(&store),
@@ -1003,6 +1144,7 @@ async fn admission_uncertain_when_control_plane_not_assembled() {
         Arc::clone(&counters),
         Duration::from_millis(20),
     ));
+    let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
     let admission = RouterTaskAttemptAdmission::new(
         Arc::new(dispatch_harness::FakeEpochSource {
             epoch: Some(dispatch_harness::corpus_epoch()),
@@ -1012,6 +1154,10 @@ async fn admission_uncertain_when_control_plane_not_assembled() {
         Arc::clone(&clock) as Arc<dyn Clock>,
         5_000,
         Arc::clone(&counters),
+        actor,
+        actor_port as Arc<dyn TaskActorOwnerPort>,
+        30_000,
+        deferred_actor_sink,
     );
     let now = store.now().await.expect("now");
     store

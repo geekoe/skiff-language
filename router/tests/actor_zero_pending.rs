@@ -207,6 +207,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&lease_key, 1, "runtime-b", &route_authority(), 0)

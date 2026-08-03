@@ -12,10 +12,19 @@ mod tests {
     use futures_util::TryStreamExt;
     use mongodb::{options::ClientOptions, Client};
 
-    use skiff_task_control::model::{DurableUtcTimestamp, TaskId, TaskState};
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity,
+        RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableTypeIdentityRef,
+    };
+    use skiff_deployment::projection::actor_routing::ActorRoutingRef;
+    use skiff_task_control::model::{
+        ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
+        ActorDeclarationOwnerUnit, DetachedCallTarget, DurableDuration, DurableUtcTimestamp,
+        RecoverablePayload, TaskId, TaskState, TaskStatusKind,
+    };
     use skiff_task_control::store::{
         ClaimInput, ClaimOutcome, DueScanInput, LeaseRecoveryInput, LeaseRecoveryOutcome,
-        ReleaseInput, ReleaseOutcome, ScanExpiredLeasesInput,
+        ReleaseInput, ReleaseOutcome, ScanExpiredLeasesInput, StatusInput,
     };
     use skiff_task_control::{
         MongoTaskStore, MongoTaskStoreOptions, TaskStore, TASK_STATE_DUE_AT_INDEX,
@@ -81,7 +90,77 @@ mod tests {
         assert!(found, "{TASK_STATE_DUE_AT_INDEX} index must exist");
         contract::run_contract(&store, &TestTime::WallClock).await;
         scheduler_store_extensions(&store).await;
+        actor_record_round_trip(&store).await;
         store.close().await.expect("close");
+    }
+
+    /// Actor-method record round trip (E2b store extension): the runtime-form
+    /// expected-type plan and declaration owner survive the Mongo DTO.
+    async fn actor_record_round_trip(store: &MongoTaskStore) {
+        let now = store.now().await.expect("store authority now");
+        let mut record = fixtures::record(9_002, now.millis() - 1_000);
+        record.task_id = TaskId::new("task-actor-mongo");
+        record.created_at = now;
+        let expected_type_plan = RecoverableExpectedTypePlan {
+            root: RecoverableExpectedTypeRoot::TypeIdentityRef {
+                type_identity_ref: RecoverableTypeIdentityRef("type-actor".to_string()),
+            },
+            root_type_identity_ref: None,
+            runtime_carrier_check_required: false,
+            interface_projection_refs: Vec::new(),
+            interface_method_refs: Vec::new(),
+            field_refs: Vec::new(),
+            union_branch_refs: Vec::new(),
+        };
+        record.target = DetachedCallTarget::ActorMethod {
+            actor: ActorRoutingRef {
+                service_id: "svc-9002".to_string(),
+                actor_abi_identity: ActorAbiIdentity::new(
+                    "skiff-actor-abi-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+            },
+            activation: ActorActivationSnapshot {
+                key: RecoverablePayload::new(vec![1, 2, 3]),
+                create_input: RecoverablePayload::new(b"[]".to_vec()),
+                expected_type_plan: expected_type_plan.clone(),
+                expected_type_plan_runtime: Some(serde_json::json!({
+                    "label": "record",
+                    "node": { "kind": "record", "fields": [] }
+                })),
+            },
+            implementation: ActorImplementationIdentity::new(
+                "skiff-actor-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            method: ActorMethodIdentity::new(
+                "skiff-actor-method-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            declaration_owner: ActorDeclarationOwner {
+                unit: ActorDeclarationOwnerUnit::Service,
+                file: ActorDeclarationOwnerFile::LoadedFileIndex(0),
+                actor_symbol: "Actor".to_string(),
+            },
+        };
+        store
+            .create(record.clone())
+            .await
+            .expect("create actor task record");
+        let status = store
+            .status(StatusInput {
+                task_id: record.task_id.clone(),
+                retention: DurableDuration::from_millis(60_000),
+            })
+            .await
+            .expect("actor task status");
+        assert_eq!(status.kind, TaskStatusKind::Scheduled);
+        let records = store
+            .scan_due(DueScanInput { limit: 10 })
+            .await
+            .expect("scan actor task");
+        let round = records
+            .into_iter()
+            .find(|candidate| candidate.task_id == record.task_id)
+            .expect("actor task visible after round trip");
+        assert_eq!(round.target, record.target, "actor target round trips");
     }
 
     /// Scheduler-owned store extensions driven by the real server clock:

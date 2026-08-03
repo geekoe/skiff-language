@@ -1036,6 +1036,7 @@ mod tests {
             abi.clone(),
             implementation.clone(),
             declaration.clone(),
+            &[],
         );
         let port = ActorActivationControlPort::new(handle, Arc::clone(&registry));
         let request = ActivateInitialControlRequest {
