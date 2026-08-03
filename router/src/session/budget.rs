@@ -1,10 +1,15 @@
-//! Per-session frame/byte budgets and the bounded outbound queue
+//! Per-session outbound frame/byte budgets and the bounded outbound queue
 //! (C-session §5.3, authority design §3.8).
 //!
 //! Owners reserve non-blockingly with `try_send`; the permit transfers to the
 //! writer on dequeue and is released exactly once. Queue-full never waits for
 //! a close frame: the exact session is aborted through its independent abort
 //! handle.
+//!
+//! Inbound traffic is deliberately unbounded: the Runtime connection is a
+//! trusted, long-lived control channel, so the Router does not impose an
+//! ingress frame/byte limit on it. Revisit only if a concrete flooding
+//! failure mode appears.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -16,8 +21,6 @@ use tokio::sync::mpsc;
 pub struct SessionBudgets {
     pub outbound_frames: usize,
     pub outbound_bytes: usize,
-    pub inbound_frames: usize,
-    pub inbound_bytes: usize,
 }
 
 impl Default for SessionBudgets {
@@ -25,13 +28,6 @@ impl Default for SessionBudgets {
         Self {
             outbound_frames: 256,
             outbound_bytes: 4 * 1024 * 1024,
-            // E-actor-rust migration correction (2026-08-03, root authorized):
-            // 64 cumulative inbound frames aborts a long-lived business
-            // session (health every ~1s plus actor/spawn/request traffic)
-            // before a two-replica full-chain can complete. Still bounded and
-            // fail-closed; saturation tests inject explicit low budgets.
-            inbound_frames: 4096,
-            inbound_bytes: 1024 * 1024,
         }
     }
 }

@@ -96,8 +96,6 @@ pub(crate) async fn run_session_task(
     let mut ack_started_at: Option<Instant> = None;
     let mut bootstrap_wait: Option<oneshot::Receiver<()>> = None;
     let mut ack_wait: Option<oneshot::Receiver<()>> = None;
-    let mut inbound_frames = 0usize;
-    let mut inbound_bytes = 0usize;
 
     // Issue `router.bootstrap` when a committed epoch is available. Without
     // one the connection stays in Accepted and fails at the bootstrap
@@ -130,14 +128,6 @@ pub(crate) async fn run_session_task(
             frame = read_half.next() => {
                 match frame {
                     Some(Ok(Message::Binary(bytes))) => {
-                        inbound_frames += 1;
-                        inbound_bytes += bytes.len();
-                        if inbound_frames > layer.budgets.inbound_frames
-                            || inbound_bytes > layer.budgets.inbound_bytes
-                        {
-                            machine.terminal_with(TerminalKind::IngressBudgetExceeded);
-                            continue;
-                        }
                         let outcome = layer.demux().classify_with_sinks(&bytes, &layer.inbound_sinks());
                         match outcome {
                             DemuxOutcome::Terminal(kind) => {
