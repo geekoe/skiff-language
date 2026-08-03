@@ -337,4 +337,66 @@ mod tests {
         let stale = project_loop_risk_runtimes(&facts, &observations, &connected, now + 6_000);
         assert!(!stale[0].fresh);
     }
+
+    #[test]
+    fn loop_risk_freshness_accepts_real_runtime_six_and_nine_digit_timestamps() {
+        let facts = vec![SessionFacts {
+            session: RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            },
+            tuple: RegisteredAssemblyTuple {
+                environment: "prod".to_string(),
+                generation: 7,
+                assembly: RuntimeAssemblyRef {
+                    assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
+                        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ),
+                },
+                config_snapshot: RuntimeConfigSnapshotRef {
+                    snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
+                        "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("snapshot"),
+                },
+            },
+            registered: true,
+            cancelled: false,
+        }];
+        let connected = facts
+            .iter()
+            .map(|fact| fact.session.clone())
+            .collect::<HashSet<_>>();
+        let now = 1_785_628_800_123;
+        for observed_at in [
+            "2026-08-02T00:00:00.123456Z",
+            "2026-08-02T00:00:00.123456789Z",
+        ] {
+            let observations = HashMap::from([(
+                RuntimeSessionEpoch {
+                    replica_id: "runtime-a".to_string(),
+                    connection_generation: 1,
+                },
+                RuntimeHealthFrameHeader {
+                    schema_version: "skiff-runtime-frame-v3".to_string(),
+                    envelope_type: "runtime.health".to_string(),
+                    runtime_id: "runtime-a".to_string(),
+                    observed_at: observed_at.to_string(),
+                    counters: RuntimeHealthCountersFrameHeader {
+                        outbound_requests_pending: 0,
+                        outbound_stream_leases_active: 0,
+                        stream_runtime_streams_active: 0,
+                        flag_backed_cancel_waiters_active: 0,
+                        spawned_tasks_active: 0,
+                    },
+                },
+            )]);
+            let runtimes = project_loop_risk_runtimes(&facts, &observations, &connected, now);
+            assert_eq!(runtimes.len(), 1);
+            assert!(
+                runtimes[0].fresh,
+                "real runtime timestamp {observed_at} must be fresh"
+            );
+        }
+    }
 }

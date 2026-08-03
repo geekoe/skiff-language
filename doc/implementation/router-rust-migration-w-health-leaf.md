@@ -253,3 +253,10 @@ mailbox/writer-queue 部分面），并通知 root（父 Agent）。
      macOS 上以 RST 结束连接（响应完整但 read 报 ECONNRESET）。修复为
      405 前 bounded drain（1 MiB，同 activation 控制端上限），与
      public gateway 早期错误路径一致。
+5. 主 Agent 裁决窄修复（追加 commit）：
+   `parse_iso_utc_millis` 放宽为接受 RFC3339 0/3/6/9 位（1–9 位均可）小数并
+   截断到毫秒（取前三位；不足三位右补零；超九位或非数字小数拒绝）。
+   新增测试覆盖 0/3/6/9 位、1/2 位补齐、超 9 位/空小数/非数字小数负例，以及
+   loop-risk `fresh` 在真实 runtime 6/9 位时间戳下为 true 的投影断言。
+   重跑 `cargo test -p skiff-router`（0 failed）、loop-risk self-test
+   （通过）、clippy 触碰面零诊断。
