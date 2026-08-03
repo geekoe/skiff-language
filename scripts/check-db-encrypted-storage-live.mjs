@@ -671,11 +671,15 @@ function storageDatabaseName(environment, serviceId) {
 }
 
 function storageCollectionName(packageId, declaredCollectionIdentity) {
-  return `_skiff_c1_${storageIdentityDigest(
-    'skiff-package-collection-storage-identity-v1',
+  const readable = String(declaredCollectionIdentity)
+    .replace(/[^A-Za-z0-9_.-]/g, '_')
+    .slice(0, 32);
+  const digest = storageIdentityDigest(
+    'skiff-package-collection-storage-identity-v2',
     packageId,
     declaredCollectionIdentity,
-  )}`;
+  ).slice(0, 12);
+  return `${readable}_${digest}`;
 }
 
 function storageIdentityDigest(...parts) {

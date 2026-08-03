@@ -102,8 +102,14 @@ fn package_collection_storage_name_is_stable_bounded_and_mongo_safe() {
             .expect("physical collection name");
 
     assert_eq!(first, repeated);
-    assert!(first.starts_with("_skiff_c1_"));
-    assert_eq!(first.len(), 53);
+    assert!(
+        first.starts_with("internal.events.TrackEvent_"),
+        "physical collection name should keep the db object type's readable identity: {first}"
+    );
+    assert!(
+        first.len() <= 45,
+        "physical collection name should stay bounded for the historical Mongo namespace budget: {first}"
+    );
     assert!(!first.contains('\0') && !first.contains('$'));
     assert!(
         format!("{}.{}", "d".repeat(63), first).len() < 120,
@@ -122,6 +128,27 @@ fn package_collection_storage_name_isolates_packages_and_logical_collections() {
 
     assert_ne!(first_package, second_package);
     assert_ne!(first_package, second_collection);
+}
+
+#[test]
+fn package_collection_storage_name_digest_prevents_sanitized_identity_collisions() {
+    // Two logical identities that sanitize to the same readable segment must
+    // still map to distinct physical collections because the digest covers
+    // the exact declared identity and the Package ID.
+    let slash = service_storage_collection_name("example.com/provider", "events/track")
+        .expect("physical collection name");
+    let question = service_storage_collection_name("example.com/provider", "events?track")
+        .expect("physical collection name");
+    let other_package = service_storage_collection_name("example.com/other", "events/track")
+        .expect("physical collection name");
+
+    assert_eq!(
+        slash.rsplit_once('_').map(|(head, _)| head),
+        question.rsplit_once('_').map(|(head, _)| head),
+        "readable segments sanitize identically"
+    );
+    assert_ne!(slash, question);
+    assert_ne!(slash, other_package);
 }
 
 #[test]
