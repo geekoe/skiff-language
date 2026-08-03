@@ -57,7 +57,7 @@ router 代码标识与文档），不保留兼容语法、旧 artifact 分支或
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | rename-docs | rename-dispatch-docs | 438d8056 | PASS（见上） | 已清理 | merged |
 | 2 | rename-code | 交接后填写 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
-| 3 | dispatch_reference | 交接后填写 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
+| 3 | dispatch_reference | dispatch-reference | 3ba13a97 | PASS（docs 链接/残留） | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新 commit/tree、
 合并任务、探针结果与 worktree 审计清单。
