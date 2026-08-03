@@ -201,7 +201,8 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, ()> {
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskSubmitResponseControl>
+    {
         let request = task_submit_with_caller_request(request, &self.owned);
         let caller_kind = self.owned.task_caller_kind;
         Box::pin(submit_task(
@@ -369,7 +370,8 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
-    ) -> capability_contract::CapabilityFuture<'a, ()> {
+    ) -> capability_contract::CapabilityFuture<'a, capability_contract::TaskSubmitResponseControl>
+    {
         let request = task_submit_with_caller_request(request, &self.0);
         let caller_kind = self.0.task_caller_kind;
         Box::pin(submit_task(
@@ -639,7 +641,7 @@ async fn submit_task(
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
     caller_kind: TaskCallerKind,
-) -> capability_contract::CapabilityResult<()> {
+) -> capability_contract::CapabilityResult<capability_contract::TaskSubmitResponseControl> {
     let scope = actor_execution_scope(&execution_control)?;
     root_result_into_capability(
         concrete::RequestClient::new(context)
@@ -647,7 +649,6 @@ async fn submit_task(
             .await,
     )
     .await
-    .map(|_| ())
 }
 
 fn actor_execution_scope(

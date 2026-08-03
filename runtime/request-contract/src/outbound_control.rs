@@ -134,6 +134,16 @@ pub struct TaskSubmitControlRequest {
     pub actor_method: Option<ActorMethodTaskTargetControl>,
 }
 
+/// Durable `task.submit` acceptance returned to the evaluator. The taskRef is
+/// the canonical `skiff-task-v1:<owner>.<taskId>` wire encoding; the runtime
+/// value is opaque and only carries this string across recoverable boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSubmitResponseControl {
+    pub task_ref: String,
+    pub task_id: String,
+    pub request_id: String,
+}
+
 /// Submission timing for one `task.submit` (D1 wire/control contract).
 ///
 /// `Immediate` is the default/legacy value; the wire codec omits it so old

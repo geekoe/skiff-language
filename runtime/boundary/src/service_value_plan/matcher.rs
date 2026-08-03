@@ -68,7 +68,9 @@ fn value_matches_plan(
             RuntimeValue::Number(number) if is_safe_integer(*number)
         )),
         RuntimeTypeNode::Null => Ok(matches!(value, RuntimeValue::Null)),
-        RuntimeTypeNode::Stream(_) | RuntimeTypeNode::Unknown => Ok(false),
+        RuntimeTypeNode::Stream(_) | RuntimeTypeNode::TaskRef | RuntimeTypeNode::Unknown => {
+            Ok(false)
+        }
         RuntimeTypeNode::Array(item) => {
             let RuntimeValue::Heap(handle) = value else {
                 return Ok(false);

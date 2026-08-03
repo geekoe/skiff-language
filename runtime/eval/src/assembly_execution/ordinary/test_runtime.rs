@@ -23,10 +23,10 @@ use skiff_runtime_capability_context::{
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedRequestCapabilityContext,
     OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext, RequestCapabilityApi,
-    RequestCapabilityContext, TaskSubmitControlRequest, StreamCancelSignal, StreamInternalItem,
-    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, WebsocketCapabilityApi,
+    RequestCapabilityContext, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard, StreamPoll, StreamPullSource,
+    StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult, StreamSink,
+    StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext, WebsocketCapabilityApi,
     WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
@@ -990,7 +990,7 @@ impl RequestCapabilityApi for TestActor {
         _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()> {
+    ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
                 "test request capability is unavailable",

@@ -5,16 +5,18 @@ use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, Payl
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
-    ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, TaskSubmitControlRequest,
+    ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, CapabilityError,
+    OwnedExecutionControl, TaskSubmitControlRequest, TaskSubmitResponseControl,
     TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorMethodImplementation,
-    LinkedCallTarget, LinkedExprIr, UnitAddr,
+    LinkedCallTarget, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::{
-    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue, value::HeapNode,
+    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
+    runtime_value::RuntimeValueCarrier, value::HeapNode,
 };
 
 use crate::{
@@ -31,12 +33,17 @@ use crate::{
     Interpreter, RuntimeAssemblyEvalTarget,
 };
 
-use super::{eval_context::EvalContext, program_ir::program_expression_ref};
+use super::eval_context::EvalContext;
 
 const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
 const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v10:sha256:";
+const TASK_SUBMIT_TARGET: &str = "task.submit.request";
+/// Bounded ambiguous-acceptance retries for one internal submission. Every
+/// attempt reuses the TaskId generated before the first physical write.
+const TASK_SUBMIT_MAX_ATTEMPTS: usize = 3;
+const TASK_SUBMIT_RETRY_BASE_MS: u64 = 50;
 
 /// Resolves one Router-authenticated direct-dispatch target only from the immutable route index
 /// validated while the exact active assembly image was linked.
@@ -138,50 +145,281 @@ pub async fn execute_runtime_assembly_task_target(
     Ok(())
 }
 
-pub async fn submit_task_statement(
-    context: &mut EvalContext<'_>,
-    call_ref: ExprRefIr,
-) -> Result<()> {
-    let expression = program_expression_ref(context.executable, call_ref)?;
-    let LinkedExprIr::Call { call } = expression else {
-        return Err(RuntimeError::InvalidArtifact(
-            "dispatch statement must reference a call expression".to_string(),
-        ));
-    };
+/// Returns true when a linked call is a compiler-produced dispatch expression
+/// (carries `dispatchSubmit` metadata). The evaluator routes these calls to the
+/// durable submission path instead of executing the target locally.
+pub fn is_dispatch_submit_call(call: &CallIr) -> bool {
+    call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY)
+}
 
+/// Durable `dispatch` submission shared by statement position
+/// (`StmtIr::Dispatch`) and expression position (`ExprIr::Call` with
+/// `dispatchSubmit` metadata).
+///
+/// Evaluation order follows the authoritative architecture: receiver/arguments
+/// are evaluated once, then the timing expression is evaluated once, then the
+/// recoverable payload is encoded, then a fresh TaskId is generated before the
+/// first physical `task.submit.request`. The TaskId is reused verbatim for
+/// every bounded ambiguous-acceptance retry. Success returns the opaque
+/// `std.task.TaskRef` runtime value (canonical wire taskRef string); statement
+/// callers discard it.
+pub async fn submit_dispatch_call(
+    context: &mut EvalContext<'_>,
+    call: &CallIr,
+) -> Result<RuntimeValue> {
+    let target = task_submit_target(call)?;
+    let timing_plan = task_submit_timing_plan(call)?;
+
+    // Step 1: evaluate receiver/arguments exactly once.
+    let values = evaluate_task_call_args(context, call).await?;
+    // Step 2: evaluate the timing expression exactly once.
+    let timing = evaluate_dispatch_timing(context, &timing_plan).await?;
+
+    // Step 3: recoverable encode against the exact linked target plan.
     let projection = context.execution_projection().clone();
+    let invocation =
+        encode_task_request_payload(context, call, projection, target, values).await?;
+
+    // Step 4: generate the TaskId before the first physical write; every retry
+    // of this submission reuses it (TaskStore create is TaskId-idempotent).
+    let task_id = new_task_id();
     let request_context = context.context.request_context().clone();
     let execution_control = context.execution.owned();
-    let invocation = encode_task_request_payload(context, call, projection).await?;
+    let request = TaskSubmitControlRequest {
+        rpc_id: String::new(),
+        runtime_id: String::new(),
+        target_kind: invocation.target_kind,
+        service_id: request_context.service_id().to_string(),
+        service_version: request_context.service_version().to_string(),
+        service_protocol_identity: request_context
+            .task_service_protocol_identity()
+            .to_string(),
+        target: invocation.target,
+        task_id: Some(task_id),
+        build_id: task_submit_build_id(request_context.request_build_id()),
+        activation_identity: current_activation_identity(
+            request_context.activation_identity(),
+        )?,
+        caller_request_id: Some(request_context.request_id().to_string()),
+        timing,
+        trace_id: request_context.trace_id().map(str::to_string),
+        caller_target: Some(request_context.request_target().to_string()),
+        max_queue_wait_ms: None,
+        actor_method: invocation.actor_method,
+    };
 
-    let submit = request_context.submit_task(
-        TaskSubmitControlRequest {
-            rpc_id: String::new(),
-            runtime_id: String::new(),
-            target_kind: invocation.target_kind,
-            service_id: request_context.service_id().to_string(),
-            service_version: request_context.service_version().to_string(),
-            service_protocol_identity: request_context
-                .task_service_protocol_identity()
-                .to_string(),
-            target: invocation.target,
-            task_id: None,
-            build_id: task_submit_build_id(request_context.request_build_id()),
-            activation_identity: current_activation_identity(
-                request_context.activation_identity(),
-            )?,
-            caller_request_id: Some(request_context.request_id().to_string()),
-            timing: TaskSubmitTimingControl::Immediate,
-            trace_id: request_context.trace_id().map(str::to_string),
-            caller_target: Some(request_context.request_target().to_string()),
-            max_queue_wait_ms: None,
-            actor_method: invocation.actor_method,
-        },
+    // Step 5: send and wait for the durable ack, retrying only ambiguous
+    // outcomes with the same TaskId.
+    let response = submit_task_durable(
+        context,
+        &request_context,
+        request,
         invocation.args_payload,
         execution_control,
+    )
+    .await?;
+    Ok(RuntimeValue::String(response.task_ref))
+}
+
+async fn evaluate_task_call_args(
+    context: &mut EvalContext<'_>,
+    call: &CallIr,
+) -> Result<Vec<RuntimeValueCarrier>> {
+    let mut values = Vec::with_capacity(call.args.len());
+    for arg in &call.args {
+        values.push(context.eval_program_expr_ref(*arg).await?);
+    }
+    Ok(values)
+}
+
+/// Waits for a durable `task.submit` acceptance.
+///
+/// Definite rejections (`invalidTiming` / `payloadInvalid` / `quotaExceeded` /
+/// `rejected` / `unsupportedTarget`) throw a clear platform error immediately
+/// and never create a task. Ambiguous outcomes (`storeUnavailable` from the
+/// control plane and transport-level uncertainty such as a lost response) are
+/// retried a bounded number of times with the exact same TaskId; if no ack
+/// arrives, the caller receives a "result is uncertain" platform error rather
+/// than a false success or a second TaskId.
+async fn submit_task_durable(
+    context: &mut EvalContext<'_>,
+    request_context: &skiff_runtime_capability_context::RequestCapabilityContext<'_>,
+    request: TaskSubmitControlRequest,
+    payload: Vec<u8>,
+    execution_control: OwnedExecutionControl,
+) -> Result<TaskSubmitResponseControl> {
+    let mut attempt = 0usize;
+    loop {
+        let result = context
+            .await_actual_pending(request_context.submit_task(
+                request.clone(),
+                payload.clone(),
+                execution_control.clone(),
+            ))
+            .await?;
+        match result {
+            Ok(response) => return Ok(response),
+            Err(CapabilityError::TaskSubmitRejected { code, message }) => {
+                if !task_submit_rejection_is_transient(&code) {
+                    return Err(RuntimeError::ProviderUnavailable {
+                        target: TASK_SUBMIT_TARGET.to_string(),
+                        reason: format!("task.submit rejected ({code}): {message}"),
+                    });
+                }
+                if attempt + 1 >= TASK_SUBMIT_MAX_ATTEMPTS {
+                    return Err(RuntimeError::ProviderUnavailable {
+                        target: TASK_SUBMIT_TARGET.to_string(),
+                        reason: format!(
+                            "task.submit result is uncertain after {} attempt(s) with the same TaskId; last error: storeUnavailable: {message}",
+                            attempt + 1
+                        ),
+                    });
+                }
+            }
+            Err(error) => {
+                if attempt + 1 >= TASK_SUBMIT_MAX_ATTEMPTS {
+                    return Err(RuntimeError::ProviderUnavailable {
+                        target: TASK_SUBMIT_TARGET.to_string(),
+                        reason: format!(
+                            "task.submit result is uncertain after {} attempt(s) with the same TaskId; last error: {error}",
+                            attempt + 1
+                        ),
+                    });
+                }
+            }
+        }
+        let backoff_ms = TASK_SUBMIT_RETRY_BASE_MS << attempt;
+        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        attempt += 1;
+    }
+}
+
+fn task_submit_rejection_is_transient(code: &str) -> bool {
+    code == "storeUnavailable"
+}
+
+fn new_task_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+struct TaskSubmitTimingPlan {
+    kind: TaskSubmitTimingKind,
+    expr: Option<ExprRefIr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskSubmitTimingKind {
+    Immediate,
+    After,
+    At,
+}
+
+fn task_submit_timing_plan(call: &CallIr) -> Result<TaskSubmitTimingPlan> {
+    let metadata = metadata_to_json(
+        call.metadata
+            .get(TASK_SUBMIT_METADATA_KEY)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "dispatch call is missing compiler dispatchSubmit metadata".to_string(),
+                )
+            })?,
     );
-    context.await_actual_pending(submit).await??;
-    Ok(())
+    let object = metadata.as_object().ok_or_else(|| {
+        RuntimeError::InvalidArtifact(
+            "dispatchSubmit metadata must be an object with targetKind and target fields"
+                .to_string(),
+        )
+    })?;
+    let Some(timing) = object.get("timing") else {
+        return Ok(TaskSubmitTimingPlan {
+            kind: TaskSubmitTimingKind::Immediate,
+            expr: None,
+        });
+    };
+    let timing = timing.as_object().ok_or_else(|| {
+        RuntimeError::InvalidArtifact("dispatchSubmit metadata timing must be an object".to_string())
+    })?;
+    let kind = timing
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "dispatchSubmit metadata timing kind must be a string".to_string(),
+            )
+        })?;
+    let (kind, expr) = match kind {
+        "immediate" => (TaskSubmitTimingKind::Immediate, None),
+        "after" => (TaskSubmitTimingKind::After, Some(task_timing_expr_ref(timing)?)),
+        "at" => (TaskSubmitTimingKind::At, Some(task_timing_expr_ref(timing)?)),
+        other => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "dispatchSubmit metadata timing kind {other} is unsupported"
+            )))
+        }
+    };
+    Ok(TaskSubmitTimingPlan { kind, expr })
+}
+
+fn task_timing_expr_ref(timing: &serde_json::Map<String, Value>) -> Result<ExprRefIr> {
+    let index = timing.get("expr").and_then(Value::as_u64).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(
+            "dispatchSubmit metadata timing after/at requires an expression index".to_string(),
+        )
+    })?;
+    u32::try_from(index)
+        .map(|expression| ExprRefIr { expression })
+        .map_err(|_| {
+            RuntimeError::InvalidArtifact(
+                "dispatchSubmit metadata timing expression index is out of range".to_string(),
+            )
+        })
+}
+
+async fn evaluate_dispatch_timing(
+    context: &mut EvalContext<'_>,
+    plan: &TaskSubmitTimingPlan,
+) -> Result<TaskSubmitTimingControl> {
+    match plan.kind {
+        TaskSubmitTimingKind::Immediate => Ok(TaskSubmitTimingControl::Immediate),
+        TaskSubmitTimingKind::After => {
+            let value = context
+                .eval_program_expr_ref(plan.expr.expect("after timing plan has an expression"))
+                .await?;
+            let duration_ms = duration_millis_from_value(&value)?;
+            Ok(TaskSubmitTimingControl::After { duration_ms })
+        }
+        TaskSubmitTimingKind::At => {
+            let value = context
+                .eval_program_expr_ref(plan.expr.expect("at timing plan has an expression"))
+                .await?;
+            match value.value() {
+                RuntimeValue::Date(utc_millis) => Ok(TaskSubmitTimingControl::At {
+                    utc_millis: *utc_millis,
+                }),
+                _ => Err(RuntimeError::InvalidArtifact(
+                    "dispatch at() timing expression did not evaluate to an Instant/Date"
+                        .to_string(),
+                )),
+            }
+        }
+    }
+}
+
+fn duration_millis_from_value(value: &RuntimeValueCarrier) -> Result<u64> {
+    match value.value() {
+        RuntimeValue::Number(millis)
+            if millis.is_finite()
+                && *millis >= 0.0
+                && millis.fract() == 0.0
+                && *millis <= u64::MAX as f64 =>
+        {
+            Ok(*millis as u64)
+        }
+        _ => Err(RuntimeError::InvalidArtifact(
+            "dispatch after() timing expression did not evaluate to a non-negative Duration"
+                .to_string(),
+        )),
+    }
 }
 
 fn task_submit_build_id(request_build_id: &str) -> Option<String> {
@@ -234,11 +472,16 @@ async fn encode_task_request_payload(
     context: &mut EvalContext<'_>,
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
+    target: TaskSubmitTarget,
+    values: Vec<RuntimeValueCarrier>,
 ) -> Result<TaskEncodedCall> {
-    let target = task_submit_target(call)?;
     match target.kind.as_str() {
-        "function" => encode_task_function_payload(context, call, projection, target).await,
-        "actorMethod" => encode_task_actor_method_payload(context, call, projection, target).await,
+        "function" => {
+            encode_task_function_payload(context, call, projection, target, values).await
+        }
+        "actorMethod" => {
+            encode_task_actor_method_payload(context, call, projection, target, values).await
+        }
         _ => Err(RuntimeError::InvalidArtifact(format!(
             "dispatchSubmit metadata targetKind {} is unsupported",
             target.kind
@@ -251,6 +494,7 @@ async fn encode_task_function_payload(
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: TaskSubmitTarget,
+    values: Vec<RuntimeValueCarrier>,
 ) -> Result<TaskEncodedCall> {
     let addr = match &projection {
         RuntimeExecutionProjection::Legacy(_) => {
@@ -284,8 +528,7 @@ async fn encode_task_function_payload(
         )?,
     };
     let mut fields = std::collections::BTreeMap::new();
-    for (param, arg_ref) in resolved.executable.params.iter().zip(&call.args) {
-        let value = context.eval_program_expr_ref(*arg_ref).await?;
+    for (param, value) in resolved.executable.params.iter().zip(values) {
         fields.insert(param.name.clone(), value);
     }
     let args_handle = context.heap.heap_mut().alloc_object_carriers(fields)?;
@@ -321,6 +564,7 @@ async fn encode_task_actor_method_payload(
     call: &CallIr,
     projection: RuntimeExecutionProjection<'_>,
     target: TaskSubmitTarget,
+    values: Vec<RuntimeValueCarrier>,
 ) -> Result<TaskEncodedCall> {
     let LinkedCallTarget::ActorDispatch { plan } = &call.target else {
         return Err(RuntimeError::InvalidArtifact(
@@ -349,10 +593,6 @@ async fn encode_task_actor_method_payload(
             expected_arguments,
             call.args.len()
         )));
-    }
-    let mut values = Vec::with_capacity(call.args.len());
-    for arg in &call.args {
-        values.push(context.eval_program_expr_ref(*arg).await?);
     }
     let receiver = values.first().ok_or_else(|| {
         RuntimeError::InvalidArtifact("task actor method call is missing its receiver".to_string())

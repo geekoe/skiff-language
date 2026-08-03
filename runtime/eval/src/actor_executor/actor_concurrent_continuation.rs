@@ -315,6 +315,7 @@ fn type_plan_contains_stream(plan: &RuntimeTypePlan) -> bool {
         | RuntimeTypeNode::Number
         | RuntimeTypeNode::Integer
         | RuntimeTypeNode::Null
+        | RuntimeTypeNode::TaskRef
         | RuntimeTypeNode::Unknown => false,
     }
 }

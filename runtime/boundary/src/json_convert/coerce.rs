@@ -93,6 +93,9 @@ fn coerce_runtime_value_scoped(
             RuntimeValue::String(_) => Ok(value.clone()),
             _ => Err(RuntimeError::Decode("expected runtime string".to_string())),
         },
+        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
+            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+        )),
         RuntimeTypeNode::Bool => match value {
             RuntimeValue::Bool(_) => Ok(value.clone()),
             _ => Err(RuntimeError::Decode("expected runtime bool".to_string())),

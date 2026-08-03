@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     ActivationIdentityControl, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
-    TaskSubmitControlRequest, TaskSubmitTimingControl,
+    TaskSubmitControlRequest, TaskSubmitResponseControl,
 };
 
 /// Request/invocation metadata and `task.submit` operations provided by the host/runtime.
@@ -30,7 +30,7 @@ pub trait RequestCapabilityApi: Send + Sync {
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()>;
+    ) -> CapabilityFuture<'a, TaskSubmitResponseControl>;
 }
 
 #[derive(Clone)]
@@ -105,7 +105,7 @@ impl<'a> RequestCapabilityContext<'a> {
         request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
-    ) -> CapabilityResult<()> {
+    ) -> CapabilityResult<TaskSubmitResponseControl> {
         self.inner
             .submit_task(request, args_payload, execution_control)
             .await

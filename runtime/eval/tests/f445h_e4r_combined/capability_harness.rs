@@ -224,7 +224,7 @@ impl RequestCapabilityApi for HarnessActor {
         _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()> {
+    ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
         unsupported_capability()
     }
 }

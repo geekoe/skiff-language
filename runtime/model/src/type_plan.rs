@@ -61,6 +61,10 @@ pub enum RuntimeTypeNode {
     Bool,
     Number,
     Integer,
+    /// Opaque `std.task.TaskRef` handle. The runtime value is the canonical
+    /// `skiff-task-v1:<owner>.<taskId>` string; recoverable boundaries validate
+    /// the canonical form before accepting it (never a plain string fallback).
+    TaskRef,
     Null,
     Stream(Box<RuntimeTypePlan>),
     Array(Box<RuntimeTypePlan>),

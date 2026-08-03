@@ -353,6 +353,7 @@ fn boundary_type_node(plan: &RuntimeTypePlan) -> Result<BoundaryTypeNode<'_>> {
         RuntimeTypeNode::Bytes => BoundaryTypeNode::Bytes,
         RuntimeTypeNode::Date => BoundaryTypeNode::Date,
         RuntimeTypeNode::String => BoundaryTypeNode::String,
+        RuntimeTypeNode::TaskRef => BoundaryTypeNode::Unknown,
         RuntimeTypeNode::Bool => BoundaryTypeNode::Bool,
         RuntimeTypeNode::Number => BoundaryTypeNode::Number,
         RuntimeTypeNode::Integer => BoundaryTypeNode::Integer,

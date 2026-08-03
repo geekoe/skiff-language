@@ -718,6 +718,13 @@ fn runtime_error_from_capability_ref(
                 message: message.clone(),
             }
         }
+        skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected {
+            code,
+            message,
+        } => RuntimeError::ProviderUnavailable {
+            target: "task.submit.request".to_string(),
+            reason: format!("task.submit rejected ({code}): {message}"),
+        },
         skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
             runtime_error_from_wire_payload_ref(error.as_ref())
         }
@@ -932,6 +939,13 @@ impl From<skiff_runtime_capability_context::CapabilityError> for RuntimeError {
             skiff_runtime_capability_context::CapabilityError::Protocol { target, message } => {
                 RuntimeError::Protocol { target, message }
             }
+            skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected {
+                code,
+                message,
+            } => RuntimeError::ProviderUnavailable {
+                target: "task.submit.request".to_string(),
+                reason: format!("task.submit rejected ({code}): {message}"),
+            },
             skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
                 runtime_error_from_wire_payload(error)
             }

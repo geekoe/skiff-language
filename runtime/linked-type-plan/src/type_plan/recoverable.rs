@@ -380,6 +380,7 @@ fn recoverable_expected_builtin_node(
         RuntimeTypeNode::Bytes => RuntimeRecoverableExpectedTypeNode::Bytes,
         RuntimeTypeNode::Date => RuntimeRecoverableExpectedTypeNode::Date,
         RuntimeTypeNode::String => RuntimeRecoverableExpectedTypeNode::String,
+        RuntimeTypeNode::TaskRef => RuntimeRecoverableExpectedTypeNode::TaskRef,
         RuntimeTypeNode::Bool => RuntimeRecoverableExpectedTypeNode::Bool,
         RuntimeTypeNode::Integer => RuntimeRecoverableExpectedTypeNode::Integer,
         RuntimeTypeNode::Number => RuntimeRecoverableExpectedTypeNode::Number,

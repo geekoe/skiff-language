@@ -560,7 +560,13 @@ impl<'a> EvalContext<'a> {
 
     #[async_recursion]
     async fn exec_statement_dispatch(&mut self, call: &ExprRefIr) -> Result<EvaluatorControl> {
-        task_ops::submit_task_statement(self, *call).await?;
+        let expression = program_expression_ref(self.executable, *call)?;
+        let LinkedExprIr::Call { call } = expression else {
+            return Err(RuntimeError::InvalidArtifact(
+                "dispatch statement must reference a call expression".to_string(),
+            ));
+        };
+        task_ops::submit_dispatch_call(self, call).await?;
         Ok(Flow::Continue.into())
     }
 
@@ -733,6 +739,14 @@ impl<'a> EvalContext<'a> {
         if self.tail_call_context == TailCallContext::Transparent {
             let expression = program_expression_ref(self.executable, value_ref)?;
             if let LinkedExprIr::Call { call } = expression {
+                if task_ops::is_dispatch_submit_call(call) {
+                    // A dispatch expression in return position is not a tail
+                    // call: it submits durably and returns an opaque TaskRef.
+                    return self
+                        .eval_program_expr_ref(value_ref)
+                        .await
+                        .map(|value| Flow::Return(value).into());
+                }
                 if let LinkedCallTarget::Executable { addr } = &call.target {
                     if !self.tail_call_has_stream_semantics(call)? {
                         self.checkpoint_generated_chunk(1)?;
@@ -870,6 +884,10 @@ impl<'a> EvalContext<'a> {
             LinkedExprIr::Unary { op, value } => self.eval_expr_unary(op, value).await,
             LinkedExprIr::Binary { op, left, right } => {
                 self.eval_expr_binary(op, left, right).await
+            }
+            LinkedExprIr::Call { call } if task_ops::is_dispatch_submit_call(call) => {
+                let value = task_ops::submit_dispatch_call(self, call).await?;
+                Ok(value.into())
             }
             LinkedExprIr::Call { call } => self.eval_program_call(call).await,
             LinkedExprIr::ValueBlock { block, result } => {

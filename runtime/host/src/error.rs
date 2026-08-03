@@ -31,6 +31,8 @@ pub enum RuntimeError {
     #[error("protocol error for {target}: {message}")]
     #[allow(dead_code)]
     Protocol { target: String, message: String },
+    #[error("task.submit rejected ({code}): {message}")]
+    TaskSubmitRejected { code: String, message: String },
     #[error("request was cancelled")]
     Cancelled,
     #[error("execution budget exceeded: {reason:?}")]
@@ -668,6 +670,7 @@ impl RuntimeError {
             | RuntimeError::Unsupported(_)
             | RuntimeError::ProviderUnavailable { .. }
             | RuntimeError::Protocol { .. }
+            | RuntimeError::TaskSubmitRejected { .. }
             | RuntimeError::ExternalErrorPayload { .. }
             | RuntimeError::Opaque(_)
             | RuntimeError::Json(_) => false,
@@ -704,6 +707,15 @@ impl RuntimeError {
                 status: None,
                 details: Some(serde_json::json!({
                     "target": target,
+                    "message": message,
+                })),
+            },
+            RuntimeError::TaskSubmitRejected { code, message } => RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "rejectionCode": code,
                     "message": message,
                 })),
             },
@@ -763,6 +775,13 @@ impl RuntimeError {
     pub fn ordinary_catch_projection(&self) -> Option<(CatchIdentity, Value)> {
         match self {
             RuntimeError::Diagnosed(error) => error.inner.ordinary_catch_projection(),
+            RuntimeError::TaskSubmitRejected { code, message } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                serde_json::json!({
+                    "rejectionCode": code,
+                    "message": message,
+                })),
+            ),
             RuntimeError::Opaque(error) => error.catch_projection(),
             RuntimeError::ProviderUnavailable { target, reason } => Some((
                 PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),

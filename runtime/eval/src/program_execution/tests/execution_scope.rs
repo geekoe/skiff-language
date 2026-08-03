@@ -26,8 +26,8 @@ use skiff_runtime_capability_context::{
     FileCapabilitySourceApi, FileChunkSource, FileSourceStreamContext, HttpCapabilityFuture,
     HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedRequestCapabilityContext,
-    RequestCapabilityApi, RequestCapabilityContext, TaskSubmitControlRequest, StreamRuntime,
-    SupervisedStreamConsumptionLease,
+    RequestCapabilityApi, RequestCapabilityContext, TaskSubmitControlRequest,
+    TaskSubmitResponseControl, StreamRuntime, SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
     LinkOverlay, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
@@ -643,9 +643,15 @@ impl RequestCapabilityApi for CarrierReceiptActor {
         _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
-    ) -> CapabilityFuture<'a, ()> {
+    ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
         self.record(execution_control);
-        Box::pin(async { Ok(()) })
+        Box::pin(async {
+            Ok(TaskSubmitResponseControl {
+                task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+                task_id: "task-1".to_string(),
+                request_id: "request-1".to_string(),
+            })
+        })
     }
 }
 
