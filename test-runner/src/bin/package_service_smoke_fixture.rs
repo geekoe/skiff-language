@@ -1,6 +1,6 @@
 use std::{
     env,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -19,14 +19,15 @@ use skiff_runtime_config_snapshot::{
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
     canonical_package::compile_package_project_for_test,
-    canonical_std_seed::seed_canonical_std,
+    canonical_std_seed::{seed_canonical_std, CanonicalStdSeedReceipt},
     package_service_host_fixture::prepare_package_service_host_fixture,
     test_service_fixture::{
         assemble_test_service_fixture, assemble_test_service_fixture_for_run_with_ingress,
+        CanonicalTestServiceFixture,
     },
 };
 
-const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
+const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment | --seed-committed] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
 
 /// Canonical artifact record path of the A3 actor routing projection
 /// (`router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH`); the strict
@@ -75,6 +76,18 @@ fn run() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string(&receipt.to_json())?);
         return Ok(());
     }
+    if args.seed_committed {
+        let package_root = args
+            .package_root
+            .as_deref()
+            .expect("--seed-committed was validated to carry a package root");
+        return seed_committed(
+            &args.platform_sources,
+            package_root,
+            &args.artifact_root,
+            &args.environment,
+        );
+    }
     publish_candidate(args)
 }
 
@@ -85,6 +98,7 @@ struct FixtureArgs {
     platform_sources: CompilerPlatformSources,
     initialize_environment: bool,
     bootstrap_only: bool,
+    seed_committed: bool,
     prepare_host_base: Option<PathBuf>,
     work_root: Option<PathBuf>,
     receipt: Option<PathBuf>,
@@ -97,6 +111,7 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     let mut platform_source_root = None;
     let mut initialize_environment = false;
     let mut bootstrap_only = false;
+    let mut seed_committed = false;
     let mut prepare_host_base = None;
     let mut work_root = None;
     let mut receipt = None;
@@ -132,6 +147,12 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
                 }
                 bootstrap_only = true;
             }
+            "--seed-committed" => {
+                if seed_committed {
+                    anyhow::bail!("--seed-committed was provided more than once");
+                }
+                seed_committed = true;
+            }
             "--prepare-host-base" => {
                 set_once(
                     &mut prepare_host_base,
@@ -162,8 +183,11 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
             "--bootstrap-only does not accept a package root or --initialize-environment"
         );
     }
+    if bootstrap_only && seed_committed {
+        anyhow::bail!("--bootstrap-only and --seed-committed are mutually exclusive");
+    }
     if prepare_host_base.is_some() {
-        if bootstrap_only || package_root.is_some() || initialize_environment {
+        if bootstrap_only || seed_committed || package_root.is_some() || initialize_environment {
             anyhow::bail!(
                 "--prepare-host-base is mutually exclusive with package, bootstrap, and initialization modes"
             );
@@ -173,6 +197,9 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
         }
     } else if work_root.is_some() || receipt.is_some() {
         anyhow::bail!("--work-root and --receipt require --prepare-host-base");
+    }
+    if seed_committed && (package_root.is_none() || initialize_environment) {
+        anyhow::bail!("--seed-committed requires a package root and rejects --initialize-environment");
     }
     let platform_source_root =
         platform_source_root.ok_or_else(|| anyhow::anyhow!("missing --platform-source-root"))?;
@@ -184,6 +211,7 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
         platform_sources,
         initialize_environment,
         bootstrap_only,
+        seed_committed,
         prepare_host_base,
         work_root,
         receipt,
@@ -218,38 +246,12 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     let package_root = args
         .package_root
         .ok_or_else(|| anyhow::anyhow!("missing package root"))?;
-
-    seed_canonical_std(&args.platform_sources, &args.artifact_root)?;
-    let project = compile_package_project_for_test(
+    let (_std, fixture) = assemble_fixture_candidate(
         &args.platform_sources,
         &package_root,
         &args.artifact_root,
+        &args.environment,
     )?;
-    let cases = discover_test_service_cases(&package_root, &package_root, false)?;
-    if cases.is_empty() {
-        anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
-    }
-    let run_scope = format!(
-        "package-service-smoke-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("test clock after Unix epoch")
-            .as_nanos()
-    );
-    let fixture = match env::var("SKIFF_TEST_INGRESS_URL").ok() {
-        Some(ingress_url) => assemble_test_service_fixture_for_run_with_ingress(
-            &project,
-            &cases,
-            Default::default(),
-            &run_scope,
-            &ingress_url,
-            &args.environment,
-        )?,
-        None => {
-            assemble_test_service_fixture(&project, &cases, Default::default(), &args.environment)?
-        }
-    };
     let case = fixture
         .cases
         .first()
@@ -338,6 +340,104 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Assembles one canonical test-service fixture candidate for the smoke
+/// fixture modes: seeds std, compiles the package for test, discovers its
+/// `.test.skiff` cases and builds the immutable fixture records (package,
+/// contracts, deployments, assembly, config snapshot).
+fn assemble_fixture_candidate(
+    platform_sources: &CompilerPlatformSources,
+    package_root: &Path,
+    artifact_root: &Path,
+    environment: &str,
+) -> anyhow::Result<(CanonicalStdSeedReceipt, CanonicalTestServiceFixture)> {
+    let std = seed_canonical_std(platform_sources, artifact_root)?;
+    let project = compile_package_project_for_test(platform_sources, package_root, artifact_root)?;
+    let cases = discover_test_service_cases(package_root, package_root, false)?;
+    if cases.is_empty() {
+        anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
+    }
+    let run_scope = format!(
+        "package-service-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock after Unix epoch")
+            .as_nanos()
+    );
+    let fixture = match env::var("SKIFF_TEST_INGRESS_URL").ok() {
+        Some(ingress_url) => assemble_test_service_fixture_for_run_with_ingress(
+            &project,
+            &cases,
+            Default::default(),
+            &run_scope,
+            &ingress_url,
+            environment,
+        )?,
+        None => {
+            assemble_test_service_fixture(&project, &cases, Default::default(), environment)?
+        }
+    };
+    Ok((std, fixture))
+}
+
+/// Seeds a canonical committed epoch (generation 0) for one fixture package:
+/// publishes the fixture's immutable records (service deployment, assembly,
+/// config snapshot), writes the canonical actor routing projection record and
+/// initializes the environment activation state against the fixture refs. The
+/// emitted `skiff-package-service-bootstrap-v2` receipt drives the isolated
+/// activation-state seed, so the router boots a committed epoch with exact
+/// deployments the activation coordinator can freeze.
+fn seed_committed(
+    platform_sources: &CompilerPlatformSources,
+    package_root: &Path,
+    artifact_root: &Path,
+    environment: &str,
+) -> anyhow::Result<()> {
+    let (std, fixture) =
+        assemble_fixture_candidate(platform_sources, package_root, artifact_root, environment)?;
+    fixture.publish(artifact_root, artifact_root)?;
+    write_actor_routing_projection(artifact_root)?;
+    let store = CanonicalArtifactStore::open(artifact_root)?;
+    let assembly_ref = runtime_assembly_ref(&fixture.records.assembly)?;
+    let config_snapshot_ref = fixture.records.config_snapshot.snapshot_ref().clone();
+    store.initialize_environment_activation(&EnvironmentActivationState::initial(
+        environment,
+        0,
+        assembly_ref.clone(),
+        config_snapshot_ref.clone(),
+    ))?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schemaVersion": "skiff-package-service-bootstrap-v2",
+            "environment": environment,
+            "bootstrap": {
+                "assembly": assembly_ref,
+                "configSnapshot": config_snapshot_ref,
+                "generation": 0,
+                "std": std.to_json(),
+            },
+        }))?
+    );
+    Ok(())
+}
+
+/// Writes the canonical empty A0 actor routing projection record required by
+/// the E-bootstrap strict loader (`records/actor-routing/current.json`).
+fn write_actor_routing_projection(artifact_root: &Path) -> anyhow::Result<()> {
+    let actor_routing_record = artifact_root.join(ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+    std::fs::create_dir_all(
+        actor_routing_record
+            .parent()
+            .expect("actor routing record path has a parent directory"),
+    )?;
+    std::fs::write(
+        &actor_routing_record,
+        EMPTY_ACTOR_ROUTING_PROJECTION_RECORD,
+    )?;
+    Ok(())
+}
+
 fn initialize_empty_environment(
     store: &CanonicalArtifactStore,
     environment: &str,
@@ -362,16 +462,7 @@ fn initialize_empty_environment(
     // The E-bootstrap strict loader requires the canonical actor routing
     // projection record at the artifact root; the empty environment carries an
     // empty projection until the A1 producer publishes real routing facts.
-    let actor_routing_record = store.root().join(ACTOR_ROUTING_PROJECTION_RECORD_PATH);
-    std::fs::create_dir_all(
-        actor_routing_record
-            .parent()
-            .expect("actor routing record path has a parent directory"),
-    )?;
-    std::fs::write(
-        &actor_routing_record,
-        EMPTY_ACTOR_ROUTING_PROJECTION_RECORD,
-    )?;
+    write_actor_routing_projection(store.root())?;
     let reference = runtime_assembly_ref(&empty)?;
     let config_snapshot_ref = new_runtime_config_snapshot_ref();
     let config_snapshot =
