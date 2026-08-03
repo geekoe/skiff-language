@@ -118,7 +118,7 @@ async fn evaluate_actor_transaction(
     source: TransactionSource,
     fixture: &DbActorFixture,
     frame: crate::actor_executor::ActorExecutionFrame,
-    access: &mut HeapAccess<'_>,
+    access: &mut HeapAccess,
     env: &mut Env,
 ) -> Result<RuntimeValue> {
     let context = fixture.context(frame);

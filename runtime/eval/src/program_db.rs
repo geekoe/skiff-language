@@ -538,7 +538,7 @@ async fn abort_transaction_and_rollback(
 /// quiescence compaction.
 fn rollback_after_transaction(
     program_context: &ProgramExecutionContext<'_>,
-    heap: &mut HeapAccess<'_>,
+    heap: &mut HeapAccess,
     env: &mut Env,
     checkpoint: rollback::TransactionRollbackCheckpoint,
     error: RuntimeError,
