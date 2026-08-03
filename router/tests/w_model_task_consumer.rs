@@ -25,9 +25,10 @@ use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
 };
 
-const REQUIRED_FRAMES: [&str; 22] = [
+const REQUIRED_FRAMES: [&str; 23] = [
     "task.submit.request.function",
     "task.submit.request.actorMethod",
+    "task.submit.request.actorMethod.snapshot",
     "task.submit.request.legacy-no-caller-kind",
     "task.submit.request.timing.after",
     "task.submit.request.timing.at",
@@ -170,6 +171,7 @@ mod tests {
         for name in [
             "task.submit.request.function",
             "task.submit.request.actorMethod",
+            "task.submit.request.actorMethod.snapshot",
             "task.submit.request.timing.after",
             "task.submit.request.timing.at",
         ] {
@@ -371,7 +373,7 @@ mod tests {
     fn expected_frame_type(name: &str) -> &str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at" => "task.submit.request",
@@ -402,7 +404,7 @@ mod tests {
     fn expected_direction(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at"
@@ -430,7 +432,7 @@ mod tests {
     fn expected_decode_as(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at" => "TaskSubmitRequest",
@@ -461,7 +463,7 @@ mod tests {
     fn expected_payload_presence(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at"

@@ -17,7 +17,7 @@ use skiff_runtime_boundary::{
     json::RuntimeBoundaryCodec,
     plan::BoundaryUse,
     request_heap::{deep_clone_runtime_values_between_heaps, RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapNode, InterfaceCarrier, RuntimeValue},
+    runtime_value::{ActorRef, HeapNode, InterfaceCarrier, RuntimeValue},
 };
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedFileUnit,
@@ -262,14 +262,31 @@ impl ActorInstanceHandle {
         &self.fence
     }
 
+    /// Canonical create input (bootstrap payload bytes) frozen when this
+    /// incarnation was materialized. This is the submission-side copy of the
+    /// registry entry's creation inputs; it deliberately contains no Actor
+    /// memory fields.
+    pub(crate) fn activation_create_input(&self) -> &[u8] {
+        &self.instance.activation_facts.create_input
+    }
+
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.instance, &other.instance)
     }
 }
 
+/// Immutable activation facts retained by one live incarnation for actor-method
+/// task submission (authoritative design Actor-method target). Only the
+/// recoverable `create` input is kept; memory fields are never snapshotted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActorActivationFacts {
+    pub(crate) create_input: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct ActorInstance {
     fence: ActorInstanceFence,
+    activation_facts: ActorActivationFacts,
     state: Mutex<ActorInstanceState>,
     next_execution_token: AtomicU64,
     upgrading: AtomicBool,
@@ -1272,6 +1289,55 @@ impl ActorInstanceStore {
         self.len() == 0
     }
 
+    /// Resolves the exact live incarnation for one authenticated Actor
+    /// reference (logical key + pinned epoch). Returns `None` when the
+    /// incarnation is absent, replaced, upgrading, or not yet admitted —
+    /// callers must treat that as a submission-side definite rejection with
+    /// no task created.
+    pub(crate) fn handle_for_actor_ref(
+        &self,
+        actor_ref: &ActorRef,
+    ) -> Option<ActorInstanceHandle> {
+        let epoch = actor_ref.epoch()?;
+        let incarnation = ActorIncarnationKey {
+            logical_key: ActorLogicalKey {
+                service_id: actor_ref.service_id().to_string(),
+                actor_type_identity: actor_ref.actor_type_identity().to_string(),
+                actor_id_type_identity: actor_ref.actor_id_type_identity().to_string(),
+                actor_id_encoding_version: actor_ref.actor_id_encoding_version().to_string(),
+                canonical_actor_id_key_bytes: actor_ref.canonical_actor_id_key_bytes().to_vec(),
+                actor_id_hash: actor_ref.actor_id_hash().to_string(),
+            },
+            epoch,
+        };
+        let state = self
+            .state
+            .lock()
+            .expect("actor instance store lock poisoned");
+        if state
+            .latest_epochs
+            .get(&incarnation.logical_key)
+            .is_some_and(|latest| *latest != epoch)
+        {
+            return None;
+        }
+        let instance = state.instances.get(&incarnation)?;
+        if instance.upgrading.load(Ordering::Acquire) {
+            return None;
+        }
+        let instance_state = instance
+            .state
+            .lock()
+            .expect("actor instance state lock poisoned");
+        if instance_state.pending_discard || !instance.admitted.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(ActorInstanceHandle {
+            fence: instance.fence.clone(),
+            instance: Arc::clone(instance),
+        })
+    }
+
     /// The later Actor executor enters field state through this exact-fence
     /// gate. The method is crate-private so ordinary host/request consumers
     /// cannot turn an opaque handle into field access. The arena guard must be
@@ -2017,6 +2083,9 @@ fn materialize_instance(
     Ok(MaterializedActorInstance {
         instance: ActorInstance {
             fence: request.fence.clone(),
+            activation_facts: ActorActivationFacts {
+                create_input: request.bootstrap_payload.to_vec(),
+            },
             state: Mutex::new(ActorInstanceState {
                 fields,
                 arena: Arc::new(tokio::sync::Mutex::new(heap)),

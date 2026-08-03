@@ -1,29 +1,38 @@
 use serde_json::{json, Value};
+use base64::Engine as _;
 use skiff_artifact_model::MetadataValue;
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::recoverable::is_canonical_task_ref_string;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
-    ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, CapabilityError,
-    OwnedExecutionControl, TaskCancelControlRequest, TaskCancelControlResponse,
+    ActivationIdentityControl, ActorActivationSnapshotControl, ActorInvocationDeclarationOwner,
+    ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorMethodTaskTargetControl,
+    CapabilityError, OwnedExecutionControl, TaskCancelControlRequest, TaskCancelControlResponse,
     TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlRequest,
     TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_program::{
-    CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorMethodImplementation,
-    LinkedCallTarget, UnitAddr,
+    CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorCreateMethod,
+    LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedCallTarget,
+    UnitAddr,
 };
-use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlan, RuntimeTypePlanLinkedExt};
+use skiff_runtime_linked_type_plan::{
+    PlanContext, ProgramTypeView, RuntimeRecoverableExpectedTypePlanLinkedExt, RuntimeTypePlan,
+    RuntimeTypePlanLinkedExt,
+};
 use skiff_runtime_model::{
-    recoverable::RuntimeRecoverableExpectedTypePlan, runtime_value::RuntimeValue,
-    runtime_value::RuntimeValueCarrier, value::HeapNode,
+    recoverable::{
+        RuntimeRecoverableExpectedRecordFieldPlan, RuntimeRecoverableExpectedTypeNode,
+        RuntimeRecoverableExpectedTypePlan,
+    },
+    runtime_value::{ActorRef, RuntimeValue, RuntimeValueCarrier},
+    value::HeapNode,
 };
 use skiff_runtime_native::dispatch::RuntimeNativeInvocation;
 
 use crate::{
-    actor_instance::resolve_actor_declaration,
+    actor_instance::{resolve_actor_declaration, ActorInstanceFence, ActorInstanceHandle},
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
     heap_access::HeapAccess,
@@ -743,6 +752,10 @@ async fn encode_task_actor_method_payload(
             "task actor method receiver is missing its pinned epoch".to_string(),
         ));
     }
+    // Freeze the ActorActivationSnapshot before any recoverable encoding or
+    // wire write: missing authenticated registry facts or unrecoverable
+    // create input is a definite submission rejection (no task is created).
+    let activation = actor_activation_snapshot(context, &projection, plan, &actor_ref)?;
 
     let request_context = context.context.request_context();
     let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload)
@@ -820,8 +833,211 @@ async fn encode_task_actor_method_payload(
             actor_abi_identity: plan.actor_abi_identity.clone(),
             actor_implementation_identity: plan.actor_implementation_identity.clone(),
             method_identity: plan.method_identity.clone(),
+            activation,
         }),
     })
+}
+
+/// Freezes the actor activation snapshot (key / create input / expected-type
+/// plan) from the authenticated live incarnation of `actor_ref`.
+///
+/// The only trusted submission-side source is this Runtime's actor instance
+/// store: `self` uses the current execution frame; explicit Actor references
+/// must resolve to a live, admitted incarnation in the same store. Absence is
+/// a definite rejection (no `task.submit.request` is produced).
+fn actor_activation_snapshot(
+    context: &mut EvalContext<'_>,
+    projection: &RuntimeExecutionProjection<'_>,
+    plan: &LinkedActorMethodDispatchPlan,
+    actor_ref: &ActorRef,
+) -> Result<ActorActivationSnapshotControl> {
+    let declaration = resolve_actor_declaration(projection.type_view(), &plan.declaration_owner)?;
+    let handle = authenticated_actor_handle(context, actor_ref)?;
+    let key = actor_activation_key_payload(handle.fence())?;
+    let create_input = handle.activation_create_input().to_vec();
+    let create = declaration.create.as_ref();
+    let create_addr = create
+        .map(|create| actor_method_executable_addr(plan, &create.implementation))
+        .unwrap_or_else(|| ExecutableAddr {
+            unit: plan.declaration_owner.unit.clone(),
+            file: plan.declaration_owner.file.clone(),
+            executable: 0,
+        });
+    let expected_type_plan = create_request_recoverable_expected_plan(
+        projection.type_view(),
+        &create_addr,
+        create,
+    )?;
+    if !create_input.is_empty() {
+        gate_create_input(
+            context,
+            projection,
+            plan,
+            create.ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "actor activation has create input but no create declaration".to_string(),
+                )
+            })?,
+            &create_input,
+        )?;
+    }
+    Ok(ActorActivationSnapshotControl {
+        key: base64::engine::general_purpose::STANDARD.encode(key),
+        create_input: base64::engine::general_purpose::STANDARD.encode(&create_input),
+        expected_type_plan: serde_json::to_value(&expected_type_plan).map_err(|error| {
+            RuntimeError::Decode(format!(
+                "actor create expected-type plan failed to encode: {error}"
+            ))
+        })?,
+    })
+}
+
+fn authenticated_actor_handle(
+    context: &mut EvalContext<'_>,
+    actor_ref: &ActorRef,
+) -> Result<ActorInstanceHandle> {
+    let Some(frame) = context.context.actor_execution_frame() else {
+        return Err(RuntimeError::ProviderUnavailable {
+            target: TASK_SUBMIT_TARGET.to_string(),
+            reason:
+                "actor method dispatch target has no authenticated actor registry entry in this Runtime; no task was created"
+                    .to_string(),
+        });
+    };
+    let current = frame.current_handle();
+    if actor_ref_matches_fence(actor_ref, current.fence()) {
+        return Ok(current);
+    }
+    frame.find_handle(actor_ref).ok_or_else(|| {
+        RuntimeError::ProviderUnavailable {
+            target: TASK_SUBMIT_TARGET.to_string(),
+            reason:
+                "actor method dispatch target registry entry is not available in this Runtime; no task was created"
+                    .to_string(),
+        }
+    })
+}
+
+fn actor_ref_matches_fence(actor_ref: &ActorRef, fence: &ActorInstanceFence) -> bool {
+    let key = &fence.incarnation.logical_key;
+    actor_ref.epoch() == Some(fence.incarnation.epoch)
+        && actor_ref.service_id() == key.service_id
+        && actor_ref.actor_type_identity() == key.actor_type_identity
+        && actor_ref.actor_id_type_identity() == key.actor_id_type_identity
+        && actor_ref.actor_id_encoding_version() == key.actor_id_encoding_version
+        && actor_ref.canonical_actor_id_key_bytes() == key.canonical_actor_id_key_bytes.as_slice()
+        && actor_ref.actor_id_hash() == key.actor_id_hash
+}
+
+/// Canonical JSON payload of the actor logical key (same field spellings as
+/// the wire `ActorLogicalKeyFrameHeader`), encoded as recoverable payload
+/// bytes. E2b decodes this to restore a minimal registry entry.
+fn actor_activation_key_payload(fence: &ActorInstanceFence) -> Result<Vec<u8>> {
+    let key = &fence.incarnation.logical_key;
+    let value = json!({
+        "serviceId": key.service_id,
+        "actorTypeIdentity": key.actor_type_identity,
+        "actorIdTypeIdentity": key.actor_id_type_identity,
+        "actorIdEncodingVersion": key.actor_id_encoding_version,
+        "canonicalActorIdKeyBytesBase64": base64::engine::general_purpose::STANDARD.encode(
+            &key.canonical_actor_id_key_bytes
+        ),
+        "actorIdHash": key.actor_id_hash,
+    });
+    canonical_json_bytes(&value).map_err(|error| RuntimeError::Decode(error.to_string()))
+}
+
+/// Runtime recoverable expected-type plan for the `create` parameters (an
+/// empty record for create-less actors). This is the plan the execution side
+/// uses to decode / re-encode the frozen create input.
+fn create_request_recoverable_expected_plan<'p>(
+    program: ProgramTypeView<'p>,
+    addr: &ExecutableAddr,
+    create: Option<&LinkedActorCreateMethod>,
+) -> Result<RuntimeRecoverableExpectedTypePlan> {
+    let context = PlanContext::from_type_view(program, addr);
+    let mut fields = Vec::new();
+    if let Some(create) = create {
+        for parameter in &create.parameters {
+            let ty = RuntimeRecoverableExpectedTypePlan::from_linked(&parameter.ty, &context)?;
+            let required = !matches!(
+                &ty.node,
+                RuntimeRecoverableExpectedTypeNode::Nullable { .. }
+            );
+            fields.push(RuntimeRecoverableExpectedRecordFieldPlan {
+                name: parameter.name.clone(),
+                ty,
+                required,
+            });
+        }
+    }
+    Ok(RuntimeRecoverableExpectedTypePlan {
+        label: "record".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::Record {
+            fields,
+            boundary_record_kind: None,
+        },
+    })
+}
+
+/// Recoverable policy gate for the frozen create input: every create argument
+/// must decode against the linked create plan and survive the owner-internal
+/// recoverable boundary. Failure is a definite submission rejection.
+fn gate_create_input(
+    context: &mut EvalContext<'_>,
+    projection: &RuntimeExecutionProjection<'_>,
+    plan: &LinkedActorMethodDispatchPlan,
+    create: &LinkedActorCreateMethod,
+    create_input: &[u8],
+) -> Result<()> {
+    let wire: Vec<Value> = serde_json::from_slice(create_input).map_err(|error| {
+        RuntimeError::Decode(format!(
+            "actor create input is not a canonical JSON array: {error}"
+        ))
+    })?;
+    if wire.len() != create.parameters.len() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "actor create input has {} argument(s), expected {}",
+            wire.len(),
+            create.parameters.len()
+        )));
+    }
+    let create_addr = actor_method_executable_addr(plan, &create.implementation);
+    let type_context = PlanContext::from_type_view(projection.type_view(), &create_addr);
+    let mut gate_fields = std::collections::BTreeMap::new();
+    for (index, (parameter, wire_value)) in create.parameters.iter().zip(wire).enumerate() {
+        let type_plan = RuntimeTypePlan::from_linked(&parameter.ty, &type_context)?;
+        let value = RuntimeBoundaryCodec::new(
+            &type_plan,
+            BoundaryUse::NativeArg,
+            format!("Actor create argument {index}"),
+        )
+        .from_wire_json(&wire_value, context.heap.heap_mut())
+        .map_err(RuntimeError::from)?;
+        gate_fields.insert(parameter.name.clone(), RuntimeValueCarrier::from(value));
+    }
+    let gate_handle = context.heap.heap_mut().alloc_object_carriers(gate_fields)?;
+    let recoverable_expected = create_request_recoverable_expected_plan(
+        projection.type_view(),
+        &create_addr,
+        Some(create),
+    )?;
+    let request_context = context.context.request_context();
+    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload)
+        .with_origin_service(
+            PayloadServiceRef::new(request_context.service_id())
+                .with_version(request_context.service_version())
+                .with_build_id(request_context.request_build_id()),
+        );
+    encode_task_args_payload(
+        &RuntimeValue::Heap(gate_handle),
+        &recoverable_expected,
+        &boundary,
+        context.heap.heap_mut(),
+        &EvalRecoverableBehaviorHooks::new_for_execution(&projection)?,
+    )?;
+    Ok(())
 }
 
 fn exact_actor_method<'a>(

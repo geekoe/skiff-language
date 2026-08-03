@@ -69,6 +69,24 @@ impl ActorExecutionFrame {
             .expect("actor suspension segment lock poisoned"))
     }
 
+    /// The exact authenticated handle of the currently executing incarnation.
+    /// `self` in actor methods is not materialized as an ordinary value, so
+    /// task self-messages derive the snapshot source from this handle.
+    pub(crate) fn current_handle(&self) -> ActorInstanceHandle {
+        self.suspension.shared.handle.clone()
+    }
+
+    /// Resolves another Actor reference against this Runtime's actor instance
+    /// store (the same ownership the current actor belongs to). Returns
+    /// `None` when the referenced incarnation is not a live authenticated
+    /// handle; task submission treats that as a definite rejection.
+    pub(crate) fn find_handle(&self, actor_ref: &ActorRef) -> Option<ActorInstanceHandle> {
+        self.suspension
+            .shared
+            .store
+            .handle_for_actor_ref(actor_ref)
+    }
+
     fn ensure_active(&self) -> Result<MutexGuard<'_, Option<SegmentLease>>, RuntimeError> {
         let segment = self.current_segment()?;
         let lease = segment.as_ref().ok_or_else(|| {

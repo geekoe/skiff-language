@@ -8,12 +8,15 @@
 
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, TaskCallerKind, TaskSubmitControlMessage,
+    ActivationIdentityControl, ActorActivationSnapshotControl,
+    ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
+    ActorMethodTaskTargetControl, TaskCallerKind, TaskSubmitControlMessage,
     TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::{
     decode_task_submit_request_frame, TaskCallerKind as WireTaskCallerKind,
+    TaskTargetKind as WireTaskTargetKind,
 };
 
 use super::*;
@@ -89,6 +92,70 @@ fn driver_encodes_actor_invocation_submit_with_closed_caller_kind() {
     assert_eq!(
         header.target_kind,
         skiff_runtime_transport::protocol::TaskTargetKind::Function
+    );
+    assert_eq!(payload, vec![1, 2]);
+    let reencoded =
+        skiff_runtime_transport::protocol::encode_task_submit_request_frame(&header, &payload)
+            .expect("re-encode");
+    assert_eq!(reencoded, frame, "canonical roundtrip must be byte-exact");
+}
+
+#[test]
+fn driver_encodes_actor_method_submit_with_frozen_activation_snapshot() {
+    let mut message = task_submit_message(TaskCallerKind::ActorInvocation, "parent-1");
+    message.request.target_kind = "actorMethod".to_string();
+    message.request.target = "Counter.increment".to_string();
+    message.request.actor_method = Some(ActorMethodTaskTargetControl {
+        actor_ref: skiff_runtime_model::runtime_value::ActorRef::new(
+            "example.com/docs",
+            "CounterActor",
+            "CounterId",
+            "skiff-actor-id-encoding-v1",
+            vec![1, 2, 3],
+            format!("sha256:{}", "1".repeat(64)),
+            Some(7),
+        ),
+        declaration_owner: ActorInvocationDeclarationOwner {
+            unit: ActorInvocationOwnerUnit::Service,
+            file: ActorInvocationOwnerFile::FileIrIdentity("file:1".to_string()),
+            actor_symbol: "Counter".to_string(),
+        },
+        actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new(format!(
+            "skiff-actor-abi-v1:sha256:{}",
+            "a".repeat(64)
+        )),
+        actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+            format!("skiff-actor-implementation-v1:sha256:{}", "b".repeat(64)),
+        ),
+        method_identity: skiff_artifact_model::ActorMethodIdentity::new(format!(
+            "skiff-actor-method-v1:sha256:{}",
+            "c".repeat(64)
+        )),
+        activation: ActorActivationSnapshotControl {
+            key: "a2V5".to_string(),
+            create_input: "W10=".to_string(),
+            expected_type_plan: serde_json::json!({
+                "label": "record",
+                "node": { "kind": "record", "fields": [] }
+            }),
+        },
+    });
+    let frame =
+        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+            .expect("canonical actor method task submit must encode");
+    let (header, payload) =
+        decode_task_submit_request_frame(&frame).expect("canonical task submit must decode");
+    assert_eq!(header.target_kind, WireTaskTargetKind::ActorMethod);
+    let actor_method = header
+        .actor_method
+        .as_ref()
+        .expect("actorMethod metadata must be carried");
+    assert_eq!(actor_method.actor_ref.epoch, 7);
+    assert_eq!(actor_method.activation.key, "a2V5");
+    assert_eq!(actor_method.activation.create_input, "W10=");
+    assert_eq!(
+        actor_method.activation.expected_type_plan["node"]["kind"],
+        "record"
     );
     assert_eq!(payload, vec![1, 2]);
     let reencoded =

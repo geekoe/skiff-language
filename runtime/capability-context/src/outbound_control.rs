@@ -1,12 +1,13 @@
 pub use skiff_runtime_request_contract::{
-    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
-    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
-    ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest,
-    TaskCancelControlResponse, TaskStatusControlRequest, TaskStatusControlResponse,
-    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
-    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
+    ActivationIdentityControl, ActorActivationSnapshotControl, ActorControlDeadline,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
+    ActorMethodTaskTargetControl, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RuntimeClientSessionControl,
+    RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest, TaskCancelControlResponse,
+    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlRequest,
+    TaskSubmitResponseControl, TaskSubmitTimingControl, WebSocketConnectionPolicyControl,
+    WebSocketConnectionPolicyOverflowControl,
 };
 
 /// Canonical `task.submit.request` writer message after H-task-parent-cut.

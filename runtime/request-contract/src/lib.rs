@@ -26,13 +26,14 @@ pub use envelope::{
 };
 pub use error::{RuntimeErrorPayload, WirePayload};
 pub use outbound::{
-    ActivationIdentityControl, ActorControlDeadline, ActorFindControlRequest,
-    ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
-    ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
-    ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest,
-    TaskCancelControlResponse, TaskStatusControlRequest, TaskStatusControlResponse,
-    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
+    ActivationIdentityControl, ActorActivationSnapshotControl, ActorControlDeadline,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
+    ActorMethodTaskTargetControl, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
+    OutboundControlMessage, OutboundResponse, RequestCancelControl, RuntimeDeadlineControl,
+    TaskCallerKind, TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskSubmitTimingControl,
 };
 pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

@@ -24,7 +24,8 @@ use crate::{
         ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
         ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
         RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, TaskActorMethodTargetFrameMetadata,
-        TaskCancelRequestFrameHeader, TaskStatusRequestFrameHeader,
+        TaskActorActivationSnapshotFrameMetadata, TaskCancelRequestFrameHeader,
+        TaskStatusRequestFrameHeader,
         TaskSubmitRequestFrameHeader, TaskRef, RUNTIME_FRAME_SCHEMA_VERSION,
         encode_task_cancel_request_frame, encode_task_status_request_frame,
     },
@@ -343,6 +344,11 @@ fn actor_method_task_target_frame(
         actor_abi_identity: target.actor_abi_identity,
         actor_implementation_identity: target.actor_implementation_identity,
         method_identity: target.method_identity,
+        activation: TaskActorActivationSnapshotFrameMetadata {
+            key: target.activation.key,
+            create_input: target.activation.create_input,
+            expected_type_plan: target.activation.expected_type_plan,
+        },
     })
 }
 

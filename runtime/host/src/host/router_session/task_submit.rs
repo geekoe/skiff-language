@@ -18,7 +18,8 @@ use skiff_runtime_transport::actor_method::{
 };
 use skiff_runtime_transport::protocol::{
     encode_task_submit_request_frame, ActivationIdentityFrameMetadata,
-    TaskActorMethodTargetFrameMetadata, TaskCallerKind as WireTaskCallerKind,
+    TaskActorActivationSnapshotFrameMetadata, TaskActorMethodTargetFrameMetadata,
+    TaskCallerKind as WireTaskCallerKind,
     TaskSubmitRequestFrameHeaderV2, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
     TASK_SUBMIT_REQUEST_FRAME_TYPE,
 };
@@ -161,6 +162,11 @@ fn actor_method_task_target_frame(
         actor_abi_identity: target.actor_abi_identity.clone(),
         actor_implementation_identity: target.actor_implementation_identity.clone(),
         method_identity: target.method_identity.clone(),
+        activation: TaskActorActivationSnapshotFrameMetadata {
+            key: target.activation.key.clone(),
+            create_input: target.activation.create_input.clone(),
+            expected_type_plan: target.activation.expected_type_plan.clone(),
+        },
     })
 }
 
