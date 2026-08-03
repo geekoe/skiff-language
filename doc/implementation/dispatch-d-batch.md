@@ -35,7 +35,7 @@
 | D1 dispatch_wire | dispatch wire / control 契约检查点 | main@16c177a0 | dispatch-wire | 18b0da77（tree 1b34cd17） | 见交接 + 集成探针 | merged |
 | D2 router_control | router control 接入 | integration@e5df67f8（D1 合并点） | router-control | 3a0c138c（tree ad85274b） | 见交接 + 集成探针 | merged |
 | D3 dispatch_grammar | dispatch 表达式语法 / compiler 接入 | main@16c177a0 | dispatch-grammar | 91a1322e（tree 60481ec5） | 见交接 + 集成探针 | merged |
-| D4 dispatch_compiler_runtime | runtime 接入 | 待交接确认 | 待开发 Agent 交接 | 待交接 | 见交接 + 集成探针 | pending |
+| D4 dispatch_runtime | runtime durable submit 接入（TaskRef） | integration@5cc1595c（D1–D3 合并点） | runtime-durable-submit | cdf0cb6d（tree 7db30e14） | 见交接 + 集成探针 | merged |
 
 节点串行；集成 Agent 每轮核对 branch/worktree/commit/tree/写集后合并。
 
@@ -63,6 +63,7 @@
 | 1 | D1 dispatch_wire | dispatch-wire | e5df67f8（tree 68280832） | PASS：cargo check skiff-runtime-transport/skiff-task-control/skiff-router；task_wire_corpus 10/10、w_model_task_corpus 7/7、actor_task_router 7/7、task_repair_acceptance 3/3、task_repair_direction 6/6；零冲突 | 已清理 | merged |
 | 2 | D2 router_control | router-control | 400078ac（tree d28f9b9a） | PASS：cargo check transport/task-control/router/syntax/compiler-*；task_wire_corpus 10/10、w_model_task_corpus 7/7、task_control_unit 14/14、skiff-task-control 25+3+9；零冲突 | 已清理 | merged |
 | 3 | D3 dispatch_grammar | dispatch-grammar | 90fc4a3b（tree 2c7c70b6） | PASS（与 D2 合并后同一轮探针）；dispatch_grammar 3/3；零冲突 | 已清理 | merged |
+| 4 | D4 dispatch_runtime | runtime-durable-submit | 211cddea（tree 7db30e14） | PASS：cargo check transport/task-control/router/eval/host/model/boundary/request-contract/syntax/compiler；task_wire_corpus 10/10、w_model 7/7、task_control_unit 14/14、dispatch_grammar 3/3、eval canonical 11/11、boundary recoverable 27/27；零冲突（boundary 构建首次因磁盘满 ENOSPC，清理已合并 worktree 后重跑通过） | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新
 commit/tree、合并任务、探针结果与 worktree 审计清单。
