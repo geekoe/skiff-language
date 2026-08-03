@@ -104,6 +104,14 @@ pub(super) fn collect_emit_expression_call_violations(
         Expr::DbLeaseRead(read) => {
             collect_emit_expression_call_violations(path, &read.key, violations);
         }
+        Expr::Dispatch { call, timing } => {
+            collect_emit_expression_call_violations(path, call, violations);
+            if let Some(crate::shared::ast::DispatchTiming::After(expr)
+            | crate::shared::ast::DispatchTiming::At(expr)) = timing
+            {
+                collect_emit_expression_call_violations(path, expr, violations);
+            }
+        }
         Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
@@ -132,7 +140,6 @@ fn collect_emit_stmt_violations(
             }
         }
         crate::shared::ast::Stmt::Let { value, .. }
-        | crate::shared::ast::Stmt::Dispatch { call: value }
         | crate::shared::ast::Stmt::Expr(value)
         | crate::shared::ast::Stmt::Emit(value) => {
             collect_emit_expression_call_violations(path, value, violations)
@@ -340,6 +347,7 @@ pub(super) fn infer_expr_type(
         Expr::DbLeaseRead(_) => {
             Some("{ expiresAt: string, owner: string, requestId: string }?".to_string())
         }
+        Expr::Dispatch { .. } => Some("std.task.TaskRef".to_string()),
     }
 }
 

@@ -4,7 +4,10 @@ use std::{
 };
 
 use crate::{
-    file_ir::{BoxSourceIr, CallIr, CallTargetIr, ExecutableIr, ExprIr, PackageRefIr, TypeRefIr},
+    file_ir::{
+        BoxSourceIr, CallIr, CallTargetIr, ExecutableIr, ExprIr, MetadataValue, PackageRefIr,
+        ExprRefIr, StmtIr, TypeRefIr,
+    },
     source_unit_lowering::symbol,
 };
 use skiff_artifact_model::{
@@ -1487,9 +1490,9 @@ fn actor_create_self_method_dispatch_stays_rejected() {
                   current.increment()
                 }
 
-                function increment(self: Counter) -> number {
+                function increment(self: Counter) -> void {
                   self.count = self.count + 1
-                  return self.count
+                  return
                 }
               }
             "#,
@@ -1499,6 +1502,175 @@ fn actor_create_self_method_dispatch_stays_rejected() {
     assert!(
         error.contains("actor Counter create cannot call other methods of the same instance"),
         "unexpected create self-call error: {error}"
+    );
+}
+
+#[test]
+fn dispatch_expression_lowers_task_submit_plan_with_timing() {
+    let unit = lowered_unit(
+        r#"
+            type Instant = Date
+
+            function run(input: string) -> void {
+              return
+            }
+
+            function start(input: string, instant: Instant) -> void {
+              const afterRef = dispatch run(input) after(200ms)
+              const atRef = dispatch run(input) at(instant)
+              dispatch run(input)
+            }
+        "#,
+    );
+    let start = unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == format!("{MODULE}.start"))
+        .expect("start executable");
+
+    let StmtIr::Let {
+        value: after_call_ref,
+        ..
+    } = &start.body.statements[0]
+    else {
+        panic!("first dispatch must lower into a let statement");
+    };
+    let after_call = task_submit_call(start, *after_call_ref);
+    assert_eq!(
+        after_call.args.len(),
+        1,
+        "dispatch payload args must evaluate each argument exactly once"
+    );
+    let after_timing = task_submit_timing(after_call);
+    assert_eq!(
+        after_timing.get("kind"),
+        Some(&MetadataValue::String("after".to_string()))
+    );
+    let MetadataValue::Number(expr_index) = after_timing.get("expr").expect("after expr index")
+    else {
+        panic!("after timing must carry an expression index");
+    };
+    let timing_expr = &start.body.expressions[expr_index.as_u64().unwrap() as usize];
+    let ExprIr::Call { call: timing_call } = timing_expr else {
+        panic!("after timing must lower to a call expression");
+    };
+    // `after(200ms)` desugars to `Duration.milliseconds(200)`.
+    assert!(
+        matches!(
+            timing_call.target,
+            CallTargetIr::Native { .. }
+        ),
+        "unexpected timing call target {:?}",
+        timing_call.target
+    );
+    assert_eq!(timing_call.args.len(), 1);
+    let ExprIr::Literal {
+        value: LiteralIr::Number { value: milliseconds },
+    } = &start.body.expressions[timing_call.args[0].expression as usize]
+    else {
+        panic!("timing literal must lower to a number");
+    };
+    assert_eq!(milliseconds.as_f64(), Some(200.0));
+    assert!(
+        !after_call
+            .args
+            .iter()
+            .any(|arg| arg.expression == expr_index.as_u64().unwrap() as u32),
+        "timing expression must not be duplicated into the payload args"
+    );
+
+    let StmtIr::Let {
+        value: at_call_ref, ..
+    } = &start.body.statements[1]
+    else {
+        panic!("second dispatch must lower into a let statement");
+    };
+    let at_call = task_submit_call(start, *at_call_ref);
+    assert_eq!(at_call.args.len(), 1);
+    let at_timing = task_submit_timing(at_call);
+    assert_eq!(
+        at_timing.get("kind"),
+        Some(&MetadataValue::String("at".to_string()))
+    );
+    let MetadataValue::Number(expr_index) = at_timing.get("expr").expect("at expr index") else {
+        panic!("at timing must carry an expression index");
+    };
+    let ExprIr::LoadSlot { slot } =
+        &start.body.expressions[expr_index.as_u64().unwrap() as usize]
+    else {
+        panic!("at timing must lower to the instant slot load");
+    };
+    assert!(matches!(slot, 1), "instant should occupy slot 1, got {slot}");
+
+    let StmtIr::Dispatch { call: call_ref } = &start.body.statements[2] else {
+        panic!("statement dispatch must keep StmtIr::Dispatch");
+    };
+    let immediate_call = task_submit_call(start, *call_ref);
+    let immediate_timing = task_submit_timing(immediate_call);
+    assert_eq!(
+        immediate_timing.get("kind"),
+        Some(&MetadataValue::String("immediate".to_string()))
+    );
+    assert!(
+        immediate_timing.get("expr").is_none(),
+        "immediate timing must not carry an expression index"
+    );
+}
+
+fn task_submit_call<'a>(executable: &'a ExecutableIr, call_ref: ExprRefIr) -> &'a CallIr {
+    let ExprIr::Call { call } = &executable.body.expressions[call_ref.expression as usize] else {
+        panic!("dispatch must reference a call expression");
+    };
+    call
+}
+
+fn task_submit_timing(call: &CallIr) -> &BTreeMap<String, MetadataValue> {
+    let MetadataValue::Object(metadata) = call
+        .metadata
+        .get("dispatchSubmit")
+        .expect("dispatch call must carry dispatchSubmit metadata")
+    else {
+        panic!("dispatchSubmit metadata must be an object");
+    };
+    let MetadataValue::Object(timing) = metadata.get("timing").expect("timing plan") else {
+        panic!("timing plan must be an object");
+    };
+    timing
+}
+
+#[test]
+fn actor_create_dispatch_self_method_stays_rejected() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                  const current = self
+                  dispatch current.increment()
+                }
+
+                function increment(self: Counter) -> void {
+                  self.count = self.count + 1
+                  return
+                }
+              }
+            "#,
+    )
+    .expect_err("create dispatch self must stay rejected")
+    .to_string();
+    assert!(
+        error.contains("actor Counter create cannot call other methods of the same instance"),
+        "unexpected create self-dispatch error: {error}"
     );
 }
 

@@ -9,7 +9,7 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{
         DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector, DbWhereClause,
-        Expr, ForBinding, Literal, PatchOperation, SourceFile, Stmt, TypeRef,
+        DispatchTiming, Expr, ForBinding, Literal, PatchOperation, SourceFile, Stmt, TypeRef,
     },
     ast_utils::expr_path,
     type_syntax::generic_inner,
@@ -495,10 +495,6 @@ impl SuspendContext<'_, '_> {
                 true
             }
             Stmt::Expr(value) => self.expr_may_suspend(value),
-            Stmt::Dispatch { call } => {
-                let _ = self.expr_may_suspend(call);
-                true
-            }
             Stmt::Break | Stmt::Continue => false,
         }
     }
@@ -574,6 +570,13 @@ impl SuspendContext<'_, '_> {
             }
             Expr::DbLeaseRead(read) => {
                 let _ = self.expr_may_suspend(&read.key);
+                true
+            }
+            Expr::Dispatch { call, timing } => {
+                let _ = self.expr_may_suspend(call);
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    let _ = self.expr_may_suspend(expr);
+                }
                 true
             }
         }
@@ -773,10 +776,11 @@ impl SuspendContext<'_, '_> {
                 DbBlockMode::Effect => Some("null".to_string()),
                 DbBlockMode::Value => None,
             },
-            Expr::DbLeaseClaim(_) => Some("bool".to_string()),
-            Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_text()),
-        }
+        Expr::DbLeaseClaim(_) => Some("bool".to_string()),
+        Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_text()),
+        Expr::Dispatch { .. } => Some("std.task.TaskRef".to_string()),
     }
+}
 
     fn legacy_call_return_type(&self, callee: &Expr, type_args: &[TypeRef]) -> Option<String> {
         let path = expr_path(callee)?;

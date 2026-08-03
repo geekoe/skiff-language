@@ -86,23 +86,6 @@ impl Parser {
                 value_spans,
             ));
         }
-        if self.match_ident("dispatch") {
-            let start = self.previous().span.start;
-            let call = self.parse_expression()?;
-            if !matches!(call.expr, Expr::Call { .. }) {
-                return Err(CompileError::syntax(
-                    "dispatch statement expects a call expression",
-                    call.spans.span.start,
-                ));
-            }
-            let (call_expr, call_spans) = call.into_parts();
-            let end = call_spans.span.end;
-            return Ok(ParsedStmt::with_expression(
-                Stmt::Dispatch { call: call_expr },
-                SourceSpan { start, end },
-                call_spans,
-            ));
-        }
         if self.match_ident("throw") {
             let start = self.previous().span.start;
             let (value_expr, value_spans) = self.parse_expression()?.into_parts();

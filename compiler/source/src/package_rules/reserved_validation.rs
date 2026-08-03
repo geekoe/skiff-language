@@ -12,7 +12,12 @@ pub(super) fn validate_package_reserved_roots_in_block(
 }
 
 pub(super) fn is_reserved_root(name: &str) -> bool {
-    name == "std" || name == "ext" || name == "connect" || name == "config" || name == "root"
+    name == "std"
+        || name == "ext"
+        || name == "connect"
+        || name == "config"
+        || name == "root"
+        || name == "dispatch"
 }
 
 #[cfg(test)]

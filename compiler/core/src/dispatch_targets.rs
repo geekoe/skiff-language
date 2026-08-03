@@ -95,6 +95,7 @@ fn task_submit_has_projected_target(metadata: &MetadataValue) -> Result<bool> {
     let MetadataValue::Object(object) = metadata else {
         return Err(error("dispatchSubmit metadata must be an object"));
     };
+    validate_task_timing_metadata(object)?;
     let Some(MetadataValue::String(target_kind)) = object.get("targetKind") else {
         return Err(error("dispatchSubmit metadata targetKind must be a string"));
     };
@@ -110,6 +111,36 @@ fn task_submit_has_projected_target(metadata: &MetadataValue) -> Result<bool> {
     Err(error(format!(
         "dispatch target kind {target_kind} is unsupported"
     )))
+}
+
+/// Validates the compiler-produced timing plan: `immediate` has no operand,
+/// `after` / `at` must reference the executable body expression index of the
+/// timing operand. A missing timing field is accepted as immediate so legacy
+/// artifacts (and projection tests) keep their default semantics.
+fn validate_task_timing_metadata(object: &BTreeMap<String, MetadataValue>) -> Result<()> {
+    let Some(timing) = object.get("timing") else {
+        return Ok(());
+    };
+    let MetadataValue::Object(timing) = timing else {
+        return Err(error("dispatchSubmit metadata timing must be an object"));
+    };
+    let Some(MetadataValue::String(kind)) = timing.get("kind") else {
+        return Err(error("dispatchSubmit metadata timing kind must be a string"));
+    };
+    match kind.as_str() {
+        "immediate" => Ok(()),
+        "after" | "at" => {
+            if !matches!(timing.get("expr"), Some(MetadataValue::Number(_))) {
+                return Err(error(format!(
+                    "dispatchSubmit metadata timing {kind} requires an expression index"
+                )));
+            }
+            Ok(())
+        }
+        other => Err(error(format!(
+            "dispatch timing kind {other} is unsupported"
+        ))),
+    }
 }
 
 fn service_task_target_for_call(

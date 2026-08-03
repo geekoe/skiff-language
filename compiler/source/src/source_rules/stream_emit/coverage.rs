@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    shared::ast::{Block, Expr, SourceFile, Stmt},
+    shared::ast::{Block, DispatchTiming, Expr, SourceFile, Stmt},
     shared::ast_utils::expr_path,
     shared::type_syntax::generic_parts,
 };
@@ -213,7 +213,6 @@ fn collect_call_targets_in_stmt(
 ) {
     match stmt {
         Stmt::Let { value, .. }
-        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value)
         | Stmt::Throw { value }
@@ -333,6 +332,12 @@ fn collect_call_targets_in_expr(
             collect_call_targets_in_block(&claim.body, known, targets);
         }
         Expr::DbLeaseRead(read) => collect_call_targets_in_expr(&read.key, known, targets),
+        Expr::Dispatch { call, timing } => {
+            collect_call_targets_in_expr(call, known, targets);
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                collect_call_targets_in_expr(expr, known, targets);
+            }
+        }
         Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }

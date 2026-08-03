@@ -137,6 +137,10 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
               dispatch sink(input)
             }
 
+            function expressionSpawn(input: Boxed) -> void {
+              const ref = dispatch sink(input)
+            }
+
             function persist(input: Boxed) -> void {
               db insert Stored { id = input.id payload = input }
             }
@@ -151,6 +155,7 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
     assert_escape_lane(&model, "stream", ValueEscapeLane::Stream);
     assert_escape_lane(&model, "scalarStream", ValueEscapeLane::Stream);
     assert_escape_lane(&model, "spawnWork", ValueEscapeLane::Dispatch);
+    assert_escape_lane(&model, "expressionSpawn", ValueEscapeLane::Dispatch);
     assert!(effects(&model, "persist").may_suspend);
     assert_escape_lane(&model, "persist", ValueEscapeLane::Database);
     assert_escape_lane(&model, "callback", ValueEscapeLane::Callback);

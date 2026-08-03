@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
-    shared::ast::{Block, Expr, FunctionDecl, SourceFile, Stmt},
+    shared::ast::{Block, DispatchTiming, Expr, FunctionDecl, SourceFile, Stmt},
     ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
 };
 
@@ -279,7 +279,7 @@ impl StreamEmitTypeChecker<'_> {
                 }
             }
             Stmt::DbTransaction { body } => self.check_block(body),
-            Stmt::Throw { value } | Stmt::Dispatch { call: value } | Stmt::Expr(value) => {
+            Stmt::Throw { value } | Stmt::Expr(value) => {
                 self.check_expr(value);
             }
             Stmt::Emit(value) => {
@@ -448,6 +448,12 @@ impl StreamEmitTypeChecker<'_> {
             }
             Expr::DbLeaseRead(read) => {
                 self.check_expr(&read.key);
+            }
+            Expr::Dispatch { call, timing } => {
+                self.check_expr(call);
+                if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                    self.check_expr(expr);
+                }
             }
         }
         if self.expression_types.fact(&key).is_none() {

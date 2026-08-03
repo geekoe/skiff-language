@@ -136,6 +136,95 @@ fn actor_method_task_targets_are_not_projected_as_function_routes() {
     assert!(targets.is_empty());
 }
 
+#[test]
+fn validates_dispatch_timing_plan_shapes() {
+    let mut metadata = BTreeMap::new();
+    assert!(
+        validate_task_timing_metadata(&metadata).is_ok(),
+        "missing timing must default to immediate"
+    );
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::Object(BTreeMap::from([(
+            "kind".to_string(),
+            MetadataValue::String("immediate".to_string()),
+        )])),
+    );
+    assert!(validate_task_timing_metadata(&metadata).is_ok());
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::Object(BTreeMap::from([
+            ("kind".to_string(), MetadataValue::String("after".to_string())),
+            ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(3u32))),
+        ])),
+    );
+    assert!(validate_task_timing_metadata(&metadata).is_ok());
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::Object(BTreeMap::from([
+            ("kind".to_string(), MetadataValue::String("at".to_string())),
+            ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(7u32))),
+        ])),
+    );
+    assert!(validate_task_timing_metadata(&metadata).is_ok());
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::Object(BTreeMap::from([(
+            "kind".to_string(),
+            MetadataValue::String("after".to_string()),
+        )])),
+    );
+    assert!(
+        validate_task_timing_metadata(&metadata).is_err(),
+        "after requires an expression index"
+    );
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::Object(BTreeMap::from([(
+            "kind".to_string(),
+            MetadataValue::String("whenever".to_string()),
+        )])),
+    );
+    assert!(
+        validate_task_timing_metadata(&metadata).is_err(),
+        "unsupported timing kind must be rejected"
+    );
+    metadata.insert(
+        "timing".to_string(),
+        MetadataValue::String("immediate".to_string()),
+    );
+    assert!(
+        validate_task_timing_metadata(&metadata).is_err(),
+        "timing must be an object"
+    );
+}
+
+#[test]
+fn function_task_target_projection_accepts_after_timing_plan() {
+    let mut unit = service_file_ir("void");
+    let ExprIr::Call { call } = &mut unit.executables[0].body.expressions[0] else {
+        panic!("fixture must contain a call expression")
+    };
+    call.metadata.insert(
+        TASK_SUBMIT_METADATA_KEY.to_string(),
+        MetadataValue::Object(BTreeMap::from([
+            ("targetKind".to_string(), MetadataValue::String("function".to_string())),
+            (
+                "timing".to_string(),
+                MetadataValue::Object(BTreeMap::from([
+                    ("kind".to_string(), MetadataValue::String("after".to_string())),
+                    ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(0u32))),
+                ])),
+            ),
+        ])),
+    );
+
+    let targets = service_task_targets_with_packages(std::slice::from_ref(&unit), &[], "proto-1")
+        .expect("after timing plan must project the function target");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].target_identity, "function:app.run");
+}
+
 fn service_file_ir(return_type: &str) -> FileIrUnit {
     let mut unit = FileIrUnit::empty("app", "hash");
     unit.file_ir_identity = "file:app".to_string();

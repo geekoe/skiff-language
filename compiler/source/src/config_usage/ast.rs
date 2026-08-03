@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::shared::ast::{Block, BlockSourceSpans, Expr, ExprSourceSpans, SourceFile, Stmt};
+use crate::shared::ast::{
+    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, SourceFile, Stmt,
+};
 
 use super::validation::{
     config_intrinsic_callee, config_intrinsic_field, const_string_expr,
@@ -187,7 +189,7 @@ fn collect_config_uses_in_block(
                     const_strings.remove(name);
                 }
             }
-            Stmt::Dispatch { call: value } | Stmt::Emit(value) | Stmt::Expr(value) => {
+            Stmt::Emit(value) | Stmt::Expr(value) => {
                 collect_config_uses_in_expr(
                     diagnostic_path,
                     source_path,
@@ -774,6 +776,31 @@ fn collect_config_uses_in_expr(
             presence_uses,
             violations,
         ),
+        Expr::Dispatch { call, timing } => {
+            let mut cursor = ExprSpanCursor::new(expr_spans);
+            collect_config_uses_in_expr(
+                diagnostic_path,
+                source_path,
+                call,
+                cursor.next(),
+                const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                collect_config_uses_in_expr(
+                    diagnostic_path,
+                    source_path,
+                    expr,
+                    cursor.next(),
+                    const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
+        }
         Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }

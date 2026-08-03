@@ -187,7 +187,6 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Stmt::Rethrow { .. }
                 | Stmt::Emit(_)
                 | Stmt::Return(_)
-                | Stmt::Dispatch { .. }
                 | Stmt::Break
                 | Stmt::Continue
                 | Stmt::Expr(_) => None,
@@ -222,7 +221,8 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Expr::DbQuery(_)
                 | Expr::DbTransaction(_)
                 | Expr::DbLeaseClaim(_)
-                | Expr::DbLeaseRead(_) => None,
+                | Expr::DbLeaseRead(_)
+                | Expr::Dispatch { .. } => None,
             };
         }
         walk_expr(self, expression);

@@ -54,6 +54,10 @@ impl Parser {
         matches!(&self.peek().kind, TokenKind::Symbol(value) if value == expected)
     }
 
+    pub(super) fn check_duration_literal(&self) -> bool {
+        matches!(&self.peek().kind, TokenKind::Duration(_))
+    }
+
     pub(super) fn check_function_start(&self) -> bool {
         self.check_ident("function")
             || self.check_ident("native")

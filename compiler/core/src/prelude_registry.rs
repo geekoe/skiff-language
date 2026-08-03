@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PRELUDE_REGISTRY_ID: &str = "skiff.prelude";
-pub const RESERVED_ROOT_NAMES: &[&str] = &["service", "std", "connect", "config", "root"];
+pub const RESERVED_ROOT_NAMES: &[&str] =
+    &["service", "std", "connect", "config", "root", "dispatch"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LanguagePrimitiveType {
@@ -161,6 +162,12 @@ pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
         symbol: "std.session.ClientCapability",
         arity: 0,
         kind: CompilerBuiltinTypeKind::Capability,
+    },
+    CompilerBuiltinType {
+        name: "TaskRef",
+        symbol: "std.task.TaskRef",
+        arity: 0,
+        kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
 ];
 

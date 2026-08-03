@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::ast::{
-    Block, DbBody, DbChangeOp, DbDecl, DbOperation, DbSelector, DbWhereClause, DurationLiteral,
-    Expr, ForBinding, FunctionDecl, InterfaceOperation, MatchArm, Pattern, SourceFile, Stmt,
-    TestEffectDeclaration, TestEffectOutcome, TestEffectStepOutcome, TypeRef,
+    Block, DbBody, DbChangeOp, DbDecl, DbOperation, DbSelector, DbWhereClause, DispatchTiming,
+    DurationLiteral, Expr, ForBinding, FunctionDecl, InterfaceOperation, MatchArm, Pattern,
+    SourceFile, Stmt, TestEffectDeclaration, TestEffectOutcome, TestEffectStepOutcome, TypeRef,
 };
 use crate::type_syntax::{generic_parts, split_top_level, string_literal};
 
@@ -137,7 +137,6 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
         Stmt::Assert { condition, .. } => visitor.visit_expr(condition),
         Stmt::Throw { value } => visitor.visit_expr(value),
         Stmt::Rethrow { exception } => visitor.visit_expr(exception),
-        Stmt::Dispatch { call } => visitor.visit_expr(call),
         Stmt::Emit(value) | Stmt::Expr(value) => visitor.visit_expr(value),
         Stmt::Return(value) => {
             if let Some(value) = value {
@@ -230,6 +229,12 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
             visitor.visit_expr(callee);
             for arg in args {
                 visitor.visit_expr(arg);
+            }
+        }
+        Expr::Dispatch { call, timing } => {
+            visitor.visit_expr(call);
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                visitor.visit_expr(expr);
             }
         }
         Expr::Generic { callee, type_args } => {
@@ -641,7 +646,6 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
         Stmt::Assert { condition, .. } => visitor.visit_expr(condition),
         Stmt::Throw { value } => visitor.visit_expr(value),
         Stmt::Rethrow { exception } => visitor.visit_expr(exception),
-        Stmt::Dispatch { call } => visitor.visit_expr(call),
         Stmt::Emit(value) | Stmt::Expr(value) => visitor.visit_expr(value),
         Stmt::Return(value) => {
             if let Some(value) = value {
@@ -708,6 +712,12 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
             visitor.visit_expr(callee);
             for arg in args {
                 visitor.visit_expr(arg);
+            }
+        }
+        Expr::Dispatch { call, timing } => {
+            visitor.visit_expr(call);
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                visitor.visit_expr(expr);
             }
         }
         Expr::Generic { callee, type_args } => {
@@ -883,6 +893,14 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
             expr_contains_with(callee, predicate)
                 || args.iter().any(|arg| expr_contains_with(arg, predicate))
         }
+        Expr::Dispatch { call, timing } => {
+            expr_contains_with(call, predicate)
+                || timing.as_ref().is_some_and(|timing| match timing {
+                    DispatchTiming::After(expr) | DispatchTiming::At(expr) => {
+                        expr_contains_with(expr, predicate)
+                    }
+                })
+        }
         Expr::Generic { callee, .. } => expr_contains_with(callee, predicate),
         Expr::InterfaceBox { value, .. } => expr_contains_with(value, predicate),
         Expr::Field { object, .. } => expr_contains_with(object, predicate),
@@ -1049,7 +1067,7 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
         Stmt::Assert { condition, .. } => expr_contains_with(condition, predicate),
         Stmt::Throw { value } => expr_contains_with(value, predicate),
         Stmt::Rethrow { exception } => expr_contains_with(exception, predicate),
-        Stmt::Dispatch { call } | Stmt::Emit(call) | Stmt::Expr(call) => {
+        Stmt::Emit(call) | Stmt::Expr(call) => {
             expr_contains_with(call, predicate)
         }
         Stmt::Return(value) => value
@@ -1342,7 +1360,6 @@ fn collect_stmt_type_ref_dotted_root_imports(
         }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
-        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value) => collect_expr_type_ref_dotted_root_imports(value, root, imports),
         Stmt::Return(value) => {
@@ -1420,6 +1437,12 @@ fn collect_expr_type_ref_dotted_root_imports(
             collect_expr_type_ref_dotted_root_imports(callee, root, imports);
             for arg in args {
                 collect_expr_type_ref_dotted_root_imports(arg, root, imports);
+            }
+        }
+        Expr::Dispatch { call, timing } => {
+            collect_expr_type_ref_dotted_root_imports(call, root, imports);
+            if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
+                collect_expr_type_ref_dotted_root_imports(expr, root, imports);
             }
         }
         Expr::ObjectLiteral { entries } => {
@@ -1623,7 +1646,6 @@ fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTree
         }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
-        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value) => collect_expr_dotted_root_imports(value, root, imports),
         Stmt::Return(value) => {

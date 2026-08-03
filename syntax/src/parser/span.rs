@@ -132,3 +132,7 @@ pub(super) fn expr_source_spans(
         record_fields: Vec::new(),
     }
 }
+
+pub(super) fn expr_source_spans_from_span(span: SourceSpan) -> ExprSourceSpans {
+    expr_source_spans(span, Vec::new())
+}

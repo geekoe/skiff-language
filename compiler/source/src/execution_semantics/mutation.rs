@@ -243,7 +243,8 @@ fn definitely_lane_local_fresh(expression: &Expr, scope: &Scope) -> bool {
         | Expr::DbQuery(_)
         | Expr::DbTransaction(_)
         | Expr::DbLeaseClaim(_)
-        | Expr::DbLeaseRead(_) => false,
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => false,
     }
 }
 
@@ -296,6 +297,7 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
         | Expr::DbQuery(_)
         | Expr::DbTransaction(_)
         | Expr::DbLeaseClaim(_)
-        | Expr::DbLeaseRead(_) => false,
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => false,
     }
 }
