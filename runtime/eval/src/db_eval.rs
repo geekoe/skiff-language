@@ -66,6 +66,7 @@ impl<'a> DbIrEvaluator<'a> {
         }
     }
 
+    #[async_recursion]
     pub async fn eval_operation(&mut self, operation: &DbOperationIr) -> Result<DbCommand> {
         let target = db_capability_target(&operation.target);
         let type_name = operation.target.type_name.clone();
@@ -416,6 +417,7 @@ impl<'a> DbIrEvaluator<'a> {
             .is_some_and(expected_contains_any_interface)
     }
 
+    #[async_recursion]
     pub async fn eval_query_value(
         &mut self,
         target: &DbTargetIr,
@@ -439,6 +441,7 @@ impl<'a> DbIrEvaluator<'a> {
         runtime_from_wire(&value, self.heap.heap_mut())
     }
 
+    #[async_recursion]
     async fn eval_query(&mut self, query: Option<&DbQueryIr>) -> Result<DbQuery> {
         let Some(query) = query else {
             return Ok(DbQuery::new(Value::Null));
@@ -449,6 +452,7 @@ impl<'a> DbIrEvaluator<'a> {
             .map(DbQuery::new)
     }
 
+    #[async_recursion]
     async fn eval_query_option(&mut self, value: Option<ExprRefIr>) -> Result<Value> {
         let Some(value) = value else {
             return Ok(Value::Null);
@@ -519,6 +523,7 @@ impl<'a> DbIrEvaluator<'a> {
         }
     }
 
+    #[async_recursion]
     async fn eval_predicate_list(&mut self, predicates: &[DbPredicateIr]) -> Result<Vec<Value>> {
         let mut filters = Vec::with_capacity(predicates.len());
         for predicate in predicates {
@@ -529,6 +534,7 @@ impl<'a> DbIrEvaluator<'a> {
         Ok(filters)
     }
 
+    #[async_recursion]
     async fn eval_body_object(&mut self, body: &DbBodyIr) -> Result<DbDocument> {
         match body {
             DbBodyIr::ObjectFields { fields } => {
@@ -542,6 +548,7 @@ impl<'a> DbIrEvaluator<'a> {
         }
     }
 
+    #[async_recursion]
     async fn eval_body_values(&mut self, body: &DbBodyIr) -> Result<Vec<DbDocument>> {
         let value = self.eval_body_object(body).await?;
         value
@@ -554,6 +561,7 @@ impl<'a> DbIrEvaluator<'a> {
             })
     }
 
+    #[async_recursion]
     async fn eval_body_runtime_object(&mut self, body: &DbBodyIr) -> Result<RuntimeValue> {
         match body {
             DbBodyIr::ObjectFields { fields } => {
@@ -571,6 +579,7 @@ impl<'a> DbIrEvaluator<'a> {
         }
     }
 
+    #[async_recursion]
     async fn eval_change(&mut self, change: Option<&DbChangeIr>) -> Result<ServiceDbChange> {
         let mut update = ServiceDbChange::new();
         let Some(change) = change else {
@@ -600,6 +609,7 @@ impl<'a> DbIrEvaluator<'a> {
         Ok(update)
     }
 
+    #[async_recursion]
     async fn eval_change_for_recoverable_plan(
         &mut self,
         change: Option<&DbChangeIr>,
@@ -679,6 +689,7 @@ impl<'a> DbIrEvaluator<'a> {
         })
     }
 
+    #[async_recursion]
     async fn eval_selector(
         &mut self,
         selector: Option<&DbSelectorIr>,
@@ -706,6 +717,7 @@ impl<'a> DbIrEvaluator<'a> {
         }
     }
 
+    #[async_recursion]
     async fn eval_page_options(
         &mut self,
         type_name: &str,
@@ -748,14 +760,16 @@ impl<'a> DbIrEvaluator<'a> {
         Ok(options)
     }
 
+    #[async_recursion]
     async fn eval_expr_wire(&mut self, expr_ref: ExprRefIr) -> Result<Value> {
         let value = self.eval_program_expr_ref(expr_ref).await?;
         runtime_to_wire(&value, self.heap.heap_mut())
     }
 
+    #[async_recursion]
     async fn eval_program_expr_ref(&mut self, expr_ref: ExprRefIr) -> Result<RuntimeValue> {
         self.interpreter
-            .eval_program_expr_ref(
+            .eval_program_expr_ref_ctx(
                 self.program_context.clone(),
                 self.heap,
                 self.env,

@@ -55,9 +55,10 @@ mod current_scope;
 
 impl Interpreter {
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub async fn exec_program_stream_for_in(
         &self,
-        context: ProgramExecutionContext<'_>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -112,7 +113,7 @@ impl Interpreter {
                     }
                 };
             let flow = self
-                .exec_program_for_in_body_carrier(
+                .exec_program_for_in_body_carrier_ctx(
                     context.clone(),
                     heap,
                     env,
@@ -139,10 +140,11 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub(crate) async fn exec_program_stream_producer_for_in(
         &self,
-        program: RuntimeExecutionProjection<'_>,
-        context: ProgramExecutionContext<'_>,
+        program: RuntimeExecutionProjection<'async_recursion>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -196,10 +198,11 @@ impl Interpreter {
     /// parked producer is driven concurrently the first time that stream value
     /// is consumed by a `for-in` (see `exec_program_stream_for_in`).
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub(crate) async fn prepare_deferred_stream_producer(
         &self,
-        program: RuntimeExecutionProjection<'_>,
-        context: ProgramExecutionContext<'_>,
+        program: RuntimeExecutionProjection<'async_recursion>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -231,10 +234,11 @@ impl Interpreter {
     /// executable after receiver dispatch, so the expression-level stream
     /// resolver cannot catch them before argument evaluation.
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub(crate) async fn prepare_deferred_stream_producer_from_values(
         &self,
-        program: RuntimeExecutionProjection<'_>,
-        context: ProgramExecutionContext<'_>,
+        program: RuntimeExecutionProjection<'async_recursion>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &Env,
         caller_addr: &ExecutableAddr,
@@ -368,10 +372,11 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     pub(crate) async fn prepare_native_stream_producer_arg(
         &self,
-        program: RuntimeExecutionProjection<'_>,
-        context: ProgramExecutionContext<'_>,
+        program: RuntimeExecutionProjection<'async_recursion>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -407,7 +412,7 @@ impl Interpreter {
         let owned_context = Arc::new(OwnedProgramExecutionContext::capture(&context));
         spawn_stream_producer(self, owned_context, addr.clone(), producer);
 
-        tokio::pin!(consumer);
+        let consumer = Box::pin(consumer);
         let (consumer_result, heap) = consumer.await;
         match consumer_result {
             Ok(value) => {
@@ -520,7 +525,7 @@ impl Interpreter {
             producer.producer_self.as_ref(),
         ) {
             (Some(const_addr), None) => Some(
-                self.eval_program_const_addr(context.clone(), heap, env, const_addr)
+                self.eval_program_const_addr_ctx(context.clone(), heap, env, const_addr)
                     .await?,
             ),
             (None, Some(receiver)) => Some(receiver.clone()),
@@ -592,7 +597,7 @@ impl Interpreter {
                 arg_producers.push(nested);
             } else {
                 let arg = self
-                    .eval_program_expr_ref(
+                    .eval_program_expr_ref_ctx(
                         context.clone(),
                         heap,
                         env,

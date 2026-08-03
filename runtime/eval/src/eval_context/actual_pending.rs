@@ -48,6 +48,7 @@ impl EvalContext<'_> {
         await_operation(&self.context, frame, self.heap, &execution, future).await
     }
 
+    #[async_recursion]
     pub(super) async fn exec_emit(&mut self, value: ExprRefIr) -> Result<Flow> {
         let value = self.eval_program_expr_ref(value).await?;
         let sink = self
@@ -98,6 +99,7 @@ impl EvalContext<'_> {
         Ok(Flow::Continue)
     }
 
+    #[async_recursion]
     pub(super) async fn eval_callback_interface_call(
         &mut self,
         call: &CallIr,
@@ -124,6 +126,7 @@ impl EvalContext<'_> {
         completed.finalize(self.heap.heap_mut()).map(Into::into)
     }
 
+    #[async_recursion]
     pub(super) async fn eval_actor_dispatch(
         &mut self,
         plan: &LinkedActorMethodDispatchPlan,
@@ -134,6 +137,7 @@ impl EvalContext<'_> {
         completed.finalize(self.heap.heap_mut())
     }
 
+    #[async_recursion]
     pub(super) async fn eval_native_prepared_call(
         &mut self,
         call: &CallIr,

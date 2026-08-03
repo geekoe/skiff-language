@@ -861,16 +861,15 @@ impl<'a> ExecutableInvocation<'a> {
         Ok(())
     }
 
-    pub async fn exec<'ctx>(
+    pub(crate) async fn exec(
         &self,
         interpreter: &Interpreter,
-        context: impl IntoProgramExecutionContext<'ctx> + Send,
+        context: ProgramExecutionContext<'_>,
         heap: &mut HeapAccess,
         env: &mut Env,
     ) -> Result<Flow> {
-        let context = context.into_program_execution_context();
         interpreter
-            .exec_program_executable(context, heap, env, self.addr, self.file, self.executable)
+            .exec_program_executable_ctx(context, heap, env, self.addr, self.file, self.executable)
             .await
     }
 }
@@ -1106,11 +1105,11 @@ impl Interpreter {
 
         if let Some(projection) = context
             .runtime_assembly_target_if_present()
-            .map(RuntimeAssemblyEvalTarget::execution_projection)
+            .map(|target| target.execution_projection().clone())
         {
             return self
                 .call_assembly_executable(
-                    &context,
+                    context,
                     projection,
                     heap,
                     caller_env,
@@ -1122,6 +1121,29 @@ impl Interpreter {
                 .await;
         }
 
+        self.call_legacy_executable_invocation(
+            context,
+            heap,
+            caller_env,
+            caller_addr,
+            addr,
+            type_args,
+            args,
+        )
+        .await
+    }
+
+    #[async_recursion]
+    async fn call_legacy_executable_invocation(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        addr: &ExecutableAddr,
+        type_args: &std::collections::BTreeMap<String, LinkedTypeRef>,
+        args: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
         let invocation = ExecutableInvocation::resolve(self, addr)?;
         let has_separate_self_arg =
             invocation.accepts_separate_self_argument_without_self_param(args.len());
@@ -1169,10 +1191,11 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
     async fn call_assembly_executable(
         &self,
-        context: &ProgramExecutionContext<'_>,
-        projection: &RuntimeAssemblyExecutionProjection,
+        context: ProgramExecutionContext<'async_recursion>,
+        projection: RuntimeAssemblyExecutionProjection,
         heap: &mut HeapAccess,
         caller_env: &Env,
         caller_addr: &ExecutableAddr,
@@ -1180,7 +1203,7 @@ impl Interpreter {
         type_args: &BTreeMap<String, LinkedTypeRef>,
         args: Vec<RuntimeValueCarrier>,
     ) -> Result<RuntimeValueCarrier> {
-        let invocation = AssemblyExecutableInvocation::resolve(projection, addr)?;
+        let invocation = AssemblyExecutableInvocation::resolve(&projection, addr)?;
         let has_separate_self_arg =
             invocation.accepts_separate_self_argument_without_self_param(args.len());
         if !has_separate_self_arg {
@@ -1206,7 +1229,7 @@ impl Interpreter {
         invocation.declare_self(&mut env, self_value)?;
         invocation.declare_args(&mut env, args)?;
         let flow = self
-            .exec_program_executable(
+            .exec_program_executable_ctx(
                 context.clone(),
                 heap,
                 &mut env,
@@ -1378,7 +1401,7 @@ impl Interpreter {
             invocation.declare_self(&mut env, self_value)?;
             invocation.declare_args(&mut env, &args)?;
             let flow = self
-                .exec_program_executable(
+                .exec_program_executable_ctx(
                     context.clone(),
                     heap,
                     &mut env,
@@ -1452,6 +1475,22 @@ impl Interpreter {
         executable: &LinkedExecutable,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
+        self.exec_program_executable_ctx(context, heap, env, addr, file, executable)
+            .await
+    }
+
+    /// Boxed recursion edge: keeps the evaluator's nested-call state machines
+    /// out of the caller's inline future (frame diet, see F8 task).
+    #[async_recursion]
+    pub(crate) async fn exec_program_executable_ctx(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        env: &mut Env,
+        addr: &ExecutableAddr,
+        file: &LinkedFileUnit,
+        executable: &LinkedExecutable,
+    ) -> Result<Flow> {
         let projection = RuntimeExecutionProjection::for_context(self, &context)?;
         let mut control = {
             let mut eval = EvalContext::new_callable_with_projection(
@@ -1475,40 +1514,54 @@ impl Interpreter {
             let EvaluatorControl::TailCall(prepared) = control else {
                 return control.into_flow("evaluator trampoline");
             };
-            let PreparedTailCall {
-                caller,
-                target: prepared_target,
-                env: mut prepared_env,
-                return_plan: _,
-                tail_site,
-            } = *prepared;
-            let resolved = promote_call_site_error(
-                &projection,
-                &context,
-                heap.heap_mut(),
-                &caller,
-                projection.resolve_nested_executable(&prepared_target),
-                &tail_site,
-            )?;
-            let target = resolved.addr.clone();
-            control = {
-                let mut eval = EvalContext::new_callable_with_projection(
-                    self,
-                    projection.clone(),
-                    context.clone(),
-                    heap,
-                    &mut prepared_env,
-                    &target,
-                    resolved.file,
-                    resolved.executable,
-                );
-                let control = eval.exec_tail_entry_control(&caller, &tail_site).await?;
-                if let EvaluatorControl::TailCall(next) = &control {
-                    eval.account_tail_transfer(&next.tail_site)?;
-                }
-                control
-            };
+            control = self
+                .exec_tail_call_hop(projection.clone(), context.clone(), heap, prepared)
+                .await?;
         }
+    }
+
+    /// One trampoline iteration for a prepared non-stream tail call, kept in
+    /// its own boxed future so the evaluator loop's state machine stays small
+    /// (frame diet, see F8 task).
+    #[async_recursion]
+    async fn exec_tail_call_hop(
+        &self,
+        projection: RuntimeExecutionProjection<'async_recursion>,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        prepared: Box<PreparedTailCall>,
+    ) -> Result<EvaluatorControl> {
+        let PreparedTailCall {
+            caller,
+            target: prepared_target,
+            env: mut prepared_env,
+            return_plan: _,
+            tail_site,
+        } = *prepared;
+        let resolved = promote_call_site_error(
+            &projection,
+            &context,
+            heap.heap_mut(),
+            &caller,
+            projection.resolve_nested_executable(&prepared_target),
+            &tail_site,
+        )?;
+        let target = resolved.addr.clone();
+        let mut eval = EvalContext::new_callable_with_projection(
+            self,
+            projection.clone(),
+            context,
+            heap,
+            &mut prepared_env,
+            &target,
+            resolved.file,
+            resolved.executable,
+        );
+        let control = eval.exec_tail_entry_control(&caller, &tail_site).await?;
+        if let EvaluatorControl::TailCall(next) = &control {
+            eval.account_tail_transfer(&next.tail_site)?;
+        }
+        Ok(control)
     }
 
     pub async fn eval_program_const<'ctx>(
@@ -1522,7 +1575,7 @@ impl Interpreter {
     ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
         let const_index = program_u32_to_usize(const_index, "const ref")?;
-        self.eval_program_const_in_file(context, heap, caller_env, addr, file, const_index)
+        self.eval_program_const_in_file_ctx(context, heap, caller_env, addr, file, const_index)
             .await
     }
 
@@ -1534,6 +1587,18 @@ impl Interpreter {
         const_addr: &ConstAddr,
     ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
+        self.eval_program_const_addr_ctx(context, heap, caller_env, const_addr)
+            .await
+    }
+
+    #[async_recursion]
+    pub(crate) async fn eval_program_const_addr_ctx(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        caller_env: &Env,
+        const_addr: &ConstAddr,
+    ) -> Result<RuntimeValueCarrier> {
         let projection = RuntimeExecutionProjection::for_context(self, &context)?;
         let resolved = projection.resolve_const(const_addr)?;
         let addr = ExecutableAddr {
@@ -1541,7 +1606,7 @@ impl Interpreter {
             file: const_addr.file.clone(),
             executable: 0,
         };
-        self.eval_program_const_in_file(
+        self.eval_program_const_in_file_ctx(
             context,
             heap,
             caller_env,
@@ -1552,16 +1617,16 @@ impl Interpreter {
         .await
     }
 
-    async fn eval_program_const_in_file<'ctx>(
+    #[async_recursion]
+    pub(crate) async fn eval_program_const_in_file_ctx(
         &self,
-        context: impl IntoProgramExecutionContext<'ctx>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         caller_env: &Env,
         addr: &ExecutableAddr,
         file: &LinkedFileUnit,
         const_index: usize,
     ) -> Result<RuntimeValueCarrier> {
-        let context = context.into_program_execution_context();
         let constant = file.constants.get(const_index).ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!("RuntimeProgram const {const_index} is missing"))
         })?;
@@ -1588,7 +1653,7 @@ impl Interpreter {
         env.type_substitutions = caller_env.type_substitutions.clone();
         let projection = RuntimeExecutionProjection::for_context(self, &context)?;
         let flow = self
-            .exec_program_executable(context, heap, &mut env, addr, file, &executable)
+            .exec_program_executable_ctx(context, heap, &mut env, addr, file, &executable)
             .await?;
         let value = FlowCompletionPolicy::const_value(flow, &constant.name)?;
         materialize_local_callable_return(
@@ -1612,14 +1677,30 @@ impl Interpreter {
         label: &str,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
+        self.exec_program_block_ctx(context, heap, env, addr, file, executable, label)
+            .await
+    }
+
+    #[async_recursion]
+    pub(crate) async fn exec_program_block_ctx(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        env: &mut Env,
+        addr: &ExecutableAddr,
+        file: &LinkedFileUnit,
+        executable: &LinkedExecutable,
+        label: &str,
+    ) -> Result<Flow> {
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_block(label)
             .await
     }
 
-    async fn exec_program_statement<'ctx>(
+    #[async_recursion]
+    pub(crate) async fn exec_program_statement_ctx(
         &self,
-        context: impl IntoProgramExecutionContext<'ctx>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -1627,7 +1708,6 @@ impl Interpreter {
         executable: &LinkedExecutable,
         statement: &LinkedStmtIr,
     ) -> Result<Flow> {
-        let context = context.into_program_execution_context();
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_statement(statement)
             .await
@@ -1646,8 +1726,8 @@ impl Interpreter {
         body: &str,
         item_value: RuntimeValue,
     ) -> Result<Flow> {
-        self.exec_program_for_in_body_carrier(
-            context,
+        self.exec_program_for_in_body_carrier_ctx(
+            context.into_program_execution_context(),
             heap,
             env,
             addr,
@@ -1674,6 +1754,26 @@ impl Interpreter {
         item_value: RuntimeValueCarrier,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
+        self.exec_program_for_in_body_carrier_ctx(
+            context, heap, env, addr, file, executable, item_slot, body, item_value,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[async_recursion]
+    pub(crate) async fn exec_program_for_in_body_carrier_ctx(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        env: &mut Env,
+        addr: &ExecutableAddr,
+        file: &LinkedFileUnit,
+        executable: &LinkedExecutable,
+        item_slot: usize,
+        body: &str,
+        item_value: RuntimeValueCarrier,
+    ) -> Result<Flow> {
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_for_in_body(item_slot, body, item_value)
             .await
@@ -1690,14 +1790,30 @@ impl Interpreter {
         expr_ref: ExprRefIr,
     ) -> Result<RuntimeValueCarrier> {
         let context = context.into_program_execution_context();
+        self.eval_program_expr_ref_ctx(context, heap, env, addr, file, executable, expr_ref)
+            .await
+    }
+
+    #[async_recursion]
+    pub(crate) async fn eval_program_expr_ref_ctx(
+        &self,
+        context: ProgramExecutionContext<'async_recursion>,
+        heap: &mut HeapAccess,
+        env: &mut Env,
+        addr: &ExecutableAddr,
+        file: &LinkedFileUnit,
+        executable: &LinkedExecutable,
+        expr_ref: ExprRefIr,
+    ) -> Result<RuntimeValueCarrier> {
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr_ref(expr_ref)
             .await
     }
 
-    async fn eval_program_expr<'ctx>(
+    #[async_recursion]
+    pub(crate) async fn eval_program_expr_ctx(
         &self,
-        context: impl IntoProgramExecutionContext<'ctx>,
+        context: ProgramExecutionContext<'async_recursion>,
         heap: &mut HeapAccess,
         env: &mut Env,
         addr: &ExecutableAddr,
@@ -1705,7 +1821,6 @@ impl Interpreter {
         executable: &LinkedExecutable,
         expr: &LinkedExprIr,
     ) -> Result<RuntimeValueCarrier> {
-        let context = context.into_program_execution_context();
         EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr(expr)
             .await

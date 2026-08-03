@@ -4,6 +4,7 @@ use skiff_runtime_model::runtime_value::{RuntimeValue, RuntimeValueCarrier};
 use super::*;
 
 impl EvalContext<'_> {
+    #[async_recursion]
     pub(in crate::eval_context) async fn eval_activation_relative_service_call(
         &mut self,
         call: &CallIr,
