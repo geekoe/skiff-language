@@ -19,7 +19,6 @@ impl ActorNativeDispatch {
         target == "std.actor.get"
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(super) fn prepare<'a, ActorContext>(
         actor_context: ActorContext,
         invocation: RuntimeNativeInvocation,

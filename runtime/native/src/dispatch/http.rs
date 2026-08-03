@@ -75,7 +75,7 @@ impl HttpNativeDispatch {
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare<
         'a,
         ActorContext,

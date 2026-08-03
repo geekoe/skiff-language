@@ -96,8 +96,8 @@ pnpm verify  # 完整非 live 验证：tests + rust-quality + type-check + check
 组件 selector 可以独立运行，但完整测试使用 `tests`，不要用 `cargo test --workspace` 或旧的
 Rust/Node 分组替代。Rust workspace package 到被测组件的唯一归属声明在
 `scripts/lib/verify-rust-subjects.mjs`；新增 workspace crate 时必须把它归入恰好一个 subject。
-`rust-quality` 分别执行 workspace rustfmt check 和 baseline-aware workspace Clippy；Clippy 当前只对
-`clippy::too_many_lines` 的 checked-in baseline 做双向门禁，其他 warning 仍为 advisory。
+`rust-quality` 分别执行 workspace rustfmt check 和 Rust file/function line gates；workspace Clippy 的
+`clippy::too_many_lines` 为 deny（阈值 534），无 baseline/白名单，其他 warning 仍为 advisory。
 
 跨语言计划只在 `scripts/verify.mjs` 中维护。`--jobs <n>` 是唯一并发参数，默认 1（串行）；
 runner 运行全部选中 task 并汇总所有失败：任一 task 的失败只计入该 task 的结果，不阻止其他

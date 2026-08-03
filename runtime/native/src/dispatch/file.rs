@@ -36,7 +36,7 @@ impl FileNativeDispatch {
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare<'a, FileContext, SourceContext>(
         file_context: FileContext,
         file_source_stream_context: SourceContext,
