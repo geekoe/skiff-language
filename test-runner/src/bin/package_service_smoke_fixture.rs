@@ -28,6 +28,18 @@ use skiff_test_runner::{
 
 const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
 
+/// Canonical artifact record path of the A3 actor routing projection
+/// (`router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH`); the strict
+/// loader fails closed when this record is missing from the artifact root.
+const ACTOR_ROUTING_PROJECTION_RECORD_PATH: &str = "records/actor-routing/current.json";
+
+/// Canonical JSON bytes of the empty A0 actor routing projection
+/// (`ActorRoutingProjection::new("skiff-actor-routing-projection-v1", [])`).
+/// Keys are sorted and the JSON is compact, matching the strict loader's
+/// canonical-bytes equality check.
+const EMPTY_ACTOR_ROUTING_PROJECTION_RECORD: &str =
+    r#"{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}"#;
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
@@ -347,6 +359,19 @@ fn initialize_empty_environment(
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut empty)?;
     store.write_runtime_assembly(&empty)?;
+    // The E-bootstrap strict loader requires the canonical actor routing
+    // projection record at the artifact root; the empty environment carries an
+    // empty projection until the A1 producer publishes real routing facts.
+    let actor_routing_record = store.root().join(ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+    std::fs::create_dir_all(
+        actor_routing_record
+            .parent()
+            .expect("actor routing record path has a parent directory"),
+    )?;
+    std::fs::write(
+        &actor_routing_record,
+        EMPTY_ACTOR_ROUTING_PROJECTION_RECORD,
+    )?;
     let reference = runtime_assembly_ref(&empty)?;
     let config_snapshot_ref = new_runtime_config_snapshot_ref();
     let config_snapshot =
