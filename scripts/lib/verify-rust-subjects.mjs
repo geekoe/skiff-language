@@ -70,6 +70,7 @@ const rustImplementationSubjects = [
     taskId: 'router:contracts',
     packages: [
       rustPackage('router', 'skiff-router'),
+      rustPackage('task-control', 'skiff-task-control'),
     ],
   },
 ];

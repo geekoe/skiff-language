@@ -1,0 +1,194 @@
+//! TaskStore port: durable create, conditional claim / renew / settlement /
+//! cancel / lease-expiry recovery, due scan and status.
+//!
+//! Every transition is a conditional write against the current
+//! state / lease; the Mongo adapter executes the same contracts with
+//! server-authority CAS. The in-memory fake shares the pure reducer so the
+//! contract tests in `tests/support/contract.rs` cover both adapters.
+
+use async_trait::async_trait;
+
+use crate::error::TaskStoreError;
+use crate::model::{
+    DurableDuration, DurableUtcTimestamp, TaskCancelResult, TaskId, TaskRecord, TaskStatus,
+    TaskTerminal,
+};
+
+#[async_trait]
+pub trait TaskStore: Send + Sync {
+    /// Durable TaskId-idempotent create. Retrying the exact canonical record
+    /// returns the existing record; the same TaskId with a different canonical
+    /// record is rejected with `DuplicateTaskId`.
+    async fn create(&self, record: TaskRecord) -> Result<TaskRecord, TaskStoreError>;
+
+    /// Conditional claim: only `ready` + `due_at <= store now` +
+    /// `image_activatable`. Atomically writes `leased`, a fresh
+    /// AttemptId / lease id, the lease owner / expiry and a monotonic attempt
+    /// generation bump.
+    async fn claim(&self, input: ClaimInput) -> Result<ClaimOutcome, TaskStoreError>;
+
+    /// Lease heartbeat. Only the current lease id may renew, and only while
+    /// the lease is unexpired at store authority time.
+    async fn renew(&self, input: RenewInput) -> Result<RenewOutcome, TaskStoreError>;
+
+    /// Terminal settlement CAS. Accepts the exact same terminal write
+    /// idempotently, rejects stale leases, expired leases and conflicting
+    /// outcomes.
+    async fn settle(&self, input: SettleInput) -> Result<SettleOutcome, TaskStoreError>;
+
+    /// Before-start cancellation: scheduled / ready -> canceled;
+    /// leased -> alreadyStarted; terminal -> alreadyTerminal;
+    /// missing / retention-expired -> expired.
+    async fn cancel(&self, input: CancelInput) -> Result<TaskCancelResult, TaskStoreError>;
+
+    /// Lease-expiry recovery CAS: only `leased` with `lease_expiry <= store
+    /// now`; atomically clears the lease and returns to `ready`.
+    async fn recover_expired_lease(
+        &self,
+        input: LeaseRecoveryInput,
+    ) -> Result<LeaseRecoveryOutcome, TaskStoreError>;
+
+    /// Due scan: advances `scheduled` tasks whose `due_at` has arrived to
+    /// `ready` (store authority time) and returns due `ready` records ordered
+    /// by `due_at`. Duplicate scans never create a second logical task.
+    async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError>;
+
+    /// Status query. Missing records and records past their retention horizon
+    /// return `expired`; terminal records never reopen.
+    async fn status(&self, input: StatusInput) -> Result<TaskStatus, TaskStoreError>;
+
+    /// Create / verify storage indexes (no-op for in-memory stores).
+    async fn ensure_indexes(&self) -> Result<(), TaskStoreError>;
+
+    /// Release storage resources; operations after close fail with `Closed`.
+    async fn close(&self) -> Result<(), TaskStoreError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimInput {
+    pub task_id: TaskId,
+    /// Scheduler / execution witness identity recorded in the lease.
+    pub owner: String,
+    /// Lease expiry chosen by the claimant; must be after store authority now.
+    pub lease_expiry: DurableUtcTimestamp,
+    /// Scheduler precondition: the frozen execution image can be reactivated.
+    pub image_activatable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewInput {
+    pub task_id: TaskId,
+    pub lease_id: crate::model::LeaseId,
+    pub new_expiry: DurableUtcTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettleInput {
+    pub task_id: TaskId,
+    pub lease_id: crate::model::LeaseId,
+    pub terminal: TaskTerminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelInput {
+    pub task_id: TaskId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseRecoveryInput {
+    pub task_id: TaskId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueScanInput {
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusInput {
+    pub task_id: TaskId,
+    pub retention: DurableDuration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimOutcome {
+    Claimed(TaskRecord),
+    Rejected(ClaimRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimRejection {
+    /// State is scheduled (due scanner has not advanced it yet).
+    NotReady,
+    /// `due_at` is after store authority now.
+    NotDue,
+    /// Claimant precondition: execution image cannot be reactivated.
+    NotActivatable,
+    /// Already leased; a second valid lease is impossible.
+    AlreadyLeased,
+    /// Terminal tasks never reopen.
+    Terminal,
+    /// No record with this TaskId.
+    NotFound,
+    /// Lease expiry supplied by the claimant is not in the future.
+    InvalidLeaseExpiry,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenewOutcome {
+    Renewed(TaskRecord),
+    Rejected(RenewRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewRejection {
+    /// Lease id does not match the current lease.
+    StaleLease,
+    /// Current lease already expired at store authority time.
+    ExpiredLease,
+    /// New expiry is not in the future at store authority time.
+    InvalidExpiry,
+    /// Not leased (scheduled / ready).
+    NotLeased,
+    /// Terminal tasks cannot be renewed.
+    Terminal,
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettleOutcome {
+    /// This settlement won the CAS and wrote the terminal.
+    Settled(TaskRecord),
+    /// Exact same terminal write replayed; idempotently accepted.
+    AlreadySettled(TaskRecord),
+    /// Same lease but a different terminal outcome already converged.
+    Conflict(TaskRecord),
+    StaleLease,
+    ExpiredLease,
+    NotLeased,
+    NotFound,
+}
+
+/// Reducer-level settlement result; adapters add the current record context
+/// when mapping to [`SettleOutcome`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettleTransition {
+    Settled(TaskRecord),
+    AlreadySettled,
+    Conflict,
+    StaleLease,
+    ExpiredLease,
+    NotLeased,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LeaseRecoveryOutcome {
+    /// Recovery won the CAS; lease cleared and task is `ready` again.
+    Recovered(TaskRecord),
+    /// Lease is still valid at store authority time.
+    NotExpired,
+    /// Not leased (scheduled / ready).
+    NotLeased,
+    Terminal,
+    NotFound,
+}

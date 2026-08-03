@@ -190,7 +190,10 @@ test('registry transition keeps a single router subject owner with no dual owner
     selector: 'router',
     leafSelector: 'router-contracts',
     taskId: 'router:contracts',
-    packages: [{ workspaceMember: 'router', packageName: 'skiff-router' }],
+    packages: [
+      { workspaceMember: 'router', packageName: 'skiff-router' },
+      { workspaceMember: 'task-control', packageName: 'skiff-task-control' },
+    ],
   });
   const routerNames = new Set(['router', 'router-contracts', 'router:contracts']);
   assert.equal(
