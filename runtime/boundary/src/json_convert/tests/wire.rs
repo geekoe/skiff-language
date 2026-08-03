@@ -104,6 +104,84 @@ fn typed_wire_decode_preserves_nested_nominal_identity_sidecars() {
 }
 
 #[test]
+fn task_ref_stays_opaque_on_external_json_boundaries() {
+    let plan = RuntimeTypePlan::synthetic_named_builtin(
+        "std.task.TaskRef",
+        RuntimeTypeNode::TaskRef,
+        Vec::new(),
+    );
+    let mut heap = RequestHeap::default();
+    let codec = RuntimeBoundaryCodec::new(&plan, BoundaryUse::TypedJson, "external boundary");
+    let canonical = "skiff-task-v1:b3duZXI.dGFzay0x";
+
+    let decode_error = codec
+        .from_wire_json(&json!(canonical), &mut heap)
+        .expect_err("external JSON decode must refuse TaskRef");
+    assert!(
+        decode_error.to_string().contains("opaque handle"),
+        "unexpected external decode error: {decode_error}"
+    );
+
+    let encode_error = codec
+        .to_wire_json(&RuntimeValue::String(canonical.to_string()), &mut heap)
+        .expect_err("external JSON encode must refuse TaskRef");
+    assert!(
+        encode_error.to_string().contains("opaque handle"),
+        "unexpected external encode error: {encode_error}"
+    );
+}
+
+#[test]
+fn db_result_lane_roundtrips_task_ref_canonical_string() {
+    let task_ref_plan = RuntimeTypePlan::synthetic_named_builtin(
+        "std.task.TaskRef",
+        RuntimeTypeNode::TaskRef,
+        Vec::new(),
+    );
+    let record_plan = RuntimeTypePlan::synthetic_request_record(vec![
+        RuntimeRecordFieldPlan::new("ref", task_ref_plan, true),
+        RuntimeRecordFieldPlan::new(
+            "title",
+            RuntimeTypePlan::synthetic_named_builtin("string", RuntimeTypeNode::String, Vec::new()),
+            true,
+        ),
+    ]);
+    let canonical = "skiff-task-v1:b3duZXI.dGFzay0x";
+    let mut heap = RequestHeap::default();
+    let codec = RuntimeBoundaryCodec::new(&record_plan, BoundaryUse::DbResultDecode, "db result");
+
+    let decoded = codec
+        .from_wire_json(
+            &json!({ "ref": canonical, "title": "task entry" }),
+            &mut heap,
+        )
+        .expect("DB result decode must accept canonical TaskRef strings");
+    let RuntimeValue::Heap(handle) = decoded else {
+        panic!("db result must decode to a record");
+    };
+    assert_eq!(
+        heap.object_field_carrier(handle, "ref")
+            .expect("ref carrier")
+            .expect("ref present")
+            .value(),
+        &RuntimeValue::String(canonical.to_string())
+    );
+
+    let encoded = codec
+        .to_wire_json(&decoded, &mut heap)
+        .expect("DB result encode must render canonical TaskRef strings");
+    assert_eq!(encoded, json!({ "ref": canonical, "title": "task entry" }));
+
+    // The write-projection lane shares the same owner-internal allowance.
+    let write_codec =
+        RuntimeBoundaryCodec::new(&record_plan, BoundaryUse::DbWriteProjection, "db write");
+    let encoded = write_codec
+        .to_wire_json(&decoded, &mut heap)
+        .expect("DB write projection encode must render canonical TaskRef strings");
+    assert_eq!(encoded, json!({ "ref": canonical, "title": "task entry" }));
+}
+
+#[test]
 fn wire_roundtrip_supports_scalars_bytes_arrays_maps_and_representation_keys() {
     let expected = map(
         representation("UserId", named("string")),

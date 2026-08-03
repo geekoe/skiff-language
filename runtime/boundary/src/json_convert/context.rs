@@ -20,6 +20,7 @@ pub(super) type RuntimeCoerceContext = HeapTraversalContext<RuntimeCoerceTravers
 pub(super) struct StreamHandleScope {
     allow_current_node: bool,
     allow_runtime_owned_record_fields: bool,
+    allow_internal_task_ref: bool,
 }
 
 impl StreamHandleScope {
@@ -27,6 +28,7 @@ impl StreamHandleScope {
         Self {
             allow_current_node: true,
             allow_runtime_owned_record_fields: false,
+            allow_internal_task_ref: false,
         }
     }
 
@@ -34,6 +36,7 @@ impl StreamHandleScope {
         Self {
             allow_current_node: true,
             allow_runtime_owned_record_fields: true,
+            allow_internal_task_ref: false,
         }
     }
 
@@ -41,11 +44,24 @@ impl StreamHandleScope {
         Self {
             allow_current_node: false,
             allow_runtime_owned_record_fields: false,
+            allow_internal_task_ref: false,
         }
+    }
+
+    /// Marks this traversal as the owner-internal DB lane, where opaque
+    /// `std.task.TaskRef` handles round-trip as their canonical strings
+    /// (`doc/reference/dispatch.md` §3 DB stored field contract).
+    pub(super) fn with_internal_task_ref(mut self) -> Self {
+        self.allow_internal_task_ref = true;
+        self
     }
 
     pub(super) fn allows_current_node(self) -> bool {
         self.allow_current_node
+    }
+
+    pub(super) fn allows_internal_task_ref(self) -> bool {
+        self.allow_internal_task_ref
     }
 
     pub(super) fn record_field(self, record_plan: &RuntimeTypePlan, field_name: &str) -> Self {
@@ -53,8 +69,19 @@ impl StreamHandleScope {
             && is_runtime_owned_stream_handle_field(record_plan, field_name)
         {
             Self::root()
+                .with_internal_task_ref_if(self.allow_internal_task_ref)
         } else {
-            Self::nested()
+            Self::nested().with_internal_task_ref_if(self.allow_internal_task_ref)
+        }
+    }
+}
+
+impl StreamHandleScope {
+    fn with_internal_task_ref_if(self, enabled: bool) -> Self {
+        if enabled {
+            self.with_internal_task_ref()
+        } else {
+            self
         }
     }
 }
@@ -97,6 +124,7 @@ pub(super) struct HeapTraversalContext<Mode> {
     active: HashSet<HeapHandle>,
     max_depth: usize,
     limits: RequestHeapLimits,
+    allow_internal_task_ref: bool,
     mode: PhantomData<Mode>,
 }
 
@@ -109,8 +137,20 @@ where
             active: HashSet::new(),
             max_depth: 0,
             limits,
+            allow_internal_task_ref: false,
             mode: PhantomData,
         }
+    }
+
+    /// Marks this traversal as the owner-internal DB lane, where opaque
+    /// `std.task.TaskRef` handles round-trip as their canonical strings.
+    pub(super) fn with_internal_task_ref(mut self) -> Self {
+        self.allow_internal_task_ref = true;
+        self
+    }
+
+    pub(super) fn allows_internal_task_ref(&self) -> bool {
+        self.allow_internal_task_ref
     }
 
     pub(super) fn max_depth(&self) -> usize {

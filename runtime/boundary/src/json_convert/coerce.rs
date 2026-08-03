@@ -1,5 +1,6 @@
 use crate::{
     error::{Result, RuntimeError},
+    recoverable::is_canonical_task_ref_string,
     request_heap::RequestHeap,
     runtime_value::{
         HeapNode, InterfaceValue, RuntimeMap, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
@@ -93,9 +94,22 @@ fn coerce_runtime_value_scoped(
             RuntimeValue::String(_) => Ok(value.clone()),
             _ => Err(RuntimeError::Decode("expected runtime string".to_string())),
         },
-        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
-            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
-        )),
+        RuntimeTypeNode::TaskRef => match value {
+            RuntimeValue::String(value)
+                if context.allows_internal_task_ref() && is_canonical_task_ref_string(value) =>
+            {
+                Ok(RuntimeValue::String(value.clone()))
+            }
+            RuntimeValue::String(_value) if context.allows_internal_task_ref() => {
+                Err(RuntimeError::Decode(
+                    "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)"
+                        .to_string(),
+                ))
+            }
+            _ => Err(RuntimeError::Decode(
+                "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+            )),
+        },
         RuntimeTypeNode::Bool => match value {
             RuntimeValue::Bool(_) => Ok(value.clone()),
             _ => Err(RuntimeError::Decode("expected runtime bool".to_string())),

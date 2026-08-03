@@ -37,6 +37,18 @@ impl BoundaryStreamHandlePolicy {
     }
 }
 
+/// Whether plan-aware JSON conversion may carry opaque internal handles
+/// (`std.task.TaskRef`) as their canonical strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InternalHandlePolicy {
+    /// External JSON boundaries: opaque handles are refused.
+    Refuse,
+    /// Owner-internal DB lane (`BoundaryUse::DbResultDecode` /
+    /// `DbWriteProjection`): TaskRef renders as its canonical
+    /// `skiff-task-v1:` string and decodes back under a TaskRef plan.
+    AllowTaskRef,
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn from_wire(
     json: &Value,
@@ -55,7 +67,27 @@ pub fn decode_wire_plan_impl(
     heap: &mut RequestHeap,
     stream_policy: BoundaryStreamHandlePolicy,
 ) -> Result<RuntimeValue> {
-    wire_decode::from_wire_inner_with_stream_scope(json, plan, heap, stream_policy.scope())
+    decode_wire_plan_impl_with_handles(
+        json,
+        plan,
+        heap,
+        stream_policy,
+        InternalHandlePolicy::Refuse,
+    )
+}
+
+pub fn decode_wire_plan_impl_with_handles(
+    json: &Value,
+    plan: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+    stream_policy: BoundaryStreamHandlePolicy,
+    handle_policy: InternalHandlePolicy,
+) -> Result<RuntimeValue> {
+    let scope = match handle_policy {
+        InternalHandlePolicy::Refuse => stream_policy.scope(),
+        InternalHandlePolicy::AllowTaskRef => stream_policy.scope().with_internal_task_ref(),
+    };
+    wire_decode::from_wire_inner_with_stream_scope(json, plan, heap, scope)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -76,8 +108,29 @@ pub fn encode_wire_plan_impl(
     heap: &mut RequestHeap,
     stream_policy: BoundaryStreamHandlePolicy,
 ) -> Result<Value> {
+    encode_wire_plan_impl_with_handles(
+        value,
+        plan,
+        heap,
+        stream_policy,
+        InternalHandlePolicy::Refuse,
+    )
+}
+
+pub fn encode_wire_plan_impl_with_handles(
+    value: &RuntimeValue,
+    plan: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+    stream_policy: BoundaryStreamHandlePolicy,
+    handle_policy: InternalHandlePolicy,
+) -> Result<Value> {
     let limits = heap.limits().clone();
-    let mut context = context::MaterializeContext::new(limits);
+    let mut context = match handle_policy {
+        InternalHandlePolicy::Refuse => context::MaterializeContext::new(limits),
+        InternalHandlePolicy::AllowTaskRef => {
+            context::MaterializeContext::new(limits).with_internal_task_ref()
+        }
+    };
     let output =
         materialize::to_wire_inner(heap, value, plan, &mut context, stream_policy.scope(), 0)?;
     let output_bytes = materialize::serialized_json_len(&output)?;
@@ -102,8 +155,27 @@ pub fn coerce_runtime_value_plan_impl(
     plan: &RuntimeTypePlan,
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
+    coerce_runtime_value_plan_impl_with_handles(
+        value,
+        plan,
+        heap,
+        InternalHandlePolicy::Refuse,
+    )
+}
+
+pub fn coerce_runtime_value_plan_impl_with_handles(
+    value: &RuntimeValue,
+    plan: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+    handle_policy: InternalHandlePolicy,
+) -> Result<RuntimeValue> {
     let limits = heap.limits().clone();
-    let mut context = context::RuntimeCoerceContext::new(limits);
+    let mut context = match handle_policy {
+        InternalHandlePolicy::Refuse => context::RuntimeCoerceContext::new(limits),
+        InternalHandlePolicy::AllowTaskRef => {
+            context::RuntimeCoerceContext::new(limits).with_internal_task_ref()
+        }
+    };
     coerce::coerce_runtime_value_inner(value, plan, heap, &mut context, 0)
 }
 
@@ -206,13 +278,29 @@ pub fn decode_json_text_runtime_value_plan_impl(
     heap: &mut RequestHeap,
     stream_policy: BoundaryStreamHandlePolicy,
 ) -> Result<RuntimeValue> {
+    decode_json_text_runtime_value_plan_impl_with_handles(
+        input,
+        expected_type,
+        heap,
+        stream_policy,
+        InternalHandlePolicy::Refuse,
+    )
+}
+
+pub fn decode_json_text_runtime_value_plan_impl_with_handles(
+    input: &str,
+    expected_type: &RuntimeTypePlan,
+    heap: &mut RequestHeap,
+    stream_policy: BoundaryStreamHandlePolicy,
+    handle_policy: InternalHandlePolicy,
+) -> Result<RuntimeValue> {
     let json = serde_json::from_str(input).map_err(|error| {
         RuntimeError::decode_target(
             "std.json.decode",
             format!("std.json.decode decode failed: {error}"),
         )
     })?;
-    decode_wire_plan_impl(&json, expected_type, heap, stream_policy)
+    decode_wire_plan_impl_with_handles(&json, expected_type, heap, stream_policy, handle_policy)
 }
 
 fn is_direct_json_runtime_plan(plan: &RuntimeTypePlan) -> bool {

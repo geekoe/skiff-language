@@ -1,0 +1,167 @@
+import std
+
+type Instant = Date
+
+type SubmitInput {
+  id: string,
+  tag: string,
+}
+
+type IdInput {
+  id: string,
+}
+
+type StatusOutput {
+  kind: string,
+}
+
+type TaskEntry {
+  id: string,
+  task: std.task.TaskRef,
+}
+
+db object TaskEntry {
+  primary key(id)
+}
+
+type Effect {
+  id: string,
+  visits: number,
+}
+
+db object Effect {
+  primary key(id)
+}
+
+function markEffect(tag: string) -> void {
+  db upsert Effect(tag) { visits = 1 } { visits += 1 }
+  return
+}
+
+function markEffectSlow(tag: string) -> void {
+  db upsert Effect(tag) { visits = 1 } { visits += 1 }
+  std.time.sleep(Duration.milliseconds(2500))
+  return
+}
+
+function submitImmediate(body: SubmitInput) -> string {
+  const task = dispatch markEffect(body.tag)
+  db insert TaskEntry { id = body.id task = task }
+  return "submitted"
+}
+
+function submitAfter(body: SubmitInput) -> string {
+  const task = dispatch markEffect(body.tag) after(3000ms)
+  db insert TaskEntry { id = body.id task = task }
+  return "submitted"
+}
+
+// `at()` absolute timing path (compiled into the artifact): `std.time.Instant`
+// is not yet in std (D3/D4 leaves defer it to a std API node), so an HTTP
+// formal cannot carry it; the fixture keeps the full `at()` dispatch surface
+// reachable by the compiler/lowering and the runtime eval at-timing tests
+// (`canonical_task_statement_at_timing_evaluates_expression_once`).
+function scheduleAt(future: Instant) -> string {
+  const task = dispatch markEffect("effect-at") at(future)
+  db insert TaskEntry { id = "task-at" task = task }
+  return "submitted"
+}
+
+function submitSlow(body: SubmitInput) -> string {
+  const task = dispatch markEffectSlow(body.tag)
+  db insert TaskEntry { id = body.id task = task }
+  return "submitted"
+}
+
+// The compiler lowers record patterns in `match` to wildcard arms today
+// (documented E3a finding), so the kind is projected through the typed JSON
+// boundary instead of a discriminated match.
+function statusKind(ref: std.task.TaskRef) -> string {
+  const s = std.task.status(ref)
+  const json = std.json.encode<std.task.TaskStatus>(s)
+  return std.json.decode<{ kind: string }>(json).kind
+}
+
+function cancelKind(ref: std.task.TaskRef) -> string {
+  const result = std.task.cancel(ref)
+  const json = std.json.encode<std.task.TaskCancelResult>(result)
+  return std.json.decode<{ kind: string }>(json).kind
+}
+
+function status(body: IdInput) -> StatusOutput {
+  const row = db find TaskEntry(body.id)
+  if row == null {
+    return { kind: "missing" }
+  }
+  return { kind: statusKind(row.task) }
+}
+
+function cancel(body: IdInput) -> StatusOutput {
+  const row = db find TaskEntry(body.id)
+  if row == null {
+    return { kind: "missing" }
+  }
+  return { kind: cancelKind(row.task) }
+}
+
+function effect(body: IdInput) -> number {
+  const row = db find Effect(body.id)
+  if row == null {
+    return 0
+  }
+  return row.visits
+}
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function scheduleIncrement(id: string) -> string {
+    const ref = dispatch self.increment()
+    db insert TaskEntry { id = id task = ref }
+    return "scheduled"
+  }
+
+  function scheduleIncrementDelayed(id: string) -> string {
+    const ref = dispatch self.increment() after(4000ms)
+    db insert TaskEntry { id = id task = ref }
+    return "scheduled"
+  }
+
+  function increment() -> void {
+    self.count = self.count + 1
+    return
+  }
+
+  function count() -> number {
+    return self.count
+  }
+}
+
+function submitActor(body: SubmitInput) -> string {
+  const actor = std.actor.get<Counter>(body.tag)
+  actor.scheduleIncrement(body.id)
+  return "submitted"
+}
+
+function submitActorAfter(body: SubmitInput) -> string {
+  const actor = std.actor.get<Counter>(body.tag)
+  actor.scheduleIncrementDelayed(body.id)
+  return "submitted"
+}
+
+function actorCount(body: IdInput) -> number {
+  const actor = std.actor.get<Counter>(body.id)
+  return actor.count()
+}

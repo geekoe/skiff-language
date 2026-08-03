@@ -9,6 +9,7 @@ use crate::{
     runtime_value::{HeapHandle, HeapNode, InterfaceValue, RuntimeMap, RuntimeValue},
     runtime_value_graph::RuntimeValueGraph,
     stream::is_stream_value,
+    recoverable::is_canonical_task_ref_string,
     type_descriptor::{
         unresolved_type_descriptor, RuntimeRecordFieldPlan as RecordField, RuntimeTypeNode,
         RuntimeTypePlan,
@@ -82,9 +83,22 @@ pub(super) fn to_wire_inner(
             RuntimeValue::String(value) => Ok(Value::String(value.clone())),
             _ => Err(RuntimeError::Decode("expected runtime string".to_string())),
         },
-        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
-            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
-        )),
+        RuntimeTypeNode::TaskRef => match value {
+            RuntimeValue::String(value)
+                if context.allows_internal_task_ref() && is_canonical_task_ref_string(value) =>
+            {
+                Ok(Value::String(value.clone()))
+            }
+            RuntimeValue::String(_value) if context.allows_internal_task_ref() => {
+                Err(RuntimeError::Decode(
+                    "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)"
+                        .to_string(),
+                ))
+            }
+            _ => Err(RuntimeError::Decode(
+                "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+            )),
+        },
         RuntimeTypeNode::Bool => match value {
             RuntimeValue::Bool(value) => Ok(Value::Bool(*value)),
             _ => Err(RuntimeError::Decode("expected runtime bool".to_string())),

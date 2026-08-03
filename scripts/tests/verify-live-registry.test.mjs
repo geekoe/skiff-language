@@ -49,6 +49,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'router-live:activation-full-chain',
     'router-live:ws',
     'router-live:actor',
+    'durable-task-e2e-live',
     'router-live:http',
     'router-live:chat',
     'router-live:clean-host',
@@ -167,6 +168,30 @@ test('live registry is the single declaration for current selectors, policies, a
   ]);
   assert.deepEqual(actor.value.requiredModules, []);
   assert.deepEqual(actor.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+
+  const durableTask = invocation('durable-task-e2e-live');
+  assert.equal(durableTask.entry.key, 'durable-task-e2e-live');
+  assert.equal(durableTask.entry.source.type, 'script');
+  assert.equal(
+    durableTask.entry.source.path,
+    'scripts/check-durable-task-e2e-live.mjs',
+  );
+  assert.equal(durableTask.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(durableTask.value.id, 'live:durable-task-e2e');
+  assert.equal(durableTask.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(durableTask.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.match(durableTask.value.description, /durable task dispatch vertical chain/);
+  assert.deepEqual(durableTask.value.requiredInputs, []);
+  assert.deepEqual(durableTask.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'mongosh',
+  ]);
+  assert.deepEqual(durableTask.value.requiredModules, []);
+  assert.deepEqual(durableTask.value.canonicalPolicy, {
     forbidSkips: false,
     forbidUnchecked: true,
   });
