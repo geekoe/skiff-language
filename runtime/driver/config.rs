@@ -43,17 +43,21 @@ pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// ~272 KiB/layer, debug ~1.04 MiB/layer (unoptimized frames are much larger).
 /// The worker stack therefore differs by build profile:
 ///
-/// - release (production deploy profile): 64 MiB, comfortably above the
-///   ~34 MiB measured for a full 128-layer chain (see
-///   `runtime_program_non_tail_recursion_deep_chain_hits_raised_guard` tests);
+/// - release (production deploy profile): 128 MiB, comfortably above the
+///   measured ~34 MiB (pre-unification) / ~60-80 MiB (post-unification) for a
+///   full 128-layer chain; see
+///   `runtime_program_non_tail_recursion_deep_chain_hits_raised_guard` tests.
 /// - debug (`debug_assertions`, used by `cargo test`, the dev instance and CI):
-///   192 MiB, so the same 128-layer chain completes instead of aborting the
-///   process at ~63 layers on the old 64 MiB size. The guard at 128 must never
-///   be the *first* native-stack boundary for an unoptimized build.
+///   384 MiB. After the HeapAccess unification the measured per-layer native
+///   stack is ~1.5 MiB, so a 128-layer chain alone reaches ~192 MiB and real
+///   paths (websocket connect, stream producers) add frames on top — the old
+///   192 MiB worker stack overflowed (`tokio-rt-worker has overflowed its
+///   stack`) during websocket connect. The guard at 128 must never be the
+///   *first* native-stack boundary for an unoptimized build.
 #[cfg(debug_assertions)]
-pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 192 * 1024 * 1024;
+pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 384 * 1024 * 1024;
 #[cfg(not(debug_assertions))]
-pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 64 * 1024 * 1024;
+pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeFileConfig {
