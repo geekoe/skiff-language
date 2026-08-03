@@ -49,6 +49,22 @@ pub(super) fn collect_package_expr_std_type_violations(
                 violations,
             );
         }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            for expr in [condition, then_expr, else_expr] {
+                collect_package_expr_std_type_violations(
+                    path,
+                    expr,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
+        }
         Expr::Record {
             type_name,
             type_args,

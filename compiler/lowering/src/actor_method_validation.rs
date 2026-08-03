@@ -356,6 +356,15 @@ impl CreateValidator<'_> {
                 self.check_reads(right, assigned)?;
             }
             Expr::Unary { expr, .. } => self.check_reads(expr, assigned)?,
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_reads(condition, assigned)?;
+                self.check_reads(then_expr, assigned)?;
+                self.check_reads(else_expr, assigned)?;
+            }
             Expr::Call { callee, args } => {
                 self.check_reads(callee, assigned)?;
                 for arg in args {
@@ -451,6 +460,15 @@ impl CreateValidator<'_> {
                 self.check_self_calls(right)?;
             }
             Expr::Unary { expr, .. } => self.check_self_calls(expr)?,
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_self_calls(condition)?;
+                self.check_self_calls(then_expr)?;
+                self.check_self_calls(else_expr)?;
+            }
             Expr::Generic { callee, .. } => self.check_self_calls(callee)?,
             Expr::InterfaceBox { value, .. } => self.check_self_calls(value)?,
             Expr::Field { object, .. } => self.check_self_calls(object)?,
@@ -597,7 +615,11 @@ fn validate_transaction_field_writes(actor: &ActorDecl, block: &Block) -> Result
     validate_transaction_block(actor, block, false)
 }
 
-fn validate_transaction_block(actor: &ActorDecl, block: &Block, in_transaction: bool) -> Result<()> {
+fn validate_transaction_block(
+    actor: &ActorDecl,
+    block: &Block,
+    in_transaction: bool,
+) -> Result<()> {
     for statement in &block.statements {
         match statement {
             Stmt::DbTransaction { body } => {

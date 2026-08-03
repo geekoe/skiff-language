@@ -260,6 +260,7 @@ impl<'a> FunctionLowerer<'a> {
             Expr::Literal(Literal::Null) => Some("null".to_string()),
             Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Ternary { .. }
             | Expr::ObjectLiteral { .. }
             | Expr::Patch { .. }
             | Expr::Throw { .. }

@@ -919,6 +919,11 @@ pub enum Expr {
         op: UnaryOp,
         expr: Box<Expr>,
     },
+    Ternary {
+        condition: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,

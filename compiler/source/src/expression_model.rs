@@ -146,6 +146,24 @@ impl OwnerCollector<'_> {
             Expr::Unary { expr, .. } => {
                 self.visit_expr(expr, next_expr_child(&mut children, "unary operand")?)?
             }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.visit_expr(
+                    condition,
+                    next_expr_child(&mut children, "ternary condition")?,
+                )?;
+                self.visit_expr(
+                    then_expr,
+                    next_expr_child(&mut children, "ternary then branch")?,
+                )?;
+                self.visit_expr(
+                    else_expr,
+                    next_expr_child(&mut children, "ternary else branch")?,
+                )?;
+            }
             Expr::Call { callee, args } => {
                 self.visit_expr(callee, next_expr_child(&mut children, "call callee")?)?;
                 for (index, arg) in args.iter().enumerate() {
@@ -710,6 +728,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::DependencySourceAddress(_) => "dependency source address",
         Expr::Binary { .. } => "binary",
         Expr::Unary { .. } => "unary",
+        Expr::Ternary { .. } => "ternary",
         Expr::Call { .. } => "call",
         Expr::Generic { .. } => "generic",
         Expr::InterfaceBox { .. } => "interface box",

@@ -1042,6 +1042,86 @@ fn executable<'a>(unit: &'a FileIrUnit, name: &str) -> &'a ExecutableIr {
         .unwrap_or_else(|| panic!("missing executable `{expected_symbol}`"))
 }
 
+#[test]
+fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
+    let unit = lowered_unit(
+        r#"
+          function pick(flag: bool, a: string, b: string) -> string {
+            return flag ? a : b
+          }
+        "#,
+    );
+    let executable = executable(&unit, "pick");
+    let value_blocks = executable
+        .body
+        .expressions
+        .iter()
+        .filter_map(|expr| match expr {
+            ExprIr::ValueBlock { block, result } => Some((block, *result)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        value_blocks.len(),
+        1,
+        "expected one ValueBlock for the ternary"
+    );
+    let (body_label, result_ref) = value_blocks[0];
+
+    let ExprIr::LoadSlot { slot: result_slot } =
+        &executable.body.expressions[result_ref.expression as usize]
+    else {
+        panic!("expected ternary result to load the temp slot");
+    };
+
+    let body_block = executable
+        .body
+        .blocks
+        .iter()
+        .find(|block| &block.label == body_label)
+        .expect("ternary body block should be emitted");
+    assert_eq!(body_block.statements.len(), 1);
+    let skiff_artifact_model::StmtIr::If {
+        condition,
+        then_block,
+        else_block,
+    } = &executable.body.statements[body_block.statements[0].statement as usize]
+    else {
+        panic!("expected If statement inside the ternary body block");
+    };
+    assert!(matches!(
+        &executable.body.expressions[condition.expression as usize],
+        ExprIr::LoadSlot { .. }
+    ));
+
+    let else_block = else_block
+        .as_ref()
+        .expect("ternary requires an else branch");
+    for (label, expected_branch) in [(then_block, "then"), (else_block, "else")] {
+        let branch_block = executable
+            .body
+            .blocks
+            .iter()
+            .find(|block| &block.label == label)
+            .unwrap_or_else(|| panic!("missing ternary {expected_branch} block"));
+        assert_eq!(branch_block.statements.len(), 1);
+        let skiff_artifact_model::StmtIr::Assign { target, value } =
+            &executable.body.statements[branch_block.statements[0].statement as usize]
+        else {
+            panic!("expected Assign in ternary {expected_branch} block");
+        };
+        assert!(matches!(
+            target,
+            skiff_artifact_model::AssignTargetIr::Slot { slot }
+                if slot == result_slot
+        ));
+        assert!(matches!(
+            &executable.body.expressions[value.expression as usize],
+            ExprIr::LoadSlot { .. }
+        ));
+    }
+}
+
 fn only_interface_box(executable: &ExecutableIr) -> &ExprIr {
     let boxes = executable
         .body

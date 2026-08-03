@@ -342,6 +342,15 @@ impl StreamEmitTypeChecker<'_> {
             Expr::Unary { expr, .. } | Expr::Generic { callee: expr, .. } => {
                 self.check_expr(expr);
             }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.check_expr(condition);
+                self.check_expr(then_expr);
+                self.check_expr(else_expr);
+            }
             Expr::InterfaceBox { value, .. } => {
                 self.check_expr(value);
             }

@@ -217,6 +217,15 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
             visitor.visit_expr(right);
         }
         Expr::Unary { expr, .. } => visitor.visit_expr(expr),
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            visitor.visit_expr(condition);
+            visitor.visit_expr(then_expr);
+            visitor.visit_expr(else_expr);
+        }
         Expr::Call { callee, args } => {
             visitor.visit_expr(callee);
             for arg in args {
@@ -686,6 +695,15 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
             visitor.visit_expr(right);
         }
         Expr::Unary { expr, .. } => visitor.visit_expr(expr),
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            visitor.visit_expr(condition);
+            visitor.visit_expr(then_expr);
+            visitor.visit_expr(else_expr);
+        }
         Expr::Call { callee, args } => {
             visitor.visit_expr(callee);
             for arg in args {
@@ -852,6 +870,15 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
             expr_contains_with(left, predicate) || expr_contains_with(right, predicate)
         }
         Expr::Unary { expr, .. } => expr_contains_with(expr, predicate),
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_with(condition, predicate)
+                || expr_contains_with(then_expr, predicate)
+                || expr_contains_with(else_expr, predicate)
+        }
         Expr::Call { callee, args } => {
             expr_contains_with(callee, predicate)
                 || args.iter().any(|arg| expr_contains_with(arg, predicate))
@@ -1359,6 +1386,15 @@ fn collect_expr_type_ref_dotted_root_imports(
         Expr::InterfaceBox { value, interface } => {
             collect_expr_type_ref_dotted_root_imports(value, root, imports);
             collect_type_ref_dotted_root_imports(interface, root, imports);
+        }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_type_ref_dotted_root_imports(condition, root, imports);
+            collect_expr_type_ref_dotted_root_imports(then_expr, root, imports);
+            collect_expr_type_ref_dotted_root_imports(else_expr, root, imports);
         }
         Expr::Record {
             type_name,

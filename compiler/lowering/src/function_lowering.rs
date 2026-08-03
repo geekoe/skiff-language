@@ -1347,6 +1347,11 @@ impl<'a> FunctionLowerer<'a> {
                 op: lower_unary_op(*op),
                 value: self.lower_expr(expr)?,
             },
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => self.lower_ternary_expr(condition, then_expr, else_expr)?,
             Expr::Binary { op, left, right } => ExprIr::Binary {
                 op: lower_binary_op(*op),
                 left: self.lower_expr(left)?,
@@ -2752,6 +2757,15 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
         | Expr::Catch { try_expr: expr, .. } => 1 + expr_preorder_node_count(expr),
         Expr::Binary { left, right, .. } => {
             1 + expr_preorder_node_count(left) + expr_preorder_node_count(right)
+        }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            1 + expr_preorder_node_count(condition)
+                + expr_preorder_node_count(then_expr)
+                + expr_preorder_node_count(else_expr)
         }
         Expr::Call { callee, args } => {
             1 + expr_preorder_node_count(callee)

@@ -2196,6 +2196,181 @@ function run(flag: bool) -> void {
 }
 
 #[test]
+fn parses_ternary_expression() {
+    let ast = parse_source(
+        r#"
+function pick(flag: bool, a: string, b: string) -> string {
+  const value = flag ? a : b
+  return value
+}
+"#,
+    )
+    .unwrap();
+
+    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary {
+        condition,
+        then_expr,
+        else_expr,
+    } = value
+    else {
+        panic!("expected ternary expression, got {value:?}");
+    };
+    assert!(matches!(condition.as_ref(), crate::ast::Expr::Identifier(name) if name == "flag"));
+    assert!(matches!(then_expr.as_ref(), crate::ast::Expr::Identifier(name) if name == "a"));
+    assert!(matches!(else_expr.as_ref(), crate::ast::Expr::Identifier(name) if name == "b"));
+}
+
+#[test]
+fn ternary_precedence_is_below_all_binary_operators_and_right_associative() {
+    let ast = parse_source(
+        r#"
+function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
+  const left = a || b ? c : d
+  const right = a ? c : d || e
+  const nestedElse = a ? c : d ? e : c
+  const nestedThen = a ? c ? d : e : c
+  return c
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::Let { value, .. } = &statements[0] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary { condition, .. } = value else {
+        panic!("expected ternary, got {value:?}");
+    };
+    assert!(matches!(
+        condition.as_ref(),
+        crate::ast::Expr::Binary {
+            op: crate::ast::BinaryOp::Or,
+            ..
+        }
+    ));
+
+    let crate::ast::Stmt::Let { value, .. } = &statements[1] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary { else_expr, .. } = value else {
+        panic!("expected ternary, got {value:?}");
+    };
+    assert!(matches!(
+        else_expr.as_ref(),
+        crate::ast::Expr::Binary {
+            op: crate::ast::BinaryOp::Or,
+            ..
+        }
+    ));
+
+    let crate::ast::Stmt::Let { value, .. } = &statements[2] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary { else_expr, .. } = value else {
+        panic!("expected ternary, got {value:?}");
+    };
+    assert!(matches!(
+        else_expr.as_ref(),
+        crate::ast::Expr::Ternary { .. }
+    ));
+
+    let crate::ast::Stmt::Let { value, .. } = &statements[3] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary { then_expr, .. } = value else {
+        panic!("expected ternary, got {value:?}");
+    };
+    assert!(matches!(
+        then_expr.as_ref(),
+        crate::ast::Expr::Ternary { .. }
+    ));
+}
+
+#[test]
+fn ternary_in_statement_header_keeps_trailing_brace_with_body() {
+    let ast = parse_source(
+        r#"
+function run(flag: bool, a: string) -> void {
+  if flag ? a : user.Status {
+    return
+  }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let crate::ast::Stmt::If {
+        condition,
+        then_block,
+        else_block,
+    } = &ast.functions[0].body.statements[0]
+    else {
+        panic!("expected if statement");
+    };
+    let crate::ast::Expr::Ternary { else_expr, .. } = condition else {
+        panic!("expected ternary condition, got {condition:?}");
+    };
+    assert!(matches!(
+        else_expr.as_ref(),
+        crate::ast::Expr::Field { field, .. } if field == "Status"
+    ));
+    assert!(matches!(
+        then_block.statements[0],
+        crate::ast::Stmt::Return(None)
+    ));
+    assert!(else_block.is_none());
+}
+
+#[test]
+fn ternary_branches_in_expression_slots_still_parse_constructs() {
+    let ast = parse_source(
+        r#"
+function run(flag: bool) -> void {
+  const value = flag ? Point { x: 1 } : point { x: 2 }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected let statement");
+    };
+    let crate::ast::Expr::Ternary {
+        then_expr,
+        else_expr,
+        ..
+    } = value
+    else {
+        panic!("expected ternary expression, got {value:?}");
+    };
+    assert!(matches!(
+        then_expr.as_ref(),
+        crate::ast::Expr::Record { type_name, .. } if type_name == "Point"
+    ));
+    assert!(matches!(
+        else_expr.as_ref(),
+        crate::ast::Expr::Record { type_name, .. } if type_name == "point"
+    ));
+}
+
+#[test]
+fn ternary_requires_colon_separator() {
+    let error = parse_source("function run(flag: bool) -> void { const x = flag ? 1\n}")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("expected `:` separating ternary branches"),
+        "unexpected ternary error: {error}"
+    );
+}
+
+#[test]
 fn parses_dependency_source_address_for_direct_call_and_boxing() {
     let ast = parse_source(
         r#"

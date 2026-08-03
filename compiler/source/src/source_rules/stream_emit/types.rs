@@ -38,6 +38,15 @@ pub(super) fn collect_emit_expression_call_violations(
             collect_emit_expression_call_violations(path, left, violations);
             collect_emit_expression_call_violations(path, right, violations);
         }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_emit_expression_call_violations(path, condition, violations);
+            collect_emit_expression_call_violations(path, then_expr, violations);
+            collect_emit_expression_call_violations(path, else_expr, violations);
+        }
         Expr::Field { object, .. } => {
             collect_emit_expression_call_violations(path, object, violations);
         }
@@ -306,6 +315,7 @@ pub(super) fn infer_expr_type(
         Expr::Timeout { value, .. } => infer_expr_type(value, env, function_return_types),
         Expr::Binary { .. }
         | Expr::Unary { .. }
+        | Expr::Ternary { .. }
         | Expr::Field { .. }
         | Expr::ObjectLiteral { .. }
         | Expr::Patch { .. }

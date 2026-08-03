@@ -1,0 +1,48 @@
+type TernaryError { message: string }
+
+function ternaryPick(flag: bool, a: string, b: string) -> string {
+  return flag ? a : b
+}
+
+function ternaryWiden(flag: bool, count: integer, ratio: number) -> number {
+  return flag ? count : ratio
+}
+
+function ternaryNullable(flag: bool, value: string) -> string? {
+  return flag ? value : null
+}
+
+function ternaryLazy(flag: bool) -> string {
+  return flag ? throw TernaryError { message: "boom" } : "fallback"
+}
+
+function ternaryInHeader(flag: bool, value: string) -> string {
+  if (flag ? value : "fallback") == "fallback" {
+    return "no"
+  }
+  return "yes"
+}
+
+test "ternary picks the matching branch" {
+  assert ternaryPick(true, "a", "b") == "a"
+  assert ternaryPick(false, "a", "b") == "b"
+}
+
+test "ternary widens integer and number branches to number" {
+  assert ternaryWiden(true, 1, 1.5) == 1
+  assert ternaryWiden(false, 1, 1.5) == 1.5
+}
+
+test "ternary null branch yields a nullable value" {
+  assert ternaryNullable(true, "ada") == "ada"
+  assert ternaryNullable(false, "ada") == null
+}
+
+test "ternary only evaluates the selected branch" {
+  assert ternaryLazy(false) == "fallback"
+}
+
+test "ternary works inside a parenthesized if header" {
+  assert ternaryInHeader(false, "x") == "no"
+  assert ternaryInHeader(true, "x") == "yes"
+}

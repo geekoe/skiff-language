@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite, StmtIr,
+    AssignTargetIr, BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite,
+    SlotKind, StmtIr,
 };
 use skiff_compiler_source::{
     ConcurrentLaneKind, ConcurrentSourcePlan, ExecutionSourceSite, TimeoutSourcePlan,
@@ -32,6 +33,53 @@ impl FunctionLowerer<'_> {
             duration_ms: plan.duration_milliseconds,
             value: self.lower_expr_with_expected(value, expected_target)?,
             site: instruction_site(&plan.source_site),
+        })
+    }
+
+    pub(super) fn lower_ternary_expr(
+        &mut self,
+        condition: &Expr,
+        then_expr: &Expr,
+        else_expr: &Expr,
+    ) -> Result<ExprIr> {
+        let temp_name = format!("$ternary{}", self.slots.len());
+        let temp_slot = self.declare_slot(&temp_name, SlotKind::Temp, true)?;
+        let condition = self.lower_expr(condition)?;
+        let then_value = self.lower_expr(then_expr)?;
+        let else_value = self.lower_expr(else_expr)?;
+
+        let then_label = self.next_block_label("ternary_then");
+        let else_label = self.next_block_label("ternary_else");
+        let then_stmt = self.push_stmt(StmtIr::Assign {
+            target: AssignTargetIr::Slot { slot: temp_slot },
+            value: then_value,
+        });
+        self.body.blocks.push(BlockIr {
+            label: then_label.clone(),
+            statements: vec![then_stmt],
+        });
+        let else_stmt = self.push_stmt(StmtIr::Assign {
+            target: AssignTargetIr::Slot { slot: temp_slot },
+            value: else_value,
+        });
+        self.body.blocks.push(BlockIr {
+            label: else_label.clone(),
+            statements: vec![else_stmt],
+        });
+
+        let body_label = self.next_block_label("ternary_body");
+        let body_stmt = self.push_stmt(StmtIr::If {
+            condition,
+            then_block: then_label,
+            else_block: Some(else_label),
+        });
+        self.body.blocks.push(BlockIr {
+            label: body_label.clone(),
+            statements: vec![body_stmt],
+        });
+        Ok(ExprIr::ValueBlock {
+            block: body_label,
+            result: self.push_expr(ExprIr::LoadSlot { slot: temp_slot }),
         })
     }
 

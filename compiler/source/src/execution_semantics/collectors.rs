@@ -207,6 +207,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Expr::DependencySourceAddress(_)
                 | Expr::Binary { .. }
                 | Expr::Unary { .. }
+                | Expr::Ternary { .. }
                 | Expr::Call { .. }
                 | Expr::Generic { .. }
                 | Expr::InterfaceBox { .. }

@@ -158,6 +158,15 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
             collect_expr_function_type_violations(path, right, violations);
         }
         Expr::Unary { expr, .. } => collect_expr_function_type_violations(path, expr, violations),
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_function_type_violations(path, condition, violations);
+            collect_expr_function_type_violations(path, then_expr, violations);
+            collect_expr_function_type_violations(path, else_expr, violations);
+        }
         Expr::Call { callee, args } => {
             collect_expr_function_type_violations(path, callee, violations);
             for arg in args {

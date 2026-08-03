@@ -78,6 +78,24 @@ impl Evaluator<'_, '_> {
                 }
                 value
             }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let mut value = self.eval_expr(condition, env);
+                value.join(&self.eval_expr(then_expr, env));
+                value.join(&self.eval_expr(else_expr, env));
+                value.reference = reference;
+                if !reference {
+                    value.caller_references.clear();
+                    value.direct_caller_references.clear();
+                    value.fresh_roots.clear();
+                    value.fresh_references.clear();
+                    value.needs_fresh_root = false;
+                }
+                value
+            }
             Expr::Call { callee, args } => self.eval_call(&key, callee, args, env),
             Expr::Generic { callee, .. } => self.eval_expr(callee, env),
             Expr::InterfaceBox { value, .. } => {

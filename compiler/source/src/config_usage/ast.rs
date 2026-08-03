@@ -566,6 +566,24 @@ fn collect_config_uses_in_expr(
             presence_uses,
             violations,
         ),
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            for (index, expr) in [condition, then_expr, else_expr].into_iter().enumerate() {
+                collect_config_uses_in_expr(
+                    diagnostic_path,
+                    source_path,
+                    expr,
+                    child_span(expr_spans, index),
+                    const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
+        }
         Expr::Record { fields, .. } => {
             for (field_index, (_, value)) in fields.iter().enumerate() {
                 collect_config_uses_in_expr(

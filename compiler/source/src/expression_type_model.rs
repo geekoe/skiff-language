@@ -1381,6 +1381,11 @@ impl<'a> OwnerChecker<'a> {
                 Expr::Unary { op, expr } => {
                     self.check_unary_expr(&key, *op, expr, db_predicate_fields)
                 }
+                Expr::Ternary {
+                    condition,
+                    then_expr,
+                    else_expr,
+                } => self.check_ternary_expr(&key, condition, then_expr, else_expr),
                 Expr::Call { callee, args } => self.check_call_expr(&key, callee, args),
                 Expr::Generic { callee, .. } => {
                     if diagnose_unknown_field {
@@ -1814,6 +1819,71 @@ impl<'a> OwnerChecker<'a> {
         Some(catch_result_type(try_ty, catch_ty))
     }
 
+    fn check_ternary_expr(
+        &mut self,
+        key: &ExpressionKey,
+        condition: &Expr,
+        then_expr: &Expr,
+        else_expr: &Expr,
+    ) -> Option<ResolvedTypeRef> {
+        let narrowings = self.condition_narrowings(condition);
+        self.check_condition(condition, "ternary condition");
+        let then_ty = self.check_expr_scoped(then_expr, &narrowings.when_true);
+        let else_ty = self.check_expr_scoped(else_expr, &narrowings.when_false);
+        let Some(result) = self.ternary_join_type(then_ty.as_ref(), else_ty.as_ref()) else {
+            if let (Some(then_ty), Some(else_ty)) = (then_ty.as_ref(), else_ty.as_ref()) {
+                self.outputs.diagnostics.push(format!(
+                    "{}: ternary branches have incompatible types at {}: `{}` and `{}`",
+                    self.module_path,
+                    self.expression_span_label(key),
+                    then_ty,
+                    else_ty,
+                ));
+            }
+            return None;
+        };
+        Some(result)
+    }
+
+    fn ternary_join_type(
+        &self,
+        then_ty: Option<&ResolvedTypeRef>,
+        else_ty: Option<&ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        let (then_ty, else_ty) = (then_ty?, else_ty?);
+        if then_ty == else_ty {
+            return Some(then_ty.clone());
+        }
+        if is_never_type(&then_ty.ir) {
+            return Some(else_ty.clone());
+        }
+        if is_never_type(&else_ty.ir) {
+            return Some(then_ty.clone());
+        }
+        if is_string_literal_type(&then_ty.ir) && is_string_literal_type(&else_ty.ir) {
+            return self.resolve_builtin(BuiltinShape::String.name());
+        }
+        if self
+            .type_resolution
+            .assignable_in_context(then_ty, else_ty, &self.type_context)
+        {
+            return Some(else_ty.clone());
+        }
+        if self
+            .type_resolution
+            .assignable_in_context(else_ty, then_ty, &self.type_context)
+        {
+            return Some(then_ty.clone());
+        }
+        if is_null_type(&then_ty.ir) || is_null_type(&else_ty.ir) {
+            let items = vec![then_ty.ir.clone(), else_ty.ir.clone()];
+            return Some(resolved_type_from_ir(&normalize_union(TypeRefIr::Union {
+                items,
+            })));
+        }
+        None
+    }
+
     fn record_stream_emit_target(&mut self, key: &ExpressionKey, target: ResolvedTypeRef) {
         let Some(fact) = self.outputs.facts.get_mut(key) else {
             self.outputs.diagnostics.push(format!(
@@ -1852,6 +1922,7 @@ impl<'a> OwnerChecker<'a> {
             | Expr::DependencySourceAddress(_)
             | Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Ternary { .. }
             | Expr::Call { .. }
             | Expr::Record { .. }
             | Expr::ObjectLiteral { .. }
@@ -2195,6 +2266,22 @@ fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
             inner: Box::new(inner.ir),
         },
         text,
+    )
+}
+
+fn is_never_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, .. } if name == BuiltinShape::Never.name()
+    )
+}
+
+fn is_string_literal_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. }
+        }
     )
 }
 

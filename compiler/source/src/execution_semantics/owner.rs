@@ -254,6 +254,15 @@ impl<'a> OwnerAnalyzer<'a> {
                 self.validate_expr(left, scope, context);
                 self.validate_expr(right, scope, context);
             }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.validate_expr(condition, scope, context);
+                self.validate_expr(then_expr, scope, context);
+                self.validate_expr(else_expr, scope, context);
+            }
             Expr::Unary { expr, .. } | Expr::Generic { callee: expr, .. } => {
                 self.validate_expr(expr, scope, context);
             }

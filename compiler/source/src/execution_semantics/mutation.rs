@@ -202,6 +202,15 @@ pub(super) fn binding_root_for_value(
 
 fn definitely_lane_local_fresh(expression: &Expr, scope: &Scope) -> bool {
     match expression {
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            lane_local_payload_is_safe(condition, scope)
+                && lane_local_payload_is_safe(then_expr, scope)
+                && lane_local_payload_is_safe(else_expr, scope)
+        }
         Expr::Record { fields, .. } => fields
             .iter()
             .all(|(_, value)| lane_local_payload_is_safe(value, scope)),
@@ -257,6 +266,15 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
         }
         Expr::Unary { expr, .. } | Expr::InterfaceBox { value: expr, .. } => {
             lane_local_payload_is_safe(expr, scope)
+        }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            lane_local_payload_is_safe(condition, scope)
+                && lane_local_payload_is_safe(then_expr, scope)
+                && lane_local_payload_is_safe(else_expr, scope)
         }
         Expr::Timeout { value, .. } => lane_local_payload_is_safe(value, scope),
         Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {

@@ -513,6 +513,15 @@ impl SuspendContext<'_, '_> {
             Expr::Unary { expr, .. } | Expr::Generic { callee: expr, .. } => {
                 self.expr_may_suspend(expr)
             }
+            Expr::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.expr_may_suspend(condition)
+                    || self.expr_may_suspend(then_expr)
+                    || self.expr_may_suspend(else_expr)
+            }
             Expr::InterfaceBox { value, .. } => self.expr_may_suspend(value),
             Expr::Call { callee, args } => {
                 let receiver_type = self.receiver_type_for_call_callee(callee);
@@ -745,6 +754,7 @@ impl SuspendContext<'_, '_> {
             Expr::Generic { callee, .. } => self.legacy_expr_type(callee),
             Expr::Binary { .. }
             | Expr::Unary { .. }
+            | Expr::Ternary { .. }
             | Expr::Field { .. }
             | Expr::ObjectLiteral { .. }
             | Expr::Patch { .. }

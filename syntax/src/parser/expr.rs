@@ -9,7 +9,31 @@ fn object_literal_key_name(key: &crate::ast::ObjectLiteralKey) -> Option<String>
 
 impl Parser {
     pub(super) fn parse_expression(&mut self) -> Result<ParsedExpr> {
-        self.parse_binary(0)
+        let condition = self.parse_binary(0)?;
+        if !self.match_symbol("?") {
+            return Ok(condition);
+        }
+        let then_expr = self.parse_expression()?;
+        if !self.match_symbol(":") {
+            return Err(CompileError::syntax(
+                "expected `:` separating ternary branches",
+                self.peek().span.start,
+            ));
+        }
+        let else_expr = self.parse_expression()?;
+        let span = SourceSpan {
+            start: condition.spans.span.start,
+            end: else_expr.spans.span.end,
+        };
+        Ok(ParsedExpr::new(
+            Expr::Ternary {
+                condition: Box::new(condition.expr),
+                then_expr: Box::new(then_expr.expr),
+                else_expr: Box::new(else_expr.expr),
+            },
+            span,
+            vec![condition.spans, then_expr.spans, else_expr.spans],
+        ))
     }
 
     /// Parses the expression of a statement header (`if`, `while`,

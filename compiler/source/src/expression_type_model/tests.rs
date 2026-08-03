@@ -1838,3 +1838,95 @@ fn package_type_ref_ir_rewrites_identity_inside_local_any_interface() {
         TypeRefIr::PackageSymbol { .. }
     ));
 }
+
+#[test]
+fn ternary_accepts_matching_and_widening_branch_types() {
+    expression_type_result(
+        r#"
+              type User { name: string }
+
+              function pick(
+                flag: bool,
+                a: string,
+                b: string,
+                count: integer,
+                ratio: number,
+                user: User?
+              ) -> string {
+                const same = flag ? a : b
+                const widened = flag ? count : ratio
+                const literalWidened = flag ? "a" : "b"
+                const nullable = user != null ? user.name : null
+                const neverBranch = flag ? throw User { name: "boom" } : b
+                return same
+              }
+            "#,
+    )
+    .expect("compatible ternary branches must type check");
+}
+
+#[test]
+fn ternary_rejects_incompatible_branch_types() {
+    let error = expression_type_result(
+        r#"
+              function pick(flag: bool, a: string, b: number) -> string {
+                const value = flag ? a : b
+                return value
+              }
+            "#,
+    )
+    .expect_err("incompatible ternary branches must fail");
+    assert!(
+        error
+            .message()
+            .contains("ternary branches have incompatible types")
+            && error.message().contains("string")
+            && error.message().contains("number"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn ternary_requires_bool_condition() {
+    let error = expression_type_result(
+        r#"
+              function pick(a: string, b: string) -> string {
+                const value = a ? b : a
+                return value
+              }
+            "#,
+    )
+    .expect_err("ternary condition must be bool");
+    assert!(
+        error.message().contains("ternary condition type mismatch"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn ternary_accepts_non_nullable_annotated_result() {
+    expression_type_result(
+        r#"
+              function pick(flag: bool, a: string, b: string) -> string {
+                const value: string = flag ? a : b
+                return value
+              }
+            "#,
+    )
+    .expect("joined string branches must satisfy a string annotation");
+}
+
+#[test]
+fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
+    expression_type_result(
+        r#"
+              function pick(flag: bool, value: string) -> string? {
+                const result: string? = flag ? value : null
+                return result
+              }
+            "#,
+    )
+    .expect("null branch must join to a nullable result");
+}

@@ -105,7 +105,8 @@ block 是 `{ Stmt* }`。statement 包括声明、赋值、控制流、stream 输
 
 赋值是 statement，不是 expression。左侧 place 由名字、member 和 index 组成；可写性由 static semantics 检查。
 
-`if` 只作为 statement，不作为 expression。需要产值时使用 `match` expression 或 `value` block。
+`if` 只作为 statement，不作为 expression。需要产值时使用 ternary、`match` expression 或
+`value` block。
 
 `for name in expr { ... }`、`for key, value in expr { ... }` 和 `while expr { ... }` 是循环语句。`break` / `continue` 只在循环内合法。
 
@@ -137,7 +138,7 @@ expression statement 的最外层表达式必须是普通函数调用、method c
 
 ## 7. Expression Syntax
 
-表达式优先级从高到低：call / member / index / nominal construct，unary `!` / `-`，乘除模，加减，关系比较，相等比较，`&&`，`||`。
+表达式优先级从高到低：call / member / index / nominal construct，unary `!` / `-`，乘除模，加减，关系比较，相等比较，`&&`，`||`，ternary。
 
 关系比较和相等比较不允许链式写法。`a < b < c` 应写成显式布尔组合。
 
@@ -146,6 +147,10 @@ postfix 表达式由 primary 加任意数量的 member、index 和 call suffix �
 generic call 只有在 postfix 后出现可成功解析的 `<...>` 且随后直接进入 `(` 时成立。`>` 和 `(` 必须在同一逻辑行，中间只允许普通空白或注释。
 
 primary expression 包括 literal、name、object literal、array literal、match expression、value expression、catch expression、throw / rethrow expression、anonymous function、nominal construct 和括号表达式。
+
+`cond ? thenExpr : elseExpr` 是 ternary 表达式，优先级低于 `||`，右结合；只求值选中的分支，
+两分支必须存在可共同赋值的类型（`A | B` 不作为结果类型，除非两分支本身是联合类型）。
+statement header slot 中若 ternary 分支以构造形态表达式结尾，整个 ternary 需要加括号（见 §9）。
 
 object literal 是 target-typed。语法允许 `{ name: expr }` 和 `{ [expr]: expr }` entry；它最终解释为 record literal、map literal 或 json literal由目标类型决定。`{ "name": value }` 不是合法 entry。
 
