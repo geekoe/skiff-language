@@ -5,6 +5,23 @@ use crate::{
     lexer::{Token, TokenKind},
 };
 
+/// Binary operator precedence table. All operators are left-associative;
+/// `parse_binary` tightens the right operand with `prec + 1`.
+const BINARY_OPS: &[(&str, BinaryOp, u8)] = &[
+    ("||", BinaryOp::Or, 1),
+    ("&&", BinaryOp::And, 2),
+    ("==", BinaryOp::Eq, 3),
+    ("!=", BinaryOp::Ne, 3),
+    ("<", BinaryOp::Lt, 4),
+    ("<=", BinaryOp::Le, 4),
+    (">", BinaryOp::Gt, 4),
+    (">=", BinaryOp::Ge, 4),
+    ("+", BinaryOp::Add, 5),
+    ("-", BinaryOp::Sub, 5),
+    ("*", BinaryOp::Mul, 6),
+    ("/", BinaryOp::Div, 6),
+];
+
 impl Parser {
     pub(super) fn snapshot(&self) -> usize {
         self.current
@@ -144,21 +161,10 @@ impl Parser {
         let TokenKind::Symbol(value) = &self.peek().kind else {
             return None;
         };
-        Some(match value.as_str() {
-            "||" => (BinaryOp::Or, 1),
-            "&&" => (BinaryOp::And, 2),
-            "==" => (BinaryOp::Eq, 3),
-            "!=" => (BinaryOp::Ne, 3),
-            "<" => (BinaryOp::Lt, 4),
-            "<=" => (BinaryOp::Le, 4),
-            ">" => (BinaryOp::Gt, 4),
-            ">=" => (BinaryOp::Ge, 4),
-            "+" => (BinaryOp::Add, 5),
-            "-" => (BinaryOp::Sub, 5),
-            "*" => (BinaryOp::Mul, 6),
-            "/" => (BinaryOp::Div, 6),
-            _ => return None,
-        })
+        BINARY_OPS
+            .iter()
+            .find(|(symbol, _, _)| symbol == value)
+            .map(|(_, op, prec)| (*op, *prec))
     }
 
     pub(super) fn skip_balanced_block(&mut self, unterminated_message: &str) -> Result<()> {
