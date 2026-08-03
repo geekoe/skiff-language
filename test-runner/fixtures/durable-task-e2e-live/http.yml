@@ -1,0 +1,72 @@
+submit-immediate:
+  method: POST
+  path: /submit-immediate
+  kind: typedJson
+  handler: main.submitImmediate
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+submit-after:
+  method: POST
+  path: /submit-after
+  kind: typedJson
+  handler: main.submitAfter
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+submit-slow:
+  method: POST
+  path: /submit-slow
+  kind: typedJson
+  handler: main.submitSlow
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+submit-actor:
+  method: POST
+  path: /submit-actor
+  kind: typedJson
+  handler: main.submitActor
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+submit-actor-after:
+  method: POST
+  path: /submit-actor-after
+  kind: typedJson
+  handler: main.submitActorAfter
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+status:
+  method: POST
+  path: /status
+  kind: typedJson
+  handler: main.status
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+cancel:
+  method: POST
+  path: /cancel
+  kind: typedJson
+  handler: main.cancel
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+effect:
+  method: POST
+  path: /effect
+  kind: typedJson
+  handler: main.effect
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }
+actor-count:
+  method: POST
+  path: /actor-count
+  kind: typedJson
+  handler: main.actorCount
+  adapterArgs:
+    - param: body
+      source: { kind: http.body }

@@ -39,6 +39,39 @@ fn recoverable_envelope_field_roundtrips_plain_values_as_opaque_binary() {
 }
 
 #[test]
+fn recoverable_envelope_task_ref_field_roundtrips_canonical_string() {
+    let binding = recoverable_task_ref_metadata();
+    let canonical = "skiff-task-v1:b3duZXI.dGFzay0x";
+    let (document, materialized) = binding
+        .document_from_business_value(db_doc(json!({
+            "id": "thread-1",
+            "title": "Hello",
+            "task": canonical
+        })))
+        .expect("TaskRef field should store through the recoverable envelope lane");
+
+    let Some(Bson::Binary(binary)) = document.get("task") else {
+        panic!("task should be stored as BSON binary recoverable envelope");
+    };
+    assert_eq!(binary.subtype, BinarySubtype::Generic);
+    assert!(!binary.bytes.is_empty());
+    assert_eq!(
+        materialized.as_value(),
+        &json!({
+            "id": "thread-1",
+            "title": "Hello",
+            "task": canonical
+        })
+    );
+
+    let read = binding
+        .business_value_from_document(document)
+        .expect("TaskRef recoverable envelope should decode back to business JSON");
+    assert_eq!(read.as_value(), materialized.as_value());
+    assert_eq!(read.as_value()["task"], json!(canonical));
+}
+
+#[test]
 fn callback_capability_db_write_fails_closed_before_recoverable_hooks() {
     let binding = recoverable_envelope_metadata();
     let mut heap = RequestHeap::default();

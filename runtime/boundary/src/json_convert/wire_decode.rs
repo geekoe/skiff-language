@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use crate::{
     date_value,
     error::{Result, RuntimeError},
+    recoverable::is_canonical_task_ref_string,
     request_heap::RequestHeap,
     runtime_value::{RuntimeMap, RuntimeValue, RuntimeValueCarrier, RuntimeValueKey},
     stream::is_stream_value,
@@ -74,9 +75,23 @@ fn from_wire_carrier_with_stream_scope(
             .map(|value| RuntimeValue::String(value.to_string()))
             .ok_or_else(|| RuntimeError::Decode("expected string".to_string()))
             .map(Into::into),
-        RuntimeTypeNode::TaskRef => Err(RuntimeError::Decode(
-            "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
-        )),
+        RuntimeTypeNode::TaskRef => match json.as_str() {
+            Some(value)
+                if stream_scope.allows_internal_task_ref()
+                    && is_canonical_task_ref_string(value) =>
+            {
+                Ok(RuntimeValue::String(value.to_string()).into())
+            }
+            Some(_) if stream_scope.allows_internal_task_ref() => {
+                Err(RuntimeError::Decode(
+                    "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)"
+                        .to_string(),
+                ))
+            }
+            _ => Err(RuntimeError::Decode(
+                "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
+            )),
+        },
         RuntimeTypeNode::Bool => json
             .as_bool()
             .map(RuntimeValue::Bool)

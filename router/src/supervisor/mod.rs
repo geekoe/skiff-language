@@ -682,6 +682,26 @@ impl RouterSupervisor {
         Ok(Self { components })
     }
 
+    /// Assembly with an explicitly injected task store (production Mongo,
+    /// tests memory / scripted fakes). Mirrors [`Self::assemble_with`] so
+    /// E2E probes can isolate the durable task store on a shared Mongo
+    /// endpoint without changing the default assembly path.
+    pub async fn assemble_with_task_store(
+        config: &RouterConfig,
+        environment: &str,
+        repository: Arc<dyn ActivationStateRepository>,
+        task_store: Arc<dyn TaskStore>,
+    ) -> Result<Self, SupervisorError> {
+        let components = RouterComponents::assemble_with_task_store(
+            config,
+            environment,
+            repository,
+            task_store,
+        )
+        .await?;
+        Ok(Self { components })
+    }
+
     pub fn components(&self) -> &Arc<RouterComponents> {
         &self.components
     }

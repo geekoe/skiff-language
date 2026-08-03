@@ -267,6 +267,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'durable-task-e2e-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-durable-task-e2e-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'durable-task-e2e-live',
+        description:
+          'durable task dispatch vertical chain: real compiler artifact with dispatch statements/expressions and after/at timing, real Runtime processes through a test-only relay, production Router composition with the real Mongo TaskStore on a probe-owned database, real HTTP consumer path; immediate succeeded, delayed not-before/cancel, cancel/claim alreadyStarted, runtime kill -> lease-expiry recovery -> new attempt with repeated effect, router restart -> accepted tasks survive, actor-method live/entry cold-activation/snapshot-restore, TaskRef recovery across requests',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:durable-task-e2e',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'mongosh'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-http-live',
     source: {
       type: 'script',

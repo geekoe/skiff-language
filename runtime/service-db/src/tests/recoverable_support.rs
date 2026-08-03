@@ -48,6 +48,30 @@ pub(super) fn recoverable_nullable_envelope_metadata_value() -> Vec<DbMetadataIr
     ]))
 }
 
+pub(super) fn recoverable_task_ref_metadata() -> DbCollectionMetadata {
+    DbCollectionMetadata::from_ir(&recoverable_task_ref_metadata_value()[0], 0)
+        .expect("task-ref recoverable metadata should parse")
+}
+
+pub(super) fn recoverable_task_ref_metadata_value() -> Vec<DbMetadataIr> {
+    db_metadata(json!([
+        {
+            "kind": "object",
+            "typeName": "TaskEntry",
+            "collectionName": "TaskEntry",
+            "key": { "name": "id", "type": { "kind": "builtin", "name": "string" } },
+            "fields": [
+                { "name": "title", "type": { "kind": "builtin", "name": "string" } },
+                {
+                    "name": "task",
+                    "type": { "kind": "builtin", "name": "std.task.TaskRef", "args": [] }
+                }
+            ],
+            "indexes": []
+        }
+    ]))
+}
+
 pub(super) fn recoverable_provider_metadata() -> DbCollectionMetadata {
     DbCollectionMetadata::from_ir(&recoverable_provider_metadata_value()[0], 0)
         .expect("recoverable provider metadata should parse")
@@ -120,6 +144,14 @@ pub(super) fn string_expected() -> RuntimeRecoverableExpectedTypePlan {
         label: "string".to_string(),
         identity: None,
         node: RuntimeRecoverableExpectedTypeNode::String,
+    }
+}
+
+pub(super) fn task_ref_expected() -> RuntimeRecoverableExpectedTypePlan {
+    RuntimeRecoverableExpectedTypePlan {
+        label: "std.task.TaskRef".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::TaskRef,
     }
 }
 

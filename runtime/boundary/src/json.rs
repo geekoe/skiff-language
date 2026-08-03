@@ -175,11 +175,12 @@ impl<'a> RuntimeBoundaryCodec<'a> {
     }
 
     pub fn from_wire_json(&self, value: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
-        json_convert::decode_wire_plan_impl(
+        json_convert::decode_wire_plan_impl_with_handles(
             value,
             self.plan,
             heap,
             self.policy().external_stream_policy(),
+            self.handle_policy(),
         )
         .map_err(|error| self.add_context(error))
     }
@@ -192,16 +193,23 @@ impl<'a> RuntimeBoundaryCodec<'a> {
         let stream_policy = self
             .policy()
             .runtime_owned_stream_policy(self.label.as_ref())?;
-        json_convert::decode_wire_plan_impl(value, self.plan, heap, stream_policy)
+        json_convert::decode_wire_plan_impl_with_handles(
+            value,
+            self.plan,
+            heap,
+            stream_policy,
+            self.handle_policy(),
+        )
             .map_err(|error| self.add_context(error))
     }
 
     pub fn to_wire_json(&self, value: &RuntimeValue, heap: &mut RequestHeap) -> Result<Value> {
-        json_convert::encode_wire_plan_impl(
+        json_convert::encode_wire_plan_impl_with_handles(
             value,
             self.plan,
             heap,
             self.policy().external_stream_policy(),
+            self.handle_policy(),
         )
         .map_err(|error| self.add_context(error))
     }
@@ -215,7 +223,13 @@ impl<'a> RuntimeBoundaryCodec<'a> {
         let stream_policy = self
             .policy()
             .runtime_owned_stream_policy(self.label.as_ref())?;
-        json_convert::encode_wire_plan_impl(value, self.plan, heap, stream_policy)
+        json_convert::encode_wire_plan_impl_with_handles(
+            value,
+            self.plan,
+            heap,
+            stream_policy,
+            self.handle_policy(),
+        )
             .map_err(|error| self.add_context(error))
     }
 
@@ -224,16 +238,22 @@ impl<'a> RuntimeBoundaryCodec<'a> {
         value: &RuntimeValue,
         heap: &mut RequestHeap,
     ) -> Result<RuntimeValue> {
-        json_convert::coerce_runtime_value_plan_impl(value, self.plan, heap)
+        json_convert::coerce_runtime_value_plan_impl_with_handles(
+            value,
+            self.plan,
+            heap,
+            self.handle_policy(),
+        )
             .map_err(|error| self.add_context(error))
     }
 
     pub fn decode_json_text(&self, input: &str, heap: &mut RequestHeap) -> Result<RuntimeValue> {
-        json_convert::decode_json_text_runtime_value_plan_impl(
+        json_convert::decode_json_text_runtime_value_plan_impl_with_handles(
             input,
             self.plan,
             heap,
             self.policy().external_stream_policy(),
+            self.handle_policy(),
         )
         .map_err(|error| self.add_context(error))
     }
@@ -287,6 +307,18 @@ impl<'a> RuntimeBoundaryCodec<'a> {
 
     fn policy(&self) -> BoundaryPolicy {
         self.use_case.policy()
+    }
+
+    /// The owner-internal DB lane may carry opaque `std.task.TaskRef`
+    /// handles as canonical strings (`doc/reference/dispatch.md` §3); every
+    /// other JSON boundary refuses them.
+    fn handle_policy(&self) -> json_convert::InternalHandlePolicy {
+        match self.use_case {
+            BoundaryUse::DbResultDecode | BoundaryUse::DbWriteProjection => {
+                json_convert::InternalHandlePolicy::AllowTaskRef
+            }
+            _ => json_convert::InternalHandlePolicy::Refuse,
+        }
     }
 
     fn add_context(&self, error: RuntimeError) -> RuntimeError {
