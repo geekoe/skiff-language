@@ -381,7 +381,9 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
     let path = request.uri().path().to_string();
     let origin = first_header_value(request.headers(), "origin");
 
-    let path_is_control = path == "/__router/health" || path == "/__router/prune-runtimes";
+    let path_is_control = path == "/__router/health"
+        || path == "/__router/prune-runtimes"
+        || path == "/__skiff/test-dispatch";
     if path_is_control {
         cancel_on_drop.defuse();
         return early_error_response(

@@ -296,8 +296,9 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
 }
 
 /// Builds the HTTP surface view from one epoch's resolved deployment
-/// records (E-activation §8 live-surface rebuild after an activation swap).
-fn http_surface_view_from_epoch(
+/// records (E-activation §8 live-surface rebuild after an activation swap;
+/// also consumed by the test-dispatch control handler).
+pub(crate) fn http_surface_view_from_epoch(
     artifact_store: &CanonicalArtifactStore,
     epoch: &RoutingEpoch,
 ) -> Result<HttpGatewaySurfaceView, String> {

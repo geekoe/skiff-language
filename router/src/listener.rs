@@ -55,6 +55,7 @@ use crate::supervisor::ws::{
     ConnectOutcome, WsConnectMetadata, WsConnectSelector, WsConnectionRecord, WsDispatchStore,
     WsGatewaySurfaceView,
 };
+use crate::test_dispatch::{TestDispatchHttpHandler, TEST_DISPATCH_CONTROL_PATH};
 use crate::ws::{AttachMeta, BusinessKey, ClientTerminal, PeerWriter, WebSocketLane};
 use skiff_artifact_model::AssemblyIdentity;
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
@@ -202,6 +203,7 @@ enum ListenerKind {
         session_layer: Arc<SessionLayer>,
         activation_http: Option<Arc<ActivationHttpHandler>>,
         health: Option<Arc<HealthAggregator>>,
+        test_dispatch: Option<Arc<TestDispatchHttpHandler>>,
     },
 }
 
@@ -254,6 +256,28 @@ pub async fn start_runtime_control_listener_with_control_and_health(
     activation_http: Option<Arc<ActivationHttpHandler>>,
     health: Option<Arc<HealthAggregator>>,
 ) -> Result<ListenerHandle, ListenerError> {
+    start_runtime_control_listener_with_control_and_health_and_test_dispatch(
+        config,
+        options,
+        session_layer,
+        activation_http,
+        health,
+        None,
+    )
+    .await
+}
+
+/// Starts the shared runtime/control listener with the activation control
+/// HTTP handler, the health projection aggregator and the test-dispatch
+/// control handler (plan §7 E-http: `POST /__skiff/test-dispatch`).
+pub async fn start_runtime_control_listener_with_control_and_health_and_test_dispatch(
+    config: &RouterConfig,
+    options: &ListenerStartOptions,
+    session_layer: Arc<SessionLayer>,
+    activation_http: Option<Arc<ActivationHttpHandler>>,
+    health: Option<Arc<HealthAggregator>>,
+    test_dispatch: Option<Arc<TestDispatchHttpHandler>>,
+) -> Result<ListenerHandle, ListenerError> {
     let runtime_control_addr = match options.runtime_control_bind {
         Some(addr) => addr,
         None => resolve_listener_addr(&config.host, config.runtime_port)?,
@@ -279,6 +303,7 @@ pub async fn start_runtime_control_listener_with_control_and_health(
                 session_layer: Arc::clone(&session_layer),
                 activation_http,
                 health,
+                test_dispatch,
             },
             runtime_control_shutdown_rx,
             options.drain_deadline,
@@ -470,6 +495,7 @@ async fn handle_request(
             session_layer,
             activation_http,
             health,
+            test_dispatch,
         } => {
             if is_websocket_upgrade(&request) && request.uri().path() == runtime_path {
                 return handle_websocket_upgrade(
@@ -487,6 +513,11 @@ async fn handle_request(
             }
             if request.uri().path() == ASSEMBLY_ACTIVATION_CONTROL_PATH {
                 if let Some(handler) = activation_http {
+                    return handler.handle(request).await;
+                }
+            }
+            if request.uri().path() == TEST_DISPATCH_CONTROL_PATH {
+                if let Some(handler) = test_dispatch {
                     return handler.handle(request).await;
                 }
             }

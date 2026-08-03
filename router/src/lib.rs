@@ -13,6 +13,7 @@ pub mod listener;
 pub mod routing;
 pub mod session;
 pub mod supervisor;
+pub mod test_dispatch;
 pub mod ws;
 
 pub use activation::{
@@ -61,8 +62,8 @@ pub use http::{
     CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
     HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
     HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
-    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
-    HttpStreamSink, UnaryHttpResponse,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource, HttpStreamSink,
+    TestDispatchOutcome, UnaryHttpResponse,
 };
 pub use listener::{
     run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,
@@ -78,6 +79,10 @@ pub use session::{
     RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
 };
 pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
+pub use test_dispatch::{
+    TestDispatchHttpHandler, TestDispatchHttpHandlerOptions, TestDispatchHttpResponse,
+    TEST_DISPATCH_CONTROL_PATH, TEST_DISPATCH_REQUEST_BODY_CAP,
+};
 pub use ws::{
     AllowAnyPendingAdmission, BrokerConnectionGeneration, BrokerGenerationAdapter,
     BrokerGenerationPort, BrokerHealthSnapshot, BrokerRuntimeResponse, BrokerRuntimeSource,

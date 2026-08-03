@@ -17,7 +17,8 @@ use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
     decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
-    decode_response_error_frame, decode_response_start_frame, RuntimeHttpResponseFrameHeader,
+    decode_response_error_frame, decode_response_start_frame, ResponseErrorFrameHeader,
+    RuntimeHttpResponseFrameHeader,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_websocket_connect_response_end_frame,
@@ -34,7 +35,7 @@ use crate::dispatch::{
 };
 use crate::http::dispatch::{
     cancel_reason_for_terminal, DispatchRequest, HttpDispatchError, HttpDispatchPort,
-    PendingTerminalSource, UnaryHttpResponse,
+    PendingTerminalSource, TestDispatchOutcome, UnaryHttpResponse,
 };
 use crate::http::ingress::HttpGatewaySurfaceView;
 use crate::http::stream::{HttpStreamError, HttpStreamSink};
@@ -747,6 +748,104 @@ impl HttpDispatchPort for DispatcherHttpPort {
                 }
             }
         };
+        self.router.unregister(&request_id);
+        result
+    }
+
+    async fn dispatch_test(
+        &self,
+        request: DispatchRequest,
+    ) -> Result<TestDispatchOutcome, HttpDispatchError> {
+        let request_id = request.header.request_id.clone();
+        let submit = dispatch_submit_from_request(&request);
+        let accepted = match self.dispatcher.submit(submit) {
+            SubmitResult::Accepted { .. } => true,
+            SubmitResult::Rejected { reason, .. } => {
+                return Err(self.rejected(&request_id, reason));
+            }
+        };
+        debug_assert!(accepted);
+        let mut rx =
+            self.router
+                .register(&request_id)
+                .map_err(|message| HttpDispatchError::Cancelled {
+                    source: PendingTerminalSource::CallbackError,
+                    message,
+                })?;
+        let timeout_ms = request.timeout.as_millis() as u64;
+        let result = tokio::select! {
+            biased;
+            reason = request.client_disconnect.clone().wait() => {
+                let _ = reason;
+                self.dispatcher.client_disconnect(&request_id);
+                self.router.unregister(&request_id);
+                Err(HttpDispatchError::Cancelled {
+                    source: PendingTerminalSource::ClientDisconnect,
+                    message: "client disconnected before dispatch terminal".to_string(),
+                })
+            }
+            _ = tokio::time::sleep(request.timeout) => {
+                self.dispatcher.timeout(&request_id);
+                self.router.unregister(&request_id);
+                Err(HttpDispatchError::Timeout { timeout_ms })
+            }
+            event = rx.recv() => {
+                match event {
+                    Some(HttpDispatchEvent::Frame {
+                        frame: DispatchedFrame::End { payload, .. },
+                        http: Some(http),
+                    }) => {
+                        self.router.unregister(&request_id);
+                        Ok(TestDispatchOutcome::End(UnaryHttpResponse {
+                            status: http.status,
+                            headers: http.headers,
+                            payload: Bytes::from(payload),
+                        }))
+                    }
+                    Some(HttpDispatchEvent::Frame {
+                        frame: DispatchedFrame::Error { error, .. },
+                        ..
+                    }) => {
+                        let outcome = match error {
+                            skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::FixedService(error) => {
+                                TestDispatchOutcome::Error(
+                                    ResponseErrorFrameHeader::fixed_service(request_id.clone()),
+                                    Bytes::from(error.into_encoded_bytes()),
+                                )
+                            }
+                            skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::Control(payload) => {
+                                TestDispatchOutcome::Error(
+                                    ResponseErrorFrameHeader::control(request_id.clone(), payload),
+                                    Bytes::new(),
+                                )
+                            }
+                        };
+                        self.router.unregister(&request_id);
+                        Ok(outcome)
+                    }
+                    Some(HttpDispatchEvent::Terminal { terminal }) => {
+                        self.router.unregister(&request_id);
+                        Err(self.terminal_error(terminal))
+                    }
+                    Some(HttpDispatchEvent::Frame { .. }) => {
+                        self.router.unregister(&request_id);
+                        Err(HttpDispatchError::Cancelled {
+                            source: PendingTerminalSource::ProtocolError,
+                            message: "unexpected response frame for test dispatch".to_string(),
+                        })
+                    }
+                    None => {
+                        self.router.unregister(&request_id);
+                        Err(HttpDispatchError::Cancelled {
+                            source: PendingTerminalSource::Backpressure,
+                            message: "dispatch correlation channel closed".to_string(),
+                        })
+                    }
+                }
+            }
+        };
+        // A terminal already settled the pending: make sure the correlation
+        // entry is gone (idempotent).
         self.router.unregister(&request_id);
         result
     }

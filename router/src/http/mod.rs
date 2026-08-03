@@ -26,7 +26,7 @@ pub mod stream;
 
 pub use dispatch::{
     CancelSignal, CancelWatch, DispatchRequest, HttpDispatchError, HttpDispatchPort,
-    UnaryHttpResponse,
+    TestDispatchOutcome, UnaryHttpResponse,
 };
 pub use error::HttpError;
 pub use ingress::{

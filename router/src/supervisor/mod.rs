@@ -38,14 +38,16 @@ use crate::http::server::{
     HttpGatewayServer, HttpGatewayServerOptions,
 };
 use crate::listener::{
-    start_runtime_control_listener_with_control_and_health, ClientWsContext, ListenerError,
-    ListenerHandle, ListenerStartOptions, WsTaskRegistry,
+    start_runtime_control_listener_with_control_and_health_and_test_dispatch, ClientWsContext,
+    ListenerError, ListenerHandle, ListenerStartOptions, WsTaskRegistry,
 };
 use crate::session::consumer::{ConsumerKind, ConsumerManifest};
 use crate::session::demux::InboundSinkSet;
 use crate::session::health::RuntimeHealthLedger;
 use crate::session::layer::{SessionLayer, SessionLayerError, SessionLayerOptions};
 use crate::session::SessionConsumer;
+use crate::test_dispatch::http::TestDispatchHttpHandlerOptions;
+use crate::test_dispatch::TestDispatchHttpHandler;
 use crate::ws::types::SystemClock as WsSystemClock;
 use crate::ws::{
     NoopNotificationObserver, WebSocketLane, WebSocketLaneOptions, WebSocketRequestBrokerOptions,
@@ -546,7 +548,7 @@ impl RouterSupervisor {
         let resolver = Arc::new(EpochHttpIngressResolver::new_with_epoch_store(
             Arc::clone(&components.surface_view),
             Arc::clone(&components.epoch_store),
-            artifact_store,
+            artifact_store.clone(),
         ));
         let public_http = start_http_gateway_with_epoch_store(
             http_options,
@@ -578,14 +580,25 @@ impl RouterSupervisor {
             components.coordinator.clone(),
             activation_deadline,
         ));
-        let runtime_control = start_runtime_control_listener_with_control_and_health(
+        let test_dispatch = Arc::new(TestDispatchHttpHandler::new(
+            TestDispatchHttpHandlerOptions {
+                epoch: Arc::clone(&components.epoch),
+                epoch_store: Some(Arc::clone(&components.epoch_store)),
+                surfaces: Arc::clone(&components.surface_view),
+                artifact_store,
+                dispatcher: Arc::clone(&components.http_dispatcher) as Arc<dyn HttpDispatchPort>,
+            },
+        ));
+        let runtime_control =
+            start_runtime_control_listener_with_control_and_health_and_test_dispatch(
             &components.config,
             options,
             Arc::clone(&components.session),
             Some(activation_http),
             Some(health),
-        )
-        .await?;
+            Some(test_dispatch),
+            )
+            .await?;
         Ok(SupervisorListeners {
             public_http,
             runtime_control,

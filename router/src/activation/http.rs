@@ -121,8 +121,11 @@ impl ActivationHttpHandler {
         }
 
         // The coordinator serializes transactions and keeps terminal phases
-        // until the next start, so "our" terminal is the first terminal that
-        // differs from the phase observed at enqueue time.
+        // (and the last `tx`/activationId) until the next start. A phase-diff
+        // wait alone can never observe a back-to-back commit's own terminal
+        // (the phase stays Committed), so the exact activationId match is the
+        // back-to-back discriminator; the phase-diff keeps pre-`tx` failures
+        // (for example a stale expected generation) settling fast.
         let initial_phase = self.coordinator.phase();
         let terminal_health = tokio::time::timeout(
             self.deadline,
@@ -134,7 +137,9 @@ impl ActivationHttpHandler {
                         | ActivationPhase::Failed
                         | ActivationPhase::Shutdown
                         | ActivationPhase::Exited
-                ) && health.phase != initial_phase
+                ) && (health.phase != initial_phase
+                    || health.activation_id.as_deref()
+                        == Some(activation.activation_id.as_str()))
             }),
         )
         .await;
@@ -516,6 +521,13 @@ mod tests {
                 leases: StdMutex::new(leases),
             }
         }
+
+        fn set_tuple(&self, tuple: RegisteredAssemblyTuple) {
+            let mut leases = self.leases.lock().expect("leases lock");
+            for lease in leases.iter_mut() {
+                lease.exact_registered_tuple = tuple.clone();
+            }
+        }
     }
 
     impl RuntimeCandidateQueryPort for ScriptedCandidates {
@@ -585,6 +597,7 @@ mod tests {
         repo: Arc<MemoryActivationStateRepository>,
         handle: crate::activation::ActivationCoordinatorHandle,
         sessions: Arc<RecordingSessions>,
+        candidates: Arc<ScriptedCandidates>,
     }
 
     async fn harness(environment: &str, committed_generation: u64) -> Harness {
@@ -619,6 +632,7 @@ mod tests {
             repo,
             handle,
             sessions,
+            candidates,
         }
     }
 
@@ -776,6 +790,7 @@ mod tests {
             repo,
             handle,
             sessions,
+            ..
         } = harness;
         let handler = ActivationHttpHandler::new(handle.clone());
         let body = request_json("prod", "activation-8", 7);
@@ -822,6 +837,68 @@ mod tests {
 
         let durable = repo.read("prod").await.expect("durable state");
         assert_eq!(durable.committed.generation, 8);
+        assert!(durable.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn back_to_back_commits_each_settle_the_exact_control_request() {
+        let harness = harness("prod", 7).await;
+        let Harness {
+            repo,
+            handle,
+            sessions,
+            candidates,
+        } = harness;
+        let handler = ActivationHttpHandler::new(handle.clone());
+
+        let commit_once = |activation_id: String, expected_generation: u64| {
+            let handle = handle.clone();
+            let sessions = Arc::clone(&sessions);
+            let handler = handler.clone();
+            async move {
+                let ack_session = session("runtime-a", 1);
+                let ack_sessions = Arc::clone(&sessions);
+                let wait_activation_id = activation_id.clone();
+                let ack_task = tokio::spawn(async move {
+                    handle
+                        .wait_until_health(|health| {
+                            health.activation_id.as_deref()
+                                == Some(wait_activation_id.as_str())
+                                && health.phase == ActivationPhase::Prepared
+                        })
+                        .await;
+                    let controls = ack_sessions.controls.lock().expect("controls lock").clone();
+                    let prepare = controls
+                        .iter()
+                        .rev()
+                        .find(|(kind, _)| kind == "prepare")
+                        .map(|(_, control)| control.clone())
+                        .expect("latest prepare control was enqueued");
+                    handle
+                        .deliver_ack(&ack_session, prepared_control(&prepare))
+                        .expect("deliver prepared ack");
+                });
+                let body = request_json("prod", &activation_id, expected_generation);
+                let (status, value) = respond(&handler, &Method::POST, body).await;
+                ack_task.await.expect("ack task");
+                assert_eq!(status, 200, "{value}");
+                value
+            }
+        };
+
+        let first = commit_once("activation-8".to_string(), 7).await;
+        assert_eq!(first["committed"]["generation"], 8);
+        let durable = repo.read("prod").await.expect("durable state");
+        assert_eq!(durable.committed.generation, 8);
+
+        // The coordinator keeps the terminal Committed phase after the first
+        // commit; a second control request must still settle its own exact
+        // transaction (regression: phase-diff wait could never observe it).
+        candidates.set_tuple(tuple("prod", 8));
+        let second = commit_once("activation-9".to_string(), 8).await;
+        assert_eq!(second["committed"]["generation"], 9);
+        let durable = repo.read("prod").await.expect("durable state");
+        assert_eq!(durable.committed.generation, 9);
         assert!(durable.pending.is_none());
     }
 
