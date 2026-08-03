@@ -160,16 +160,6 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment }),
         { cwd: skiffRoot, env, signal },
       );
-      // The Rust Router bootstrap strictly loads the canonical actor-routing
-      // projection record. The generation-zero isolated fixture has no actor
-      // methods; write the empty canonical record so the real binary starts.
-      const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
-      await mkdir(projectionDirectory, { recursive: true });
-      await writeFile(
-        join(projectionDirectory, 'current.json'),
-        '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}',
-        { encoding: 'utf8', flag: 'wx', mode: 0o600 },
-      );
       return JSON.parse(result.stdout);
     },
     spawnSupervisor: ({ configPath, startupGate, startupReady, env }) => {
