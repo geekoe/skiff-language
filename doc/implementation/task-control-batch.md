@@ -34,7 +34,7 @@
 | 节点 | 职责 | 基线 | 分支 / worktree | commit/tree | 自验收矩阵 | 合并状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | task_store | TaskStore 权威 owner（共享契约检查点） | main@25e430f5 | task-store | bf9c14a1（tree b300d8d9） | 见交接 + 集成探针 | merged |
-| task_scheduler | 调度 / claim / lease / Runtime candidate selection | integration（task_store 合并后） | TBD（待交接） | TBD | 见交接 + 集成探针 | pending |
+| task_scheduler | 调度 / claim / lease / Runtime candidate selection | integration@e207db62 | task-scheduler | 328c70fe（tree a0630356） | 见交接 + 集成探针 | merged |
 
 ## 基线 / 集成分支
 
@@ -58,7 +58,7 @@
 | 顺序 | 任务 | 分支 | 合并 commit/tree | 集成探针 | 清理 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | task_store | task-store | 71633eab（tree d384310b） | PASS：cargo check -p skiff-task-control；cargo test -p skiff-task-control 19 unit + 3 memory contract 全过（1 ignored Mongo live probe）；cargo check -p skiff-router（仅 1 个预存 unused_variables warning，文件未被本合并改动） | 已清理 | merged |
-| 2 | task_scheduler | TBD | TBD | TBD | TBD | pending |
+| 2 | task_scheduler | task-scheduler | 6f6c8169（tree a0630356） | PASS：cargo check -p skiff-task-control；cargo test -p skiff-task-control 25 unit + 3 memory contract + 9 scheduler_memory 全过（1 ignored Mongo live probe）；无 router/Cargo 依赖改动，跳过 router check | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新 commit/tree、
 合并任务、探针结果与 worktree 审计清单。
