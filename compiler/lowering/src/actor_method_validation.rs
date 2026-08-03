@@ -42,6 +42,7 @@ pub(super) fn validate_actor_source_rules(ast: &SourceFile) -> Result<()> {
             .unwrap_or_default();
         for method in &methods {
             validate_key_writes(actor, &method.body)?;
+            validate_transaction_field_writes(actor, &method.body)?;
             if method.name == "create" {
                 validate_create_body(actor, &method.body, &method_names, &non_key_fields)?;
             }
@@ -575,6 +576,102 @@ fn self_field(expr: &Expr) -> Option<&str> {
         return None;
     };
     matches!(object.as_ref(), Expr::Identifier(name) if name == "self").then_some(field)
+}
+
+/// Returns the root actor field name when `expr` is a field-access chain rooted
+/// at `self` (any depth), e.g. `self.items` or `self.items.first`.
+fn self_field_root(expr: &Expr) -> Option<&str> {
+    let Expr::Field { object, field } = expr else {
+        return None;
+    };
+    match object.as_ref() {
+        Expr::Identifier(name) if name == "self" => Some(field),
+        nested => self_field_root(nested),
+    }
+}
+
+/// Actor `db transaction` bodies are DB-only in v1: the DB is rolled back on
+/// abort but actor memory is not, so transaction bodies must not write actor
+/// fields (direct assignment or in-place mutation through a field receiver).
+fn validate_transaction_field_writes(actor: &ActorDecl, block: &Block) -> Result<()> {
+    validate_transaction_block(actor, block, false)
+}
+
+fn validate_transaction_block(actor: &ActorDecl, block: &Block, in_transaction: bool) -> Result<()> {
+    for statement in &block.statements {
+        match statement {
+            Stmt::DbTransaction { body } => {
+                validate_transaction_block(actor, body, true)?;
+            }
+            Stmt::Expr(Expr::DbTransaction(transaction)) => {
+                validate_transaction_block(actor, &transaction.body, true)?;
+            }
+            Stmt::Assign { target, .. } if in_transaction => {
+                if let Some(field) = self_field_root(target) {
+                    return Err(CompileError::Semantic(format!(
+                        "db transaction bodies cannot write actor field {} in v1 (DB-only rollback)",
+                        field
+                    )));
+                }
+            }
+            Stmt::Expr(expression) if in_transaction => {
+                validate_transaction_expr(actor, expression)?;
+            }
+            Stmt::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                validate_transaction_block(actor, then_block, in_transaction)?;
+                if let Some(else_block) = else_block {
+                    validate_transaction_block(actor, else_block, in_transaction)?;
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                validate_transaction_block(actor, body, in_transaction)?;
+            }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    validate_transaction_block(actor, &arm.body, in_transaction)?;
+                }
+            }
+            Stmt::Timeout { body, .. } => {
+                validate_transaction_block(actor, body, in_transaction)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_transaction_expr(actor: &ActorDecl, expression: &Expr) -> Result<()> {
+    match expression {
+        Expr::DbTransaction(transaction) => {
+            validate_transaction_block(actor, &transaction.body, true)?;
+        }
+        Expr::Call { callee, .. } => {
+            // Reject in-place mutation through a field receiver:
+            // `self.<field>.<method>(...)` — but allow plain `self.method()`.
+            if let Expr::Field { object, .. } = callee.as_ref() {
+                if self_field_root(object).is_some() {
+                    return Err(CompileError::Semantic(format!(
+                        "db transaction bodies cannot mutate actor fields through field receivers in v1 (DB-only rollback)"
+                    )));
+                }
+            }
+        }
+        Expr::ValueBlock(block) => {
+            validate_transaction_block(actor, &block.body, true)?;
+        }
+        Expr::Catch { try_expr, .. } => {
+            validate_transaction_expr(actor, try_expr)?;
+        }
+        Expr::Timeout { value, .. } => {
+            validate_transaction_expr(actor, value)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn check_db_reads(

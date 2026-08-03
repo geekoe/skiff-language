@@ -1410,6 +1410,75 @@ fn actor_create_self_method_dispatch_stays_rejected() {
 }
 
 #[test]
+fn actor_transaction_bodies_cannot_write_actor_fields() {
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                }
+
+                function run(self: Counter) -> void {
+                  db transaction {
+                    self.count = 1
+                  }
+                }
+              }
+            "#,
+    )
+    .expect_err("actor transaction bodies must not write actor fields")
+    .to_string();
+    assert!(
+        error.contains("db transaction bodies cannot write actor field count in v1"),
+        "unexpected transaction body field write error: {error}"
+    );
+
+    let error = lowered_unit_result(
+        r#"
+              type Counter {
+                id: string,
+                count: number,
+                items: Array<number>,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                  self.items = Array.empty<number>()
+                }
+
+                function run(self: Counter) -> void {
+                  db transaction {
+                    self.items.push(1)
+                  }
+                }
+              }
+            "#,
+    )
+    .expect_err("actor transaction bodies must not mutate actor fields")
+    .to_string();
+    assert!(
+        error.contains("db transaction bodies cannot mutate actor fields"),
+        "unexpected transaction body field mutation error: {error}"
+    );
+}
+
+#[test]
 fn actor_self_field_access_keeps_while_body_call_targets_aligned() {
     let units = lowered_units(vec![
         (

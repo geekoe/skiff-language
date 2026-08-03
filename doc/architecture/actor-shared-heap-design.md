@@ -137,30 +137,33 @@ v4 决策（用户确认）：
 - 风险控制：先在 actor 单路径（get → method → suspend → resume）做最小原型（Slice 2），验证
   `HeapAccess::Shared` 模式后再铺开。
 
-## 5. 事务：v1 简化决策
+## 5. 事务：DB-only 语义（v1）
 
 ### 5.1 规则
 
-- **actor 方法内（含 `create`）禁止 `db transaction`**，编译期报错；
-- 单一 db 操作（`db require` / `insert` / `upsert` / `update` 等）在 actor 方法内继续允许，
-  不受影响；其外部副作用语义不变；
-- 普通 request 的 `db transaction` 完全不变（现有 truncate + live-roots rebase 路径保留）；
-- **禁令边界（v1 文档化限制）**：同包直接语法与本地 helper 可达性（经 `callable_effect_profiles`
-  的 `db:transaction` access tag）编译期拒绝；跨包 / service call / interface 目标体内的事务当前
-  不可见，v1 不承诺覆盖（如需覆盖，需新增 artifact effect bit，列为后续设计）。
+- **actor 方法内（含 `create`）支持 `db transaction`**，含同包本地 helper 可达性；
+- **事务只回滚 DB，不回滚 actor 内存**：abort 时 DB 由事务生命周期回滚，共享 arena 与 Env
+  原样保留（不 truncate、不 rebase），事务期间的分配作为垃圾由 quiescence 压缩回收；
+- **事务体内禁止写 actor 字段（编译期）**：直接赋值（`self.f = ...`）与通过字段接收器的原地修改
+  （`self.f.method(...)`）都被拒绝——保证 abort 后不存在“DB 已回滚、内存残留事务内写入”的脏状态，
+  也让 `*WithRetry` 重试语义安全；
+- 事务内一致性读取走 DB（DB 事务自带 snapshot isolation），平台不做字段快照；字段是易失工作内存，
+  无“事务开始冻结字段”契约；
+- 普通 request 的 `db transaction` 不变（现有 truncate + live-roots rebase 路径保留）。
 
 ### 5.2 理由
 
-- 当前业务未使用 actor 内事务；该禁令直接移除事务锁、truncate 安全性论证、竞争者写入语义变更、
-  事务 drop / cancel 清理等一整套复杂度；
-- 未来需要时再设计：候选方向为“事务持有实例 + live-roots rebase（复用现状机制）”或
-  “staging heap + 提交合并”，届时单独评审，不阻塞 v1。
+- 业务真实用法（thread-actor-drain、drain helpers）都是“事务体内只写 DB、actor 只留 key”，
+  与“事务体内禁写字段”完全吻合；
+- 共享 arena 下 truncate 不安全，而“不回滚内存”从根上避免 dangling handle、竞争者写入、
+  事务锁与 rebase 一整套复杂度；
+- 与 §3.4“失败段不保证字段原子性”一致：事务 abort 等同失败段，字段保持已执行写入。
 
 ### 5.3 影响
 
-- `program_db` rollback 的 actor 接入点（`with_transaction_live_fields`）删除或退化为普通路径；
-- 现有 actor 事务测试改写为“编译期拒绝”测试；普通 request 事务测试不变（并需补普通 request 专用
-  事务回归测试，因为现有 runtime 事务测试全部是 actor 上下文的）。
+- `program_db` rollback 对 actor 上下文走 DB-only 分支（`rollback_after_transaction`）；
+- 编译器删除 actor 事务禁令，新增事务体内字段写校验；
+- 测试：普通事务矩阵保留；新增 actor 事务成功 / abort 轨迹测试。
 
 ## 6. Concurrent：v1 暂缓（前置片）
 

@@ -175,8 +175,9 @@ impl Interpreter {
         match result {
             Ok(value) => {
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
-                    let error = rollback::rollback_transaction_live_roots(
-                        heap.heap_mut(),
+                    let error = rollback_after_transaction(
+                        &program_context,
+                        heap,
                         env,
                         checkpoint,
                         error,
@@ -527,6 +528,24 @@ async fn abort_transaction_and_rollback(
         Ok(()) => original_error,
         Err(abort_error) => abort_error,
     };
+    rollback_after_transaction(program_context, heap, env, checkpoint, error)
+}
+
+/// Actor transactions are DB-only in v1: the DB is rolled back by the
+/// lifecycle, but the shared arena and Env are left intact. Fields are
+/// volatile working memory, so no heap truncate/rebase runs on the shared
+/// arena; transaction-local allocations remain as garbage reclaimed by
+/// quiescence compaction.
+fn rollback_after_transaction(
+    program_context: &ProgramExecutionContext<'_>,
+    heap: &mut HeapAccess<'_>,
+    env: &mut Env,
+    checkpoint: rollback::TransactionRollbackCheckpoint,
+    error: RuntimeError,
+) -> Result<RuntimeError> {
+    if program_context.actor_execution_frame().is_some() {
+        return Ok(error);
+    }
     rollback::rollback_transaction_live_roots(heap.heap_mut(), env, checkpoint, error)
 }
 

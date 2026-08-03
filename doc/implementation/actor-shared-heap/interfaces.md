@@ -16,6 +16,9 @@
 - **F1（在途）**：`db transaction` 同包禁令（compiler execution_semantics + 本地 helper 可达性）+
   移除 runtime actor 事务回滚路径（`with_transaction_live_fields`、rollback actor 分支）+
   删除 actor 事务测试、补普通 request 事务回归测试。
+  - 注：F1 的“禁令”已被后续决策取代——actor 内 `db transaction` 恢复支持，采用 DB-only
+    语义（只回滚 DB、不回滚内存；事务体内编译期禁止写 actor 字段；不做字段快照）。
+    见权威设计 §5 与 `tasks/f7-actor-transactions.md`。
 - **Wave 1（并行）**：
   - **F2（求值器核心）**：`HeapAccess` 双模式（§3）+ `EvalContext.heap` 改造 + 漏斗
     release/reacquire（§4）+ `Interpreter` 入口签名（§5）+ provider-stream 边界修复 +

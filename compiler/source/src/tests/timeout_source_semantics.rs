@@ -202,8 +202,9 @@ fn concurrent_serial_and_concurrent_value_are_rejected_in_v1() {
 }
 
 #[test]
-fn db_transaction_is_rejected_directly_in_actor_methods_and_create() {
-    let error = build_error(
+fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers() {
+    // Direct transaction in an actor method.
+    build_ok(
         r#"
             type Counter { id: string, count: number }
 
@@ -223,12 +224,9 @@ fn db_transaction_is_rejected_directly_in_actor_methods_and_create() {
             }
         "#,
     );
-    assert!(
-        error.contains("db transaction is not supported inside actor methods in v1"),
-        "actor method produced unexpected diagnostic:\n{error}"
-    );
 
-    let error = build_error(
+    // Transaction in `create` (fields assigned outside the transaction body).
+    build_ok(
         r#"
             type Counter { id: string, count: number }
 
@@ -245,15 +243,9 @@ fn db_transaction_is_rejected_directly_in_actor_methods_and_create() {
             }
         "#,
     );
-    assert!(
-        error.contains("db transaction is not supported inside actor methods in v1"),
-        "actor create produced unexpected diagnostic:\n{error}"
-    );
-}
 
-#[test]
-fn db_transaction_is_rejected_through_local_helpers_but_not_ordinary_callers_or_spawn_targets() {
-    let error = build_error(
+    // Transaction reachable through a same-package local helper.
+    build_ok(
         r#"
             type Counter { id: string, count: number }
 
@@ -277,11 +269,8 @@ fn db_transaction_is_rejected_through_local_helpers_but_not_ordinary_callers_or_
             }
         "#,
     );
-    assert!(
-        error.contains("db transaction is not supported inside actor methods in v1"),
-        "transitive local helper produced unexpected diagnostic:\n{error}"
-    );
 
+    // Ordinary callers and spawn targets are unaffected.
     build_ok(
         r#"
             function helper() -> void {
@@ -293,7 +282,6 @@ fn db_transaction_is_rejected_through_local_helpers_but_not_ordinary_callers_or_
             }
         "#,
     );
-
     build_ok(
         r#"
             type Counter { id: string, count: number }
@@ -319,6 +307,7 @@ fn db_transaction_is_rejected_through_local_helpers_but_not_ordinary_callers_or_
         "#,
     );
 }
+
 
 #[test]
 fn ordinary_sources_without_concurrent_surface_still_compile() {

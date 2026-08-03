@@ -114,6 +114,49 @@ async fn evaluate_transaction(
     }
 }
 
+async fn evaluate_actor_transaction(
+    source: TransactionSource,
+    fixture: &DbActorFixture,
+    frame: crate::actor_executor::ActorExecutionFrame,
+    access: &mut HeapAccess<'_>,
+    env: &mut Env,
+) -> Result<RuntimeValue> {
+    let context = fixture.context(frame);
+    match source {
+        TransactionSource::Legacy => {
+            let db_context = context.db_context();
+            fixture
+                .linked
+                .interpreter
+                .eval_program_db_transaction(
+                    &db_context,
+                    context,
+                    access,
+                    env,
+                    &fixture.linked.addr,
+                    &fixture.linked.file,
+                    fixture.linked.executable(),
+                    &legacy_create_call(fixture),
+                )
+                .await
+        }
+        TransactionSource::Explicit => fixture
+            .linked
+            .interpreter
+            .eval_program_explicit_db_transaction(
+                context,
+                access,
+                env,
+                &fixture.linked.addr,
+                &fixture.linked.file,
+                fixture.linked.executable(),
+                &explicit_create_transaction(fixture),
+            )
+            .await
+            .map(RuntimeValueCarrier::into_value),
+    }
+}
+
 fn assert_success_value(source: TransactionSource, value: RuntimeValue) {
     match source {
         TransactionSource::Legacy => {
@@ -209,6 +252,61 @@ fn assert_heap_retained_body(heap: &RequestHeap, checkpoint: RequestHeapCheckpoi
         checkpoint,
         "{case} must retain the successful body allocation"
     );
+}
+
+#[tokio::test]
+async fn actor_transaction_ready_success_matrix() {
+    for source in SOURCES {
+        let state = FakeDbState::new();
+        state.begin.push_ready(Ok(()));
+        state
+            .body_create
+            .push_ready(Ok(body_document("actor-ready-success")));
+        state.commit.push_ready(Ok(()));
+        let fixture = DbActorFixture::new(state.clone());
+        let (frame, mut access) = fixture.actor.execution_frame().await;
+        let checkpoint = access.checkpoint();
+        let mut env = Env::new();
+
+        let result = evaluate_actor_transaction(source, &fixture, frame, &mut access, &mut env)
+            .await
+            .expect("Ready actor transaction must succeed");
+
+        assert_success_value(source, result);
+        assert_heap_retained_body(&access, checkpoint, "actor Ready success");
+        assert_transaction_trace(
+            &state,
+            &[DbPhase::Begin, DbPhase::BodyCreate, DbPhase::Commit],
+        );
+    }
+}
+
+#[tokio::test]
+async fn actor_transaction_body_error_aborts_db_without_heap_rollback() {
+    for source in SOURCES {
+        let state = FakeDbState::new();
+        let error_message = format!("{source}-actor-body-error");
+        state.begin.push_ready(Ok(()));
+        state.body_create.push_ready(Err(db_error(&error_message)));
+        state.abort.push_ready(Ok(()));
+        let fixture = DbActorFixture::new(state.clone());
+        let (frame, mut access) = fixture.actor.execution_frame().await;
+        let mut env = Env::new();
+
+        let result = evaluate_actor_transaction(source, &fixture, frame, &mut access, &mut env)
+            .await
+            .expect_err("actor transaction body error must abort");
+
+        assert_db_error(Err(result), &error_message);
+        // Actor transactions are DB-only: the shared arena is never truncated
+        // on abort (no dangling-handle risk) and the DB abort is observed.
+        // The fixture body errors before allocating, so there is no heap
+        // delta to assert; the abort trace is the observable contract.
+        assert_transaction_trace(
+            &state,
+            &[DbPhase::Begin, DbPhase::BodyCreate, DbPhase::Abort],
+        );
+    }
 }
 
 #[tokio::test]
