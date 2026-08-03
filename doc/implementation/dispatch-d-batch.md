@@ -29,7 +29,7 @@
 
 | 节点 | 职责 | 基线 | 分支 / worktree | commit/tree | 自验收矩阵 | 合并状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| D1 dispatch_wire | dispatch wire / control 契约检查点 | main@16c177a0（待确认） | 待开发 Agent 交接 | 待交接 | 见交接 + 集成探针 | pending |
+| D1 dispatch_wire | dispatch wire / control 契约检查点 | main@16c177a0 | dispatch-wire | 18b0da77（tree 1b34cd17） | 见交接 + 集成探针 | merged |
 | D2 router_control | router control 接入 | 待交接确认 | 待开发 Agent 交接 | 待交接 | 见交接 + 集成探针 | pending |
 | D3/D4 dispatch_compiler_runtime | compiler / runtime 接入 | 待交接确认 | 待开发 Agent 交接 | 待交接 | 见交接 + 集成探针 | pending |
 
@@ -56,7 +56,7 @@
 
 | 顺序 | 任务 | 分支 | 合并 commit/tree | 集成探针 | 清理 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | D1 dispatch_wire | 待交接 | 待交接 | pending | pending | pending |
+| 1 | D1 dispatch_wire | dispatch-wire | e5df67f8（tree 68280832） | PASS：cargo check skiff-runtime-transport/skiff-task-control/skiff-router；task_wire_corpus 10/10、w_model_task_corpus 7/7、actor_task_router 7/7、task_repair_acceptance 3/3、task_repair_direction 6/6；零冲突 | 已清理 | merged |
 | 2 | D2 router_control | 待交接 | 待交接 | pending | pending | pending |
 | 3 | D3/D4 dispatch_compiler_runtime | 待交接 | 待交接 | pending | pending | pending |
 
