@@ -30,8 +30,9 @@ pub use outbound::{
     ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RuntimeDeadlineControl, TaskCallerKind, TaskSubmitControlRequest,
-    TaskSubmitResponseControl, TaskSubmitTimingControl,
+    RequestCancelControl, RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest,
+    TaskCancelControlResponse, TaskStatusControlRequest, TaskStatusControlResponse,
+    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

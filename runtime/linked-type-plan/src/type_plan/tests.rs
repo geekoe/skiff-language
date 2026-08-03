@@ -94,6 +94,44 @@ mod recoverable_expected_plan_tests {
     }
 
     #[test]
+    fn task_status_and_cancel_result_builtins_project_to_recoverable_union() {
+        let service_files = Vec::new();
+        let packages = Vec::new();
+        let link_overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let addr = ExecutableAddr::service(0, 0);
+        let ctx = empty_ctx(&service_files, &packages, &link_overlay, &types, &addr);
+
+        for (name, kind_count) in [("TaskStatus", 8), ("TaskCancelResult", 4)] {
+            let ty = LinkedTypeRef::Native {
+                name: name.to_string(),
+                args: Vec::new(),
+            };
+            let expected =
+                RuntimeRecoverableExpectedTypePlan::from_linked(&ty, &ctx)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let RuntimeRecoverableExpectedTypeNode::Union { items } = expected.node else {
+                panic!("{name} must project to a recoverable union");
+            };
+            assert_eq!(items.len(), kind_count, "{name} kind count");
+            for item in items {
+                let RuntimeRecoverableExpectedTypeNode::Record { fields, .. } = item.node else {
+                    panic!("{name} union branch must be a record");
+                };
+                assert_eq!(fields.len(), 1, "{name} branch fields");
+                assert_eq!(fields[0].name, "kind", "{name} branch discriminant");
+                assert!(
+                    matches!(
+                        fields[0].ty.node,
+                        RuntimeRecoverableExpectedTypeNode::LiteralString { .. }
+                    ),
+                    "{name} branch kind must be a literal string"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn linked_recoverable_expected_plan_preserves_nested_any_interface() {
         let service_files = Vec::new();
         let packages = Vec::new();
@@ -955,6 +993,15 @@ mod builtin_catalog_tests {
             ("std.stream.Stream", RuntimeBuiltinShape::Stream),
             ("Map", RuntimeBuiltinShape::Map),
             ("std.collection.Map", RuntimeBuiltinShape::Map),
+            ("TaskRef", RuntimeBuiltinShape::TaskRef),
+            ("std.task.TaskRef", RuntimeBuiltinShape::TaskRef),
+            ("TaskStatus", RuntimeBuiltinShape::TaskStatus),
+            ("std.task.TaskStatus", RuntimeBuiltinShape::TaskStatus),
+            ("TaskCancelResult", RuntimeBuiltinShape::TaskCancelResult),
+            (
+                "std.task.TaskCancelResult",
+                RuntimeBuiltinShape::TaskCancelResult,
+            ),
             ("Json", RuntimeBuiltinShape::Json),
             ("JsonObject", RuntimeBuiltinShape::JsonObject),
             ("Date", RuntimeBuiltinShape::Date),
@@ -990,7 +1037,7 @@ mod builtin_catalog_tests {
 
     #[test]
     fn leaf_node_maps_only_leaf_shapes() {
-        let cases: [(&str, fn(&RuntimeTypeNode) -> bool); 10] = [
+        let cases: [(&str, fn(&RuntimeTypeNode) -> bool); 13] = [
             ("Json", |n: &RuntimeTypeNode| {
                 matches!(n, RuntimeTypeNode::Json)
             }),
@@ -1020,6 +1067,15 @@ mod builtin_catalog_tests {
             }),
             ("void", |n: &RuntimeTypeNode| {
                 matches!(n, RuntimeTypeNode::Null)
+            }),
+            ("TaskRef", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::TaskRef)
+            }),
+            ("TaskStatus", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Union(_))
+            }),
+            ("TaskCancelResult", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Union(_))
             }),
         ];
         for (name, is_expected) in cases {

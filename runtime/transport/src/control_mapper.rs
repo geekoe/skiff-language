@@ -4,8 +4,8 @@ use skiff_runtime_request_contract::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, RequestCancelControl, RuntimeDeadlineControl,
-    TaskSubmitControlRequest,
+    OutboundControlMessage, RequestCancelControl, RuntimeDeadlineControl, TaskCancelControlRequest,
+    TaskStatusControlRequest, TaskSubmitControlRequest,
 };
 
 use crate::{
@@ -24,7 +24,9 @@ use crate::{
         ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
         ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
         RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, TaskActorMethodTargetFrameMetadata,
-        TaskSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        TaskCancelRequestFrameHeader, TaskStatusRequestFrameHeader,
+        TaskSubmitRequestFrameHeader, TaskRef, RUNTIME_FRAME_SCHEMA_VERSION,
+        encode_task_cancel_request_frame, encode_task_status_request_frame,
     },
 };
 
@@ -49,6 +51,12 @@ pub fn encode_outbound_control_message(
         }
         OutboundControlMessage::TaskSubmit { request, payload } => {
             task_submit_request_frame(task_submit_request_frame_header(request)?, &payload)
+        }
+        OutboundControlMessage::TaskStatus { request } => {
+            encode_task_status_request_frame(&task_status_request_frame_header(request)?)
+        }
+        OutboundControlMessage::TaskCancel { request } => {
+            encode_task_cancel_request_frame(&task_cancel_request_frame_header(request)?)
         }
         OutboundControlMessage::RequestCancel { request } => {
             request_cancel_frame(request_cancel_frame_header(request), &[])
@@ -278,7 +286,37 @@ fn task_submit_request_frame_header(
         actor_method: request
             .actor_method
             .map(actor_method_task_target_frame)
-            .transpose()?,
+        .transpose()?,
+    })
+}
+
+fn task_status_request_frame_header(
+    request: TaskStatusControlRequest,
+) -> TransportResult<TaskStatusRequestFrameHeader> {
+    Ok(TaskStatusRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "task.status.request".to_string(),
+        rpc_id: request.rpc_id,
+        task_ref: TaskRef::parse(&request.task_ref).map_err(|error| {
+            crate::TransportError::decode(format!(
+                "task.status.request carries an undecodable taskRef: {error}"
+            ))
+        })?,
+    })
+}
+
+fn task_cancel_request_frame_header(
+    request: TaskCancelControlRequest,
+) -> TransportResult<TaskCancelRequestFrameHeader> {
+    Ok(TaskCancelRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "task.cancel.request".to_string(),
+        rpc_id: request.rpc_id,
+        task_ref: TaskRef::parse(&request.task_ref).map_err(|error| {
+            crate::TransportError::decode(format!(
+                "task.cancel.request carries an undecodable taskRef: {error}"
+            ))
+        })?,
     })
 }
 

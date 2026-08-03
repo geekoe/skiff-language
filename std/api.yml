@@ -78,6 +78,9 @@ time:
   DecodeError: time.DecodeError
   Duration: time.Duration
   sleep: time.sleep
+task:
+  status: task.status
+  cancel: task.cancel
 string:
   split: string.split
   isAsciiDigits: string.isAsciiDigits

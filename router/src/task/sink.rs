@@ -11,15 +11,17 @@ use std::sync::Arc;
 
 use skiff_runtime_transport::protocol::{
     decode_task_cancel_request_frame, decode_task_status_request_frame,
-    decode_task_submit_request_frame, encode_task_cancel_response_frame,
+    decode_task_submit_request_frame, encode_task_cancel_error_frame,
+    encode_task_cancel_response_frame, encode_task_status_error_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_response_frame, ActorTaskRuntimeErrorFrameHeader,
     RuntimeErrorFramePayload, RuntimeFrameFamily, TaskCancelRequestFrameHeader,
     TaskCancelResultKindWire, TaskCancelResultWire, TaskCancelResponseFrameHeader,
-    TaskStatusKindWire, TaskStatusRequestFrameHeader, TaskStatusResponseFrameHeader,
-    TaskStatusWire, TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
-    TaskSubmitResponseFrameHeader, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
-    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED, TaskRef,
+    TaskControlRejectionCode, TaskRef, TaskStatusKindWire, TaskStatusRequestFrameHeader,
+    TaskStatusResponseFrameHeader, TaskStatusWire, TaskSubmitRejectionCode,
+    TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader, TaskTargetKind,
+    RUNTIME_FRAME_SCHEMA_VERSION, TASK_CANCEL_ERROR_FRAME_TYPE,
+    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED, TASK_STATUS_ERROR_FRAME_TYPE,
 };
 use skiff_task_control::model::{
     DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
@@ -157,18 +159,47 @@ impl DurableTaskFrameSink {
         code: TaskSubmitRejectionCode,
         message: &str,
     ) -> Result<Vec<u8>, TerminalKind> {
+        Self::control_error_frame(rpc_id, "task.submit.error", code.as_str(), message)
+    }
+
+    /// Encodes one `task.*.error` frame (submit/status/cancel share the
+    /// `ActorTaskRuntimeErrorFrameHeader` shape; the envelope type selects the
+    /// exact frame family).
+    fn control_error_frame(
+        rpc_id: &str,
+        envelope_type: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<Vec<u8>, TerminalKind> {
         let header = ActorTaskRuntimeErrorFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "task.submit.error".to_string(),
+            envelope_type: envelope_type.to_string(),
             rpc_id: rpc_id.to_string(),
             error: RuntimeErrorFramePayload {
-                code: code.as_str().to_string(),
+                code: code.to_string(),
                 message: message.to_string(),
                 status: None,
                 details: None,
             },
         };
-        encode_task_submit_error_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
+        match envelope_type {
+            "task.submit.error" => {
+                encode_task_submit_error_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
+            }
+            TASK_STATUS_ERROR_FRAME_TYPE => {
+                encode_task_status_error_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
+            }
+            TASK_CANCEL_ERROR_FRAME_TYPE => {
+                encode_task_cancel_error_frame(&header).map_err(|_| TerminalKind::MalformedFrame)
+            }
+            other => {
+                debug_assert!(
+                    false,
+                    "control_error_frame called with unknown task envelope {other}"
+                );
+                Err(TerminalKind::MalformedFrame)
+            }
+        }
     }
 
     fn submit_response(rpc_id: &str, task_id: &TaskId, owner: &str) -> Result<Vec<u8>, TerminalKind> {
@@ -354,50 +385,77 @@ impl DurableTaskFrameSink {
         self.counters
             .status_queries
             .fetch_add(1, Ordering::Relaxed);
-        let status = if !self.owner_is_known(&request.task_ref) {
-            TaskStatusWire {
-                kind: TaskStatusKindWire::Expired,
-            }
-        } else {
-            match self
-                .store
-                .status(StatusInput {
-                    task_id: TaskId::new(request.task_ref.task_id()),
-                    retention: self.retention,
-                })
-                .await
-            {
-                Ok(status) => TaskStatusWire {
-                    kind: wire_status_kind(status.kind),
-                },
-                Err(_) => {
-                    // D1 wire defines no status error frame; a transient store
-                    // failure projects as expired + a distinct health counter
-                    // so it is observable (documented D2 limitation).
-                    self.counters
-                        .status_unavailable
-                        .fetch_add(1, Ordering::Relaxed);
-                    TaskStatusWire {
-                        kind: TaskStatusKindWire::Expired,
-                    }
-                }
-            }
-        };
-        if status.kind == TaskStatusKindWire::Expired {
+        if !self.owner_is_known(&request.task_ref) {
+            // Owner scope is not a service of the active routing epoch: the
+            // TaskId cannot be resolved by this caller, which is the wire
+            // `notFound` projection (user surface maps it to stable expired).
             self.counters
-                .status_expired
+                .status_not_found
                 .fetch_add(1, Ordering::Relaxed);
+            let bytes = Self::control_error_frame(
+                &request.rpc_id,
+                TASK_STATUS_ERROR_FRAME_TYPE,
+                TaskControlRejectionCode::NotFound.as_str(),
+                "task reference owner scope is not a service of the active routing epoch",
+            )?;
+            return self.write(&session, bytes);
         }
-        let header = TaskStatusResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "task.status.response".to_string(),
-            rpc_id: request.rpc_id,
-            task_ref: request.task_ref,
-            status,
-        };
-        let bytes =
-            encode_task_status_response_frame(&header).map_err(|_| TerminalKind::MalformedFrame)?;
-        self.write(&session, bytes)
+        match self
+            .store
+            .status(StatusInput {
+                task_id: TaskId::new(request.task_ref.task_id()),
+                retention: self.retention,
+            })
+            .await
+        {
+            Ok(status) => {
+                let wire = TaskStatusWire {
+                    kind: wire_status_kind(status.kind),
+                };
+                if wire.kind == TaskStatusKindWire::Expired {
+                    self.counters
+                        .status_expired
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                let header = TaskStatusResponseFrameHeader {
+                    schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                    envelope_type: "task.status.response".to_string(),
+                    rpc_id: request.rpc_id,
+                    task_ref: request.task_ref,
+                    status: wire,
+                };
+                let bytes = encode_task_status_response_frame(&header)
+                    .map_err(|_| TerminalKind::MalformedFrame)?;
+                self.write(&session, bytes)
+            }
+            Err(skiff_task_control::TaskStoreError::NotFound { .. }) => {
+                self.counters
+                    .status_not_found
+                    .fetch_add(1, Ordering::Relaxed);
+                let bytes = Self::control_error_frame(
+                    &request.rpc_id,
+                    TASK_STATUS_ERROR_FRAME_TYPE,
+                    TaskControlRejectionCode::NotFound.as_str(),
+                    "task record is not found in the durable task store",
+                )?;
+                self.write(&session, bytes)
+            }
+            Err(_) => {
+                // Transient / closed / unexpected store failure: surface the
+                // wire `storeUnavailable` error instead of faking a stable
+                // expired projection (D2 limitation removed by E1).
+                self.counters
+                    .status_unavailable
+                    .fetch_add(1, Ordering::Relaxed);
+                let bytes = Self::control_error_frame(
+                    &request.rpc_id,
+                    TASK_STATUS_ERROR_FRAME_TYPE,
+                    TaskControlRejectionCode::StoreUnavailable.as_str(),
+                    "task store is unavailable",
+                )?;
+                self.write(&session, bytes)
+            }
+        }
     }
 
     /// Durable `task.cancel.request` handler (reference kind projection;
@@ -407,63 +465,87 @@ impl DurableTaskFrameSink {
         session: RuntimeSessionEpoch,
         request: TaskCancelRequestFrameHeader,
     ) -> Result<(), TerminalKind> {
-        let result = if !self.owner_is_known(&request.task_ref) {
-            TaskCancelResultWire {
-                kind: TaskCancelResultKindWire::Expired,
-            }
-        } else {
-            match self
-                .store
-                .cancel(CancelInput {
-                    task_id: TaskId::new(request.task_ref.task_id()),
-                })
-                .await
-            {
-                Ok(result) => TaskCancelResultWire {
+        if !self.owner_is_known(&request.task_ref) {
+            self.counters
+                .cancel_not_found
+                .fetch_add(1, Ordering::Relaxed);
+            let bytes = Self::control_error_frame(
+                &request.rpc_id,
+                TASK_CANCEL_ERROR_FRAME_TYPE,
+                TaskControlRejectionCode::NotFound.as_str(),
+                "task reference owner scope is not a service of the active routing epoch",
+            )?;
+            return self.write(&session, bytes);
+        }
+        match self
+            .store
+            .cancel(CancelInput {
+                task_id: TaskId::new(request.task_ref.task_id()),
+            })
+            .await
+        {
+            Ok(result) => {
+                let wire = TaskCancelResultWire {
                     kind: wire_cancel_kind(result.kind),
-                },
-                Err(_) => {
-                    self.counters
-                        .cancel_unavailable
-                        .fetch_add(1, Ordering::Relaxed);
-                    TaskCancelResultWire {
-                        kind: TaskCancelResultKindWire::Expired,
+                };
+                match wire.kind {
+                    TaskCancelResultKindWire::Canceled => {
+                        self.counters
+                            .cancel_canceled
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    TaskCancelResultKindWire::AlreadyStarted => {
+                        self.counters
+                            .cancel_already_started
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    TaskCancelResultKindWire::AlreadyTerminal => {
+                        self.counters
+                            .cancel_already_terminal
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    TaskCancelResultKindWire::Expired => {
+                        self.counters
+                            .cancel_expired
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
+                let header = TaskCancelResponseFrameHeader {
+                    schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                    envelope_type: "task.cancel.response".to_string(),
+                    rpc_id: request.rpc_id,
+                    task_ref: request.task_ref,
+                    result: wire,
+                };
+                let bytes = encode_task_cancel_response_frame(&header)
+                    .map_err(|_| TerminalKind::MalformedFrame)?;
+                self.write(&session, bytes)
             }
-        };
-        match result.kind {
-            TaskCancelResultKindWire::Canceled => {
+            Err(skiff_task_control::TaskStoreError::NotFound { .. }) => {
                 self.counters
-                    .cancel_canceled
+                    .cancel_not_found
                     .fetch_add(1, Ordering::Relaxed);
+                let bytes = Self::control_error_frame(
+                    &request.rpc_id,
+                    TASK_CANCEL_ERROR_FRAME_TYPE,
+                    TaskControlRejectionCode::NotFound.as_str(),
+                    "task record is not found in the durable task store",
+                )?;
+                self.write(&session, bytes)
             }
-            TaskCancelResultKindWire::AlreadyStarted => {
+            Err(_) => {
                 self.counters
-                    .cancel_already_started
+                    .cancel_unavailable
                     .fetch_add(1, Ordering::Relaxed);
-            }
-            TaskCancelResultKindWire::AlreadyTerminal => {
-                self.counters
-                    .cancel_already_terminal
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            TaskCancelResultKindWire::Expired => {
-                self.counters
-                    .cancel_expired
-                    .fetch_add(1, Ordering::Relaxed);
+                let bytes = Self::control_error_frame(
+                    &request.rpc_id,
+                    TASK_CANCEL_ERROR_FRAME_TYPE,
+                    TaskControlRejectionCode::StoreUnavailable.as_str(),
+                    "task store is unavailable",
+                )?;
+                self.write(&session, bytes)
             }
         }
-        let header = TaskCancelResponseFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "task.cancel.response".to_string(),
-            rpc_id: request.rpc_id,
-            task_ref: request.task_ref,
-            result,
-        };
-        let bytes =
-            encode_task_cancel_response_frame(&header).map_err(|_| TerminalKind::MalformedFrame)?;
-        self.write(&session, bytes)
     }
 }
 

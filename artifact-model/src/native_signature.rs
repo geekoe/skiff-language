@@ -122,6 +122,8 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_native("std.file.create", true),
     detached_native("std.file.createFromStream", true),
     detached_native("std.time.sleep", true),
+    detached_native("std.task.status", true),
+    detached_native("std.task.cancel", true),
     detached_scalar_native("std.websocket.sendTextToConnection"),
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
     detached_scalar_native("std.websocket.sendTextToBusinessIdentity"),
@@ -210,6 +212,10 @@ const RESOURCE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package 
     package_id: "skiff.run/std",
     public_path: "std.resource.ResourceInfo",
 };
+const TASK_REF: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("TaskRef");
+const TASK_STATUS: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("TaskStatus");
+const TASK_CANCEL_RESULT: NativeSignatureTypeExpr =
+    NativeSignatureTypeExpr::Builtin("TaskCancelResult");
 pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
     NativeSignatureDef {
         target: "std.actor.get",
@@ -838,6 +844,22 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         type_param_count: 2,
         params: &[STRING, STRING, T0],
         return_type: T1,
+    },
+    NativeSignatureDef {
+        target: "std.task.status",
+        binding_key: "std.task.status",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[TASK_REF],
+        return_type: TASK_STATUS,
+    },
+    NativeSignatureDef {
+        target: "std.task.cancel",
+        binding_key: "std.task.cancel",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[TASK_REF],
+        return_type: TASK_CANCEL_RESULT,
     },
 ];
 

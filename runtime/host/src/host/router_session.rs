@@ -30,8 +30,8 @@ use skiff_runtime_transport::{
         ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
         ActorTaskRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
-        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        TaskSubmitResponseFrameHeader, TypedEnvelope,
+        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader, TaskCancelResponseFrameHeader,
+        TaskStatusResponseFrameHeader, TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
     runtime_assembly_request::decode_runtime_assembly_request_start_frame,
@@ -1145,6 +1145,54 @@ async fn dispatch_router_binary_frame_inner(
                 payload,
                 header.error,
                 "task.submit.error",
+            )?;
+        }
+        "task.status.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<TaskStatusResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_response(
+                host,
+                &header.rpc_id,
+                &header,
+                payload,
+                "task.status.response",
+            )?;
+        }
+        "task.status.error" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_error(
+                host,
+                &header.rpc_id,
+                payload,
+                header.error,
+                "task.status.error",
+            )?;
+        }
+        "task.cancel.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<TaskCancelResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_response(
+                host,
+                &header.rpc_id,
+                &header,
+                payload,
+                "task.cancel.response",
+            )?;
+        }
+        "task.cancel.error" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorTaskRuntimeErrorFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_error(
+                host,
+                &header.rpc_id,
+                payload,
+                header.error,
+                "task.cancel.error",
             )?;
         }
         other => {

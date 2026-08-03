@@ -236,6 +236,7 @@ pub(super) fn native_route_matches_required_context(
         | (NativeRequiredContext::Resource, RuntimeNativeRoute::Resource)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::TaskControl)
         | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
         | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
         // Date.now is synchronously backed by the registry, but still requires

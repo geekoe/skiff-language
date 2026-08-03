@@ -94,6 +94,19 @@ fn compiler_builtin_registry_owns_identity_kind_and_arity() {
     assert_eq!(task_ref.arity, 0);
     assert_eq!(task_ref.kind, CompilerBuiltinTypeKind::OpaqueHandle);
     assert_eq!(compiler_builtin_type(task_ref.symbol), Some(task_ref));
+
+    let status = compiler_builtin_type("TaskStatus").unwrap();
+    assert_eq!(status.symbol, "std.task.TaskStatus");
+    assert_eq!(status.arity, 0);
+    assert_eq!(status.kind, CompilerBuiltinTypeKind::Value);
+    assert_eq!(compiler_builtin_type(status.symbol), Some(status));
+
+    let cancel_result = compiler_builtin_type("TaskCancelResult").unwrap();
+    assert_eq!(cancel_result.symbol, "std.task.TaskCancelResult");
+    assert_eq!(cancel_result.arity, 0);
+    assert_eq!(cancel_result.kind, CompilerBuiltinTypeKind::Value);
+    assert_eq!(compiler_builtin_type(cancel_result.symbol), Some(cancel_result));
+
     assert!(compiler_builtin_type("ActorRef").is_none());
     assert!(compiler_builtin_type("NotABuiltin").is_none());
 }

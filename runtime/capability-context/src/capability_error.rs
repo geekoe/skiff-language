@@ -17,6 +17,11 @@ pub enum CapabilityError {
     /// `storeUnavailable` is transient, every other code is a definite
     /// rejection that guarantees no task was created.
     TaskSubmitRejected { code: String, message: String },
+    /// A `task.status.error` / `task.cancel.error` projection from the router
+    /// control plane. `code` is the canonical `TaskControlRejectionCode`
+    /// string; `notFound` projects to the stable `expired` user result and
+    /// `storeUnavailable` is a transient platform failure.
+    TaskControlRejected { code: String, message: String },
     Opaque(Box<dyn WirePayload>),
 }
 
@@ -50,6 +55,13 @@ impl CapabilityError {
         }
     }
 
+    pub fn task_control_rejected(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::TaskControlRejected {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
     pub fn opaque(error: impl WirePayload) -> Self {
         Self::Opaque(Box::new(error))
     }
@@ -68,6 +80,9 @@ impl fmt::Display for CapabilityError {
             Self::TaskSubmitRejected { code, message } => {
                 write!(formatter, "task.submit rejected ({code}): {message}")
             }
+            Self::TaskControlRejected { code, message } => {
+                write!(formatter, "task control rejected ({code}): {message}")
+            }
             Self::Opaque(error) => error.fmt(formatter),
         }
     }
@@ -81,7 +96,8 @@ impl Error for CapabilityError {
             | Self::Unsupported(_)
             | Self::ProviderUnavailable { .. }
             | Self::Protocol { .. }
-            | Self::TaskSubmitRejected { .. } => None,
+            | Self::TaskSubmitRejected { .. }
+            | Self::TaskControlRejected { .. } => None,
         }
     }
 }
@@ -122,6 +138,15 @@ impl WirePayload for CapabilityError {
                     "message": message,
                 })),
             },
+            Self::TaskControlRejected { code, message } => RuntimeErrorPayload {
+                code: "std.service.ProviderUnavailableError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(json!({
+                    "controlCode": code,
+                    "message": message,
+                })),
+            },
             Self::Opaque(error) => error.payload(),
         }
     }
@@ -147,7 +172,15 @@ impl WirePayload for CapabilityError {
                 json!({
                     "rejectionCode": code,
                     "message": message,
-                })),
+                }),
+            )),
+            Self::TaskControlRejected { code, message } => Some((
+                PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
+                json!({
+                    "controlCode": code,
+                    "message": message,
+                }),
+            ),
             ),
             Self::Opaque(error) => error.catch_projection(),
             Self::Decode(_) | Self::Unsupported(_) => None,

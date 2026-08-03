@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     ActivationIdentityControl, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
-    TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlRequest, TaskSubmitResponseControl,
 };
 
 /// Request/invocation metadata and `task.submit` operations provided by the host/runtime.
@@ -31,6 +32,18 @@ pub trait RequestCapabilityApi: Send + Sync {
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, TaskSubmitResponseControl>;
+
+    fn status_task<'a>(
+        &'a self,
+        request: TaskStatusControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse>;
+
+    fn cancel_task<'a>(
+        &'a self,
+        request: TaskCancelControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse>;
 }
 
 #[derive(Clone)]
@@ -109,6 +122,22 @@ impl<'a> RequestCapabilityContext<'a> {
         self.inner
             .submit_task(request, args_payload, execution_control)
             .await
+    }
+
+    pub async fn status_task(
+        &self,
+        request: TaskStatusControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<TaskStatusControlResponse> {
+        self.inner.status_task(request, execution_control).await
+    }
+
+    pub async fn cancel_task(
+        &self,
+        request: TaskCancelControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityResult<TaskCancelControlResponse> {
+        self.inner.cancel_task(request, execution_control).await
     }
 }
 

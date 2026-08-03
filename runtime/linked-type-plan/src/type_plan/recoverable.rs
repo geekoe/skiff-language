@@ -385,6 +385,14 @@ fn recoverable_expected_builtin_node(
         RuntimeTypeNode::Integer => RuntimeRecoverableExpectedTypeNode::Integer,
         RuntimeTypeNode::Number => RuntimeRecoverableExpectedTypeNode::Number,
         RuntimeTypeNode::Null => RuntimeRecoverableExpectedTypeNode::Null,
+        RuntimeTypeNode::Union(items) => RuntimeRecoverableExpectedTypeNode::Union {
+            items: items
+                .iter()
+                .map(
+                    RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics,
+                )
+                .collect(),
+        },
         _ => RuntimeRecoverableExpectedTypeNode::Unresolved {
             diagnostic_label: name.to_string(),
         },

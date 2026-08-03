@@ -23,7 +23,9 @@ use skiff_runtime_capability_context::{
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedRequestCapabilityContext,
     OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext, RequestCapabilityApi,
-    RequestCapabilityContext, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    RequestCapabilityContext, TaskCancelControlRequest, TaskCancelControlResponse,
+    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlRequest,
+    TaskSubmitResponseControl,
     StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard, StreamPoll, StreamPullSource,
     StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult, StreamSink,
     StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext, WebsocketCapabilityApi,
@@ -991,6 +993,30 @@ impl RequestCapabilityApi for TestActor {
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "test request capability is unavailable",
+            ))
+        })
+    }
+
+    fn status_task<'a>(
+        &'a self,
+        _request: TaskStatusControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "test request capability is unavailable",
+            ))
+        })
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        _request: TaskCancelControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse> {
         Box::pin(async {
             Err(CapabilityError::unsupported(
                 "test request capability is unavailable",

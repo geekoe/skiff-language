@@ -278,3 +278,78 @@ fn dispatch_keyword_is_rejected_for_local_bindings() {
         "expected local binding violation, got {violations:?}"
     );
 }
+
+#[test]
+fn std_task_status_and_cancel_compile_with_task_ref_argument() {
+    init_prelude();
+    build_ok(
+        r#"
+            function run() -> void {
+              return
+            }
+
+            function start() -> std.task.TaskStatus {
+              const ref = dispatch run()
+              return std.task.status(ref)
+            }
+
+            function stop() -> std.task.TaskCancelResult {
+              const ref = dispatch run()
+              return std.task.cancel(ref)
+            }
+        "#,
+    );
+}
+
+#[test]
+fn std_task_status_rejects_non_task_ref_argument() {
+    init_prelude();
+    let error = build_error(
+        r#"
+            function start() -> std.task.TaskStatus {
+              return std.task.status("not-a-task-ref")
+            }
+        "#,
+    );
+    assert!(
+        error.contains("std.task.status") && error.contains("TaskRef"),
+        "std.task.status must reject a non-TaskRef argument, got: {error}"
+    );
+}
+
+#[test]
+fn std_task_cancel_rejects_non_task_ref_argument() {
+    init_prelude();
+    let error = build_error(
+        r#"
+            function start() -> std.task.TaskCancelResult {
+              return std.task.cancel(42)
+            }
+        "#,
+    );
+    assert!(
+        error.contains("std.task.cancel") && error.contains("TaskRef"),
+        "std.task.cancel must reject a non-TaskRef argument, got: {error}"
+    );
+}
+
+#[test]
+fn std_task_status_rejects_extra_arguments() {
+    init_prelude();
+    let error = build_error(
+        r#"
+            function run() -> void {
+              return
+            }
+
+            function start() -> std.task.TaskStatus {
+              const ref = dispatch run()
+              return std.task.status(ref, ref)
+            }
+        "#,
+    );
+    assert!(
+        error.contains("std.task.status"),
+        "std.task.status arity mismatch must surface, got: {error}"
+    );
+}

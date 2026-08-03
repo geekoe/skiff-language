@@ -725,6 +725,13 @@ fn runtime_error_from_capability_ref(
             target: "task.submit.request".to_string(),
             reason: format!("task.submit rejected ({code}): {message}"),
         },
+        skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
+            code,
+            message,
+        } => RuntimeError::ProviderUnavailable {
+            target: "task.status.request".to_string(),
+            reason: format!("task control rejected ({code}): {message}"),
+        },
         skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
             runtime_error_from_wire_payload_ref(error.as_ref())
         }
@@ -945,6 +952,13 @@ impl From<skiff_runtime_capability_context::CapabilityError> for RuntimeError {
             } => RuntimeError::ProviderUnavailable {
                 target: "task.submit.request".to_string(),
                 reason: format!("task.submit rejected ({code}): {message}"),
+            },
+            skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
+                code,
+                message,
+            } => RuntimeError::ProviderUnavailable {
+                target: "task.status.request".to_string(),
+                reason: format!("task control rejected ({code}): {message}"),
             },
             skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
                 runtime_error_from_wire_payload(error)

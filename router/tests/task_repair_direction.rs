@@ -248,7 +248,14 @@ mod tests {
 
         // RouterToRuntime responses remain direction violations when sent by
         // the Runtime, exactly like task.submit.response/error.
-        for name in ["task.status.response.scheduled", "task.cancel.response.canceled"] {
+        for name in [
+            "task.status.response.scheduled",
+            "task.status.error.notFound",
+            "task.status.error.storeUnavailable",
+            "task.cancel.response.canceled",
+            "task.cancel.error.notFound",
+            "task.cancel.error.storeUnavailable",
+        ] {
             let bytes = corpus_frame(name);
             assert_eq!(
                 demux.classify(&bytes),

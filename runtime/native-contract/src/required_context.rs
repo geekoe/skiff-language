@@ -71,6 +71,7 @@ impl NativeRequiredContext {
             | "std.http.stream.chunk"
             | "std.http.stream.end" => Self::None,
             "core.date.now" | "std.time.sleep" => Self::Time,
+            "std.task.status" | "std.task.cancel" => Self::None,
             TARGET_STD_HTTP_REQUEST | TARGET_STD_HTTP_STREAM | TARGET_STD_HTTP_SSE => {
                 Self::HttpClient
             }

@@ -47,11 +47,12 @@ pub(super) use skiff_runtime_capability_context::{
     HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedRequestCapabilityContext,
     OwnedWebsocketCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
-    TaskSubmitControlRequest, TaskSubmitResponseControl, StreamCancelSignal, StreamCancelSignalApi,
-    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, TimeCapabilityContext, WebsocketCapabilityApi,
-    WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    StreamCancelSignal, StreamCancelSignalApi, StreamLifetimeGuard, StreamPoll, StreamPullSource,
+    StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult, StreamSink,
+    StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext,
+    WebsocketCapabilityApi, WebsocketCapabilityContext as SharedWebsocketCapabilityContext,
 };
 pub(super) use skiff_runtime_eval::{
     actor_executor::{ActorMethodExecutionRequest, ActorMethodExecutor},

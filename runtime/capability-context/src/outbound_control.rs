@@ -3,7 +3,8 @@ pub use skiff_runtime_request_contract::{
     ActorGetOrCreateControlRequest, ActorKeyControlMetadata, ActorMethodTaskTargetControl,
     ActorRemoveControlRequest, ActorReplaceControlRequest, ConnectionRequestCancelControl,
     ConnectionRequestControl, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
+    RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest,
+    TaskCancelControlResponse, TaskStatusControlRequest, TaskStatusControlResponse,
     TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
     WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
 };

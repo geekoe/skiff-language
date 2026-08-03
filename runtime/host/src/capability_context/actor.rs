@@ -7,7 +7,9 @@ use skiff_runtime_capability_context::{
     InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
     OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
     OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, TaskCallerKind,
-    TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlMessage, TaskSubmitControlRequest,
+    TaskSubmitResponseControl,
 };
 use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -18,7 +20,8 @@ use skiff_runtime_model::runtime_value::ActorRef;
 use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
-    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskSubmitRejectionCode,
+    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskCancelResponseFrameHeader,
+    TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader, TaskSubmitRejectionCode,
     TaskSubmitResponseFrameHeader,
 };
 
@@ -27,6 +30,8 @@ const ACTOR_REPLACE_TARGET: &str = "actor.replace";
 const ACTOR_FIND_TARGET: &str = "actor.find";
 const ACTOR_REMOVE_TARGET: &str = "actor.remove";
 const TASK_SUBMIT_TARGET: &str = "task.submit";
+const TASK_STATUS_TARGET: &str = "task.status";
+const TASK_CANCEL_TARGET: &str = "task.cancel";
 const ACTOR_GET_CREATE_DEADLINE_MS: u64 = 30_000;
 
 pub struct ActorClient<'a> {
@@ -254,6 +259,74 @@ impl<'a> RequestClient<'a> {
             task_ref: response.task_ref.into_string(),
             task_id: response.task_id,
             request_id: response.request_id,
+        })
+    }
+
+    pub async fn status_task(
+        &self,
+        request: TaskStatusControlRequest,
+    ) -> Result<TaskStatusControlResponse> {
+        self.status_task_with_scope(request, None).await
+    }
+
+    pub(crate) async fn status_task_in_scope(
+        &self,
+        request: TaskStatusControlRequest,
+        scope: ExecutionScope,
+    ) -> Result<TaskStatusControlResponse> {
+        self.status_task_with_scope(request, Some(scope)).await
+    }
+
+    async fn status_task_with_scope(
+        &self,
+        mut request: TaskStatusControlRequest,
+        scope: Option<ExecutionScope>,
+    ) -> Result<TaskStatusControlResponse> {
+        request.rpc_id = control_rpc_id(&self.context, TASK_STATUS_TARGET);
+        request.runtime_id = self.context.runtime_id().to_string();
+        let rpc_id = request.rpc_id.clone();
+        let command = OutboundControlMessage::TaskStatus { request };
+        let response: TaskStatusResponseFrameHeader =
+            send_control_request(&self.context, TASK_STATUS_TARGET, &rpc_id, command, scope)
+                .await?;
+        validate_task_status_response(&response, &rpc_id)?;
+        Ok(TaskStatusControlResponse {
+            task_ref: response.task_ref.into_string(),
+            kind: response.status.kind.as_str().to_string(),
+        })
+    }
+
+    pub async fn cancel_task(
+        &self,
+        request: TaskCancelControlRequest,
+    ) -> Result<TaskCancelControlResponse> {
+        self.cancel_task_with_scope(request, None).await
+    }
+
+    pub(crate) async fn cancel_task_in_scope(
+        &self,
+        request: TaskCancelControlRequest,
+        scope: ExecutionScope,
+    ) -> Result<TaskCancelControlResponse> {
+        self.cancel_task_with_scope(request, Some(scope)).await
+    }
+
+    async fn cancel_task_with_scope(
+        &self,
+        mut request: TaskCancelControlRequest,
+        scope: Option<ExecutionScope>,
+    ) -> Result<TaskCancelControlResponse> {
+        request.rpc_id = control_rpc_id(&self.context, TASK_CANCEL_TARGET);
+        request.runtime_id = self.context.runtime_id().to_string();
+        let rpc_id = request.rpc_id.clone();
+        let command = OutboundControlMessage::TaskCancel { request };
+        let response: TaskCancelResponseFrameHeader =
+            send_control_request(&self.context, TASK_CANCEL_TARGET, &rpc_id, command, scope)
+                .await?;
+        validate_task_cancel_response(&response, &rpc_id)?;
+        Ok(TaskCancelControlResponse {
+            task_ref: response.task_ref.into_string(),
+            kind: response.result.kind.as_str().to_string(),
         })
     }
 }
@@ -836,17 +909,23 @@ fn finish_control_response(
         }
         Some(OutboundResponse::Error(error)) => {
             lease.complete();
-            if let Some(code) = TaskSubmitRejectionCode::parse(&error.code) {
-                Err(RuntimeError::TaskSubmitRejected {
+            if target == TASK_STATUS_TARGET || target == TASK_CANCEL_TARGET {
+                if let Some(code) = TaskControlRejectionCode::parse(&error.code) {
+                    return Err(RuntimeError::TaskControlRejected {
+                        code: code.as_str().to_string(),
+                        message: error.message,
+                    });
+                }
+            } else if let Some(code) = TaskSubmitRejectionCode::parse(&error.code) {
+                return Err(RuntimeError::TaskSubmitRejected {
                     code: code.as_str().to_string(),
                     message: error.message,
-                })
-            } else {
-                Err(RuntimeError::ProviderUnavailable {
-                    target: target.to_string(),
-                    reason: error.message,
-                })
+                });
             }
+            Err(RuntimeError::ProviderUnavailable {
+                target: target.to_string(),
+                reason: error.message,
+            })
         }
         None => {
             let _ = lease.cancel("response_channel_closed");
@@ -929,6 +1008,46 @@ fn validate_task_submit_identity(label: &str, value: &str) -> Result<()> {
         target: TASK_SUBMIT_TARGET.to_string(),
         message: format!("task.submit.response {message}"),
     })
+}
+
+fn validate_task_status_response(
+    response: &TaskStatusResponseFrameHeader,
+    expected_rpc_id: &str,
+) -> Result<()> {
+    if response.rpc_id != expected_rpc_id {
+        return Err(RuntimeError::Protocol {
+            target: TASK_STATUS_TARGET.to_string(),
+            message: format!(
+                "task.status.response rpcId {} does not match request {}",
+                response.rpc_id, expected_rpc_id
+            ),
+        });
+    }
+    TaskRef::parse(response.task_ref.as_str()).map_err(|error| RuntimeError::Protocol {
+        target: TASK_STATUS_TARGET.to_string(),
+        message: format!("task.status.response {error}"),
+    })?;
+    Ok(())
+}
+
+fn validate_task_cancel_response(
+    response: &TaskCancelResponseFrameHeader,
+    expected_rpc_id: &str,
+) -> Result<()> {
+    if response.rpc_id != expected_rpc_id {
+        return Err(RuntimeError::Protocol {
+            target: TASK_CANCEL_TARGET.to_string(),
+            message: format!(
+                "task.cancel.response rpcId {} does not match request {}",
+                response.rpc_id, expected_rpc_id
+            ),
+        });
+    }
+    TaskRef::parse(response.task_ref.as_str()).map_err(|error| RuntimeError::Protocol {
+        target: TASK_CANCEL_TARGET.to_string(),
+        message: format!("task.cancel.response {error}"),
+    })?;
+    Ok(())
 }
 
 fn actor_control_deadline(

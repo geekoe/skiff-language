@@ -274,6 +274,11 @@ impl HealthAggregator {
                     .counters()
                     .status_expired
                     .load(std::sync::atomic::Ordering::Relaxed),
+                status_not_found: components
+                    .task_control
+                    .counters()
+                    .status_not_found
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 status_unavailable: components
                     .task_control
                     .counters()
@@ -298,6 +303,11 @@ impl HealthAggregator {
                     .task_control
                     .counters()
                     .cancel_expired
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                cancel_not_found: components
+                    .task_control
+                    .counters()
+                    .cancel_not_found
                     .load(std::sync::atomic::Ordering::Relaxed),
                 cancel_unavailable: components
                     .task_control

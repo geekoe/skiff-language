@@ -25,11 +25,14 @@ use skiff_runtime_capability_context::{
     ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
     CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, OwnedExecutionControl,
     OwnedRequestCapabilityContext, RequestCapabilityApi, RequestCapabilityContext,
-    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{ActorRef, RuntimeValue},
+    value::HeapNode,
 };
 
 use crate::{
@@ -49,6 +52,10 @@ struct RecordingActor {
     submissions: Arc<Mutex<Vec<(TaskSubmitControlRequest, Vec<u8>)>>>,
     execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
     replies: Arc<Mutex<VecDeque<Result<TaskSubmitResponseControl, CapabilityError>>>>,
+    status_requests: Arc<Mutex<Vec<TaskStatusControlRequest>>>,
+    status_replies: Arc<Mutex<VecDeque<Result<TaskStatusControlResponse, CapabilityError>>>>,
+    cancel_requests: Arc<Mutex<Vec<TaskCancelControlRequest>>>,
+    cancel_replies: Arc<Mutex<VecDeque<Result<TaskCancelControlResponse, CapabilityError>>>>,
     task_seq: Arc<AtomicU64>,
 }
 
@@ -57,12 +64,18 @@ impl RecordingActor {
         activation_identity: ActivationIdentityControl,
         submissions: Arc<Mutex<Vec<(TaskSubmitControlRequest, Vec<u8>)>>>,
         execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
+        status_requests: Arc<Mutex<Vec<TaskStatusControlRequest>>>,
+        cancel_requests: Arc<Mutex<Vec<TaskCancelControlRequest>>>,
     ) -> Self {
         Self {
             activation_identity,
             submissions,
             execution_receipts,
             replies: Arc::new(Mutex::new(VecDeque::new())),
+            status_requests,
+            status_replies: Arc::new(Mutex::new(VecDeque::new())),
+            cancel_requests,
+            cancel_replies: Arc::new(Mutex::new(VecDeque::new())),
             task_seq: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -74,6 +87,28 @@ impl RecordingActor {
         self.replies
             .lock()
             .expect("task reply script should remain available")
+            .extend(replies);
+        self
+    }
+
+    fn scripted_status(
+        self,
+        replies: Vec<Result<TaskStatusControlResponse, CapabilityError>>,
+    ) -> Self {
+        self.status_replies
+            .lock()
+            .expect("status reply script should remain available")
+            .extend(replies);
+        self
+    }
+
+    fn scripted_cancel(
+        self,
+        replies: Vec<Result<TaskCancelControlResponse, CapabilityError>>,
+    ) -> Self {
+        self.cancel_replies
+            .lock()
+            .expect("cancel reply script should remain available")
             .extend(replies);
         self
     }
@@ -239,6 +274,70 @@ impl RequestCapabilityApi for RecordingActor {
             reply
         })
     }
+
+    fn status_task<'a>(
+        &'a self,
+        request: TaskStatusControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse> {
+        let execution_receipts = Arc::clone(&self.execution_receipts);
+        let status_requests = Arc::clone(&self.status_requests);
+        let status_replies = Arc::clone(&self.status_replies);
+        Box::pin(async move {
+            execution_receipts
+                .lock()
+                .expect("task execution receipts should remain available")
+                .push(execution_control);
+            status_requests
+                .lock()
+                .expect("status recorder lock should remain available")
+                .push(request.clone());
+            let reply = {
+                let mut replies = status_replies
+                    .lock()
+                    .expect("status reply script should remain available");
+                replies.pop_front().unwrap_or_else(|| {
+                    Ok(TaskStatusControlResponse {
+                        task_ref: request.task_ref,
+                        kind: "scheduled".to_string(),
+                    })
+                })
+            };
+            reply
+        })
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        request: TaskCancelControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse> {
+        let execution_receipts = Arc::clone(&self.execution_receipts);
+        let cancel_requests = Arc::clone(&self.cancel_requests);
+        let cancel_replies = Arc::clone(&self.cancel_replies);
+        Box::pin(async move {
+            execution_receipts
+                .lock()
+                .expect("task execution receipts should remain available")
+                .push(execution_control);
+            cancel_requests
+                .lock()
+                .expect("cancel recorder lock should remain available")
+                .push(request.clone());
+            let reply = {
+                let mut replies = cancel_replies
+                    .lock()
+                    .expect("cancel reply script should remain available");
+                replies.pop_front().unwrap_or_else(|| {
+                    Ok(TaskCancelControlResponse {
+                        task_ref: request.task_ref,
+                        kind: "canceled".to_string(),
+                    })
+                })
+            };
+            reply
+        })
+    }
 }
 
 fn task_ref_for(owner: &str, task_id: &str) -> String {
@@ -290,6 +389,8 @@ struct CanonicalTaskFixture {
     request: RequestCapabilityContext<'static>,
     activation_identity: ActivationIdentityControl,
     submissions: Arc<Mutex<Vec<(TaskSubmitControlRequest, Vec<u8>)>>>,
+    status_requests: Arc<Mutex<Vec<TaskStatusControlRequest>>>,
+    cancel_requests: Arc<Mutex<Vec<TaskCancelControlRequest>>>,
     execution_receipts: Arc<Mutex<Vec<OwnedExecutionControl>>>,
 }
 
@@ -776,6 +877,346 @@ fn canonical_task_function_target_rejects_mismatched_metadata_defensively() {
         .contains("does not match linked executable function:task.fixture.run"));
 }
 
+#[tokio::test]
+async fn std_task_status_maps_wire_kind_to_user_union_value() {
+    let fixture = task_control_fixture_with_replies(
+        "task.status",
+        "TaskStatus",
+        "skiff-task-v1:b3duZXI.dGFzay0x",
+        vec![Ok(TaskStatusControlResponse {
+            task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+            kind: "running".to_string(),
+        })],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("std.task.status should map to a user union value");
+    let RuntimeValue::Heap(handle) = value else {
+        panic!("status must return a record")
+    };
+    let HeapNode::Object(object) = heap
+        .heap_mut()
+        .get(handle)
+        .expect("status record must resolve")
+    else {
+        panic!("status must return a record")
+    };
+    assert_eq!(
+        object.fields().get("kind"),
+        Some(&RuntimeValue::String("running".to_string()))
+    );
+    let requests = fixture.status_requests.lock().expect("status requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].task_ref, "skiff-task-v1:b3duZXI.dGFzay0x");
+}
+
+#[tokio::test]
+async fn std_task_cancel_maps_wire_kind_to_user_union_value() {
+    let fixture = task_control_fixture_with_replies(
+        "task.cancel",
+        "TaskCancelResult",
+        "skiff-task-v1:b3duZXI.dGFzay0x",
+        Vec::new(),
+        vec![Ok(TaskCancelControlResponse {
+            task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+            kind: "alreadyStarted".to_string(),
+        })],
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("std.task.cancel should map to a user union value");
+    let RuntimeValue::Heap(handle) = value else {
+        panic!("cancel must return a heap record")
+    };
+    let HeapNode::Object(object) = heap
+        .heap_mut()
+        .get(handle)
+        .expect("cancel record must resolve")
+    else {
+        panic!("cancel must return a record")
+    };
+    assert_eq!(
+        object.fields().get("kind"),
+        Some(&RuntimeValue::String("alreadyStarted".to_string()))
+    );
+    let requests = fixture.cancel_requests.lock().expect("cancel requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].task_ref, "skiff-task-v1:b3duZXI.dGFzay0x");
+}
+
+#[tokio::test]
+async fn std_task_status_not_found_projects_to_stable_expired() {
+    let fixture = task_control_fixture_with_replies(
+        "task.status",
+        "TaskStatus",
+        "skiff-task-v1:b3duZXIuZG9jcy5jb20.bWlzc2luZw",
+        vec![Err(CapabilityError::task_control_rejected(
+            "notFound",
+            "task reference owner scope is not resolvable",
+        ))],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("notFound must project to stable expired");
+    let RuntimeValue::Heap(handle) = value else {
+        panic!("expired must be a heap record")
+    };
+    let HeapNode::Object(object) = heap
+        .heap_mut()
+        .get(handle)
+        .expect("expired record must resolve")
+    else {
+        panic!("expired must be a record")
+    };
+    assert_eq!(
+        object.fields().get("kind"),
+        Some(&RuntimeValue::String("expired".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn std_task_cancel_not_found_projects_to_stable_expired() {
+    let fixture = task_control_fixture_with_replies(
+        "task.cancel",
+        "TaskCancelResult",
+        "skiff-task-v1:b3duZXI.dGFzay0x",
+        Vec::new(),
+        vec![Err(CapabilityError::task_control_rejected(
+            "notFound",
+            "task record is not found",
+        ))],
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect("notFound must project to stable expired");
+    let RuntimeValue::Heap(handle) = value else {
+        panic!("expired must be a heap record")
+    };
+    let HeapNode::Object(object) = heap
+        .heap_mut()
+        .get(handle)
+        .expect("expired record must resolve")
+    else {
+        panic!("expired must be a record")
+    };
+    assert_eq!(
+        object.fields().get("kind"),
+        Some(&RuntimeValue::String("expired".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn std_task_status_store_unavailable_surfaces_platform_error() {
+    let fixture = task_control_fixture_with_replies(
+        "task.status",
+        "TaskStatus",
+        "skiff-task-v1:b3duZXI.dGFzay0x",
+        vec![Err(CapabilityError::task_control_rejected(
+            "storeUnavailable",
+            "task store is unavailable",
+        ))],
+        Vec::new(),
+    );
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect_err("storeUnavailable must surface as a platform error");
+    assert!(
+        error.to_string().contains("task control rejected (storeUnavailable)"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn std_task_cancel_rejects_non_canonical_task_ref_argument() {
+    let fixture = task_control_fixture("task.cancel", "TaskCancelResult", "not-a-task-ref");
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(
+        &interpreter,
+        fixture.actor,
+        fixture.request,
+        Some(fixture.eval_target),
+    );
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut HeapAccess::private(RequestHeap::default()),
+            &fixture.caller_addr,
+            Vec::new(),
+        )
+        .await
+        .expect_err("non-canonical TaskRef must fail closed before any control request");
+    assert!(
+        error.to_string().contains("canonical"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        fixture
+            .cancel_requests
+            .lock()
+            .expect("cancel requests")
+            .len(),
+        0,
+        "invalid TaskRef must not produce a control request"
+    );
+}
+
+fn task_control_fixture(
+    binding_suffix: &str,
+    return_type: &str,
+    task_ref: &str,
+) -> CanonicalTaskFixture {
+    task_control_fixture_with_replies(
+        binding_suffix,
+        return_type,
+        task_ref,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+fn task_control_fixture_with_replies(
+    binding_suffix: &str,
+    return_type: &str,
+    task_ref: &str,
+    status_replies: Vec<Result<TaskStatusControlResponse, CapabilityError>>,
+    cancel_replies: Vec<Result<TaskCancelControlResponse, CapabilityError>>,
+) -> CanonicalTaskFixture {
+    canonical_task_fixture_with_control_scripts(
+        vec![
+            task_control_caller_executable(binding_suffix, return_type, task_ref),
+            target_executable(),
+        ],
+        Vec::new(),
+        status_replies,
+        cancel_replies,
+    )
+}
+
+fn task_control_caller_executable(
+    binding_suffix: &str,
+    return_type: &str,
+    task_ref: &str,
+) -> ExecutableIr {
+    let binding_key = format!("std.{binding_suffix}");
+    let symbol = binding_suffix.to_string();
+    ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "task.fixture.control".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin(return_type),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: true,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
+            }],
+            expressions: vec![
+                ExprIr::Call {
+                    call: skiff_artifact_model::CallIr {
+                        target: skiff_artifact_model::CallTargetIr::Native {
+                            target: NativeTarget {
+                                namespace: "std".to_string(),
+                                symbol,
+                                binding_key: Some(binding_key),
+                                metadata: BTreeMap::new(),
+                            },
+                        },
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
+                        args: vec![ExprRefIr { expression: 1 }],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ExprIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::String {
+                        value: task_ref.to_string(),
+                    },
+                },
+            ],
+        },
+        source_span: None,
+    }
+}
+
 fn canonical_task_fixture(metadata_symbol: Option<&str>) -> CanonicalTaskFixture {
     canonical_task_fixture_with(
         vec![caller_executable(metadata_symbol), target_executable()],
@@ -786,6 +1227,15 @@ fn canonical_task_fixture(metadata_symbol: Option<&str>) -> CanonicalTaskFixture
 fn canonical_task_fixture_with(
     executables: Vec<ExecutableIr>,
     replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>,
+) -> CanonicalTaskFixture {
+    canonical_task_fixture_with_control_scripts(executables, replies, Vec::new(), Vec::new())
+}
+
+fn canonical_task_fixture_with_control_scripts(
+    executables: Vec<ExecutableIr>,
+    replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>,
+    status_replies: Vec<Result<TaskStatusControlResponse, CapabilityError>>,
+    cancel_replies: Vec<Result<TaskCancelControlResponse, CapabilityError>>,
 ) -> CanonicalTaskFixture {
     let mut file = FileIrUnit::empty("task.fixture", "source:canonical-task");
     file.executables = executables;
@@ -834,12 +1284,18 @@ fn canonical_task_fixture_with(
     };
     let submissions = Arc::new(Mutex::new(Vec::new()));
     let execution_receipts = Arc::new(Mutex::new(Vec::new()));
+    let status_requests = Arc::new(Mutex::new(Vec::new()));
+    let cancel_requests = Arc::new(Mutex::new(Vec::new()));
     let recording_actor = RecordingActor::new(
         activation_identity.clone(),
         Arc::clone(&submissions),
         Arc::clone(&execution_receipts),
+        Arc::clone(&status_requests),
+        Arc::clone(&cancel_requests),
     )
-    .scripted(replies);
+    .scripted(replies)
+    .scripted_status(status_replies)
+    .scripted_cancel(cancel_replies);
     let actor = ActorCapabilityContext::new(recording_actor.clone());
     let request = RequestCapabilityContext::new(recording_actor);
     CanonicalTaskFixture {
@@ -849,6 +1305,8 @@ fn canonical_task_fixture_with(
         request,
         activation_identity,
         submissions,
+        status_requests,
+        cancel_requests,
         execution_receipts,
     }
 }

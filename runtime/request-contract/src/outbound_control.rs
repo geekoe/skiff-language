@@ -30,6 +30,12 @@ pub enum OutboundControlMessage {
         request: TaskSubmitControlRequest,
         payload: Vec<u8>,
     },
+    TaskStatus {
+        request: TaskStatusControlRequest,
+    },
+    TaskCancel {
+        request: TaskCancelControlRequest,
+    },
     RequestCancel {
         request: RequestCancelControl,
     },
@@ -132,6 +138,42 @@ pub struct TaskSubmitControlRequest {
     pub caller_target: Option<String>,
     pub max_queue_wait_ms: Option<f64>,
     pub actor_method: Option<ActorMethodTaskTargetControl>,
+}
+
+/// Durable `task.status.request` control facts. `task_ref` is the canonical
+/// `skiff-task-v1:<owner>.<taskId>` string carried by `std.task.TaskRef`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub task_ref: String,
+}
+
+/// Durable `task.status.response` projected to the evaluator. `kind` is the
+/// canonical `std.task.TaskStatus` kind spelling (`scheduled` / `ready` /
+/// `running` / `succeeded` / `failed` / `platformFailed` / `canceled` /
+/// `expired`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusControlResponse {
+    pub task_ref: String,
+    pub kind: String,
+}
+
+/// Durable `task.cancel.request` control facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCancelControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub task_ref: String,
+}
+
+/// Durable `task.cancel.response` projected to the evaluator. `kind` is the
+/// canonical `std.task.TaskCancelResult` kind spelling (`canceled` /
+/// `alreadyStarted` / `alreadyTerminal` / `expired`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCancelControlResponse {
+    pub task_ref: String,
+    pub kind: String,
 }
 
 /// Durable `task.submit` acceptance returned to the evaluator. The taskRef is

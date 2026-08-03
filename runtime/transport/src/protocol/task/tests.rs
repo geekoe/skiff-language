@@ -2,7 +2,9 @@ use serde_json::json;
 
 use super::*;
 use crate::protocol::{
-    encode_binary_frame, ActorTaskRuntimeErrorFrameHeader, TaskSubmitResponseFrameHeader,
+    decode_task_cancel_error_frame, decode_task_status_error_frame,
+    encode_binary_frame, encode_task_cancel_error_frame, encode_task_status_error_frame,
+    ActorTaskRuntimeErrorFrameHeader, TaskControlRejectionCode, TaskSubmitResponseFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
@@ -188,6 +190,30 @@ fn task_frame_direction_table_is_frozen_per_frame() {
     );
     assert_eq!(
         task_submit_frame_direction(TASK_SUBMIT_ERROR_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_STATUS_REQUEST_FRAME_TYPE),
+        Some(FrameDirection::RuntimeToRouter)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_STATUS_RESPONSE_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_STATUS_ERROR_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_CANCEL_REQUEST_FRAME_TYPE),
+        Some(FrameDirection::RuntimeToRouter)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_CANCEL_RESPONSE_FRAME_TYPE),
+        Some(FrameDirection::RouterToRuntime)
+    );
+    assert_eq!(
+        task_submit_frame_direction(TASK_CANCEL_ERROR_FRAME_TYPE),
         Some(FrameDirection::RouterToRuntime)
     );
     assert_eq!(
@@ -488,6 +514,79 @@ fn status_and_cancel_frames_round_trip_and_enforce_empty_payload() {
     let error = decode_task_status_request_frame(&with_payload)
         .expect_err("task.status.request payload must be empty");
     assert!(error.to_string().contains("payload must be empty"));
+}
+
+#[test]
+fn task_control_rejection_codes_match_reference_spelling_and_transient_class() {
+    let codes = [
+        (TaskControlRejectionCode::NotFound, "notFound"),
+        (TaskControlRejectionCode::StoreUnavailable, "storeUnavailable"),
+    ];
+    for (code, expected) in codes {
+        assert_eq!(code.as_str(), expected, "task control rejection code spelling");
+        assert_eq!(TaskControlRejectionCode::parse(expected), Some(code));
+        assert_eq!(
+            serde_json::to_string(&code).expect("serialize"),
+            format!("\"{expected}\"")
+        );
+    }
+    assert!(TaskControlRejectionCode::parse("expired").is_none());
+    assert!(!TaskControlRejectionCode::NotFound.is_transient());
+    assert!(TaskControlRejectionCode::StoreUnavailable.is_transient());
+}
+
+#[test]
+fn task_status_and_cancel_error_frames_round_trip_and_enforce_empty_payload() {
+    for (envelope, code, message, encode, decode) in [
+        (
+            TASK_STATUS_ERROR_FRAME_TYPE,
+            TaskControlRejectionCode::NotFound,
+            "task reference owner scope is not resolvable",
+            encode_task_status_error_frame as fn(&ActorTaskRuntimeErrorFrameHeader) -> _,
+            decode_task_status_error_frame as fn(&[u8]) -> _,
+        ),
+        (
+            TASK_CANCEL_ERROR_FRAME_TYPE,
+            TaskControlRejectionCode::StoreUnavailable,
+            "task store is unavailable",
+            encode_task_cancel_error_frame,
+            decode_task_cancel_error_frame,
+        ),
+    ] {
+        let header = ActorTaskRuntimeErrorFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: envelope.to_string(),
+            rpc_id: "rpc:status-1".to_string(),
+            error: crate::protocol::RuntimeErrorFramePayload {
+                code: code.as_str().to_string(),
+                message: message.to_string(),
+                status: None,
+                details: None,
+            },
+        };
+        let bytes = encode(&header).expect("task control error frame must encode");
+        assert_eq!(decode(&bytes).expect("decode"), header);
+
+        let with_payload =
+            encode_binary_frame(&header, b"intruder").expect("raw frame must encode");
+        let error = decode(&with_payload).expect_err("error payload must be empty");
+        assert!(
+            error.to_string().contains("payload must be empty"),
+            "unexpected payload error: {error}"
+        );
+
+        let mut wrong_type = header;
+        wrong_type.envelope_type = if envelope == TASK_STATUS_ERROR_FRAME_TYPE {
+            TASK_CANCEL_ERROR_FRAME_TYPE.to_string()
+        } else {
+            TASK_STATUS_ERROR_FRAME_TYPE.to_string()
+        };
+        let bytes = encode(&wrong_type).expect_err("wrong envelope type must fail closed");
+        assert!(
+            bytes.to_string().contains("frame type must be"),
+            "unexpected envelope validation error: {bytes}"
+        );
+    }
 }
 
 #[test]

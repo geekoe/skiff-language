@@ -22,9 +22,9 @@ use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
     ConnectionRequestRegistry, ConnectionRequestSession, ExecutionControlResult,
-    FileCapabilityError, FileCapabilityFuture, RuntimeDeadlineControl, TaskCallerKind,
-    TaskSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    FileCapabilityError, FileCapabilityFuture, RuntimeDeadlineControl, StreamPoll,
+    StreamPullSource, StreamRuntimeError, StreamRuntimeResult, TaskCallerKind,
+    TaskCancelControlRequest, TaskStatusControlRequest, TaskSubmitControlRequest,
 };
 use skiff_runtime_eval::{
     capabilities as eval_capabilities,

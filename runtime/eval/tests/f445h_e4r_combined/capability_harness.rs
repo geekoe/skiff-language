@@ -227,6 +227,22 @@ impl RequestCapabilityApi for HarnessActor {
     ) -> CapabilityFuture<'a, TaskSubmitResponseControl> {
         unsupported_capability()
     }
+
+    fn status_task<'a>(
+        &'a self,
+        _request: TaskStatusControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse> {
+        unsupported_capability()
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        _request: TaskCancelControlRequest,
+        _execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse> {
+        unsupported_capability()
+    }
 }
 
 fn unsupported_capability<'a, T>() -> CapabilityFuture<'a, T> {

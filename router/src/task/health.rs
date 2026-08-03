@@ -20,12 +20,14 @@ pub struct TaskControlHealth {
     /// Status queries and their expired/unavailable projections.
     pub status_queries: u64,
     pub status_expired: u64,
+    pub status_not_found: u64,
     pub status_unavailable: u64,
     /// Cancel outcomes by reference kind.
     pub cancel_canceled: u64,
     pub cancel_already_started: u64,
     pub cancel_already_terminal: u64,
     pub cancel_expired: u64,
+    pub cancel_not_found: u64,
     pub cancel_unavailable: u64,
     /// Attempt settlements by outcome class.
     pub settlements_succeeded: u64,
@@ -47,11 +49,13 @@ pub struct TaskControlCounters {
     pub submissions_transient: std::sync::atomic::AtomicU64,
     pub status_queries: std::sync::atomic::AtomicU64,
     pub status_expired: std::sync::atomic::AtomicU64,
+    pub status_not_found: std::sync::atomic::AtomicU64,
     pub status_unavailable: std::sync::atomic::AtomicU64,
     pub cancel_canceled: std::sync::atomic::AtomicU64,
     pub cancel_already_started: std::sync::atomic::AtomicU64,
     pub cancel_already_terminal: std::sync::atomic::AtomicU64,
     pub cancel_expired: std::sync::atomic::AtomicU64,
+    pub cancel_not_found: std::sync::atomic::AtomicU64,
     pub cancel_unavailable: std::sync::atomic::AtomicU64,
     pub settlements_succeeded: std::sync::atomic::AtomicU64,
     pub settlements_failed: std::sync::atomic::AtomicU64,
@@ -77,6 +81,9 @@ impl TaskControlCounters {
                 .load(std::sync::atomic::Ordering::Relaxed),
             status_queries: self.status_queries.load(std::sync::atomic::Ordering::Relaxed),
             status_expired: self.status_expired.load(std::sync::atomic::Ordering::Relaxed),
+            status_not_found: self
+                .status_not_found
+                .load(std::sync::atomic::Ordering::Relaxed),
             status_unavailable: self
                 .status_unavailable
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -88,6 +95,9 @@ impl TaskControlCounters {
                 .cancel_already_terminal
                 .load(std::sync::atomic::Ordering::Relaxed),
             cancel_expired: self.cancel_expired.load(std::sync::atomic::Ordering::Relaxed),
+            cancel_not_found: self
+                .cancel_not_found
+                .load(std::sync::atomic::Ordering::Relaxed),
             cancel_unavailable: self
                 .cancel_unavailable
                 .load(std::sync::atomic::Ordering::Relaxed),

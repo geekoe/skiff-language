@@ -26,8 +26,10 @@ use skiff_runtime_capability_context::{
     FileCapabilitySourceApi, FileChunkSource, FileSourceStreamContext, HttpCapabilityFuture,
     HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedRequestCapabilityContext,
-    RequestCapabilityApi, RequestCapabilityContext, TaskSubmitControlRequest,
-    TaskSubmitResponseControl, StreamRuntime, SupervisedStreamConsumptionLease,
+    RequestCapabilityApi, RequestCapabilityContext, TaskCancelControlRequest,
+    TaskCancelControlResponse, TaskStatusControlRequest, TaskStatusControlResponse,
+    TaskSubmitControlRequest, TaskSubmitResponseControl, StreamRuntime,
+    SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
     LinkOverlay, PublicationResourceTable, RuntimeTypeContext, ServiceMeta,
@@ -650,6 +652,34 @@ impl RequestCapabilityApi for CarrierReceiptActor {
                 task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
                 task_id: "task-1".to_string(),
                 request_id: "request-1".to_string(),
+            })
+        })
+    }
+
+    fn status_task<'a>(
+        &'a self,
+        _request: TaskStatusControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskStatusControlResponse> {
+        self.record(execution_control);
+        Box::pin(async {
+            Ok(TaskStatusControlResponse {
+                task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+                kind: "scheduled".to_string(),
+            })
+        })
+    }
+
+    fn cancel_task<'a>(
+        &'a self,
+        _request: TaskCancelControlRequest,
+        execution_control: OwnedExecutionControl,
+    ) -> CapabilityFuture<'a, TaskCancelControlResponse> {
+        self.record(execution_control);
+        Box::pin(async {
+            Ok(TaskCancelControlResponse {
+                task_ref: "skiff-task-v1:b3duZXI.dGFzay0x".to_string(),
+                kind: "canceled".to_string(),
             })
         })
     }

@@ -26,12 +26,14 @@ use skiff_router::task::{
 };
 use skiff_router::ws::Clock;
 use skiff_runtime_transport::protocol::{
-    decode_task_cancel_response_frame, decode_task_status_response_frame,
-    decode_task_submit_error_frame, decode_task_submit_response_frame, encode_task_cancel_request_frame,
-    encode_task_status_request_frame, encode_task_submit_request_frame,
-    ActivationIdentityFrameMetadata, TaskCallerKind, TaskCancelRequestFrameHeader,
-    TaskCancelResultKindWire, TaskStatusKindWire, TaskSubmitRequestFrameHeaderV2,
-    TaskSubmitTiming, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
+    decode_task_cancel_error_frame, decode_task_cancel_response_frame,
+    decode_task_status_error_frame, decode_task_status_response_frame,
+    decode_task_submit_error_frame, decode_task_submit_response_frame,
+    encode_task_cancel_request_frame, encode_task_status_request_frame,
+    encode_task_submit_request_frame, ActivationIdentityFrameMetadata, TaskCallerKind,
+    TaskCancelRequestFrameHeader, TaskCancelResultKindWire, TaskControlRejectionCode,
+    TaskStatusKindWire, TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_task_control::model::{
     DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
@@ -279,6 +281,139 @@ impl TaskStore for AmbiguousCreateStore {
     }
 }
 
+/// Scripted status/cancel outcome for the E1 error-frame branches: each
+/// control query can be forced to a transient store failure or a definite
+/// store `NotFound`; everything else delegates to the in-memory store.
+#[derive(Clone)]
+struct ScriptedControlStore {
+    inner: MemoryTaskStore,
+    status_outcome: Arc<Mutex<ControlQueryOutcome>>,
+    cancel_outcome: Arc<Mutex<ControlQueryOutcome>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ControlQueryOutcome {
+    #[default]
+    Passthrough,
+    Transient,
+    NotFound,
+}
+
+impl ScriptedControlStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryTaskStore::new(),
+            status_outcome: Arc::new(Mutex::new(ControlQueryOutcome::Passthrough)),
+            cancel_outcome: Arc::new(Mutex::new(ControlQueryOutcome::Passthrough)),
+        }
+    }
+
+    fn script_status(&self, outcome: ControlQueryOutcome) {
+        *self.status_outcome.lock().expect("status script") = outcome;
+    }
+
+    fn script_cancel(&self, outcome: ControlQueryOutcome) {
+        *self.cancel_outcome.lock().expect("cancel script") = outcome;
+    }
+}
+
+#[async_trait]
+impl TaskStore for ScriptedControlStore {
+    async fn now(&self) -> Result<DurableUtcTimestamp, TaskStoreError> {
+        self.inner.now().await
+    }
+
+    async fn create(&self, record: TaskRecord) -> Result<TaskRecord, TaskStoreError> {
+        self.inner.create(record).await
+    }
+
+    async fn claim(&self, input: ClaimInput) -> Result<skiff_task_control::store::ClaimOutcome, TaskStoreError> {
+        self.inner.claim(input).await
+    }
+
+    async fn renew(
+        &self,
+        input: skiff_task_control::store::RenewInput,
+    ) -> Result<skiff_task_control::store::RenewOutcome, TaskStoreError> {
+        self.inner.renew(input).await
+    }
+
+    async fn settle(&self, input: SettleInput) -> Result<skiff_task_control::store::SettleOutcome, TaskStoreError> {
+        self.inner.settle(input).await
+    }
+
+    async fn cancel(
+        &self,
+        input: skiff_task_control::store::CancelInput,
+    ) -> Result<skiff_task_control::model::TaskCancelResult, TaskStoreError> {
+        let outcome = *self.cancel_outcome.lock().expect("cancel script");
+        match outcome {
+            ControlQueryOutcome::Passthrough => self.inner.cancel(input).await,
+            ControlQueryOutcome::Transient => Err(TaskStoreError::Transient {
+                message: "scripted cancel transient failure".to_string(),
+            }),
+            ControlQueryOutcome::NotFound => Err(TaskStoreError::NotFound {
+                task_id: input.task_id,
+            }),
+        }
+    }
+
+    async fn recover_expired_lease(
+        &self,
+        input: skiff_task_control::store::LeaseRecoveryInput,
+    ) -> Result<skiff_task_control::store::LeaseRecoveryOutcome, TaskStoreError> {
+        self.inner.recover_expired_lease(input).await
+    }
+
+    async fn release(
+        &self,
+        input: skiff_task_control::store::ReleaseInput,
+    ) -> Result<skiff_task_control::store::ReleaseOutcome, TaskStoreError> {
+        self.inner.release(input).await
+    }
+
+    async fn scan_due(
+        &self,
+        input: DueScanInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.inner.scan_due(input).await
+    }
+
+    async fn scan_expired_leases(
+        &self,
+        input: skiff_task_control::store::ScanExpiredLeasesInput,
+    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+        self.inner.scan_expired_leases(input).await
+    }
+
+    async fn status(&self, input: StatusInput) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
+        let outcome = *self.status_outcome.lock().expect("status script");
+        match outcome {
+            ControlQueryOutcome::Passthrough => self.inner.status(input).await,
+            ControlQueryOutcome::Transient => Err(TaskStoreError::Transient {
+                message: "scripted status transient failure".to_string(),
+            }),
+            ControlQueryOutcome::NotFound => Err(TaskStoreError::NotFound {
+                task_id: input.task_id,
+            }),
+        }
+    }
+
+    async fn observe_backlog(
+        &self,
+    ) -> Result<skiff_task_control::store::BacklogObservation, TaskStoreError> {
+        self.inner.observe_backlog().await
+    }
+
+    async fn ensure_indexes(&self) -> Result<(), TaskStoreError> {
+        self.inner.ensure_indexes().await
+    }
+
+    async fn close(&self) -> Result<(), TaskStoreError> {
+        self.inner.close().await
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
@@ -414,6 +549,35 @@ fn sink_rig() -> (
         4096,
     ));
     (store, scheduler, sink, writer, counters)
+}
+
+fn scripted_control_rig(
+    store: Arc<dyn TaskStore>,
+    _scripted: Arc<ScriptedControlStore>,
+) -> (
+    Arc<Scheduler>,
+    Arc<DurableTaskFrameSink>,
+    Arc<FakeWriter>,
+    Arc<TaskControlCounters>,
+) {
+    let scheduler = Arc::new(Scheduler::new(
+        Arc::clone(&store),
+        Arc::new(NoopAdmission),
+        Arc::new(skiff_task_control::SystemClock),
+        SchedulerConfig::default(),
+        RetryBackoffPolicy::default(),
+    ));
+    let writer = Arc::new(FakeWriter::default());
+    let counters = Arc::new(TaskControlCounters::default());
+    let sink = Arc::new(DurableTaskFrameSink::new(
+        store,
+        Arc::clone(&scheduler),
+        Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+        Arc::clone(&counters),
+        4096,
+    ));
+    (scheduler, sink, writer, counters)
 }
 
 async fn claim_ready(store: &dyn TaskStore, task_id: &str) -> TaskRecord {
@@ -1182,6 +1346,160 @@ async fn status_and_cancel_project_reference_kinds() {
     let response = poll_writer(&writer, 8).await;
     let decoded = decode_task_cancel_response_frame(&response).expect("decode");
     assert_eq!(decoded.result.kind, TaskCancelResultKindWire::Expired);
+}
+
+#[tokio::test]
+async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() {
+    let store = Arc::new(ScriptedControlStore::new());
+    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+    let (scheduler, sink, writer, counters) =
+        scripted_control_rig(store_dyn, Arc::clone(&store));
+    let session = RuntimeSessionEpoch {
+        replica_id: "runtime-a".to_string(),
+        connection_generation: 1,
+    };
+
+    store.script_status(ControlQueryOutcome::Transient);
+    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("status");
+    let error = poll_writer(&writer, 1).await;
+    let decoded = decode_task_status_error_frame(&error).expect("status error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::StoreUnavailable.as_str());
+    assert_eq!(
+        counters.status_unavailable.load(Ordering::Relaxed),
+        1,
+        "transient status failure must increment statusUnavailable"
+    );
+    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
+
+    store.script_cancel(ControlQueryOutcome::Transient);
+    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("cancel");
+    let error = poll_writer(&writer, 2).await;
+    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::StoreUnavailable.as_str());
+    assert_eq!(
+        counters.cancel_unavailable.load(Ordering::Relaxed),
+        1,
+        "transient cancel failure must increment cancelUnavailable"
+    );
+    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 0);
+    drop(scheduler);
+}
+
+#[tokio::test]
+async fn status_and_cancel_store_not_found_is_not_found_error() {
+    let store = Arc::new(ScriptedControlStore::new());
+    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+    let (scheduler, sink, writer, counters) =
+        scripted_control_rig(store_dyn, Arc::clone(&store));
+    let session = RuntimeSessionEpoch {
+        replica_id: "runtime-a".to_string(),
+        connection_generation: 1,
+    };
+
+    store.script_status(ControlQueryOutcome::NotFound);
+    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("status");
+    let error = poll_writer(&writer, 1).await;
+    let decoded = decode_task_status_error_frame(&error).expect("status error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+
+    store.script_cancel(ControlQueryOutcome::NotFound);
+    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("cancel");
+    let error = poll_writer(&writer, 2).await;
+    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.cancel_unavailable.load(Ordering::Relaxed), 0);
+    drop(scheduler);
+}
+
+#[tokio::test]
+async fn status_and_cancel_unknown_owner_is_not_found_error() {
+    let store = Arc::new(MemoryTaskStore::new());
+    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+    let scheduler = Arc::new(Scheduler::new(
+        store_dyn,
+        Arc::new(NoopAdmission),
+        Arc::new(skiff_task_control::SystemClock),
+        SchedulerConfig::default(),
+        RetryBackoffPolicy::default(),
+    ));
+    let writer = Arc::new(FakeWriter::default());
+    let counters = Arc::new(TaskControlCounters::default());
+    let sink = Arc::new(DurableTaskFrameSink::new(
+        Arc::clone(&store) as Arc<dyn TaskStore>,
+        Arc::clone(&scheduler),
+        Arc::new(FakeImageSource {
+            image: corpus_image(),
+            services: Vec::new(),
+        }),
+        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+        Arc::clone(&counters),
+        4096,
+    ));
+    let session = RuntimeSessionEpoch {
+        replica_id: "runtime-a".to_string(),
+        connection_generation: 1,
+    };
+
+    // The taskRef owner is not in the image source's known services.
+    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("status");
+    let error = poll_writer(&writer, 1).await;
+    let decoded = decode_task_status_error_frame(&error).expect("status error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.status_expired.load(Ordering::Relaxed), 0);
+
+    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("cancel");
+    let error = poll_writer(&writer, 2).await;
+    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.cancel_expired.load(Ordering::Relaxed), 0);
+    drop(scheduler);
+}
+
+#[tokio::test]
+async fn status_retention_expired_stays_stable_expired_response() {
+    let (store, _scheduler, sink, writer, counters) = sink_rig();
+    let session = RuntimeSessionEpoch {
+        replica_id: "runtime-a".to_string(),
+        connection_generation: 1,
+    };
+    let now = store.now().await.expect("now");
+    let retention_ms = 30 * 24 * 60 * 60 * 1000i64;
+    let past = DurableUtcTimestamp::from_millis((now.millis() - retention_ms - 1).max(0));
+    store
+        .create(record("task-expired", corpus_image(), past, TaskState::Scheduled))
+        .await
+        .expect("create");
+
+    let bytes = encode_task_status_request_frame(&status_request(&task_ref("task-expired")))
+        .expect("encode");
+    sink.handle(&session, &bytes).expect("status");
+    let response = poll_writer(&writer, 1).await;
+    let decoded = decode_task_status_response_frame(&response).expect("status response");
+    assert_eq!(
+        decoded.status.kind,
+        TaskStatusKindWire::Expired,
+        "retention expiry must stay a stable expired response"
+    );
+    assert_eq!(counters.status_expired.load(Ordering::Relaxed), 1);
+    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
+    assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
 }
 
 // ---------------------------------------------------------------------------

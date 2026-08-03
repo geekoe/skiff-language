@@ -2099,7 +2099,7 @@ fn kind_mismatch(
 /// (`skiff-task-v1:<base64url-nopad(owner)>.<base64url-nopad(taskId)>`).
 /// The recoverable boundary owns this check so opaque task references can be
 /// restored from durable payloads without a transport dependency.
-fn is_canonical_task_ref_string(raw: &str) -> bool {
+pub fn is_canonical_task_ref_string(raw: &str) -> bool {
     let Some(rest) = raw.strip_prefix("skiff-task-v1:") else {
         return false;
     };

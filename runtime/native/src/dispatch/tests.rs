@@ -52,6 +52,7 @@ fn native_signature_registry_shared_targets_are_runtime_reachable() {
         RuntimeNativeRoute::Websocket,
         RuntimeNativeRoute::Telemetry,
         RuntimeNativeRoute::Resource,
+        RuntimeNativeRoute::TaskControl,
         RuntimeNativeRoute::NativeRegistry,
         RuntimeNativeRoute::ReceiverMethod,
     ]);

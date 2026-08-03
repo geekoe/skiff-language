@@ -565,6 +565,13 @@ impl From<skiff_runtime_capability_context::CapabilityError> for RuntimeError {
                 target: "task.submit".to_string(),
                 message: format!("task.submit rejected ({code}): {message}"),
             },
+            skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
+                code,
+                message,
+            } => RuntimeError::DecodeTarget {
+                target: "task.status".to_string(),
+                message: format!("task control rejected ({code}): {message}"),
+            },
             skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
                 native_error_from_wire_payload(error)
             }
@@ -807,6 +814,13 @@ fn native_error_from_capability_ref(
         } => RuntimeError::DecodeTarget {
             target: "task.submit".to_string(),
             message: format!("task.submit rejected ({code}): {message}"),
+        },
+        skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
+            code,
+            message,
+        } => RuntimeError::DecodeTarget {
+            target: "task.status".to_string(),
+            message: format!("task control rejected ({code}): {message}"),
         },
         skiff_runtime_capability_context::CapabilityError::Opaque(error) => {
             native_error_from_wire_payload_ref(error.as_ref())

@@ -110,6 +110,8 @@ pub enum RuntimeBuiltinShape {
     Date,
     String,
     TaskRef,
+    TaskStatus,
+    TaskCancelResult,
     Integer,
     Number,
     Bool,
@@ -135,6 +137,8 @@ impl RuntimeBuiltinShape {
             "Date" => Self::Date,
             "string" => Self::String,
             "TaskRef" => Self::TaskRef,
+            "TaskStatus" => Self::TaskStatus,
+            "TaskCancelResult" => Self::TaskCancelResult,
             "integer" => Self::Integer,
             "number" => Self::Number,
             "bool" | "boolean" => Self::Bool,
@@ -156,6 +160,8 @@ impl RuntimeBuiltinShape {
             Self::Date => RuntimeTypeNode::Date,
             Self::String => RuntimeTypeNode::String,
             Self::TaskRef => RuntimeTypeNode::TaskRef,
+            Self::TaskStatus => task_status_union_node(),
+            Self::TaskCancelResult => task_cancel_result_union_node(),
             Self::Integer => RuntimeTypeNode::Integer,
             Self::Number => RuntimeTypeNode::Number,
             Self::Bool => RuntimeTypeNode::Bool,
@@ -193,6 +199,100 @@ pub fn std_field(name: &str, ty: RuntimeTypePlan) -> RuntimeRecordFieldPlan {
 
 pub fn leaf_string_plan() -> RuntimeTypePlan {
     leaf_builtin_plan("string", RuntimeTypeNode::String)
+}
+
+/// `std.task.TaskStatus` discriminated union (`doc/reference/dispatch.md` §3):
+/// `{ kind: "scheduled" | "ready" | "running" | "succeeded" | "failed" |
+/// "platformFailed" | "canceled" | "expired" }`, spelled verbatim.
+pub fn std_task_status_plan() -> RuntimeTypePlan {
+    builtin_plan(
+        "std.task.TaskStatus",
+        RuntimeTypeNode::Union(
+            TASK_STATUS_KINDS
+                .iter()
+                .map(|kind| task_status_branch_plan(kind))
+                .collect(),
+        ),
+    )
+}
+
+/// `std.task.TaskCancelResult` discriminated union
+/// (`doc/reference/dispatch.md` §3): `{ kind: "canceled" |
+/// "alreadyStarted" | "alreadyTerminal" | "expired" }`, spelled verbatim.
+pub fn std_task_cancel_result_plan() -> RuntimeTypePlan {
+    builtin_plan(
+        "std.task.TaskCancelResult",
+        RuntimeTypeNode::Union(
+            TASK_CANCEL_RESULT_KINDS
+                .iter()
+                .map(|kind| task_cancel_result_branch_plan(kind))
+                .collect(),
+        ),
+    )
+}
+
+const TASK_STATUS_KINDS: [&str; 8] = [
+    "scheduled",
+    "ready",
+    "running",
+    "succeeded",
+    "failed",
+    "platformFailed",
+    "canceled",
+    "expired",
+];
+
+const TASK_CANCEL_RESULT_KINDS: [&str; 4] =
+    ["canceled", "alreadyStarted", "alreadyTerminal", "expired"];
+
+fn task_status_union_node() -> RuntimeTypeNode {
+    RuntimeTypeNode::Union(
+        TASK_STATUS_KINDS
+            .iter()
+            .copied()
+            .map(task_status_branch_plan)
+            .collect(),
+    )
+}
+
+fn task_cancel_result_union_node() -> RuntimeTypeNode {
+    RuntimeTypeNode::Union(
+        TASK_CANCEL_RESULT_KINDS
+            .iter()
+            .copied()
+            .map(task_cancel_result_branch_plan)
+            .collect(),
+    )
+}
+
+fn task_status_branch_plan(kind: &str) -> RuntimeTypePlan {
+    RuntimeTypePlan::new(
+        format!("std.task.TaskStatus[{kind}]"),
+        None,
+        RuntimeTypeNode::Record {
+            fields: vec![std_field("kind", task_kind_literal_plan(kind))],
+            boundary_record_kind: None,
+        },
+    )
+}
+
+fn task_cancel_result_branch_plan(kind: &str) -> RuntimeTypePlan {
+    RuntimeTypePlan::new(
+        format!("std.task.TaskCancelResult[{kind}]"),
+        None,
+        RuntimeTypeNode::Record {
+            fields: vec![std_field("kind", task_kind_literal_plan(kind))],
+            boundary_record_kind: None,
+        },
+    )
+}
+
+fn task_kind_literal_plan(kind: &str) -> RuntimeTypePlan {
+    RuntimeTypePlan::new(
+        format!("\"{kind}\""),
+        None,
+        RuntimeTypeNode::LiteralString(kind.to_string()),
+    )
 }
 
 pub fn leaf_integer_plan() -> RuntimeTypePlan {
