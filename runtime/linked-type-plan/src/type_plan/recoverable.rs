@@ -366,16 +366,22 @@ fn recoverable_expected_builtin_node(
         });
     }
 
-    Ok(match bare_type_name(name) {
-        "Json" => RuntimeRecoverableExpectedTypeNode::Json,
-        "JsonObject" => RuntimeRecoverableExpectedTypeNode::JsonObject,
-        "bytes" => RuntimeRecoverableExpectedTypeNode::Bytes,
-        "Date" => RuntimeRecoverableExpectedTypeNode::Date,
-        "string" => RuntimeRecoverableExpectedTypeNode::String,
-        "bool" | "boolean" => RuntimeRecoverableExpectedTypeNode::Bool,
-        "integer" => RuntimeRecoverableExpectedTypeNode::Integer,
-        "number" => RuntimeRecoverableExpectedTypeNode::Number,
-        "null" | "void" => RuntimeRecoverableExpectedTypeNode::Null,
+    let Some(node) = RuntimeBuiltinShape::of_name(name).and_then(RuntimeBuiltinShape::leaf_node)
+    else {
+        return Ok(RuntimeRecoverableExpectedTypeNode::Unresolved {
+            diagnostic_label: name.to_string(),
+        });
+    };
+    Ok(match node {
+        RuntimeTypeNode::Json => RuntimeRecoverableExpectedTypeNode::Json,
+        RuntimeTypeNode::JsonObject => RuntimeRecoverableExpectedTypeNode::JsonObject,
+        RuntimeTypeNode::Bytes => RuntimeRecoverableExpectedTypeNode::Bytes,
+        RuntimeTypeNode::Date => RuntimeRecoverableExpectedTypeNode::Date,
+        RuntimeTypeNode::String => RuntimeRecoverableExpectedTypeNode::String,
+        RuntimeTypeNode::Bool => RuntimeRecoverableExpectedTypeNode::Bool,
+        RuntimeTypeNode::Integer => RuntimeRecoverableExpectedTypeNode::Integer,
+        RuntimeTypeNode::Number => RuntimeRecoverableExpectedTypeNode::Number,
+        RuntimeTypeNode::Null => RuntimeRecoverableExpectedTypeNode::Null,
         _ => RuntimeRecoverableExpectedTypeNode::Unresolved {
             diagnostic_label: name.to_string(),
         },

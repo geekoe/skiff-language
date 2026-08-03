@@ -1,5 +1,73 @@
 use super::*;
 
+/// Canonical runtime builtin shape classification. Layer 1 of the builtin
+/// catalog: name → shape + leaf node mapping. Record-shaped builtins
+/// (`std.http.*`, `Duration`) stay in the record functions below and are not
+/// enum variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeBuiltinShape {
+    Array,
+    Stream,
+    Map,
+    Json,
+    JsonObject,
+    Date,
+    String,
+    Integer,
+    Number,
+    Bool,
+    Bytes,
+    Null,
+    Void,
+    DbInsertManyResult,
+    DbUpdateManyResult,
+    DbDeleteManyResult,
+    DbUpsertResult,
+}
+
+impl RuntimeBuiltinShape {
+    /// Resolves a builtin type name to its shape. Uses `bare_type_name` so
+    /// full spellings (`std.collection.Array`, `std.http.Json`, ...) and the
+    /// `bool`/`boolean` alias resolve exactly like the historical leaf matches.
+    pub(crate) fn of_name(name: &str) -> Option<Self> {
+        Some(match bare_type_name(name) {
+            "Array" => Self::Array,
+            "Stream" => Self::Stream,
+            "Map" => Self::Map,
+            "Json" => Self::Json,
+            "JsonObject" => Self::JsonObject,
+            "Date" => Self::Date,
+            "string" => Self::String,
+            "integer" => Self::Integer,
+            "number" => Self::Number,
+            "bool" | "boolean" => Self::Bool,
+            "bytes" => Self::Bytes,
+            "null" | "void" => Self::Null,
+            "DbInsertManyResult" => Self::DbInsertManyResult,
+            "DbUpdateManyResult" => Self::DbUpdateManyResult,
+            "DbDeleteManyResult" => Self::DbDeleteManyResult,
+            "DbUpsertResult" => Self::DbUpsertResult,
+            _ => return None,
+        })
+    }
+
+    /// Leaf node mapping; returns `None` for structural/record shapes.
+    pub(crate) fn leaf_node(self) -> Option<RuntimeTypeNode> {
+        Some(match self {
+            Self::Json => RuntimeTypeNode::Json,
+            Self::JsonObject => RuntimeTypeNode::JsonObject,
+            Self::Date => RuntimeTypeNode::Date,
+            Self::String => RuntimeTypeNode::String,
+            Self::Integer => RuntimeTypeNode::Integer,
+            Self::Number => RuntimeTypeNode::Number,
+            Self::Bool => RuntimeTypeNode::Bool,
+            Self::Bytes => RuntimeTypeNode::Bytes,
+            Self::Null | Self::Void => RuntimeTypeNode::Null,
+            _ => return None,
+        })
+    }
+}
+
 fn builtin_plan(name: &str, node: RuntimeTypeNode) -> RuntimeTypePlan {
     RuntimeTypePlan {
         label: "builtin".to_string(),
@@ -108,7 +176,10 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
     )
 }
 
-fn std_runtime_builtin_node(name: &str, arg_count: usize) -> Option<Result<RuntimeTypeNode>> {
+pub(crate) fn std_runtime_builtin_node(
+    name: &str,
+    arg_count: usize,
+) -> Option<Result<RuntimeTypeNode>> {
     let root = type_name_root(name);
     let bare = bare_type_name(root);
     let node = match bare {
@@ -126,29 +197,6 @@ fn std_runtime_builtin_node(name: &str, arg_count: usize) -> Option<Result<Runti
     Some(Ok(node))
 }
 
-pub(crate) fn std_runtime_builtin_node_from_artifact_parts(
-    name: &str,
-    args: &[skiff_artifact_model::TypeRefIr],
-) -> Option<Result<RuntimeTypeNode>> {
-    std_runtime_builtin_node(name, args.len())
-}
-
-pub(crate) fn std_runtime_builtin_node_from_artifact_parts_in_program(
-    name: &str,
-    args: &[skiff_artifact_model::TypeRefIr],
-    _ctx: &PlanContext<'_>,
-) -> Option<Result<RuntimeTypeNode>> {
-    std_runtime_builtin_node(name, args.len())
-}
-
-pub(crate) fn std_runtime_builtin_node_from_linked_parts(
-    name: &str,
-    args: &[LinkedTypeRef],
-    _ctx: &PlanContext<'_>,
-) -> Option<Result<RuntimeTypeNode>> {
-    std_runtime_builtin_node(name, args.len())
-}
-
 pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
     if name == "Duration" || name == "std.time.Duration" {
         return Ok(RuntimeTypePlan {
@@ -164,22 +212,13 @@ pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
     if let Some(node) = std_runtime_builtin_node(name, 0) {
         return Ok(builtin_plan(name, node?));
     }
-    let node = match bare_type_name(name) {
-        "Json" => RuntimeTypeNode::Json,
-        "JsonObject" => RuntimeTypeNode::JsonObject,
-        "bytes" => RuntimeTypeNode::Bytes,
-        "Date" => RuntimeTypeNode::Date,
-        "string" => RuntimeTypeNode::String,
-        "bool" | "boolean" => RuntimeTypeNode::Bool,
-        "integer" => RuntimeTypeNode::Integer,
-        "number" => RuntimeTypeNode::Number,
-        "null" | "void" => RuntimeTypeNode::Null,
-        _ => {
-            return Err(RuntimeError::InvalidArtifact(format!(
+    let node = RuntimeBuiltinShape::of_name(name)
+        .and_then(RuntimeBuiltinShape::leaf_node)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
                 "native signature references unknown builtin type {name}"
-            )))
-        }
-    };
+            ))
+        })?;
     Ok(builtin_plan(name, node))
 }
 

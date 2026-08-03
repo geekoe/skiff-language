@@ -33,11 +33,10 @@ pub(crate) use address::{
     program_publication_type_addr, program_service_symbol_type_addr,
 };
 pub(crate) use builtins::native_builtin_plan;
+pub(crate) use builtins::RuntimeBuiltinShape;
 pub(crate) use builtins::{
     db_result_node_from_artifact_parts_in_program, db_result_node_from_linked_parts,
-    db_result_node_from_parts, std_runtime_builtin_node_from_artifact_parts,
-    std_runtime_builtin_node_from_artifact_parts_in_program,
-    std_runtime_builtin_node_from_linked_parts,
+    db_result_node_from_parts,
 };
 pub use context::{PlanContext, ProgramTypeView};
 pub(crate) use labels::{

@@ -941,3 +941,106 @@ mod differential_legacy_json_baseline_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod builtin_catalog_tests {
+    use super::super::*;
+
+    #[test]
+    fn shape_of_name_resolves_bare_full_and_alias_spellings() {
+        for (name, expected) in [
+            ("Array", RuntimeBuiltinShape::Array),
+            ("std.collection.Array", RuntimeBuiltinShape::Array),
+            ("Stream", RuntimeBuiltinShape::Stream),
+            ("std.stream.Stream", RuntimeBuiltinShape::Stream),
+            ("Map", RuntimeBuiltinShape::Map),
+            ("std.collection.Map", RuntimeBuiltinShape::Map),
+            ("Json", RuntimeBuiltinShape::Json),
+            ("JsonObject", RuntimeBuiltinShape::JsonObject),
+            ("Date", RuntimeBuiltinShape::Date),
+            ("string", RuntimeBuiltinShape::String),
+            ("integer", RuntimeBuiltinShape::Integer),
+            ("number", RuntimeBuiltinShape::Number),
+            ("bool", RuntimeBuiltinShape::Bool),
+            ("boolean", RuntimeBuiltinShape::Bool),
+            ("bytes", RuntimeBuiltinShape::Bytes),
+            ("null", RuntimeBuiltinShape::Null),
+            ("void", RuntimeBuiltinShape::Null),
+            ("std.http.Json", RuntimeBuiltinShape::Json),
+            (
+                "DbInsertManyResult",
+                RuntimeBuiltinShape::DbInsertManyResult,
+            ),
+            (
+                "DbUpdateManyResult",
+                RuntimeBuiltinShape::DbUpdateManyResult,
+            ),
+            (
+                "DbDeleteManyResult",
+                RuntimeBuiltinShape::DbDeleteManyResult,
+            ),
+            ("DbUpsertResult", RuntimeBuiltinShape::DbUpsertResult),
+        ] {
+            assert_eq!(RuntimeBuiltinShape::of_name(name), Some(expected), "{name}");
+        }
+        for name in ["example.Unknown", "", "MyRecord"] {
+            assert_eq!(RuntimeBuiltinShape::of_name(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn leaf_node_maps_only_leaf_shapes() {
+        let cases: [(&str, fn(&RuntimeTypeNode) -> bool); 10] = [
+            ("Json", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Json)
+            }),
+            ("JsonObject", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::JsonObject)
+            }),
+            ("Date", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Date)
+            }),
+            ("string", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::String)
+            }),
+            ("integer", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Integer)
+            }),
+            ("number", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Number)
+            }),
+            ("bool", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Bool)
+            }),
+            ("bytes", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Bytes)
+            }),
+            ("null", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Null)
+            }),
+            ("void", |n: &RuntimeTypeNode| {
+                matches!(n, RuntimeTypeNode::Null)
+            }),
+        ];
+        for (name, is_expected) in cases {
+            let node = RuntimeBuiltinShape::of_name(name).and_then(RuntimeBuiltinShape::leaf_node);
+            assert!(node.as_ref().is_some_and(is_expected), "{name}");
+        }
+        for name in [
+            "Array",
+            "Stream",
+            "Map",
+            "DbInsertManyResult",
+            "DbUpdateManyResult",
+            "DbDeleteManyResult",
+            "DbUpsertResult",
+        ] {
+            assert!(
+                RuntimeBuiltinShape::of_name(name)
+                    .and_then(RuntimeBuiltinShape::leaf_node)
+                    .is_none(),
+                "{name}"
+            );
+        }
+    }
+}

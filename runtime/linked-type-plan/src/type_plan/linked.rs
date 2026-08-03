@@ -1,3 +1,4 @@
+use super::builtins::std_runtime_builtin_node;
 use super::*;
 
 impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
@@ -500,21 +501,12 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         if let Some(node) = db_result_node_from_linked_parts(name, args, ctx) {
             return node;
         }
-        if let Some(node) = std_runtime_builtin_node_from_linked_parts(name, args, ctx) {
+        if let Some(node) = std_runtime_builtin_node(name, args.len()) {
             return node;
         }
-        Ok(match bare_type_name(name) {
-            "Json" => RuntimeTypeNode::Json,
-            "JsonObject" => RuntimeTypeNode::JsonObject,
-            "bytes" => RuntimeTypeNode::Bytes,
-            "Date" => RuntimeTypeNode::Date,
-            "string" => RuntimeTypeNode::String,
-            "bool" | "boolean" => RuntimeTypeNode::Bool,
-            "integer" => RuntimeTypeNode::Integer,
-            "number" => RuntimeTypeNode::Number,
-            "null" | "void" => RuntimeTypeNode::Null,
-            _ => RuntimeTypeNode::Unknown,
-        })
+        Ok(RuntimeBuiltinShape::of_name(name)
+            .and_then(RuntimeBuiltinShape::leaf_node)
+            .unwrap_or(RuntimeTypeNode::Unknown))
     }
 
     fn artifact_builtin_node(
@@ -540,21 +532,12 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         if let Some(node) = db_result_node_from_parts(name, args) {
             return node;
         }
-        if let Some(node) = std_runtime_builtin_node_from_artifact_parts(name, args) {
+        if let Some(node) = std_runtime_builtin_node(name, args.len()) {
             return node;
         }
-        Ok(match bare_type_name(name) {
-            "Json" => RuntimeTypeNode::Json,
-            "JsonObject" => RuntimeTypeNode::JsonObject,
-            "bytes" => RuntimeTypeNode::Bytes,
-            "Date" => RuntimeTypeNode::Date,
-            "string" => RuntimeTypeNode::String,
-            "bool" | "boolean" => RuntimeTypeNode::Bool,
-            "integer" => RuntimeTypeNode::Integer,
-            "number" => RuntimeTypeNode::Number,
-            "null" | "void" => RuntimeTypeNode::Null,
-            _ => RuntimeTypeNode::Unknown,
-        })
+        Ok(RuntimeBuiltinShape::of_name(name)
+            .and_then(RuntimeBuiltinShape::leaf_node)
+            .unwrap_or(RuntimeTypeNode::Unknown))
     }
 
     fn artifact_builtin_node_in_program(
@@ -581,21 +564,11 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
         if let Some(node) = db_result_node_from_artifact_parts_in_program(name, args, ctx) {
             return node;
         }
-        if let Some(node) = std_runtime_builtin_node_from_artifact_parts_in_program(name, args, ctx)
-        {
+        if let Some(node) = std_runtime_builtin_node(name, args.len()) {
             return node;
         }
-        Ok(match bare_type_name(name) {
-            "Json" => RuntimeTypeNode::Json,
-            "JsonObject" => RuntimeTypeNode::JsonObject,
-            "bytes" => RuntimeTypeNode::Bytes,
-            "Date" => RuntimeTypeNode::Date,
-            "string" => RuntimeTypeNode::String,
-            "bool" | "boolean" => RuntimeTypeNode::Bool,
-            "integer" => RuntimeTypeNode::Integer,
-            "number" => RuntimeTypeNode::Number,
-            "null" | "void" => RuntimeTypeNode::Null,
-            _ => RuntimeTypeNode::Unknown,
-        })
+        Ok(RuntimeBuiltinShape::of_name(name)
+            .and_then(RuntimeBuiltinShape::leaf_node)
+            .unwrap_or(RuntimeTypeNode::Unknown))
     }
 }
