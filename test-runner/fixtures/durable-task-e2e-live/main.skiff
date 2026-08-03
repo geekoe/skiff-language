@@ -73,19 +73,61 @@ function submitSlow(body: SubmitInput) -> string {
   return "submitted"
 }
 
-// The compiler lowers record patterns in `match` to wildcard arms today
-// (documented E3a finding), so the kind is projected through the typed JSON
-// boundary instead of a discriminated match.
+// Record patterns in `match` discriminate on the union `kind` field (F0a
+// fix), so `TaskStatus` / `TaskCancelResult` branches are matched directly
+// instead of projecting through std.json.
 function statusKind(ref: std.task.TaskRef) -> string {
   const s = std.task.status(ref)
-  const json = std.json.encode<std.task.TaskStatus>(s)
-  return std.json.decode<{ kind: string }>(json).kind
+  match s {
+    { kind: "scheduled" } => {
+      return "scheduled"
+    }
+    { kind: "ready" } => {
+      return "ready"
+    }
+    { kind: "running" } => {
+      return "running"
+    }
+    { kind: "succeeded" } => {
+      return "succeeded"
+    }
+    { kind: "failed" } => {
+      return "failed"
+    }
+    { kind: "platformFailed" } => {
+      return "platformFailed"
+    }
+    { kind: "canceled" } => {
+      return "canceled"
+    }
+    { kind: "expired" } => {
+      return "expired"
+    }
+    _ => {
+      return "unknown"
+    }
+  }
 }
 
 function cancelKind(ref: std.task.TaskRef) -> string {
   const result = std.task.cancel(ref)
-  const json = std.json.encode<std.task.TaskCancelResult>(result)
-  return std.json.decode<{ kind: string }>(json).kind
+  match result {
+    { kind: "canceled" } => {
+      return "canceled"
+    }
+    { kind: "alreadyStarted" } => {
+      return "alreadyStarted"
+    }
+    { kind: "alreadyTerminal" } => {
+      return "alreadyTerminal"
+    }
+    { kind: "expired" } => {
+      return "expired"
+    }
+    _ => {
+      return "unknown"
+    }
+  }
 }
 
 function status(body: IdInput) -> StatusOutput {

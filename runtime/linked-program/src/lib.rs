@@ -42,9 +42,9 @@ pub use linked::{
     LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr, LinkedStmtIr,
     LinkedTestEffectExpectedIr, LinkedTestEffectOutcomeIr, LinkedTypeDescriptor, LinkedTypeRef,
     LiteralIr, MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr,
-    PackageSymbolRef, ParamIr, PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef,
-    ServiceSymbolRef, SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr,
-    TypeDeclIr, UnaryOpIr,
+    PackageSymbolRef, ParamIr, PatternIr, ReceiverCallAbi, RecordPatternFieldIr,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SlotBindingIr, SlotIr, SlotLayoutIr,
+    SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr, UnaryOpIr,
 };
 pub use overlay::{LinkOverlay, ResolvedSymbol, SymbolOverlay};
 pub use package_unit::{

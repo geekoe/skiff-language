@@ -726,4 +726,44 @@ fn linked_file_conversion_rejects_tampered_actor_abi_identity() {
     .to_string()
     .contains("ABI identity does not match"));
 }
+
+#[test]
+fn linked_pattern_converts_record_fields_recursively() {
+    let artifact_pattern = artifact::PatternIr::Record {
+        fields: vec![
+            artifact::RecordPatternFieldIr {
+                name: "kind".to_string(),
+                pattern: artifact::PatternIr::Literal {
+                    value: artifact::LiteralIr::String {
+                        value: "succeeded".to_string(),
+                    },
+                },
+            },
+            artifact::RecordPatternFieldIr {
+                name: "detail".to_string(),
+                pattern: artifact::PatternIr::Binding { slot: 3 },
+            },
+            artifact::RecordPatternFieldIr {
+                name: "payload".to_string(),
+                pattern: artifact::PatternIr::Type {
+                    ty: artifact::TypeRefIr::builtin("string"),
+                },
+            },
+        ],
+    };
+
+    let PatternIr::Record { fields } = linked_pattern(&artifact_pattern) else {
+        panic!("record pattern must survive linking");
+    };
+    assert_eq!(fields.len(), 3);
+    assert!(matches!(
+        &fields[0].pattern,
+        PatternIr::Literal {
+            value: LiteralIr::String { value },
+        } if value == "succeeded"
+    ));
+    assert!(matches!(fields[1].pattern, PatternIr::Binding { slot: 3 }));
+    assert!(matches!(&fields[2].pattern, PatternIr::Type { .. }));
+}
+
 mod timeout_execution;

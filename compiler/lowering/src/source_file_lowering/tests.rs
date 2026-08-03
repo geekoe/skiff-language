@@ -13,7 +13,7 @@ use crate::{
 use skiff_artifact_model::{
     validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
     InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageCallableId,
-    PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
+    PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
     SyntheticInstructionSiteReason, TypeDescriptorIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
@@ -2915,5 +2915,121 @@ fn package_call_target_alias_must_match_callee_root() {
     assert!(message.contains("typed package target names dependency `other`"));
     assert!(message.contains("callee root is `utils`"));
 }
+
+#[test]
+fn record_pattern_match_preserves_kind_literal_and_field_bindings() {
+    let unit = lowered_unit(
+        r#"
+            function run(status: { kind: string, detail: string }) -> string {
+              match status {
+                { kind: "succeeded", detail } => {
+                  return detail
+                }
+                { kind: "failed" } => {
+                  return "failed"
+                }
+                _ => {
+                  return "other"
+                }
+              }
+            }
+        "#,
+    );
+    let run = executable(&unit, "run");
+    let match_statement = run
+        .body
+        .statements
+        .iter()
+        .find(|statement| matches!(statement, StmtIr::Match { .. }))
+        .expect("expected match statement");
+    let StmtIr::Match { arms, .. } = match_statement else {
+        unreachable!();
+    };
+    assert_eq!(arms.len(), 3, "discriminated union arms must stay ordered");
+
+    let PatternIr::Record { fields } = &arms[0].pattern else {
+        panic!("`{{ kind: \"succeeded\", detail }}` must lower to a record pattern");
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].name, "kind");
+    assert_eq!(
+        fields[0].pattern,
+        PatternIr::Literal {
+            value: LiteralIr::String {
+                value: "succeeded".to_string(),
+            },
+        },
+        "record pattern kind discriminant must preserve its literal"
+    );
+    let PatternIr::Binding { slot } = fields[1].pattern else {
+        panic!("bare record pattern field must lower to a binding");
+    };
+    assert!(
+        run.slots.slots.iter().any(|declared| {
+            declared.index == slot
+                && declared.name == "detail"
+                && declared.kind == SlotKind::Pattern
+        }),
+        "record pattern bare field must declare its slot in the executable layout"
+    );
+
+    let PatternIr::Record { fields } = &arms[1].pattern else {
+        panic!("`{{ kind: \"failed\" }}` must lower to a record pattern");
+    };
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name, "kind");
+    assert!(matches!(
+        &fields[0].pattern,
+        PatternIr::Literal {
+            value: LiteralIr::String { value },
+        } if value == "failed"
+    ));
+
+    assert!(matches!(arms[2].pattern, PatternIr::Wildcard));
+}
+
+#[test]
+fn record_pattern_nested_field_patterns_lower_recursively() {
+    let unit = lowered_unit(
+        r#"
+            function run(payload: { kind: string, body: { state: string } }) -> string {
+              match payload {
+                { kind: "ok", body: { state } } => {
+                  return state
+                }
+                _ => {
+                  return "other"
+                }
+              }
+            }
+        "#,
+    );
+    let run = executable(&unit, "run");
+    let match_statement = run
+        .body
+        .statements
+        .iter()
+        .find(|statement| matches!(statement, StmtIr::Match { .. }))
+        .expect("expected match statement");
+    let StmtIr::Match { arms, .. } = match_statement else {
+        unreachable!();
+    };
+    let PatternIr::Record { fields } = &arms[0].pattern else {
+        panic!("outer pattern must lower to a record pattern");
+    };
+    let PatternIr::Record {
+        fields: body_fields,
+    } = &fields[1].pattern
+    else {
+        panic!("nested `{{ state }}` must lower to a record pattern");
+    };
+    assert_eq!(body_fields.len(), 1);
+    assert!(matches!(&body_fields[0].pattern, PatternIr::Binding { .. }));
+    assert!(
+        run.slots.slots.iter().any(|slot| slot.name == "state"),
+        "nested record pattern bare field must declare its slot"
+    );
+}
+
 mod interface_execution;
 mod object_materialization;

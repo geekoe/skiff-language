@@ -915,6 +915,15 @@ fn linked_pattern(pattern: &artifact::PatternIr) -> PatternIr {
             ty: linked_type_ref(ty),
         },
         artifact::PatternIr::Binding { slot } => PatternIr::Binding { slot: *slot },
+        artifact::PatternIr::Record { fields } => PatternIr::Record {
+            fields: fields
+                .iter()
+                .map(|field| RecordPatternFieldIr {
+                    name: field.name.clone(),
+                    pattern: linked_pattern(&field.pattern),
+                })
+                .collect(),
+        },
     }
 }
 
