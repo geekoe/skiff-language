@@ -2027,6 +2027,175 @@ function make() -> void {
 }
 
 #[test]
+fn parses_record_construct_regardless_of_identifier_case() {
+    let ast = parse_source(
+        r#"
+function make() -> void {
+  const upper = RepoImpl { name: "a" }
+  const lower = repoImpl { name: "b" }
+  const dotted = user.repoImpl { name: "c" }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    for (index, expected) in ["RepoImpl", "repoImpl", "user.repoImpl"].iter().enumerate() {
+        let crate::ast::Stmt::Let { value, .. } = &statements[index] else {
+            panic!("expected let statement at {index}");
+        };
+        assert!(
+            matches!(
+                value,
+                crate::ast::Expr::Record { type_name, .. } if type_name == expected
+            ),
+            "expected record construct named {expected}, got {value:?}"
+        );
+    }
+}
+
+#[test]
+fn statement_header_brace_belongs_to_body_not_record_construct() {
+    let ast = parse_source(
+        r#"
+function run(flag: bool, user: RepoImpl) -> void {
+  if user.Status {
+    return
+  }
+  while Flag {
+    break
+  }
+  for item in Items {
+    break
+  }
+  match Flag {
+    _ => {
+      return
+    }
+  }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::If {
+        condition,
+        then_block,
+        else_block,
+    } = &statements[0]
+    else {
+        panic!("expected if statement, got {:?}", statements[0]);
+    };
+    assert!(matches!(
+        condition,
+        crate::ast::Expr::Field { field, .. } if field == "Status"
+    ));
+    assert!(matches!(
+        then_block.statements[0],
+        crate::ast::Stmt::Return(None)
+    ));
+    assert!(else_block.is_none());
+
+    let crate::ast::Stmt::While { condition, body } = &statements[1] else {
+        panic!("expected while statement, got {:?}", statements[1]);
+    };
+    assert!(matches!(condition, crate::ast::Expr::Identifier(name) if name == "Flag"));
+    assert!(matches!(body.statements[0], crate::ast::Stmt::Break));
+
+    let crate::ast::Stmt::For { iterable, body, .. } = &statements[2] else {
+        panic!("expected for statement, got {:?}", statements[2]);
+    };
+    assert!(matches!(iterable, crate::ast::Expr::Identifier(name) if name == "Items"));
+    assert!(matches!(body.statements[0], crate::ast::Stmt::Break));
+
+    let crate::ast::Stmt::Match { value, arms } = &statements[3] else {
+        panic!("expected match statement, got {:?}", statements[3]);
+    };
+    assert!(matches!(value, crate::ast::Expr::Identifier(name) if name == "Flag"));
+    assert_eq!(arms.len(), 1);
+    assert!(matches!(arms[0].pattern, crate::ast::Pattern::Wildcard));
+}
+
+#[test]
+fn parenthesized_record_construct_in_statement_header() {
+    let ast = parse_source(
+        r#"
+function run(flag: bool) -> void {
+  if (Point { x: 1 }) {
+    return
+  }
+  while (point { x: 1 }) {
+    break
+  }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::If { condition, .. } = &statements[0] else {
+        panic!("expected if statement, got {:?}", statements[0]);
+    };
+    assert!(matches!(
+        condition,
+        crate::ast::Expr::Record { type_name, .. } if type_name == "Point"
+    ));
+
+    let crate::ast::Stmt::While { condition, .. } = &statements[1] else {
+        panic!("expected while statement, got {:?}", statements[1]);
+    };
+    assert!(matches!(
+        condition,
+        crate::ast::Expr::Record { type_name, .. } if type_name == "point"
+    ));
+}
+
+#[test]
+fn nested_expression_slots_in_statement_header_keep_construct_parsing() {
+    let ast = parse_source(
+        r#"
+function run(flag: bool) -> void {
+  if isEnabled(Point { x: 1 }) {
+    return
+  }
+  if value { point { x: 1 } } {
+    return
+  }
+  return
+}
+"#,
+    )
+    .unwrap();
+
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::If { condition, .. } = &statements[0] else {
+        panic!("expected if statement, got {:?}", statements[0]);
+    };
+    let crate::ast::Expr::Call { args, .. } = condition else {
+        panic!("expected call condition, got {condition:?}");
+    };
+    assert!(matches!(
+        &args[0],
+        crate::ast::Expr::Record { type_name, .. } if type_name == "Point"
+    ));
+
+    let crate::ast::Stmt::If { condition, .. } = &statements[1] else {
+        panic!("expected if statement, got {:?}", statements[1]);
+    };
+    let crate::ast::Expr::ValueBlock(value) = condition else {
+        panic!("expected value block condition, got {condition:?}");
+    };
+    assert!(matches!(
+        value.tail.as_ref(),
+        crate::ast::Expr::Record { type_name, .. } if type_name == "point"
+    ));
+}
+
+#[test]
 fn parses_dependency_source_address_for_direct_call_and_boxing() {
     let ast = parse_source(
         r#"

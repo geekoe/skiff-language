@@ -153,7 +153,9 @@ record literal 中字段名是编译期字段名。map / json literal 中裸 `Na
 
 array literal 写作 `[expr, ...]`。空数组需要目标类型上下文；mixed element 的 union 推断或报错由类型规则决定。
 
-nominal construct 写作 `QualifiedName TypeArgs? { fields }`，在 expression slot 中优先于 block 解析。它只适用于名义 record 构造糖。
+nominal construct 写作 `QualifiedName TypeArgs? { fields }`，不依赖名称大小写。expression slot 中
+`Path { ... }` 总是按 nominal construct 解析，类型名是否成立由语义阶段验证；statement header slot
+是例外，见 §9。
 
 anonymous function 写作 `fn(params) -> Type { ... }`。语法允许它作为 primary，但语义只允许 IIFE callee 或白名单 callback 参数位置。
 
@@ -187,11 +189,17 @@ literal pattern 可包含 string、number、bool 和 `null`。对 representation
 
 statement slot 和 expression slot 是最重要的消歧边界。`match`、object literal 和 nominal construct 的解析都依赖所在 slot。
 
+statement header slot（`if`、`while`、`for ... in`、`match` 的 scrutinee，以及 db `where if`
+的条件）是第三种边界：头部表达式后的 `{` 一律是 body 或 arms，不按 nominal construct 消费。
+头部内需要 nominal construct 或 patch construct 时用括号包裹：`if (Point { x: 1 }) { ... }`。
+嵌套 expression slot（调用参数、括号内、字段值、value block 内等）不受此限制。
+
 在 statement slot 中，裸 `{ ... }` 是语法错误；在 expression slot 中，`{ ... }` 是 object literal，随后由目标类型解释。
 
 表达式 `match` 分支若要返回 object literal，写作 `=> ({ ... })`。`value` block tail expression 若要返回 object literal，也写作 `({ ... })`。
 
-`QualifiedName TypeArgs? { ... }` 在 expression slot 中优先解析为 nominal construct。statement slot 中的 `Name { ... }` 不作为 statement。
+`QualifiedName TypeArgs? { ... }` 在 expression slot 中解析为 nominal construct（名称大小写不参与
+消歧；是否指向 record 类型由语义验证）。statement slot 中的 `Name { ... }` 不作为 statement。
 
 generic call 和比较表达式按“`<...>` 后是否直接进入 call”消歧。不能把 `a < b > (c)` 误解析为泛型调用。
 

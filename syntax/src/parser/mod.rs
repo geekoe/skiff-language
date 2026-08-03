@@ -68,6 +68,13 @@ pub(super) struct Parser {
     current: usize,
     mode: ParseMode,
     source_spans: SourceSpanTable,
+    /// True while parsing the expression of a statement header (`if`,
+    /// `while`, `for ... in`, `match`). In this slot a trailing `{` always
+    /// starts the body or arms; nominal constructs and patch constructs must
+    /// be parenthesized. Nested expression slots (call arguments, field
+    /// values, parenthesized expressions, value blocks, ...) temporarily
+    /// reset this flag.
+    in_statement_header: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +124,7 @@ impl Parser {
             current: 0,
             mode,
             source_spans: SourceSpanTable::default(),
+            in_statement_header: false,
         }
     }
 

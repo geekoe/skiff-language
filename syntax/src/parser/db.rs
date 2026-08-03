@@ -643,7 +643,8 @@ impl Parser {
     ) -> Result<()> {
         if self.match_ident("where") {
             if self.match_ident("if") {
-                let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
+                let (condition_expr, condition_spans) =
+                    self.parse_header_expression()?.into_parts();
                 self.expect_symbol("{")?;
                 let (predicate_expr, predicate_spans) = self.parse_expression()?.into_parts();
                 self.expect_symbol("}")?;

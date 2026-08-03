@@ -295,7 +295,7 @@ impl Parser {
     }
 
     pub(super) fn parse_if(&mut self, in_test: bool, start: SourceLocation) -> Result<ParsedStmt> {
-        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
+        let (condition_expr, condition_spans) = self.parse_header_expression()?.into_parts();
         let then_block = self.parse_block(in_test)?;
         let else_block = if self.match_ident("else") {
             if self.match_ident("if") {
@@ -340,7 +340,7 @@ impl Parser {
             ForBinding::Item { item: first }
         };
         self.expect_ident_value("in")?;
-        let (iterable_expr, iterable_spans) = self.parse_expression()?.into_parts();
+        let (iterable_expr, iterable_spans) = self.parse_header_expression()?.into_parts();
         let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
         let end = body_spans.span.end;
         Ok(ParsedStmt::with_expression_and_block(
@@ -360,7 +360,7 @@ impl Parser {
         in_test: bool,
         start: SourceLocation,
     ) -> Result<ParsedStmt> {
-        let (condition_expr, condition_spans) = self.parse_expression()?.into_parts();
+        let (condition_expr, condition_spans) = self.parse_header_expression()?.into_parts();
         let (body_expr, body_spans) = self.parse_block(in_test)?.into_parts();
         let end = body_spans.span.end;
         Ok(ParsedStmt::with_expression_and_block(
@@ -379,7 +379,7 @@ impl Parser {
         in_test: bool,
         start: SourceLocation,
     ) -> Result<ParsedStmt> {
-        let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+        let (value_expr, value_spans) = self.parse_header_expression()?.into_parts();
         let mut arms = Vec::new();
         let mut blocks = Vec::new();
         self.expect_symbol("{")?;

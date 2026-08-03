@@ -12,6 +12,29 @@ impl Parser {
         self.parse_binary(0)
     }
 
+    /// Parses the expression of a statement header (`if`, `while`,
+    /// `for ... in`, `match`). A `{` directly following the header expression
+    /// is always the body or arms, so record/patch constructs in the header
+    /// must be wrapped in parentheses.
+    pub(super) fn parse_header_expression(&mut self) -> Result<ParsedExpr> {
+        let saved_header = self.in_statement_header;
+        self.in_statement_header = true;
+        let result = self.parse_expression();
+        self.in_statement_header = saved_header;
+        result
+    }
+
+    /// Parses an expression in a nested expression slot where a `{` after a
+    /// path is a nominal construct. Callers restore the previous slot mode on
+    /// both success and error.
+    pub(super) fn parse_slot_expression(&mut self) -> Result<ParsedExpr> {
+        let saved_header = self.in_statement_header;
+        self.in_statement_header = false;
+        let result = self.parse_expression();
+        self.in_statement_header = saved_header;
+        result
+    }
+
     pub(super) fn parse_binary(&mut self, min_prec: u8) -> Result<ParsedExpr> {
         let mut left = self.parse_unary()?;
         while let Some((op, prec)) = self.peek_binary_op() {
@@ -100,7 +123,7 @@ impl Parser {
                 let mut children = vec![expr.spans];
                 if !self.check_symbol(")") {
                     loop {
-                        let arg = self.parse_expression()?;
+                        let arg = self.parse_slot_expression()?;
                         children.push(arg.spans);
                         args.push(arg.expr);
                         if !self.match_symbol(",") {
@@ -152,7 +175,7 @@ impl Parser {
                 );
                 continue;
             }
-            if self.check_symbol("{") {
+            if self.check_symbol("{") && !self.in_statement_header {
                 if let Some(target) = Self::patch_construct_target(&expr.expr) {
                     self.advance();
                     let (operations, operation_spans) = self.parse_patch_operations()?;
@@ -221,11 +244,7 @@ impl Parser {
             _ => (expr, Vec::new()),
         };
         let type_name = expr_path(without_generic(callee))?;
-        let tail = type_name.rsplit('.').next()?;
-        tail.chars()
-            .next()
-            .is_some_and(char::is_uppercase)
-            .then_some((type_name, type_args))
+        Some((type_name, type_args))
     }
 
     pub(super) fn parse_generic_args(&mut self) -> Result<Vec<TypeRef>> {
@@ -340,7 +359,7 @@ impl Parser {
                 ))
             }
             TokenKind::Ident(value) if value == "throw" => {
-                let value = self.parse_expression()?;
+                let value = self.parse_slot_expression()?;
                 Ok(ParsedExpr::new(
                     Expr::Throw {
                         value: Box::new(value.expr),
@@ -353,7 +372,7 @@ impl Parser {
                 ))
             }
             TokenKind::Ident(value) if value == "rethrow" => {
-                let exception = self.parse_expression()?;
+                let exception = self.parse_slot_expression()?;
                 Ok(ParsedExpr::new(
                     Expr::Rethrow {
                         exception: Box::new(exception.expr),
@@ -366,7 +385,13 @@ impl Parser {
                 ))
             }
             TokenKind::Ident(value) if value == "catch" => self.parse_catch_expression(start),
-            TokenKind::Ident(value) if value == "db" => self.parse_db_expression(token.span),
+            TokenKind::Ident(value) if value == "db" => {
+                let saved_header = self.in_statement_header;
+                self.in_statement_header = false;
+                let result = self.parse_db_expression(token.span);
+                self.in_statement_header = saved_header;
+                result
+            }
             TokenKind::Ident(value) if value == "process" => Err(CompileError::syntax(
                 "process has been removed; use actors and spawn instead",
                 token.span.start,
@@ -376,7 +401,7 @@ impl Parser {
                 token.span.start,
             )),
             TokenKind::Ident(value) => {
-                if self.check_symbol("{") && value.chars().next().is_some_and(char::is_uppercase) {
+                if self.check_symbol("{") && !self.in_statement_header {
                     self.advance();
                     let (fields, children, record_fields) = self.parse_record_construct_fields()?;
                     Ok(ParsedExpr::with_children_and_parts(
@@ -398,7 +423,7 @@ impl Parser {
                 }
             }
             TokenKind::Symbol(value) if value == "(" => {
-                let expr = self.parse_expression()?;
+                let expr = self.parse_slot_expression()?;
                 self.expect_symbol(")")?;
                 Ok(expr)
             }
@@ -478,6 +503,18 @@ impl Parser {
     }
 
     pub(super) fn parse_value_block_expression(
+        &mut self,
+        start: SourceLocation,
+        concurrent: bool,
+    ) -> Result<ParsedExpr> {
+        let saved_header = self.in_statement_header;
+        self.in_statement_header = false;
+        let result = self.parse_value_block_expression_inner(start, concurrent);
+        self.in_statement_header = saved_header;
+        result
+    }
+
+    fn parse_value_block_expression_inner(
         &mut self,
         start: SourceLocation,
         concurrent: bool,
@@ -646,7 +683,7 @@ impl Parser {
         let catch_type = self.parse_type()?;
         self.expect_symbol(">")?;
         self.expect_symbol("(")?;
-        let try_expr = self.parse_expression()?;
+        let try_expr = self.parse_slot_expression()?;
         self.expect_symbol(")")?;
         Ok(ParsedExpr::new(
             Expr::Catch {
@@ -676,7 +713,7 @@ impl Parser {
                 let field = self.expect_ident("expected record field name")?;
                 let field_name_span = self.previous().span;
                 self.expect_symbol(":")?;
-                let field_value = self.parse_expression()?;
+                let field_value = self.parse_slot_expression()?;
                 record_fields.push(RecordFieldSourceSpans {
                     name: field.clone(),
                     name_span: field_name_span,
@@ -707,7 +744,7 @@ impl Parser {
             match op.as_str() {
                 "set" => {
                     self.expect_symbol("=")?;
-                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    let (value_expr, value_spans) = self.parse_slot_expression()?.into_parts();
                     spans.push(value_spans);
                     operations.push(crate::ast::PatchOperation::Set {
                         path,
@@ -716,7 +753,7 @@ impl Parser {
                 }
                 "inc" => {
                     self.expect_ident_value("by")?;
-                    let (value_expr, value_spans) = self.parse_expression()?.into_parts();
+                    let (value_expr, value_spans) = self.parse_slot_expression()?.into_parts();
                     spans.push(value_spans);
                     operations.push(crate::ast::PatchOperation::Inc {
                         path,
@@ -750,7 +787,7 @@ impl Parser {
             loop {
                 let (key, key_span) = self.parse_object_literal_key()?;
                 self.expect_symbol(":")?;
-                let value = self.parse_expression()?;
+                let value = self.parse_slot_expression()?;
                 let field_name = object_literal_key_name(&key);
                 if let Some(field_name) = field_name {
                     record_fields.push(RecordFieldSourceSpans {
