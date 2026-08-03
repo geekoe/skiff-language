@@ -2698,3 +2698,436 @@ mod applied_nominal_type_plan_tests {
         });
     }
 }
+
+/// Phase 0 differential baseline: `from_linked` vs the legacy JSON descriptor
+/// bridge. Requires `--features test-support` (the legacy trait is gated);
+/// semantically different inputs are pinned as expected differences.
+#[cfg(all(test, feature = "test-support"))]
+mod differential_legacy_json_baseline_tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use serde_json::{json, Value};
+
+    use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
+    use skiff_runtime_linked_program::{
+        ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, LinkedTypeDescriptor, LinkedTypeRef,
+        LiteralIr, RuntimeExecutionPackage, RuntimeTypeContext, TypeAddr, TypeDeclIr, UnitAddr,
+    };
+
+    use super::*;
+
+    fn native(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    fn generic(name: &str, args: Vec<LinkedTypeRef>) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args,
+        }
+    }
+
+    fn builtin_descriptor(name: &str, args: Vec<Value>) -> Value {
+        json!({ "kind": "builtin", "name": name, "args": args })
+    }
+
+    fn string_descriptor() -> Value {
+        builtin_descriptor("string", Vec::new())
+    }
+
+    fn with_ctx<T>(
+        types: Option<&RuntimeTypeContext>,
+        substitutions: Option<&BTreeMap<String, LinkedTypeRef>>,
+        test: impl FnOnce(&PlanContext<'_>) -> T,
+    ) -> T {
+        let owned_types = RuntimeTypeContext::default();
+        let types = types.unwrap_or(&owned_types);
+        let service_files: Vec<Arc<LinkedFileUnit>> = Vec::new();
+        let packages: Vec<Arc<RuntimeExecutionPackage>> = Vec::new();
+        let overlay = LinkOverlay::default();
+        let current = ExecutableAddr::service(0, 0);
+        let view = ProgramTypeView::new(&service_files, &packages, &overlay, types);
+        let context = match substitutions {
+            Some(substitutions) => {
+                PlanContext::with_substitutions_from_type_view(view, &current, substitutions)
+            }
+            None => PlanContext::from_type_view(view, &current),
+        };
+        test(&context)
+    }
+
+    fn addr(type_index: usize) -> TypeAddr {
+        TypeAddr {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            type_index,
+        }
+    }
+
+    fn declaration(name: &str, descriptor: LinkedTypeDescriptor) -> TypeDeclIr {
+        TypeDeclIr {
+            name: name.to_string(),
+            descriptor,
+            ..Default::default()
+        }
+    }
+
+    fn type_context() -> RuntimeTypeContext {
+        let mut types = RuntimeTypeContext::default();
+        let representation = LinkedTypeDescriptor::Representation {
+            representation: native("string"),
+        };
+        let alias = LinkedTypeDescriptor::Alias {
+            target: native("string"),
+        };
+        types
+            .descriptors
+            .insert(addr(0), declaration("Wrapped", representation));
+        types
+            .descriptors
+            .insert(addr(1), declaration("PlainAlias", alias));
+        types
+    }
+
+    fn assert_plan_eq(actual: &RuntimeTypePlan, expected: &RuntimeTypePlan, context: &str) {
+        assert_eq!(actual.label, expected.label, "{context}: label");
+        assert_eq!(
+            actual.named_type_name, expected.named_type_name,
+            "{context}: named_type_name"
+        );
+        assert_eq!(actual.identity, expected.identity, "{context}: identity");
+        assert_node_eq(&actual.node, &expected.node, context);
+    }
+
+    fn assert_node_eq(actual: &RuntimeTypeNode, expected: &RuntimeTypeNode, context: &str) {
+        match (actual, expected) {
+            (RuntimeTypeNode::Alias(a), RuntimeTypeNode::Alias(b))
+            | (RuntimeTypeNode::Nullable(a), RuntimeTypeNode::Nullable(b))
+            | (RuntimeTypeNode::Stream(a), RuntimeTypeNode::Stream(b))
+            | (RuntimeTypeNode::Array(a), RuntimeTypeNode::Array(b)) => {
+                assert_plan_eq(a, b, context)
+            }
+            (RuntimeTypeNode::Union(a), RuntimeTypeNode::Union(b)) => {
+                assert_eq!(a.len(), b.len(), "{context}: union len");
+                for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                    assert_plan_eq(a, b, &format!("{context}: union[{index}]"));
+                }
+            }
+            (RuntimeTypeNode::LiteralString(a), RuntimeTypeNode::LiteralString(b)) => {
+                assert_eq!(a, b, "{context}: literal")
+            }
+            (
+                RuntimeTypeNode::Representation {
+                    type_name: a_name,
+                    payload: a_payload,
+                },
+                RuntimeTypeNode::Representation {
+                    type_name: b_name,
+                    payload: b_payload,
+                },
+            ) => {
+                assert_eq!(a_name, b_name, "{context}: representation name");
+                assert_plan_eq(a_payload, b_payload, context);
+            }
+            (
+                RuntimeTypeNode::Map {
+                    key: a_key,
+                    value: a_value,
+                },
+                RuntimeTypeNode::Map {
+                    key: b_key,
+                    value: b_value,
+                },
+            ) => {
+                assert_plan_eq(a_key, b_key, context);
+                assert_plan_eq(a_value, b_value, context);
+            }
+            (
+                RuntimeTypeNode::Record {
+                    fields: a_fields,
+                    boundary_record_kind: a_kind,
+                },
+                RuntimeTypeNode::Record {
+                    fields: b_fields,
+                    boundary_record_kind: b_kind,
+                },
+            ) => {
+                assert_eq!(a_kind, b_kind, "{context}: record kind");
+                assert_eq!(
+                    a_fields.len(),
+                    b_fields.len(),
+                    "{context}: record fields len"
+                );
+                for (index, (a, b)) in a_fields.iter().zip(b_fields).enumerate() {
+                    assert_eq!(a.name, b.name, "{context}: record[{index}].name");
+                    assert_eq!(
+                        a.required, b.required,
+                        "{context}: record[{index}].required"
+                    );
+                    assert_eq!(
+                        a.identity, b.identity,
+                        "{context}: record[{index}].identity"
+                    );
+                    assert_plan_eq(&a.ty, &b.ty, &format!("{context}: record[{index}].ty"));
+                }
+            }
+            // Remaining variants are payload-free leaves and Unknown; compare
+            // discriminant (Debug output is not a stable semantic contract).
+            _ => assert_eq!(
+                std::mem::discriminant(actual),
+                std::mem::discriminant(expected),
+                "{context}: node"
+            ),
+        }
+    }
+
+    #[test]
+    fn builtin_directory_matches_legacy_json_descriptors() {
+        with_ctx(None, None, |ctx| {
+            let mut cases: Vec<(LinkedTypeRef, Value)> = Vec::new();
+            for name in
+                "Json JsonObject bytes Date string bool boolean integer number null void".split(' ')
+            {
+                cases.push((native(name), builtin_descriptor(name, Vec::new())));
+            }
+            for name in "DbInsertManyResult DbUpdateManyResult DbDeleteManyResult".split(' ') {
+                cases.push((
+                    generic(name, Vec::new()),
+                    builtin_descriptor(name, Vec::new()),
+                ));
+            }
+            cases.push((
+                generic("DbUpsertResult", vec![native("string")]),
+                builtin_descriptor("DbUpsertResult", vec![string_descriptor()]),
+            ));
+            let number = builtin_descriptor("number", Vec::new());
+            cases.push((
+                generic("Array", vec![native("string")]),
+                builtin_descriptor("Array", vec![string_descriptor()]),
+            ));
+            cases.push((
+                generic("Map", vec![native("string"), native("number")]),
+                builtin_descriptor("Map", vec![string_descriptor(), number]),
+            ));
+            cases.push((
+                generic("Stream", vec![native("bytes")]),
+                builtin_descriptor("Stream", vec![builtin_descriptor("bytes", Vec::new())]),
+            ));
+            for name in "std.http.HttpClientRequest std.http.HttpClientResponse std.http.HttpClientStreamHandle example.Unknown".split(' ') {
+                cases.push((native(name), builtin_descriptor(name, Vec::new())));
+            }
+            for (index, (linked_ty, descriptor)) in cases.into_iter().enumerate() {
+                let linked = RuntimeTypePlan::from_linked(&linked_ty, ctx)
+                    .expect("linked builtin should build");
+                let legacy = RuntimeTypePlan::from_descriptor(&descriptor)
+                    .expect("legacy builtin should build");
+                assert_plan_eq(&linked, &legacy, &format!("builtin case[{index}]"));
+            }
+            let unknown = RuntimeTypePlan::from_linked(&native("example.Unknown"), ctx)
+                .expect("unknown builtin should not error");
+            assert!(matches!(unknown.node, RuntimeTypeNode::Unknown));
+        });
+    }
+
+    #[test]
+    fn inline_record_union_nullable_and_literal_match_legacy_json_descriptors() {
+        with_ctx(None, None, |ctx| {
+            let nullable = |name: &str| LinkedTypeRef::Nullable {
+                inner: Box::new(native(name)),
+            };
+            let literal = |value: &str| LinkedTypeRef::Literal {
+                value: LiteralIr::String {
+                    value: value.to_string(),
+                },
+            };
+            let cases = [
+                (
+                    LinkedTypeRef::Record {
+                        fields: BTreeMap::from([
+                            ("age".to_string(), nullable("integer")),
+                            ("name".to_string(), native("string")),
+                            ("tags".to_string(), generic("Array", vec![native("string")])),
+                        ]),
+                    },
+                    json!({"kind":"record","fields":{"age":{"kind":"nullable","inner":builtin_descriptor("integer",Vec::new())},"name":string_descriptor(),"tags":builtin_descriptor("Array",vec![string_descriptor()])}}),
+                    "record",
+                ),
+                (
+                    LinkedTypeRef::Union {
+                        items: vec![native("string"), nullable("number"), literal("none")],
+                    },
+                    json!({"kind":"union","items":[string_descriptor(),{"kind":"nullable","inner":builtin_descriptor("number",Vec::new())},{"kind":"literal","value":{"kind":"string","value":"none"}}]}),
+                    "union",
+                ),
+                (
+                    nullable("string"),
+                    json!({"kind":"nullable","inner":string_descriptor()}),
+                    "nullable",
+                ),
+                (
+                    literal("ok"),
+                    json!({"kind":"literal","value":{"kind":"string","value":"ok"}}),
+                    "literal",
+                ),
+            ];
+            for (linked_ty, descriptor, label) in cases {
+                let linked = RuntimeTypePlan::from_linked(&linked_ty, ctx)
+                    .expect("linked structural shape should build");
+                let legacy = RuntimeTypePlan::from_descriptor(&descriptor)
+                    .expect("legacy structural shape should build");
+                assert_plan_eq(&linked, &legacy, label);
+            }
+        });
+    }
+
+    #[test]
+    fn address_resolved_descriptors_match_legacy_nodes_but_owner_context_is_outer_path_only() {
+        let types = type_context();
+        with_ctx(Some(&types), None, |ctx| {
+            let representation = json!({"kind":"representation","name":"Wrapped","representation":string_descriptor()});
+            let alias = json!({"kind":"alias","target":string_descriptor()});
+            let cases = [
+                (addr(0), representation, "Wrapped", "representation"),
+                (addr(1), alias, "PlainAlias", "alias"),
+            ];
+            for (target_addr, descriptor, linked_label, legacy_label) in cases {
+                let linked = RuntimeTypePlan::from_linked(
+                    &LinkedTypeRef::Address { addr: target_addr },
+                    ctx,
+                )
+                .expect("address should build");
+                let legacy =
+                    RuntimeTypePlan::from_descriptor(&descriptor).expect("legacy should build");
+                assert_node_eq(&linked.node, &legacy.node, "address node");
+                // 预期差异：owner context 由外层 JSON 路径应用（linked 侧
+                // apply_nominal_owner_context），from_descriptor 桥本身不应用，
+                // 因此 label/named_type_name 不同而 node 相同。
+                assert_eq!(linked.label, linked_label);
+                assert_eq!(linked.named_type_name, Some(linked_label.to_string()));
+                assert_eq!(legacy.label, legacy_label);
+                assert_eq!(legacy.named_type_name, None);
+            }
+        });
+    }
+
+    #[test]
+    fn type_param_substitution_resolves_bound_ref_but_legacy_bridge_has_no_substitution_pass() {
+        let substitutions = BTreeMap::from([("T".to_string(), native("string"))]);
+        with_ctx(None, Some(&substitutions), |ctx| {
+            let type_param = |name: &str| LinkedTypeRef::TypeParam {
+                name: name.to_string(),
+            };
+            let linked = RuntimeTypePlan::from_linked(&type_param("T"), ctx)
+                .expect("bound type parameter should resolve");
+            let legacy =
+                RuntimeTypePlan::from_descriptor(&string_descriptor()).expect("legacy string");
+            assert_plan_eq(&linked, &legacy, "TypeParam<T> with T=string");
+
+            // 预期差异：substitution 由外层 JSON 路径完成；裸 typeParam
+            // descriptor 直接交给 from_descriptor 不会替换，落到 Unknown。
+            let raw_legacy = RuntimeTypePlan::from_descriptor(&json!({
+                "kind": "typeParam",
+                "name": "T",
+            }))
+            .expect("raw typeParam descriptor should not error");
+            assert!(matches!(raw_legacy.node, RuntimeTypeNode::Unknown));
+            assert_eq!(raw_legacy.label, "typeParam");
+
+            // 预期差异：linked 侧未绑定的 type param 直接报错（fail closed），
+            // legacy 桥则保留为 Unknown。
+            let unbound = RuntimeTypePlan::from_linked(&type_param("Missing"), ctx);
+            assert!(unbound.is_err());
+        });
+    }
+
+    #[test]
+    fn depth_32_cap_truncates_linked_walk_but_legacy_bridge_recurses_uncapped() {
+        fn innermost(node: &RuntimeTypeNode) -> &RuntimeTypeNode {
+            match node {
+                RuntimeTypeNode::Array(inner) => innermost(&inner.node),
+                other => other,
+            }
+        }
+        with_ctx(None, None, |ctx| {
+            let mut at_cap_ref = native("string");
+            let mut at_cap_descriptor = string_descriptor();
+            for _ in 0..16 {
+                at_cap_ref = generic("Array", vec![at_cap_ref]);
+                at_cap_descriptor = builtin_descriptor("Array", vec![at_cap_descriptor]);
+            }
+            // 16 层 Array：最内层 depth = 2*16 = 32，未超过 cap，两路径完整一致。
+            let at_cap =
+                RuntimeTypePlan::from_linked(&at_cap_ref, ctx).expect("depth-32 plan should build");
+            let at_cap_legacy = RuntimeTypePlan::from_descriptor(&at_cap_descriptor)
+                .expect("legacy depth-32 plan should build");
+            assert_plan_eq(&at_cap, &at_cap_legacy, "depth 32 array");
+            assert!(matches!(innermost(&at_cap.node), RuntimeTypeNode::String));
+
+            let mut over_cap_ref = native("string");
+            let mut over_cap_descriptor = string_descriptor();
+            for _ in 0..17 {
+                over_cap_ref = generic("Array", vec![over_cap_ref]);
+                over_cap_descriptor = builtin_descriptor("Array", vec![over_cap_descriptor]);
+            }
+            // 17 层 Array：最内层 depth = 34 > 32，from_linked 截断为 Unknown。
+            let over_cap = RuntimeTypePlan::from_linked(&over_cap_ref, ctx)
+                .expect("over-cap plan should build");
+            assert!(matches!(
+                innermost(&over_cap.node),
+                RuntimeTypeNode::Unknown
+            ));
+
+            // 预期差异：legacy from_descriptor 自身没有 depth cap（cap 在外层
+            // JSON walk resolve_program_descriptor_refs），同一输入不截断。
+            let over_cap_legacy = RuntimeTypePlan::from_descriptor(&over_cap_descriptor)
+                .expect("legacy over-cap plan should build");
+            assert!(matches!(
+                innermost(&over_cap_legacy.node),
+                RuntimeTypeNode::String
+            ));
+        });
+    }
+
+    #[test]
+    fn recoverable_expected_structural_shapes_match_legacy_shape_only_bridge() {
+        with_ctx(None, None, |ctx| {
+            let number = builtin_descriptor("number", Vec::new());
+            let record_ref = LinkedTypeRef::Record {
+                fields: BTreeMap::from([(
+                    "name".to_string(),
+                    LinkedTypeRef::Nullable {
+                        inner: Box::new(native("string")),
+                    },
+                )]),
+            };
+            let record_descriptor = json!({"kind":"record","fields":{"name":{"kind":"nullable","inner":string_descriptor()}}});
+            let cases = [
+                (native("string"), string_descriptor()),
+                (
+                    generic("Array", vec![native("string")]),
+                    builtin_descriptor("Array", vec![string_descriptor()]),
+                ),
+                (
+                    generic("Map", vec![native("string"), native("number")]),
+                    builtin_descriptor("Map", vec![string_descriptor(), number]),
+                ),
+                (record_ref, record_descriptor),
+            ];
+            for (index, (linked_ty, descriptor)) in cases.into_iter().enumerate() {
+                let linked_expected =
+                    RuntimeRecoverableExpectedTypePlan::from_linked(&linked_ty, ctx)
+                        .expect("recoverable expected should build");
+                let legacy_runtime = RuntimeTypePlan::from_descriptor(&descriptor)
+                    .expect("legacy runtime plan should build");
+                let legacy_expected = RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(&legacy_runtime);
+                assert_eq!(
+                    linked_expected, legacy_expected,
+                    "recoverable case[{index}] should match legacy shape-only bridge"
+                );
+            }
+        });
+    }
+}
