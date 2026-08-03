@@ -110,7 +110,7 @@ impl Interpreter {
         deadline: Option<Instant>,
     ) -> RuntimeWebSocketJsonRpcExecutionTerminal {
         let execution = self.execute_runtime_websocket_jsonrpc_kernel(context, request, target);
-        tokio::pin!(execution);
+        let mut execution = Box::pin(execution);
         let cancel_wait = cancellation.clone();
 
         match deadline {

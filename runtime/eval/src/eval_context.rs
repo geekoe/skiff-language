@@ -1,9 +1,10 @@
 use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, AssignTargetIr, BlockIr, CallIr, ExecutableAddr, ExprRefIr,
-    LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedStmtIr, LinkedTestEffectOutcomeIr, LinkedTypeRef,
-    NativeTarget, ReceiverCallAbi, UnaryOpIr,
+    ActivationRelativeServiceCall, AssignTargetIr, BinaryOpIr, BlockIr, CallIr, ExecutableAddr,
+    ExprRefIr, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceInstantiationRef, LinkedPackageDirectCall, LinkedStmtIr,
+    LinkedTestEffectExpectedIr, LinkedTestEffectOutcomeIr, LinkedTypeRef, MatchArmIr, NativeTarget,
+    ReceiverCallAbi, UnaryOpIr,
 };
 use skiff_runtime_linked_type_plan::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
@@ -76,6 +77,9 @@ use skiff_runtime_native_contract::{native_target_binding_key, native_target_nam
 mod actual_pending;
 mod checkpoint;
 mod timeout;
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 pub(crate) use actual_pending::tests::legacy_native_call_expected_to_suspend as native_call_suspends;
@@ -343,6 +347,7 @@ impl<'a> EvalContext<'a> {
         self.exec_program_block_body(block).await
     }
 
+    #[async_recursion]
     pub(crate) async fn exec_tail_entry_control(
         &mut self,
         tail_caller: &ExecutableAddr,
@@ -372,7 +377,6 @@ impl<'a> EvalContext<'a> {
             .into_flow("EvalContext block")
     }
 
-    #[async_recursion]
     async fn exec_program_block_control(&mut self, label: &str) -> Result<EvaluatorControl> {
         let block = self.prepare_program_block(label)?;
         self.exec_program_block_body(block).await
@@ -430,19 +434,9 @@ impl<'a> EvalContext<'a> {
             LinkedStmtIr::Concurrent { .. } => Err(RuntimeError::InvalidArtifact(
                 "concurrent is not supported in v1".to_string(),
             )),
-            LinkedStmtIr::Let { slot, value } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                self.env.declare_binding(
-                    "slot",
-                    Some(program_u32_to_usize(*slot, "let.slot")?),
-                    value,
-                )?;
-                Ok(Flow::Continue.into())
-            }
+            LinkedStmtIr::Let { slot, value } => self.exec_statement_let(slot, value).await,
             LinkedStmtIr::Assign { target, value } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                self.assign_program_target(target, value).await?;
-                Ok(Flow::Continue.into())
+                self.exec_statement_assign(target, value).await
             }
             LinkedStmtIr::ForIn {
                 item_slot,
@@ -466,25 +460,11 @@ impl<'a> EvalContext<'a> {
                 self.exec_program_while(*condition, body).await
             }
             LinkedStmtIr::Assert { condition, message } => {
-                let condition = self.eval_program_expr_ref(*condition).await?;
-                if runtime_truthy(&condition, self.heap.heap_mut())? {
-                    return Ok(Flow::Continue.into());
-                }
-                let message = match message {
-                    Some(message_ref) => {
-                        let message = self.eval_program_expr_ref(*message_ref).await?;
-                        runtime_stringify_key(&message, self.heap.heap_mut())?
-                    }
-                    _ => "assertion failed".to_string(),
-                };
-                Err(RuntimeError::Decode(message))
+                self.exec_statement_assert(condition, message).await
             }
             LinkedStmtIr::Break => Ok(Flow::Break.into()),
             LinkedStmtIr::Continue => Ok(Flow::LoopContinue.into()),
-            LinkedStmtIr::Spawn { call } => {
-                spawn_ops::submit_spawn_statement(self, *call).await?;
-                Ok(Flow::Continue.into())
-            }
+            LinkedStmtIr::Spawn { call } => self.exec_statement_spawn(call).await,
             LinkedStmtIr::Expr { value } => {
                 self.eval_program_expr_ref(*value).await?;
                 Ok(Flow::Continue.into())
@@ -495,35 +475,10 @@ impl<'a> EvalContext<'a> {
                 then_block,
                 else_block,
             } => {
-                let condition = self.eval_program_expr_ref(*condition).await?;
-                let block = if runtime_truthy(&condition, self.heap.heap_mut())? {
-                    then_block
-                } else if let Some(block) = else_block {
-                    block
-                } else {
-                    return Ok(Flow::Continue.into());
-                };
-                self.exec_program_block_control(block).await
+                self.exec_statement_if(condition, then_block, else_block.as_deref())
+                    .await
             }
-            LinkedStmtIr::Match { value, arms } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                for arm in arms {
-                    self.checkpoint_generated_chunk(0)?;
-                    if !program_pattern_matches(&arm.pattern, &value, self.heap.heap_mut())? {
-                        continue;
-                    }
-                    self.env.push();
-                    if let Err(error) = bind_program_pattern(self.env, &arm.pattern, value.clone())
-                    {
-                        self.env.pop();
-                        return Err(error);
-                    }
-                    let control = self.exec_program_block_control(&arm.body).await;
-                    self.env.pop();
-                    return control;
-                }
-                Ok(Flow::Continue.into())
-            }
+            LinkedStmtIr::Match { value, arms } => self.exec_statement_match(value, arms).await,
             LinkedStmtIr::Emit { value, .. } => {
                 self.exec_emit(*value).await.map(EvaluatorControl::from)
             }
@@ -533,114 +488,8 @@ impl<'a> EvalContext<'a> {
                 step_expect,
                 outcome,
             } => {
-                if !self.interpreter.test_effects_enabled {
-                    return Err(RuntimeError::Unsupported(
-                        "test effect setup cannot run outside test execution".to_string(),
-                    ));
-                }
-                let (effect_target, setup_package_build_id) = match target {
-                    LinkedCallTarget::PackageDirect { call: target } => (
-                        TestEffectTarget::package_callable(
-                            target.dependency_package_build_id().clone(),
-                            target.package_callable_id().clone(),
-                        ),
-                        target.caller_package_build_id().clone(),
-                    ),
-                    LinkedCallTarget::ActivationRelativeService { instruction } => (
-                        TestEffectTarget::contract_operation(
-                            instruction.operation_id().clone(),
-                            instruction.expected_protocol_identity().clone(),
-                        ),
-                        instruction.caller_package_build_id().clone(),
-                    ),
-                    _ => {
-                        return Err(RuntimeError::InvalidArtifact(
-                            "test effect target did not link to a package callable or contract operation"
-                                .to_string(),
-                        ));
-                    }
-                };
-                let expect = match expect {
-                    Some(expected) => {
-                        let value = self.eval_program_expr_ref(expected.value).await?;
-                        Some(runtime_to_wire(&value, self.heap.heap_mut())?)
-                    }
-                    None => None,
-                };
-                let step_expect = match step_expect {
-                    Some(expected) => {
-                        let value = self.eval_program_expr_ref(expected.value).await?;
-                        Some(runtime_to_wire(&value, self.heap.heap_mut())?)
-                    }
-                    None => None,
-                };
-                let outcome = match outcome {
-                    LinkedTestEffectOutcomeIr::Respond { value, value_type } => {
-                        let value = self.eval_program_expr_ref(*value).await?;
-                        let value_plan = self
-                            .type_projection()
-                            .plan_from_linked_nested_ref(value_type, self.addr)?;
-                        let value = runtime_to_wire_required_plan(
-                            &value,
-                            Some(&value_plan),
-                            "test effect response",
-                            self.heap.heap_mut(),
-                        )?;
-                        RegisteredTestEffectOutcome::Respond { value, value_plan }
-                    }
-                    LinkedTestEffectOutcomeIr::Throw {
-                        value,
-                        payload_type,
-                    } => {
-                        let payload = self.eval_program_expr_ref(*value).await?;
-                        let payload_plan = self
-                            .type_projection()
-                            .plan_from_linked_nested_ref_with_substitutions(
-                                payload_type,
-                                self.addr,
-                                &self.env.type_substitutions,
-                            )?;
-                        let payload = runtime_carrier_for_plan(
-                            payload,
-                            &payload_plan,
-                            "test effect typed throw",
-                            self.heap.heap_mut(),
-                        )?;
-                        RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
-                            failure: RegisteredTestEffectFailure::LocalPayload(payload),
-                            setup_heap: self.heap.heap_mut().clone(),
-                            setup_package_build_id: setup_package_build_id.clone(),
-                        })
-                    }
-                    LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
-                        let item_plan = self
-                            .type_projection()
-                            .plan_from_linked_nested_ref(item_type, self.addr)?;
-                        let mut runtime_values = Vec::with_capacity(values.len());
-                        for value in values {
-                            let value = self.eval_program_expr_ref(*value).await?;
-                            runtime_values.push(runtime_to_wire_required_plan(
-                                &value,
-                                Some(&item_plan),
-                                "test effect stream item",
-                                self.heap.heap_mut(),
-                            )?);
-                        }
-                        RegisteredTestEffectOutcome::Stream {
-                            values: runtime_values,
-                            item_plan,
-                        }
-                    }
-                };
-                self.interpreter.runtime_test_effects.register(
-                    effect_target,
-                    RegisteredTestEffect {
-                        expect,
-                        step_expect,
-                        outcome,
-                    },
-                );
-                Ok(Flow::Continue.into())
+                self.exec_statement_test_effect_register(target, expect, step_expect, outcome)
+                    .await
             }
             LinkedStmtIr::Throw {
                 value,
@@ -661,6 +510,220 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    #[async_recursion]
+    async fn exec_statement_let(
+        &mut self,
+        slot: &u32,
+        value: &ExprRefIr,
+    ) -> Result<EvaluatorControl> {
+        let value = self.eval_program_expr_ref(*value).await?;
+        self.env.declare_binding(
+            "slot",
+            Some(program_u32_to_usize(*slot, "let.slot")?),
+            value,
+        )?;
+        Ok(Flow::Continue.into())
+    }
+
+    #[async_recursion]
+    async fn exec_statement_assign(
+        &mut self,
+        target: &AssignTargetIr,
+        value: &ExprRefIr,
+    ) -> Result<EvaluatorControl> {
+        let value = self.eval_program_expr_ref(*value).await?;
+        self.assign_program_target(target, value).await?;
+        Ok(Flow::Continue.into())
+    }
+
+    #[async_recursion]
+    async fn exec_statement_assert(
+        &mut self,
+        condition: &ExprRefIr,
+        message: &Option<ExprRefIr>,
+    ) -> Result<EvaluatorControl> {
+        let condition = self.eval_program_expr_ref(*condition).await?;
+        if runtime_truthy(&condition, self.heap.heap_mut())? {
+            return Ok(Flow::Continue.into());
+        }
+        let message = match message {
+            Some(message_ref) => {
+                let message = self.eval_program_expr_ref(*message_ref).await?;
+                runtime_stringify_key(&message, self.heap.heap_mut())?
+            }
+            _ => "assertion failed".to_string(),
+        };
+        Err(RuntimeError::Decode(message))
+    }
+
+    #[async_recursion]
+    async fn exec_statement_spawn(&mut self, call: &ExprRefIr) -> Result<EvaluatorControl> {
+        spawn_ops::submit_spawn_statement(self, *call).await?;
+        Ok(Flow::Continue.into())
+    }
+
+    #[async_recursion]
+    async fn exec_statement_if(
+        &mut self,
+        condition: &ExprRefIr,
+        then_block: &str,
+        else_block: Option<&str>,
+    ) -> Result<EvaluatorControl> {
+        let condition = self.eval_program_expr_ref(*condition).await?;
+        let block = if runtime_truthy(&condition, self.heap.heap_mut())? {
+            then_block
+        } else if let Some(block) = else_block {
+            block
+        } else {
+            return Ok(Flow::Continue.into());
+        };
+        self.exec_program_block_control(block).await
+    }
+
+    #[async_recursion]
+    async fn exec_statement_match(
+        &mut self,
+        value: &ExprRefIr,
+        arms: &[MatchArmIr],
+    ) -> Result<EvaluatorControl> {
+        let value = self.eval_program_expr_ref(*value).await?;
+        for arm in arms {
+            self.checkpoint_generated_chunk(0)?;
+            if !program_pattern_matches(&arm.pattern, &value, self.heap.heap_mut())? {
+                continue;
+            }
+            self.env.push();
+            if let Err(error) = bind_program_pattern(self.env, &arm.pattern, value.clone()) {
+                self.env.pop();
+                return Err(error);
+            }
+            let control = self.exec_program_block_control(&arm.body).await;
+            self.env.pop();
+            return control;
+        }
+        Ok(Flow::Continue.into())
+    }
+
+    #[async_recursion]
+    #[allow(clippy::too_many_arguments)]
+    async fn exec_statement_test_effect_register(
+        &mut self,
+        target: &LinkedCallTarget,
+        expect: &Option<LinkedTestEffectExpectedIr>,
+        step_expect: &Option<LinkedTestEffectExpectedIr>,
+        outcome: &LinkedTestEffectOutcomeIr,
+    ) -> Result<EvaluatorControl> {
+        if !self.interpreter.test_effects_enabled {
+            return Err(RuntimeError::Unsupported(
+                "test effect setup cannot run outside test execution".to_string(),
+            ));
+        }
+        let (effect_target, setup_package_build_id) = match target {
+            LinkedCallTarget::PackageDirect { call: target } => (
+                TestEffectTarget::package_callable(
+                    target.dependency_package_build_id().clone(),
+                    target.package_callable_id().clone(),
+                ),
+                target.caller_package_build_id().clone(),
+            ),
+            LinkedCallTarget::ActivationRelativeService { instruction } => (
+                TestEffectTarget::contract_operation(
+                    instruction.operation_id().clone(),
+                    instruction.expected_protocol_identity().clone(),
+                ),
+                instruction.caller_package_build_id().clone(),
+            ),
+            _ => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "test effect target did not link to a package callable or contract operation"
+                        .to_string(),
+                ));
+            }
+        };
+        let expect = match expect {
+            Some(expected) => {
+                let value = self.eval_program_expr_ref(expected.value).await?;
+                Some(runtime_to_wire(&value, self.heap.heap_mut())?)
+            }
+            None => None,
+        };
+        let step_expect = match step_expect {
+            Some(expected) => {
+                let value = self.eval_program_expr_ref(expected.value).await?;
+                Some(runtime_to_wire(&value, self.heap.heap_mut())?)
+            }
+            None => None,
+        };
+        let outcome = match outcome {
+            LinkedTestEffectOutcomeIr::Respond { value, value_type } => {
+                let value = self.eval_program_expr_ref(*value).await?;
+                let value_plan = self
+                    .type_projection()
+                    .plan_from_linked_nested_ref(value_type, self.addr)?;
+                let value = runtime_to_wire_required_plan(
+                    &value,
+                    Some(&value_plan),
+                    "test effect response",
+                    self.heap.heap_mut(),
+                )?;
+                RegisteredTestEffectOutcome::Respond { value, value_plan }
+            }
+            LinkedTestEffectOutcomeIr::Throw {
+                value,
+                payload_type,
+            } => {
+                let payload = self.eval_program_expr_ref(*value).await?;
+                let payload_plan = self
+                    .type_projection()
+                    .plan_from_linked_nested_ref_with_substitutions(
+                        payload_type,
+                        self.addr,
+                        &self.env.type_substitutions,
+                    )?;
+                let payload = runtime_carrier_for_plan(
+                    payload,
+                    &payload_plan,
+                    "test effect typed throw",
+                    self.heap.heap_mut(),
+                )?;
+                RegisteredTestEffectOutcome::Throw(RegisteredTestEffectThrow {
+                    failure: RegisteredTestEffectFailure::LocalPayload(payload),
+                    setup_heap: self.heap.heap_mut().clone(),
+                    setup_package_build_id: setup_package_build_id.clone(),
+                })
+            }
+            LinkedTestEffectOutcomeIr::Stream { values, item_type } => {
+                let item_plan = self
+                    .type_projection()
+                    .plan_from_linked_nested_ref(item_type, self.addr)?;
+                let mut runtime_values = Vec::with_capacity(values.len());
+                for value in values {
+                    let value = self.eval_program_expr_ref(*value).await?;
+                    runtime_values.push(runtime_to_wire_required_plan(
+                        &value,
+                        Some(&item_plan),
+                        "test effect stream item",
+                        self.heap.heap_mut(),
+                    )?);
+                }
+                RegisteredTestEffectOutcome::Stream {
+                    values: runtime_values,
+                    item_plan,
+                }
+            }
+        };
+        self.interpreter.runtime_test_effects.register(
+            effect_target,
+            RegisteredTestEffect {
+                expect,
+                step_expect,
+                outcome,
+            },
+        );
+        Ok(Flow::Continue.into())
+    }
+
+    #[async_recursion]
     async fn exec_program_return(&mut self, value: Option<ExprRefIr>) -> Result<EvaluatorControl> {
         let Some(value_ref) = value else {
             return Ok(Flow::Return(RuntimeValue::Null.into()).into());
@@ -745,7 +808,6 @@ impl<'a> EvalContext<'a> {
             .is_some())
     }
 
-    #[async_recursion]
     pub async fn eval_program_expr_ref(
         &mut self,
         expr_ref: ExprRefIr,
@@ -773,10 +835,7 @@ impl<'a> EvalContext<'a> {
             LinkedExprIr::LoadSlot { slot } => self
                 .env
                 .get_slot(program_u32_to_usize(*slot, "loadSlot.slot")?),
-            LinkedExprIr::Field { object, field } => {
-                let object = self.eval_program_expr_ref(*object).await?;
-                runtime_member_access_carrier(&object, field, self.heap.heap_mut())
-            }
+            LinkedExprIr::Field { object, field } => self.eval_expr_field(object, field).await,
             LinkedExprIr::ActorSelfField { field, .. } => self
                 .context
                 .actor_execution_frame()
@@ -792,18 +851,7 @@ impl<'a> EvalContext<'a> {
                 self.eval_program_construct(type_ref, fields).await
             }
             LinkedExprIr::RepresentationWrap { value, type_ref } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                let plan = self.type_projection().representation_wrap_target_plan(
-                    self.addr,
-                    type_ref,
-                    &self.env.type_substitutions,
-                )?;
-                runtime_representation_wrap_for_plan(
-                    value,
-                    &plan,
-                    "representation wrap",
-                    self.heap.heap_mut(),
-                )
+                self.eval_expr_representation_wrap(value, type_ref).await
             }
             LinkedExprIr::InterfaceBox {
                 value,
@@ -815,72 +863,15 @@ impl<'a> EvalContext<'a> {
             }
             LinkedExprIr::MapLiteral { entries } => self.eval_program_map_literal(entries).await,
             LinkedExprIr::ArrayLiteral { items: item_refs } => {
-                let mut items = Vec::new();
-                for item_ref in item_refs {
-                    self.checkpoint_generated_chunk(0)?;
-                    items.push(self.eval_program_expr_ref(*item_ref).await?);
-                }
-                runtime_array_from_carriers(items, self.heap.heap_mut())
+                self.eval_expr_array_literal(item_refs).await
             }
-            LinkedExprIr::Unary { op, value } => {
-                let value = self.eval_program_expr_ref(*value).await?;
-                match op {
-                    UnaryOpIr::Not => Ok(RuntimeValue::Bool(!runtime_truthy(
-                        &value,
-                        self.heap.heap_mut(),
-                    )?)
-                    .into()),
-                    UnaryOpIr::Negate => Ok(runtime_number_value(-runtime_numeric(&value)?).into()),
-                }
-            }
+            LinkedExprIr::Unary { op, value } => self.eval_expr_unary(op, value).await,
             LinkedExprIr::Binary { op, left, right } => {
-                let op = program_binary_operator(*op);
-                if op == "&&" || op == "||" {
-                    let left = self.eval_program_expr_ref(*left).await?;
-                    return match op {
-                        "&&" if !runtime_truthy(&left, self.heap.heap_mut())? => {
-                            Ok(RuntimeValue::Bool(false).into())
-                        }
-                        "&&" => {
-                            let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(
-                                RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?)
-                                    .into(),
-                            )
-                        }
-                        "||" if runtime_truthy(&left, self.heap.heap_mut())? => {
-                            Ok(RuntimeValue::Bool(true).into())
-                        }
-                        "||" => {
-                            let right = self.eval_program_expr_ref(*right).await?;
-                            Ok(
-                                RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?)
-                                    .into(),
-                            )
-                        }
-                        _ => unreachable!("checked logical operator"),
-                    };
-                }
-                let left = self.eval_program_expr_ref(*left).await?;
-                let right = self.eval_program_expr_ref(*right).await?;
-                runtime_eval_binary(
-                    op,
-                    left.into_value(),
-                    right.into_value(),
-                    self.heap.heap_mut(),
-                )
-                .map(Into::into)
+                self.eval_expr_binary(op, left, right).await
             }
             LinkedExprIr::Call { call } => self.eval_program_call(call).await,
             LinkedExprIr::ValueBlock { block, result } => {
-                let flow = self
-                    .exec_program_block_with_tail_call_barrier(block)
-                    .await?;
-                if let Some(value) = FlowCompletionPolicy::value_block_value(flow)? {
-                    Ok(value)
-                } else {
-                    self.eval_program_expr_ref(*result).await
-                }
+                self.eval_expr_value_block(block, result).await
             }
             LinkedExprIr::DbOperation { operation } => {
                 let result = self
@@ -966,19 +957,24 @@ impl<'a> EvalContext<'a> {
             }
             LinkedExprIr::LoadConst { const_index } => {
                 self.interpreter
-                    .eval_program_const(
+                    .eval_program_const_in_file_ctx(
                         self.context.clone(),
                         self.heap,
                         self.env,
                         self.addr,
                         self.file,
-                        *const_index,
+                        program_u32_to_usize(*const_index, "const ref")?,
                     )
                     .await
             }
             LinkedExprIr::LoadConstAddress { const_addr } => {
                 self.interpreter
-                    .eval_program_const_addr(self.context.clone(), self.heap, self.env, const_addr)
+                    .eval_program_const_addr_ctx(
+                        self.context.clone(),
+                        self.heap,
+                        self.env,
+                        const_addr,
+                    )
                     .await
             }
             LinkedExprIr::LoadPackageConst { .. } => Err(RuntimeError::InvalidArtifact(
@@ -1008,6 +1004,119 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    #[async_recursion]
+    async fn eval_expr_field(
+        &mut self,
+        object: &ExprRefIr,
+        field: &String,
+    ) -> Result<RuntimeValueCarrier> {
+        let object = self.eval_program_expr_ref(*object).await?;
+        runtime_member_access_carrier(&object, field, self.heap.heap_mut())
+    }
+
+    #[async_recursion]
+    async fn eval_expr_representation_wrap(
+        &mut self,
+        value: &ExprRefIr,
+        type_ref: &LinkedTypeRef,
+    ) -> Result<RuntimeValueCarrier> {
+        let value = self.eval_program_expr_ref(*value).await?;
+        let plan = self.type_projection().representation_wrap_target_plan(
+            self.addr,
+            type_ref,
+            &self.env.type_substitutions,
+        )?;
+        runtime_representation_wrap_for_plan(
+            value,
+            &plan,
+            "representation wrap",
+            self.heap.heap_mut(),
+        )
+    }
+
+    #[async_recursion]
+    async fn eval_expr_array_literal(
+        &mut self,
+        item_refs: &[ExprRefIr],
+    ) -> Result<RuntimeValueCarrier> {
+        let mut items = Vec::new();
+        for item_ref in item_refs {
+            self.checkpoint_generated_chunk(0)?;
+            items.push(self.eval_program_expr_ref(*item_ref).await?);
+        }
+        runtime_array_from_carriers(items, self.heap.heap_mut())
+    }
+
+    #[async_recursion]
+    async fn eval_expr_unary(
+        &mut self,
+        op: &UnaryOpIr,
+        value: &ExprRefIr,
+    ) -> Result<RuntimeValueCarrier> {
+        let value = self.eval_program_expr_ref(*value).await?;
+        match op {
+            UnaryOpIr::Not => {
+                Ok(RuntimeValue::Bool(!runtime_truthy(&value, self.heap.heap_mut())?).into())
+            }
+            UnaryOpIr::Negate => Ok(runtime_number_value(-runtime_numeric(&value)?).into()),
+        }
+    }
+
+    async fn eval_expr_binary(
+        &mut self,
+        op: &BinaryOpIr,
+        left: &ExprRefIr,
+        right: &ExprRefIr,
+    ) -> Result<RuntimeValueCarrier> {
+        let op = program_binary_operator(*op);
+        if op == "&&" || op == "||" {
+            let left = self.eval_program_expr_ref(*left).await?;
+            return match op {
+                "&&" if !runtime_truthy(&left, self.heap.heap_mut())? => {
+                    Ok(RuntimeValue::Bool(false).into())
+                }
+                "&&" => {
+                    let right = self.eval_program_expr_ref(*right).await?;
+                    Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?).into())
+                }
+                "||" if runtime_truthy(&left, self.heap.heap_mut())? => {
+                    Ok(RuntimeValue::Bool(true).into())
+                }
+                "||" => {
+                    let right = self.eval_program_expr_ref(*right).await?;
+                    Ok(RuntimeValue::Bool(runtime_truthy(&right, self.heap.heap_mut())?).into())
+                }
+                _ => unreachable!("checked logical operator"),
+            };
+        }
+        let left = self.eval_program_expr_ref(*left).await?;
+        let right = self.eval_program_expr_ref(*right).await?;
+        runtime_eval_binary(
+            op,
+            left.into_value(),
+            right.into_value(),
+            self.heap.heap_mut(),
+        )
+        .map(Into::into)
+    }
+
+    #[async_recursion]
+    async fn eval_expr_value_block(
+        &mut self,
+        block: &str,
+        result: &ExprRefIr,
+    ) -> Result<RuntimeValueCarrier> {
+        let flow = self
+            .exec_program_block_with_tail_call_barrier(block)
+            .await?;
+        if let Some(value) = FlowCompletionPolicy::value_block_value(flow)? {
+            Ok(value)
+        } else {
+            self.eval_program_expr_ref(*result).await
+        }
+    }
+
+    #[async_recursion]
     async fn exec_program_for_in(
         &mut self,
         item_slot: usize,
@@ -1123,6 +1232,7 @@ impl<'a> EvalContext<'a> {
         ))
     }
 
+    #[async_recursion]
     async fn exec_program_array_for_in(
         &mut self,
         item_slot: usize,
@@ -1149,6 +1259,7 @@ impl<'a> EvalContext<'a> {
         Ok(Flow::Continue.into())
     }
 
+    #[async_recursion]
     async fn exec_program_while(
         &mut self,
         condition: ExprRefIr,
@@ -1176,6 +1287,7 @@ impl<'a> EvalContext<'a> {
         Ok(Flow::Continue.into())
     }
 
+    #[async_recursion]
     async fn exec_program_map_entry_for_in(
         &mut self,
         item_slot: usize,
@@ -1214,6 +1326,7 @@ impl<'a> EvalContext<'a> {
             .into_flow("for-in body")
     }
 
+    #[async_recursion]
     async fn exec_program_for_in_body_control(
         &mut self,
         item_slot: usize,
@@ -1233,6 +1346,7 @@ impl<'a> EvalContext<'a> {
         control
     }
 
+    #[async_recursion]
     async fn exec_program_for_in_entry_body(
         &mut self,
         item_slot: usize,
@@ -1258,6 +1372,7 @@ impl<'a> EvalContext<'a> {
         control
     }
 
+    #[async_recursion]
     async fn eval_program_construct(
         &mut self,
         type_ref: &LinkedTypeRef,
@@ -1289,6 +1404,7 @@ impl<'a> EvalContext<'a> {
         )
     }
 
+    #[async_recursion]
     async fn eval_program_interface_box(
         &mut self,
         value: ExprRefIr,
@@ -1337,6 +1453,7 @@ impl<'a> EvalContext<'a> {
         Ok(RuntimeValue::Heap(handle).into())
     }
 
+    #[async_recursion]
     async fn eval_program_interface_method_call(
         &mut self,
         call: &CallIr,
@@ -1433,6 +1550,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    #[async_recursion]
     async fn eval_program_map_literal(
         &mut self,
         entry_refs: &std::collections::BTreeMap<String, ExprRefIr>,
@@ -1446,6 +1564,7 @@ impl<'a> EvalContext<'a> {
         runtime_map_from_carriers(entries, self.heap.heap_mut())
     }
 
+    #[async_recursion]
     async fn eval_program_call(&mut self, call: &CallIr) -> Result<RuntimeValueCarrier> {
         if let Some(op) = program_call_db_op(&call.target) {
             return Err(RuntimeError::Unsupported(format!(
@@ -1520,30 +1639,7 @@ impl<'a> EvalContext<'a> {
                     .await
             }
             LinkedCallTarget::PackageDirect { call: target } => {
-                let bypass_test_effect = is_std_http_self_ingress_call(
-                    target,
-                    &values,
-                    self.heap.heap_mut(),
-                    &self.context,
-                )?;
-                if self.interpreter.test_effects_enabled && !bypass_test_effect {
-                    let effect_target = TestEffectTarget::package_callable(
-                        target.dependency_package_build_id().clone(),
-                        target.package_callable_id().clone(),
-                    );
-                    let stream_runtime = self.context.stream_runtime();
-                    if let Some(result) = self.interpreter.runtime_test_effects.dispatch_package(
-                        &effect_target,
-                        &values,
-                        Some(&stream_runtime),
-                        self.heap.heap_mut(),
-                        &self.context,
-                        &call.site,
-                    ) {
-                        return result;
-                    }
-                }
-                super::assembly_execution::dispatch_package_direct(self, call, target, values).await
+                self.eval_call_package_direct(call, target, values).await
             }
             LinkedCallTarget::ActivationRelativeService { instruction } => {
                 self.eval_activation_relative_service_call(call, instruction, values)
@@ -1571,46 +1667,7 @@ impl<'a> EvalContext<'a> {
                 }
                 self.eval_native_prepared_call(call, target, values).await
             }
-            LinkedCallTarget::Builtin { op } => {
-                if is_db_builtin_op(op) {
-                    Err(RuntimeError::Unsupported(format!(
-                        "old RuntimeProgram db builtin {op} is not supported for object DB; use explicit DbOperation IR"
-                    )))
-                } else {
-                    let config_context =
-                        RuntimeNativeConfigCapabilityContext::new(self.context.config_context());
-                    let config_type_arg_plan = resolve_config_builtin_type_arg_plan(
-                        self.projection.type_view(),
-                        self.addr,
-                        self.env.type_substitutions.as_linked_map(),
-                        call,
-                        op,
-                    )?;
-                    let return_plan = config_type_arg_plan.clone();
-                    let value = NativeDispatch::new()
-                        .dispatch_builtin(
-                            &config_context,
-                            self.addr,
-                            op,
-                            config_type_arg_plan,
-                            values
-                                .into_iter()
-                                .map(RuntimeValueCarrier::into_value)
-                                .collect(),
-                            self.heap.heap_mut(),
-                        )
-                        .map_err(RuntimeError::from)?;
-                    match return_plan {
-                        Some(plan) => runtime_carrier_for_plan(
-                            value,
-                            &plan,
-                            "config builtin return",
-                            self.heap.heap_mut(),
-                        ),
-                        None => Ok(value.into()),
-                    }
-                }
-            }
+            LinkedCallTarget::Builtin { op } => self.eval_call_builtin(call, op, values).await,
             LinkedCallTarget::ReceiverBuiltin { op } => {
                 let receiver = values.first().cloned().ok_or_else(|| {
                     RuntimeError::InvalidArtifact(format!(
@@ -1644,7 +1701,12 @@ impl<'a> EvalContext<'a> {
             } => {
                 let receiver = self
                     .interpreter
-                    .eval_program_const_addr(self.context.clone(), self.heap, self.env, const_addr)
+                    .eval_program_const_addr_ctx(
+                        self.context.clone(),
+                        self.heap,
+                        self.env,
+                        const_addr,
+                    )
                     .await?;
                 match receiver_call_abi {
                     ReceiverCallAbi::ExplicitSelfFirst => {
@@ -1665,6 +1727,81 @@ impl<'a> EvalContext<'a> {
             }
         };
         self.promote_call_site_error(result, &call.site)
+    }
+
+    #[async_recursion]
+    async fn eval_call_package_direct(
+        &mut self,
+        call: &CallIr,
+        target: &LinkedPackageDirectCall,
+        values: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
+        let bypass_test_effect =
+            is_std_http_self_ingress_call(target, &values, self.heap.heap_mut(), &self.context)?;
+        if self.interpreter.test_effects_enabled && !bypass_test_effect {
+            let effect_target = TestEffectTarget::package_callable(
+                target.dependency_package_build_id().clone(),
+                target.package_callable_id().clone(),
+            );
+            let stream_runtime = self.context.stream_runtime();
+            if let Some(result) = self.interpreter.runtime_test_effects.dispatch_package(
+                &effect_target,
+                &values,
+                Some(&stream_runtime),
+                self.heap.heap_mut(),
+                &self.context,
+                &call.site,
+            ) {
+                return result;
+            }
+        }
+        super::assembly_execution::dispatch_package_direct(self, call, target, values).await
+    }
+
+    #[async_recursion]
+    async fn eval_call_builtin(
+        &mut self,
+        call: &CallIr,
+        op: &str,
+        values: Vec<RuntimeValueCarrier>,
+    ) -> Result<RuntimeValueCarrier> {
+        if is_db_builtin_op(op) {
+            return Err(RuntimeError::Unsupported(format!(
+                "old RuntimeProgram db builtin {op} is not supported for object DB; use explicit DbOperation IR"
+            )));
+        }
+        let config_context =
+            RuntimeNativeConfigCapabilityContext::new(self.context.config_context());
+        let config_type_arg_plan = resolve_config_builtin_type_arg_plan(
+            self.projection.type_view(),
+            self.addr,
+            self.env.type_substitutions.as_linked_map(),
+            call,
+            op,
+        )?;
+        let return_plan = config_type_arg_plan.clone();
+        let value = NativeDispatch::new()
+            .dispatch_builtin(
+                &config_context,
+                self.addr,
+                op,
+                config_type_arg_plan,
+                values
+                    .into_iter()
+                    .map(RuntimeValueCarrier::into_value)
+                    .collect(),
+                self.heap.heap_mut(),
+            )
+            .map_err(RuntimeError::from)?;
+        match return_plan {
+            Some(plan) => runtime_carrier_for_plan(
+                value,
+                &plan,
+                "config builtin return",
+                self.heap.heap_mut(),
+            ),
+            None => Ok(value.into()),
+        }
     }
 
     pub(crate) fn account_tail_transfer(&mut self, site: &InstructionSourceSite) -> Result<()> {
@@ -1691,6 +1828,7 @@ impl<'a> EvalContext<'a> {
         )
     }
 
+    #[async_recursion]
     async fn eval_executable_call_with_stream_producer_arg(
         &mut self,
         call: &CallIr,
@@ -1807,6 +1945,7 @@ impl<'a> EvalContext<'a> {
         Ok(Some(result))
     }
 
+    #[async_recursion]
     async fn eval_native_call_with_stream_producer_arg(
         &mut self,
         call: &CallIr,
@@ -1947,6 +2086,7 @@ impl<'a> EvalContext<'a> {
         .map(Some)
     }
 
+    #[async_recursion]
     async fn eval_program_throw(
         &mut self,
         value: ExprRefIr,
@@ -1980,6 +2120,7 @@ impl<'a> EvalContext<'a> {
         Err(RuntimeError::UserException(UserException::new(exception)))
     }
 
+    #[async_recursion]
     async fn eval_program_catch(
         &mut self,
         try_expression: ExprRefIr,
@@ -2007,6 +2148,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    #[async_recursion]
     async fn assign_program_target(
         &mut self,
         target: &AssignTargetIr,

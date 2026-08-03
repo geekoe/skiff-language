@@ -16,7 +16,7 @@ pub(crate) async fn execute_package_direct(
     if let Some(receiver_const) = target.receiver_const() {
         let receiver = context
             .interpreter
-            .eval_program_const_addr(
+            .eval_program_const_addr_ctx(
                 context.context.clone(),
                 context.heap,
                 context.env,

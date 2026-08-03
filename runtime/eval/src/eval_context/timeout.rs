@@ -7,6 +7,7 @@ use super::*;
 use crate::program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind};
 
 impl EvalContext<'_> {
+    #[async_recursion]
     pub(super) async fn exec_timeout_statement(
         &mut self,
         duration_ms: u64,
@@ -21,7 +22,7 @@ impl EvalContext<'_> {
         let owner_context = child_context.clone();
         let result = self
             .interpreter
-            .exec_program_block(
+            .exec_program_block_ctx(
                 child_context,
                 self.heap,
                 self.env,
@@ -34,6 +35,7 @@ impl EvalContext<'_> {
         self.materialize_owned_timeout(result, &owner_context, &child_scope, site)
     }
 
+    #[async_recursion]
     pub(super) async fn eval_timeout_expression(
         &mut self,
         duration_ms: u64,
@@ -48,7 +50,7 @@ impl EvalContext<'_> {
         let owner_context = child_context.clone();
         let result = self
             .interpreter
-            .eval_program_expr_ref(
+            .eval_program_expr_ref_ctx(
                 child_context,
                 self.heap,
                 self.env,

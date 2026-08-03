@@ -45,7 +45,7 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(future);
+    let mut future = Box::pin(future);
     tokio::pin!(deadline_wait);
     tokio::select! {
         biased;

@@ -450,7 +450,7 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(operation);
+    let mut operation = Box::pin(operation);
     tokio::pin!(deadline_wait);
     tokio::select! {
         biased;
@@ -483,7 +483,7 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(operation);
+    let mut operation = Box::pin(operation);
     tokio::pin!(deadline_wait);
     tokio::select! {
         biased;
