@@ -157,7 +157,7 @@ fn image(
         packages,
         service_resources: Default::default(),
         routes: HashMap::new(),
-        spawn_routes: HashMap::new(),
+        task_routes: HashMap::new(),
         operations: HashMap::new(),
         operation_receivers: HashMap::new(),
         link_overlay: LinkOverlay::default(),

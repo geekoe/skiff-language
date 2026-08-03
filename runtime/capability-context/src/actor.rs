@@ -10,7 +10,7 @@ use crate::{
 
 /// Actor storage and invocation operations provided by the host/runtime.
 ///
-/// Request/invocation metadata and `submit_spawn` live on
+/// Request/invocation metadata and `submit_task` live on
 /// [`crate::RequestCapabilityApi`] so actor-model consumers do not need them.
 pub trait ActorCapabilityApi: Send + Sync {
     fn owned(&self) -> OwnedActorCapabilityContext;

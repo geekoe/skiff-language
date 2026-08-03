@@ -178,7 +178,7 @@ pub use skiff_runtime_capability_context::{
     OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
     OwnedExecutionControlApi, OwnedRequestCapabilityContext, RequestCapabilityApi,
     RequestCapabilityContext, RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
-    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, SpawnSubmitControlRequest,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, TaskSubmitControlRequest,
     StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
     StreamRuntimeOwner, StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild,

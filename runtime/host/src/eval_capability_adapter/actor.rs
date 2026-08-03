@@ -13,7 +13,7 @@ pub(super) struct RuntimeOwnedRequestParts {
     pub(super) activation_identity: Option<ActivationIdentityControl>,
     pub(super) trace_id: Option<String>,
     pub(super) test_case_capability: Option<String>,
-    pub(super) spawn_caller_kind: SpawnCallerKind,
+    pub(super) task_caller_kind: TaskCallerKind,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(super) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
@@ -180,8 +180,8 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
     fn request_build_id(&self) -> &str {
         self.request_context.request_build_id()
     }
-    fn spawn_service_protocol_identity(&self) -> &str {
-        self.request_context.spawn_service_protocol_identity()
+    fn task_service_protocol_identity(&self) -> &str {
+        self.request_context.task_service_protocol_identity()
     }
     fn request_service_protocol_identity(&self) -> &str {
         self.request_context.request_service_protocol_identity()
@@ -196,15 +196,15 @@ impl capability_contract::RequestCapabilityApi for RuntimeActorCapabilityContext
         self.request_context.trace_id()
     }
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        let request = spawn_submit_with_caller_request(request, &self.owned);
-        let caller_kind = self.owned.spawn_caller_kind;
-        Box::pin(submit_spawn(
+        let request = task_submit_with_caller_request(request, &self.owned);
+        let caller_kind = self.owned.task_caller_kind;
+        Box::pin(submit_task(
             self.request_context.clone(),
             request,
             args_payload,
@@ -345,7 +345,7 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
     fn request_build_id(&self) -> &str {
         &self.0.request_build_id
     }
-    fn spawn_service_protocol_identity(&self) -> &str {
+    fn task_service_protocol_identity(&self) -> &str {
         self.0
             .operation_service_protocol_identity
             .as_deref()
@@ -364,15 +364,15 @@ impl capability_contract::RequestCapabilityApi for RuntimeOwnedRequestCapability
         self.0.trace_id.as_deref()
     }
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: capability_contract::OwnedExecutionControl,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        let request = spawn_submit_with_caller_request(request, &self.0);
-        let caller_kind = self.0.spawn_caller_kind;
-        Box::pin(submit_spawn(
+        let request = task_submit_with_caller_request(request, &self.0);
+        let caller_kind = self.0.task_caller_kind;
+        Box::pin(submit_task(
             concrete_request_context_from_owned(&self.0),
             request,
             args_payload,
@@ -394,10 +394,10 @@ fn actor_get_or_create_with_test_authority(
     request
 }
 
-fn spawn_submit_with_caller_request(
-    mut request: SpawnSubmitControlRequest,
+fn task_submit_with_caller_request(
+    mut request: TaskSubmitControlRequest,
     parts: &RuntimeOwnedRequestParts,
-) -> SpawnSubmitControlRequest {
+) -> TaskSubmitControlRequest {
     request.caller_request_id = Some(parts.request_id.clone());
     request
 }
@@ -633,17 +633,17 @@ fn actor_method_wire_timeout_ms(
     primitive_timeout_ms.min(remaining_ms)
 }
 
-async fn submit_spawn(
+async fn submit_task(
     context: concrete::RequestClientContext<'_>,
-    request: SpawnSubmitControlRequest,
+    request: TaskSubmitControlRequest,
     args_payload: Vec<u8>,
     execution_control: capability_contract::OwnedExecutionControl,
-    caller_kind: SpawnCallerKind,
+    caller_kind: TaskCallerKind,
 ) -> capability_contract::CapabilityResult<()> {
     let scope = actor_execution_scope(&execution_control)?;
     root_result_into_capability(
         concrete::RequestClient::new(context)
-            .submit_spawn_in_scope(request, args_payload, scope, caller_kind)
+            .submit_task_in_scope(request, args_payload, scope, caller_kind)
             .await,
     )
     .await

@@ -786,7 +786,7 @@ struct Harness {
 }
 
 /// Scripted harness inputs extracted from one corpus case (keeps
-/// `spawn_harness` argument count bounded).
+/// `task_harness` argument count bounded).
 struct HarnessScript {
     committed_generation: u64,
     candidate_generation: u64,
@@ -798,7 +798,7 @@ struct HarnessScript {
     gated_commit: bool,
 }
 
-async fn spawn_harness(
+async fn task_harness(
     environment: &str,
     script: HarnessScript,
     options: ActivationCoordinatorOptions,
@@ -952,7 +952,7 @@ async fn run_live_case(case: &Case, steps: &[Step], expected: &Expected) {
         commit_outcome: commit_outcome.map(str::to_string),
         gated_commit: gated,
     };
-    let (harness, gate) = spawn_harness(&environment, script, options()).await;
+    let (harness, gate) = task_harness(&environment, script, options()).await;
     let Harness {
         repo,
         epoch_store,
@@ -1083,7 +1083,7 @@ async fn run_cold_case(case: &Case, steps: &[Step], expected: &Expected) {
         commit_outcome: None,
         gated_commit: gated,
     };
-    let (harness, gate) = spawn_harness(&environment, script, options()).await;
+    let (harness, gate) = task_harness(&environment, script, options()).await;
     let Harness {
         repo,
         epoch_store,

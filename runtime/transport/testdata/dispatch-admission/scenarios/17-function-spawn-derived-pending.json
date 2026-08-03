@@ -35,21 +35,21 @@
     { "kind": "request", "requestId": "req-1", "mode": "unary" },
     {
       "kind": "spawnFunction",
-      "requestId": "spawn-request-1",
+      "requestId": "task-request-1",
       "parentRequestId": "req-1",
       "target": "example.com/service-1:fn"
     },
-    { "kind": "responseEnd", "requestId": "spawn-request-1", "payloadPresent": false },
+    { "kind": "responseEnd", "requestId": "task-request-1", "payloadPresent": false },
     { "kind": "responseEnd", "requestId": "req-1", "payloadPresent": true }
   ],
   "expect": {
-    "requestOutcomes": { "req-1": "completed", "spawn-request-1": "completed" },
+    "requestOutcomes": { "req-1": "completed", "task-request-1": "completed" },
     "rejectReasons": {},
     "terminalSources": {
       "req-1": "runtime_response_end",
-      "spawn-request-1": "runtime_response_end"
+      "task-request-1": "runtime_response_end"
     },
-    "sessionBindings": { "req-1": "s1", "spawn-request-1": "s1" },
+    "sessionBindings": { "req-1": "s1", "task-request-1": "s1" },
     "cancelFrames": [],
     "permitsHeld": 0,
     "releases": 2,

@@ -98,7 +98,7 @@ function runSelfTest() {
     outboundStreamLeasesActive: 0,
     streamRuntimeStreamsActive: 0,
     flagBackedCancelWaitersActive: 0,
-    spawnedTasksActive: 0,
+    taskRequestsActive: 0,
   };
   const zeroRouter = {
     dispatcher: { pendingUnary: 0, pendingStream: 0 },

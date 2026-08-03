@@ -53,7 +53,7 @@ impl RuntimeHost {
             outbound_stream_leases_active: self.outbound_requests.active_lease_count(),
             stream_runtime_streams_active: stream_runtime_streams_active(),
             flag_backed_cancel_waiters_active: flag_backed_cancel_waiters_active(),
-            spawned_tasks_active: self.request_supervisor.active_count().await,
+            task_requests_active: self.request_supervisor.active_count().await,
         }
     }
 }

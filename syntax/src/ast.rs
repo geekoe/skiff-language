@@ -558,7 +558,7 @@ pub enum Stmt {
     },
     Emit(Expr),
     Return(Option<Expr>),
-    Spawn {
+    Dispatch {
         call: Expr,
     },
     Break,

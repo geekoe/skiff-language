@@ -187,7 +187,7 @@ fn collect_config_uses_in_block(
                     const_strings.remove(name);
                 }
             }
-            Stmt::Spawn { call: value } | Stmt::Emit(value) | Stmt::Expr(value) => {
+            Stmt::Dispatch { call: value } | Stmt::Emit(value) | Stmt::Expr(value) => {
                 collect_config_uses_in_expr(
                     diagnostic_path,
                     source_path,

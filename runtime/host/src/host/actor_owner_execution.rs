@@ -472,7 +472,7 @@ impl RuntimeHost {
             );
         }
         // Once execution has a terminal winner, the invocation is no longer a valid parent for
-        // recursive Actor/spawn work. Its ownership lease remains alive through terminal send.
+        // recursive Actor/task work. Its ownership lease remains alive through terminal send.
         if let Some(revoker) = test_request_revoker {
             revoker.revoke();
         }

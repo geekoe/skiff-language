@@ -805,7 +805,7 @@ impl StreamRuntime {
 
     /// Opens one additional owner for the already-selected request scope.
     ///
-    /// Detached producer tasks call this only when they are about to spawn, so
+    /// Detached producer tasks call this only when they are about to task, so
     /// a parked-but-never-driven producer cannot keep a request registry alive.
     pub fn retain_request_scope(&self) -> Option<StreamRuntimeOwner> {
         self.request_generation.map(|request_generation| {

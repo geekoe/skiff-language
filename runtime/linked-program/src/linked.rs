@@ -808,7 +808,7 @@ pub enum LinkedStmtIr {
     },
     Break,
     Continue,
-    Spawn {
+    Dispatch {
         call: ExprRefIr,
     },
     Emit {

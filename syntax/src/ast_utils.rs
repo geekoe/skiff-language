@@ -137,7 +137,7 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
         Stmt::Assert { condition, .. } => visitor.visit_expr(condition),
         Stmt::Throw { value } => visitor.visit_expr(value),
         Stmt::Rethrow { exception } => visitor.visit_expr(exception),
-        Stmt::Spawn { call } => visitor.visit_expr(call),
+        Stmt::Dispatch { call } => visitor.visit_expr(call),
         Stmt::Emit(value) | Stmt::Expr(value) => visitor.visit_expr(value),
         Stmt::Return(value) => {
             if let Some(value) = value {
@@ -641,7 +641,7 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
         Stmt::Assert { condition, .. } => visitor.visit_expr(condition),
         Stmt::Throw { value } => visitor.visit_expr(value),
         Stmt::Rethrow { exception } => visitor.visit_expr(exception),
-        Stmt::Spawn { call } => visitor.visit_expr(call),
+        Stmt::Dispatch { call } => visitor.visit_expr(call),
         Stmt::Emit(value) | Stmt::Expr(value) => visitor.visit_expr(value),
         Stmt::Return(value) => {
             if let Some(value) = value {
@@ -1049,7 +1049,7 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
         Stmt::Assert { condition, .. } => expr_contains_with(condition, predicate),
         Stmt::Throw { value } => expr_contains_with(value, predicate),
         Stmt::Rethrow { exception } => expr_contains_with(exception, predicate),
-        Stmt::Spawn { call } | Stmt::Emit(call) | Stmt::Expr(call) => {
+        Stmt::Dispatch { call } | Stmt::Emit(call) | Stmt::Expr(call) => {
             expr_contains_with(call, predicate)
         }
         Stmt::Return(value) => value
@@ -1342,7 +1342,7 @@ fn collect_stmt_type_ref_dotted_root_imports(
         }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
-        | Stmt::Spawn { call: value }
+        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value) => collect_expr_type_ref_dotted_root_imports(value, root, imports),
         Stmt::Return(value) => {
@@ -1623,7 +1623,7 @@ fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTree
         }
         Stmt::Throw { value }
         | Stmt::Rethrow { exception: value }
-        | Stmt::Spawn { call: value }
+        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value) => collect_expr_dotted_root_imports(value, root, imports),
         Stmt::Return(value) => {

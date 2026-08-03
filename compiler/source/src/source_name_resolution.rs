@@ -534,7 +534,7 @@ impl AstVisitor for ResolvedPathCollector<'_, '_> {
             Stmt::Throw { value }
             | Stmt::Rethrow { exception: value }
             | Stmt::Emit(value)
-            | Stmt::Spawn { call: value, .. }
+            | Stmt::Dispatch { call: value, .. }
             | Stmt::Expr(value) => self.visit_expr(value),
             Stmt::Return(value) => {
                 if let Some(value) = value {

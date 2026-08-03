@@ -16,7 +16,7 @@ use skiff_runtime_transport::actor_method::{
 };
 
 use super::health::InvocationHealth;
-use super::spawn::SpawnParentSnapshot;
+use super::task::TaskParentSnapshot;
 use super::types::{ActorOwnerFence, ActorOwnerRouteAuthority};
 
 /// Relay construction options.
@@ -336,21 +336,21 @@ impl ActorInvocationRelay {
         terminals
     }
 
-    /// Actor-method spawn parent seam (W-dispatch `ActorMethodSpawnControl`):
+    /// Actor-method task parent seam (W-dispatch `ActorMethodTaskControl`):
     /// an invocation pending is an active actorInvocation parent.
     pub fn is_active_parent(&self, invocation_id: &str) -> bool {
         self.lock().pending.contains_key(invocation_id)
     }
 
-    /// Exact fenced parent snapshot for the actor-method spawn resolver.
-    pub fn parent_snapshot(&self, invocation_id: &str) -> Option<SpawnParentSnapshot> {
+    /// Exact fenced parent snapshot for the actor-method task resolver.
+    pub fn parent_snapshot(&self, invocation_id: &str) -> Option<TaskParentSnapshot> {
         let inner = self.lock();
         let pending = inner.pending.get(invocation_id)?;
-        // C-spawn §4.2 / E-actor-parity: an actor-method invocation's spawn
+        // C-task §4.2 / E-actor-parity: an actor-method invocation's task
         // parent authority is the runtime connection where the method
         // executes (the owner). The original caller may differ when the
-        // Router pins the owner to another replica; the spawned method's
-        // `spawn.submit.request` then arrives from the owner connection and
+        // Router pins the owner to another replica; the task method's
+        // `task.submit.request` then arrives from the owner connection and
         // must resolve against it. Test-capability lineages keep the caller
         // origin (the capability parent), matching the TS dispatcher.
         let (runtime_id, connection) = if pending.test_case_capability.is_some() {
@@ -364,7 +364,7 @@ impl ActorInvocationRelay {
                 pending.owner_connection.clone(),
             )
         };
-        Some(SpawnParentSnapshot {
+        Some(TaskParentSnapshot {
             runtime_id,
             connection,
             assembly_generation: pending.route_authority.assembly_generation,

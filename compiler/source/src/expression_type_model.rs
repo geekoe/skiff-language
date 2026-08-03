@@ -745,7 +745,7 @@ impl<'a> OwnerChecker<'a> {
             Stmt::Throw { value } => self.check_throw_stmt(value),
             Stmt::Emit(value) => self.check_emit_stmt(value),
             Stmt::Expr(value) => self.check_expr_stmt(value),
-            Stmt::Spawn { call } => self.check_spawn_stmt(call),
+            Stmt::Dispatch { call } => self.check_task_stmt(call),
             Stmt::Rethrow { exception } => self.check_rethrow_stmt(exception),
             Stmt::Return(value) => self.check_return_stmt(value.as_ref()),
             Stmt::Break | Stmt::Continue => true,
@@ -1171,13 +1171,13 @@ impl<'a> OwnerChecker<'a> {
         ty.as_ref().is_some_and(|ty| type_ir_is_never(&ty.ir))
     }
 
-    fn check_spawn_stmt(&mut self, call: &Expr) -> bool {
+    fn check_task_stmt(&mut self, call: &Expr) -> bool {
         let call_key = self.peek_key();
         let actual = self.check_expr(call);
         if let Some(actual) = actual {
             if !type_ir_is_void_or_null(&actual.ir) {
                 self.outputs.diagnostics.push(format!(
-                    "{}: spawn target return type mismatch at {}: expected void/null, found {}",
+                    "{}: dispatch target return type mismatch at {}: expected void/null, found {}",
                     self.module_path,
                     self.expression_span_label(&call_key),
                     actual

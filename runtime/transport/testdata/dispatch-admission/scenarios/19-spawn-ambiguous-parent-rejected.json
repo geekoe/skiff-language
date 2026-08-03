@@ -35,13 +35,13 @@
     { "kind": "request", "requestId": "req-1", "mode": "unary" },
     {
       "kind": "spawnFunction",
-      "requestId": "spawn-request-1",
+      "requestId": "task-request-1",
       "parentRequestId": "req-1",
       "target": "example.com/service-1:fn"
     },
     {
       "kind": "spawnActorMethod",
-      "requestId": "spawn-actor-1",
+      "requestId": "task-actor-1",
       "parentRequestId": "req-1"
     },
     { "kind": "responseEnd", "requestId": "req-1", "payloadPresent": true }
@@ -49,12 +49,12 @@
   "expect": {
     "requestOutcomes": {
       "req-1": "completed",
-      "spawn-request-1": "rejected",
-      "spawn-actor-1": "rejected"
+      "task-request-1": "rejected",
+      "task-actor-1": "rejected"
     },
     "rejectReasons": {
-      "spawn-request-1": "ambiguous",
-      "spawn-actor-1": "ambiguous"
+      "task-request-1": "ambiguous",
+      "task-actor-1": "ambiguous"
     },
     "terminalSources": { "req-1": "runtime_response_end" },
     "sessionBindings": { "req-1": "s1" },

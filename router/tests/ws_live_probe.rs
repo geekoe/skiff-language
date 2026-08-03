@@ -203,7 +203,7 @@ fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn spawn_router(config_path: &Path) -> Child {
+fn task_router(config_path: &Path) -> Child {
     let stdout_path = PathBuf::from(std::env::var("SKIFF_ROUTER_WS_LIVE_TEMP_DIR").unwrap())
         .join("router-ws.stdout.log");
     let stderr_path = PathBuf::from(std::env::var("SKIFF_ROUTER_WS_LIVE_TEMP_DIR").unwrap())
@@ -676,7 +676,7 @@ mod tests {
         seed_committed(&live, &repository).await;
 
         let router_config_path = write_router_config(&live);
-        let mut router = spawn_router(&router_config_path);
+        let mut router = task_router(&router_config_path);
         wait_for_listeners(&live, &mut router);
 
         let runtime_config_path = write_runtime_config(&live);

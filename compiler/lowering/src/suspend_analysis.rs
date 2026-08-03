@@ -495,7 +495,7 @@ impl SuspendContext<'_, '_> {
                 true
             }
             Stmt::Expr(value) => self.expr_may_suspend(value),
-            Stmt::Spawn { call } => {
+            Stmt::Dispatch { call } => {
                 let _ = self.expr_may_suspend(call);
                 true
             }

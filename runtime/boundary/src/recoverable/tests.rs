@@ -1581,7 +1581,7 @@ fn callback_capability_recoverable_encode_rejects_before_every_behavior_hook() {
     );
     for kind in [
         RuntimeRecoverableBoundaryKind::RuntimeBinaryPayload,
-        RuntimeRecoverableBoundaryKind::SpawnPayload,
+        RuntimeRecoverableBoundaryKind::TaskDispatchPayload,
         RuntimeRecoverableBoundaryKind::QueueWorkItemPayload,
     ] {
         let context = RuntimeRecoverableBoundaryContext::new(

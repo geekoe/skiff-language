@@ -267,7 +267,7 @@ fn seed_runtime_home(live: &LiveEnvironment) {
     .expect("seed runtime-id");
 }
 
-fn spawn_router(live: &LiveEnvironment, config_path: &Path) -> Child {
+fn task_router(live: &LiveEnvironment, config_path: &Path) -> Child {
     let stdout_path = live.temp_dir.join("router-activation.stdout.log");
     let stderr_path = live.temp_dir.join("router-activation.stderr.log");
     let stdout = OpenOptions::new()
@@ -960,7 +960,7 @@ async fn wait_for_durable(
 // Scenario helpers.
 // ---------------------------------------------------------------------------
 
-/// Spawns the real Runtime against the already-listening relay and waits for
+/// Tasks the real Runtime against the already-listening relay and waits for
 /// the new connection's handshake. Returns the child and the relay
 /// connection id.
 async fn spawn_runtime_await_handshake(
@@ -993,7 +993,7 @@ mod tests {
 
         let router_config = write_router_config(&live);
         let runtime_config = write_runtime_config(&live);
-        let mut router = spawn_router(&live, &router_config);
+        let mut router = task_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
 
         // Committed epoch published before the runtime connects.
@@ -1218,7 +1218,7 @@ mod tests {
             third_snapshot.clone(),
         )
         .await;
-        let mut router = spawn_router(&live, &router_config);
+        let mut router = task_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
         assert_bootstrap_tuple(&live, 3).await;
         // The phase-1 relay listener is still bound on the leased port; the
@@ -1270,7 +1270,7 @@ mod tests {
             live.snapshot_ref(&live.third_config_snapshot_id),
         )
         .await;
-        let mut router = spawn_router(&live, &router_config);
+        let mut router = task_router(&live, &router_config);
         wait_for_listeners(&live, &mut router);
         assert_bootstrap_tuple(&live, 4).await;
         let durable = wait_for_durable(&live, &repository, |state| {

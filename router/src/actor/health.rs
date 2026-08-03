@@ -79,7 +79,7 @@ pub struct LeaseHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SpawnHealth {
+pub struct TaskHealth {
     pub capacity_in_use: usize,
     pub accepted: u64,
     pub rejected: u64,
@@ -98,5 +98,5 @@ pub struct ActorHealthSnapshot {
     pub invocation: InvocationHealth,
     pub control: ControlHealth,
     pub lease: LeaseHealth,
-    pub spawn: SpawnHealth,
+    pub task: TaskHealth,
 }

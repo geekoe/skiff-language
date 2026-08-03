@@ -199,7 +199,7 @@ impl RequestCapabilityApi for HarnessActor {
         "combined-build"
     }
 
-    fn spawn_service_protocol_identity(&self) -> &str {
+    fn task_service_protocol_identity(&self) -> &str {
         ""
     }
 
@@ -219,9 +219,9 @@ impl RequestCapabilityApi for HarnessActor {
         None
     }
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        _request: SpawnSubmitControlRequest,
+        _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {

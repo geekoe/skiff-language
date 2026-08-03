@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata, CancellationToken,
-    ExecutionScope, OutboundControlMessage, RouterWriterMessage, SpawnSubmitControlRequest,
+    ExecutionScope, OutboundControlMessage, RouterWriterMessage, TaskSubmitControlRequest,
 };
 use skiff_runtime_transport::protocol::{
-    encode_binary_frame, ActorFindResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-    RuntimeErrorFramePayload, SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    encode_binary_frame, ActorFindResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader,
+    RuntimeErrorFramePayload, TaskSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{sync::mpsc, time::timeout};
 
@@ -76,7 +76,7 @@ async fn scoped_actor_response_dispatch_commits_before_ready_deadline() {
 }
 
 #[tokio::test]
-async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
+async fn scoped_task_submit_response_dispatch_reaches_the_caller() {
     let host = test_host();
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let activation = activation_identity();
@@ -84,44 +84,44 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
     let lifecycle = scope.clone();
     let context = actor_context(&host, &router_sender, &activation);
     let client = RequestClient::new(context);
-    let submit = client.submit_spawn_in_scope(
-        spawn_submit_request(),
+    let submit = client.submit_task_in_scope(
+        task_submit_request(),
         Vec::new(),
         scope,
-        skiff_runtime_request::SpawnCallerKind::Request,
+        skiff_runtime_request::TaskCallerKind::Request,
     );
     tokio::pin!(submit);
 
     let rpc_id = tokio::select! {
-        result = &mut submit => panic!("scoped spawn submit completed before dispatch: {result:?}"),
+        result = &mut submit => panic!("scoped task submit completed before dispatch: {result:?}"),
         message = router_receiver.recv() => {
-            let Some(RouterWriterMessage::SpawnSubmit(message)) = message else {
-                panic!("spawn submit must emit its canonical writer message")
+            let Some(RouterWriterMessage::TaskSubmit(message)) = message else {
+                panic!("task submit must emit its canonical writer message")
             };
             message.request.rpc_id
         }
     };
     let frame = encode_binary_frame(
-        &SpawnSubmitResponseFrameHeader {
+        &TaskSubmitResponseFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.submit.response".to_string(),
+            envelope_type: "task.submit.response".to_string(),
             rpc_id: rpc_id.clone(),
-            spawn_id: "spawn-7".to_string(),
-            request_id: "spawn-request-11".to_string(),
+            task_id: "task-7".to_string(),
+            request_id: "task-request-11".to_string(),
             status: "submitted".to_string(),
         },
         &[],
     )
-    .expect("spawn submit response frame");
+    .expect("task submit response frame");
     dispatch_frame(&host, &frame).await;
 
     let response = timeout(Duration::from_millis(100), &mut submit)
         .await
-        .expect("dispatcher must release the scoped spawn waiter")
-        .expect("spawn submit response must reach its caller");
+        .expect("dispatcher must release the scoped task waiter")
+        .expect("task submit response must reach its caller");
     assert_eq!(response.rpc_id, rpc_id);
-    assert_eq!(response.spawn_id, "spawn-7");
-    assert_eq!(response.request_id, "spawn-request-11");
+    assert_eq!(response.task_id, "task-7");
+    assert_eq!(response.request_id, "task-request-11");
     assert_eq!(host.outbound_requests.pending_count(), 0);
     assert_eq!(host.outbound_requests.active_lease_count(), 0);
     assert_eq!(
@@ -130,7 +130,7 @@ async fn scoped_spawn_submit_response_dispatch_reaches_the_caller() {
     );
     assert!(
         router_receiver.try_recv().is_err(),
-        "winning spawn response must not emit request.cancel"
+        "winning task response must not emit request.cancel"
     );
 }
 
@@ -155,7 +155,7 @@ async fn scoped_actor_error_dispatch_reaches_the_caller() {
         }
     };
     let frame = encode_binary_frame(
-        &ActorSpawnRuntimeErrorFrameHeader {
+        &ActorTaskRuntimeErrorFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "actor.find.error".to_string(),
             rpc_id,
@@ -255,8 +255,8 @@ fn find_request() -> ActorFindControlRequest {
     }
 }
 
-fn spawn_submit_request() -> SpawnSubmitControlRequest {
-    SpawnSubmitControlRequest {
+fn task_submit_request() -> TaskSubmitControlRequest {
+    TaskSubmitControlRequest {
         rpc_id: String::new(),
         runtime_id: String::new(),
         target_kind: "function".to_string(),
@@ -264,7 +264,7 @@ fn spawn_submit_request() -> SpawnSubmitControlRequest {
         service_version: "v1".to_string(),
         service_protocol_identity: "protocol-test".to_string(),
         target: "function:program.test".to_string(),
-        spawn_id: None,
+        task_id: None,
         build_id: Some(BUILD_ID.to_string()),
         activation_identity: activation_identity(),
         caller_request_id: Some("request-test".to_string()),

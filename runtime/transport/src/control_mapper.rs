@@ -5,7 +5,7 @@ use skiff_runtime_request_contract::{
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
     OutboundControlMessage, RequestCancelControl, RuntimeDeadlineControl,
-    SpawnSubmitControlRequest,
+    TaskSubmitControlRequest,
 };
 
 use crate::{
@@ -23,8 +23,8 @@ use crate::{
         encode_binary_frame, validate_test_case_authority, ActivationIdentityFrameMetadata,
         ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
         ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, SpawnActorMethodTargetFrameMetadata,
-        SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, TaskActorMethodTargetFrameMetadata,
+        TaskSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -47,8 +47,8 @@ pub fn encode_outbound_control_message(
         OutboundControlMessage::ActorRemove { request } => {
             actor_remove_request_frame(actor_remove_request_frame_header(request), &[])
         }
-        OutboundControlMessage::SpawnSubmit { request, payload } => {
-            spawn_submit_request_frame(spawn_submit_request_frame_header(request)?, &payload)
+        OutboundControlMessage::TaskSubmit { request, payload } => {
+            task_submit_request_frame(task_submit_request_frame_header(request)?, &payload)
         }
         OutboundControlMessage::RequestCancel { request } => {
             request_cancel_frame(request_cancel_frame_header(request), &[])
@@ -107,8 +107,8 @@ pub fn actor_remove_request_frame(
     encode_control_frame(&header, payload)
 }
 
-pub fn spawn_submit_request_frame(
-    header: SpawnSubmitRequestFrameHeader,
+pub fn task_submit_request_frame(
+    header: TaskSubmitRequestFrameHeader,
     payload: &[u8],
 ) -> TransportResult<Vec<u8>> {
     encode_control_frame(&header, payload)
@@ -240,18 +240,18 @@ fn activation_identity_frame_metadata(
     }
 }
 
-fn spawn_submit_request_frame_header(
-    request: SpawnSubmitControlRequest,
-) -> TransportResult<SpawnSubmitRequestFrameHeader> {
+fn task_submit_request_frame_header(
+    request: TaskSubmitControlRequest,
+) -> TransportResult<TaskSubmitRequestFrameHeader> {
     // The shared strict parser is still exposed through the historical publication storage
     // projection. Reuse that grammar without retaining its projected component; this boundary
     // owns a service ID, not a storage path or package ID.
     skiff_artifact_identity::publication_storage_segment(&request.service_id, "service ID")
-        .map_err(|_| crate::TransportError::invalid_outbound_service_id("spawn.submit.request"))?;
+        .map_err(|_| crate::TransportError::invalid_outbound_service_id("task.submit.request"))?;
 
-    Ok(SpawnSubmitRequestFrameHeader {
+    Ok(TaskSubmitRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        envelope_type: "spawn.submit.request".to_string(),
+        envelope_type: "task.submit.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
         target_kind: request.target_kind,
@@ -259,7 +259,7 @@ fn spawn_submit_request_frame_header(
         service_version: request.service_version,
         service_protocol_identity: request.service_protocol_identity,
         target: request.target,
-        spawn_id: request.spawn_id,
+        task_id: request.task_id,
         build_id: request.build_id,
         activation_identity: activation_identity_frame_metadata(request.activation_identity),
         caller_request_id: request.caller_request_id,
@@ -268,20 +268,20 @@ fn spawn_submit_request_frame_header(
         max_queue_wait_ms: request.max_queue_wait_ms,
         actor_method: request
             .actor_method
-            .map(actor_method_spawn_target_frame)
+            .map(actor_method_task_target_frame)
             .transpose()?,
     })
 }
 
-fn actor_method_spawn_target_frame(
-    target: skiff_runtime_request_contract::ActorMethodSpawnTargetControl,
-) -> TransportResult<SpawnActorMethodTargetFrameMetadata> {
+fn actor_method_task_target_frame(
+    target: skiff_runtime_request_contract::ActorMethodTaskTargetControl,
+) -> TransportResult<TaskActorMethodTargetFrameMetadata> {
     let epoch = target.actor_ref.epoch().ok_or_else(|| {
         crate::TransportError::decode(
-            "actor method spawn target requires a pinned Actor epoch".to_string(),
+            "actor method dispatch target requires a pinned Actor epoch".to_string(),
         )
     })?;
-    Ok(SpawnActorMethodTargetFrameMetadata {
+    Ok(TaskActorMethodTargetFrameMetadata {
         actor_ref: ActorLogicalRefFrameHeader {
             service_id: target.actor_ref.service_id().to_string(),
             actor_type_identity: target.actor_ref.actor_type_identity().to_string(),

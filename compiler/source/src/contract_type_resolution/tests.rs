@@ -61,7 +61,7 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
                 function privateSink(input: payments.User) -> void {}
 
                 function suspendedHelper(input: payments.User) -> void {
-                    spawn privateSink(input)
+                    dispatch privateSink(input)
                 }
             "#,
         &dependency_analysis,

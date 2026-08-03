@@ -55,24 +55,24 @@ fn invocation_round_trips_all_identity_and_payload_fields() {
 #[test]
 fn invocation_round_trips_optional_trace_id() {
     let mut with_trace = invoke();
-    with_trace.trace_id = Some("trace:spawn:1".to_string());
+    with_trace.trace_id = Some("trace:task:1".to_string());
     let header = serde_json::to_value(&with_trace).unwrap();
     let expected = ActorMethodFrame::Invoke(with_trace, vec![]);
     let wire = encode_actor_method_frame(&expected).unwrap();
     assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);
-    assert_eq!(header["traceId"], "trace:spawn:1");
+    assert_eq!(header["traceId"], "trace:task:1");
 }
 
 #[test]
 fn invocation_round_trips_optional_test_case_capability_with_exact_wire_name() {
     let mut with_capability = invoke();
-    with_capability.test_case_capability = Some("test-case:spawn_1.capability".to_string());
+    with_capability.test_case_capability = Some("test-case:task_1.capability".to_string());
     with_capability.test_case_parent_request_id = Some("request:parent_1".to_string());
     let header = serde_json::to_value(&with_capability).unwrap();
     let expected = ActorMethodFrame::Invoke(with_capability, vec![1, 2, 3]);
     let wire = encode_actor_method_frame(&expected).unwrap();
 
-    assert_eq!(header["testCaseCapability"], "test-case:spawn_1.capability");
+    assert_eq!(header["testCaseCapability"], "test-case:task_1.capability");
     assert_eq!(header["testCaseParentRequestId"], "request:parent_1");
     assert!(header.get("test_case_capability").is_none());
     assert_eq!(decode_actor_method_frame(&wire).unwrap(), expected);

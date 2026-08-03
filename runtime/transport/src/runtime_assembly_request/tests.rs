@@ -103,11 +103,11 @@ struct ConnectWireMutation {
     payload_hex: Option<String>,
 }
 
-fn canonical_spawn_header(test_effects_enabled: bool) -> Value {
+fn canonical_task_header(test_effects_enabled: bool) -> Value {
     let mut header = json!({
         "schemaVersion": "skiff-runtime-frame-v3",
         "type": "request.start",
-        "requestId": "spawn-request-1",
+        "requestId": "task-request-1",
         "mode": "unary",
         "caller": {"kind": "service"},
         "routing": {
@@ -122,13 +122,13 @@ fn canonical_spawn_header(test_effects_enabled: bool) -> Value {
             }
         },
         "invocation": {
-            "kind": "spawn",
+            "kind": "task",
             "targetKind": "function",
             "target": "function:worker.run"
         },
         "trace": {
-            "traceId": "trace-spawn",
-            "spanId": "span-spawn",
+            "traceId": "trace-task",
+            "spanId": "span-task",
             "sampled": true
         },
         "testEffectsEnabled": test_effects_enabled
@@ -140,13 +140,13 @@ fn canonical_spawn_header(test_effects_enabled: bool) -> Value {
 }
 
 #[test]
-fn runtime_assembly_spawn_request_decodes_production_and_test_authority() {
+fn runtime_assembly_task_request_decodes_production_and_test_authority() {
     for test_effects_enabled in [false, true] {
         let frame =
-            encode_binary_frame(&canonical_spawn_header(test_effects_enabled), &[0x81]).unwrap();
+            encode_binary_frame(&canonical_task_header(test_effects_enabled), &[0x81]).unwrap();
         let (header, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-        let RuntimeAssemblyRequestStartFrameWireHeader::Spawn(header) = header else {
-            panic!("spawn invocation must select the closed spawn union branch")
+        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+            panic!("task invocation must select the closed task union branch")
         };
         assert_eq!(header.invocation.target, "function:worker.run");
         assert_eq!(header.test_effects_enabled, test_effects_enabled);
@@ -156,8 +156,8 @@ fn runtime_assembly_spawn_request_decodes_production_and_test_authority() {
 }
 
 #[test]
-fn runtime_assembly_spawn_request_rejects_authority_mismatch_and_empty_payload() {
-    let mut missing_capability = canonical_spawn_header(true);
+fn runtime_assembly_task_request_rejects_authority_mismatch_and_empty_payload() {
+    let mut missing_capability = canonical_task_header(true);
     missing_capability
         .as_object_mut()
         .unwrap()
@@ -165,12 +165,12 @@ fn runtime_assembly_spawn_request_rejects_authority_mismatch_and_empty_payload()
     let frame = encode_binary_frame(&missing_capability, &[0x81]).unwrap();
     assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
 
-    let mut production_with_capability = canonical_spawn_header(false);
+    let mut production_with_capability = canonical_task_header(false);
     production_with_capability["testCaseCapability"] = json!("test-case-capability-1");
     let frame = encode_binary_frame(&production_with_capability, &[0x81]).unwrap();
     assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
 
-    let frame = encode_binary_frame(&canonical_spawn_header(false), &[]).unwrap();
+    let frame = encode_binary_frame(&canonical_task_header(false), &[]).unwrap();
     assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
 }
 

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn payload_trust_is_derived_from_kind_and_target_service() {
     assert_eq!(
-        PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload).trust(),
+        PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload).trust(),
         PayloadTrust::OwnerInternal
     );
     assert_eq!(

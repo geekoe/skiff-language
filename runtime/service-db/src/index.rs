@@ -169,7 +169,7 @@ async fn reconcile_database(database: &DatabaseIndexPlan) -> Result<()> {
 /// Runs independent database units with a fixed in-task bound. Success means every database has
 /// completed. The first observed failure returns immediately and drops the remaining futures,
 /// preserving fail-fast activation when a peer database is slow or permanently pending. No task
-/// is spawned per database: `buffer_unordered` owns at most `concurrency_limit` live futures.
+/// is task per database: `buffer_unordered` owns at most `concurrency_limit` live futures.
 async fn reconcile_databases_bounded<Input, Error, Reconcile, ReconcileFuture>(
     databases: impl IntoIterator<Item = Input>,
     concurrency_limit: usize,

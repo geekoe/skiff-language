@@ -8,7 +8,7 @@ use skiff_runtime_capability_context::{
     ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorInvocationDeclarationOwner,
     ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorKeyControlMetadata,
     ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationSource, ExecutionScope,
-    OutboundResponse, ResponseError, SpawnSubmitControlRequest,
+    OutboundResponse, ResponseError, TaskSubmitControlRequest,
 };
 
 use super::*;
@@ -142,23 +142,23 @@ async fn f445h_i6_actor_scope_control_committed_response_beats_ready_scope_deadl
 }
 
 #[tokio::test]
-async fn spawn_submit_accepts_correlated_receipt_and_preserves_activation_identity() {
+async fn task_submit_accepts_correlated_receipt_and_preserves_activation_identity() {
     let expected_activation = activation_identity();
     let (result, sent_request) = submit_with_response(|rpc_id| {
         typed_response(json!({
             "schemaVersion": "skiff-runtime-frame-v1",
-            "type": "spawn.submit.response",
+            "type": "task.submit.response",
             "rpcId": rpc_id,
-            "spawnId": "spawn-7",
-            "requestId": "spawn-request-11",
+            "taskId": "task-7",
+            "requestId": "task-request-11",
             "status": "submitted"
         }))
     })
     .await;
 
     let response = result.expect("canonical submitted receipt should succeed");
-    assert_eq!(response.spawn_id, "spawn-7");
-    assert_eq!(response.request_id, "spawn-request-11");
+    assert_eq!(response.task_id, "task-7");
+    assert_eq!(response.request_id, "task-request-11");
     assert_eq!(sent_request.rpc_id, response.rpc_id);
     assert_eq!(sent_request.runtime_id, "runtime-test");
     assert_eq!(sent_request.activation_identity, expected_activation);
@@ -244,13 +244,13 @@ where
 }
 
 #[tokio::test]
-async fn spawn_submit_rejects_uncorrelated_status_and_identity_receipts() {
+async fn task_submit_rejects_uncorrelated_status_and_identity_receipts() {
     let cases = [
         InvalidReceipt::WrongRpcId,
         InvalidReceipt::BadStatus,
-        InvalidReceipt::MissingSpawnId,
-        InvalidReceipt::EmptySpawnId,
-        InvalidReceipt::InvalidSpawnId,
+        InvalidReceipt::MissingTaskId,
+        InvalidReceipt::EmptyTaskId,
+        InvalidReceipt::InvalidTaskId,
         InvalidReceipt::MissingRequestId,
         InvalidReceipt::EmptyRequestId,
         InvalidReceipt::InvalidRequestId,
@@ -269,11 +269,11 @@ async fn spawn_submit_rejects_uncorrelated_status_and_identity_receipts() {
 }
 
 #[tokio::test]
-async fn spawn_submit_preserves_typed_router_error_as_failure() {
+async fn task_submit_preserves_typed_router_error_as_failure() {
     let (result, _) = submit_with_response(|_| {
         OutboundResponse::Error(ResponseError {
-            code: "SpawnRejected".to_string(),
-            message: "spawn queue rejected the request".to_string(),
+            code: "TaskSubmitRejected".to_string(),
+            message: "task queue rejected the request".to_string(),
             status: Some(409),
             details: None,
         })
@@ -284,15 +284,15 @@ async fn spawn_submit_preserves_typed_router_error_as_failure() {
     assert!(matches!(
         error,
         RuntimeError::ProviderUnavailable { target, reason }
-            if target == SPAWN_SUBMIT_TARGET && reason == "spawn queue rejected the request"
+            if target == TASK_SUBMIT_TARGET && reason == "task queue rejected the request"
     ));
 }
 
 async fn submit_with_response(
     response: impl FnOnce(&str) -> OutboundResponse,
 ) -> (
-    Result<SpawnSubmitResponseFrameHeader>,
-    SpawnSubmitControlRequest,
+    Result<TaskSubmitResponseFrameHeader>,
+    TaskSubmitControlRequest,
 ) {
     let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
     let outbound_requests = Arc::new(OutboundRequestRegistry::default());
@@ -313,25 +313,25 @@ async fn submit_with_response(
         CancellationToken::new(),
     );
     let client = RequestClient::new(context);
-    let submit = client.submit_spawn(
-        spawn_submit_request(),
+    let submit = client.submit_task(
+        task_submit_request(),
         Vec::new(),
-        skiff_runtime_capability_context::SpawnCallerKind::Request,
+        skiff_runtime_capability_context::TaskCallerKind::Request,
     );
     tokio::pin!(submit);
 
     let sent_request = tokio::select! {
-        result = &mut submit => panic!("spawn submit completed before response: {result:?}"),
-        message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
-            RouterWriterMessage::SpawnSubmit(message) => message.request,
+        result = &mut submit => panic!("task submit completed before response: {result:?}"),
+        message = router_receiver.recv() => match message.expect("task.submit request should be sent") {
+            RouterWriterMessage::TaskSubmit(message) => message.request,
             other => panic!("unexpected router message: {other:?}"),
         }
     };
     outbound_requests
         .take_terminal_sender(&sent_request.rpc_id)
-        .expect("spawn submit response should be pending")
+        .expect("task submit response should be pending")
         .send(response(&sent_request.rpc_id))
-        .expect("spawn submit response should be delivered");
+        .expect("task submit response should be delivered");
 
     (submit.await, sent_request)
 }
@@ -353,10 +353,10 @@ fn activation_identity() -> ActivationIdentityControl {
     }
 }
 
-fn spawn_submit_request() -> SpawnSubmitControlRequest {
+fn task_submit_request() -> TaskSubmitControlRequest {
     let mut untrusted_identity = activation_identity();
     untrusted_identity.generation = 99;
-    SpawnSubmitControlRequest {
+    TaskSubmitControlRequest {
         rpc_id: "caller-supplied-rpc".to_string(),
         runtime_id: "caller-supplied-runtime".to_string(),
         target_kind: "function".to_string(),
@@ -364,7 +364,7 @@ fn spawn_submit_request() -> SpawnSubmitControlRequest {
         service_version: "v1".to_string(),
         service_protocol_identity: "protocol-test".to_string(),
         target: "function:program.test".to_string(),
-        spawn_id: None,
+        task_id: None,
         build_id: Some(BUILD_ID.to_string()),
         activation_identity: untrusted_identity,
         caller_request_id: Some("request-test".to_string()),
@@ -444,9 +444,9 @@ fn remove_request() -> ActorRemoveControlRequest {
 enum InvalidReceipt {
     WrongRpcId,
     BadStatus,
-    MissingSpawnId,
-    EmptySpawnId,
-    InvalidSpawnId,
+    MissingTaskId,
+    EmptyTaskId,
+    InvalidTaskId,
     MissingRequestId,
     EmptyRequestId,
     InvalidRequestId,
@@ -456,23 +456,23 @@ impl InvalidReceipt {
     fn response(self, rpc_id: &str) -> Value {
         let mut response = json!({
             "schemaVersion": "skiff-runtime-frame-v1",
-            "type": "spawn.submit.response",
+            "type": "task.submit.response",
             "rpcId": rpc_id,
-            "spawnId": "spawn-7",
-            "requestId": "spawn-request-11",
+            "taskId": "task-7",
+            "requestId": "task-request-11",
             "status": "submitted"
         });
         match self {
             Self::WrongRpcId => response["rpcId"] = json!("another-rpc"),
             Self::BadStatus => response["status"] = json!("queued"),
-            Self::MissingSpawnId => {
+            Self::MissingTaskId => {
                 response
                     .as_object_mut()
                     .expect("response object")
-                    .remove("spawnId");
+                    .remove("taskId");
             }
-            Self::EmptySpawnId => response["spawnId"] = json!(""),
-            Self::InvalidSpawnId => response["spawnId"] = json!("spawn id"),
+            Self::EmptyTaskId => response["taskId"] = json!(""),
+            Self::InvalidTaskId => response["taskId"] = json!("task id"),
             Self::MissingRequestId => {
                 response
                     .as_object_mut()
@@ -489,9 +489,9 @@ impl InvalidReceipt {
         match self {
             Self::WrongRpcId => "wrong rpcId",
             Self::BadStatus => "bad status",
-            Self::MissingSpawnId => "missing spawnId",
-            Self::EmptySpawnId => "empty spawnId",
-            Self::InvalidSpawnId => "invalid spawnId",
+            Self::MissingTaskId => "missing taskId",
+            Self::EmptyTaskId => "empty taskId",
+            Self::InvalidTaskId => "invalid taskId",
             Self::MissingRequestId => "missing requestId",
             Self::EmptyRequestId => "empty requestId",
             Self::InvalidRequestId => "invalid requestId",
@@ -502,8 +502,8 @@ impl InvalidReceipt {
         match self {
             Self::WrongRpcId => "does not match request",
             Self::BadStatus => "status must be submitted",
-            Self::MissingSpawnId => "missing field `spawnId`",
-            Self::EmptySpawnId | Self::InvalidSpawnId => "spawnId must be an ASCII visible token",
+            Self::MissingTaskId => "missing field `taskId`",
+            Self::EmptyTaskId | Self::InvalidTaskId => "taskId must be an ASCII visible token",
             Self::MissingRequestId => "missing field `requestId`",
             Self::EmptyRequestId | Self::InvalidRequestId => {
                 "requestId must be an ASCII visible token"

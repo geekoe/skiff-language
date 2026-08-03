@@ -32,7 +32,7 @@ use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateRequestFrameHeader,
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
-    ActorReplaceResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader, FrameDirection,
+    ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader, FrameDirection,
     PayloadPresenceRule, RuntimeFrameFamily,
 };
 
@@ -209,8 +209,8 @@ mod tests {
                             .unwrap_or_else(|error| panic!("{name}: {error}"));
                     encode_binary_frame(&header, &payload).expect("re-encode")
                 }
-                "ActorSpawnRuntimeError" => {
-                    let (header, payload): (ActorSpawnRuntimeErrorFrameHeader, Vec<u8>) =
+                "ActorTaskRuntimeError" => {
+                    let (header, payload): (ActorTaskRuntimeErrorFrameHeader, Vec<u8>) =
                         decode_typed_binary_frame(&bytes)
                             .unwrap_or_else(|error| panic!("{name}: {error}"));
                     encode_binary_frame(&header, &payload).expect("re-encode")
@@ -514,16 +514,16 @@ mod tests {
         match name {
             "actor.getOrCreate.request" => "ActorGetOrCreateRequest",
             "actor.getOrCreate.response" => "ActorGetOrCreateResponse",
-            "actor.getOrCreate.error" => "ActorSpawnRuntimeError",
+            "actor.getOrCreate.error" => "ActorTaskRuntimeError",
             "actor.replace.request" => "ActorReplaceRequest",
             "actor.replace.response" => "ActorReplaceResponse",
-            "actor.replace.error" => "ActorSpawnRuntimeError",
+            "actor.replace.error" => "ActorTaskRuntimeError",
             "actor.find.request" => "ActorFindRequest",
             "actor.find.response" => "ActorFindResponse",
-            "actor.find.error" => "ActorSpawnRuntimeError",
+            "actor.find.error" => "ActorTaskRuntimeError",
             "actor.remove.request" => "ActorRemoveRequest",
             "actor.remove.response" => "ActorRemoveResponse",
-            "actor.remove.error" => "ActorSpawnRuntimeError",
+            "actor.remove.error" => "ActorTaskRuntimeError",
             "actor.method.invoke" => "ActorMethodInvoke",
             "actor.method.return" => "ActorMethodReturn",
             "actor.method.error" => "ActorMethodError",

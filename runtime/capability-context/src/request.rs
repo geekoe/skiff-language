@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use crate::{
     ActivationIdentityControl, CapabilityFuture, CapabilityResult, OwnedExecutionControl,
-    SpawnSubmitControlRequest,
+    TaskSubmitControlRequest,
 };
 
-/// Request/invocation metadata and `spawn.submit` operations provided by the host/runtime.
+/// Request/invocation metadata and `task.submit` operations provided by the host/runtime.
 ///
 /// Actor model operations live on [`crate::ActorCapabilityApi`]; this trait is the
-/// single entry point for request-wide metadata and spawn submission.
+/// single entry point for request-wide metadata and task submission.
 pub trait RequestCapabilityApi: Send + Sync {
     fn owned(&self) -> OwnedRequestCapabilityContext;
     fn borrow(&self) -> RequestCapabilityContext<'_>;
@@ -19,15 +19,15 @@ pub trait RequestCapabilityApi: Send + Sync {
     fn request_id(&self) -> &str;
     fn request_target(&self) -> &str;
     fn request_build_id(&self) -> &str;
-    fn spawn_service_protocol_identity(&self) -> &str;
+    fn task_service_protocol_identity(&self) -> &str;
     fn request_service_protocol_identity(&self) -> &str;
     fn operation_service_protocol_identity(&self) -> Option<&str>;
     fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
     fn trace_id(&self) -> Option<&str>;
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()>;
@@ -80,8 +80,8 @@ impl<'a> RequestCapabilityContext<'a> {
         self.inner.request_build_id()
     }
 
-    pub fn spawn_service_protocol_identity(&self) -> &str {
-        self.inner.spawn_service_protocol_identity()
+    pub fn task_service_protocol_identity(&self) -> &str {
+        self.inner.task_service_protocol_identity()
     }
 
     pub fn request_service_protocol_identity(&self) -> &str {
@@ -100,14 +100,14 @@ impl<'a> RequestCapabilityContext<'a> {
         self.inner.trace_id()
     }
 
-    pub async fn submit_spawn(
+    pub async fn submit_task(
         &self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
     ) -> CapabilityResult<()> {
         self.inner
-            .submit_spawn(request, args_payload, execution_control)
+            .submit_task(request, args_payload, execution_control)
             .await
     }
 }

@@ -6,8 +6,8 @@ use skiff_runtime_capability_context::{
     CancellationToken, ExecutionScope, ExecutionScopeLeaseTerminal, ExecutionScopeTerminal,
     InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
     OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnCallerKind,
-    SpawnSubmitControlMessage, SpawnSubmitControlRequest,
+    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, TaskCallerKind,
+    TaskSubmitControlMessage, TaskSubmitControlRequest,
 };
 use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -19,14 +19,14 @@ use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_inter
 use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
     ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
-    SpawnSubmitResponseFrameHeader,
+    TaskSubmitResponseFrameHeader,
 };
 
 const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
 const ACTOR_REPLACE_TARGET: &str = "actor.replace";
 const ACTOR_FIND_TARGET: &str = "actor.find";
 const ACTOR_REMOVE_TARGET: &str = "actor.remove";
-const SPAWN_SUBMIT_TARGET: &str = "spawn.submit";
+const TASK_SUBMIT_TARGET: &str = "task.submit";
 const ACTOR_GET_CREATE_DEADLINE_MS: u64 = 30_000;
 
 pub struct ActorClient<'a> {
@@ -207,49 +207,49 @@ impl<'a> RequestClient<'a> {
         Self { context }
     }
 
-    pub async fn submit_spawn(
+    pub async fn submit_task(
         &self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
-        caller_kind: SpawnCallerKind,
-    ) -> Result<SpawnSubmitResponseFrameHeader> {
-        self.submit_spawn_with_scope(request, args_payload, None, caller_kind)
+        caller_kind: TaskCallerKind,
+    ) -> Result<TaskSubmitResponseFrameHeader> {
+        self.submit_task_with_scope(request, args_payload, None, caller_kind)
             .await
     }
 
-    pub(crate) async fn submit_spawn_in_scope(
+    pub(crate) async fn submit_task_in_scope(
         &self,
-        request: SpawnSubmitControlRequest,
+        request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         scope: ExecutionScope,
-        caller_kind: SpawnCallerKind,
-    ) -> Result<SpawnSubmitResponseFrameHeader> {
-        self.submit_spawn_with_scope(request, args_payload, Some(scope), caller_kind)
+        caller_kind: TaskCallerKind,
+    ) -> Result<TaskSubmitResponseFrameHeader> {
+        self.submit_task_with_scope(request, args_payload, Some(scope), caller_kind)
             .await
     }
 
-    async fn submit_spawn_with_scope(
+    async fn submit_task_with_scope(
         &self,
-        mut request: SpawnSubmitControlRequest,
+        mut request: TaskSubmitControlRequest,
         args_payload: Vec<u8>,
         scope: Option<ExecutionScope>,
-        caller_kind: SpawnCallerKind,
-    ) -> Result<SpawnSubmitResponseFrameHeader> {
-        request.rpc_id = control_rpc_id(&self.context, SPAWN_SUBMIT_TARGET);
+        caller_kind: TaskCallerKind,
+    ) -> Result<TaskSubmitResponseFrameHeader> {
+        request.rpc_id = control_rpc_id(&self.context, TASK_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
         request.activation_identity = self
             .context
-            .current_activation_identity(SPAWN_SUBMIT_TARGET)?;
+            .current_activation_identity(TASK_SUBMIT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
-        let message = SpawnSubmitControlMessage {
+        let message = TaskSubmitControlMessage {
             request,
             payload: args_payload,
             caller_kind,
         };
-        let response: SpawnSubmitResponseFrameHeader =
-            send_spawn_submit_request(&self.context, SPAWN_SUBMIT_TARGET, &rpc_id, message, scope)
+        let response: TaskSubmitResponseFrameHeader =
+            send_task_submit_request(&self.context, TASK_SUBMIT_TARGET, &rpc_id, message, scope)
                 .await?;
-        validate_spawn_submit_response(&response, &rpc_id)?;
+        validate_task_submit_response(&response, &rpc_id)?;
         Ok(response)
     }
 }
@@ -361,7 +361,7 @@ impl<'a> RequestClientContext<'a> {
             request_target: invocation.request_target(),
             request_build_id: invocation.request_build_id(),
             request_service_protocol_identity: invocation.actor_service_protocol_identity(),
-            operation_service_protocol_identity: Some(invocation.spawn_service_protocol_identity()),
+            operation_service_protocol_identity: Some(invocation.task_service_protocol_identity()),
             activation_identity,
             trace_id: invocation.trace_id(),
             router_sender,
@@ -427,7 +427,7 @@ impl<'a> RequestClientContext<'a> {
         self.request_build_id
     }
 
-    pub fn spawn_service_protocol_identity(&self) -> &'a str {
+    pub fn task_service_protocol_identity(&self) -> &'a str {
         self.operation_service_protocol_identity
             .unwrap_or(self.request_service_protocol_identity)
     }
@@ -462,7 +462,7 @@ trait ControlContext {
         request_id: &str,
         command: OutboundControlMessage,
     ) -> Result<()>;
-    fn send_spawn_submit(&self, request_id: &str, message: SpawnSubmitControlMessage)
+    fn send_task_submit(&self, request_id: &str, message: TaskSubmitControlMessage)
         -> Result<()>;
     fn cancellation_token(&self) -> CancellationToken;
     fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender>;
@@ -496,12 +496,12 @@ impl ControlContext for ActorClientContext<'_> {
         send_outbound_request(self.router_sender, request_id, command)
     }
 
-    fn send_spawn_submit(
+    fn send_task_submit(
         &self,
         request_id: &str,
-        message: SpawnSubmitControlMessage,
+        message: TaskSubmitControlMessage,
     ) -> Result<()> {
-        send_spawn_submit(self.router_sender, request_id, message)
+        send_task_submit(self.router_sender, request_id, message)
     }
 
     fn cancellation_token(&self) -> CancellationToken {
@@ -541,12 +541,12 @@ impl ControlContext for RequestClientContext<'_> {
         send_outbound_request(self.router_sender, request_id, command)
     }
 
-    fn send_spawn_submit(
+    fn send_task_submit(
         &self,
         request_id: &str,
-        message: SpawnSubmitControlMessage,
+        message: TaskSubmitControlMessage,
     ) -> Result<()> {
-        send_spawn_submit(self.router_sender, request_id, message)
+        send_task_submit(self.router_sender, request_id, message)
     }
 
     fn cancellation_token(&self) -> CancellationToken {
@@ -601,17 +601,17 @@ fn send_outbound_request(
         })
 }
 
-fn send_spawn_submit(
+fn send_task_submit(
     router_sender: Option<&mpsc::UnboundedSender<RouterWriterMessage>>,
     request_id: &str,
-    message: SpawnSubmitControlMessage,
+    message: TaskSubmitControlMessage,
 ) -> Result<()> {
     let sender = router_sender.ok_or_else(|| RuntimeError::ProviderUnavailable {
         target: request_id.to_string(),
         reason: "router writer is not available".to_string(),
     })?;
     sender
-        .send(RouterWriterMessage::SpawnSubmit(message))
+        .send(RouterWriterMessage::TaskSubmit(message))
         .map_err(|_| RuntimeError::ProviderUnavailable {
             target: request_id.to_string(),
             reason: "router writer channel closed".to_string(),
@@ -677,18 +677,18 @@ async fn send_raw_control_request<C: ControlContext>(
     }
 }
 
-async fn send_spawn_submit_request<C, TResponse>(
+async fn send_task_submit_request<C, TResponse>(
     context: &C,
     target: &str,
     rpc_id: &str,
-    message: SpawnSubmitControlMessage,
+    message: TaskSubmitControlMessage,
     scope: Option<ExecutionScope>,
 ) -> Result<TResponse>
 where
     C: ControlContext,
     TResponse: DeserializeOwned,
 {
-    let payload = send_raw_spawn_submit_request(context, target, rpc_id, message, scope).await?;
+    let payload = send_raw_task_submit_request(context, target, rpc_id, message, scope).await?;
     serde_json::from_slice(&payload).map_err(|error| {
         RuntimeError::decode_target(
             target,
@@ -697,11 +697,11 @@ where
     })
 }
 
-async fn send_raw_spawn_submit_request<C: ControlContext>(
+async fn send_raw_task_submit_request<C: ControlContext>(
     context: &C,
     target: &str,
     rpc_id: &str,
-    message: SpawnSubmitControlMessage,
+    message: TaskSubmitControlMessage,
     scope: Option<ExecutionScope>,
 ) -> Result<Vec<u8>> {
     if scope
@@ -712,7 +712,7 @@ async fn send_raw_spawn_submit_request<C: ControlContext>(
         return Err(RuntimeError::cancelled());
     }
     let (response_rx, lease) = context.open_outbound_response_lease(rpc_id)?;
-    if let Err(error) = context.send_spawn_submit(rpc_id, message) {
+    if let Err(error) = context.send_task_submit(rpc_id, message) {
         let _ = lease.cancel("runtime_disconnect");
         return Err(error);
     }
@@ -887,36 +887,36 @@ fn actor_ref_from_metadata(frame: ActorRefFrameMetadata) -> Result<ActorRef> {
     ))
 }
 
-fn validate_spawn_submit_response(
-    response: &SpawnSubmitResponseFrameHeader,
+fn validate_task_submit_response(
+    response: &TaskSubmitResponseFrameHeader,
     expected_rpc_id: &str,
 ) -> Result<()> {
     if response.rpc_id != expected_rpc_id {
         return Err(RuntimeError::Protocol {
-            target: SPAWN_SUBMIT_TARGET.to_string(),
+            target: TASK_SUBMIT_TARGET.to_string(),
             message: format!(
-                "spawn.submit.response rpcId {} does not match request {}",
+                "task.submit.response rpcId {} does not match request {}",
                 response.rpc_id, expected_rpc_id
             ),
         });
     }
     if response.status != "submitted" {
         return Err(RuntimeError::Protocol {
-            target: SPAWN_SUBMIT_TARGET.to_string(),
+            target: TASK_SUBMIT_TARGET.to_string(),
             message: format!(
-                "spawn.submit.response status must be submitted, got {}",
+                "task.submit.response status must be submitted, got {}",
                 response.status
             ),
         });
     }
-    validate_spawn_submit_identity("spawnId", &response.spawn_id)?;
-    validate_spawn_submit_identity("requestId", &response.request_id)
+    validate_task_submit_identity("taskId", &response.task_id)?;
+    validate_task_submit_identity("requestId", &response.request_id)
 }
 
-fn validate_spawn_submit_identity(label: &str, value: &str) -> Result<()> {
+fn validate_task_submit_identity(label: &str, value: &str) -> Result<()> {
     validate_activation_token(value, label).map_err(|message| RuntimeError::Protocol {
-        target: SPAWN_SUBMIT_TARGET.to_string(),
-        message: format!("spawn.submit.response {message}"),
+        target: TASK_SUBMIT_TARGET.to_string(),
+        message: format!("task.submit.response {message}"),
     })
 }
 

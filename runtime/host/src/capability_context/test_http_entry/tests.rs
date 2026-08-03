@@ -700,7 +700,7 @@ async fn exact_router_session_binds_root_derived_actor_and_self_ingress_authorit
         .self_ingress_for_request(SESSION_B, "session-root")
         .is_none());
     assert!(registry
-        .begin_derived("session-case", SESSION_B, "cross-session-spawn".to_string())
+        .begin_derived("session-case", SESSION_B, "cross-session-task".to_string())
         .err()
         .expect("cross-session capability replay must fail")
         .to_string()
@@ -818,7 +818,7 @@ async fn disconnect_revokes_session_authority_but_live_leases_finish_normally() 
         .begin_derived(
             "disconnect-case",
             SESSION_A,
-            "post-disconnect-spawn".to_string(),
+            "post-disconnect-task".to_string(),
         )
         .err()
         .expect("disconnect must close capability admission")

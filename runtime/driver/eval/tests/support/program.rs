@@ -138,7 +138,7 @@ pub(crate) fn program_with_executables(executables: Vec<LinkedExecutable>) -> Ru
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
         routes: HashMap::from([("svc.main.run".to_string(), addr.clone())]),
-        spawn_routes: HashMap::new(),
+        task_routes: HashMap::new(),
         operations: HashMap::from([("run".to_string(), addr)]),
         operation_receivers: HashMap::new(),
         db: Vec::new(),

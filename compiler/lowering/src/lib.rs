@@ -38,7 +38,7 @@ pub use service_call_error::ServiceCallLoweringError;
 pub use service_call_lowering::{lower_service_calls, LoweredServiceCallSite, LoweredServiceCalls};
 pub use source_metadata::CompiledPackageSource;
 pub use storage_projection::{
-    service_spawn_targets_with_packages, CompiledPackageStorageProjection, PackageSpawnTargetSource,
+    service_task_targets_with_packages, CompiledPackageStorageProjection, PackageTaskTargetSource,
 };
 
 use skiff_compiler_source::{PackageSourceModel, SourceCompileError};

@@ -16,7 +16,7 @@ pub use skiff_runtime_capability_context::{
     OutboundRequestRegistryError, OutboundResponse, OutboundResponseReceiver,
     OutboundResponseSender, RequestAbortSignal, RequestCancelControl, RequestPayloadContext,
     RequestPayloadContextError, RequestPayloadEncoding, ResponseError, RouterWriterMessage,
-    ServiceDbChange, ServiceDbChangeOp, ServiceDbFindOptions, SpawnSubmitControlRequest,
+    ServiceDbChange, ServiceDbChangeOp, ServiceDbFindOptions, TaskSubmitControlRequest,
     StreamPoll, StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
 };
 pub use skiff_runtime_host::capability_context::{

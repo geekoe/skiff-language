@@ -219,7 +219,7 @@ impl Parser {
                 dbs.push(self.parse_db_decl()?);
             } else if self.check_ident("process") {
                 return Err(CompileError::syntax(
-                    "process has been removed; use actors and spawn instead",
+                    "process has been removed; use actors and dispatch instead",
                     self.peek().span.start,
                 ));
             } else if self.check_function_start() {

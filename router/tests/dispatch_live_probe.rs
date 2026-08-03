@@ -1329,7 +1329,7 @@ mod tests {
         let health = components.dispatcher.health();
         assert_eq!(health.pending.unary, 0);
         assert_eq!(health.pending.stream, 0);
-        assert_eq!(health.pending.derived_spawn, 0);
+        assert_eq!(health.pending.derived_task, 0);
         assert_eq!(health.admission.permits_held, 0);
         assert_eq!(
             health.admission.releases,

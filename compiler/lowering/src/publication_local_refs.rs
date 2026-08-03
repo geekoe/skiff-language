@@ -267,7 +267,7 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         | StmtIr::Assert { .. }
         | StmtIr::Break
         | StmtIr::Continue
-        | StmtIr::Spawn { .. }
+        | StmtIr::Dispatch { .. }
         | StmtIr::Emit { .. }
         | StmtIr::Expr { .. }
         | StmtIr::Return { .. }

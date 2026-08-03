@@ -107,7 +107,7 @@ impl HealthAggregator {
             invocation: components.actor.relay.health(),
             control: components.actor.control_broker.health(),
             lease: components.actor.lease_scheduler.health(),
-            spawn: components.actor.spawn_router.health(),
+            task: components.actor.task_router.health(),
         };
 
         let observations = components.session.health().observations_snapshot();
@@ -146,10 +146,10 @@ impl HealthAggregator {
             observed_at: format_iso_millis(now),
             router: LoopRiskRouterProjection {
                 dispatcher: LoopRiskDispatcherProjection {
-                    // TS parity: spawn-derived pending was counted as unary
+                    // TS parity: task-derived pending was counted as unary
                     // by `pendingLifecycleCounters`.
                     pending_unary: dispatcher_health.pending.unary
-                        + dispatcher_health.pending.derived_spawn,
+                        + dispatcher_health.pending.derived_task,
                     pending_stream: dispatcher_health.pending.stream,
                 },
                 http_stream: LoopRiskHttpStreamProjection {
@@ -214,7 +214,7 @@ impl HealthAggregator {
             request_pending: RequestPendingCounters {
                 unary: dispatcher_health.pending.unary,
                 stream: dispatcher_health.pending.stream,
-                derived_spawn: dispatcher_health.pending.derived_spawn,
+                derived_task: dispatcher_health.pending.derived_task,
                 http_pending: components.pending_http.pending_count(),
                 http_overflow_terminals: components.pending_http.overflow_terminal_count(),
                 stopped: dispatcher_health.stopped,
@@ -241,11 +241,11 @@ impl HealthAggregator {
                 ws_slow_client_count: index_health.slow_client_count,
                 ws_observed_write_bytes_total: index_health.observed_write_bytes.values().sum(),
             },
-            spawned_tasks: SpawnedTaskCounters {
+            tasks: SpawnedTaskCounters {
                 live_session_tasks: session_health.live_session_tasks,
-                actor_spawn_capacity_in_use: actor_health.spawn.capacity_in_use,
-                actor_spawn_accepted: actor_health.spawn.accepted,
-                actor_spawn_rejected: actor_health.spawn.rejected,
+                actor_task_capacity_in_use: actor_health.task.capacity_in_use,
+                actor_task_accepted: actor_health.task.accepted,
+                actor_task_rejected: actor_health.task.rejected,
             },
             shutdown: ShutdownResidueCounters {
                 session_fail_stop: session_health.fail_stop,

@@ -15,8 +15,8 @@ use skiff_artifact_model::{
 };
 use skiff_router::dispatch::{
     CancelFrame, DispatchSubmit, PendingTerminal, RequestAuthority, RequestDispatcher,
-    RevalidateOutcome, RuntimeDispatcherOptions, RuntimeResponseFrame, SpawnSubmit,
-    SpawnSubmitResult, SpawnTargetKind, SubmitResult,
+    RevalidateOutcome, RuntimeDispatcherOptions, RuntimeResponseFrame, SubmitResult,
+    TaskSubmit, TaskSubmitResult, TaskTargetKind,
 };
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -27,7 +27,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 
 use dispatch_harness::{
-    build_epoch, FakeActorMethodSpawnControl, FakeCandidateViewSource, FakeEpochSource,
+    build_epoch, FakeActorMethodTaskControl, FakeCandidateViewSource, FakeEpochSource,
     FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
 };
 
@@ -429,7 +429,7 @@ impl Harness {
         let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
-        let actor_control = FakeActorMethodSpawnControl::new();
+        let actor_control = FakeActorMethodTaskControl::new();
         {
             let mut record = actor_control.record.lock().unwrap();
             record.parents = scenario.actor_invocation_parents.keys().cloned().collect();
@@ -620,48 +620,48 @@ impl Harness {
             .get(&parent_session)
             .expect("parent session")
             .clone();
-        let spawn = SpawnSubmit {
-            spawn_request_id: request_id.to_string(),
+        let task = TaskSubmit {
+            task_request_id: request_id.to_string(),
             caller_request_id: parent_request_id.to_string(),
-            target_kind: SpawnTargetKind::Function,
+            target_kind: TaskTargetKind::Function,
             target: target.to_string(),
             authority: self.authority_for(&parent_session_id),
             deadline: None,
         };
-        match self.dispatcher.spawn_submit(spawn) {
-            SpawnSubmitResult::AcceptedDerived(result) => {
+        match self.dispatcher.task_submit(task) {
+            TaskSubmitResult::AcceptedDerived(result) => {
                 let session_id = self
                     .session_ids
                     .get(&result.session_epoch)
                     .expect("derived session")
                     .clone();
                 self.session_bindings
-                    .insert(result.spawn_request_id.clone(), session_id);
+                    .insert(result.task_request_id.clone(), session_id);
             }
-            SpawnSubmitResult::ForwardedActorMethod(_) => {
+            TaskSubmitResult::ForwardedActorMethod(_) => {
                 panic!("function spawn must not forward to the actor lane")
             }
-            SpawnSubmitResult::Rejected { request_id, reason } => {
+            TaskSubmitResult::Rejected { request_id, reason } => {
                 self.record_rejected(&request_id, reason.as_str());
             }
         }
     }
 
     fn spawn_actor_method(&mut self, request_id: &str, parent_request_id: &str) {
-        let spawn = SpawnSubmit {
-            spawn_request_id: request_id.to_string(),
+        let task = TaskSubmit {
+            task_request_id: request_id.to_string(),
             caller_request_id: parent_request_id.to_string(),
-            target_kind: SpawnTargetKind::ActorMethod,
+            target_kind: TaskTargetKind::ActorMethod,
             target: String::new(),
             authority: self.authority_for(&self.scenario.sessions[0].id),
             deadline: None,
         };
-        match self.dispatcher.spawn_submit(spawn) {
-            SpawnSubmitResult::ForwardedActorMethod(_) => {}
-            SpawnSubmitResult::AcceptedDerived(_) => {
+        match self.dispatcher.task_submit(task) {
+            TaskSubmitResult::ForwardedActorMethod(_) => {}
+            TaskSubmitResult::AcceptedDerived(_) => {
                 panic!("actor-method spawn must not enter dispatcher pending")
             }
-            SpawnSubmitResult::Rejected { request_id, reason } => {
+            TaskSubmitResult::Rejected { request_id, reason } => {
                 self.record_rejected(&request_id, reason.as_str());
             }
         }
@@ -873,11 +873,11 @@ mod tests {
                 "{name} releases"
             );
             assert_eq!(
-                health.spawn.derived_spawns, scenario.expect.derived_spawns,
+                health.task.derived_tasks, scenario.expect.derived_spawns,
                 "{name} derived spawns"
             );
             assert_eq!(
-                health.spawn.actor_lane_spawns, scenario.expect.actor_lane_spawns,
+                health.task.actor_lane_tasks, scenario.expect.actor_lane_spawns,
                 "{name} actor lane spawns"
             );
             assert!(!scenario.expect.fail_stop, "{name} failStop");

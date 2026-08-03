@@ -128,7 +128,7 @@ pub(super) fn counters() -> Value {
             "evictionRetries": 0,
             "evictionExhausted": 0,
         },
-        "spawn": {
+        "task": {
             "capacityInUse": 0,
             "accepted": 0,
             "rejected": 0,
@@ -230,7 +230,7 @@ pub(super) fn counters() -> Value {
         "requestPending": {
             "unary": 0,
             "stream": 0,
-            "derivedSpawn": 0,
+            "derivedTask": 0,
             "httpPending": 0,
             "httpOverflowTerminals": 0,
             "stopped": false,
@@ -256,7 +256,7 @@ pub(super) fn counters() -> Value {
         "http": { "requests": 0, "unaryDispatches": 0, "streamDispatches": 0, "corsPreflights": 0, "serviceManagedCors": 0, "selectorRejects": 0, "ingressMisses": 0, "requestTooLarge": 0, "responseTooLarge": 0, "backpressureCancels": 0, "clientDisconnectCancels": 0, "timeouts": 0, "platformErrors": 0 },
         "mailboxes": { "coordinator": { "occupancy": 0, "capacity": 64, "saturation": 0 } },
         "writerQueues": { "wsSlowClientCount": 0, "wsObservedWriteBytesTotal": 0 },
-        "spawnedTasks": { "liveSessionTasks": 0, "actorSpawnCapacityInUse": 0, "actorSpawnAccepted": 0, "actorSpawnRejected": 0 },
+        "tasks": { "liveSessionTasks": 0, "actorTaskCapacityInUse": 0, "actorTaskAccepted": 0, "actorTaskRejected": 0 },
         "shutdown": { "sessionFailStop": null, "coordinatorShutdown": false, "repositoryDriverClosed": false, "repositoryDriverShutdownResidue": 0, "dispatcherStopped": false, "wsFailStopReason": null },
     })
 }

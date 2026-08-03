@@ -18,7 +18,7 @@ use crate::protocol::{
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
     RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
-    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
+    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, TaskSubmitRequestFrameHeader,
     TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
     ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
@@ -89,7 +89,7 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
 }
 
 #[test]
-fn actor_spawn_requests_share_strict_activation_identity_corpus() {
+fn actor_task_requests_share_strict_activation_identity_corpus() {
     let corpus: Value = serde_json::from_str(include_str!(
         "../../testdata/actor-control-activation-identity.json"
     ))
@@ -153,7 +153,7 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
         merge_json(
             &base,
             json!({
-                "type": "spawn.submit.request",
+                "type": "task.submit.request",
                 "targetKind": "function",
                 "serviceId": "example.com/worker",
                 "serviceVersion": "1.0.0",
@@ -164,7 +164,7 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
     ];
 
     for frame in &frames {
-        decode_actor_spawn_request(frame.clone()).unwrap_or_else(|error| {
+        decode_actor_task_request(frame.clone()).unwrap_or_else(|error| {
             panic!("valid {} failed: {error}", frame["type"]);
         });
 
@@ -174,7 +174,7 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
             .expect("frame must be an object")
             .remove("activationIdentity");
         assert!(
-            decode_actor_spawn_request(missing).is_err(),
+            decode_actor_task_request(missing).is_err(),
             "{} accepted missing activationIdentity",
             frame["type"]
         );
@@ -185,7 +185,7 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
             .expect("frame must be an object")
             .insert("serviceDisplayName".to_string(), json!("legacy"));
         assert!(
-            decode_actor_spawn_request(unknown).is_err(),
+            decode_actor_task_request(unknown).is_err(),
             "{} accepted an unknown top-level field",
             frame["type"]
         );
@@ -197,7 +197,7 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
             let mut mutated = frame.clone();
             mutated["activationIdentity"] = invalid["value"].clone();
             assert!(
-                decode_actor_spawn_request(mutated).is_err(),
+                decode_actor_task_request(mutated).is_err(),
                 "{} accepted invalid activation identity case {}",
                 frame["type"],
                 invalid["label"]
@@ -244,7 +244,7 @@ fn actor_create_test_authority_is_a_strict_canonical_pair() {
         }),
     );
 
-    decode_actor_spawn_request(frame.clone()).expect("valid authority pair must decode");
+    decode_actor_task_request(frame.clone()).expect("valid authority pair must decode");
     for missing in ["testCaseCapability", "testCaseParentRequestId"] {
         let mut partial = frame.clone();
         partial
@@ -252,7 +252,7 @@ fn actor_create_test_authority_is_a_strict_canonical_pair() {
             .expect("frame must be an object")
             .remove(missing);
         assert!(
-            decode_actor_spawn_request(partial).is_err(),
+            decode_actor_task_request(partial).is_err(),
             "actor create accepted authority pair missing {missing}"
         );
     }
@@ -267,7 +267,7 @@ fn actor_create_test_authority_is_a_strict_canonical_pair() {
             let mut malformed = frame.clone();
             malformed[field] = Value::String(invalid);
             assert!(
-                decode_actor_spawn_request(malformed).is_err(),
+                decode_actor_task_request(malformed).is_err(),
                 "actor create accepted invalid {field}"
             );
         }
@@ -275,11 +275,11 @@ fn actor_create_test_authority_is_a_strict_canonical_pair() {
 }
 
 #[test]
-fn spawn_submit_rejects_test_authority_fields() {
+fn task_submit_rejects_test_authority_fields() {
     let frame = json!({
         "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
-        "type": "spawn.submit.request",
-        "rpcId": "rpc-spawn",
+        "type": "task.submit.request",
+        "rpcId": "rpc-task",
         "runtimeId": "runtime-1",
         "activationIdentity": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -294,7 +294,7 @@ fn spawn_submit_rejects_test_authority_fields() {
         "target": "Worker.run",
         "callerRequestId": "request:parent_1"
     });
-    decode_actor_spawn_request(frame.clone()).expect("caller-only spawn submit must decode");
+    decode_actor_task_request(frame.clone()).expect("caller-only task submit must decode");
 
     for fields in [
         json!({ "testCaseCapability": "test-case:capability_1" }),
@@ -305,8 +305,8 @@ fn spawn_submit_rejects_test_authority_fields() {
         }),
     ] {
         assert!(
-            decode_actor_spawn_request(merge_json(&frame, fields)).is_err(),
-            "spawn submit accepted redundant test authority"
+            decode_actor_task_request(merge_json(&frame, fields)).is_err(),
+            "task submit accepted redundant test authority"
         );
     }
 }
@@ -325,7 +325,7 @@ fn merge_json(base: &Value, overlay: Value) -> Value {
     merged
 }
 
-fn decode_actor_spawn_request(value: Value) -> Result<(), serde_json::Error> {
+fn decode_actor_task_request(value: Value) -> Result<(), serde_json::Error> {
     match value.get("type").and_then(Value::as_str) {
         Some("actor.getOrCreate.request") => {
             serde_json::from_value::<ActorGetOrCreateRequestFrameHeader>(value).map(drop)
@@ -339,10 +339,10 @@ fn decode_actor_spawn_request(value: Value) -> Result<(), serde_json::Error> {
         Some("actor.remove.request") => {
             serde_json::from_value::<ActorRemoveRequestFrameHeader>(value).map(drop)
         }
-        Some("spawn.submit.request") => {
-            serde_json::from_value::<SpawnSubmitRequestFrameHeader>(value).map(drop)
+        Some("task.submit.request") => {
+            serde_json::from_value::<TaskSubmitRequestFrameHeader>(value).map(drop)
         }
-        _ => unreachable!("test only supplies actor/spawn request frames"),
+        _ => unreachable!("test only supplies actor/task request frames"),
     }
 }
 
@@ -505,7 +505,7 @@ fn runtime_health_frame_header_round_trips_empty_payload() {
             outbound_stream_leases_active: 2,
             stream_runtime_streams_active: 3,
             flag_backed_cancel_waiters_active: 4,
-            spawned_tasks_active: 5,
+            task_requests_active: 5,
         },
     };
 
@@ -528,7 +528,7 @@ fn runtime_health_frame_header_round_trips_empty_payload() {
         decoded_json.header["counters"]["flagBackedCancelWaitersActive"],
         4
     );
-    assert_eq!(decoded_json.header["counters"]["spawnedTasksActive"], 5);
+    assert_eq!(decoded_json.header["counters"]["taskRequestsActive"], 5);
 
     let (decoded, payload): (RuntimeHealthFrameHeader, Vec<u8>) =
         decode_typed_binary_frame(&frame).expect("runtime.health frame decodes");

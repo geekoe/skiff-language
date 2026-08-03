@@ -440,11 +440,11 @@ async fn authority_error_ends_real_session_before_later_success_receipt_is_read(
     )
     .unwrap();
     let later_success = encode_binary_frame(
-        &SpawnSubmitResponseFrameHeader {
+        &TaskSubmitResponseFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.submit.response".to_string(),
+            envelope_type: "task.submit.response".to_string(),
             rpc_id: "rpc-after-authority-error".to_string(),
-            spawn_id: "spawn-must-not-complete".to_string(),
+            task_id: "task-must-not-complete".to_string(),
             request_id: "request-must-not-complete".to_string(),
             status: "submitted".to_string(),
         },

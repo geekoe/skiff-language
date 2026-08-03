@@ -424,8 +424,8 @@ impl OwnerCollector<'_> {
             Stmt::Emit(value) => {
                 self.visit_expr(value, next_stmt_expr(&mut expressions, "emit value")?)?
             }
-            Stmt::Spawn { call } => {
-                self.visit_expr(call, next_stmt_expr(&mut expressions, "spawn call")?)?
+            Stmt::Dispatch { call } => {
+                self.visit_expr(call, next_stmt_expr(&mut expressions, "dispatch call")?)?
             }
             Stmt::Return(value) => {
                 if let Some(value) = value {

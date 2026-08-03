@@ -300,7 +300,7 @@ mod tests {
                     outbound_stream_leases_active: 0,
                     stream_runtime_streams_active: 0,
                     flag_backed_cancel_waiters_active: 0,
-                    spawned_tasks_active: 0,
+                    task_requests_active: 0,
                 },
             },
         );
@@ -387,7 +387,7 @@ mod tests {
                         outbound_stream_leases_active: 0,
                         stream_runtime_streams_active: 0,
                         flag_backed_cancel_waiters_active: 0,
-                        spawned_tasks_active: 0,
+                        task_requests_active: 0,
                     },
                 },
             )]);

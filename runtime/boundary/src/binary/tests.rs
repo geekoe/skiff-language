@@ -281,7 +281,7 @@ fn payload_boundary_does_not_change_encoded_bytes() {
     let plan = RuntimeTypePlan::from_descriptor(&descriptor).expect("plan should build");
     let heap = RequestHeap::default();
     let value = RuntimeValue::String("Ada".to_string());
-    let owner_internal = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+    let owner_internal = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
     let cross_service = PayloadBoundary::cross_service(
         PayloadBoundaryKind::OutboundServiceCall,
         crate::payload::PayloadServiceRef::new("skiff.run/account").with_version("0.1.0"),
@@ -314,7 +314,7 @@ fn payload_codec_errors_include_boundary_context() {
 }
 
 #[test]
-fn spawn_and_queue_recoverable_payload_helpers_share_canonical_envelope() {
+fn task_and_queue_recoverable_payload_helpers_share_canonical_envelope() {
     let descriptor = json!({
         "kind": "record",
         "fields": {
@@ -333,22 +333,22 @@ fn spawn_and_queue_recoverable_payload_helpers_share_canonical_envelope() {
     let value = RuntimeValue::Heap(object);
     let service =
         PayloadServiceRef::new("skiff.run/account").with_build_id("skiff-service-build-a");
-    let spawn_boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload)
+    let task_boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload)
         .with_origin_service(service.clone());
     let queue_boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::QueueWorkItemPayload)
         .with_origin_service(service);
 
-    let spawn_bytes = encode_recoverable_payload_plan(&value, &plan, &spawn_boundary, &heap)
-        .expect("spawn recoverable payload should encode");
+    let task_bytes = encode_recoverable_payload_plan(&value, &plan, &task_boundary, &heap)
+        .expect("task recoverable payload should encode");
     let queue_bytes = encode_recoverable_payload_plan(&value, &plan, &queue_boundary, &heap)
         .expect("queue recoverable payload should encode");
 
-    assert_eq!(spawn_bytes, queue_bytes);
+    assert_eq!(task_bytes, queue_bytes);
 
     let mut decode_heap = RequestHeap::default();
     let decoded =
-        decode_recoverable_payload_plan(&spawn_bytes, &plan, &spawn_boundary, &mut decode_heap)
-            .expect("spawn recoverable payload should decode");
+        decode_recoverable_payload_plan(&task_bytes, &plan, &task_boundary, &mut decode_heap)
+            .expect("task recoverable payload should decode");
     let RuntimeValue::Heap(decoded_handle) = decoded else {
         panic!("decoded value should be a heap object");
     };
@@ -371,7 +371,7 @@ fn spawn_and_queue_recoverable_payload_helpers_share_canonical_envelope() {
 #[test]
 fn ordinary_payload_decode_rejects_recoverable_envelope_magic() {
     let plan = string_plan();
-    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
     let heap = RequestHeap::default();
     let bytes = encode_recoverable_payload_plan(
         &RuntimeValue::String("Ada".to_string()),
@@ -466,7 +466,7 @@ fn owner_internal_service_explicit_slot_roundtrips_local_interface_with_hooks() 
 #[test]
 fn behavior_helper_encode_failures_return_no_bytes_before_submission() {
     let expected = any_reader_expected();
-    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+    let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
     let mut heap = RequestHeap::default();
     let local_value = local_interface_runtime_value(&mut heap);
 

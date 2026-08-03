@@ -301,7 +301,7 @@ impl CreateValidator<'_> {
                     self.require_all_assigned(&current)?;
                     return Ok(None);
                 }
-                Stmt::Spawn { call } => {
+                Stmt::Dispatch { call } => {
                     self.check_reads(call, &current)?;
                     self.check_self_calls(call)?;
                 }
@@ -568,7 +568,7 @@ impl CreateValidator<'_> {
                         self.check_self_calls(value)?;
                     }
                 }
-                Stmt::Spawn { call } => self.check_self_calls(call)?,
+                Stmt::Dispatch { call } => self.check_self_calls(call)?,
                 Stmt::Break | Stmt::Continue => {}
             }
         }

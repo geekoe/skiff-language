@@ -194,7 +194,7 @@ pub(super) fn validate_emit_usage_in_stmt(
         Stmt::Expr(value) => {
             collect_emit_expression_call_violations(path, value, violations);
         }
-        Stmt::Spawn { call } => {
+        Stmt::Dispatch { call } => {
             collect_emit_expression_call_violations(path, call, violations);
         }
         Stmt::Return(value) => {

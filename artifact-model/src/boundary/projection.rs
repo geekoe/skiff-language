@@ -192,7 +192,7 @@ pub enum ValueEscapeLane {
     Capture,
     Callback,
     Stream,
-    Spawn,
+    Dispatch,
     Database,
     Native,
     External,

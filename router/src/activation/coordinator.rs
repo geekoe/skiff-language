@@ -710,7 +710,7 @@ impl Drop for ActivationCoordinatorHandle {
     }
 }
 
-/// Spawn point (one coordinator per environment; the durable pending slot is
+/// Task point (one coordinator per environment; the durable pending slot is
 /// the single slot).
 pub struct ActivationCoordinator;
 

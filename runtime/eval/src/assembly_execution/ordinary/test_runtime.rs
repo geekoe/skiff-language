@@ -23,7 +23,7 @@ use skiff_runtime_capability_context::{
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedRequestCapabilityContext,
     OwnedWebsocketCapabilityContext as SharedOwnedWebsocketCapabilityContext, RequestCapabilityApi,
-    RequestCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal, StreamInternalItem,
+    RequestCapabilityContext, TaskSubmitControlRequest, StreamCancelSignal, StreamInternalItem,
     StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
     StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
     TelemetryCapabilityContext, WebsocketCapabilityApi,
@@ -969,7 +969,7 @@ impl RequestCapabilityApi for TestActor {
     fn request_build_id(&self) -> &str {
         &self.request_build_id
     }
-    fn spawn_service_protocol_identity(&self) -> &str {
+    fn task_service_protocol_identity(&self) -> &str {
         ""
     }
     fn request_service_protocol_identity(&self) -> &str {
@@ -985,9 +985,9 @@ impl RequestCapabilityApi for TestActor {
         self.trace_id.as_deref()
     }
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        _request: SpawnSubmitControlRequest,
+        _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         _execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {

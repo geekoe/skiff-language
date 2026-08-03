@@ -111,7 +111,7 @@ impl BlockingLoader {
 
     /// Runs one blocking operation under a permit and a deadline.
     ///
-    /// Saturation and shutdown fail closed before any work is spawned; a
+    /// Saturation and shutdown fail closed before any work is task; a
     /// deadline elapse fails the logical read closed (the detached blocking
     /// thread finishes on its own; it never consumes another permit).
     pub async fn run<T, E, F>(&self, operation: F) -> Result<T, BlockingLoaderError<E>>

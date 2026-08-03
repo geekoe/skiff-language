@@ -115,7 +115,7 @@ impl ActorExecutionFrame {
     }
 
     /// The logical Actor reference of the currently executing instance. `self`
-    /// in actor methods is not materialized as an ordinary value, so spawned
+    /// in actor methods is not materialized as an ordinary value, so task
     /// self-messages derive the receiver from the active execution frame.
     pub(crate) fn current_actor_ref(&self) -> Result<ActorRef, RuntimeError> {
         let fence = self.suspension.shared.handle.fence();

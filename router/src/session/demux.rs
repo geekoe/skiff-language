@@ -17,7 +17,7 @@ use skiff_runtime_transport::assembly_activation::{
     decode_assembly_activation_frame, AssemblyActivationFrameDirection,
 };
 use skiff_runtime_transport::protocol::{
-    decode_binary_frame, decode_typed_binary_frame, spawn_submit_frame_direction, FrameDirection,
+    decode_binary_frame, decode_typed_binary_frame, task_submit_frame_direction, FrameDirection,
     RuntimeCapabilitiesFrameHeader, RuntimeFrameFamily, RuntimeHealthFrameHeader,
 };
 
@@ -93,7 +93,7 @@ impl RuntimeFrameDemux {
             return DemuxOutcome::Terminal(TerminalKind::MalformedFrame);
         };
 
-        // Inbound frames must be Runtime->Router. The Spawn family is
+        // Inbound frames must be Runtime->Router. The Task family is
         // mixed-direction (submit.request = Runtime->Router;
         // submit.response/error = Router->Runtime) and is narrowed
         // frame-level below; all others are Either at family level and are
@@ -124,21 +124,21 @@ impl RuntimeFrameDemux {
                 sink_or_unimplemented(sinks.connection.as_ref(), family, raw)
             }
             RuntimeFrameFamily::Actor => sink_or_unimplemented(sinks.actor.as_ref(), family, raw),
-            RuntimeFrameFamily::Spawn => self.classify_spawn(frame_type, raw, sinks),
+            RuntimeFrameFamily::Task => self.classify_task(frame_type, raw, sinks),
         }
     }
 
-    /// Spawn family frame-level direction narrowing (C-model-spawn §3.0).
+    /// Task family frame-level direction narrowing (C-model-task §3.0).
     ///
-    /// Only `spawn.submit.request` may arrive from the Runtime and reach the
-    /// installed spawn sink; `spawn.submit.response/error` are Router->Runtime
+    /// Only `task.submit.request` may arrive from the Runtime and reach the
+    /// installed task sink; `task.submit.response/error` are Router->Runtime
     /// frames and are direction violations here (fail closed, even with a
     /// sink installed). Without an installed sink the request terminates the
     /// exact session via `Unimplemented` (authority design §6.1).
-    fn classify_spawn(&self, frame_type: &str, raw: &[u8], sinks: &InboundSinkSet) -> DemuxOutcome {
-        match spawn_submit_frame_direction(frame_type) {
+    fn classify_task(&self, frame_type: &str, raw: &[u8], sinks: &InboundSinkSet) -> DemuxOutcome {
+        match task_submit_frame_direction(frame_type) {
             Some(FrameDirection::RuntimeToRouter) => {
-                sink_or_unimplemented(sinks.spawn.as_ref(), RuntimeFrameFamily::Spawn, raw)
+                sink_or_unimplemented(sinks.task.as_ref(), RuntimeFrameFamily::Task, raw)
             }
             Some(FrameDirection::RouterToRuntime) | Some(FrameDirection::Either) | None => {
                 DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
@@ -234,7 +234,7 @@ pub struct InboundSinkSet {
     pub connection: Option<Arc<dyn InboundFrameSink>>,
     pub activation_transaction: Option<Arc<dyn InboundFrameSink>>,
     pub actor: Option<Arc<dyn InboundFrameSink>>,
-    pub spawn: Option<Arc<dyn InboundFrameSink>>,
+    pub task: Option<Arc<dyn InboundFrameSink>>,
 }
 
 impl InboundSinkSet {
@@ -243,7 +243,7 @@ impl InboundSinkSet {
             && self.connection.is_none()
             && self.activation_transaction.is_none()
             && self.actor.is_none()
-            && self.spawn.is_none()
+            && self.task.is_none()
     }
 
     pub fn sink_for(&self, family: RuntimeFrameFamily) -> Option<&Arc<dyn InboundFrameSink>> {
@@ -257,7 +257,7 @@ impl InboundSinkSet {
             RuntimeFrameFamily::Request => self.request.as_ref(),
             RuntimeFrameFamily::Connection => self.connection.as_ref(),
             RuntimeFrameFamily::Actor => self.actor.as_ref(),
-            RuntimeFrameFamily::Spawn => self.spawn.as_ref(),
+            RuntimeFrameFamily::Task => self.task.as_ref(),
         }
     }
 }
@@ -285,7 +285,7 @@ fn sink_family_for_frame_type(
         sinks.connection.as_ref(),
         sinks.activation_transaction.as_ref(),
         sinks.actor.as_ref(),
-        sinks.spawn.as_ref(),
+        sinks.task.as_ref(),
     ];
     let mut matched = None;
     for sink in candidates.into_iter().flatten() {

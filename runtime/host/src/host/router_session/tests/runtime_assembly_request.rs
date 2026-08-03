@@ -12,7 +12,7 @@ use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
         ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, SpawnSubmitResponseFrameHeader,
+        ResponseErrorFrameHeader, ResponseStartFrameHeader, TaskSubmitResponseFrameHeader,
         TypedEnvelope, BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
@@ -22,8 +22,8 @@ use skiff_runtime_transport::{
         RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
         RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
         RuntimeAssemblyRequestStartFrameWireHeader, RuntimeAssemblyRequestTraceFrameHeader,
-        RuntimeAssemblySpawnInvocationFrameHeader, RuntimeAssemblySpawnRequestCallerFrameHeader,
-        RuntimeAssemblySpawnRequestRoutingFrameHeader, RuntimeAssemblySpawnRequestStartFrameHeader,
+        RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
+        RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
     },
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -34,26 +34,26 @@ use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 pub(super) mod fixture;
 
 #[tokio::test]
-async fn host_direct_spawn_executes_exact_route_and_cleans_supervision() {
-    let (host, route) = fixture::admitted_spawn_submit_host().await;
-    let parent = canonical_header(&route, "host-direct-spawn-parent");
+async fn host_direct_task_executes_exact_route_and_cleans_supervision() {
+    let (host, route) = fixture::admitted_task_submit_host().await;
+    let parent = canonical_header(&route, "host-direct-task-parent");
     let parent_frame = encode_binary_frame(&parent, b"null").unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     dispatch(&host, &parent_frame, &sender).await.unwrap();
 
     let message = timeout(Duration::from_secs(10), receiver.recv())
         .await
-        .expect("spawn submit timeout")
-        .expect("spawn submit channel");
-    let RouterWriterMessage::SpawnSubmit(message) = message else {
-        panic!("compiled spawn statement must emit canonical spawn.submit")
+        .expect("task submit timeout")
+        .expect("task submit channel");
+    let RouterWriterMessage::TaskSubmit(message) = message else {
+        panic!("compiled dispatch statement must emit canonical task.submit")
     };
     let submit = message.request;
     let payload = message.payload;
     assert_eq!(
-        skiff_runtime_request::SpawnCallerKind::Request,
+        skiff_runtime_request::TaskCallerKind::Request,
         message.caller_kind,
-        "ordinary request spawn parent must be callerKind=request"
+        "ordinary request task parent must be callerKind=request"
     );
     assert!(submit
         .build_id
@@ -63,12 +63,12 @@ async fn host_direct_spawn_executes_exact_route_and_cleans_supervision() {
     assert!(!payload.is_empty());
 
     let receipt = encode_binary_frame(
-        &SpawnSubmitResponseFrameHeader {
+        &TaskSubmitResponseFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "spawn.submit.response".to_string(),
+            envelope_type: "task.submit.response".to_string(),
             rpc_id: submit.rpc_id.clone(),
-            spawn_id: "spawn-direct-1".to_string(),
-            request_id: "host-direct-spawn-child".to_string(),
+            task_id: "task-direct-1".to_string(),
+            request_id: "host-direct-task-child".to_string(),
             status: "submitted".to_string(),
         },
         &[],
@@ -80,46 +80,46 @@ async fn host_direct_spawn_executes_exact_route_and_cleans_supervision() {
     };
     assert_eq!(parent_end.request_id, parent.request_id);
 
-    let spawn = direct_spawn_header(
+    let task = direct_task_header(
         &route,
-        "host-direct-spawn-child",
+        "host-direct-task-child",
         submit.target.clone(),
         None,
     );
-    let spawn_frame = encode_binary_frame(&spawn, &payload).unwrap();
-    dispatch(&host, &spawn_frame, &sender).await.unwrap();
+    let task_frame = encode_binary_frame(&task, &payload).unwrap();
+    dispatch(&host, &task_frame, &sender).await.unwrap();
     let Terminal::End(end, returned_payload) = recv_terminal(&mut receiver).await else {
-        panic!("exact direct spawn target must finish successfully")
+        panic!("exact direct dispatch target must finish successfully")
     };
-    assert_eq!(end.request_id, spawn.request_id);
+    assert_eq!(end.request_id, task.request_id);
     assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
     assert!(returned_payload.is_empty());
     assert_eq!(host.request_supervisor.active_count().await, 0);
 
-    let unknown = direct_spawn_header(
+    let unknown = direct_task_header(
         &route,
-        "host-direct-spawn-unknown",
+        "host-direct-task-unknown",
         "function:missing".to_string(),
         None,
     );
     let unknown_frame = encode_binary_frame(&unknown, &payload).unwrap();
     dispatch(&host, &unknown_frame, &sender).await.unwrap();
     let Terminal::Error(error, _) = recv_terminal(&mut receiver).await else {
-        panic!("unknown direct spawn target must fail closed")
+        panic!("unknown direct dispatch target must fail closed")
     };
     assert_eq!(error.request_id(), unknown.request_id);
     assert_eq!(host.request_supervisor.active_count().await, 0);
 
-    let expired = direct_spawn_header(
+    let expired = direct_task_header(
         &route,
-        "host-direct-spawn-expired",
+        "host-direct-task-expired",
         submit.target,
         Some(deadline(0, 0)),
     );
     let expired_frame = encode_binary_frame(&expired, &payload).unwrap();
     dispatch(&host, &expired_frame, &sender).await.unwrap();
     let Terminal::Error(error, _) = recv_terminal(&mut receiver).await else {
-        panic!("expired direct spawn request must use ordinary response.error")
+        panic!("expired direct task request must use ordinary response.error")
     };
     assert_eq!(error.request_id(), expired.request_id);
     assert_eq!(host.request_supervisor.active_count().await, 0);
@@ -1068,35 +1068,35 @@ fn canonical_header(
     }
 }
 
-fn direct_spawn_header(
+fn direct_task_header(
     route: &ActiveAssemblyRoute,
     request_id: &str,
     target: String,
     deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-) -> RuntimeAssemblySpawnRequestStartFrameHeader {
-    RuntimeAssemblySpawnRequestStartFrameHeader {
+) -> RuntimeAssemblyTaskRequestStartFrameHeader {
+    RuntimeAssemblyTaskRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: "unary".to_string(),
-        caller: RuntimeAssemblySpawnRequestCallerFrameHeader {
+        caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
             kind: "service".to_string(),
         },
-        routing: RuntimeAssemblySpawnRequestRoutingFrameHeader {
+        routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             deployment: route.deployment().clone(),
         },
-        invocation: RuntimeAssemblySpawnInvocationFrameHeader {
-            kind: "spawn".to_string(),
+        invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+            kind: "task".to_string(),
             target_kind: "function".to_string(),
             target,
         },
         deadline,
         trace: RuntimeAssemblyRequestTraceFrameHeader {
             trace_id: format!("trace-{request_id}"),
-            span_id: "span-host-direct-spawn".to_string(),
+            span_id: "span-host-direct-task".to_string(),
             parent_span_id: None,
             sampled: None,
         },

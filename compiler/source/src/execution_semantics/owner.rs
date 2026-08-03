@@ -223,7 +223,7 @@ impl<'a> OwnerAnalyzer<'a> {
                     self.validate_expr(value, scope, context);
                 }
             }
-            Stmt::Spawn { call } => self.validate_expr(call, scope, context),
+            Stmt::Dispatch { call } => self.validate_expr(call, scope, context),
             Stmt::Break | Stmt::Continue => {
                 if context.value_boundary {
                     self.diagnostic("value block control flow cannot cross the value boundary");

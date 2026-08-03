@@ -250,7 +250,7 @@ impl ActorHarness {
             service_files: vec![file],
             packages: Vec::new(),
             service_resources: PublicationResourceTable::default(),
-            spawn_routes: HashMap::new(),
+            task_routes: HashMap::new(),
             link_overlay: LinkOverlay::default(),
             types: RuntimeTypeContext::default(),
         };

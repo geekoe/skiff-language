@@ -9,10 +9,10 @@ use skiff_artifact_model::{
 use skiff_router::activation::{ActivationCoordinatorHealth, ActivationPhase, DecisionState};
 use skiff_router::actor::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, SpawnHealth as ActorSpawnHealth,
+    LeaseHealth, OwnershipHealth, TaskHealth as ActorTaskHealth,
 };
 use skiff_router::dispatch::{
-    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, SpawnHealth, TerminalHealth,
+    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
     TerminalSource,
 };
 use skiff_router::health::{
@@ -61,7 +61,7 @@ mod tests {
             outbound_stream_leases_active: 0,
             stream_runtime_streams_active: 0,
             flag_backed_cancel_waiters_active: 0,
-            spawned_tasks_active: 0,
+            task_requests_active: 0,
         }
     }
 
@@ -88,7 +88,7 @@ mod tests {
                 by_source: BTreeMap::new(),
             },
             admission: AdmissionHealth::default(),
-            spawn: SpawnHealth::default(),
+            task: TaskHealth::default(),
             stopped: false,
         };
         let coordinator = ActivationCoordinatorHealth {
@@ -120,7 +120,7 @@ mod tests {
             invocation: InvocationHealth::default(),
             control: ControlHealth::default(),
             lease: LeaseHealth::default(),
-            spawn: ActorSpawnHealth::default(),
+            task: ActorTaskHealth::default(),
         };
         build_counters(
             &dispatcher,
@@ -204,7 +204,7 @@ mod tests {
             request_pending: skiff_router::health::counters::RequestPendingCounters {
                 unary: dispatcher.pending.unary,
                 stream: dispatcher.pending.stream,
-                derived_spawn: dispatcher.pending.derived_spawn,
+                derived_task: dispatcher.pending.derived_task,
                 http_pending: 0,
                 http_overflow_terminals: 0,
                 stopped: dispatcher.stopped,
@@ -231,11 +231,11 @@ mod tests {
                 ws_slow_client_count: 0,
                 ws_observed_write_bytes_total: 0,
             },
-            spawned_tasks: skiff_router::health::counters::SpawnedTaskCounters {
+            tasks: skiff_router::health::counters::SpawnedTaskCounters {
                 live_session_tasks: 0,
-                actor_spawn_capacity_in_use: 0,
-                actor_spawn_accepted: 0,
-                actor_spawn_rejected: 0,
+                actor_task_capacity_in_use: 0,
+                actor_task_accepted: 0,
+                actor_task_rejected: 0,
             },
             shutdown: skiff_router::health::counters::ShutdownResidueCounters {
                 session_fail_stop: None,
@@ -282,7 +282,7 @@ mod tests {
             "http",
             "mailboxes",
             "writerQueues",
-            "spawnedTasks",
+            "tasks",
             "shutdown",
         ] {
             assert!(
@@ -298,7 +298,7 @@ mod tests {
             pending: PendingHealth {
                 unary: 1,
                 stream: 2,
-                derived_spawn: 3,
+                derived_task: 3,
             },
             terminal: TerminalHealth {
                 by_source: BTreeMap::from([(TerminalSource::Timeout, 4)]),
@@ -307,7 +307,7 @@ mod tests {
                 permits_held: 5,
                 ..AdmissionHealth::default()
             },
-            spawn: SpawnHealth::default(),
+            task: TaskHealth::default(),
             stopped: false,
         };
         let coordinator = ActivationCoordinatorHealth {
@@ -323,7 +323,7 @@ mod tests {
         let mut actor = ActorHealthSnapshot::default();
         actor.ownership.current_fences = 3;
         actor.invocation.pending = 4;
-        actor.spawn.actor_invocation_accepted = 6;
+        actor.task.actor_invocation_accepted = 6;
         let counters = build_counters(
             &dispatcher,
             &coordinator,
@@ -354,10 +354,10 @@ mod tests {
         let value = serde_json::to_value(&counters).expect("counters serialize");
         assert_eq!(value["requestPending"]["unary"], 1);
         assert_eq!(value["requestPending"]["stream"], 2);
-        assert_eq!(value["requestPending"]["derivedSpawn"], 3);
+        assert_eq!(value["requestPending"]["derivedTask"], 3);
         assert_eq!(value["admission"]["permitsHeld"], 5);
         assert_eq!(value["terminal"]["bySource"]["timeout"], 4);
-        assert_eq!(value["actor"]["spawn"]["actorInvocationAccepted"], 6);
+        assert_eq!(value["actor"]["task"]["actorInvocationAccepted"], 6);
         assert_eq!(value["activation"]["phase"], "prepared");
         assert_eq!(value["activation"]["activationId"], "activation-x");
         assert_eq!(value["actor"]["ownership"]["currentFences"], 3);
@@ -477,7 +477,7 @@ mod tests {
             value["runtimes"][0]["counters"]["outboundRequestsPending"],
             0
         );
-        assert_eq!(value["runtimes"][0]["counters"]["spawnedTasksActive"], 0);
+        assert_eq!(value["runtimes"][0]["counters"]["taskRequestsActive"], 0);
     }
 
     #[test]

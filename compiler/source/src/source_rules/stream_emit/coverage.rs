@@ -213,7 +213,7 @@ fn collect_call_targets_in_stmt(
 ) {
     match stmt {
         Stmt::Let { value, .. }
-        | Stmt::Spawn { call: value }
+        | Stmt::Dispatch { call: value }
         | Stmt::Emit(value)
         | Stmt::Expr(value)
         | Stmt::Throw { value }

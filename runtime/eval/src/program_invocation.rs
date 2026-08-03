@@ -39,8 +39,8 @@ use super::{
     program_ir::executable_has_explicit_self_binding,
     program_stream::{executable_body_contains_emit, linked_stream_item_type},
     recoverable_behavior::EvalRecoverableBehaviorHooks,
-    recoverable_spawn_payload::{
-        decode_spawn_args_payload, executable_request_recoverable_expected_plan,
+    recoverable_task_dispatch_payload::{
+        decode_task_args_payload, executable_request_recoverable_expected_plan,
     },
     runtime_ops::{
         runtime_carrier_for_plan, runtime_coerce_required_plan, runtime_empty_object,
@@ -1294,14 +1294,14 @@ fn declare_runtime_value_request_parameters(
         return Ok(());
     }
     let request_context = context.execution_context().request_context();
-    let spawn_decode = RecoverableSpawnDecodeContext {
+    let task_decode = RecoverableTaskDispatchDecodeContext {
         program,
         addr,
         executable,
         artifact_identity: request_context.request_service_protocol_identity(),
         build_id: request_context.request_build_id(),
     };
-    let decoded = decode_request_args_payload(request, args_plan, heap, Some(spawn_decode))?;
+    let decoded = decode_request_args_payload(request, args_plan, heap, Some(task_decode))?;
     let object_handle = match &decoded {
         RuntimeValue::Heap(handle) => match heap.get(*handle)? {
             HeapNode::Object(_) => *handle,
@@ -1330,7 +1330,7 @@ fn declare_runtime_value_request_parameters(
 }
 
 #[derive(Clone, Copy)]
-struct RecoverableSpawnDecodeContext<'a> {
+struct RecoverableTaskDispatchDecodeContext<'a> {
     program: EvalProgramProjection<'a>,
     addr: &'a ExecutableAddr,
     executable: &'a LinkedExecutable,
@@ -1342,7 +1342,7 @@ fn decode_request_args_payload(
     request: &RequestPayloadContext<'_>,
     args_plan: &RuntimeTypePlan,
     heap: &mut RequestHeap,
-    spawn_decode: Option<RecoverableSpawnDecodeContext<'_>>,
+    task_decode: Option<RecoverableTaskDispatchDecodeContext<'_>>,
 ) -> Result<RuntimeValue> {
     let value = match request.payload_encoding() {
         RequestPayloadEncoding::RuntimeBinary => {
@@ -1350,25 +1350,25 @@ fn decode_request_args_payload(
                 PayloadBoundary::external_untrusted(PayloadBoundaryKind::InboundServiceCall);
             decode_payload_plan(request.payload_bytes(), args_plan, &boundary, heap)?
         }
-        RequestPayloadEncoding::RecoverableSpawnPayload => {
-            let spawn_decode = spawn_decode.ok_or_else(|| {
+        RequestPayloadEncoding::RecoverableTaskDispatchPayload => {
+            let task_decode = task_decode.ok_or_else(|| {
                 RuntimeError::InvalidArtifact(
-                    "spawn request payload decode requires linked recoverable spawn context"
+                    "task request payload decode requires linked recoverable task context"
                         .to_string(),
                 )
             })?;
-            let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+            let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
             let expected = executable_request_recoverable_expected_plan(
-                spawn_decode.program.type_view(),
-                spawn_decode.addr,
-                spawn_decode.executable,
+                task_decode.program.type_view(),
+                task_decode.addr,
+                task_decode.executable,
             )?;
             let behavior_hooks = EvalRecoverableBehaviorHooks::new(
-                spawn_decode.program,
-                spawn_decode.artifact_identity,
-                spawn_decode.build_id,
+                task_decode.program,
+                task_decode.artifact_identity,
+                task_decode.build_id,
             )?;
-            decode_spawn_args_payload(
+            decode_task_args_payload(
                 request.payload_bytes(),
                 &expected,
                 &boundary,
@@ -1382,7 +1382,7 @@ fn decode_request_args_payload(
 }
 
 #[cfg(test)]
-mod recoverable_spawn_payload_tests {
+mod recoverable_task_dispatch_payload_tests {
     use std::{collections::HashMap, sync::Arc};
 
     use serde_json::json;
@@ -1403,13 +1403,13 @@ mod recoverable_spawn_payload_tests {
         type_plan::{RuntimeRecordFieldPlan, RuntimeTypePlan},
     };
 
-    use super::{decode_request_args_payload, RecoverableSpawnDecodeContext};
+    use super::{decode_request_args_payload, RecoverableTaskDispatchDecodeContext};
     use crate::invocation::EvalProgramProjection;
 
     struct TestProgram {
         service_files: Vec<Arc<LinkedFileUnit>>,
         packages: Vec<Arc<RuntimeExecutionPackage>>,
-        spawn_routes: HashMap<String, ExecutableAddr>,
+        task_routes: HashMap<String, ExecutableAddr>,
         link_overlay: LinkOverlay,
         types: RuntimeTypeContext,
     }
@@ -1419,7 +1419,7 @@ mod recoverable_spawn_payload_tests {
             Self {
                 service_files: Vec::new(),
                 packages: Vec::new(),
-                spawn_routes: HashMap::new(),
+                task_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
                 types: RuntimeTypeContext::default(),
             }
@@ -1430,7 +1430,7 @@ mod recoverable_spawn_payload_tests {
                 "skiff.test/invocation",
                 &self.service_files,
                 &self.packages,
-                &self.spawn_routes,
+                &self.task_routes,
                 &self.link_overlay,
                 &self.types,
             )
@@ -1455,7 +1455,7 @@ mod recoverable_spawn_payload_tests {
         }])
     }
 
-    fn recoverable_spawn_args_bytes(plan: &RuntimeTypePlan) -> Vec<u8> {
+    fn recoverable_task_args_bytes(plan: &RuntimeTypePlan) -> Vec<u8> {
         let mut heap = RequestHeap::default();
         let value = RuntimeValue::Heap(
             heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
@@ -1467,10 +1467,10 @@ mod recoverable_spawn_payload_tests {
         encode_recoverable_payload_plan(
             &value,
             plan,
-            &PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload),
+            &PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload),
             &heap,
         )
-        .expect("spawn args should encode")
+        .expect("task args should encode")
     }
 
     fn string_executable() -> LinkedExecutable {
@@ -1502,16 +1502,16 @@ mod recoverable_spawn_payload_tests {
     }
 
     #[test]
-    fn worker_spawn_request_args_decode_uses_recoverable_payload_encoding() {
+    fn worker_task_request_args_decode_uses_recoverable_payload_encoding() {
         let plan = args_record_plan();
-        let bytes = recoverable_spawn_args_bytes(&plan);
+        let bytes = recoverable_task_args_bytes(&plan);
         assert_eq!(&bytes[..4], b"SKRE");
         let request = RequestPayloadContext::new("function:target", &bytes, None)
-            .with_payload_encoding(RequestPayloadEncoding::RecoverableSpawnPayload);
+            .with_payload_encoding(RequestPayloadEncoding::RecoverableTaskDispatchPayload);
         let program = TestProgram::empty();
         let executable = string_executable();
         let addr = ExecutableAddr::service(0, 0);
-        let spawn_decode = RecoverableSpawnDecodeContext {
+        let task_decode = RecoverableTaskDispatchDecodeContext {
             program: program.projection(),
             addr: &addr,
             executable: &executable,
@@ -1521,8 +1521,8 @@ mod recoverable_spawn_payload_tests {
         };
 
         let mut heap = RequestHeap::default();
-        let decoded = decode_request_args_payload(&request, &plan, &mut heap, Some(spawn_decode))
-            .expect("worker spawn args should decode from recoverable envelope");
+        let decoded = decode_request_args_payload(&request, &plan, &mut heap, Some(task_decode))
+            .expect("worker task args should decode from recoverable envelope");
 
         let RuntimeValue::Heap(handle) = decoded else {
             panic!("decoded args should be a heap object");
@@ -1539,7 +1539,7 @@ mod recoverable_spawn_payload_tests {
     #[test]
     fn ordinary_request_args_decode_still_rejects_recoverable_envelope_magic() {
         let plan = args_record_plan();
-        let bytes = recoverable_spawn_args_bytes(&plan);
+        let bytes = recoverable_task_args_bytes(&plan);
         let request = RequestPayloadContext::new("function:target", &bytes, None);
 
         let error = decode_request_args_payload(&request, &plan, &mut RequestHeap::default(), None)

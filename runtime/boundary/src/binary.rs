@@ -103,7 +103,7 @@ pub fn decode_payload_plan(
 /// Encodes an explicit recoverable payload slot using the current runtime shape
 /// as a diagnostics-only expected plan.
 ///
-/// This is the non-DB integration helper for spawn/queue/runtime-wire/public/
+/// This is the non-DB integration helper for task/queue/runtime-wire/public/
 /// materialization call sites whose compiler artifact has not yet bridged a
 /// durable recoverable expected plan into this crate. Ordinary service/public
 /// payloads must keep using [`encode_payload_plan`].
@@ -211,8 +211,8 @@ fn recoverable_payload_kind(
     kind: crate::payload::PayloadBoundaryKind,
 ) -> RuntimeRecoverableBoundaryKind {
     match kind {
-        crate::payload::PayloadBoundaryKind::SpawnPayload => {
-            RuntimeRecoverableBoundaryKind::SpawnPayload
+        crate::payload::PayloadBoundaryKind::TaskDispatchPayload => {
+            RuntimeRecoverableBoundaryKind::TaskDispatchPayload
         }
         crate::payload::PayloadBoundaryKind::QueueWorkItemPayload => {
             RuntimeRecoverableBoundaryKind::QueueWorkItemPayload

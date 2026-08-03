@@ -223,7 +223,7 @@ fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn spawn_router(config_path: &Path) -> Child {
+fn task_router(config_path: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_skiff-router"))
         .arg(config_path)
         .stdin(Stdio::null())
@@ -371,7 +371,7 @@ fn health_frame(replica_id: &str) -> Vec<u8> {
             outbound_stream_leases_active: 0,
             stream_runtime_streams_active: 0,
             flag_backed_cancel_waiters_active: 0,
-            spawned_tasks_active: 0,
+            task_requests_active: 0,
         },
     };
     encode_binary_frame(&header, &[]).expect("encode health frame")
@@ -972,7 +972,7 @@ mod tests {
         seed_committed(&live, &repository).await;
 
         let config_path = write_router_config(&live);
-        let mut router = spawn_router(&config_path);
+        let mut router = task_router(&config_path);
         wait_for_listeners(&live, &mut router);
 
         let state = Arc::new(RelayState::new());

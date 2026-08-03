@@ -1,5 +1,5 @@
 //! W-dispatch invariant tests beyond the frozen corpus: writer failures,
-//! deadline rechecks, stale exact-fence, spawn authority, closed-session race
+//! deadline rechecks, stale exact-fence, task authority, closed-session race
 //! and pending/permit-to-zero assertions (C-dispatch §3/§4/§5/§7).
 
 mod dispatch_harness;
@@ -12,7 +12,7 @@ use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use dispatch_harness::{
-    authority_for_session, corpus_epoch, request, session_state, FakeActorMethodSpawnControl,
+    authority_for_session, corpus_epoch, request, session_state, FakeActorMethodTaskControl,
     FakeCandidateViewSource, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer,
     FakeSessionAbort, SessionState,
 };
@@ -44,7 +44,7 @@ impl Rig {
         let candidate = FakeCandidateViewSource::new(sessions);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
-        let actor = FakeActorMethodSpawnControl::new();
+        let actor = FakeActorMethodTaskControl::new();
         let revalidate = FakeLeaseRevalidate::new();
         let mut options = RuntimeDispatcherOptions::new(
             max_concurrency,
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_spawn_authority_mismatch_is_rejected_without_pending() {
+    fn dispatch_task_authority_mismatch_is_rejected_without_pending() {
         let rig = Rig::new(2);
         rig.accept("req-1", "unary");
         let wrong_authority = {
@@ -244,19 +244,19 @@ mod tests {
             authority.assembly_generation += 1;
             authority
         };
-        let result = rig.dispatcher.spawn_submit(SpawnSubmit {
-            spawn_request_id: "spawn-1".to_string(),
+        let result = rig.dispatcher.task_submit(TaskSubmit {
+            task_request_id: "task-1".to_string(),
             caller_request_id: "req-1".to_string(),
-            target_kind: SpawnTargetKind::Function,
+            target_kind: TaskTargetKind::Function,
             target: "example.com/service-1:fn".to_string(),
             authority: wrong_authority,
             deadline: None,
         });
         assert_eq!(
             result,
-            SpawnSubmitResult::Rejected {
-                request_id: "spawn-1".to_string(),
-                reason: SpawnRejectReason::ParentAuthorityMismatch,
+            TaskSubmitResult::Rejected {
+                request_id: "task-1".to_string(),
+                reason: TaskRejectReason::ParentAuthorityMismatch,
             }
         );
         assert_eq!(rig.dispatcher.pending_count(), 1);
@@ -404,26 +404,26 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_derived_spawn_end_with_payload_is_protocol_error() {
+    fn dispatch_derived_task_end_with_payload_is_protocol_error() {
         let rig = Rig::new(2);
         rig.accept("req-1", "unary");
-        let result = rig.dispatcher.spawn_submit(SpawnSubmit {
-            spawn_request_id: "spawn-1".to_string(),
+        let result = rig.dispatcher.task_submit(TaskSubmit {
+            task_request_id: "task-1".to_string(),
             caller_request_id: "req-1".to_string(),
-            target_kind: SpawnTargetKind::Function,
+            target_kind: TaskTargetKind::Function,
             target: "example.com/service-1:fn".to_string(),
             authority: authority_for_session(&rig.session),
             deadline: None,
         });
-        let SpawnSubmitResult::AcceptedDerived(derived) = result else {
-            panic!("derived spawn must be accepted");
+        let TaskSubmitResult::AcceptedDerived(derived) = result else {
+            panic!("derived task must be accepted");
         };
         assert_eq!(derived.session_epoch, rig.session);
 
         let outcome = rig.dispatcher.on_frame(
             &rig.session,
             RuntimeResponseFrame::End {
-                request_id: "spawn-1".to_string(),
+                request_id: "task-1".to_string(),
                 payload_present: true,
                 payload: Vec::new(),
             },
@@ -516,26 +516,26 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_duplicate_spawn_request_id_is_rejected() {
+    fn dispatch_duplicate_task_request_id_is_rejected() {
         let rig = Rig::new(2);
         rig.accept("req-1", "unary");
-        let spawn = || SpawnSubmit {
-            spawn_request_id: "spawn-1".to_string(),
+        let task = || TaskSubmit {
+            task_request_id: "task-1".to_string(),
             caller_request_id: "req-1".to_string(),
-            target_kind: SpawnTargetKind::Function,
+            target_kind: TaskTargetKind::Function,
             target: "example.com/service-1:fn".to_string(),
             authority: authority_for_session(&rig.session),
             deadline: None,
         };
         assert!(matches!(
-            rig.dispatcher.spawn_submit(spawn()),
-            SpawnSubmitResult::AcceptedDerived(_)
+            rig.dispatcher.task_submit(task()),
+            TaskSubmitResult::AcceptedDerived(_)
         ));
         assert_eq!(
-            rig.dispatcher.spawn_submit(spawn()),
-            SpawnSubmitResult::Rejected {
-                request_id: "spawn-1".to_string(),
-                reason: SpawnRejectReason::Duplicate,
+            rig.dispatcher.task_submit(task()),
+            TaskSubmitResult::Rejected {
+                request_id: "task-1".to_string(),
+                reason: TaskRejectReason::Duplicate,
             }
         );
         assert_eq!(rig.dispatcher.health().admission.permits_held, 2);
@@ -562,7 +562,7 @@ mod tests {
         let candidate = FakeCandidateViewSource::new(vec![session_state("s1", "runtime-a", 1)]);
         let peer = FakeRuntimePeer::new();
         let abort = FakeSessionAbort::new();
-        let actor = FakeActorMethodSpawnControl::new();
+        let actor = FakeActorMethodTaskControl::new();
         let revalidate = FakeLeaseRevalidate::new();
         let options = RuntimeDispatcherOptions::new(
             2,

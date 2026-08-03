@@ -16,7 +16,7 @@
 //!
 //! Owner boundary (§3.2): `RuntimeAdmissionPool` owns per-session capacity
 //! permits and the selection cursor/policy only; `RequestDispatcher` owns
-//! ordinary unary/stream pending, terminal and derived function-spawn
+//! ordinary unary/stream pending, terminal and derived function-task
 //! correlation only. Neither owns session truth, sockets or the active
 //! routing epoch: epoch capture and candidate projection are consumed through
 //! the typed ports in [`candidate`], and session cancellation arrives through
@@ -45,18 +45,18 @@ pub use candidate::{
 };
 pub use dispatcher::{
     CancelFrame, DispatchedFrame, FrameOutcome, PendingTerminal, RequestDispatcher, RequestOutcome,
-    RuntimeDispatcherOptions, SpawnRejectReason, SpawnSubmitResult, SubmitRejectReason,
+    RuntimeDispatcherOptions, TaskRejectReason, TaskSubmitResult, SubmitRejectReason,
     SubmitResult,
 };
 pub use frame::{
-    ActorMethodSpawnControl, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TimeoutCheck,
+    ActorMethodTaskControl, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TimeoutCheck,
     WireTimeoutCheck,
 };
 pub use health::{
-    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, SpawnHealth, TerminalHealth,
+    AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
     TerminalSource,
 };
 pub use types::{
-    derived_deadline, ActorMethodSpawnDispatch, DerivedSpawnResult, DispatchSubmit,
-    RequestAuthority, RequestDeadline, SpawnSubmit, SpawnTargetKind,
+    derived_deadline, ActorMethodTaskDispatch, DerivedTaskResult, DispatchSubmit,
+    RequestAuthority, RequestDeadline, TaskSubmit, TaskTargetKind,
 };

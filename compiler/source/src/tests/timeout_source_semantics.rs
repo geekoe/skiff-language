@@ -270,7 +270,7 @@ fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers()
         "#,
     );
 
-    // Ordinary callers and spawn targets are unaffected.
+    // Ordinary callers and dispatch targets are unaffected.
     build_ok(
         r#"
             function helper() -> void {
@@ -297,7 +297,7 @@ fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers()
               }
 
               function run() -> void {
-                spawn helper()
+                dispatch helper()
               }
             }
 

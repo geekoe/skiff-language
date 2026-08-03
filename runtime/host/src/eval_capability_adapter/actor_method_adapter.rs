@@ -230,7 +230,7 @@ impl ActorMethodEvalExecution {
             self.test_http_admission
                 .as_ref()
                 .map(concrete::TestHttpAdmittedContext::capability),
-            SpawnCallerKind::ActorInvocation,
+            TaskCallerKind::ActorInvocation,
             self.cancellation.clone(),
         );
         let stream_runtime = self.interpreter.stream_runtime.clone();
@@ -305,10 +305,10 @@ mod tests {
 
     #[test]
     fn request_extra_with_trace_id_builds_request_mapper_trace_shape() {
-        let extra = request_extra_with_trace_id(Some("trace:spawn:1"));
+        let extra = request_extra_with_trace_id(Some("trace:task:1"));
         assert_eq!(
             extra["trace"]["traceId"],
-            Value::String("trace:spawn:1".to_string())
+            Value::String("trace:task:1".to_string())
         );
     }
 

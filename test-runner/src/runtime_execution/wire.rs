@@ -684,7 +684,7 @@ fn decode_health_counters(value: &Value, parent: &str) -> Result<(), String> {
         "outboundStreamLeasesActive",
         "streamRuntimeStreamsActive",
         "flagBackedCancelWaitersActive",
-        "spawnedTasksActive",
+        "taskRequestsActive",
     ];
     let counters = exact_object(value, &names, &[], &context)?;
     for name in names {
@@ -717,7 +717,7 @@ const HEALTH_COUNTER_SECTIONS: &[&str] = &[
     "http",
     "mailboxes",
     "writerQueues",
-    "spawnedTasks",
+    "tasks",
     "shutdown",
 ];
 
@@ -781,7 +781,7 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         .expect("section object checked above");
     u64_field(request_pending, "unary", &context("requestPending"))?;
     u64_field(request_pending, "stream", &context("requestPending"))?;
-    u64_field(request_pending, "derivedSpawn", &context("requestPending"))?;
+    u64_field(request_pending, "derivedTask", &context("requestPending"))?;
     bool_field(request_pending, "stopped", &context("requestPending"))?;
 
     let terminal = counters["terminal"]
@@ -823,7 +823,7 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         "invocation",
         "control",
         "lease",
-        "spawn",
+        "task",
     ] {
         if !actor.get(name).is_some_and(Value::is_object) {
             return Err(format!(
@@ -868,10 +868,10 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         .expect("section object checked above");
     u64_field(writer_queues, "wsSlowClientCount", &context("writerQueues"))?;
 
-    let spawned_tasks = counters["spawnedTasks"]
+    let tasks = counters["tasks"]
         .as_object()
         .expect("section object checked above");
-    u64_field(spawned_tasks, "liveSessionTasks", &context("spawnedTasks"))?;
+    u64_field(tasks, "liveSessionTasks", &context("tasks"))?;
 
     let shutdown = counters["shutdown"]
         .as_object()

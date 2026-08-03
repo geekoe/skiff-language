@@ -209,7 +209,7 @@ impl TestCaseRegistry {
         self.begin_derived_inner(capability, router_session_id, None, request_id)
     }
 
-    /// Registers a derived HTTP, spawn, or Actor request only while its authenticated parent is
+    /// Registers a derived HTTP, task, or Actor request only while its authenticated parent is
     /// still an active member of the same opaque test case. Capability, session, parent
     /// validation, and child insertion share one owner lock so concurrent parent release cannot
     /// admit late work.

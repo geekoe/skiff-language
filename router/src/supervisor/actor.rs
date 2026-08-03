@@ -1,4 +1,4 @@
-//! W-actor production assembly: the six owners plus the spawn consumer with
+//! W-actor production assembly: the six owners plus the task consumer with
 //! the outbound control ports wired through the session outbound registry,
 //! and the A3 catalog captured into the routing epoch view.
 
@@ -21,11 +21,11 @@ use crate::actor::ActorLogicalKey;
 use crate::actor::{
     ActivateInitialControlRequest, ActivationControlPort, ActorActivationBrokerOptions,
     ActorActivationRequestBroker, ActorInvocationRelay, ActorInvocationRelayOptions,
-    ActorLaneSpawnControl, ActorLeaseExpiryScheduler, ActorMethodCatalogView,
-    ActorMethodSpawnExecutionSink, ActorOwnerControlBroker, ActorOwnershipRegistry,
-    ActorSpawnParentResolver, ControlBrokerOptions, FunctionSpawnParentResolver,
-    IdleEvictControlPort, LeaseSchedulerOptions, RelaySpawnParentLookup, SpawnParentLookup,
-    SpawnParentSnapshot, SpawnSubmitAcceptance, SpawnSubmitRouter, SpawnWireStore,
+    ActorLaneTaskControl, ActorLeaseExpiryScheduler, ActorMethodCatalogView,
+    ActorMethodTaskExecutionSink, ActorOwnerControlBroker, ActorOwnershipRegistry,
+    ActorTaskParentResolver, ControlBrokerOptions, FunctionTaskParentResolver,
+    IdleEvictControlPort, LeaseSchedulerOptions, RelayTaskParentLookup, TaskParentLookup,
+    TaskParentSnapshot, TaskSubmitAcceptance, TaskSubmitRouter, TaskWireStore,
     DEFAULT_ACTOR_PENDING_BUDGET,
 };
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
@@ -36,7 +36,7 @@ use crate::session::identity::RuntimeSessionEpoch;
 use super::session_ports::SessionHandle;
 
 /// Fully assembled W-actor lane (composition owner; E-actor-rust adds the
-/// inbound actor frame sink and the real spawn execution owner).
+/// inbound actor frame sink and the real task execution owner).
 #[derive(Debug)]
 pub struct ActorComponents {
     pub registry: Arc<ActorOwnershipRegistry>,
@@ -45,31 +45,31 @@ pub struct ActorComponents {
     pub control_broker: Arc<ActorOwnerControlBroker>,
     pub lease_scheduler: Arc<ActorLeaseExpiryScheduler>,
     pub catalog_view: Arc<ActorMethodCatalogView>,
-    pub spawn_router: Arc<SpawnSubmitRouter>,
-    pub execution_sink: Arc<DeferredActorMethodSpawnExecutionSink>,
-    pub actor_lane_spawn_control: Arc<ActorLaneSpawnControl>,
-    /// Raw wire correlation for accepted actor-method spawns
-    /// (E-actor-rust; M-spawn-repair `SpawnSubmitAcceptance` data surface).
-    pub spawn_wire_store: Arc<SpawnWireStore>,
+    pub task_router: Arc<TaskSubmitRouter>,
+    pub execution_sink: Arc<DeferredActorMethodTaskExecutionSink>,
+    pub actor_lane_task_control: Arc<ActorLaneTaskControl>,
+    /// Raw wire correlation for accepted actor-method tasks
+    /// (E-actor-rust; M-task-repair `TaskSubmitAcceptance` data surface).
+    pub task_wire_store: Arc<TaskWireStore>,
     /// `eviction_request_id -> actor key` registered by the idle-evict port
     /// and consumed by the actor frame sink on the ACK.
     pub idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
     /// Deferred dispatcher reference (assembled after the actor lane; the
-    /// function-spawn parent lookup answers through it).
+    /// function-task parent lookup answers through it).
     pub deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
 }
 
 /// Execution sink installed before the `ActorFrameSink` exists. The
 /// composition sets the real sink once the session/actor sink is assembled;
-/// accepts before then fail closed (no silently dropped spawn).
+/// accepts before then fail closed (no silently dropped task).
 #[derive(Debug, Default)]
-pub struct DeferredActorMethodSpawnExecutionSink {
-    inner: Mutex<Option<Arc<dyn ActorMethodSpawnExecutionSink>>>,
+pub struct DeferredActorMethodTaskExecutionSink {
+    inner: Mutex<Option<Arc<dyn ActorMethodTaskExecutionSink>>>,
     uninstalled_accepts: AtomicU64,
 }
 
-impl DeferredActorMethodSpawnExecutionSink {
-    pub fn set(&self, sink: Arc<dyn ActorMethodSpawnExecutionSink>) {
+impl DeferredActorMethodTaskExecutionSink {
+    pub fn set(&self, sink: Arc<dyn ActorMethodTaskExecutionSink>) {
         *self
             .inner
             .lock()
@@ -81,8 +81,8 @@ impl DeferredActorMethodSpawnExecutionSink {
     }
 }
 
-impl ActorMethodSpawnExecutionSink for DeferredActorMethodSpawnExecutionSink {
-    fn on_accept(&self, acceptance: &SpawnSubmitAcceptance) {
+impl ActorMethodTaskExecutionSink for DeferredActorMethodTaskExecutionSink {
+    fn on_accept(&self, acceptance: &TaskSubmitAcceptance) {
         match self
             .inner
             .lock()
@@ -101,24 +101,24 @@ impl ActorMethodSpawnExecutionSink for DeferredActorMethodSpawnExecutionSink {
 /// pending (C-dispatch §5.1). The dispatcher owns request pending truth; this
 /// adapter only reads its public fenced snapshot ports.
 #[derive(Debug, Clone)]
-pub struct DispatcherSpawnParentLookup {
+pub struct DispatcherTaskParentLookup {
     dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
 }
 
-impl DispatcherSpawnParentLookup {
+impl DispatcherTaskParentLookup {
     pub fn new(dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>) -> Self {
         Self { dispatcher }
     }
 }
 
-impl SpawnParentLookup for DispatcherSpawnParentLookup {
-    fn find_parent(&self, caller_request_id: &str) -> Option<SpawnParentSnapshot> {
+impl TaskParentLookup for DispatcherTaskParentLookup {
+    fn find_parent(&self, caller_request_id: &str) -> Option<TaskParentSnapshot> {
         let dispatcher = self
             .dispatcher
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()?;
-        let (epoch, session) = match dispatcher.spawn_parent_facts(caller_request_id) {
+        let (epoch, session) = match dispatcher.task_parent_facts(caller_request_id) {
             Some(facts) => facts,
             None => {
                 let epoch = dispatcher.pending_epoch(caller_request_id)?;
@@ -126,7 +126,7 @@ impl SpawnParentLookup for DispatcherSpawnParentLookup {
                 (epoch, lease.session_epoch)
             }
         };
-        Some(SpawnParentSnapshot {
+        Some(TaskParentSnapshot {
             runtime_id: session.replica_id.clone(),
             connection: format!("{}#{}", session.replica_id, session.connection_generation),
             assembly_generation: epoch.assembly_generation(),
@@ -150,12 +150,12 @@ pub fn assemble_actor_components(
     ));
     let control_broker = Arc::new(ActorOwnerControlBroker::new(ControlBrokerOptions::default()));
     let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch)));
-    let spawn_wire_store = Arc::new(SpawnWireStore::new());
+    let task_wire_store = Arc::new(TaskWireStore::new());
     let idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
         Arc::new(Mutex::new(None));
-    let execution_sink = Arc::new(DeferredActorMethodSpawnExecutionSink::default());
+    let execution_sink = Arc::new(DeferredActorMethodTaskExecutionSink::default());
     let lease_scheduler = Arc::new(ActorLeaseExpiryScheduler::new(
         Arc::clone(&registry),
         Arc::new(ActorIdleEvictControlPort::with_idle_evictions(
@@ -165,19 +165,19 @@ pub fn assemble_actor_components(
         )),
         LeaseSchedulerOptions::default(),
     ));
-    let spawn_router = Arc::new(SpawnSubmitRouter::new(
-        Arc::new(FunctionSpawnParentResolver::new(Arc::new(
-            DispatcherSpawnParentLookup::new(Arc::clone(&deferred_dispatcher)),
+    let task_router = Arc::new(TaskSubmitRouter::new(
+        Arc::new(FunctionTaskParentResolver::new(Arc::new(
+            DispatcherTaskParentLookup::new(Arc::clone(&deferred_dispatcher)),
         ))),
-        Arc::new(ActorSpawnParentResolver::new(Arc::new(
-            RelaySpawnParentLookup::new(Arc::clone(&relay)),
+        Arc::new(ActorTaskParentResolver::new(Arc::new(
+            RelayTaskParentLookup::new(Arc::clone(&relay)),
         ))),
         DEFAULT_ACTOR_PENDING_BUDGET,
     )?);
-    let actor_lane_spawn_control = Arc::new(ActorLaneSpawnControl::new(
+    let actor_lane_task_control = Arc::new(ActorLaneTaskControl::new(
         Arc::clone(&relay),
-        Arc::clone(&spawn_router),
-        Arc::clone(&execution_sink) as Arc<dyn ActorMethodSpawnExecutionSink>,
+        Arc::clone(&task_router),
+        Arc::clone(&execution_sink) as Arc<dyn ActorMethodTaskExecutionSink>,
     ));
     let activation_broker = Arc::new(ActorActivationRequestBroker::new(
         Arc::clone(&registry),
@@ -194,10 +194,10 @@ pub fn assemble_actor_components(
         control_broker,
         lease_scheduler,
         catalog_view,
-        spawn_router,
+        task_router,
         execution_sink,
-        actor_lane_spawn_control,
-        spawn_wire_store,
+        actor_lane_task_control,
+        task_wire_store,
         idle_evictions,
         deferred_dispatcher,
     }))

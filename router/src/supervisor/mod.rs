@@ -24,12 +24,12 @@ use crate::activation::{
     MongoActivationStateRepositoryOptions, NoopHealthSink, RoutingCandidateQueryPortAdapter,
     SystemClock,
 };
-use crate::actor::ActorMethodSpawnExecutionSink;
+use crate::actor::ActorMethodTaskExecutionSink;
 use crate::bootstrap::{
     ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
 };
 use crate::config::RouterConfig;
-use crate::dispatch::{ActorMethodSpawnControl, RequestDispatcher, RuntimeDispatcherOptions};
+use crate::dispatch::{ActorMethodTaskControl, RequestDispatcher, RuntimeDispatcherOptions};
 use crate::health::HealthAggregator;
 use crate::http::dispatch::HttpDispatchPort;
 use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
@@ -54,7 +54,7 @@ use crate::ws::{
 };
 
 use self::actor::{assemble_actor_components, ActorComponents, ActorSessionOwnerConsumer};
-use self::actor_sink::{ActorFrameSink, ActorSpawnFrameSink};
+use self::actor_sink::{ActorFrameSink, ActorTaskFrameSink};
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
@@ -189,16 +189,16 @@ impl RouterComponents {
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
                     Arc::new(
                         SessionRuntimePeer::new(session_handle.clone())
-                            .with_spawn_wire_store(Arc::clone(&actor.spawn_wire_store)),
+                            .with_task_wire_store(Arc::clone(&actor.task_wire_store)),
                     ),
                     Arc::new(LayerSessionAbort::new(session_handle.clone())),
-                    Arc::clone(&actor.actor_lane_spawn_control) as Arc<dyn ActorMethodSpawnControl>,
+                    Arc::clone(&actor.actor_lane_task_control) as Arc<dyn ActorMethodTaskControl>,
                 )
                 .map_err(SupervisorError::Dispatcher)?,
             )
             .map_err(SupervisorError::Dispatcher)?,
         );
-        // The request-parent spawn lookup answers through the dispatcher
+        // The request-parent task lookup answers through the dispatcher
         // pending (assembled after the actor lane).
         *actor
             .deferred_dispatcher
@@ -341,7 +341,7 @@ impl RouterComponents {
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
         ));
-        let spawn_sink = Arc::new(ActorSpawnFrameSink::new(
+        let task_sink = Arc::new(ActorTaskFrameSink::new(
             Arc::clone(&actor),
             Arc::clone(&dispatcher),
             Arc::clone(&epoch_store),
@@ -349,11 +349,11 @@ impl RouterComponents {
             Arc::new(WsSystemClock),
             config.request_timeout_ms,
         ));
-        // E-actor-rust: the real spawn execution owner is the actor frame
+        // E-actor-rust: the real task execution owner is the actor frame
         // sink (correlation + owner forward share one surface).
         actor
             .execution_sink
-            .set(Arc::clone(&actor_sink) as Arc<dyn ActorMethodSpawnExecutionSink>);
+            .set(Arc::clone(&actor_sink) as Arc<dyn ActorMethodTaskExecutionSink>);
         actor_session_owner.set_sink(Arc::clone(&actor_sink));
         let sinks = InboundSinkSet {
             request: Some(
@@ -366,7 +366,7 @@ impl RouterComponents {
                 Arc::clone(&activation_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
             ),
             actor: Some(Arc::clone(&actor_sink) as Arc<dyn crate::session::demux::InboundFrameSink>),
-            spawn: Some(spawn_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
+            task: Some(task_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
         };
         session.install_inbound_sinks(Arc::new(sinks));
         crate::supervisor::actor::spawn_actor_lane_timer_pump(

@@ -27,7 +27,7 @@ use tracing::error;
 
 use super::{
     assembly_wire::{
-        AdmittedHttpGatewayRequest, AdmittedSpawnRequest, AdmittedWebSocketConnectRequest,
+        AdmittedHttpGatewayRequest, AdmittedTaskRequest, AdmittedWebSocketConnectRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -44,14 +44,14 @@ use crate::{
 };
 
 impl RuntimeHost {
-    pub(super) async fn spawn_direct_request_on_active_assembly(
+    pub(super) async fn task_direct_request_on_active_assembly(
         &self,
         router_session_id: String,
-        request: AdmittedSpawnRequest,
+        request: AdmittedTaskRequest,
         http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        let AdmittedSpawnRequest {
+        let AdmittedTaskRequest {
             header,
             request,
             target,
@@ -79,12 +79,12 @@ impl RuntimeHost {
         telemetry.parent_span_id = header.trace.parent_span_id.clone();
         let Some(supervised_request) = self
             .request_supervisor
-            .begin_spawn(&header, telemetry.clone(), "request.start")
+            .begin_task(&header, telemetry.clone(), "request.start")
             .await
         else {
             self.send_http_gateway_admission_error(
                 &header.request_id,
-                "duplicate active spawn requestId",
+                "duplicate active task requestId",
                 &sender,
             );
             return;
@@ -109,7 +109,7 @@ impl RuntimeHost {
             router_session: match ConnectionRequestSession::new(router_session_id) {
                 Ok(session) => session,
                 Err(error) => {
-                    self.finish_direct_spawn_error(
+                    self.finish_direct_task_error(
                         &supervised_request,
                         header.request_id,
                         RequestError::Decode(error),
@@ -122,15 +122,15 @@ impl RuntimeHost {
             http_response_max_bytes,
             test_http_entries: self.test_http_entries.clone(),
         };
-        let eval_adapter = match crate::eval_capability_adapter::spawn_eval_adapter(
-            crate::eval_capability_adapter::RuntimeSpawnEvalAdapterInput {
+        let eval_adapter = match crate::eval_capability_adapter::task_eval_adapter(
+            crate::eval_capability_adapter::RuntimeTaskEvalAdapterInput {
                 context,
                 header: header.clone(),
             },
         ) {
             Ok(adapter) => adapter,
             Err(error) => {
-                self.finish_direct_spawn_error(
+                self.finish_direct_task_error(
                     &supervised_request,
                     header.request_id,
                     RequestError::Decode(error.to_string()),
@@ -145,7 +145,7 @@ impl RuntimeHost {
         let test_effect_execution = match eval_adapter.begin_test_effect_execution() {
             Ok(execution) => execution,
             Err(error) => {
-                self.finish_direct_spawn_error(
+                self.finish_direct_task_error(
                     &supervised_request,
                     header.request_id,
                     error,
@@ -162,15 +162,15 @@ impl RuntimeHost {
             &execution_budget,
             header.deadline.as_ref().map(|deadline| deadline.timeout_ms),
         );
-        let handles = request_runner::RuntimeSpawnExecutionHandles {
+        let handles = request_runner::RuntimeTaskExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
             eval_adapter,
         };
         let host = self.clone();
         tokio::spawn(async move {
             let request_id = header.request_id;
-            let execution = request_runner::execute_runtime_spawn_request(
-                request_runner::RuntimeSpawnExecutionInput {
+            let execution = request_runner::execute_runtime_task_request(
+                request_runner::RuntimeTaskExecutionInput {
                     target,
                     request,
                     cancelled,
@@ -234,14 +234,14 @@ impl RuntimeHost {
                     }
                 }
                 Err(error) => {
-                    host.finish_direct_spawn_error(&supervised_request, request_id, error, &sender)
+                    host.finish_direct_task_error(&supervised_request, request_id, error, &sender)
                         .await;
                 }
             }
         });
     }
 
-    pub(super) async fn spawn_websocket_connect_on_active_assembly_route(
+    pub(super) async fn task_websocket_connect_on_active_assembly_route(
         &self,
         router_session_id: String,
         request: AdmittedWebSocketConnectRequest,
@@ -445,7 +445,7 @@ impl RuntimeHost {
         });
     }
 
-    pub(super) async fn spawn_request_on_active_assembly_route(
+    pub(super) async fn task_request_on_active_assembly_route(
         &self,
         router_session_id: String,
         request: AdmittedHttpGatewayRequest,
@@ -794,7 +794,7 @@ impl RuntimeHost {
         }
     }
 
-    async fn finish_direct_spawn_error(
+    async fn finish_direct_task_error(
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
@@ -809,7 +809,7 @@ impl RuntimeHost {
         }
         if let Some(failure) = request_error.fixed_service_response_failure() {
             error!(
-                event = "runtime.assembly_spawn_fixed_service_failure",
+                event = "runtime.assembly_task_fixed_service_failure",
                 request_id,
                 trace_id = %failure.error().envelope().trace_id(),
                 error_id = %failure.error().envelope().error_id(),
@@ -841,7 +841,7 @@ impl RuntimeHost {
             .expect("cancellation was split before ordinary response mapping");
         let runtime_error = request_error_into_runtime_error(request_error);
         error!(
-            event = "runtime.assembly_spawn_request_error",
+            event = "runtime.assembly_task_request_error",
             request_id,
             error = %runtime_error
         );

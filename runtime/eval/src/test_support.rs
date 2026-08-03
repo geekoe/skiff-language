@@ -179,7 +179,7 @@ pub struct RuntimeProgram {
     pub timeout: ServiceTimeoutConfig,
     pub operation_route_bindings: Vec<OperationRouteBinding>,
     pub routes: HashMap<String, ExecutableAddr>,
-    pub spawn_routes: HashMap<String, ExecutableAddr>,
+    pub task_routes: HashMap<String, ExecutableAddr>,
     pub operations: HashMap<String, ExecutableAddr>,
     pub operation_receivers: HashMap<String, ConstAddr>,
     pub db: Vec<DbMetadataIr>,
@@ -200,7 +200,7 @@ impl RuntimeProgram {
             packages: self.packages.clone(),
             service_resources: self.service_resources.clone(),
             routes: self.routes.clone(),
-            spawn_routes: self.spawn_routes.clone(),
+            task_routes: self.task_routes.clone(),
             operations: self.operations.clone(),
             operation_receivers: self.operation_receivers.clone(),
             link_overlay: self.link_overlay.clone(),
@@ -226,8 +226,8 @@ impl EvalRuntimeProgramSource for RuntimeProgram {
         &self.service_resources
     }
 
-    fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {
-        &self.spawn_routes
+    fn task_routes(&self) -> &HashMap<String, ExecutableAddr> {
+        &self.task_routes
     }
 
     fn link_overlay(&self) -> &LinkOverlay {

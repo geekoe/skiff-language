@@ -25,10 +25,10 @@ pub use activation::{
     ACTIVATION_REQUEST_BODY_CAP, ASSEMBLY_ACTIVATION_CONTROL_PATH,
 };
 pub use actor::{
-    ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneSpawnControl,
-    ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorMethodSpawnExecutionSink,
-    ActorOwnerControlBroker, ActorOwnershipRegistry, ActorSpawnParentResolver,
-    FunctionSpawnParentResolver, RelaySpawnParentLookup, SpawnSubmitRouter,
+    ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay, ActorLaneTaskControl,
+    ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorMethodTaskExecutionSink,
+    ActorOwnerControlBroker, ActorOwnershipRegistry, ActorTaskParentResolver,
+    FunctionTaskParentResolver, RelayTaskParentLookup, TaskSubmitRouter,
 };
 pub use bootstrap::{
     ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
@@ -42,13 +42,13 @@ pub use config::{
 };
 pub use dispatch::{
     candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
-    dispatch_mode_from_wire, ActorMethodSpawnControl, AdmissionCounters, AdmissionHealth,
-    CancelFrame, CandidateViewSource, DerivedSpawnResult, DispatchedFrame,
+    dispatch_mode_from_wire, ActorMethodTaskControl, AdmissionCounters, AdmissionHealth,
+    CancelFrame, CandidateViewSource, DerivedTaskResult, DispatchedFrame,
     DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate, PendingHealth, PendingTerminal,
     Permit, PermitLedger, RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome,
     Reservation, RevalidateOutcome, RoutingEpochSource, RuntimeAdmissionPool,
-    RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SpawnHealth,
-    SpawnRejectReason, SpawnSubmit, SpawnSubmitResult, SpawnTargetKind, SubmitRejectReason,
+    RuntimeDispatcherOptions, RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TaskHealth,
+    TaskRejectReason, TaskSubmit, TaskSubmitResult, TaskTargetKind, SubmitRejectReason,
     SubmitResult, TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
 };
 pub use health::{

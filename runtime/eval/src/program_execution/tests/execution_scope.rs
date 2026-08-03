@@ -26,7 +26,7 @@ use skiff_runtime_capability_context::{
     FileCapabilitySourceApi, FileChunkSource, FileSourceStreamContext, HttpCapabilityFuture,
     HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
     OwnedExecutionControl, OwnedExecutionControlApi, OwnedRequestCapabilityContext,
-    RequestCapabilityApi, RequestCapabilityContext, SpawnSubmitControlRequest, StreamRuntime,
+    RequestCapabilityApi, RequestCapabilityContext, TaskSubmitControlRequest, StreamRuntime,
     SupervisedStreamConsumptionLease,
 };
 use skiff_runtime_linked_program::{
@@ -618,7 +618,7 @@ impl RequestCapabilityApi for CarrierReceiptActor {
         "build:f445h-i6-receipt"
     }
 
-    fn spawn_service_protocol_identity(&self) -> &str {
+    fn task_service_protocol_identity(&self) -> &str {
         "protocol:f445h-i6-receipt"
     }
 
@@ -638,9 +638,9 @@ impl RequestCapabilityApi for CarrierReceiptActor {
         Some("trace:f445h-i6-receipt")
     }
 
-    fn submit_spawn<'a>(
+    fn submit_task<'a>(
         &'a self,
-        _request: SpawnSubmitControlRequest,
+        _request: TaskSubmitControlRequest,
         _args_payload: Vec<u8>,
         execution_control: OwnedExecutionControl,
     ) -> CapabilityFuture<'a, ()> {

@@ -849,22 +849,22 @@ impl GatewayUpgradeHandler for ClientWsContext {
                 return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }
         };
-        let spawn_parent_deadline = crate::dispatch::RequestDeadline {
+        let task_parent_deadline = crate::dispatch::RequestDeadline {
             timeout_ms: self.connect_timeout_ms,
             expires_at: crate::supervisor::ws::format_iso8601_now_plus(self.connect_timeout_ms),
         };
-        if let Err(_) = self.dispatcher.register_spawn_parent(
+        if let Err(_) = self.dispatcher.register_task_parent(
             connect_request_id.clone(),
             runtime.clone(),
             epoch.clone(),
-            Some(spawn_parent_deadline),
+            Some(task_parent_deadline),
         ) {
-            // The admission cannot act as a spawn parent; fail closed so a
-            // connect handler that spawns gets a deterministic error instead
+            // The admission cannot act as a task parent; fail closed so a
+            // connect handler that tasks gets a deterministic error instead
             // of a mid-flight parent loss.
             self.store.connect_unavailable(
                 &connect_request_id,
-                "websocket connect spawn parent registration failed".to_string(),
+                "websocket connect task parent registration failed".to_string(),
             );
             self.fail_reservation(&connection_id);
             return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
@@ -883,7 +883,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             }
         };
         self.selector.release(&connection_id);
-        self.dispatcher.unregister_spawn_parent(&connect_request_id);
+        self.dispatcher.unregister_task_parent(&connect_request_id);
         let Some(outcome) = outcome else {
             let _ = self
                 .lane

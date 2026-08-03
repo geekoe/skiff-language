@@ -86,19 +86,19 @@ impl Parser {
                 value_spans,
             ));
         }
-        if self.match_ident("spawn") {
+        if self.match_ident("dispatch") {
             let start = self.previous().span.start;
             let call = self.parse_expression()?;
             if !matches!(call.expr, Expr::Call { .. }) {
                 return Err(CompileError::syntax(
-                    "spawn statement expects a call expression",
+                    "dispatch statement expects a call expression",
                     call.spans.span.start,
                 ));
             }
             let (call_expr, call_spans) = call.into_parts();
             let end = call_spans.span.end;
             return Ok(ParsedStmt::with_expression(
-                Stmt::Spawn { call: call_expr },
+                Stmt::Dispatch { call: call_expr },
                 SourceSpan { start, end },
                 call_spans,
             ));

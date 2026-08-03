@@ -22,9 +22,9 @@ use skiff_deployment::projection::actor_routing::{
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::dispatch::{
-    capabilities_from_wire_names, ActorMethodSpawnControl, ActorMethodSpawnDispatch,
+    capabilities_from_wire_names, ActorMethodTaskControl, ActorMethodTaskDispatch,
     CandidateViewSource, DispatchSubmit, LeaseRevalidate, RequestAuthority, RevalidateOutcome,
-    RoutingEpochSource, RuntimePeer, SessionAbortControl, SpawnSubmit,
+    RoutingEpochSource, RuntimePeer, SessionAbortControl, TaskSubmit,
 };
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
@@ -150,10 +150,10 @@ impl LeaseRevalidate for FakeLeaseRevalidate {
 pub struct PeerRecord {
     pub starts: Vec<String>,
     pub cancels: Vec<(String, String)>,
-    pub spawns: Vec<String>,
+    pub tasks: Vec<String>,
     pub fail_start: bool,
     pub fail_cancel: bool,
-    pub fail_spawn: bool,
+    pub fail_task: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -199,16 +199,16 @@ impl RuntimePeer for FakeRuntimePeer {
         Ok(())
     }
 
-    fn send_spawn_submit(
+    fn send_task_submit(
         &self,
         _session: &RuntimeSessionEpoch,
-        spawn: &SpawnSubmit,
+        task: &TaskSubmit,
     ) -> Result<(), String> {
         let mut record = self.record.lock().unwrap();
-        if record.fail_spawn {
+        if record.fail_task {
             return Err("writer queue full".to_string());
         }
-        record.spawns.push(spawn.spawn_request_id.clone());
+        record.tasks.push(task.task_request_id.clone());
         Ok(())
     }
 }
@@ -240,25 +240,25 @@ impl SessionAbortControl for FakeSessionAbort {
 
 /// Fake actor lane parent registry (C-dispatch §5.1).
 #[derive(Debug, Default)]
-pub struct ActorSpawnRecord {
+pub struct ActorTaskRecord {
     pub parents: HashSet<String>,
-    pub submitted: Vec<ActorMethodSpawnDispatch>,
+    pub submitted: Vec<ActorMethodTaskDispatch>,
 }
 
 #[derive(Debug, Clone)]
-pub struct FakeActorMethodSpawnControl {
-    pub record: Arc<Mutex<ActorSpawnRecord>>,
+pub struct FakeActorMethodTaskControl {
+    pub record: Arc<Mutex<ActorTaskRecord>>,
 }
 
-impl FakeActorMethodSpawnControl {
+impl FakeActorMethodTaskControl {
     pub fn new() -> Self {
         Self {
-            record: Arc::new(Mutex::new(ActorSpawnRecord::default())),
+            record: Arc::new(Mutex::new(ActorTaskRecord::default())),
         }
     }
 }
 
-impl ActorMethodSpawnControl for FakeActorMethodSpawnControl {
+impl ActorMethodTaskControl for FakeActorMethodTaskControl {
     fn is_active_invocation_parent(&self, caller_request_id: &str) -> bool {
         self.record
             .lock()
@@ -267,8 +267,8 @@ impl ActorMethodSpawnControl for FakeActorMethodSpawnControl {
             .contains(caller_request_id)
     }
 
-    fn submit_spawn(&self, spawn: ActorMethodSpawnDispatch) {
-        self.record.lock().unwrap().submitted.push(spawn);
+    fn submit_task(&self, task: ActorMethodTaskDispatch) {
+        self.record.lock().unwrap().submitted.push(task);
     }
 }
 
@@ -439,7 +439,7 @@ pub fn request(request_id: &str, mode: &str) -> DispatchSubmit {
     }
 }
 
-/// Fixed corpus-shaped spawn parent authority.
+/// Fixed corpus-shaped task parent authority.
 pub fn authority_for_session(session: &RuntimeSessionEpoch) -> RequestAuthority {
     RequestAuthority {
         assembly_identity: CORPUS_ASSEMBLY_IDENTITY.to_string(),

@@ -88,8 +88,8 @@ pub(crate) mod runtime_value_view {
 pub(crate) mod source_context {
     pub(crate) use skiff_runtime_eval::source_context::*;
 }
-pub(crate) mod spawn_ops {
-    pub(crate) use skiff_runtime_eval::spawn_ops::*;
+pub(crate) mod task_ops {
+    pub(crate) use skiff_runtime_eval::task_ops::*;
 }
 pub(crate) mod stream_callback {
     pub(crate) use skiff_runtime_eval::stream_callback::*;

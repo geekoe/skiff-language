@@ -56,7 +56,7 @@ where
     )
 }
 
-pub(super) fn deserialize_spawn_unary_dispatch_mode<'de, D>(
+pub(super) fn deserialize_task_unary_dispatch_mode<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>
 where
@@ -65,7 +65,7 @@ where
     deserialize_exact_string(
         deserializer,
         "unary",
-        "runtimeAssembly spawn request.start mode",
+        "runtimeAssembly task request.start mode",
     )
 }
 
@@ -73,39 +73,39 @@ pub(super) fn deserialize_service_caller_kind<'de, D>(deserializer: D) -> Result
 where
     D: Deserializer<'de>,
 {
-    deserialize_exact_string(deserializer, "service", "runtimeAssembly spawn caller.kind")
+    deserialize_exact_string(deserializer, "service", "runtimeAssembly dispatch caller.kind")
 }
 
-pub(super) fn deserialize_spawn_invocation_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(super) fn deserialize_task_invocation_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     deserialize_exact_string(
         deserializer,
-        "spawn",
+        "task",
         "runtimeAssembly request.start invocation.kind",
     )
 }
 
-pub(super) fn deserialize_spawn_target_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(super) fn deserialize_task_target_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     deserialize_exact_string(
         deserializer,
         "function",
-        "runtimeAssembly spawn invocation.targetKind",
+        "runtimeAssembly task invocation.targetKind",
     )
 }
 
-pub(super) fn deserialize_spawn_target<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(super) fn deserialize_task_target<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     deserialize_bounded_canonical_string(
         deserializer,
         MAX_RUNTIME_ASSEMBLY_REQUEST_ID_BYTES,
-        "runtimeAssembly spawn invocation.target",
+        "runtimeAssembly task invocation.target",
     )
 }
 

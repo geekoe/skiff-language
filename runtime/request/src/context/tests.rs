@@ -31,18 +31,18 @@ fn request_with_caller_kind(kind: Option<&str>) -> RequestEnvelope {
 }
 
 #[test]
-fn spawn_caller_marks_request_payload_as_recoverable_spawn() {
-    let request = request_with_caller_kind(Some("spawn"));
+fn task_caller_marks_request_payload_as_recoverable_task() {
+    let request = request_with_caller_kind(Some("task"));
     let context = request_payload_context_from_request(&request);
 
     assert_eq!(
         context.payload_encoding(),
-        RequestPayloadEncoding::RecoverableSpawnPayload
+        RequestPayloadEncoding::RecoverableTaskDispatchPayload
     );
 }
 
 #[test]
-fn non_spawn_request_payload_defaults_to_runtime_binary() {
+fn non_task_request_payload_defaults_to_runtime_binary() {
     for kind in [None, Some("service"), Some("gateway")] {
         let request = request_with_caller_kind(kind);
         let context = request_payload_context_from_request(&request);

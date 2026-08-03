@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::activation::{ActivationCoordinatorHealth, ActivationRepositoryHealth, DecisionState};
 use crate::actor::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
-    LeaseHealth, OwnershipHealth, SpawnHealth as ActorSpawnHealth,
+    LeaseHealth, OwnershipHealth, TaskHealth as ActorTaskHealth,
 };
 use crate::bootstrap::{BlockingLoaderHealth, ReaderFailClosedCounters};
 use crate::dispatch::DispatcherHealthSnapshot;
@@ -42,7 +42,7 @@ pub struct HealthCounters {
     pub http: HttpCounters,
     pub mailboxes: MailboxCounters,
     pub writer_queues: WriterQueueCounters,
-    pub spawned_tasks: SpawnedTaskCounters,
+    pub tasks: SpawnedTaskCounters,
     pub shutdown: ShutdownResidueCounters,
 }
 
@@ -154,7 +154,7 @@ pub struct AdmissionCounters {
 pub struct RequestPendingCounters {
     pub unary: u64,
     pub stream: u64,
-    pub derived_spawn: u64,
+    pub derived_task: u64,
     pub http_pending: usize,
     pub http_overflow_terminals: u64,
     pub stopped: bool,
@@ -215,7 +215,7 @@ pub struct ActorCounters {
     pub invocation: InvocationHealthDto,
     pub control: ControlHealthDto,
     pub lease: LeaseHealthDto,
-    pub spawn: ActorSpawnHealthDto,
+    pub task: ActorTaskHealthDto,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -299,7 +299,7 @@ pub struct LeaseHealthDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ActorSpawnHealthDto {
+pub struct ActorTaskHealthDto {
     pub capacity_in_use: usize,
     pub accepted: u64,
     pub rejected: u64,
@@ -418,14 +418,14 @@ pub struct WriterQueueCounters {
     pub ws_observed_write_bytes_total: u64,
 }
 
-/// `counters.spawnedTasks` (session tasks + actor spawn capacity).
+/// `counters.tasks` (session tasks + actor task capacity).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnedTaskCounters {
     pub live_session_tasks: usize,
-    pub actor_spawn_capacity_in_use: usize,
-    pub actor_spawn_accepted: u64,
-    pub actor_spawn_rejected: u64,
+    pub actor_task_capacity_in_use: usize,
+    pub actor_task_accepted: u64,
+    pub actor_task_rejected: u64,
 }
 
 /// `counters.shutdown` (shutdown residue across owners).
@@ -514,7 +514,7 @@ impl From<&DispatcherHealthSnapshot> for RequestPendingCounters {
         Self {
             unary: health.pending.unary,
             stream: health.pending.stream,
-            derived_spawn: health.pending.derived_spawn,
+            derived_task: health.pending.derived_task,
             http_pending: 0,
             http_overflow_terminals: 0,
             stopped: health.stopped,
@@ -585,7 +585,7 @@ impl From<&ActorHealthSnapshot> for ActorCounters {
             invocation: InvocationHealthDto::from(&health.invocation),
             control: ControlHealthDto::from(&health.control),
             lease: LeaseHealthDto::from(&health.lease),
-            spawn: ActorSpawnHealthDto::from(&health.spawn),
+            task: ActorTaskHealthDto::from(&health.task),
         }
     }
 }
@@ -681,8 +681,8 @@ impl From<&LeaseHealth> for LeaseHealthDto {
     }
 }
 
-impl From<&ActorSpawnHealth> for ActorSpawnHealthDto {
-    fn from(health: &ActorSpawnHealth) -> Self {
+impl From<&ActorTaskHealth> for ActorTaskHealthDto {
+    fn from(health: &ActorTaskHealth) -> Self {
         Self {
             capacity_in_use: health.capacity_in_use,
             accepted: health.accepted,
