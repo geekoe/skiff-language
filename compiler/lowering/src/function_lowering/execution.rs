@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     AssignTargetIr, BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite,
-    SlotKind, StmtIr,
+    LiteralIr, SlotKind, StmtIr,
 };
 use skiff_compiler_source::{
     ConcurrentLaneKind, ConcurrentSourcePlan, ExecutionSourceSite, TimeoutSourcePlan,
@@ -68,6 +68,13 @@ impl FunctionLowerer<'_> {
         });
 
         let body_label = self.next_block_label("ternary_body");
+        let init_value = self.push_expr(ExprIr::Literal {
+            value: LiteralIr::Null,
+        });
+        let init_stmt = self.push_stmt(StmtIr::Let {
+            slot: temp_slot,
+            value: init_value,
+        });
         let body_stmt = self.push_stmt(StmtIr::If {
             condition,
             then_block: then_label,
@@ -75,7 +82,7 @@ impl FunctionLowerer<'_> {
         });
         self.body.blocks.push(BlockIr {
             label: body_label.clone(),
-            statements: vec![body_stmt],
+            statements: vec![init_stmt, body_stmt],
         });
         Ok(ExprIr::ValueBlock {
             block: body_label,

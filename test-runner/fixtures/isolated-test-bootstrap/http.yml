@@ -1,0 +1,8 @@
+ready:
+  method: GET
+  path: /__skiff/isolated-bootstrap
+  kind: rawHttp
+  handler: bootstrap.__test.ready
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
