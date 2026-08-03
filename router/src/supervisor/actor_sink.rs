@@ -12,11 +12,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use sha2::{Digest, Sha256};
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, encode_actor_method_frame, ActorMethodCancelFrameHeader,
-    ActorMethodCancelReason, ActorMethodFrame, ActorOwnerUnitFrameHeader,
+    ActorMethodCancelReason, ActorMethodErrorFramePayload, ActorMethodFrame,
+    ActorOwnerUnitFrameHeader,
 };
 use skiff_runtime_transport::actor_owner::{
     decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
@@ -32,9 +32,9 @@ use skiff_runtime_transport::protocol::{
 };
 
 use crate::actor::{
-    ActivationAckOutcome, ActorGetOrCreateRequest, ActorInvokeInput, ActorLogicalKey,
-    ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery, GetOrCreateOutcome, InvocationError,
-    OwnerReleaseReason, OwnerSettleKind, DEFAULT_OWNER_LEASE_TTL_MS,
+    pick_owner_candidate, ActivationAckOutcome, ActorGetOrCreateRequest, ActorInvokeInput,
+    ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery, GetOrCreateOutcome,
+    InvocationError, OwnerReleaseReason, OwnerSettleKind, DEFAULT_OWNER_LEASE_TTL_MS,
 };
 use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::session::demux::InboundFrameSink;
@@ -42,6 +42,9 @@ use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::actor::ActorComponents;
 use crate::supervisor::ws::WsSessionWriter;
+use crate::task::{
+    ActorAttemptTerminal, ActorAttemptTerminalSink, TaskAttemptInvocationCorrelation,
+};
 use crate::ws::Clock;
 
 use super::session_ports::SessionHandle;
@@ -57,15 +60,17 @@ pub struct ActorFrameSink {
     epoch_store: Arc<ActiveRoutingEpochStore>,
     writer: Arc<dyn WsSessionWriter>,
     clock: Arc<dyn Clock>,
+    task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
     waiters: Mutex<HashMap<String, (RuntimeSessionEpoch, ActorLogicalKey)>>,
     invocations: Mutex<HashMap<String, InvocationCorrelation>>,
 }
 
 #[derive(Debug, Clone)]
 struct InvocationCorrelation {
-    caller: RuntimeSessionEpoch,
+    caller: Option<RuntimeSessionEpoch>,
     owner: RuntimeSessionEpoch,
     fence: ActorOwnerFence,
+    task_attempt: Option<TaskAttemptInvocationCorrelation>,
 }
 
 impl ActorFrameSink {
@@ -75,6 +80,7 @@ impl ActorFrameSink {
         epoch_store: Arc<ActiveRoutingEpochStore>,
         writer: Arc<dyn WsSessionWriter>,
         clock: Arc<dyn Clock>,
+        task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
     ) -> Self {
         Self {
             components,
@@ -82,8 +88,66 @@ impl ActorFrameSink {
             epoch_store,
             writer,
             clock,
+            task_attempt_terminal,
             waiters: Mutex::new(HashMap::new()),
             invocations: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers one task-attempt actor invocation correlation (E2b). The
+    /// task admission lane has already relayed the invocation; the sink owns
+    /// the terminal correlation and routes terminals back to the task control
+    /// plane through [`ActorAttemptTerminalSink`].
+    pub fn register_task_attempt_invocation(
+        &self,
+        invocation_id: &str,
+        task_attempt: TaskAttemptInvocationCorrelation,
+        owner: RuntimeSessionEpoch,
+        fence: ActorOwnerFence,
+    ) -> Result<(), String> {
+        let mut invocations = self
+            .invocations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if invocations.contains_key(invocation_id) {
+            return Err(format!(
+                "task-attempt actor invocation {invocation_id} is already registered"
+            ));
+        }
+        invocations.insert(
+            invocation_id.to_string(),
+            InvocationCorrelation {
+                caller: None,
+                owner,
+                fence,
+                task_attempt: Some(task_attempt),
+            },
+        );
+        Ok(())
+    }
+
+    /// Drops one invocation correlation (used when the owner frame write
+    /// failed before the attempt became definite).
+    pub fn unregister_invocation(&self, invocation_id: &str) {
+        self.invocations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(invocation_id);
+    }
+
+    fn report_task_attempt_terminal(
+        &self,
+        correlation: &InvocationCorrelation,
+        terminal: ActorAttemptTerminal,
+    ) {
+        if let Some(task_attempt) = &correlation.task_attempt {
+            self.task_attempt_terminal.on_actor_terminal(
+                &task_attempt.request_id,
+                &task_attempt.task_id,
+                &task_attempt.attempt_id,
+                &task_attempt.lease_id,
+                terminal,
+            );
         }
     }
 
@@ -393,10 +457,19 @@ impl ActorFrameSink {
                 correlation,
                 ActorMethodCancelReason::DeadlineExceeded,
             );
-            self.invocations
+            let correlation = self
+                .invocations
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(invocation_id);
+            if let Some(correlation) = correlation {
+                self.report_task_attempt_terminal(
+                    &correlation,
+                    ActorAttemptTerminal::TargetFailed {
+                        message: "actor method invocation deadline exceeded".to_string(),
+                    },
+                );
+            }
         }
     }
 
@@ -408,25 +481,55 @@ impl ActorFrameSink {
         let token = Self::session_token(session);
         let (caller_cancels, _caller_terminals) =
             self.components.relay.on_caller_disconnect(&token);
-        let mut invocations = self
-            .invocations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for cancel in caller_cancels {
-            let Some(correlation) = invocations.get(&cancel.invocation_id).cloned() else {
-                continue;
-            };
-            self.write_owner_cancel(
-                &cancel.invocation_id,
-                &correlation.owner,
-                &cancel.correlation,
-                ActorMethodCancelReason::Cancelled,
+        let task_attempt_uncertain = {
+            let mut invocations = self
+                .invocations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for cancel in caller_cancels {
+                let Some(correlation) = invocations.get(&cancel.invocation_id).cloned() else {
+                    continue;
+                };
+                self.write_owner_cancel(
+                    &cancel.invocation_id,
+                    &correlation.owner,
+                    &cancel.correlation,
+                    ActorMethodCancelReason::Cancelled,
+                );
+                invocations.remove(&cancel.invocation_id);
+            }
+            let uncertain = invocations
+                .iter()
+                .filter(|(_, correlation)| {
+                    correlation.task_attempt.is_some() && correlation.owner == *session
+                })
+                .map(|(invocation_id, correlation)| {
+                    (invocation_id.clone(), correlation.clone())
+                })
+                .collect::<Vec<_>>();
+            for (invocation_id, _correlation) in &uncertain {
+                invocations.remove(invocation_id);
+            }
+            uncertain
+        };
+        for (_invocation_id, correlation) in task_attempt_uncertain {
+            self.report_task_attempt_terminal(
+                &correlation,
+                ActorAttemptTerminal::Uncertain {
+                    reason: "actor owner runtime session closed".to_string(),
+                },
             );
-            invocations.remove(&cancel.invocation_id);
         }
-        invocations.retain(|_id, correlation| {
-            correlation.owner != *session && correlation.caller != *session
-        });
+        self.invocations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|_id, correlation| {
+                correlation.owner != *session
+                    && correlation
+                        .caller
+                        .as_ref()
+                        .is_none_or(|caller| caller != session)
+            });
     }
 
     fn write_owner_cancel(
@@ -569,9 +672,10 @@ impl ActorFrameSink {
                             .insert(
                                 header.invocation_id.clone(),
                                 InvocationCorrelation {
-                                    caller: session.clone(),
+                                    caller: Some(session.clone()),
                                     owner: owner.clone(),
                                     fence: fence.clone(),
+                                    task_attempt: None,
                                 },
                             );
                         let route = ActorOwnerRouteAuthorityFrameHeader {
@@ -622,10 +726,20 @@ impl ActorFrameSink {
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .remove(&header.invocation_id);
+                            if correlation.task_attempt.is_some() {
+                                self.report_task_attempt_terminal(
+                                    &correlation,
+                                    ActorAttemptTerminal::Succeeded,
+                                );
+                                return Ok(());
+                            }
+                            let Some(caller) = correlation.caller else {
+                                return Ok(());
+                            };
                             let forward = ActorMethodFrame::Return(header, payload);
                             let bytes = encode_actor_method_frame(&forward)
                                 .map_err(|_| TerminalKind::MalformedFrame)?;
-                            self.write(&correlation.caller, bytes)
+                            self.write(&caller, bytes)
                         }
                         Err(_) => Ok(()),
                     }
@@ -652,9 +766,22 @@ impl ActorFrameSink {
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .remove(&header.invocation_id);
+                            if let Some(task_attempt) = &correlation.task_attempt {
+                                self.report_task_attempt_terminal(
+                                    &correlation,
+                                    Self::actor_error_terminal(
+                                        header.error,
+                                        &task_attempt.request_id,
+                                    ),
+                                );
+                                return Ok(());
+                            }
+                            let Some(caller) = correlation.caller else {
+                                return Ok(());
+                            };
                             let bytes = encode_actor_method_frame(&ActorMethodFrame::Error(header))
                                 .map_err(|_| TerminalKind::MalformedFrame)?;
-                            self.write(&correlation.caller, bytes)
+                            self.write(&caller, bytes)
                         }
                         Err(_) => Ok(()),
                     }
@@ -674,6 +801,12 @@ impl ActorFrameSink {
                     // fail-closed (relay deadline owns the terminal).
                     return Ok(());
                 };
+                if correlation.caller.is_none() {
+                    // Task-attempt invocations have no Runtime caller to
+                    // cancel from; the owner cancel is owned by deadline /
+                    // disconnect terminals.
+                    return Ok(());
+                }
                 match self.components.relay.on_caller_cancel(
                     &Self::session_token(session),
                     &header.invocation_id,
@@ -727,11 +860,55 @@ impl ActorFrameSink {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .remove(&header.invocation_id);
+                if let Some(task_attempt) = &correlation.task_attempt {
+                    self.report_task_attempt_terminal(
+                        &correlation,
+                        ActorAttemptTerminal::TargetFailed {
+                            message: format!(
+                                "actor owner failed attempt {}: {}",
+                                task_attempt.request_id, header.reason.message
+                            ),
+                        },
+                    );
+                    return Ok(());
+                }
+                let Some(caller) = correlation.caller else {
+                    return Ok(());
+                };
                 let bytes =
                     encode_binary_frame(&header, &[]).map_err(|_| TerminalKind::MalformedFrame)?;
-                self.write(&correlation.caller, bytes)
+                self.write(&caller, bytes)
             }
             Err(_) => Ok(()),
+        }
+    }
+
+    fn actor_error_terminal(
+        error: ActorMethodErrorFramePayload,
+        request_id: &str,
+    ) -> ActorAttemptTerminal {
+        match error {
+            ActorMethodErrorFramePayload::ActorUpgradingError { retry_after_ms, .. } => {
+                ActorAttemptTerminal::Upgrading { retry_after_ms }
+            }
+            ActorMethodErrorFramePayload::ActorVersionRejectedError {
+                requested_implementation_identity,
+                accepted_implementation_identity,
+                ..
+            } => ActorAttemptTerminal::VersionRejected {
+                message: format!(
+                    "ActorVersionRejectedError: task attempt {request_id} requested {} but {} is accepted",
+                    requested_implementation_identity.as_str(),
+                    accepted_implementation_identity.as_str()
+                ),
+            },
+            ActorMethodErrorFramePayload::ActorIncarnationReplacedError { current_epoch, .. } => {
+                ActorAttemptTerminal::VersionRejected {
+                    message: format!(
+                        "ActorIncarnationReplacedError: task attempt {request_id} incarnation advanced to epoch {current_epoch}"
+                    ),
+                }
+            }
         }
     }
 
@@ -823,62 +1000,4 @@ impl InboundFrameSink for ActorFrameSink {
             _ => Err(TerminalKind::MalformedFrame),
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pick_owner_candidate;
-    use crate::session::identity::RuntimeSessionEpoch;
-
-    #[test]
-    fn owner_selection_pins_ts_hash_modulo_candidates() {
-        // E-actor-parity: the Router pins the owner with
-        // sha256(actorIdHash) big-endian first 4 bytes modulo the sorted
-        // candidate count (TS coordinator pickOwner parity).
-        let session = |replica: &str| RuntimeSessionEpoch {
-            replica_id: replica.to_string(),
-            connection_generation: 1,
-        };
-        let first = session("actor-parity-replica-1");
-        let second = session("actor-parity-replica-2");
-        let candidates = [first.clone(), second.clone()];
-        let aaa = format!("sha256:{}", "a".repeat(64));
-        let bbb = format!("sha256:{}", "b".repeat(64));
-        assert_eq!(
-            pick_owner_candidate(&candidates, &aaa).expect("owner"),
-            &second
-        );
-        assert_eq!(
-            pick_owner_candidate(&candidates, &bbb).expect("owner"),
-            &first
-        );
-        assert_eq!(
-            pick_owner_candidate(&candidates, &aaa).expect("owner"),
-            pick_owner_candidate(&candidates, &aaa).expect("owner")
-        );
-        assert_eq!(pick_owner_candidate(&[], &aaa), None);
-        let three = [first, second.clone(), session("actor-parity-replica-3")];
-        assert_eq!(pick_owner_candidate(&three, &bbb).expect("owner"), &second);
-    }
-}
-
-/// Deterministic router-side owner selection (E-actor-parity, TS coordinator
-/// parity): `sha256(actorIdHash)` big-endian first four bytes modulo the
-/// sorted registered candidate count. The candidates come from the session
-/// admission pool for the captured committed tuple (routable, current,
-/// non-cancelled, sorted by replica id), matching the TS
-/// `actorRuntimeCandidates` ordering.
-fn pick_owner_candidate<'a>(
-    candidates: &'a [RuntimeSessionEpoch],
-    actor_id_hash: &str,
-) -> Option<&'a RuntimeSessionEpoch> {
-    if candidates.is_empty() {
-        return None;
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(actor_id_hash.as_bytes());
-    let digest = hasher.finalize();
-    let index = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize
-        % candidates.len();
-    candidates.get(index)
 }

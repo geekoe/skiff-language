@@ -2,14 +2,36 @@
 //! Settlement"): after a claim, this seam selects a Runtime that has already
 //! admitted the task's frozen execution image and submits one ordinary
 //! `request.start` frame carrying the `taskAttempt` header
-//! (taskId/attemptId/leaseId). The dispatcher is the ordinary request
-//! admission owner (same pool / permit / revalidation / deadline machinery);
-//! this seam only proves image admission and maps the dispatcher result to
-//! the scheduler's four-decision vocabulary.
+//! (taskId/attemptId/leaseId) for function targets.
+//!
+//! Actor-method targets (E2b) do not use `request.start`: the seam executes
+//! the Actor route layer's **get-or-activate** (authoritative design
+//! "Actor-method target") and admits the method as an ordinary Actor
+//! invocation through `ActorInvocationRelay` + `actor.owner.invoke`. The five
+//! branches are:
+//!
+//! 1. live incarnation with the same implementation → ordinary admission;
+//! 2. no live incarnation but registry entry exists → activate from the
+//!    entry's frozen create input (put-if-absent);
+//! 3. registry entry lost → restore a minimal entry from the task snapshot
+//!    and activate (first successful restore wins);
+//! 4. owner runtime reports `ActorUpgradingError` → recoverable release with
+//!    the runtime-provided backoff;
+//! 5. incarnation / fencing taken over by a different implementation →
+//!    `ActorVersionRejectedError` → permanent platform-failed.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use skiff_runtime_transport::actor_method::{
+    ActorLogicalRefFrameHeader, ActorMethodDeadlineFrameHeader, ActorMethodInvokeFrameHeader,
+    ACTOR_ARGUMENTS_ENCODING_V1,
+};
+use skiff_runtime_transport::actor_owner::{
+    encode_actor_owner_invoke_frame, ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader,
+    ActorOwnerRouteAuthorityFrameHeader,
+};
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
@@ -17,15 +39,25 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyTaskRequestCallerFrameHeader, RuntimeAssemblyTaskRequestRoutingFrameHeader,
     RuntimeAssemblyTaskRequestStartFrameHeader,
 };
-use skiff_task_control::model::{DetachedCallTarget, TaskRecord};
+use skiff_task_control::model::{DetachedCallTarget, TaskLease, TaskRecord};
 use skiff_task_control::scheduler::{AdmissionDecision, AttemptAdmission};
 
+use crate::actor::{
+    pick_owner_candidate, ActivationWaiterOutcome, ActorGetOrCreateRequest, ActorInvokeInput,
+    ActorLogicalKey, ActorOwnerRouteAuthority, CatalogQuery, GetOrCreateOutcome, OwnerSettleKind,
+    DEFAULT_OWNER_LEASE_TTL_MS,
+};
 use crate::dispatch::{
     RequestAuthority, RequestDeadline, RequestDispatcher, RoutingEpochSource, TaskAttemptSubmit,
     TaskAttemptSubmitResult,
 };
+use crate::session::identity::RuntimeSessionEpoch;
+use crate::supervisor::actor_sink::ActorFrameSink;
+use crate::supervisor::actor::ActorComponents;
+use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation};
 use crate::ws::Clock;
 
+use super::actor_target::{snapshot_actor_key, store_declaration_owner_to_frame};
 use super::control::DurableTaskControl;
 use super::health::TaskControlCounters;
 
@@ -39,6 +71,15 @@ pub struct RouterTaskAttemptAdmission {
     request_timeout_ms: u64,
     counters: Arc<TaskControlCounters>,
     seq: AtomicU64,
+    /// Actor lane owners consumed by get-or-activate / invocation admission.
+    actor: Arc<ActorComponents>,
+    /// Owner candidate selection / session resolution / outbound writes.
+    actor_port: Arc<dyn TaskActorOwnerPort>,
+    /// Bounded actor activation wait budget for get-or-activate branches 2/3.
+    activation_deadline_ms: u64,
+    /// Deferred actor frame sink (task-attempt invocation terminal
+    /// correlation owner; assembled after the control plane).
+    actor_sink: Arc<Mutex<Option<Arc<ActorFrameSink>>>>,
 }
 
 impl std::fmt::Debug for RouterTaskAttemptAdmission {
@@ -51,6 +92,7 @@ impl std::fmt::Debug for RouterTaskAttemptAdmission {
 }
 
 impl RouterTaskAttemptAdmission {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         epoch: Arc<dyn RoutingEpochSource>,
         dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
@@ -58,6 +100,10 @@ impl RouterTaskAttemptAdmission {
         clock: Arc<dyn Clock>,
         request_timeout_ms: u64,
         counters: Arc<TaskControlCounters>,
+        actor: Arc<ActorComponents>,
+        actor_port: Arc<dyn TaskActorOwnerPort>,
+        activation_deadline_ms: u64,
+        actor_sink: Arc<Mutex<Option<Arc<ActorFrameSink>>>>,
     ) -> Self {
         Self {
             epoch,
@@ -67,6 +113,10 @@ impl RouterTaskAttemptAdmission {
             request_timeout_ms,
             counters,
             seq: AtomicU64::new(0),
+            actor,
+            actor_port,
+            activation_deadline_ms,
+            actor_sink,
         }
     }
 
@@ -89,7 +139,7 @@ impl RouterTaskAttemptAdmission {
             assembly_identity: tuple.assembly.assembly_identity.as_str().to_string(),
             assembly_generation: tuple.generation,
             deployment: record.execution.deployment.clone(),
-            session_epoch: crate::session::identity::RuntimeSessionEpoch {
+            session_epoch: RuntimeSessionEpoch {
                 replica_id: "task-attempt".to_string(),
                 connection_generation: 0,
             },
@@ -158,11 +208,574 @@ impl RouterTaskAttemptAdmission {
             }),
         })
     }
+
+    /// Actor-method get-or-activate admission (authoritative design
+    /// "Actor-method target", five branches).
+    async fn admit_actor_method(&self, record: &TaskRecord) -> AdmissionDecision {
+        let DetachedCallTarget::ActorMethod {
+            actor,
+            activation,
+            implementation,
+            method,
+            declaration_owner,
+        } = &record.target
+        else {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: "actor-method admission received a non-actor target".to_string(),
+            };
+        };
+        let Some(lease) = record.active_lease.as_ref() else {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: "claimed task record has no active lease".to_string(),
+            };
+        };
+        let key = match snapshot_actor_key(&activation.key) {
+            Ok(key) => key,
+            Err(reason) => {
+                self.counters
+                    .admissions_permanent_failure
+                    .fetch_add(1, Ordering::Relaxed);
+                return AdmissionDecision::PermanentFailure {
+                    reason: format!("actor task snapshot key is invalid: {reason}"),
+                };
+            }
+        };
+        let Some(epoch) = self.epoch.capture() else {
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: "no active routing epoch is available".to_string(),
+            };
+        };
+        let Some(authority) = self.image_authority(record) else {
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: "frozen execution image is not admitted by any runtime".to_string(),
+            };
+        };
+        let query = CatalogQuery::new(
+            key.service_id.clone(),
+            actor.actor_abi_identity.clone(),
+            implementation.clone(),
+            method.clone(),
+        );
+        if !self.actor.catalog_view.has_method(&query) {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: "actor method is absent from the current routing catalog".to_string(),
+            };
+        }
+        let candidates = self.actor_port.candidates(&epoch.registered_tuple());
+        let Some(owner) = pick_owner_candidate(&candidates, &key.actor_id_hash) else {
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: "no Runtime is available to own the Actor".to_string(),
+            };
+        };
+        let owner_connection = format!(
+            "{}#{}",
+            owner.replica_id, owner.connection_generation
+        );
+        let now = self.clock.now_ms();
+        let declaration_owner_frame = store_declaration_owner_to_frame(declaration_owner);
+
+        // Branch 1 / 5: a live owner fence decides by implementation identity.
+        if let Some(fence) = self.actor.registry.current_owner(&key) {
+            if fence.actor_implementation_identity != *implementation {
+                return self.version_rejected(record, Some(&fence));
+            }
+            let fence = self
+                .actor
+                .registry
+                .renew(&key, &fence, DEFAULT_OWNER_LEASE_TTL_MS, now)
+                .unwrap_or(fence);
+            return self
+                .invoke_actor_method(
+                    record,
+                    lease,
+                    &authority,
+                    &fence,
+                    &key,
+                    &declaration_owner_frame,
+                    owner,
+                    &owner_connection,
+                )
+                .await;
+        }
+
+        // No live owner: branch 2 (entry create input) or branch 3 (snapshot
+        // restore). Both go through the same broker / identity fencing.
+        let entry = self.actor.registry.entry(&key);
+        let (activation_abi, activation_impl, activation_decl, bootstrap) = match entry {
+            Some(entry) => {
+                if entry.actor_implementation_identity != *implementation {
+                    let fence = self.actor.registry.current_owner(&key);
+                    return self.version_rejected(record, fence.as_ref());
+                }
+                if entry.create_input.is_empty() {
+                    // Entry predates create-input freezing: it cannot satisfy
+                    // "entry 创建输入", so treat it as an incomplete entry and
+                    // restore from the task snapshot (put-if-absent still
+                    // keeps identity facts from the first entry).
+                    (
+                        actor.actor_abi_identity.clone(),
+                        implementation.clone(),
+                        declaration_owner_frame.clone(),
+                        activation.create_input.as_bytes().to_vec(),
+                    )
+                } else {
+                    (
+                        entry.actor_abi_identity,
+                        entry.actor_implementation_identity,
+                        entry.declaration_owner,
+                        entry.create_input,
+                    )
+                }
+            }
+            None => (
+                actor.actor_abi_identity.clone(),
+                implementation.clone(),
+                declaration_owner_frame.clone(),
+                activation.create_input.as_bytes().to_vec(),
+            ),
+        };
+        let deadline_at = now.saturating_add(self.activation_deadline_ms);
+        let rpc_id = format!(
+            "task-activation:{}-{}",
+            record.task_id.as_str(),
+            lease.attempt_id.as_str()
+        );
+        let request = ActorGetOrCreateRequest {
+            rpc_id: rpc_id.clone(),
+            actor_key: key.clone(),
+            actor_abi_identity: activation_abi,
+            actor_implementation_identity: activation_impl,
+            declaration_owner: activation_decl,
+            bootstrap_bytes: bootstrap,
+            owner_runtime_id: owner.replica_id.clone(),
+            owner_connection: owner_connection.clone(),
+            route_authority: ActorOwnerRouteAuthority {
+                assembly_identity: authority.assembly_identity.clone(),
+                assembly_generation: authority.assembly_generation,
+            },
+            deadline: Some(ActorMethodDeadlineFrameHeader {
+                timeout_ms: self.activation_deadline_ms,
+                expires_at: super::iso_timestamp(deadline_at),
+            }),
+            test_case_capability: None,
+            test_case_parent_request_id: None,
+            now,
+        };
+        match self.actor.activation_broker.get_or_create(&request) {
+            GetOrCreateOutcome::Resolved(_) => self
+                .invoke_resolved_actor(
+                    record,
+                    lease,
+                    &authority,
+                    &key,
+                    implementation,
+                    &declaration_owner_frame,
+                    owner,
+                    &owner_connection,
+                )
+                .await,
+            GetOrCreateOutcome::StartedActivation { .. } | GetOrCreateOutcome::Joined => {
+                match self
+                    .wait_for_activation(&rpc_id, deadline_at.saturating_add(1_000))
+                    .await
+                {
+                    Some(ActivationWaiterOutcome::Resolved { .. }) => self
+                        .invoke_resolved_actor(
+                            record,
+                            lease,
+                            &authority,
+                            &key,
+                            implementation,
+                            &declaration_owner_frame,
+                            owner,
+                            &owner_connection,
+                        )
+                        .await,
+                    Some(ActivationWaiterOutcome::Failed { code }) => {
+                        self.activation_failure_decision(&code)
+                    }
+                    None => {
+                        self.counters
+                            .admissions_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        AdmissionDecision::RejectedProvable {
+                            reason: "actor activation deadline elapsed without an ACK".to_string(),
+                        }
+                    }
+                }
+            }
+            GetOrCreateOutcome::Saturated => {
+                self.counters
+                    .admissions_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                AdmissionDecision::RejectedProvable {
+                    reason: "actor activation claim budget reached".to_string(),
+                }
+            }
+            GetOrCreateOutcome::LineageConflict => {
+                self.counters
+                    .admissions_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                AdmissionDecision::RejectedProvable {
+                    reason: "actor activation lineage conflict".to_string(),
+                }
+            }
+            GetOrCreateOutcome::Failed { code } => self.activation_failure_decision(&code),
+        }
+    }
+
+    async fn invoke_resolved_actor(
+        &self,
+        record: &TaskRecord,
+        lease: &TaskLease,
+        authority: &RequestAuthority,
+        key: &ActorLogicalKey,
+        implementation: &skiff_artifact_model::ActorImplementationIdentity,
+        declaration_owner: &skiff_runtime_transport::actor_method::ActorDeclarationOwnerFrameHeader,
+        owner: &RuntimeSessionEpoch,
+        owner_connection: &str,
+    ) -> AdmissionDecision {
+        let Some(fence) = self.actor.registry.current_owner(key) else {
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: "actor activation resolved without a committed owner fence"
+                    .to_string(),
+            };
+        };
+        if fence.actor_implementation_identity != *implementation {
+            return self.version_rejected(record, Some(&fence));
+        }
+        self.invoke_actor_method(
+            record,
+            lease,
+            authority,
+            &fence,
+            key,
+            declaration_owner,
+            owner,
+            owner_connection,
+        )
+        .await
+    }
+
+    /// Bounded async wait for one get-or-create waiter outcome (the broker
+    /// remains a synchronous reducer; outcome inserts wake this waiter).
+    async fn wait_for_activation(
+        &self,
+        rpc_id: &str,
+        deadline_at: u64,
+    ) -> Option<ActivationWaiterOutcome> {
+        let notify = self.actor.activation_broker.notifier();
+        loop {
+            let notified = notify.notified();
+            if let Some(outcome) = self.actor.activation_broker.outcome_for(rpc_id) {
+                return Some(parse_waiter_outcome(&outcome));
+            }
+            let now = self.clock.now_ms();
+            if now >= deadline_at {
+                return None;
+            }
+            let remaining = (deadline_at - now).min(50);
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(Duration::from_millis(remaining)) => {}
+            }
+        }
+    }
+
+    fn activation_failure_decision(&self, code: &str) -> AdmissionDecision {
+        if code == "IncarnationReplaced" {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: format!(
+                    "ActorVersionRejectedError: actor incarnation was replaced ({code})"
+                ),
+            };
+        }
+        self.counters
+            .admissions_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionDecision::RejectedProvable {
+            reason: format!("actor activation failed closed: {code}"),
+        }
+    }
+
+    fn version_rejected(
+        &self,
+        record: &TaskRecord,
+        fence: Option<&crate::actor::ActorOwnerFence>,
+    ) -> AdmissionDecision {
+        self.counters
+            .admissions_permanent_failure
+            .fetch_add(1, Ordering::Relaxed);
+        let accepted = fence
+            .map(|fence| fence.actor_implementation_identity.as_str())
+            .unwrap_or("unknown");
+        let DetachedCallTarget::ActorMethod { implementation, .. } = &record.target else {
+            return AdmissionDecision::PermanentFailure {
+                reason: "actor version rejection on non-actor target".to_string(),
+            };
+        };
+        AdmissionDecision::PermanentFailure {
+            reason: format!(
+                "ActorVersionRejectedError: task implementation {} was superseded by {accepted}",
+                implementation.as_str()
+            ),
+        }
+    }
+
+    /// Admit one actor method invocation on an existing owner fence (branches
+    /// 1/2/3 resolution): relay + register task-attempt correlation + write
+    /// `actor.owner.invoke` with the frozen task payload.
+    async fn invoke_actor_method(
+        &self,
+        record: &TaskRecord,
+        lease: &TaskLease,
+        authority: &RequestAuthority,
+        fence: &crate::actor::ActorOwnerFence,
+        key: &ActorLogicalKey,
+        declaration_owner: &skiff_runtime_transport::actor_method::ActorDeclarationOwnerFrameHeader,
+        owner: &RuntimeSessionEpoch,
+        owner_connection: &str,
+    ) -> AdmissionDecision {
+        let DetachedCallTarget::ActorMethod {
+            actor, implementation, method, ..
+        } = &record.target
+        else {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: "actor invoke received a non-actor target".to_string(),
+            };
+        };
+        let now = self.clock.now_ms();
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let request_id = format!(
+            "task-attempt:{}-{}-{seq}",
+            record.task_id.as_str(),
+            lease.attempt_id.as_str()
+        );
+        let invocation_id = format!("{request_id}:invoke");
+        let expires_at = super::iso_timestamp(now.saturating_add(self.request_timeout_ms));
+        let cancellation_correlation = format!("{invocation_id}:cancel");
+        let invoke = ActorMethodInvokeFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.method.invoke".to_string(),
+            invocation_id: invocation_id.clone(),
+            actor_ref: ActorLogicalRefFrameHeader {
+                service_id: key.service_id.clone(),
+                actor_type_identity: key.actor_type_identity.clone(),
+                actor_id_type_identity: key.actor_id_type_identity.clone(),
+                actor_id_encoding_version: key.actor_id_encoding_version.clone(),
+                canonical_actor_id_key_bytes_base64: key
+                    .canonical_actor_id_key_bytes_base64
+                    .clone(),
+                actor_id_hash: key.actor_id_hash.clone(),
+                epoch: fence.epoch,
+            },
+            declaration_owner: declaration_owner.clone(),
+            actor_abi_identity: actor.actor_abi_identity.clone(),
+            actor_implementation_identity: implementation.clone(),
+            method_identity: method.clone(),
+            arguments_encoding_version: ACTOR_ARGUMENTS_ENCODING_V1.to_string(),
+            deadline: ActorMethodDeadlineFrameHeader {
+                timeout_ms: self.request_timeout_ms,
+                expires_at: expires_at.clone(),
+            },
+            cancellation_correlation: cancellation_correlation.clone(),
+            trace_id: Some(record.trace.trace_id.clone()),
+            test_case_capability: None,
+            test_case_parent_request_id: None,
+        };
+        let owner_invoke = ActorOwnerInvokeFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "actor.owner.invoke".to_string(),
+            target_runtime_id: fence.owner_runtime_id.clone(),
+            owner_fence: ActorOwnerFenceFrameHeader {
+                owner_runtime_id: fence.owner_runtime_id.clone(),
+                owner_lease_id: fence.owner_lease_id.clone(),
+                epoch: fence.epoch,
+                actor_abi_identity: fence.actor_abi_identity.clone(),
+                actor_implementation_identity: fence.actor_implementation_identity.clone(),
+                declaration_owner: fence.declaration_owner.clone(),
+            },
+            invoke,
+            route_authority: ActorOwnerRouteAuthorityFrameHeader {
+                assembly_identity: authority.assembly_identity.clone(),
+                assembly_generation: authority.assembly_generation,
+            },
+            activation_bootstrap: None,
+        };
+        let bytes = match encode_actor_owner_invoke_frame(&owner_invoke, record.payload.as_bytes())
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.counters
+                    .admissions_permanent_failure
+                    .fetch_add(1, Ordering::Relaxed);
+                return AdmissionDecision::PermanentFailure {
+                    reason: format!("actor owner invoke encode failed: {error}"),
+                };
+            }
+        };
+        let route_authority = ActorOwnerRouteAuthority {
+            assembly_identity: authority.assembly_identity.clone(),
+            assembly_generation: authority.assembly_generation,
+        };
+        self.actor.lease_scheduler.mark_live(key, now, owner_connection);
+        let input = ActorInvokeInput {
+            invocation_id: invocation_id.clone(),
+            caller_connection: format!("task-attempt:{request_id}"),
+            caller_runtime_id: "task-control".to_string(),
+            owner_fence: fence.clone(),
+            owner_connection: owner_connection.to_string(),
+            route_authority: route_authority.clone(),
+            correlation: cancellation_correlation,
+            deadline: Some(ActorMethodDeadlineFrameHeader {
+                timeout_ms: self.request_timeout_ms,
+                expires_at,
+            }),
+            test_case_capability: None,
+            now,
+        };
+        if let Err(error) = self.actor.relay.invoke(&input) {
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: format!("actor invocation relay rejected the attempt: {error}"),
+            };
+        }
+        let Some(actor_sink) = self
+            .actor_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        else {
+            let _ = self.actor.relay.on_owner_settle(
+                &invocation_id,
+                fence,
+                owner_connection,
+                OwnerSettleKind::Error,
+            );
+            self.counters
+                .admissions_uncertain
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::Uncertain {
+                reason: "actor frame sink is not assembled".to_string(),
+            };
+        };
+        let task_attempt = TaskAttemptInvocationCorrelation {
+            request_id: request_id.clone(),
+            task_id: record.task_id.as_str().to_string(),
+            attempt_id: lease.attempt_id.as_str().to_string(),
+            lease_id: lease.lease_id.as_str().to_string(),
+        };
+        if let Err(error) =
+            actor_sink.register_task_attempt_invocation(&invocation_id, task_attempt, owner.clone(), fence.clone())
+        {
+            let _ = self.actor.relay.on_owner_settle(
+                &invocation_id,
+                fence,
+                owner_connection,
+                OwnerSettleKind::Error,
+            );
+            self.counters
+                .admissions_uncertain
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::Uncertain {
+                reason: format!("actor task-attempt correlation failed: {error}"),
+            };
+        }
+        let Some(owner_session) = self.actor_port.current_session_by_replica(&owner.replica_id)
+        else {
+            actor_sink.unregister_invocation(&invocation_id);
+            let _ = self.actor.relay.on_owner_settle(
+                &invocation_id,
+                fence,
+                owner_connection,
+                OwnerSettleKind::Error,
+            );
+            self.counters
+                .admissions_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::RejectedProvable {
+                reason: format!("owner runtime {} has no registered session", owner.replica_id),
+            };
+        };
+        if let Err(error) = self.actor_port.write(&owner_session, bytes) {
+            actor_sink.unregister_invocation(&invocation_id);
+            let _ = self.actor.relay.on_owner_settle(
+                &invocation_id,
+                fence,
+                owner_connection,
+                OwnerSettleKind::Error,
+            );
+            self.counters
+                .admissions_uncertain
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::Uncertain {
+                reason: format!("actor owner invoke write failed: {error}"),
+            };
+        }
+        self.control.track_attempt(
+            &request_id,
+            &record.task_id,
+            &lease.lease_id,
+            now.saturating_add(self.request_timeout_ms),
+        );
+        self.counters
+            .admissions_accepted
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionDecision::Accepted
+    }
+}
+
+fn parse_waiter_outcome(outcome: &str) -> ActivationWaiterOutcome {
+    if let Some(epoch) = outcome.strip_prefix("resolved:") {
+        if let Ok(epoch) = epoch.parse::<u64>() {
+            return ActivationWaiterOutcome::Resolved { epoch };
+        }
+    }
+    if let Some(code) = outcome.strip_prefix("failed:") {
+        return ActivationWaiterOutcome::Failed {
+            code: code.to_string(),
+        };
+    }
+    ActivationWaiterOutcome::Failed {
+        code: outcome.to_string(),
+    }
 }
 
 #[async_trait::async_trait]
 impl AttemptAdmission for RouterTaskAttemptAdmission {
     async fn admit(&self, record: &TaskRecord) -> AdmissionDecision {
+        if matches!(record.target, DetachedCallTarget::ActorMethod { .. }) {
+            return self.admit_actor_method(record).await;
+        }
         let Some(authority) = self.image_authority(record) else {
             self.counters
                 .admissions_rejected
@@ -184,7 +797,7 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
                 .admissions_permanent_failure
                 .fetch_add(1, Ordering::Relaxed);
             return AdmissionDecision::PermanentFailure {
-                reason: "actor-method task targets are unsupported until stage E".to_string(),
+                reason: "task target cannot be formed into a runtime request".to_string(),
             };
         };
         let Some(dispatcher) = self

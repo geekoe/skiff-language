@@ -33,6 +33,10 @@ pub struct TaskControlHealth {
     pub settlements_succeeded: u64,
     pub settlements_failed: u64,
     pub settlements_uncertain: u64,
+    /// Platform-proven terminal (ActorVersionRejectedError etc.).
+    pub settlements_platform_failed: u64,
+    /// Recoverable actor upgrading releases (backoff, not a settlement).
+    pub settlements_upgrading: u64,
     /// Admissions observed by this replica's scheduler seam.
     pub admissions_accepted: u64,
     pub admissions_rejected: u64,
@@ -60,6 +64,8 @@ pub struct TaskControlCounters {
     pub settlements_succeeded: std::sync::atomic::AtomicU64,
     pub settlements_failed: std::sync::atomic::AtomicU64,
     pub settlements_uncertain: std::sync::atomic::AtomicU64,
+    pub settlements_platform_failed: std::sync::atomic::AtomicU64,
+    pub settlements_upgrading: std::sync::atomic::AtomicU64,
     pub admissions_accepted: std::sync::atomic::AtomicU64,
     pub admissions_rejected: std::sync::atomic::AtomicU64,
     pub admissions_uncertain: std::sync::atomic::AtomicU64,
@@ -109,6 +115,12 @@ impl TaskControlCounters {
                 .load(std::sync::atomic::Ordering::Relaxed),
             settlements_uncertain: self
                 .settlements_uncertain
+                .load(std::sync::atomic::Ordering::Relaxed),
+            settlements_platform_failed: self
+                .settlements_platform_failed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            settlements_upgrading: self
+                .settlements_upgrading
                 .load(std::sync::atomic::Ordering::Relaxed),
             admissions_accepted: self
                 .admissions_accepted

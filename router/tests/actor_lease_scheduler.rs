@@ -132,6 +132,7 @@ fn run_lease_scenario(raw: &str) {
         abi(),
         actor_implementation_identity(),
         declaration_owner(),
+        &[],
     );
     let token = registry
         .reserve(
@@ -240,6 +241,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -270,6 +272,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)
@@ -304,6 +307,7 @@ mod tests {
             abi(),
             actor_implementation_identity(),
             declaration_owner(),
+            &[],
         );
         let token = registry
             .reserve(&key, 1, "runtime-b", &route_authority(), 0)

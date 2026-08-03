@@ -27,6 +27,7 @@ mod control;
 mod health;
 mod invocation;
 mod lease;
+mod owner_candidate;
 mod ownership;
 mod types;
 
@@ -51,7 +52,8 @@ pub use invocation::{
 pub use lease::{
     ActorLeaseExpiryScheduler, IdleEvictControlPort, LeaseError, LeaseSchedulerOptions,
 };
-pub use ownership::{ActorOwnershipRegistry, OwnershipError};
+pub(crate) use owner_candidate::pick_owner_candidate;
+pub use ownership::{ActorOwnershipRegistry, ActorRegistryEntry, OwnershipError};
 pub use types::{
     ActorClaimId, ActorClaimToken, ActorEntryFacts, ActorIncarnationFence, ActorLineage,
     ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, ActorRef, CommitFenceFacts,

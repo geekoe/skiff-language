@@ -18,13 +18,14 @@ use skiff_task_control::model::{
     DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal,
 };
 use skiff_task_control::scheduler::Scheduler;
-use skiff_task_control::store::{SettleInput, TaskStore};
+use skiff_task_control::store::{ReleaseInput, SettleInput, TaskStore};
 
 use crate::dispatch::{
     RequestDispatcher, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink,
 };
 use crate::ws::Clock;
 
+use super::actor_attempt::{ActorAttemptTerminal, ActorAttemptTerminalSink};
 use super::health::TaskControlCounters;
 
 /// One pending task-attempt correlation: the ordinary `request.start` frame
@@ -43,6 +44,12 @@ enum ControlEvent {
         task_id: TaskId,
         lease_id: LeaseId,
         outcome: TaskOutcome,
+    },
+    Release {
+        request_id: String,
+        task_id: TaskId,
+        lease_id: LeaseId,
+        retry_after_ms: u64,
     },
 }
 
@@ -216,6 +223,33 @@ impl DurableTaskControl {
                     .await;
                 self.pending.lock().expect("pending lock").remove(&request_id);
             }
+            ControlEvent::Release {
+                request_id,
+                task_id,
+                lease_id,
+                retry_after_ms,
+            } => {
+                self.pending.lock().expect("pending lock").remove(&request_id);
+                let now = self
+                    .store
+                    .now()
+                    .await
+                    .unwrap_or(DurableUtcTimestamp::from_millis(
+                        i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
+                    ));
+                let retry_ms = i64::try_from(retry_after_ms).unwrap_or(i64::MAX);
+                let retry_not_before = now
+                    .checked_add_millis(retry_ms)
+                    .unwrap_or(DurableUtcTimestamp::from_millis(i64::MAX));
+                let _ = self
+                    .store
+                    .release(ReleaseInput {
+                        task_id,
+                        lease_id,
+                        retry_not_before,
+                    })
+                    .await;
+            }
         }
     }
 
@@ -232,6 +266,30 @@ impl DurableTaskControl {
             task_id: task_id.clone(),
             lease_id: lease_id.clone(),
             outcome,
+        });
+    }
+
+    fn enqueue_release(
+        &self,
+        request_id: &str,
+        task_id: &TaskId,
+        lease_id: &LeaseId,
+        retry_after_ms: u64,
+    ) {
+        self.pending.lock().expect("pending lock").remove(request_id);
+        if let Some(scheduler) = self
+            .scheduler
+            .lock()
+            .expect("deferred scheduler lock")
+            .clone()
+        {
+            scheduler.forget_active_lease(task_id, lease_id);
+        }
+        let _ = self.events.try_send(ControlEvent::Release {
+            request_id: request_id.to_string(),
+            task_id: task_id.clone(),
+            lease_id: lease_id.clone(),
+            retry_after_ms,
         });
     }
 
@@ -285,6 +343,65 @@ impl TaskAttemptTerminalSink for DurableTaskControl {
                     .fetch_add(1, Ordering::Relaxed);
                 tracing_or_eprintln(format!(
                     "task attempt {request_id} terminal uncertain: {reason}"
+                ));
+                self.forget_now(request_id, &task_id, &lease_id);
+            }
+        }
+    }
+}
+
+impl ActorAttemptTerminalSink for DurableTaskControl {
+    fn on_actor_terminal(
+        &self,
+        request_id: &str,
+        task_id: &str,
+        _attempt_id: &str,
+        lease_id: &str,
+        terminal: ActorAttemptTerminal,
+    ) {
+        let task_id = TaskId::new(task_id);
+        let lease_id = LeaseId::new(lease_id);
+        match terminal {
+            ActorAttemptTerminal::Succeeded => {
+                self.counters
+                    .settlements_succeeded
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_settle(request_id, &task_id, &lease_id, TaskOutcome::Succeeded);
+            }
+            ActorAttemptTerminal::TargetFailed { message } => {
+                self.counters
+                    .settlements_failed
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_settle(
+                    request_id,
+                    &task_id,
+                    &lease_id,
+                    TaskOutcome::TargetFailed { error: message },
+                );
+            }
+            ActorAttemptTerminal::VersionRejected { message } => {
+                self.counters
+                    .settlements_platform_failed
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_settle(
+                    request_id,
+                    &task_id,
+                    &lease_id,
+                    TaskOutcome::PlatformFailed { reason: message },
+                );
+            }
+            ActorAttemptTerminal::Upgrading { retry_after_ms } => {
+                self.counters
+                    .settlements_upgrading
+                    .fetch_add(1, Ordering::Relaxed);
+                self.enqueue_release(request_id, &task_id, &lease_id, retry_after_ms);
+            }
+            ActorAttemptTerminal::Uncertain { reason } => {
+                self.counters
+                    .settlements_uncertain
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing_or_eprintln(format!(
+                    "task attempt {request_id} actor terminal uncertain: {reason}"
                 ));
                 self.forget_now(request_id, &task_id, &lease_id);
             }

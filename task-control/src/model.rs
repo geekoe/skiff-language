@@ -302,7 +302,43 @@ impl RecoverablePayload {
 pub struct ActorActivationSnapshot {
     pub key: RecoverablePayload,
     pub create_input: RecoverablePayload,
+    /// Artifact-form expected-type plan for the frozen create input (store
+    /// witness). Execution decodes against linked expected plans, never this
+    /// projection.
     pub expected_type_plan: RecoverableExpectedTypePlan,
+    /// Runtime-form recoverable expected-type plan as frozen by the
+    /// submission side (E2a wire `expectedTypePlan`). The runtime form is the
+    /// only plan the Runtime can freeze from the linked program; the artifact
+    /// projection above is a store-compatible witness. `None` for records
+    /// created before this field existed (C1 compatibility).
+    pub expected_type_plan_runtime: Option<serde_json::Value>,
+}
+
+/// Store-model projection of the actor declaration owner coordinates
+/// (`ActorDeclarationOwnerFrameHeader` wire shape). Needed by
+/// get-or-activate branch 3: restoring a minimal registry entry after Router
+/// restart requires the exact declaration owner so the owner Runtime can
+/// resolve the linked actor declaration and run `create`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorDeclarationOwner {
+    pub unit: ActorDeclarationOwnerUnit,
+    pub file: ActorDeclarationOwnerFile,
+    pub actor_symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ActorDeclarationOwnerUnit {
+    Service,
+    Package(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ActorDeclarationOwnerFile {
+    LoadedFileIndex(u64),
+    FileIrIdentity(String),
 }
 
 /// Canonical detached-call target.
@@ -316,6 +352,7 @@ pub enum DetachedCallTarget {
         activation: ActorActivationSnapshot,
         implementation: ActorImplementationIdentity,
         method: ActorMethodIdentity,
+        declaration_owner: ActorDeclarationOwner,
     },
 }
 

@@ -178,6 +178,10 @@ pub struct ActorActivationRequestBroker {
     options: ActorActivationBrokerOptions,
     inner: Arc<Mutex<ActivationInner>>,
     lease_mint: LeaseIdMint,
+    /// Wakeup channel for async waiters (durable task get-or-activate). The
+    /// broker stays a synchronous reducer: every outcome insert notifies;
+    /// waiters poll `outcome_for` after waking.
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl ActorActivationRequestBroker {
@@ -192,6 +196,7 @@ impl ActorActivationRequestBroker {
             options,
             inner: Arc::new(Mutex::new(ActivationInner::default())),
             lease_mint: LeaseIdMint::new(),
+            notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -199,6 +204,15 @@ impl ActorActivationRequestBroker {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Clone of the broker's wakeup channel for bounded async outcome waits.
+    pub fn notifier(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.notify)
+    }
+
+    fn notify_waiters(&self) {
+        self.notify.notify_waiters();
     }
 
     /// get-or-create admission (C-actor §5): dedup by actor logical key,
@@ -219,6 +233,7 @@ impl ActorActivationRequestBroker {
                         code: "ActorCreateLineageConflict".to_string(),
                     },
                 );
+                self.notify_waiters();
                 return GetOrCreateOutcome::LineageConflict;
             }
             inner
@@ -236,6 +251,7 @@ impl ActorActivationRequestBroker {
                 request.rpc_id.clone(),
                 ActivationWaiterOutcome::Resolved { epoch: fence.epoch },
             );
+            self.notify_waiters();
             return GetOrCreateOutcome::Resolved(actor_ref);
         }
 
@@ -244,6 +260,7 @@ impl ActorActivationRequestBroker {
             request.actor_abi_identity.clone(),
             request.actor_implementation_identity.clone(),
             request.declaration_owner.clone(),
+            &request.bootstrap_bytes,
         );
         let token = match self.registry.reserve(
             &request.actor_key,
@@ -260,6 +277,7 @@ impl ActorActivationRequestBroker {
                         code: ownership_failure_code(&error),
                     },
                 );
+                self.notify_waiters();
                 return GetOrCreateOutcome::Failed {
                     code: ownership_failure_code(&error),
                 };
@@ -331,6 +349,7 @@ impl ActorActivationRequestBroker {
                     },
                 );
             }
+            self.notify_waiters();
             return GetOrCreateOutcome::Failed {
                 code: "AckRejected".to_string(),
             };
@@ -384,6 +403,7 @@ impl ActorActivationRequestBroker {
                             ActivationWaiterOutcome::Resolved { epoch: fence.epoch },
                         );
                     }
+                    self.notify_waiters();
                     ActivationAckOutcome::Committed {
                         epoch: fence.epoch,
                         waiters,
@@ -398,6 +418,7 @@ impl ActorActivationRequestBroker {
                             },
                         );
                     }
+                    self.notify_waiters();
                     ActivationAckOutcome::CommitRejected { waiters }
                 }
             }
@@ -412,6 +433,7 @@ impl ActorActivationRequestBroker {
                     },
                 );
             }
+            self.notify_waiters();
             ActivationAckOutcome::Aborted { waiters }
         }
     }
@@ -458,6 +480,7 @@ impl ActorActivationRequestBroker {
                 },
             );
         }
+        self.notify_waiters();
         let _ = now;
         Some(ActivationTimeoutOutcome { waiters })
     }
@@ -490,6 +513,7 @@ impl ActorActivationRequestBroker {
             }
             outcomes.push(ActivationTimeoutOutcome { waiters });
         }
+        self.notify_waiters();
         inner.tombstones.clear();
         outcomes
     }

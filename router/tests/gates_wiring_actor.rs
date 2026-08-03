@@ -105,6 +105,7 @@ fn sink() -> (
         Arc::clone(&epoch_store),
         writer.clone(),
         Arc::new(SystemClock),
+        Arc::new(skiff_router::task::NoopActorAttemptTerminalSink),
     );
     (sink, writer, epoch_store)
 }

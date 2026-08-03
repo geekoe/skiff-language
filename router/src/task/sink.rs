@@ -2,13 +2,18 @@
 //! `task.cancel.request`). Replaces the old volatile actor/dedicated task
 //! sink: submissions become durable TaskStore records (TaskId-idempotent
 //! create), immediate tasks wake the scheduler, status/cancel project
-//! directly onto the store, and actor-method targets fail closed with the
-//! definite `unsupportedTarget` rejection until stage E.
+//! directly onto the store, and actor-method targets freeze their
+//! `ActorActivationSnapshot` into the durable record (E2b).
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use base64::Engine as _;
+use skiff_deployment::projection::actor_routing::ActorRoutingRef;
+use skiff_runtime_transport::actor_method::{
+    ActorDeclarationOwnerFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+};
 use skiff_runtime_transport::protocol::{
     decode_task_cancel_request_frame, decode_task_status_request_frame,
     decode_task_submit_request_frame, encode_task_cancel_error_frame,
@@ -24,9 +29,10 @@ use skiff_runtime_transport::protocol::{
     TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED, TASK_STATUS_ERROR_FRAME_TYPE,
 };
 use skiff_task_control::model::{
-    DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
-    TaskCancelResultKind, TaskExecutionImageRef, TaskId, TaskRecord, TaskState,
-    TaskStatusKind, TaskTraceContext,
+    ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
+    ActorDeclarationOwnerUnit, DetachedCallTarget, DurableDuration, DurableUtcTimestamp,
+    RecoverablePayload, ServiceOwner, TaskCancelResultKind, TaskExecutionImageRef, TaskId,
+    TaskRecord, TaskState, TaskStatusKind, TaskTraceContext,
 };
 use skiff_task_control::scheduler::Scheduler;
 use skiff_task_control::store::{CancelInput, StatusInput, TaskStore};
@@ -37,6 +43,7 @@ use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::ws::WsSessionWriter;
 use super::health::TaskControlCounters;
+use super::project_runtime_expected_type_plan;
 
 /// Default status/cancel retention horizon (task-control `StatusInput`).
 const DEFAULT_TASK_STATUS_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -228,17 +235,20 @@ impl DurableTaskFrameSink {
         payload: Vec<u8>,
     ) -> Result<(), TerminalKind> {
         let rpc_id = header.rpc_id.clone();
-        if header.target_kind == TaskTargetKind::ActorMethod {
-            self.counters
-                .submissions_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            let bytes = Self::error_frame(
-                &rpc_id,
-                TaskSubmitRejectionCode::UnsupportedTarget,
-                "actor-method task targets are not supported until stage E",
-            )?;
-            return self.write(&session, bytes);
-        }
+        let target = match resolve_target(&header) {
+            Ok(target) => target,
+            Err(message) => {
+                self.counters
+                    .submissions_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                let bytes = Self::error_frame(
+                    &rpc_id,
+                    TaskSubmitRejectionCode::Rejected,
+                    &message,
+                )?;
+                return self.write(&session, bytes);
+            }
+        };
         let Some(image) = self.image_source.resolve(&header) else {
             self.counters
                 .submissions_rejected
@@ -294,9 +304,7 @@ impl DurableTaskFrameSink {
             task_id: task_id.clone(),
             owner: ServiceOwner::new(header.service_id.clone()),
             execution: image,
-            target: DetachedCallTarget::Function {
-                callable: skiff_artifact_model::PackageCallableId::new(header.target.clone()),
-            },
+            target,
             payload: RecoverablePayload::new(payload),
             due_at,
             state: TaskState::Scheduled,
@@ -562,6 +570,72 @@ fn resolve_due_at(
         TaskSubmitTiming::At { utc_millis } => {
             (utc_millis >= 0).then_some(DurableUtcTimestamp::from_millis(utc_millis))
         }
+    }
+}
+
+/// Projects one authenticated `task.submit.request` target into the canonical
+/// `DetachedCallTarget` (E2b: actor-method targets decode their snapshot into
+/// the durable record instead of being rejected as unsupported).
+fn resolve_target(header: &TaskSubmitRequestFrameHeaderV2) -> Result<DetachedCallTarget, String> {
+    match header.target_kind {
+        TaskTargetKind::Function => Ok(DetachedCallTarget::Function {
+            callable: skiff_artifact_model::PackageCallableId::new(header.target.clone()),
+        }),
+        TaskTargetKind::ActorMethod => {
+            let actor_method = header.actor_method.as_ref().ok_or_else(|| {
+                "actor-method task target is missing actorMethod metadata".to_string()
+            })?;
+            let key_bytes = decode_snapshot_base64(&actor_method.activation.key, "activation.key")?;
+            let create_input_bytes =
+                decode_snapshot_base64(&actor_method.activation.create_input, "activation.createInput")?;
+            let expected_type_plan = project_runtime_expected_type_plan(
+                &actor_method.activation.expected_type_plan,
+            )
+            .map_err(|error| format!("actor task snapshot plan is invalid: {error}"))?;
+            Ok(DetachedCallTarget::ActorMethod {
+                actor: ActorRoutingRef {
+                    service_id: actor_method.actor_ref.service_id.clone(),
+                    actor_abi_identity: actor_method.actor_abi_identity.clone(),
+                },
+                activation: ActorActivationSnapshot {
+                    key: RecoverablePayload::new(key_bytes),
+                    create_input: RecoverablePayload::new(create_input_bytes),
+                    expected_type_plan,
+                    expected_type_plan_runtime: Some(
+                        actor_method.activation.expected_type_plan.clone(),
+                    ),
+                },
+                implementation: actor_method.actor_implementation_identity.clone(),
+                method: actor_method.method_identity.clone(),
+                declaration_owner: declaration_owner_from_frame(&actor_method.declaration_owner),
+            })
+        }
+    }
+}
+
+fn decode_snapshot_base64(value: &str, label: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|error| format!("task {label} is not canonical base64: {error}"))
+}
+
+fn declaration_owner_from_frame(
+    owner: &ActorDeclarationOwnerFrameHeader,
+) -> ActorDeclarationOwner {
+    ActorDeclarationOwner {
+        unit: match owner.unit {
+            ActorOwnerUnitFrameHeader::Service => ActorDeclarationOwnerUnit::Service,
+            ActorOwnerUnitFrameHeader::Package(slot) => ActorDeclarationOwnerUnit::Package(slot),
+        },
+        file: match &owner.file {
+            ActorOwnerFileFrameHeader::LoadedFileIndex(index) => {
+                ActorDeclarationOwnerFile::LoadedFileIndex(*index)
+            }
+            ActorOwnerFileFrameHeader::FileIrIdentity(identity) => {
+                ActorDeclarationOwnerFile::FileIrIdentity(identity.clone())
+            }
+        },
+        actor_symbol: owner.actor_symbol.clone(),
     }
 }
 

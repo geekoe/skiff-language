@@ -77,9 +77,24 @@ struct ActorEntry {
     actor_abi_identity: ActorAbiIdentity,
     actor_implementation_identity: ActorImplementationIdentity,
     declaration_owner: ActorDeclarationOwnerFrameHeader,
+    /// Frozen create input (canonical JSON array bytes) saved at entry
+    /// creation (put-if-absent). Used by get-or-activate to cold-activate the
+    /// entry's implementation when no live incarnation exists; the task
+    /// `ActorActivationSnapshot` is only used when this entry is missing.
+    create_input: Vec<u8>,
     owner: Option<ActorOwnerFence>,
     eviction_request_id: Option<String>,
     reservation: Option<ActorClaimToken>,
+}
+
+/// Registry entry identity / create-input facts exposed to the task
+/// actor-method admission lane (read-only view of the entry truth).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorRegistryEntry {
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub declaration_owner: ActorDeclarationOwnerFrameHeader,
+    pub create_input: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -135,6 +150,7 @@ impl ActorOwnershipRegistry {
         actor_abi_identity: ActorAbiIdentity,
         actor_implementation_identity: ActorImplementationIdentity,
         declaration_owner: ActorDeclarationOwnerFrameHeader,
+        create_input: &[u8],
     ) -> ActorEntryFacts {
         let mut inner = self.lock();
         let epoch = inner
@@ -145,6 +161,7 @@ impl ActorOwnershipRegistry {
                 actor_abi_identity: actor_abi_identity.clone(),
                 actor_implementation_identity: actor_implementation_identity.clone(),
                 declaration_owner: declaration_owner.clone(),
+                create_input: create_input.to_vec(),
                 owner: None,
                 eviction_request_id: None,
                 reservation: None,
@@ -380,6 +397,17 @@ impl ActorOwnershipRegistry {
     /// Current incarnation epoch of one key.
     pub fn entry_epoch(&self, key: &ActorLogicalKey) -> Option<u64> {
         self.lock().entries.get(key).map(|entry| entry.epoch)
+    }
+
+    /// Read-only registry entry facts (identity + frozen create input).
+    /// `None` when the key is not present (snapshot restoration path).
+    pub fn entry(&self, key: &ActorLogicalKey) -> Option<ActorRegistryEntry> {
+        self.lock().entries.get(key).map(|entry| ActorRegistryEntry {
+            actor_abi_identity: entry.actor_abi_identity.clone(),
+            actor_implementation_identity: entry.actor_implementation_identity.clone(),
+            declaration_owner: entry.declaration_owner.clone(),
+            create_input: entry.create_input.clone(),
+        })
     }
 
     /// Marks an owner fence as eviction-requested (scheduler trigger; truth
