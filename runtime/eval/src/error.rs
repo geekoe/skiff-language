@@ -982,11 +982,24 @@ impl From<skiff_runtime_capability_context::OutboundRequestRegistryError> for Ru
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserException {
     request: RequestException,
+    /// Decoded platform payload captured while the request heap was still
+    /// alive. Without this, an unhandled builtin exception (for example
+    /// `std.service.ProviderUnavailableError`) logs only its catch identity
+    /// and loses the `target`/`reason` fields that make it diagnosable.
+    platform_details: Option<(CatchIdentity, Value)>,
 }
 
 impl UserException {
     pub fn new(request: RequestException) -> Self {
-        Self { request }
+        Self {
+            request,
+            platform_details: None,
+        }
+    }
+
+    pub fn with_platform_details(mut self, identity: CatchIdentity, payload: Value) -> Self {
+        self.platform_details = Some((identity, payload));
+        self
     }
 
     pub fn request(&self) -> &RequestException {
@@ -1000,13 +1013,20 @@ impl UserException {
     pub fn actual_payload_type(&self) -> Option<&CatchIdentity> {
         self.request.local_catch_identity()
     }
+
+    pub fn platform_details(&self) -> Option<&(CatchIdentity, Value)> {
+        self.platform_details.as_ref()
+    }
 }
 
 impl fmt::Display for UserException {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.actual_payload_type() {
-            Some(identity) => write!(formatter, "{identity:?}"),
-            None => formatter.write_str("opaque service error"),
+        match &self.platform_details {
+            Some((identity, payload)) => write!(formatter, "{identity:?} {payload}"),
+            None => match self.actual_payload_type() {
+                Some(identity) => write!(formatter, "{identity:?}"),
+                None => formatter.write_str("opaque service error"),
+            },
         }
     }
 }
@@ -1869,14 +1889,23 @@ pub fn decode_target_error_code(target: &str) -> Option<&'static str> {
 
 fn user_exception_payload(exception: &UserException) -> RuntimeErrorPayload {
     let correlation = exception.request().correlation();
+    let details = match exception.platform_details() {
+        Some((identity, payload)) => json!({
+            "traceId": correlation.trace_id,
+            "errorId": correlation.error_id,
+            "identity": format!("{identity:?}"),
+            "payload": payload,
+        }),
+        None => json!({
+            "traceId": correlation.trace_id,
+            "errorId": correlation.error_id,
+        }),
+    };
     RuntimeErrorPayload {
         code: "UnhandledServiceError".to_string(),
         message: "unhandled request-local user exception".to_string(),
         status: None,
-        details: Some(serde_json::json!({
-            "traceId": correlation.trace_id,
-            "errorId": correlation.error_id,
-        })),
+        details: Some(details),
     }
 }
 

@@ -132,7 +132,7 @@ pub(crate) fn promote_call_site_error<T>(
     )? {
         return Err(RuntimeError::UserException(UserException::new(exception)));
     }
-    let Some((identity, _)) = error.ordinary_catch_projection() else {
+    let Some((identity, payload)) = error.ordinary_catch_projection() else {
         return Err(error);
     };
     let exception = request_exception_for_catch(
@@ -148,7 +148,9 @@ pub(crate) fn promote_call_site_error<T>(
             "platform catch projection did not match its own exact identity".to_string(),
         )
     })?;
-    Err(RuntimeError::UserException(UserException::new(exception)))
+    Err(RuntimeError::UserException(
+        UserException::new(exception).with_platform_details(identity, payload),
+    ))
 }
 
 impl<'a> EvalContext<'a> {
