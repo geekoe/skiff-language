@@ -74,3 +74,28 @@
 
 完成后把 branch、worktree 路径、commit/tree、实际写集和自验收矩阵直接报告给
 `/root/dispatch_integration`，并通知主 Agent `/root`。
+
+## 追加修正（dispatch-reference-fix）
+
+首次交付 commit `2b065d04` 已由集成 Agent 合入 `dispatch-rename-integration`
+（merge `3ba13a97`）并清理 worktree / 临时分支。以下窄幅修正基于集成分支 HEAD
+`1997d2b7`（含 rename-code 合并）重开 worktree `/Users/geek/workspace/skiff-reference-fix`、
+branch `dispatch-reference-fix`，追加一个 commit，不 rebase、不改已有 commit。
+
+修正内容（纯文档、机械收敛）：
+
+1. `doc/reference/dispatch.md`：H1 去掉“（草案）”，改为 `# Skiff Dispatch Reference`；
+   删除 §7“随本草案一并收敛的文档改动”整节（迁移注记不属于正式参考文档，收敛工作已落在
+   syntax.md / static-semantics.md / runtime.md / queue.md / actor-model.md 并记录在本叶子文件），
+   原 §8 测试矩阵重编号为 §7。
+2. `doc/architecture/recoverable-value.md`：核对第 6–7 行已引用
+   `../reference/dispatch.md`（rename-docs 已改）；第 693–694 行“spawn 现状”表述已为
+   dispatch 表述（rename-docs 已改）。`RecoverableBoundaryKind` 枚举与规则说明中的
+   `SpawnPayload` 按权威文档 Canonical Contract Ownership 改为 `TaskDispatchPayload`
+   （第 714、734 行附近）。保留第 10 行历史“旧 spawn payload”表述（目标态不兼容旧
+   spawn payload，属历史语义说明，机械改名为“旧 dispatch payload”会改变语义），已列入
+   交接报告。
+
+自验收：`rg -n '草案|随本草案一并收敛|spawn|SpawnPayload' doc/reference/dispatch.md`
+为空；`rg -n 'spawn|SpawnPayload' doc/architecture/recoverable-value.md` 仅剩第 10 行
+历史白名单；`git diff --check` 通过；零代码改动。

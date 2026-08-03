@@ -1,4 +1,4 @@
-# Skiff Dispatch Reference（草案）
+# Skiff Dispatch Reference
 
 状态：正式参考文档。权威契约：[`../architecture/durable-task-dispatch.md`](../architecture/durable-task-dispatch.md)；本文只定义该契约的用户可见 grammar、公开类型与 status / cancel 拼写。
 
@@ -90,16 +90,7 @@ std.task.cancel(ref: std.task.TaskRef) -> TaskCancelResult
 - request dispatch（Router `RequestDispatcher` / `DispatchSubmit` / `DispatchMode`）：把普通 request frame 分发给 runtime 的 transport 机制；task attempt 复用该通道执行，但 request dispatch 不拥有 task 语义。
 - 文档用语：描述 router 动作时用“派发 / 转发请求”，不用“dispatch”。
 
-## 7. 随本草案一并收敛的文档改动
-
-- `doc/reference/syntax.md` §6：expression statement 枚举增加 dispatch 表达式；保留名规则增加 `dispatch`。
-- `doc/reference/static-semantics.md`：`TaskRef` 加入可恢复类型；保留名规则增加 `dispatch`。
-- `doc/reference/runtime.md`：移除旧 `spawn` 用户面表述并按本文语义收敛（pending 容量只计 leased attempt 对应的 active request；scheduled / ready backlog 不计入任何 Runtime connection）。v1 不支持 `concurrent`，`dispatch` 与普通能力调用同等对待；concurrent 恢复时再收敛其受限列表。
-- `doc/reference/static-semantics.md`：`dispatch` 明确列入保留名（§9 已声明关键字不能作为用户标识符）；§18 recoverable boundary 增加 `std.task.TaskRef` 为可恢复类型。
-- `doc/reference/queue.md`：与权威文档的矛盾（自动重试 / lease expiry / build pinning / dedupe）按权威文档收敛；业务源码不暴露 queue。
-- `doc/reference/spawn.md` 不再存在；历史表述只保留在权威文档中。
-
-## 8. 测试矩阵
+## 7. 测试矩阵
 
 ### 语法 / 编译层（parser + compiler）
 
