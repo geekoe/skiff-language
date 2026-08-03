@@ -27,9 +27,10 @@ router 代码标识与文档），不保留兼容语法、旧 artifact 分支或
 
 | 节点 | 职责 | 基线 | 分支 / worktree | commit/tree | 自验收矩阵 | 合并状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| rename-code | 代码侧全链路机械改名 | main@13068249 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
-| rename-docs | 文档侧全链路机械改名 | main@13068249 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
-| dispatch_reference | reference/dispatch.md 与配套文档语义收敛（纯文档） | integration@438d8056 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
+| rename-code | 代码侧全链路机械改名 | main@13068249 | rename-dispatch-code | 1997d2b7（tree 6fa3ae79 前） | 见交接 + 集成探针 | merged |
+| rename-docs | 文档侧全链路机械改名 | main@13068249 | rename-dispatch-docs | 438d8056（tree af6b666f） | 见交接 + 集成探针 | merged |
+| dispatch_reference | reference/dispatch.md 与配套文档语义收敛（纯文档） | integration@438d8056 | dispatch-reference | 3ba13a97（tree 36742bb4 前） | 见交接 + 集成探针 | merged |
+| dispatch-reference-fix | 去“（草案）”标题/迁移注记、SpawnPayload→TaskDispatchPayload（纯文档） | integration@1997d2b7 | dispatch-reference-fix | a5646c44（最终 tree 见下） | 见交接 + 集成探针 | merged |
 
 节点可并行；集成 Agent 串行合入 `dispatch-rename-integration`。
 
@@ -56,8 +57,9 @@ router 代码标识与文档），不保留兼容语法、旧 artifact 分支或
 | 顺序 | 任务 | 分支 | 合并 commit/tree | 集成探针 | 清理 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | rename-docs | rename-dispatch-docs | 438d8056 | PASS（见上） | 已清理 | merged |
-| 2 | rename-code | 交接后填写 | 交接后填写 | 交接后填写 | 交接后填写 | pending |
+| 2 | rename-code | rename-dispatch-code | 1997d2b7 | PASS：cargo check skiff-syntax/transport/router + task_wire_corpus 8/8；router --tests 仅预存 baseline 编译失败（actor_live_lane/session_budget_probe 引用不存在的 SessionBudgets.inbound_*，文件未被本次合并改动） | 已清理 | merged |
 | 3 | dispatch_reference | dispatch-reference | 3ba13a97 | PASS（docs 链接/残留） | 已清理 | merged |
+| 4 | dispatch-reference-fix | dispatch-reference-fix | a5646c44 | PASS（docs 链接/残留；dispatch.md 无草案/迁移注记/SpawnPayload） | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新 commit/tree、
 合并任务、探针结果与 worktree 审计清单。
