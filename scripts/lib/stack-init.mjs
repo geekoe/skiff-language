@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -7,7 +7,13 @@ import {
   runConfigSnapshotAuthoring,
   runStdSeedAuthoring,
 } from './package-service-authoring.mjs';
-import { loadStackConfig, posixShellQuote, requireRemoteStackConfig } from './stack-config.mjs';
+import { captureCheckedCommand } from './command-execution.mjs';
+import {
+  loadStackConfig,
+  parseStackYaml,
+  posixShellQuote,
+  requireRemoteStackConfig,
+} from './stack-config.mjs';
 import { renderEcosystemConfig } from './stack-deploy.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
@@ -27,6 +33,9 @@ export async function initStack({
   },
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
+  if (stack.config.remote === undefined) {
+    return initLocalStack({ stack, skiffRoot, authoring });
+  }
   requireRemoteStackConfig(stack, 'stack init');
   const profile = stack.config.profile;
   const { host, remoteSkiff, nodeBin } = stack.config.remote;
@@ -129,4 +138,96 @@ export async function initStack({
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function initLocalStack({
+  stack,
+  skiffRoot,
+  authoring,
+}) {
+  const profile = stack.config.profile;
+  const instanceFile = path.join(stack.paths.buildRoot, 'instance.yml');
+  let instance;
+  try {
+    instance = parseStackYaml(await readFile(instanceFile, 'utf8'), 'instance.yml');
+  } catch (error) {
+    throw new Error(
+      `local stack init requires instance.yml at ${instanceFile}; run "skiff stack build --configDir <dir> --profile debug" first`,
+      { cause: error },
+    );
+  }
+  if (instance.schemaVersion !== 'skiff-instance-v1' || instance.profile !== profile) {
+    throw new Error('instance.yml must be skiff-instance-v1 with the configDir profile');
+  }
+  const artifactRoot = instance.artifactRoot;
+  const serviceDbMongoUrl = stack.router.serviceDb?.mongoUrl;
+  if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
+    throw new Error('router.yml serviceDb.mongoUrl is required for stack init');
+  }
+  await mkdir(artifactRoot, { recursive: true });
+
+  const assemblyReceipt = await authoring.runCompilerAuthoring({
+    skiffRoot,
+    kind: 'assembly',
+    action: 'build',
+    artifactRoot,
+    profile,
+    rootDeployments: [],
+  });
+  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
+  const assemblyIdentity = assemblyReceipt?.runtimeAssemblyReceipt?.assembly?.assemblyIdentity;
+  if (typeof recordPath !== 'string' || typeof assemblyIdentity !== 'string') {
+    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
+  }
+  const snapshotReceipt = await authoring.runConfigSnapshotAuthoring({
+    skiffRoot,
+    artifactRoot,
+    profile,
+    assemblyRecord: recordPath,
+    sources: [],
+  });
+  const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
+  if (typeof configSnapshotId !== 'string') {
+    throw new Error('config snapshot production returned no exact snapshot reference');
+  }
+  await authoring.runStdSeedAuthoring({ skiffRoot, artifactRoot });
+  await access(path.join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH));
+
+  const stateDocument = {
+    _id: profile,
+    revision: 0,
+    state: {
+      schemaVersion: ACTIVATION_STATE_SCHEMA_VERSION,
+      profile,
+      committed: {
+        generation: 0,
+        assembly: { assemblyIdentity },
+        configSnapshot: { snapshotId: configSnapshotId },
+      },
+      pending: null,
+    },
+  };
+  const evalScript = [
+    `db.getSiblingDB(${JSON.stringify(ACTIVATION_STATE_DATABASE)})`,
+    `.getCollection(${JSON.stringify(ACTIVATION_STATE_COLLECTION)})`,
+    `.replaceOne({_id: ${JSON.stringify(profile)}}, ${JSON.stringify(stateDocument)}, {upsert: true});`,
+  ].join('');
+  await captureLocalMongo(evalScript, serviceDbMongoUrl);
+
+  return {
+    profile,
+    generation: 0,
+    assemblyIdentity,
+    configSnapshotId,
+    mode: 'local',
+    artifactRoot,
+  };
+}
+
+async function captureLocalMongo(evalScript, mongoUrl) {
+  await captureCheckedCommand(
+    'mongosh',
+    [mongoUrl, '--quiet', '--eval', evalScript],
+    { cwd: process.cwd() },
+  );
 }

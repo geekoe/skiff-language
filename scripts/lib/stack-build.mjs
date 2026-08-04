@@ -11,7 +11,7 @@ export async function buildStack({
   runCommand = runAttachedCommand,
   generateInstance = generateLocalInstanceSpec,
 }) {
-  const stack = await loadStackConfig(configDir, { skiffRoot, files: ['build.yml'] });
+  const stack = await loadStackConfig(configDir, { skiffRoot });
   const profile = profileOverride ?? stack.build.profile;
   if (profile !== 'debug' && profile !== 'release') {
     throw new Error(`build profile must be "debug" or "release"; got ${profile}`);

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { stringify } from 'yaml';
@@ -21,6 +21,12 @@ export async function generateLocalInstanceSpec({ stack, skiffRoot }) {
   }
   const spec = localInstanceSpecFrom({ stack, skiffRoot, manifest });
   await ensureDevHomeDirs(spec.devHome);
+  for (const file of ['router.yml', 'runtime.yml', 'telemetry.yml']) {
+    await copyFile(
+      join(stack.configDir, file),
+      join(stack.paths.buildRoot, file),
+    );
+  }
   await writeFile(join(stack.paths.buildRoot, 'instance.yml'), stringify(spec));
   return spec;
 }
