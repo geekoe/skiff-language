@@ -92,6 +92,12 @@ pub struct SchedulerConfig {
     /// Local scan cadence. Renewals of accepted leases run on the same
     /// cadence, so `lease_duration` must be at least twice this interval.
     pub scan_interval: Duration,
+    /// Minimum pause between back-to-back saturated cycles while draining a
+    /// large burst. `run()` continues cycling at this cadence after a scan
+    /// reaches `batch_limit`, instead of waiting for the next wake or scan
+    /// interval, but never faster than this interval to avoid hammering the
+    /// store.
+    pub min_cycle_interval: Duration,
     /// Batch cap for due scans and expired-lease scans (capacity / fairness
     /// boundary; due order is `due_at` ascending).
     pub batch_limit: usize,
@@ -108,7 +114,8 @@ impl Default for SchedulerConfig {
         Self {
             scheduler_id: "scheduler".to_string(),
             scan_interval: Duration::from_secs(1),
-            batch_limit: 64,
+            min_cycle_interval: Duration::from_millis(10),
+            batch_limit: 128,
             lease_duration: DurableDuration::from_millis(60_000),
             image_activatable: true,
         }
@@ -123,6 +130,9 @@ impl SchedulerConfig {
         }
         if self.scan_interval.is_zero() {
             return Err("scan interval must be positive".to_string());
+        }
+        if self.min_cycle_interval.is_zero() {
+            return Err("min cycle interval must be positive".to_string());
         }
         if self.batch_limit == 0 {
             return Err("batch limit must be positive".to_string());
@@ -251,23 +261,32 @@ impl Scheduler {
         let mut wake = self.wake_rx.clone();
         loop {
             self.wait_for_cycle(&mut wake).await;
-            self.run_cycle().await;
+            // A scan that consumed the whole batch may leave more due work
+            // behind it. Keep draining at the minimum cycle cadence until a
+            // scan no longer saturates its batch; then go back to waiting for
+            // a wake or the scan interval.
+            while self.run_cycle().await {
+                self.wait_min_cycle_interval().await;
+            }
         }
     }
 
     /// One full cycle: lease-expiry recovery, renewal of accepted leases,
-    /// then due scan + claim + admission.
-    pub async fn run_cycle(&self) {
+    /// then due scan + claim + admission. Returns whether the due scan
+    /// saturated its batch and the store may still hold more due work.
+    pub async fn run_cycle(&self) -> bool {
         self.recover_once().await;
         self.renew_active_leases().await;
-        self.scan_once().await;
+        self.scan_once().await
     }
 
     /// Due scanner: claims due `ready` tasks in `due_at` order, bounded by
     /// `batch_limit`, and routes each claim through the admission seam.
-    pub async fn scan_once(&self) {
+    /// Returns `true` when the scan returned a full batch, which means there
+    /// may be additional due work behind this batch.
+    pub async fn scan_once(&self) -> bool {
         let Ok(now) = self.store.now().await else {
-            return;
+            return false;
         };
         let Ok(records) = self
             .store
@@ -276,8 +295,9 @@ impl Scheduler {
             })
             .await
         else {
-            return;
+            return false;
         };
+        let more_may_exist = records.len() >= self.config.batch_limit;
         for record in records {
             if record.state != TaskState::Ready {
                 continue;
@@ -319,6 +339,7 @@ impl Scheduler {
             let decision = self.admission.admit(&record).await;
             self.handle_decision(record, decision, now).await;
         }
+        more_may_exist
     }
 
     /// Lease-expiry recovery loop: recovers every expired lease visible in
@@ -519,6 +540,20 @@ impl Scheduler {
             }
         }
     }
+
+    async fn wait_min_cycle_interval(&self) {
+        let interval_ms =
+            i64::try_from(self.config.min_cycle_interval.as_millis()).unwrap_or(i64::MAX);
+        let next = self.clock.now_millis().saturating_add(interval_ms);
+        loop {
+            let now = self.clock.now_millis();
+            if now >= next {
+                return;
+            }
+            let wait = Duration::from_millis((next - now).max(0) as u64);
+            tokio::time::sleep(wait).await;
+        }
+    }
 }
 
 /// Convenience alias for the store handle consumed by schedulers.
@@ -536,6 +571,13 @@ mod tests {
         config.lease_duration = DurableDuration::from_millis(1);
         assert!(config.validate().is_err(), "lease shorter than cadence");
         config.lease_duration = DurableDuration::from_millis(2_000);
+        assert!(config.validate().is_ok());
+        config.min_cycle_interval = Duration::ZERO;
+        assert!(
+            config.validate().is_err(),
+            "min cycle interval must be positive"
+        );
+        config.min_cycle_interval = Duration::from_millis(10);
         assert!(config.validate().is_ok());
         config.batch_limit = 0;
         assert!(config.validate().is_err());

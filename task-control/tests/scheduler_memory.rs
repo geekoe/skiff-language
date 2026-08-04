@@ -26,7 +26,7 @@ use skiff_task_control::store::{
     RenewOutcome, RenewRejection, ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput,
     TaskStore,
 };
-use skiff_task_control::{MemoryTaskStore, TaskClock, TaskStoreError};
+use skiff_task_control::{MemoryTaskStore, SystemClock, TaskClock, TaskStoreError};
 
 use support::scheduler::FakeAdmission;
 use support::{fixtures, FakeClock};
@@ -37,6 +37,7 @@ fn test_config(scheduler_id: &str) -> SchedulerConfig {
     SchedulerConfig {
         scheduler_id: scheduler_id.to_string(),
         scan_interval: Duration::from_millis(1),
+        min_cycle_interval: Duration::from_millis(10),
         batch_limit: 128,
         lease_duration: DurableDuration::from_millis(60_000),
         image_activatable: true,
@@ -626,6 +627,94 @@ async fn wake_fast_path_triggers_cycle_without_waiting_for_scan_interval() {
 
     handle.abort();
     let _ = handle.await;
+}
+
+#[tokio::test]
+async fn saturated_burst_drains_without_waiting_for_scan_interval() {
+    const TASK_COUNT: u64 = 200;
+    const BATCH_LIMIT: usize = 128;
+
+    let store = Arc::new(MemoryTaskStore::new());
+    let admission = Arc::new(FakeAdmission::new());
+    let mut config = test_config("drain");
+    config.batch_limit = BATCH_LIMIT;
+    config.scan_interval = Duration::from_secs(3_600);
+    config.lease_duration = DurableDuration::from_millis(7_200_000);
+    config.min_cycle_interval = Duration::from_millis(10);
+    let scheduler = Scheduler::new(
+        store.clone(),
+        admission.clone(),
+        Arc::new(SystemClock),
+        config,
+        test_backoff(100, 400, 0),
+    );
+
+    let runner = scheduler.clone();
+    let handle = tokio::spawn(async move { runner.run().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    for seed in 0..TASK_COUNT {
+        store
+            .create(immediate_record(seed))
+            .await
+            .expect("create burst task");
+    }
+    scheduler.wake();
+
+    admission
+        .wait_for_calls(TASK_COUNT as usize, Duration::from_secs(2))
+        .await;
+    assert_eq!(
+        admission.calls(),
+        TASK_COUNT as usize,
+        "all burst tasks must be claimed without waiting for the scan interval"
+    );
+    let records = store.records().await;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.state == TaskState::Leased)
+            .count(),
+        TASK_COUNT as usize,
+        "every burst task must be leased"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn scan_once_reports_saturation_until_burst_is_drained() {
+    let clock = Arc::new(FakeClock::new(START_MILLIS));
+    let store = Arc::new(MemoryTaskStore::with_clock(clock.clone()));
+    let admission = Arc::new(FakeAdmission::new());
+    let mut config = test_config("saturation");
+    config.batch_limit = 2;
+    let scheduler = Scheduler::new(
+        store.clone(),
+        admission.clone(),
+        clock.clone(),
+        config,
+        test_backoff(100, 400, 0),
+    );
+
+    for seed in 0..3 {
+        store
+            .create(immediate_record(seed))
+            .await
+            .expect("create burst task");
+    }
+
+    assert!(
+        scheduler.scan_once().await,
+        "a full batch means more due work may remain"
+    );
+    assert_eq!(admission.calls(), 2);
+    assert!(
+        !scheduler.scan_once().await,
+        "a short batch means the burst has been drained"
+    );
+    assert_eq!(admission.calls(), 3);
 }
 
 #[tokio::test]
