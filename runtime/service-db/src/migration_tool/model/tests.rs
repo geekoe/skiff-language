@@ -6,7 +6,7 @@ use mongodb::bson::doc;
 
 fn endpoint(database: &str, collection: &str) -> StorageEndpoint {
     StorageEndpoint {
-        environment: "dev".to_owned(),
+        profile: "dev".to_owned(),
         service_id: "example.test/service".to_owned(),
         database: database.to_owned(),
         package_id: "example.test/package".to_owned(),

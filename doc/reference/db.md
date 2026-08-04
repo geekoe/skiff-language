@@ -664,7 +664,7 @@ sanitization receipt 指定的 `ToolProvider` 连接态在写入 staging 前精�
 execution receipt 记录 resume 状态。崩溃后必须使用完全相同的 plan 和 keyring fingerprint
 继续。工具不删除旧 database/collection，运行完成后也由操作者另行保留和核对。
 
-Runtime config 是 profile 与 keyring 路径的操作面输入来源，Router config 是 Mongo URL 的唯一来源；
+Router config 是 profile 与 Mongo URL 的操作面输入来源，Runtime config 只提供 keyring 路径；
 allowlist、sanitization 和 execution receipt 都不保存连接凭据，工具也不接受命令行 root key。
 inventory stdout 会给出精确 source/target namespace、最终索引计划、opaque migration/mapping ID
 和数量，但不包含 plaintext、Mongo document、key material、连接字符串或 keyring 路径。
