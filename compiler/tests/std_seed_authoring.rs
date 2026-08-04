@@ -33,9 +33,15 @@ fn fresh_seed_is_idempotent_and_materializes_exact_std_records() {
 
     let authored = author_official_std_package(&platform_sources).unwrap();
     let exact = package_artifact_ref(&authored.artifact).unwrap();
-    assert_eq!(first["package"]["artifact"], serde_json::to_value(&exact).unwrap());
+    assert_eq!(
+        first["package"]["artifact"],
+        serde_json::to_value(&exact).unwrap()
+    );
     assert_eq!(first["pointer"]["artifact"], first["package"]["artifact"]);
-    assert_eq!(first["pointer"]["recordPath"], first["package"]["recordPath"]);
+    assert_eq!(
+        first["pointer"]["recordPath"],
+        first["package"]["recordPath"]
+    );
     let package_id = first["package"]["artifact"]["packageId"].as_str().unwrap();
     let package_version = first["package"]["artifact"]["packageVersion"]
         .as_str()
@@ -49,15 +55,11 @@ fn fresh_seed_is_idempotent_and_materializes_exact_std_records() {
 
     let store = CanonicalArtifactStore::open(root.path()).unwrap();
     let pointer = store
-        .read_package_artifact_pointer(
-            &exact.package_id,
-            &exact.package_version,
-        )
+        .read_package_artifact_pointer(&exact.package_id, &exact.package_version)
         .unwrap()
         .expect("std pointer must be installed");
     assert_eq!(
-        pointer.artifact,
-        exact,
+        pointer.artifact, exact,
         "installed pointer must select the exact std candidate"
     );
     let stored = store.read_package_artifact(&pointer.artifact).unwrap();

@@ -13,11 +13,7 @@ fn internal_actions_are_absent_from_public_help() {
 
 #[test]
 fn std_seed_action_requires_exactly_one_platform_source_root() {
-    let missing = run_error(&[
-        "std-seed",
-        "--artifact-root",
-        "/tmp/skiff-artifacts",
-    ]);
+    let missing = run_error(&["std-seed", "--artifact-root", "/tmp/skiff-artifacts"]);
     assert_eq!(missing, "--platform-source-root is required");
 
     let duplicate = run_error(&[

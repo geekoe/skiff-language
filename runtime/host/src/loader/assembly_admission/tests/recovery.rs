@@ -102,9 +102,9 @@ fn generation_one_control(
     );
     match (kind, common) {
         (
-        "prepare",
-        (
-            profile,
+            "prepare",
+            (
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -123,9 +123,9 @@ fn generation_one_control(
             service_db: None,
         },
         (
-        "abort",
-        (
-            profile,
+            "abort",
+            (
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -143,9 +143,9 @@ fn generation_one_control(
             replica_id,
         },
         (
-        "commit",
-        (
-            profile,
+            "commit",
+            (
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
