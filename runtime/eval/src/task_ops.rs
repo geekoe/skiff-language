@@ -854,7 +854,12 @@ fn actor_activation_snapshot(
         });
     let expected_type_plan =
         create_request_recoverable_expected_plan(projection.type_view(), &create_addr, create)?;
-    if !create_input.is_empty() {
+    // A create-less keyed actor is activated with the canonical empty array
+    // `[]` (2 bytes). That is not a create input: only an actor with a linked
+    // create declaration can have one, so the recoverable gate must not run
+    // for it. The plan-level has-create marker keeps actors that declare a
+    // create method on the previous byte-level path unchanged.
+    if create.is_some() && !create_input.is_empty() {
         gate_create_input(
             context,
             projection,

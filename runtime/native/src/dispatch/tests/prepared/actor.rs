@@ -5,6 +5,7 @@ pub(super) struct TestActorCapability {
     activation: ActivationIdentityControl,
     actor_ref: ActorRef,
     calls: Arc<AtomicUsize>,
+    bootstraps: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl NativeActorCapability for TestActorCapability {
@@ -19,9 +20,13 @@ impl NativeActorCapability for TestActorCapability {
     fn get_or_create_actor<'a>(
         &'a self,
         _request: ActorGetOrCreateControlRequest,
-        _bootstrap_payload: Vec<u8>,
+        bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         self.calls.fetch_add(1, Ordering::AcqRel);
+        self.bootstraps
+            .lock()
+            .expect("actor bootstrap record lock")
+            .push(bootstrap_payload);
         let actor_ref = self.actor_ref.clone();
         Box::pin(async move { Ok(actor_ref) })
     }
@@ -114,6 +119,7 @@ fn actor_get_route_is_an_owned_external_wait() {
         activation: actor_activation(),
         actor_ref: actor_ref.clone(),
         calls: Arc::clone(&calls),
+        bootstraps: Arc::new(Mutex::new(Vec::new())),
     };
     let mut heap = RequestHeap::default();
     let target = "std.actor.get";
@@ -141,4 +147,61 @@ fn actor_get_route_is_an_owned_external_wait() {
         .unwrap_or_else(|error| panic!("{target} should finalize: {error}"));
     assert_eq!(value, RuntimeValue::ActorRef(actor_ref.clone()));
     assert_eq!(calls.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn actor_get_route_without_create_args_preserves_empty_array_bootstrap() {
+    // Regression: a keyed actor without a create declaration is fetched with
+    // only the actor id. The canonical empty-array bootstrap `[]` must reach
+    // get-or-create so the runtime freezes it as the create-less activation
+    // input (and the E2a snapshot gate treats it as no create input).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let actor_ref = ActorRef::new(
+        "service.test",
+        "actor:Counter",
+        "number",
+        "skiff-canonical-v1",
+        b"1".to_vec(),
+        "sha256:test",
+        Some(1),
+    );
+    let bootstraps: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let actor = TestActorCapability {
+        activation: actor_activation(),
+        actor_ref: actor_ref.clone(),
+        calls: Arc::clone(&calls),
+        bootstraps: Arc::clone(&bootstraps),
+    };
+    let mut heap = RequestHeap::default();
+    let target = "std.actor.get";
+    let args = vec![RuntimeValue::Number(1.0)];
+    let prepared = ActorNativeDispatch::prepare(
+        actor.clone(),
+        actor_invocation(target, 1, scalar_plan("unknown", RuntimeTypeNode::Unknown)),
+        target.to_string(),
+        args,
+        &mut heap,
+    )
+    .unwrap_or_else(|error| panic!("{target} should prepare: {error}"));
+    let PreparedNativeCall::ExternalWait(operation) = prepared else {
+        panic!("{target} is an external registry operation");
+    };
+    let (mut wait, finalize) = operation.into_parts();
+    let Poll::Ready(outcome) = poll_external_wait(&mut wait) else {
+        panic!("fixture is immediately ready");
+    };
+    let value = finalize
+        .finalize(
+            outcome.unwrap_or_else(|error| panic!("{target} wait should succeed: {error}")),
+            &mut heap,
+        )
+        .unwrap_or_else(|error| panic!("{target} should finalize: {error}"));
+    assert_eq!(value, RuntimeValue::ActorRef(actor_ref));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    let recorded = bootstraps.lock().expect("actor bootstrap record lock");
+    assert_eq!(
+        recorded.as_slice(),
+        &[br#"[]"#.to_vec()],
+        "create-less std.actor.get must freeze the canonical empty-array bootstrap"
+    );
 }

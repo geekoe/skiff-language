@@ -120,6 +120,7 @@ fn null_type() -> skiff_runtime_linked_program::LinkedTypeRef {
 
 fn linked_fixture(
     create_param_type: skiff_runtime_linked_program::LinkedTypeRef,
+    has_create: bool,
 ) -> Arc<LinkedFileUnit> {
     let mut declarations = FileDeclarations::default();
     let _ = declarations.types.insert(
@@ -156,7 +157,7 @@ fn linked_fixture(
                 ty: string_type(),
                 encoding: ActorFieldEncodingIr::CanonicalValueV1,
             }],
-            create: Some(LinkedActorCreateMethod {
+            create: has_create.then(|| LinkedActorCreateMethod {
                 method_identity: ActorMethodIdentity::new("skiff-actor-method-v1:sha256:create"),
                 parameters: vec![LinkedFunctionTypeParamIr {
                     name: "accountId".to_string(),
@@ -502,7 +503,22 @@ impl ActorSubmitFixture {
         create_param_type: skiff_runtime_linked_program::LinkedTypeRef,
         with_frame: bool,
     ) -> Self {
-        let file = linked_fixture(create_param_type);
+        Self::new_with_create(create_param_type, with_frame, true).await
+    }
+
+    /// Create-less keyed actor fixture: no `create` declaration and the
+    /// canonical empty-array activation bootstrap (`[]`), which is the shape
+    /// produced by `std.actor.get` on a create-less actor (E2a regression).
+    async fn new_without_create(with_frame: bool) -> Self {
+        Self::new_with_create(string_type(), with_frame, false).await
+    }
+
+    async fn new_with_create(
+        create_param_type: skiff_runtime_linked_program::LinkedTypeRef,
+        with_frame: bool,
+        has_create: bool,
+    ) -> Self {
+        let file = linked_fixture(create_param_type, has_create);
         let package = runtime_execution_package_fixture_with_identity(
             "example.com/actor-task-submit-package",
             "1.0.0",
@@ -553,7 +569,11 @@ impl ActorSubmitFixture {
                     declaration_owner: actor_owner(),
                 },
                 bootstrap_encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1,
-                bootstrap_payload: br#"["account-1"]"#,
+                bootstrap_payload: if has_create {
+                    br#"["account-1"]"#
+                } else {
+                    br#"[]"#
+                },
                 program: program.projection().type_view(),
             })
             .expect("actor task submit fixture activation");
@@ -801,6 +821,95 @@ async fn actor_method_submit_freezes_snapshot_and_submits_once() {
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0]["name"], "accountId");
     assert_eq!(fields[0]["ty"]["node"]["kind"], "string");
+}
+
+#[tokio::test]
+async fn actor_method_submit_keyed_actor_without_create_submits_once() {
+    // Regression: a keyed actor without a create declaration is activated with
+    // the canonical empty-array bootstrap `[]`. The E2a snapshot must not
+    // treat those 2 bytes as a create input and reject before submission.
+    let fixture = ActorSubmitFixture::new_without_create(true).await;
+    let value = fixture
+        .run_submit()
+        .await
+        .expect("create-less keyed actor dispatch should submit");
+    assert_eq!(value, RuntimeValue::Null);
+
+    let submissions = fixture
+        .recording
+        .submissions
+        .lock()
+        .expect("task submissions lock");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("create-less actor method dispatch should submit exactly once");
+    };
+    assert_eq!(request.target_kind, "actorMethod");
+    let actor_method = request
+        .actor_method
+        .as_ref()
+        .expect("actor method target metadata");
+    assert_eq!(
+        actor_method.activation.create_input,
+        base64::engine::general_purpose::STANDARD.encode(br#"[]"#)
+    );
+    let plan = &actor_method.activation.expected_type_plan;
+    assert_eq!(plan["label"], "record");
+    assert_eq!(plan["node"]["kind"], "record");
+    let fields = plan["node"]["fields"].as_array().expect("plan fields");
+    assert!(
+        fields.is_empty(),
+        "create-less actor snapshot plan must have no create fields"
+    );
+}
+
+#[tokio::test]
+async fn actor_method_submit_keyed_actor_without_create_external_context_submits_once() {
+    // Regression (chat shape): an external context with the Runtime's actor
+    // instance store dispatches `actor.method(...)` on a create-less keyed
+    // actor whose activation bootstrap is `[]`. The submission must succeed.
+    let fixture = ActorSubmitFixture::new_without_create(false).await;
+    let context = fixture.context_with_actor_store();
+    let mut heap = HeapAccess::private(RequestHeap::default());
+    let value = fixture
+        .interpreter
+        .call_program_executable_with_self_direct(
+            context,
+            &mut heap,
+            &Env::new(),
+            &fixture.caller_addr,
+            &fixture.caller_addr,
+            &Default::default(),
+            RuntimeValue::ActorRef(fixture.actor_ref.clone()),
+            Vec::new(),
+        )
+        .await
+        .expect("external-context create-less actor dispatch should submit");
+    assert_eq!(value, RuntimeValue::Null);
+
+    let submissions = fixture
+        .recording
+        .submissions
+        .lock()
+        .expect("task submissions lock");
+    let [(request, _payload)] = submissions.as_slice() else {
+        panic!("external-context create-less actor dispatch should submit exactly once");
+    };
+    assert_eq!(request.target_kind, "actorMethod");
+    let actor_method = request
+        .actor_method
+        .as_ref()
+        .expect("actor method target metadata");
+    assert_eq!(
+        actor_method.activation.create_input,
+        base64::engine::general_purpose::STANDARD.encode(br#"[]"#)
+    );
+    let fields = actor_method.activation.expected_type_plan["node"]["fields"]
+        .as_array()
+        .expect("plan fields");
+    assert!(
+        fields.is_empty(),
+        "create-less actor snapshot plan must have no create fields"
+    );
 }
 
 #[tokio::test]
