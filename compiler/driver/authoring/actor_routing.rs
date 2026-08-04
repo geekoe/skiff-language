@@ -8,8 +8,6 @@
 //! the producer. It never forwards module paths, actor/method names, source
 //! spans, executable coordinates or payload bytes.
 
-use std::collections::BTreeSet;
-
 use skiff_artifact_identity::{package_artifact_ref, service_deployment_ref};
 use skiff_artifact_model::{FileIrUnit, PackageArtifact, ServiceDeployment};
 use skiff_deployment::{
@@ -67,21 +65,12 @@ fn project_deployment_actor_routing(
 ) -> AuthoringResult<ActorRoutingProjection> {
     let deployment_ref = service_deployment_ref(deployment);
     let mut package_inputs = Vec::new();
-    let mut seen_package_builds = BTreeSet::new();
     for package_ref in deployment
         .package_bindings
         .iter()
         .map(|binding| &binding.package)
         .chain(std::iter::once(&deployment.implementation))
     {
-        // The same package can be reachable through multiple binding edges
-        // (a direct caller requirement plus a transitive requirement). Its
-        // actor routing facts are identical for every edge, so project it
-        // exactly once; the frozen projection rejects duplicate method
-        // entries.
-        if !seen_package_builds.insert(package_ref.package_build_id.clone()) {
-            continue;
-        }
         let artifact = packages
             .iter()
             .find(|artifact| artifact.package_build_id == package_ref.package_build_id)

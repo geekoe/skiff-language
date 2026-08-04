@@ -342,16 +342,6 @@ impl ActorFrameSink {
     /// The A0/A3 catalog and ownership registry are keyed by that owning
     /// service id, so a cross-package caller key would miss the catalog and
     /// leave method invocations silently undeliverable.
-    ///
-    /// An assembly may contain multiple deployments that bind the same
-    /// declaration package (canonical test-service batches generate one
-    /// isolated deployment per test case). The catalog then holds one entry
-    /// per owning deployment, and the exact owner is ambiguous. Prefer the
-    /// caller's own deployment when it binds the declaration package: the
-    /// caller's request already runs in that deployment's service database,
-    /// so the actor must resolve to the same service to share the caller's
-    /// durable state. Only fall back to the first catalog entry for a
-    /// cross-package caller that does not bind the package itself.
     fn actor_owner_service_id(
         &self,
         epoch: &Arc<RoutingEpoch>,
@@ -367,18 +357,11 @@ impl ActorFrameSink {
                     .get(*slot as usize)
                     .map(|slot| &slot.package.package_build_id)
                     .ok_or("ActorOwnerServiceUnresolved")?;
-                let entries = epoch.actor_catalog().entries();
-                entries
+                epoch
+                    .actor_catalog()
+                    .entries()
                     .iter()
-                    .find(|entry| {
-                        &entry.package.package_build_id == build_id
-                            && entry.deployment.service_id == header.actor_key.service_id
-                    })
-                    .or_else(|| {
-                        entries
-                            .iter()
-                            .find(|entry| &entry.package.package_build_id == build_id)
-                    })
+                    .find(|entry| &entry.package.package_build_id == build_id)
                     .map(|entry| entry.deployment.service_id.clone())
                     .ok_or("ActorOwnerServiceUnresolved")
             }
