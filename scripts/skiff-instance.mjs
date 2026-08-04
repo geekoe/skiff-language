@@ -545,7 +545,7 @@ function routerConfigText(config) {
     host: '127.0.0.1',
     artifactsPath: config.paths.artifactRoot,
     devReload: true,
-    requestTimeoutMs: 20000,
+    requestTimeoutMs: config.router.requestTimeoutMs,
     activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     httpPort: config.ports.routerHttp,
     httpMaxRequestBytes: config.http.maxRequestBytes,

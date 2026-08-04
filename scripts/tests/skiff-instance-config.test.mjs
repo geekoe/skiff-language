@@ -27,6 +27,7 @@ test('instance config defaults profile to dev and exposes it in the summary', ()
 
   assert.match(defaultInstanceConfigText(), /^profile: dev$/m);
   assert.match(defaultInstanceConfigText(), /^cargoTargetDir: \.\.\/build\/cargo-target$/m);
+  assert.match(defaultInstanceConfigText(), /^router:\n  requestTimeoutMs: 20000$/m);
   assert.equal(config.profile, 'dev');
   assert.equal(config.paths.cargoTargetDir, resolve(dirname(configPath), '../build/cargo-target'));
   assert.equal(instanceSummary(config).profile, 'dev');
@@ -221,12 +222,60 @@ test('instance config owns an explicit positive activation prepare timeout', asy
   }
 });
 
+test('instance config owns an explicit positive router request timeout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-instance-invalid-router-'));
+  try {
+    const configPath = join(root, 'custom.yml');
+    await writeFile(configPath, instanceConfigText({
+      profile: 'dev',
+      devHome: join(root, 'dev-home'),
+      routerRequestTimeoutMs: '45000',
+    }));
+    const config = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
+    assert.equal(config.router.requestTimeoutMs, 45000);
+    assert.equal(instanceSummary(config).routerRequestTimeoutMs, 45000);
+
+    const oldConfigPath = join(root, 'without-router.yml');
+    await writeFile(oldConfigPath, [
+      'profile: dev',
+      `devHome: ${JSON.stringify(join(root, 'old-home'))}`,
+      'http:',
+      '  maxRequestBytes: 67108864',
+      '  maxResponseBytes: 8388608',
+      'activation:',
+      '  prepareTimeoutMs: 120000',
+      '',
+    ].join('\n'));
+    const oldConfig = await readInstanceConfig({
+      configPath: oldConfigPath,
+      repoRoot: skiffRoot,
+    });
+    assert.equal(oldConfig.router.requestTimeoutMs, 20000);
+
+    for (const [index, value] of ['0', '-1', '1.5', '"20000"'].entries()) {
+      const invalidPath = join(root, `invalid-${index}.yml`);
+      await writeFile(invalidPath, instanceConfigText({
+        profile: 'dev',
+        devHome: join(root, `invalid-home-${index}`),
+        routerRequestTimeoutMs: value,
+      }));
+      await assert.rejects(
+        readInstanceConfig({ configPath: invalidPath, repoRoot: skiffRoot }),
+        /router\.requestTimeoutMs must be a positive safe integer/,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function instanceConfigText({
   profile,
   devHome,
   maxRequestBytes = '67108864',
   maxResponseBytes = '8388608',
   activationPrepareTimeoutMs = '120000',
+  routerRequestTimeoutMs = '20000',
 }) {
   return [
     `profile: ${profile}`,
@@ -237,6 +286,8 @@ function instanceConfigText({
     `  maxResponseBytes: ${maxResponseBytes}`,
     'activation:',
     `  prepareTimeoutMs: ${activationPrepareTimeoutMs}`,
+    'router:',
+    `  requestTimeoutMs: ${routerRequestTimeoutMs}`,
     'components:',
     '  telemetry: disabled',
     '  mongo: disabled',

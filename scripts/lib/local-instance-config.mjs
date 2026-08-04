@@ -28,6 +28,9 @@ export const defaultInstanceHttp = {
 export const defaultInstanceActivation = {
   prepareTimeoutMs: DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS,
 };
+export const defaultInstanceRouter = {
+  requestTimeoutMs: 20000,
+};
 export function defaultInstanceConfigPath(repoRoot = skiffRoot) {
   return join(repoRoot, '.skiff-instance', 'config.yml');
 }
@@ -60,6 +63,9 @@ export function defaultInstanceConfigText() {
     '',
     'activation:',
     `  prepareTimeoutMs: ${defaultInstanceActivation.prepareTimeoutMs}`,
+    '',
+    'router:',
+    `  requestTimeoutMs: ${defaultInstanceRouter.requestTimeoutMs}`,
     '',
     'components:',
     '  telemetry: managed',
@@ -140,6 +146,7 @@ export function instanceSummary(config) {
     httpMaxRequestBytes: config.http.maxRequestBytes,
     httpMaxResponseBytes: config.http.maxResponseBytes,
     activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
+    routerRequestTimeoutMs: config.router.requestTimeoutMs,
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
@@ -162,6 +169,7 @@ function normalizeInstanceConfig(raw, context) {
   const ports = normalizePorts(raw.ports);
   const http = normalizeHttp(raw.http);
   const activation = normalizeActivation(raw.activation);
+  const router = normalizeRouter(raw.router);
   const components = normalizeComponents(raw.components);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
@@ -200,6 +208,7 @@ function normalizeInstanceConfig(raw, context) {
     ports,
     http,
     activation,
+    router,
     components,
     packageDirs,
     telemetry,
@@ -240,6 +249,26 @@ function normalizeActivation(value) {
     prepareTimeoutMs: readPositiveSafeInteger(
       value.prepareTimeoutMs,
       'activation.prepareTimeoutMs',
+    ),
+  };
+}
+
+function normalizeRouter(value) {
+  if (value === undefined || value === null) {
+    return { ...defaultInstanceRouter };
+  }
+  if (!isRecord(value)) {
+    throw new Error('router must be a mapping with explicit requestTimeoutMs');
+  }
+  if (typeof value.requestTimeoutMs !== 'number') {
+    throw new Error(
+      'router.requestTimeoutMs must be a positive safe integer'
+    );
+  }
+  return {
+    requestTimeoutMs: readPositiveSafeInteger(
+      value.requestTimeoutMs,
+      'router.requestTimeoutMs',
     ),
   };
 }
