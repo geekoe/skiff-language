@@ -20,7 +20,7 @@ test('dev registry distinguishes package and service roots and preserves strict 
   const classified = await Promise.all(
     fixture.roots.map(({ root }) => classifyAuthoringRoot(root)),
   );
-  await writeDevRegistry(registryPath, { environment: 'dev', roots: classified });
+  await writeDevRegistry(registryPath, { profile: 'dev', roots: classified });
   const registry = await readDevRegistry(registryPath);
   assert.deepEqual(registry.roots.map(({ kind }) => kind), ['package', 'service']);
   assert.equal(
@@ -78,7 +78,7 @@ test('registry classifies real service manifest shapes and persists their servic
     manifests.map(({ id }) => ({ kind: 'service', serviceId: id })),
   );
   const registryPath = join(temp, 'watch.json');
-  await writeDevRegistry(registryPath, { environment: 'dev', roots });
+  await writeDevRegistry(registryPath, { profile: 'dev', roots });
   assert.deepEqual(
     (await readDevRegistry(registryPath)).roots.map(({ serviceId }) => serviceId).sort(),
     manifests.map(({ id }) => id).sort(),
@@ -125,13 +125,13 @@ test('missing package manifest and retired authoring files fail closed', async (
   await assert.rejects(classifyAuthoringRoot(temp), /retired independent authoring file.*deployment\.yml/);
 });
 
-test('ordinary package roots cannot own service environment config files', async () => {
+test('ordinary package roots cannot own service profile config files', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-package-config-'));
   await writePackageRoot(temp);
   await writeFile(join(temp, 'config.dev.yml'), '"example.com/package": {}\n');
   await assert.rejects(
     classifyAuthoringRoot(temp),
-    /environment config belongs only to a Package with service\.yml/,
+    /profile config belongs only to a Package with service\.yml/,
   );
 });
 
@@ -241,7 +241,7 @@ test('a failing package batch never sends activation prepare', async () => {
   await assert.rejects(
     runDevSyncOnce({
       roots: fixture.roots,
-      environment: 'dev',
+      profile: 'dev',
       artifactRoot: fixture.artifactRoot,
       expectedGeneration: 0,
       compilerRunner: async ({ kind }) => {
@@ -264,7 +264,7 @@ test('dev sync has one package phase and consumes generated service receipts bef
   let assemblyInput;
   const result = await runDevSyncOnce({
     roots: fixture.roots,
-    environment: 'dev',
+    profile: 'dev',
     artifactRoot: fixture.artifactRoot,
     expectedGeneration: 7,
     activationId: 'activation-8',
@@ -273,13 +273,13 @@ test('dev sync has one package phase and consumes generated service receipts bef
         assemblyInput = input;
       }
       events.push(input.kind === 'assembly'
-        ? `assembly:${input.environment}`
-        : `${input.kind}:${basename(input.root)}:${input.environment}`);
+        ? `assembly:${input.profile}`
+        : `${input.kind}:${basename(input.root)}:${input.profile}`);
       return compilerReceipt(input);
     },
     configSnapshotRunner: async (input) => {
       events.push(`snapshot:${input.profile}`);
-      assert.equal(input.environment, 'dev');
+      assert.equal(input.profile, 'dev');
       assert.deepEqual(input.sources, [{
         root: fixture.roots.find(({ root }) => basename(root) === 'service').root,
         deployment: dummyDeploymentRef,
@@ -319,7 +319,7 @@ test('dev sync defers roots until exact package/service pointers are available',
   let providerPublished = false;
   await runDevSyncOnce({
     roots: [...fixture.roots].reverse(),
-    environment: 'dev',
+    profile: 'dev',
     artifactRoot: fixture.artifactRoot,
     buildOnly: true,
     compilerRunner: async (input) => {
@@ -343,7 +343,7 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
   let compilerCalls = 0;
   const first = await runDevSyncOnce({
     roots: fixture.roots,
-    environment: 'dev',
+    profile: 'dev',
     artifactRoot: fixture.artifactRoot,
     expectedGeneration: 0,
     compilerRunner: async (input) => {
@@ -356,7 +356,7 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
         return activeAssemblyHealth(0, '1', '2');
       }
       const request = JSON.parse(body);
-      assert.equal(request.schemaVersion, 'skiff-assembly-activation-request-v2');
+      assert.equal(request.schemaVersion, 'skiff-assembly-activation-request-v3');
       assert.equal(request.configSnapshot.snapshotId, configSnapshotId);
       return jsonResponse({ committed: { generation: 1 } });
     },
@@ -370,7 +370,7 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
   const secondSnapshotId = `skiff-runtime-config-snapshot-v1:${'6'.repeat(32)}`;
   const second = await runDevSyncOnce({
     roots: fixture.roots,
-    environment: 'dev',
+    profile: 'dev',
     artifactRoot: fixture.artifactRoot,
     expectedGeneration: 1,
     buildState: reusableDevBuildState(first),
@@ -439,7 +439,7 @@ function compilerReceipt({ kind, root = '' }) {
   if (kind === 'assembly') {
     return {
       runtimeAssemblyReceipt: {
-        environment: 'dev',
+        profile: 'dev',
         assembly: { assemblyIdentity },
         recordPath: 'records/assembly.json',
       },
@@ -459,7 +459,7 @@ function activeAssemblyHealth(generation, assemblyDigit, snapshotDigit) {
   return jsonResponse({
     ok: true,
     activeAssembly: {
-      environment: 'dev',
+      profile: 'dev',
       generation,
       assemblyIdentity:
         `skiff-runtime-assembly-v3:sha256:${assemblyDigit.repeat(64)}`,

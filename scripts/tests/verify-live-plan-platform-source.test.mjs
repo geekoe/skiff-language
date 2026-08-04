@@ -34,7 +34,7 @@ test('runtime-live forwards the absolute repository root exactly once', async ()
       runtimeLiveActivationUrl: 'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
-      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveProfile: 'runtime-live',
       runtimeLiveExpectedGeneration: '0',
       env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
     });

@@ -16,7 +16,6 @@ test('runtime config renders an optional host keyring mount path', () => {
   const common = {
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: '/srv/skiff/runtime-home',
-    environment: 'prod',
   };
 
   assert.doesNotMatch(
@@ -39,7 +38,7 @@ test('deploy CLI writes only the remote keyring path to runtime.yml', async () =
   });
   try {
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.runtimeConfig, /^environment: "prod"$/m);
+    assert.doesNotMatch(result.runtimeConfig, /^(?:profile|environment):/m);
     assert.doesNotMatch(result.runtimeConfig, /^artifactRoots?:/m);
     assert.doesNotMatch(result.runtimeConfig, /mongoUrl/);
     assert.doesNotMatch(

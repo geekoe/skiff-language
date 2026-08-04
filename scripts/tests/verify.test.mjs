@@ -48,7 +48,7 @@ test('verify CLI rejects repeated runtime-live singleton inputs across split and
     '--runtime-live-ingress-url',
     'http://router.test:4100',
     '--runtime-live-artifact-root=artifacts',
-    '--runtime-live-environment=runtime-live',
+    '--runtime-live-profile=runtime-live',
     '--runtime-live-expected-generation',
     '7',
   ]);
@@ -58,7 +58,7 @@ test('verify CLI rejects repeated runtime-live singleton inputs across split and
   );
   assert.equal(parsed.runtimeLiveIngressUrl, 'http://router.test:4100');
   assert.equal(parsed.runtimeLiveArtifactRoot, 'artifacts');
-  assert.equal(parsed.runtimeLiveEnvironment, 'runtime-live');
+  assert.equal(parsed.runtimeLiveProfile, 'runtime-live');
   assert.equal(parsed.runtimeLiveExpectedGeneration, '7');
   for (const args of [
     [
@@ -72,7 +72,7 @@ test('verify CLI rejects repeated runtime-live singleton inputs across split and
       'http://other.test:4100',
     ],
     ['--runtime-live-artifact-root', 'one', '--runtime-live-artifact-root=two'],
-    ['--runtime-live-environment', 'one', '--runtime-live-environment=two'],
+    ['--runtime-live-profile', 'one', '--runtime-live-profile=two'],
     [
       '--runtime-live-expected-generation=1',
       '--runtime-live-expected-generation',
@@ -356,7 +356,7 @@ test('runtime-live blocks for every nonempty subset of missing required inputs',
         'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
-      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveProfile: 'runtime-live',
       runtimeLiveExpectedGeneration: '0',
     };
     const keys = Object.keys(values);
@@ -535,7 +535,7 @@ test('runtime-live builds executable Cargo tasks when config and fixtures exist'
           'http://router.test:4101/__skiff/activate-assembly',
           '--ingress-url',
           'http://router.test:4100',
-          '--environment',
+          '--profile',
           'runtime-live',
           '--expected-generation',
           '0',
@@ -550,7 +550,7 @@ test('runtime-live builds executable Cargo tasks when config and fixtures exist'
   }
 });
 
-test('runtime-live target environment does not select the source config profile', async () => {
+test('runtime-live target profile does not select the source config profile', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-target-profile-'));
   try {
     const artifactRoot = join(fixture, 'artifacts');
@@ -564,12 +564,12 @@ test('runtime-live target environment does not select the source config profile'
       catalogRoot: root,
       selectors: ['runtime-live'],
       ...runtimeLiveInputs(artifactRoot),
-      runtimeLiveEnvironment: 'remote.prod',
+      runtimeLiveProfile: 'remote.prod',
     });
 
     assert.equal(plan.tasks.length, 1);
-    const environmentIndex = plan.tasks[0].args.indexOf('--environment');
-    assert.equal(plan.tasks[0].args[environmentIndex + 1], 'remote.prod');
+    const profileIndex = plan.tasks[0].args.indexOf('--profile');
+    assert.equal(plan.tasks[0].args[profileIndex + 1], 'remote.prod');
     await assert.rejects(
       access(join(fixture, 'runtime', 'live-tests', 'config.remote.prod.yml')),
       { code: 'ENOENT' },
@@ -721,8 +721,8 @@ test('runtime-live rejects unsafe canonical URLs and wrong artifact-root types b
   }
 });
 
-test('generic development target environment cannot unlock runtime-live', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-env-boundary-'));
+test('generic development target profile cannot unlock runtime-live', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-profile-boundary-'));
   try {
     await writeCanonicalRuntimeLiveFixture(
       fixture,
@@ -794,7 +794,7 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
       'http://router.test:4100',
       '--runtime-live-artifact-root',
       artifactRoot,
-      '--runtime-live-environment',
+      '--runtime-live-profile',
       'runtime-live',
       '--runtime-live-expected-generation',
       '0',
@@ -823,7 +823,7 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
       'http://router.test:4100',
       '--runtime-live-artifact-root',
       artifactRoot,
-      '--runtime-live-environment',
+      '--runtime-live-profile',
       'runtime-live',
       '--runtime-live-expected-generation',
       '0',
@@ -1319,7 +1319,7 @@ function runtimeLiveInputs(artifactRoot) {
       'http://router.test:4101/__skiff/activate-assembly',
     runtimeLiveIngressUrl: 'http://router.test:4100',
     runtimeLiveArtifactRoot: artifactRoot,
-    runtimeLiveEnvironment: 'runtime-live',
+    runtimeLiveProfile: 'runtime-live',
     runtimeLiveExpectedGeneration: '0',
   };
 }

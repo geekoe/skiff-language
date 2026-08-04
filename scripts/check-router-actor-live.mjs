@@ -44,7 +44,7 @@ import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
 import { synthesizeActorRoutingProjection } from './lib/actor-live-projection.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ENVIRONMENT = 'actor-live';
+const PROFILE = 'actor-live';
 const GENERATION = 1;
 const FORBIDDEN_PORTS = new Set([
   27017,
@@ -85,7 +85,7 @@ try {
     skiffRoot: repoRoot,
     sourceRoot,
     artifactRoot,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
   });
   const { assemblyIdentity, configSnapshotId, deployment } = authored;
   const deploymentRecord = await loadActorLiveDeploymentRecord(artifactRoot);
@@ -154,7 +154,7 @@ try {
         SKIFF_ROUTER_ACTOR_LIVE_MONGO_URL: harness.mongoUrl,
         SKIFF_ROUTER_ACTOR_LIVE_DB: DATABASE,
         SKIFF_ROUTER_ACTOR_LIVE_ARTIFACT_ROOT: artifactRoot,
-        SKIFF_ROUTER_ACTOR_LIVE_ENVIRONMENT: ENVIRONMENT,
+        SKIFF_ROUTER_ACTOR_LIVE_PROFILE: PROFILE,
         SKIFF_ROUTER_ACTOR_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_ACTOR_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_ACTOR_LIVE_GENERATION: String(GENERATION),

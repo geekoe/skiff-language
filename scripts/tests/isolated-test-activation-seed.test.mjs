@@ -19,21 +19,21 @@ import {
 test('activation seed is v2 and resolves the exact secure config snapshot record', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-activation-seed-v2-'));
   const artifactRoot = join(root, 'artifacts');
-  const environment = 'isolated-test';
+  const profile = 'isolated-test';
   const assemblyIdentity =
     `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
   const snapshotId =
     `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
   const configSnapshot = { snapshotId };
   const bootstrap = bootstrapReceipt({
-    environment,
+    profile,
     assemblyIdentity,
     configSnapshot,
   });
   try {
     const recordPath = await writeSecureSnapshotRecord(
       artifactRoot,
-      environment,
+      profile,
       configSnapshot,
     );
     assert.equal(
@@ -43,12 +43,12 @@ test('activation seed is v2 and resolves the exact secure config snapshot record
     assert.deepEqual(
       await buildIsolatedActivationState({
         artifactRoot,
-        environment,
+        profile,
         bootstrap,
       }),
       {
-        schemaVersion: 'skiff-environment-activation-state-v2',
-        environment,
+        schemaVersion: 'skiff-profile-activation-state-v1',
+        profile,
         committed: {
           generation: 0,
           assembly: { assemblyIdentity },
@@ -63,19 +63,19 @@ test('activation seed is v2 and resolves the exact secure config snapshot record
       `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`;
     await writeFile(recordPath, JSON.stringify(mismatched));
     await assert.rejects(
-      buildIsolatedActivationState({ artifactRoot, environment, bootstrap }),
+      buildIsolatedActivationState({ artifactRoot, profile, bootstrap }),
       /does not match its exact reference/,
     );
 
     await writeFile(recordPath, JSON.stringify({
-      schemaVersion: 'skiff-runtime-config-snapshot-record-v2',
-      environment,
+      schemaVersion: 'skiff-runtime-config-snapshot-record-v3',
+      profile,
       snapshot: configSnapshot,
       deployments: [],
     }));
     await chmod(recordPath, 0o644);
     await assert.rejects(
-      buildIsolatedActivationState({ artifactRoot, environment, bootstrap }),
+      buildIsolatedActivationState({ artifactRoot, profile, bootstrap }),
       /0600 regular file/,
     );
   } finally {
@@ -86,9 +86,9 @@ test('activation seed is v2 and resolves the exact secure config snapshot record
 test('activation seed rejects fake refs and receipts without a stored snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-activation-seed-missing-'));
   const artifactRoot = join(root, 'artifacts');
-  const environment = 'isolated-test';
+  const profile = 'isolated-test';
   const bootstrap = bootstrapReceipt({
-    environment,
+    profile,
     assemblyIdentity:
       `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
     configSnapshot: {
@@ -103,33 +103,33 @@ test('activation seed rejects fake refs and receipts without a stored snapshot',
     await chmod(join(artifactRoot, 'runtime-config'), 0o700);
     await chmod(join(artifactRoot, 'runtime-config', 'snapshots'), 0o700);
     await assert.rejects(
-      buildIsolatedActivationState({ artifactRoot, environment, bootstrap }),
+      buildIsolatedActivationState({ artifactRoot, profile, bootstrap }),
       { code: 'ENOENT' },
     );
 
     await assert.rejects(
       buildIsolatedActivationState({
         artifactRoot,
-        environment: 'other',
+        profile: 'other',
         bootstrap,
       }),
-      /environment or receipt schema is invalid/,
+      /profile or receipt schema is invalid/,
     );
     const v1 = structuredClone(bootstrap);
     v1.schemaVersion = 'skiff-package-service-bootstrap-v1';
     await assert.rejects(
-      buildIsolatedActivationState({ artifactRoot, environment, bootstrap: v1 }),
-      /environment or receipt schema is invalid/,
+      buildIsolatedActivationState({ artifactRoot, profile, bootstrap: v1 }),
+      /profile or receipt schema is invalid/,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
-function bootstrapReceipt({ environment, assemblyIdentity, configSnapshot }) {
+function bootstrapReceipt({ profile, assemblyIdentity, configSnapshot }) {
   return {
     schemaVersion: 'skiff-package-service-bootstrap-v2',
-    environment,
+    profile,
     bootstrap: {
       assembly: { assemblyIdentity },
       configSnapshot,
@@ -141,7 +141,7 @@ function bootstrapReceipt({ environment, assemblyIdentity, configSnapshot }) {
 
 async function writeSecureSnapshotRecord(
   artifactRoot,
-  environment,
+  profile,
   configSnapshot,
 ) {
   const snapshotsRoot = join(artifactRoot, 'runtime-config', 'snapshots');
@@ -151,8 +151,8 @@ async function writeSecureSnapshotRecord(
   const recordPath =
     isolatedConfigSnapshotRecordPath(artifactRoot, configSnapshot);
   await writeFile(recordPath, JSON.stringify({
-    schemaVersion: 'skiff-runtime-config-snapshot-record-v2',
-    environment,
+    schemaVersion: 'skiff-runtime-config-snapshot-record-v3',
+    profile,
     snapshot: configSnapshot,
     deployments: [],
   }), { mode: 0o600 });

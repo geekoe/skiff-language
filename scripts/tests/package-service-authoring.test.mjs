@@ -91,7 +91,7 @@ test('public package/assembly CLI does not expose the internal platform trust op
     () => parseObjectArgs('assembly', 'build', [
       '--artifact-root',
       '/tmp/artifacts',
-      '--environment',
+      '--profile',
       'dev',
       '--root-deployment',
       JSON.stringify(rootDeployment),
@@ -111,7 +111,7 @@ test('assembly authoring transports only exact inline deployment roots', () => {
   };
   const parsed = parseObjectArgs('assembly', 'publish', [
     '--artifact-root=/tmp/artifacts',
-    '--environment',
+    '--profile',
     'dev',
     '--root-deployment',
     JSON.stringify(rootDeployment),
@@ -125,7 +125,7 @@ test('assembly authoring transports only exact inline deployment roots', () => {
     kind: 'assembly',
     action: 'publish',
     artifactRoot: parsed.artifactRoot,
-    environment: parsed.environment,
+    profile: parsed.profile,
     rootDeployments: parsed.rootDeployments,
   });
   assert.equal(invocation.args.includes('/tmp/object-root'), false);
@@ -142,7 +142,7 @@ test('assembly authoring accepts empty roots and rejects duplicate, malformed, a
   const base = [
     '--artifact-root',
     '/tmp/artifacts',
-    '--environment',
+    '--profile',
     'dev',
   ];
   const empty = parseObjectArgs('assembly', 'build', base);
@@ -204,14 +204,14 @@ test('assembly authoring accepts empty roots and rejects duplicate, malformed, a
       artifactRoot: '/tmp/artifacts',
       rootDeployments: [rootDeployment],
     }),
-    /explicit environment/,
+    /explicit profile/,
   );
   const emptyInvocation = compilerAuthoringInvocation({
     skiffRoot,
     kind: 'assembly',
     action: 'build',
     artifactRoot: '/tmp/artifacts',
-    environment: 'dev',
+    profile: 'dev',
     rootDeployments: [],
   });
   assert.equal(emptyInvocation.args.includes('--root-deployment'), false);
@@ -224,7 +224,7 @@ test('assembly activation requires and parses an exact config snapshot reference
   const parsed = parseObjectArgs('assembly', 'activate', [
     '--artifact-root',
     '/tmp/artifacts',
-    '--environment',
+    '--profile',
     'dev',
     '--root-deployment',
     JSON.stringify(rootDeployment),
@@ -238,7 +238,7 @@ test('assembly activation requires and parses an exact config snapshot reference
     () => parseObjectArgs('assembly', 'activate', [
       '--artifact-root',
       '/tmp/artifacts',
-      '--environment',
+      '--profile',
       'dev',
       '--root-deployment',
       JSON.stringify(rootDeployment),
@@ -251,7 +251,7 @@ test('assembly activation requires and parses an exact config snapshot reference
     () => parseObjectArgs('assembly', 'activate', [
       '--artifact-root',
       '/tmp/artifacts',
-      '--environment',
+      '--profile',
       'dev',
       '--root-deployment',
       JSON.stringify(rootDeployment),
@@ -264,11 +264,10 @@ test('assembly activation requires and parses an exact config snapshot reference
   );
 });
 
-test('config snapshot production requires a canonical target environment distinct from profile', async () => {
+test('config snapshot production requires an explicit canonical profile', async () => {
   const base = {
     skiffRoot,
     artifactRoot: '/tmp/artifacts',
-    profile: 'dev',
     assemblyRecord: 'records/assembly.json',
     sources: [{
       root: '/tmp/service',
@@ -277,11 +276,11 @@ test('config snapshot production requires a canonical target environment distinc
   };
   await assert.rejects(
     runConfigSnapshotAuthoring(base),
-    /explicit canonical target environment/,
+    /explicit canonical profile/,
   );
   await assert.rejects(
-    runConfigSnapshotAuthoring({ ...base, environment: '..' }),
-    /explicit canonical target environment/,
+    runConfigSnapshotAuthoring({ ...base, profile: '..' }),
+    /explicit canonical profile/,
   );
 });
 
@@ -289,19 +288,16 @@ test('config snapshot authoring transports an explicit empty service source set'
   const invocation = configSnapshotAuthoringInvocation({
     skiffRoot,
     artifactRoot: '/tmp/artifacts',
-    environment: 'dev',
     profile: 'dev',
     assemblyRecord: 'records/runtime-assembly.json',
     sources: [],
   });
   assert.equal(invocation.args.includes('--source'), false);
   assert.deepEqual(
-    invocation.args.slice(-6),
+    invocation.args.slice(-4),
     [
       '--assembly-record',
       'records/runtime-assembly.json',
-      '--environment',
-      'dev',
       '--profile',
       'dev',
     ],
@@ -318,7 +314,6 @@ test(
       const base = {
         skiffRoot,
         artifactRoot: '/tmp/artifacts',
-        environment: 'dev',
         profile: 'dev',
         assemblyRecord: 'records/assembly.json',
         sources: [{
@@ -532,7 +527,7 @@ test('activation request construction rejects values outside the frozen T01 wire
   const base = {
     activationId: 'activation-1',
     expectedGeneration: 0,
-    environment: 'dev',
+    profile: 'dev',
     assembly: {
       assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
     },
@@ -549,7 +544,7 @@ test('activation request construction rejects values outside the frozen T01 wire
     { expectedGeneration: -0 },
     { expectedGeneration: Number.MAX_SAFE_INTEGER },
     { activationId: 'not visible ascii space' },
-    { environment: 'x'.repeat(201) },
+    { profile: 'x'.repeat(201) },
     { assembly: { ...base.assembly, buildId: 'legacy' } },
     { configSnapshot: { ...base.configSnapshot, latest: true } },
     {
@@ -574,7 +569,7 @@ test('activation request transports its AbortSignal and preserves the abort reas
   const activation = requestAssemblyActivation({
     activationId: 'activation-signal',
     expectedGeneration: 0,
-    environment: 'dev',
+    profile: 'dev',
     assembly: {
       assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
     },

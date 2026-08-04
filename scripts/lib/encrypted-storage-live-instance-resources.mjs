@@ -21,7 +21,7 @@ const FORBIDDEN_PORTS = new Set([
 
 export async function createEncryptedStorageLiveInstanceResources({
   repoRoot,
-  environment,
+  profile,
   randomPort = randomInt,
   leasePorts = leaseLocalPorts,
   makeTempDirectory = mkdtemp,
@@ -58,7 +58,7 @@ export async function createEncryptedStorageLiveInstanceResources({
     configPath,
     encryptedStorageLiveInstanceConfigText({
       repoRoot,
-      environment,
+      profile,
       ports: portLease.ports,
     }),
     'utf8',
@@ -68,11 +68,11 @@ export async function createEncryptedStorageLiveInstanceResources({
 
 export function encryptedStorageLiveInstanceConfigText({
   repoRoot,
-  environment,
+  profile,
   ports,
 }) {
   return [
-    `environment: ${environment}`,
+    `profile: ${profile}`,
     'devHome: dev-home',
     `cargoTargetDir: ${JSON.stringify(join(repoRoot, 'build', 'cargo-target'))}`,
     'ports:',

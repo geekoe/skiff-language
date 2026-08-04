@@ -150,7 +150,7 @@ async function runtimeFixture({ fixtureNames = RUNTIME_FIXTURES } = {}) {
         'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
-      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveProfile: 'runtime-live',
       env: { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
     },
   };

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
 export const repoRoot = resolve(scriptDir, '..', '..');
-export const ENCRYPTED_STORAGE_TARGET_ENVIRONMENT = 'dev';
+export const ENCRYPTED_STORAGE_TARGET_PROFILE = 'dev';
 
 const RUNTIME_ASSEMBLY_IDENTITY =
   /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
@@ -27,7 +27,7 @@ export function encryptedStorageTestRunnerArgs({
   baseConfigSnapshot,
   activationUrl,
   ingressUrl,
-  environment,
+  profile,
   expectedGeneration,
 }) {
   requiredAbsolutePath(testFile, 'encrypted-storage test file');
@@ -40,9 +40,9 @@ export function encryptedStorageTestRunnerArgs({
   }
   requiredActivationUrl(activationUrl);
   requiredIngressUrl(ingressUrl);
-  if (environment !== ENCRYPTED_STORAGE_TARGET_ENVIRONMENT) {
+  if (profile !== ENCRYPTED_STORAGE_TARGET_PROFILE) {
     throw new Error(
-      `encrypted-storage target environment must be ${ENCRYPTED_STORAGE_TARGET_ENVIRONMENT}`,
+      `encrypted-storage target profile must be ${ENCRYPTED_STORAGE_TARGET_PROFILE}`,
     );
   }
   requiredGeneration(expectedGeneration, 'encrypted-storage expected generation');
@@ -69,8 +69,8 @@ export function encryptedStorageTestRunnerArgs({
     activationUrl,
     '--ingress-url',
     ingressUrl,
-    '--environment',
-    environment,
+    '--profile',
+    profile,
     '--expected-generation',
     String(expectedGeneration),
     '--deny-skips',
@@ -99,8 +99,8 @@ export function encryptedStorageBuildArgs({
     join(fixtureRoot, 'mapped-service'),
     '--artifact-root',
     artifactRoot,
-    '--environment',
-    ENCRYPTED_STORAGE_TARGET_ENVIRONMENT,
+    '--profile',
+    ENCRYPTED_STORAGE_TARGET_PROFILE,
     '--build-only',
     '--json',
   ];
@@ -112,10 +112,10 @@ export function encryptedStorageProductionAssembly(receipt) {
   }
   const { runtimeAssemblyReceipt } = receipt;
   if (
-    runtimeAssemblyReceipt.environment !== ENCRYPTED_STORAGE_TARGET_ENVIRONMENT
+    runtimeAssemblyReceipt.profile !== ENCRYPTED_STORAGE_TARGET_PROFILE
   ) {
     throw new Error(
-      `runtime assembly receipt environment must be ${ENCRYPTED_STORAGE_TARGET_ENVIRONMENT}`,
+      `runtime assembly receipt profile must be ${ENCRYPTED_STORAGE_TARGET_PROFILE}`,
     );
   }
   const assembly = runtimeAssemblyReceipt.assembly;

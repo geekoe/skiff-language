@@ -36,7 +36,7 @@ export async function runInIsolatedTestRuntime({
   runTest,
   skiffRoot = defaultSkiffRoot,
   baseEnv = process.env,
-  environment = 'skiff-test',
+  profile = 'skiff-test',
   signalTarget = process,
   validateBootstrapReceipt,
   runtimeReplicas = 1,
@@ -73,7 +73,7 @@ export async function runInIsolatedTestRuntime({
       skiffRoot: absoluteSkiffRoot,
       cargoTarget: absoluteCargoTarget,
       baseEnv: isolatedBaseEnv,
-      environment,
+      profile,
       ops,
       signal: abortController.signal,
       validateBootstrapReceipt,
@@ -126,7 +126,7 @@ async function startIsolatedTestRuntime({
   skiffRoot,
   cargoTarget,
   baseEnv,
-  environment,
+  profile,
   ops,
   signal,
   validateBootstrapReceipt,
@@ -159,7 +159,7 @@ async function startIsolatedTestRuntime({
       cargoTarget,
       basePort,
       mongoPort,
-      environment,
+      profile,
     });
     configOwnershipRequired = true;
     await ops.writeConfig(configPath, config, ownershipReceipt);
@@ -171,7 +171,7 @@ async function startIsolatedTestRuntime({
       devHome,
       controlPort,
       routerHttpPort: basePort,
-      environment,
+      profile,
     });
     signal.throwIfAborted();
     supervisorAttempted = true;
@@ -191,7 +191,7 @@ async function startIsolatedTestRuntime({
       const receipt = await ops.seedBootstrap({
         skiffRoot,
         artifactRoot,
-        environment,
+        profile,
         env: isolatedEnv,
         signal,
       });
@@ -199,7 +199,7 @@ async function startIsolatedTestRuntime({
       await ops.seedActivationState({
         mongoPort,
         artifactRoot,
-        environment,
+        profile,
         bootstrap: receipt,
         signal,
       });
@@ -236,7 +236,6 @@ async function startIsolatedTestRuntime({
       await writeFile(runtimeConfig, renderRuntimeConfig({
         routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
         runtimeHome,
-        environment,
       }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       // child-process-owner: isolated-additional-runtime
       const child = spawnAdditionalRuntimeChild(
@@ -273,7 +272,7 @@ async function startIsolatedTestRuntime({
       additionalRuntimes,
       additionalRuntimeLogFiles,
       tempRoot,
-      environment,
+      profile,
       instanceOwnership: ownershipReceipt,
       ownershipReceipt,
       testRunnerEnv: isolatedEnv,

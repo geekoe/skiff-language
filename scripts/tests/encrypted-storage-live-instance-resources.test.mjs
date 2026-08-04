@@ -20,7 +20,7 @@ test('instance resources reject forbidden ports and write the canonical config',
   const randomValues = [20, 30];
   const resources = await createEncryptedStorageLiveInstanceResources({
     repoRoot: '/repo/skiff',
-    environment: 'dev',
+    profile: 'dev',
     temporaryDirectory: '/tmp/tests',
     randomPort: () => randomValues.shift(),
     leasePorts: async (ports) => {
@@ -68,13 +68,13 @@ test('instance resources reject forbidden ports and write the canonical config',
     '/tmp/tests/run-a/instance/config.yml',
     encryptedStorageLiveInstanceConfigText({
       repoRoot: '/repo/skiff',
-      environment: 'dev',
+      profile: 'dev',
       ports: { base: 45020, mongo: 45530 },
     }),
     'utf8',
   ]);
   assert.equal(events[3][2], [
-    'environment: dev',
+    'profile: dev',
     'devHome: dev-home',
     'cargoTargetDir: "/repo/skiff/build/cargo-target"',
     'ports:',

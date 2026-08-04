@@ -17,7 +17,7 @@ export {
   readRouterActivationState,
 } from './lib/dev-assembly-activation.mjs';
 import {
-  assertEnvironment,
+  assertProfile,
   devRegistrySchemaVersion,
   readStoredDevRegistry,
   writeStoredDevRegistry,
@@ -37,7 +37,7 @@ const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
 const devBuildStates = new WeakMap();
 
-const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
@@ -61,7 +61,7 @@ export async function main(rawArgs, dependencies = {}) {
   });
   const result = await runDevSyncOnce({
     roots: [...registry.roots, ...options.roots],
-    environment: options.environment ?? registry.environment,
+    profile: options.profile ?? registry.profile,
     artifactRoot: options.artifactRoot,
     activationUrl: options.activationUrl,
     activationId: options.activationId,
@@ -151,7 +151,7 @@ export async function runDevWatch(options, dependencies = {}) {
         registryPath: options.config,
         registry,
         explicitRoots: options.roots,
-        environmentOverride: options.environment,
+        profileOverride: options.profile,
       });
     } catch (error) {
       if (lastKnownRegistry === undefined) {
@@ -191,7 +191,7 @@ export async function runDevWatch(options, dependencies = {}) {
       const configOnly = successful?.codeFingerprint === pending.codeFingerprint;
       const result = await syncRunner({
         roots: pending.roots,
-        environment: pending.environment,
+        profile: pending.profile,
         artifactRoot: options.artifactRoot,
         activationUrl: options.activationUrl,
         activationId: options.activationId,
@@ -240,25 +240,25 @@ async function devWatchObservation({
   registryPath,
   registry,
   explicitRoots,
-  environmentOverride,
+  profileOverride,
 }) {
   const roots = await normalizedRoots([...registry.roots, ...explicitRoots]);
-  const environment = environmentOverride ?? registry.environment;
-  assertEnvironment(environment);
+  const profile = profileOverride ?? registry.profile;
+  assertProfile(profile);
   const treeFingerprint = await rootsFingerprint(roots);
   const codeTreeFingerprint = await rootsCodeFingerprint(roots);
   return {
     roots,
-    environment,
+    profile,
     fingerprint: structuredFingerprint({
       registryPath,
-      environment,
+      profile,
       roots,
       treeFingerprint,
     }),
     codeFingerprint: structuredFingerprint({
       registryPath,
-      environment,
+      profile,
       roots,
       treeFingerprint: codeTreeFingerprint,
     }),
@@ -267,7 +267,7 @@ async function devWatchObservation({
 
 export async function runDevSyncOnce({
   roots,
-  environment,
+  profile,
   artifactRoot,
   activationUrl = defaultAssemblyActivationUrl,
   activationId,
@@ -279,17 +279,17 @@ export async function runDevSyncOnce({
   activationWait = delay,
   buildState,
 }) {
-  assertEnvironment(environment);
+  assertProfile(profile);
   const classified = await normalizedRoots(roots);
   await mkdir(artifactRoot, { recursive: true });
   const build = buildState ?? await buildDevAssembly({
     classified,
-    environment,
+    profile,
     artifactRoot,
     compilerRoot,
     compilerRunner,
   });
-  validateReusableBuildState(build, { environment, artifactRoot });
+  validateReusableBuildState(build, { profile, artifactRoot });
   const {
     serviceContractReceipts,
     packageArtifactReceipts,
@@ -306,8 +306,7 @@ export async function runDevSyncOnce({
   const snapshotResult = await configSnapshotRunner({
     skiffRoot: compilerRoot,
     artifactRoot,
-    environment,
-    profile: environment,
+    profile,
     assemblyRecord: assemblyReceipt.recordPath,
     sources: serviceConfigSources,
   });
@@ -331,7 +330,7 @@ export async function runDevSyncOnce({
     fetchImpl,
     activationUrl,
     activationId,
-    environment,
+    profile,
     assembly: assemblyReceipt.assembly,
     configSnapshot: configSnapshotReceipt.snapshot,
     wait: activationWait,
@@ -354,7 +353,7 @@ export function reusableDevBuildState(result) {
 
 async function buildDevAssembly({
   classified,
-  environment,
+  profile,
   artifactRoot,
   compilerRoot,
   compilerRunner,
@@ -370,7 +369,7 @@ async function buildDevAssembly({
     action: 'publish',
     root: entry.root,
     artifactRoot,
-    environment,
+    profile,
   });
   for (const { entry, receipt } of await buildDependencyOrdered(classified, buildPackage)) {
     rejectDuplicateCoordinate(
@@ -405,10 +404,10 @@ async function buildDevAssembly({
     action: 'build',
     rootDeployments,
     artifactRoot,
-    environment,
+    profile,
   });
   return {
-    environment,
+    profile,
     artifactRoot,
     serviceContractReceipts,
     packageArtifactReceipts,
@@ -418,10 +417,10 @@ async function buildDevAssembly({
   };
 }
 
-function validateReusableBuildState(state, { environment, artifactRoot }) {
+function validateReusableBuildState(state, { profile, artifactRoot }) {
   if (
     !isPlainObject(state)
-    || state.environment !== environment
+    || state.profile !== profile
     || state.artifactRoot !== artifactRoot
     || !Array.isArray(state.serviceContractReceipts)
     || !Array.isArray(state.packageArtifactReceipts)
@@ -429,7 +428,7 @@ function validateReusableBuildState(state, { environment, artifactRoot }) {
     || !Array.isArray(state.serviceConfigSources)
     || !isPlainObject(state.assemblyReceipt)
   ) {
-    throw new Error('dev sync reusable build state does not match this environment and artifact root');
+    throw new Error('dev sync reusable build state does not match this profile and artifact root');
   }
 }
 
@@ -473,7 +472,7 @@ export async function readDevRegistry(path = defaultRegistryPath, options = {}) 
 export async function writeDevRegistry(path, registry) {
   return writeStoredDevRegistry(path, {
     schemaVersion: devRegistrySchemaVersion,
-    environment: registry.environment,
+    profile: registry.profile,
     roots: registry.roots,
   });
 }
@@ -518,7 +517,7 @@ export async function classifyAuthoringRoot(root) {
     .sort();
   if (configFiles.length > 0 && !present.includes('service.yml')) {
     throw new Error(
-      `${absolute} contains service config file(s) ${configFiles.join(', ')}; environment config belongs only to a Package with service.yml`,
+      `${absolute} contains service config file(s) ${configFiles.join(', ')}; profile config belongs only to a Package with service.yml`,
     );
   }
   const legacy = present.filter(
@@ -545,7 +544,7 @@ export function parseDevSyncArgs(rawArgs) {
     artifactRoot: defaultArtifactRoot,
     activationUrl: defaultAssemblyActivationUrl,
     activationId: undefined,
-    environment: undefined,
+    profile: undefined,
     pollIntervalMs: 500,
     watch: false,
     buildOnly: false,
@@ -562,7 +561,7 @@ export function parseDevSyncArgs(rawArgs) {
     ['--artifact-root', 'artifactRoot'],
     ['--activation-url', 'activationUrl'],
     ['--activation-id', 'activationId'],
-    ['--environment', 'environment'],
+    ['--profile', 'profile'],
     ['--poll-interval-ms', 'pollIntervalMs'],
   ]);
   const seen = new Set();

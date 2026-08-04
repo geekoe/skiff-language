@@ -16,11 +16,11 @@ export async function runDevRegistryCommand(rawArgs, {
   }
   const parsed = parseArgs(action, rawArgs.slice(1), defaultConfig);
   const registry = await readDevRegistry(parsed.config, { allowMissing: true });
-  if (action !== 'add' && parsed.environment !== undefined) {
-    throw new Error(`dev registry ${action} does not accept --environment`);
+  if (action !== 'add' && parsed.profile !== undefined) {
+    throw new Error(`dev registry ${action} does not accept --profile`);
   }
-  if (parsed.environment !== undefined) {
-    registry.environment = parsed.environment;
+  if (parsed.profile !== undefined) {
+    registry.profile = parsed.profile;
   }
 
   if (action === 'list') {
@@ -28,7 +28,7 @@ export async function runDevRegistryCommand(rawArgs, {
       stdout(`no authoring roots registered in ${parsed.config}`);
       return registry;
     }
-    stdout(`authoring roots for ${registry.environment} in ${parsed.config}:`);
+    stdout(`authoring roots for ${registry.profile} in ${parsed.config}:`);
     for (const entry of registry.roots) {
       stdout(
         entry.kind === 'service'
@@ -92,12 +92,12 @@ export function matchRegistryRemovalTarget(
 function parseArgs(action, rawArgs, defaultConfig) {
   let root;
   let config = resolve(defaultConfig);
-  let environment;
+  let profile;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
     const equals = argument.indexOf('=');
     const option = equals === -1 ? argument : argument.slice(0, equals);
-    if (option === '--config' || option === '--environment') {
+    if (option === '--config' || option === '--profile') {
       const value = equals === -1 ? rawArgs[index + 1] : argument.slice(equals + 1);
       if (!value || value.startsWith('--')) {
         throw new Error(`${option} requires a value`);
@@ -105,7 +105,7 @@ function parseArgs(action, rawArgs, defaultConfig) {
       if (option === '--config') {
         config = resolve(value);
       } else {
-        environment = value;
+        profile = value;
       }
       if (equals === -1) {
         index += 1;
@@ -126,5 +126,5 @@ function parseArgs(action, rawArgs, defaultConfig) {
   if (action !== 'list' && root === undefined) {
     throw new Error(`dev registry ${action} requires a root`);
   }
-  return { root, config, environment };
+  return { root, config, profile };
 }

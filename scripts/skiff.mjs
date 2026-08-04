@@ -32,16 +32,16 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
-  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
-  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
+  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff service dev registry list [--config <path>]
-  skiff service dev registry add <package-or-service-root> [--environment <name>] [--config <path>]
+  skiff service dev registry add <package-or-service-root> [--profile <name>] [--config <path>]
   skiff service dev registry remove <service-id-or-root> [--config <path>]
   skiff instance init <config> [--force]
   skiff instance paths <config> [--json]
@@ -55,12 +55,12 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance sync <config> [root] [--environment <name>] [--activation-id <id>] [--build-only] [--json]
-  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
-  skiff package build <root> --artifact-root <dir> [--environment <name>] [--json]
-  skiff package publish <root> --artifact-root <dir> [--environment <name>] [--json]
-  skiff assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
-  skiff assembly activate --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
+  skiff instance sync <config> [root] [--profile <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance watch <config> [root] [--profile <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff package build <root> --artifact-root <dir> [--profile <name>] [--json]
+  skiff package publish <root> --artifact-root <dir> [--profile <name>] [--json]
+  skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
+  skiff assembly activate --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
 
 The dev registry watches only explicitly listed package and service roots;
 service package dependencies are not discovered as local source roots.
@@ -207,18 +207,18 @@ async function test(rawArgs) {
       '--base-config-snapshot',
       '--activation-url',
       '--ingress-url',
-      '--environment',
+      '--profile',
       '--expected-generation',
     ]),
     flags: new Set(['--live', '--deny-skips', '--require-tests']),
   });
   const live = args.flags.has('--live');
   const liveTargetKeys = [
-    'activationUrl', 'ingressUrl', 'environment', 'expectedGeneration',
+    'activationUrl', 'ingressUrl', 'profile', 'expectedGeneration',
   ];
   if (!live && liveTargetKeys.some((key) => args.options[key] !== undefined)) {
     throw new Error(
-      'non-live skiff test owns activation, ingress, environment, and generation targets',
+      'non-live skiff test owns activation, ingress, profile, and generation targets',
     );
   }
   if (args.options.artifactRoot === undefined) {
@@ -249,8 +249,8 @@ async function test(rawArgs) {
       '--activation-url',
     );
     validateCanonicalTestUrl(args.options.ingressUrl, '/', '--ingress-url');
-    if (!/^[A-Za-z0-9._-]{1,200}$/.test(args.options.environment)) {
-      throw new Error('--environment must be a canonical ASCII token');
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(args.options.profile)) {
+      throw new Error('--profile must be a canonical ASCII token');
     }
   }
   const kind = await detectRootKind(args.root);
@@ -282,7 +282,7 @@ async function test(rawArgs) {
     testArgs.push(
       '--activation-url', args.options.activationUrl,
       '--ingress-url', args.options.ingressUrl,
-      '--environment', args.options.environment,
+      '--profile', args.options.profile,
       '--expected-generation', args.options.expectedGeneration,
     );
   }
@@ -730,7 +730,6 @@ function routerDevConfig(options) {
   return renderRouterConfig({
     profile: 'dev',
     host: '0.0.0.0',
-    environment: 'dev',
     artifactsPath: options.artifactRoot,
     devReload: true,
     requestTimeoutMs: 20000,
@@ -764,7 +763,6 @@ function runtimeDevConfig(options) {
   return renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: options.runtimeHome,
-    environment: 'dev',
   });
 }
 

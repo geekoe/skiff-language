@@ -22,7 +22,7 @@ test('non-live runner receives canonical activation and Host-ingress targets', (
     devHome: '/tmp/skiff-owned/dev-home',
     controlPort: 46101,
     routerHttpPort: 46100,
-    environment: 'test-environment',
+    profile: 'test-environment',
   });
 
   assert.equal(environment.SKIFF_DEV_HOME, '/tmp/skiff-owned/dev-home');
@@ -56,7 +56,7 @@ test('isolated config is rooted in its temporary dev home and dynamic ports', ()
   assert.match(config, /mongo: 46103/);
   assert.match(config, /mongo: managed/);
   assert.doesNotMatch(config, /27017/);
-  assert.match(config, /environment: "skiff-test"/);
+  assert.match(config, /profile: "skiff-test"/);
   assert.doesNotMatch(config, /\.skiff-instance/);
   assert.doesNotMatch(config, /__skiff\/reload-artifacts/);
 });

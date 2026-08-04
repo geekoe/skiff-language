@@ -40,9 +40,9 @@ import {
 } from './helpers/package-service-ecosystem-smoke-fixtures.mjs';
 
 test('I02 oracle selects a transitive package and freezes rollback invariants', () => {
-  const environment = 'skiff-cutover';
-  const fixture = validSmokeFixtureReceipt(environment);
-  const bootstrap = validBootstrapReceipt(environment);
+  const profile = 'skiff-cutover';
+  const fixture = validSmokeFixtureReceipt(profile);
+  const bootstrap = validBootstrapReceipt(profile);
   const assembly = assemblyRecord(fixture, bootstrap);
   const transitive = selectI02TransitivePackageRecord({
     assemblyRecord: assembly,
@@ -55,9 +55,9 @@ test('I02 oracle selects a transitive package and freezes rollback invariants', 
   );
   assert.match(transitive.relativePath, /records\/package-artifacts\/skiff~drun~sstd/);
 
-  const health = readyAssemblyHealth(environment);
+  const health = readyAssemblyHealth(profile);
   const before = captureI02CommittedState(health, {
-    environment,
+    profile,
     generation: 1,
     assemblyIdentity: smokeFixtureIdentities.assembly,
     replicaId: 'runtime-f27c',
@@ -200,7 +200,7 @@ test('I02 deadline remains armed until the isolated runtime owner finishes clean
     runPackageServiceI02Combined({
       checkout: '/checkout/skiff',
       replicaCount: 1,
-      environment: 'skiff-cutover',
+      profile: 'skiff-cutover',
     }, {
       transactionDeadlineMs: 5,
       parentSignalTarget,
@@ -221,8 +221,8 @@ test('I02 deadline remains armed until the isolated runtime owner finishes clean
 });
 
 test('I02 combined owner performs valid commit, two zero-I/O requests, and real rollback', async () => {
-  const environment = 'skiff-cutover';
-  const fixture = validI02SpawnSubmitFixtureReceipt(environment);
+  const profile = 'skiff-cutover';
+  const fixture = validI02SpawnSubmitFixtureReceipt(profile);
   assert.deepEqual(
     fixture.candidate.entrypoints.map(({ gatewayEntryKey, selector }) => ({
       gatewayEntryKey,
@@ -233,7 +233,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
       { gatewayEntryKey: 'probe', protocol: 'http' },
     ],
   );
-  const bootstrap = validBootstrapReceipt(environment);
+  const bootstrap = validBootstrapReceipt(profile);
   const parentSignalTarget = new EventEmitter();
   const unaryRootPresence = [];
   let activationCount = 0;
@@ -243,7 +243,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
   const result = await runPackageServiceI02Combined({
     checkout: '/checkout/skiff',
     replicaCount: 1,
-    environment,
+    profile,
   }, {
     transactionDeadlineMs: 10_000,
     parentSignalTarget,
@@ -309,7 +309,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
     activate: async (request) => {
       activationCount += 1;
       if (activationCount === 1) {
-        const receipt = structuredClone(validActivationReceipt(environment));
+        const receipt = structuredClone(validActivationReceipt(profile));
         receipt.request.activationId = request.activationId;
         return receipt;
       }
@@ -334,7 +334,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
       );
     },
     waitForReady: async () => ({ ready: true, replicaId: 'runtime-f27c' }),
-    readHealth: async () => readyAssemblyHealth(environment),
+    readHealth: async () => readyAssemblyHealth(profile),
     requestUnary: async ({ url }) => {
       assert.match(url, /\/probe$/);
       let present = true;
@@ -428,8 +428,8 @@ function assemblyRecord(fixture, bootstrap) {
   };
 }
 
-function validI02SpawnSubmitFixtureReceipt(environment) {
-  const fixture = structuredClone(validSmokeFixtureReceipt(environment));
+function validI02SpawnSubmitFixtureReceipt(profile) {
+  const fixture = structuredClone(validSmokeFixtureReceipt(profile));
   const packageId = 'test.skiff/package-service-i02-spawn-submit';
   fixture.candidate.testService.packageId = packageId;
   fixture.candidate.testServiceRecordPath = fixture.candidate.testServiceRecordPath

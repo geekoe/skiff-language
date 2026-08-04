@@ -31,7 +31,7 @@ try {
       runtimeLiveActivationUrl: options.runtimeLiveActivationUrl,
       runtimeLiveIngressUrl: options.runtimeLiveIngressUrl,
       runtimeLiveArtifactRoot: options.runtimeLiveArtifactRoot,
-      runtimeLiveEnvironment: options.runtimeLiveEnvironment,
+      runtimeLiveProfile: options.runtimeLiveProfile,
       runtimeLiveExpectedGeneration: options.runtimeLiveExpectedGeneration,
       loopRiskConfig: options.loopRiskConfig,
     });

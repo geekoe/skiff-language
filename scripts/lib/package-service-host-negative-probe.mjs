@@ -104,7 +104,7 @@ export async function runPackageServiceHostNegativeProbe({
           artifactRoot: stack.sourceArtifactRoot,
           workRoot: host.workRoot,
           receipt: host.receipt,
-          environment: isolatedEnv.SKIFF_TEST_ENVIRONMENT,
+          profile: isolatedEnv.SKIFF_TEST_ENVIRONMENT,
         }),
         { cwd: absoluteSkiffRoot, env: isolatedEnv },
       );
