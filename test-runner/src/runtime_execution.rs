@@ -13,10 +13,11 @@ use std::{
 use skiff_artifact_identity::runtime_assembly_ref;
 use skiff_artifact_model::{
     IngressProtocol, PackageArtifact, PackageArtifactRef, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotRef,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
 use skiff_compiler::authoring::project_assembly_actor_routing;
 use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
@@ -55,6 +56,19 @@ pub fn run_package_cases(
     inline_effects::reject_legacy_manifest(package_root)?;
     read_root_package_manifest(&options.platform_sources, package_root)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    // Non-live tests should run against whatever environment base they are
+    // pointed at. The isolated activation profile is derived from the base
+    // config snapshot instead of a fixed "skiff-test", so the same test code
+    // can run against a dev or skiff-test base without profile matching
+    // errors. Live tests keep their explicit --profile contract.
+    let mut effective_options = options.clone();
+    if !effective_options.live {
+        if let Some(snapshot_id) = effective_options.base_config_snapshot.as_deref() {
+            effective_options.target_profile =
+                base_snapshot_profile(source_artifact_root, snapshot_id)?;
+        }
+    }
+    let options = &effective_options;
     let base = CanonicalBaseAssembly::load(
         source_artifact_root,
         options.base_assembly.as_deref(),
@@ -121,6 +135,23 @@ pub fn run_package_cases(
         ingress_url,
         options,
     )
+}
+
+fn base_snapshot_profile(
+    artifact_root: &Path,
+    snapshot_id: &str,
+) -> Result<String, CanonicalFixtureError> {
+    let snapshot_ref = RuntimeConfigSnapshotRef {
+        snapshot_id: RuntimeConfigSnapshotId::parse(snapshot_id).map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "base config snapshot identity is invalid: {error}"
+            ))
+        })?,
+    };
+    RuntimeConfigSnapshotStore::open(artifact_root.join("runtime-config"))
+        .and_then(|store| store.read(&snapshot_ref))
+        .map(|snapshot| snapshot.profile().to_string())
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }
 
 fn execute_assembly_batches(

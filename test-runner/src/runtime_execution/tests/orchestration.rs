@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 
@@ -70,6 +71,36 @@ fn activation_request_preserves_dev_target_profile() {
             },
         })
     );
+}
+
+#[test]
+fn base_snapshot_profile_is_used_to_align_non_live_test_environment() {
+    let root = std::env::temp_dir().join(format!(
+        "skiff-test-runner-profile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("runtime-config")).unwrap();
+    let permissions = std::fs::Permissions::from_mode(0o700);
+    std::fs::set_permissions(&root, permissions.clone()).unwrap();
+    std::fs::set_permissions(root.join("runtime-config"), permissions).unwrap();
+    let store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
+        root.join("runtime-config"),
+    )
+    .unwrap();
+    let snapshot_ref = test_support::snapshot_ref(test_support::SNAPSHOT_B);
+    let snapshot =
+        skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new("dev", snapshot_ref.clone(), Vec::new())
+            .unwrap();
+    store.publish(&snapshot).unwrap();
+
+    let profile = base_snapshot_profile(&root, test_support::SNAPSHOT_B).unwrap();
+    assert_eq!(profile, "dev");
+
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
