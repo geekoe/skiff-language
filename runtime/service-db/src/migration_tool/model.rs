@@ -96,7 +96,7 @@ impl ValidatedMigrationPlan {
 impl ValidatedCollectionMapping {
     pub(crate) fn target_context(&self) -> MigrationTargetContext<'_> {
         MigrationTargetContext {
-            environment: &self.target.environment,
+            profile: &self.target.environment,
             service_id: &self.target.service_id,
             collection_name: &self.target.physical_collection,
         }

@@ -302,21 +302,21 @@ async fn activation_contract_errors_run_through_the_live_session_path() {
         "activation before bootstrap must be a strict handshake terminal: {error:?}"
     );
 
-    let mut foreign_environment = ActivationSession::start("foreign-environment").await;
-    let mut prepare = foreign_environment.prepare("activation-foreign-environment");
-    let AssemblyActivationControl::Prepare { environment, .. } = &mut prepare else {
+    let mut foreign_profile = ActivationSession::start("foreign-profile").await;
+    let mut prepare = foreign_profile.prepare("activation-foreign-profile");
+    let AssemblyActivationControl::Prepare { profile, .. } = &mut prepare else {
         unreachable!();
     };
-    *environment = "prod".to_string();
-    foreign_environment.send_activation(&prepare).await;
-    let error = foreign_environment
-        .wait_for_session("foreign activation environment")
+    *profile = "prod".to_string();
+    foreign_profile.send_activation(&prepare).await;
+    let error = foreign_profile
+        .wait_for_session("foreign activation profile")
         .await
-        .expect_err("foreign activation environment must fail");
+        .expect_err("foreign activation profile must fail");
     assert!(error
         .to_string()
-        .contains("does not match Runtime trusted environment"));
-    assert_no_activation_candidate(&foreign_environment.host);
+        .contains("does not match Runtime frozen profile"));
+    assert_no_activation_candidate(&foreign_profile.host);
 
     let mut transient_service_db = ActivationSession::start("transient-service-db").await;
     let mut prepare = transient_service_db.prepare("activation-transient-service-db");
@@ -524,7 +524,7 @@ impl ActivationSession {
                 "skiff-runtime-session-activation-{label}-{}",
                 uuid::Uuid::new_v4()
             )),
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             http_response_max_bytes: 1024,
             http_egress_proxy: None,
         })
@@ -559,7 +559,7 @@ impl ActivationSession {
                 "artifactsPath": self.artifact_root,
                 "serviceDb": { "mongoUrl": "mongodb://activation-cancel" },
                 "activation": {
-                    "environment": "test",
+                    "profile": "test",
                     "generation": 1,
                     "assembly": self.assembly,
                     "configSnapshot": self.config_snapshot,
@@ -639,7 +639,7 @@ impl ActivationSession {
 
     fn prepare(&self, activation_id: &str) -> AssemblyActivationControl {
         AssemblyActivationControl::Prepare {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: activation_id.to_string(),
             expected_generation: 1,
             candidate_generation: 2,
@@ -932,7 +932,7 @@ impl ActivationSession {
 
 fn activation_abort(prepare: &AssemblyActivationControl) -> AssemblyActivationControl {
     let AssemblyActivationControl::Prepare {
-        environment,
+        profile,
         activation_id,
         expected_generation,
         candidate_generation,
@@ -945,7 +945,7 @@ fn activation_abort(prepare: &AssemblyActivationControl) -> AssemblyActivationCo
         panic!("test abort requires Prepare");
     };
     AssemblyActivationControl::Abort {
-        environment: environment.clone(),
+        profile: profile.clone(),
         activation_id: activation_id.clone(),
         expected_generation: *expected_generation,
         candidate_generation: *candidate_generation,
@@ -957,7 +957,7 @@ fn activation_abort(prepare: &AssemblyActivationControl) -> AssemblyActivationCo
 
 fn activation_commit(prepare: &AssemblyActivationControl) -> AssemblyActivationControl {
     let AssemblyActivationControl::Prepare {
-        environment,
+        profile,
         activation_id,
         expected_generation,
         candidate_generation,
@@ -970,7 +970,7 @@ fn activation_commit(prepare: &AssemblyActivationControl) -> AssemblyActivationC
         panic!("test commit requires Prepare");
     };
     AssemblyActivationControl::Commit {
-        environment: environment.clone(),
+        profile: profile.clone(),
         activation_id: activation_id.clone(),
         expected_generation: *expected_generation,
         candidate_generation: *candidate_generation,

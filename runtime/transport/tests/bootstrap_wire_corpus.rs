@@ -192,7 +192,7 @@ mod tests {
                         header.activation.config_snapshot.snapshot_id.as_str(),
                         "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     );
-                    assert_eq!(header.activation.environment, "prod");
+                    assert_eq!(header.activation.profile, "prod");
                     assert_eq!(header.activation.generation, 7);
 
                     // Canonical bootstrap frames must encode/decode with an empty

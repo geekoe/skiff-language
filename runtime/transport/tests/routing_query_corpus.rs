@@ -78,7 +78,7 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Epoch {
-    environment: String,
+    profile: String,
     generation: u64,
     #[serde(rename = "assemblyIdentity")]
     assembly_identity: String,
@@ -109,7 +109,7 @@ struct Query {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Tuple {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: String,
     #[serde(rename = "configSnapshot")]
@@ -176,7 +176,7 @@ struct Expect {
 
 fn epoch_tuple(epoch: &Epoch) -> Tuple {
     Tuple {
-        environment: epoch.environment.clone(),
+        profile: epoch.profile.clone(),
         generation: epoch.generation,
         assembly: epoch.assembly_identity.clone(),
         config_snapshot: epoch.config_snapshot_id.clone(),

@@ -228,7 +228,7 @@ struct BoundaryConversionPlan {
 ### `skiff-runtime-config-snapshot`
 
 `skiff-runtime-config-snapshot`拥有独立配置快照的严格record、受限文件store和typed read边界。它校验
-schema、activation environment、精确deployment/Package分区、canonical JSON、权限和opaque snapshot
+schema、activation profile、精确deployment/Package分区、canonical JSON、权限和opaque snapshot
 reference；向Host返回`RuntimeConfigSnapshot`及其已验证的package-local config object。Host不得重新解析
 snapshot wire，也不得用`serde_json::Map`重建该object。该crate不依赖其他`skiff-runtime-*` crate。
 
@@ -761,7 +761,7 @@ skiff-runtime-package-test
 
 ### `ActiveAssemblyContextSet` 与 `ActivationExecutionContextRebinder`
 
-Host按exact `(environment, RuntimeAssemblyRef, RuntimeConfigSnapshotRef, generation)`持有
+Host按exact `(profile, RuntimeAssemblyRef, RuntimeConfigSnapshotRef, generation)`持有
 `ActiveAssemblyContextSet`。集合同时包含active generation和仍有显式pin的draining generation，并在每个
 generation下按`ServiceDeploymentRef`提供完整`ServiceRuntimeContext`。它不是latest service registry；
 missing、duplicate或tuple不匹配都fail closed。

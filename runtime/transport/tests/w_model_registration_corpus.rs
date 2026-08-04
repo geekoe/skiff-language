@@ -262,7 +262,7 @@ mod tests {
                 }
             }
             assert!(
-                value["epoch"]["environment"].is_string()
+                value["epoch"]["profile"].is_string()
                     && value["epoch"]["generation"].is_u64()
                     && value["epoch"]["assembly"]["assemblyIdentity"].is_string()
                     && value["epoch"]["configSnapshot"]["snapshotId"].is_string(),

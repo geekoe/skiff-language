@@ -145,7 +145,7 @@ impl TaskExecutionImageSource for FakeImageSource {
 
 fn corpus_image() -> TaskExecutionImageRef {
     TaskExecutionImageRef {
-        target_environment: dispatch_harness::CORPUS_ENVIRONMENT.to_string(),
+        target_profile: dispatch_harness::CORPUS_PROFILE.to_string(),
         package_version: dispatch_harness::CORPUS_CONTRACT_VERSION.to_string(),
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(

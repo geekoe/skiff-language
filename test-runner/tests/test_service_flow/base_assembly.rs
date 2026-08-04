@@ -197,17 +197,17 @@ mod tests {
             "base-test",
         )
         .expect("publish the production provider closure and base assembly");
-        let cross_environment = CanonicalBaseAssembly::load(
+        let cross_profile = CanonicalBaseAssembly::load(
             &artifacts,
             Some(receipt.base_assembly.assembly_identity.as_str()),
             Some(receipt.base_config_snapshot.snapshot_id.as_str()),
             "other-test",
         )
-        .expect_err("base config snapshot must not cross activation environments")
+        .expect_err("base config snapshot must not cross activation profiles")
         .to_string();
         assert!(
-            cross_environment.contains("does not match target environment"),
-            "{cross_environment}"
+            cross_profile.contains("does not match target profile"),
+            "{cross_profile}"
         );
         let base = CanonicalBaseAssembly::load(
             &artifacts,

@@ -10,7 +10,7 @@ use skiff_artifact_identity::{
     assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, contract_operation_id, package_artifact_ref,
     package_schema_index_identity, runtime_assembly_ref, service_contract_ref,
-    service_deployment_ref, EnvironmentActivationStatePath, PackageArtifactRecordPath,
+    service_deployment_ref, PackageArtifactRecordPath, ProfileActivationStatePath,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
@@ -630,25 +630,21 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
 
     let committed_config = config_snapshot_ref('a');
     let candidate_config = config_snapshot_ref('b');
-    let initial = EnvironmentActivationState::initial(
-        "test",
-        7,
-        committed_ref.clone(),
-        committed_config.clone(),
-    );
-    store.initialize_environment_activation(&initial).unwrap();
+    let initial =
+        ProfileActivationState::initial("test", 7, committed_ref.clone(), committed_config.clone());
+    store.initialize_profile_activation(&initial).unwrap();
     let committed_bytes = skiff_canonical_json::canonical_json_bytes(&initial.committed).unwrap();
-    let state_path = EnvironmentActivationStatePath::new("test").unwrap();
+    let state_path = ProfileActivationStatePath::new("test").unwrap();
     let state_host_path = store.root().join(state_path.as_relative_path().as_path());
     fs::write(
         state_host_path.with_file_name(".activation.json.tmp-crash"),
         b"{",
     )
     .unwrap();
-    assert_eq!(store.read_environment_activation("test").unwrap(), initial);
+    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
 
     assert!(store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "rollback",
             7,
@@ -658,9 +654,9 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             vec!["replica-a".to_string()],
         )
         .is_err());
-    assert_eq!(store.read_environment_activation("test").unwrap(), initial);
+    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
     assert!(store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "wrong-assembly-domain",
             7,
@@ -674,10 +670,10 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
             vec!["replica-a".to_string()],
         )
         .is_err());
-    assert_eq!(store.read_environment_activation("test").unwrap(), initial);
+    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
 
     let prepared = store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "activation-8",
             7,
@@ -693,7 +689,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         ["replica-a", "replica-b"]
     );
     assert!(store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "stale",
             6,
@@ -704,7 +700,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         )
         .is_err());
     assert!(store
-        .commit_environment_activation(
+        .commit_profile_activation(
             "test",
             "activation-8",
             7,
@@ -716,7 +712,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         )
         .is_err());
     assert!(store
-        .commit_environment_activation(
+        .commit_profile_activation(
             "test",
             "activation-8",
             7,
@@ -758,7 +754,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     );
 
     let aborted = store
-        .abort_environment_activation("test", "activation-8", 7)
+        .abort_profile_activation("test", "activation-8", 7)
         .unwrap();
     assert!(aborted.pending.is_none());
     assert_eq!(
@@ -767,7 +763,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     );
 
     store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "activation-8b",
             7,
@@ -778,7 +774,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         )
         .unwrap();
     let committed = store
-        .commit_environment_activation(
+        .commit_profile_activation(
             "test",
             "activation-8b",
             7,
@@ -797,7 +793,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     );
     assert_eq!(
         store
-            .commit_environment_activation(
+            .commit_profile_activation(
                 "test",
                 "activation-8b",
                 7,
@@ -812,7 +808,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         "post-commit notification replay must be idempotent"
     );
     assert!(store
-        .commit_environment_activation(
+        .commit_profile_activation(
             "test",
             "activation-8b",
             6,
@@ -824,7 +820,7 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
         )
         .is_err());
     assert!(store
-        .commit_environment_activation(
+        .commit_profile_activation(
             "test",
             "",
             7,

@@ -1403,7 +1403,7 @@ impl DbCollectionMetadata {
         cipher
             .encrypt_string(
                 DbEncryptedFieldContext {
-                    storage_environment: &self.storage_environment,
+                    storage_profile: &self.storage_profile,
                     storage_service_id: &self.storage_service_id,
                     collection_name: &self.collection_name,
                     field_name,
@@ -1434,7 +1434,7 @@ impl DbCollectionMetadata {
         cipher
             .decrypt_string(
                 DbEncryptedFieldContext {
-                    storage_environment: &self.storage_environment,
+                    storage_profile: &self.storage_profile,
                     storage_service_id: &self.storage_service_id,
                     collection_name: &self.collection_name,
                     field_name,

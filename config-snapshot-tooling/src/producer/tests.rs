@@ -11,7 +11,7 @@ use tempfile::tempdir;
 use super::{produce_runtime_config_snapshot, ConfigSnapshotProductionInput};
 
 #[test]
-fn empty_assembly_produces_and_securely_publishes_an_empty_v2_snapshot() {
+fn empty_assembly_produces_and_securely_publishes_an_empty_snapshot() {
     let artifact_root = tempdir().unwrap();
     let assembly = RuntimeAssembly {
             schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
@@ -32,7 +32,6 @@ fn empty_assembly_produces_and_securely_publishes_an_empty_v2_snapshot() {
         };
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
-            environment: "dev".to_string(),
             profile: "dev".to_string(),
             assembly,
             package_artifacts: BTreeMap::new(),
@@ -47,7 +46,7 @@ fn empty_assembly_produces_and_securely_publishes_an_empty_v2_snapshot() {
     let store =
         RuntimeConfigSnapshotStore::open(artifact_root.path().join("runtime-config")).unwrap();
     let snapshot = store.read(&receipt.snapshot).unwrap();
-    assert_eq!(snapshot.environment(), "dev");
+    assert_eq!(snapshot.profile(), "dev");
     assert!(snapshot.deployments().is_empty());
     let record: serde_json::Value = serde_json::from_slice(
         &std::fs::read(artifact_root.path().join(receipt.record_path)).unwrap(),

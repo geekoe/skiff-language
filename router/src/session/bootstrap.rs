@@ -45,7 +45,7 @@ impl RuntimeBootstrapProvider {
                 max_response_bytes: self.max_response_bytes,
             },
             activation: RouterBootstrapActivationFrameHeader {
-                environment: epoch.environment.clone(),
+                profile: epoch.profile.clone(),
                 generation: epoch.generation,
                 assembly: epoch.assembly.clone(),
                 config_snapshot: epoch.config_snapshot.clone(),

@@ -1,0 +1,8 @@
+target: x86_64-unknown-linux-gnu
+zigDir: /Users/geek/.cache/skiff-tools/zig-aarch64-macos-0.15.2
+buildRoot: build/runtime-stack
+cargoTargetDir: build/cargo-target
+units:
+  - runtime
+  - router
+  - telemetry

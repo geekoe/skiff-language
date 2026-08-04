@@ -718,7 +718,7 @@ impl Drop for BatchTestRoot {
     }
 }
 
-fn empty_base(environment: &str) -> CanonicalBaseAssembly {
+fn empty_base(profile: &str) -> CanonicalBaseAssembly {
     let mut assembly = skiff_artifact_model::RuntimeAssembly {
         schema_version: skiff_artifact_model::RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new("unassigned"),
@@ -736,7 +736,7 @@ fn empty_base(environment: &str) -> CanonicalBaseAssembly {
     };
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
     let config_snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        environment,
+        profile,
         skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref(),
         Vec::new(),
     )

@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use crate::health_common::{
     assemble, complete_handshake, connect_runtime, health_bytes, health_json, materialize,
-    raw_request, register_bytes, send_binary, start_listeners, wait_until_health, ENVIRONMENT,
-    GENERATION, REPLICA_A, REPLICA_B,
+    raw_request, register_bytes, send_binary, start_listeners, wait_until_health, GENERATION,
+    PROFILE, REPLICA_A, REPLICA_B,
 };
 
 #[cfg(test)]
@@ -88,7 +88,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_route_serves_ts_compatible_shape_zero_counters_and_loop_risk_detail() {
-        let chain = materialize(ENVIRONMENT);
+        let chain = materialize(PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();
@@ -99,7 +99,7 @@ mod tests {
             "health must return 200, got {status:?}"
         );
         assert_eq!(health["ok"], true);
-        assert_eq!(health["activeAssembly"]["environment"], ENVIRONMENT);
+        assert_eq!(health["activeAssembly"]["profile"], PROFILE);
         assert_eq!(health["activeAssembly"]["generation"], GENERATION);
         assert_eq!(
             health["activeAssembly"]["assemblyIdentity"],
@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_reflects_registered_session_and_returns_to_zero_after_disconnect() {
-        let chain = materialize(ENVIRONMENT);
+        let chain = materialize(PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();
@@ -224,7 +224,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_returns_to_zero_after_error_terminal() {
-        let chain = materialize(ENVIRONMENT);
+        let chain = materialize(PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();
@@ -242,7 +242,7 @@ mod tests {
             &mut runtime,
             register_bytes(
                 REPLICA_B,
-                ENVIRONMENT,
+                PROFILE,
                 GENERATION + 1,
                 &chain.assembly_ref,
                 &chain.config_snapshot_ref,

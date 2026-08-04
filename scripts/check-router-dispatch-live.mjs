@@ -38,7 +38,7 @@ import {
 } from './lib/package-service-authoring.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ENVIRONMENT = 'dispatch-live';
+const PROFILE = 'dispatch-live';
 const GENERATION = 1;
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
 const ACTOR_ROUTING_PROJECTION_CONTENT =
@@ -124,8 +124,8 @@ try {
       artifactRoot,
       '--platform-source-root',
       repoRoot,
-      '--environment',
-      ENVIRONMENT,
+      '--profile',
+      PROFILE,
     ],
     { cwd: repoRoot, env: { ...process.env, CARGO_TARGET_DIR: targetDir } },
   );
@@ -137,7 +137,7 @@ try {
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
   });
   const deployment = packageReceipt?.serviceDeploymentReceipt?.deployment;
   if (
@@ -157,7 +157,7 @@ try {
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
     rootDeployments: [deployment],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -171,8 +171,7 @@ try {
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot: repoRoot,
     artifactRoot,
-    environment: ENVIRONMENT,
-    profile: 'dev',
+    profile: PROFILE,
     assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment }],
   });
@@ -239,7 +238,7 @@ try {
         SKIFF_ROUTER_DISPATCH_LIVE_MONGO_URL: harness.mongoUrl,
         SKIFF_ROUTER_DISPATCH_LIVE_DB: DATABASE,
         SKIFF_ROUTER_DISPATCH_LIVE_ARTIFACT_ROOT: artifactRoot,
-        SKIFF_ROUTER_DISPATCH_LIVE_ENVIRONMENT: ENVIRONMENT,
+        SKIFF_ROUTER_DISPATCH_LIVE_ENVIRONMENT: PROFILE,
         SKIFF_ROUTER_DISPATCH_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_DISPATCH_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_DISPATCH_LIVE_GENERATION: String(GENERATION),

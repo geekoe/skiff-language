@@ -3,14 +3,14 @@ use std::{collections::BTreeMap, fmt, path::Path};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_activation_environment, validate_runtime_config_snapshot_ref, PackageBuildId,
+    validate_activation_profile, validate_runtime_config_snapshot_ref, PackageBuildId,
     RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
 
 use crate::{error::invalid, strict_json::StrictJsonValue, RuntimeConfigSnapshotResult};
 
 pub const RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION: &str =
-    "skiff-runtime-config-snapshot-record-v2";
+    "skiff-runtime-config-snapshot-record-v3";
 pub const MAX_CONFIG_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_DEPLOYMENTS_PER_SNAPSHOT: usize = 1_024;
 pub const MAX_PACKAGES_PER_DEPLOYMENT: usize = 4_096;
@@ -25,7 +25,7 @@ const MAX_CONTAINER_ENTRIES: usize = 16_384;
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeConfigSnapshot {
     schema_version: String,
-    environment: String,
+    profile: String,
     snapshot: RuntimeConfigSnapshotRef,
     deployments: Vec<RuntimeConfigDeployment>,
 }
@@ -34,20 +34,20 @@ pub struct RuntimeConfigSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeConfigSnapshot {
     schema_version: String,
-    environment: String,
+    profile: String,
     snapshot: RuntimeConfigSnapshotRef,
     deployments: Vec<RuntimeConfigDeployment>,
 }
 
 impl RuntimeConfigSnapshot {
     pub fn new(
-        environment: impl Into<String>,
+        profile: impl Into<String>,
         snapshot: RuntimeConfigSnapshotRef,
         deployments: Vec<RuntimeConfigDeployment>,
     ) -> RuntimeConfigSnapshotResult<Self> {
         let record = Self {
             schema_version: RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION.to_string(),
-            environment: environment.into(),
+            profile: profile.into(),
             snapshot,
             deployments,
         };
@@ -59,8 +59,8 @@ impl RuntimeConfigSnapshot {
         &self.snapshot
     }
 
-    pub fn environment(&self) -> &str {
-        &self.environment
+    pub fn profile(&self) -> &str {
+        &self.profile
     }
 
     pub fn deployments(&self) -> &[RuntimeConfigDeployment] {
@@ -78,8 +78,7 @@ impl RuntimeConfigSnapshot {
         if self.schema_version != RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION {
             return Err(invalid(path, "snapshot record schemaVersion mismatch"));
         }
-        validate_activation_environment(&self.environment)
-            .map_err(|message| invalid(path, message))?;
+        validate_activation_profile(&self.profile).map_err(|message| invalid(path, message))?;
         validate_runtime_config_snapshot_ref(&self.snapshot)
             .map_err(|message| invalid(path, message))?;
         if self.deployments.len() > MAX_DEPLOYMENTS_PER_SNAPSHOT {
@@ -131,7 +130,7 @@ impl<'de> Deserialize<'de> for RuntimeConfigSnapshot {
         let raw = RawRuntimeConfigSnapshot::deserialize(deserializer)?;
         let record = Self {
             schema_version: raw.schema_version,
-            environment: raw.environment,
+            profile: raw.profile,
             snapshot: raw.snapshot,
             deployments: raw.deployments,
         };

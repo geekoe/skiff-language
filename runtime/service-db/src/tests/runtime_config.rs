@@ -61,7 +61,7 @@ fn assert_publication_id_fixture_applies_to(fixture: &PublicationIdFixture) {
 }
 
 #[test]
-fn service_db_runtime_derives_storage_identity_from_environment_and_service_id() {
+fn service_db_runtime_derives_storage_identity_from_profile_and_service_id() {
     let fixture = runtime_publication_id_fixture();
     for case in fixture
         .valid
@@ -69,7 +69,7 @@ fn service_db_runtime_derives_storage_identity_from_environment_and_service_id()
         .filter(|case| case.applies_to.iter().any(|system| system == "runtime"))
     {
         let runtime = ServiceDbRuntime::new(
-            test_environment(),
+            test_profile(),
             case.canonical_id.clone(),
             "mongodb://127.0.0.1:27017".to_string(),
             &[],
@@ -162,9 +162,9 @@ fn package_collection_storage_name_is_diamond_path_independent() {
 }
 
 #[test]
-fn service_db_runtime_environment_does_not_change_database_name() {
+fn service_db_runtime_profile_does_not_change_database_name() {
     let config = ServiceDbConfig {
-        mongo_url: inert_mongo_url("environment"),
+        mongo_url: inert_mongo_url("profile"),
         encryption_cipher: None,
     };
     let service_id = service_id("stateful");
@@ -179,7 +179,7 @@ fn service_db_runtime_environment_does_not_change_database_name() {
         .expect("prod service database");
     assert_eq!(
         first.database_name, second.database_name,
-        "environment must not participate in the Mongo database name"
+        "profile must not participate in the Mongo database name"
     );
 }
 
@@ -206,17 +206,17 @@ fn service_db_runtime_storage_identity_is_stable_within_each_mongo_endpoint_doma
 }
 
 #[test]
-fn service_db_runtime_rejects_unvalidated_environment() {
+fn service_db_runtime_rejects_unvalidated_profile() {
     let error = ServiceDbRuntime::new(
         "../prod".to_string(),
-        service_id("invalid-environment"),
-        inert_mongo_url("invalid-environment"),
+        service_id("invalid-profile"),
+        inert_mongo_url("invalid-profile"),
         &[],
     )
     .err()
-    .expect("invalid environment must fail before provider construction");
+    .expect("invalid profile must fail before provider construction");
 
-    assert!(error.to_string().contains("environment"));
+    assert!(error.to_string().contains("profile"));
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn service_db_runtime_rejects_mongo_unsafe_database_names() {
         "config",
     ] {
         let error = ServiceDbRuntime::new(
-            test_environment(),
+            test_profile(),
             service_id.to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &[],
@@ -251,13 +251,13 @@ fn service_db_runtime_rejects_mongo_unsafe_database_names() {
 async fn service_db_runtime_reuses_client_cell_for_exact_mongo_url() {
     let mongo_url = inert_mongo_url("shared_cell");
     let first = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("shared_a"),
         mongo_url.clone(),
         &[],
     )
     .expect("first service DB runtime should build");
-    let second = ServiceDbRuntime::new(test_environment(), service_id("shared_b"), mongo_url, &[])
+    let second = ServiceDbRuntime::new(test_profile(), service_id("shared_b"), mongo_url, &[])
         .expect("second service DB runtime should build");
 
     assert!(
@@ -286,14 +286,14 @@ async fn service_db_runtime_reuses_client_cell_for_exact_mongo_url() {
 #[test]
 fn service_db_runtime_does_not_share_client_cell_for_different_mongo_urls() {
     let first = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("distinct_a"),
         inert_mongo_url("distinct_a"),
         &[],
     )
     .expect("first service DB runtime should build");
     let second = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("distinct_b"),
         inert_mongo_url("distinct_b"),
         &[],
@@ -310,20 +310,12 @@ fn service_db_runtime_does_not_share_client_cell_for_different_mongo_urls() {
 fn service_db_client_cache_drops_dead_cells_and_urls() {
     let stale_url = inert_mongo_url("drop_stale");
     let stale_cell = {
-        let first = ServiceDbRuntime::new(
-            test_environment(),
-            service_id("drop_a"),
-            stale_url.clone(),
-            &[],
-        )
-        .expect("first service DB runtime should build");
-        let second = ServiceDbRuntime::new(
-            test_environment(),
-            service_id("drop_b"),
-            stale_url.clone(),
-            &[],
-        )
-        .expect("second service DB runtime should build");
+        let first =
+            ServiceDbRuntime::new(test_profile(), service_id("drop_a"), stale_url.clone(), &[])
+                .expect("first service DB runtime should build");
+        let second =
+            ServiceDbRuntime::new(test_profile(), service_id("drop_b"), stale_url.clone(), &[])
+                .expect("second service DB runtime should build");
 
         assert!(
             Arc::ptr_eq(&first.client, &second.client),
@@ -338,7 +330,7 @@ fn service_db_client_cache_drops_dead_cells_and_urls() {
 
     let live_url = inert_mongo_url("drop_live");
     let live_runtime = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("drop_live"),
         live_url.clone(),
         &[],
@@ -369,14 +361,14 @@ fn service_db_client_cache_drops_dead_cells_and_urls() {
 fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell_is_shared() {
     let mongo_url = inert_mongo_url("isolated_runtime");
     let account = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("account"),
         mongo_url.clone(),
         &provider_metadata_from_ir(object_metadata_for_type("AccountOnly")),
     )
     .expect("account service DB runtime should build");
     let registry = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("registry"),
         mongo_url,
         &provider_metadata_from_ir(object_metadata_for_type("RegistryOnly")),
@@ -421,19 +413,14 @@ fn service_db_runtime_keeps_database_name_and_metadata_isolated_when_client_cell
 async fn service_db_client_cache_does_not_store_failed_initialization() {
     let invalid_url = "http://127.0.0.1:1".to_string();
     let first = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id("invalid_a"),
         invalid_url.clone(),
         &[],
     )
     .expect("first service DB runtime should build before connecting");
-    let second = ServiceDbRuntime::new(
-        test_environment(),
-        service_id("invalid_b"),
-        invalid_url,
-        &[],
-    )
-    .expect("second service DB runtime should build before connecting");
+    let second = ServiceDbRuntime::new(test_profile(), service_id("invalid_b"), invalid_url, &[])
+        .expect("second service DB runtime should build before connecting");
 
     assert!(
         Arc::ptr_eq(&first.client, &second.client),

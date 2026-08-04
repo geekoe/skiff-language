@@ -1,6 +1,5 @@
 router: ws://127.0.0.1:4001/runtime
 runtime-home: .runtime-home
-environment: production
 serviceDb:
   encryption:
     keyringFile: /run/secrets/skiff-service-db-keyring.json

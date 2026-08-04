@@ -249,14 +249,14 @@ impl SessionAbortControl for FakeSessionAbort {
 /// `epoch.registered_tuple()` projects the exact corpus tuple (the same way
 /// the frozen routing-query reference derives the expected tuple).
 pub fn build_epoch(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_identity: &str,
     config_snapshot_id: &str,
     deployment: ServiceDeploymentRef,
 ) -> Arc<RoutingEpoch> {
     build_epoch_with_actor_methods(
-        environment,
+        profile,
         generation,
         assembly_identity,
         config_snapshot_id,
@@ -268,7 +268,7 @@ pub fn build_epoch(
 /// Builds a real immutable `RoutingEpoch` with an explicit actor routing
 /// projection (E2b actor-method task tests).
 pub fn build_epoch_with_actor_methods(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_identity: &str,
     config_snapshot_id: &str,
@@ -280,7 +280,7 @@ pub fn build_epoch_with_actor_methods(
     assembly.resolved_deployments = vec![deployment];
     let snapshot = Arc::new(
         RuntimeConfigSnapshot::new(
-            environment,
+            profile,
             RuntimeConfigSnapshotRef {
                 snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id)
                     .expect("config snapshot id"),
@@ -294,18 +294,12 @@ pub fn build_epoch_with_actor_methods(
             .expect("empty projection"),
     )));
     Arc::new(
-        RoutingEpoch::new(
-            environment,
-            generation,
-            Arc::new(assembly),
-            snapshot,
-            catalog,
-        )
-        .expect("epoch fixture"),
+        RoutingEpoch::new(profile, generation, Arc::new(assembly), snapshot, catalog)
+            .expect("epoch fixture"),
     )
 }
 
-pub const CORPUS_ENVIRONMENT: &str = "prod";
+pub const CORPUS_PROFILE: &str = "prod";
 pub const CORPUS_GENERATION: u64 = 42;
 pub const CORPUS_ASSEMBLY_IDENTITY: &str =
     "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -320,7 +314,7 @@ pub const CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY: &str =
 /// Fixed corpus-shaped epoch for invariant tests.
 pub fn corpus_epoch() -> Arc<RoutingEpoch> {
     build_epoch(
-        CORPUS_ENVIRONMENT,
+        CORPUS_PROFILE,
         CORPUS_GENERATION,
         CORPUS_ASSEMBLY_IDENTITY,
         CORPUS_CONFIG_SNAPSHOT_ID,
@@ -351,7 +345,7 @@ pub fn session_state(id: &str, replica_id: &str, connection_generation: u64) -> 
         revision: 1,
         cancelled: false,
         tuple: RegisteredAssemblyTuple {
-            environment: CORPUS_ENVIRONMENT.to_string(),
+            profile: CORPUS_PROFILE.to_string(),
             generation: CORPUS_GENERATION,
             assembly: skiff_artifact_model::RuntimeAssemblyRef {
                 assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY),
@@ -368,7 +362,7 @@ pub fn session_state(id: &str, replica_id: &str, connection_generation: u64) -> 
 /// Fixed corpus-shaped `request.start` header.
 pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestStartFrameHeader {
     RuntimeAssemblyRequestStartFrameHeader {
-        schema_version: "skiff-runtime-frame-v3".to_string(),
+        schema_version: "skiff-runtime-frame-v4".to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: mode.to_string(),

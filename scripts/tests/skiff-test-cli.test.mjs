@@ -42,7 +42,7 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url',
         'http://router.test:4100',
-        '--environment',
+        '--profile',
         'test-live',
         '--expected-generation',
         '7',
@@ -51,7 +51,7 @@ test('skiff test selects the canonical binary once for absolute and relative roo
       ], {
         env: {
           ...fixture.env,
-          SKIFF_TEST_RUNNER_BIN: 'hostile-environment-fallback',
+          SKIFF_TEST_RUNNER_BIN: 'hostile-profile-fallback',
         },
       });
       assert.equal(result.code, 0, result.stderr);
@@ -80,7 +80,7 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url',
         'http://router.test:4100',
-        '--environment',
+        '--profile',
         'test-live',
         '--expected-generation',
         '7',
@@ -129,7 +129,7 @@ test('skiff test treats package.yml as the root and external files as optional s
         '--live',
         '--activation-url', 'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url', 'http://router.test:4100',
-        '--environment', 'root-detection',
+        '--profile', 'root-detection',
         '--expected-generation', '0',
       ], { env: fixture.env });
 
@@ -239,14 +239,14 @@ test('non-live skiff test rejects caller-owned live targets before Cargo', async
     for (const option of [
       ['--activation-url', 'http://router.test:4101/__skiff/activate-assembly'],
       ['--ingress-url', 'http://router.test:4100'],
-      ['--environment', 'caller-owned'],
+      ['--profile', 'caller-owned'],
       ['--expected-generation', '1'],
     ]) {
       const result = await runProcess(process.execPath, [
         skiffPath, 'test', input, '--artifact-root', fixture.root, ...option,
       ], { env: fixture.env });
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /non-live skiff test owns activation, ingress, environment, and generation targets/);
+      assert.match(result.stderr, /non-live skiff test owns activation, ingress, profile, and generation targets/);
       await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
     }
   } finally {
@@ -258,7 +258,6 @@ test('skiff test rejects every retired test-runner option without an alias', asy
   const fixture = await fakeCargoFixture();
   try {
     for (const option of [
-      '--profile',
       '--service-artifact-root',
       '--config',
       '--package-test-concurrency',

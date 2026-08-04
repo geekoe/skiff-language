@@ -40,7 +40,7 @@ test('managed activation restart accepts an already committed generation one tup
   let posts = 0;
   const result = await activateDevAssembly({
     activationUrl: 'http://router.test:4101/custom/activation',
-    environment: 'dev',
+    profile: 'dev',
     assembly: targetAssembly,
     configSnapshot: targetConfig,
     fetchImpl: async (url, init) => {
@@ -64,7 +64,7 @@ test('managed activation treats a lost commit response as idempotent success', a
   let request;
   const result = await activateDevAssembly({
     activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    environment: 'dev',
+    profile: 'dev',
     assembly: targetAssembly,
     configSnapshot: targetConfig,
     fetchImpl: async (_url, init) => {
@@ -73,7 +73,7 @@ test('managed activation treats a lost commit response as idempotent success', a
       }
       request = JSON.parse(init.body);
       active = {
-        environment: 'dev',
+        profile: 'dev',
         generation: 2,
         assembly: targetAssembly,
         configSnapshot: targetConfig,
@@ -92,7 +92,7 @@ test('managed activation rereads generation and retries a competing 409 with bou
   const waits = [];
   const result = await activateDevAssembly({
     activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    environment: 'dev',
+    profile: 'dev',
     assembly: targetAssembly,
     configSnapshot: targetConfig,
     wait: async (milliseconds) => waits.push(milliseconds),
@@ -109,7 +109,7 @@ test('managed activation rereads generation and retries a competing 409 with bou
         }, 409);
       }
       active = {
-        environment: 'dev',
+        profile: 'dev',
         generation: 3,
         assembly: targetAssembly,
         configSnapshot: targetConfig,
@@ -133,20 +133,20 @@ test('registry writer atomically replaces the file and persists service identity
     serviceId: 'example.com/atomic',
   });
   await writeDevRegistry(registryPath, {
-    environment: 'dev',
+    profile: 'dev',
     roots: [entry],
   });
   const oldHandle = await open(registryPath, 'r');
   await writeDevRegistry(registryPath, {
-    environment: 'staging',
+    profile: 'staging',
     roots: [entry],
   });
   const oldBytes = await oldHandle.readFile('utf8');
   await oldHandle.close();
   const current = await readDevRegistry(registryPath);
-  assert.match(oldBytes, /"environment": "dev"/);
+  assert.match(oldBytes, /"profile": "dev"/);
   assert.equal(current.schemaVersion, 'skiff-package-service-dev-registry-v2');
-  assert.equal(current.environment, 'staging');
+  assert.equal(current.profile, 'staging');
   assert.deepEqual(current.roots, [{
     kind: 'service',
     root: fixture.root,
@@ -164,7 +164,7 @@ test('registry remove accepts service ID and a deleted canonical root without re
   await writePackageRoot(secondRoot, { packageId: 'example.com/stale-package' });
   const registryPath = join(first.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
-    environment: 'dev',
+    profile: 'dev',
     roots: [
       await classifyAuthoringRoot(first.root),
       await classifyAuthoringRoot(secondRoot),
@@ -278,22 +278,22 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-test('watch reloads registry environment and sorted roots after atomic replacement', async () => {
+test('watch reloads registry profile and sorted roots after atomic replacement', async () => {
   const first = await serviceFixture('watch-registry', 'example.com/watch-a');
   const secondRoot = join(first.temp, 'service-b');
   await writeServiceRoot(secondRoot, 'example.com/watch-b');
   const registryPath = join(first.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
-    environment: 'dev',
+    profile: 'dev',
     roots: [await classifyAuthoringRoot(first.root)],
   });
   const calls = [];
   let polls = 0;
   await assert.rejects(
     runDevWatch(watchOptions(registryPath), {
-      syncRunner: async ({ roots, environment }) => {
+      syncRunner: async ({ roots, profile }) => {
         calls.push({
-          environment,
+          profile,
           services: roots.map(({ serviceId }) => serviceId),
         });
         return {};
@@ -307,7 +307,7 @@ test('watch reloads registry environment and sorted roots after atomic replaceme
         polls += 1;
         if (polls === 1) {
           await writeDevRegistry(registryPath, {
-            environment: 'staging',
+            profile: 'staging',
             roots: [
               await classifyAuthoringRoot(secondRoot),
               await classifyAuthoringRoot(first.root),
@@ -315,7 +315,7 @@ test('watch reloads registry environment and sorted roots after atomic replaceme
           });
         } else if (polls === 2) {
           await writeDevRegistry(registryPath, {
-            environment: 'staging',
+            profile: 'staging',
             roots: [],
           });
         } else {
@@ -326,12 +326,12 @@ test('watch reloads registry environment and sorted roots after atomic replaceme
     /dynamic registry sequence complete/,
   );
   assert.deepEqual(calls, [
-    { environment: 'dev', services: ['example.com/watch-a'] },
+    { profile: 'dev', services: ['example.com/watch-a'] },
     {
-      environment: 'staging',
+      profile: 'staging',
       services: ['example.com/watch-a', 'example.com/watch-b'],
     },
-    { environment: 'staging', services: [] },
+    { profile: 'staging', services: [] },
   ]);
 });
 
@@ -339,14 +339,14 @@ test('watch preserves last-known-good registry across invalid live roots, bad JS
   const fixture = await serviceFixture('watch-lkg', 'example.com/watch-lkg');
   const registryPath = join(fixture.temp, 'watch.json');
   const entry = await classifyAuthoringRoot(fixture.root);
-  await writeDevRegistry(registryPath, { environment: 'dev', roots: [entry] });
+  await writeDevRegistry(registryPath, { profile: 'dev', roots: [entry] });
   const calls = [];
   const errors = [];
   let polls = 0;
   await assert.rejects(
     runDevWatch(watchOptions(registryPath), {
-      syncRunner: async ({ environment }) => {
-        calls.push(environment);
+      syncRunner: async ({ profile }) => {
+        calls.push(profile);
         return {};
       },
       buildStateFromResult: () => ({}),
@@ -356,7 +356,7 @@ test('watch preserves last-known-good registry across invalid live roots, bad JS
         polls += 1;
         if (polls === 1) {
           await writeDevRegistry(registryPath, {
-            environment: 'invalid-live-root',
+            profile: 'invalid-live-root',
             roots: [{
               kind: 'service',
               root: join(fixture.temp, 'missing-service'),
@@ -369,7 +369,7 @@ test('watch preserves last-known-good registry across invalid live roots, bad JS
           await rm(registryPath);
         } else if (polls === 4) {
           await writeDevRegistry(registryPath, {
-            environment: 'recovered',
+            profile: 'recovered',
             roots: [entry],
           });
         } else {
@@ -410,7 +410,7 @@ test('watch does not synthesize an empty activation before its first valid regis
         polls += 1;
         if (clock === 1000) {
           await writeDevRegistry(registryPath, {
-            environment: 'dev',
+            profile: 'dev',
             roots: [await classifyAuthoringRoot(fixture.root)],
           });
         } else if (polls === 3) {
@@ -429,7 +429,7 @@ test('watch retries failed content with exponential delay and new content replac
   const fixture = await serviceFixture('watch-retry', 'example.com/watch-retry');
   const registryPath = join(fixture.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
-    environment: 'dev',
+    profile: 'dev',
     roots: [await classifyAuthoringRoot(fixture.root)],
   });
   const attempts = [];
@@ -477,14 +477,14 @@ test('empty registry still builds the explicit empty assembly candidate', async 
   let assemblyInput;
   const result = await runDevSyncOnce({
     roots: [],
-    environment: 'dev',
+    profile: 'dev',
     artifactRoot: join(temp, 'artifacts'),
     buildOnly: true,
     compilerRunner: async (input) => {
       assemblyInput = input;
       return {
         runtimeAssemblyReceipt: {
-          environment: 'dev',
+          profile: 'dev',
           assembly: targetAssembly,
           recordPath: 'records/empty-assembly.json',
         },
@@ -508,7 +508,7 @@ test('removing the final service converges watch to one exact empty assembly and
   const fixture = await serviceFixture('remove-last', 'example.com/remove-last');
   const registryPath = join(fixture.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
-    environment: 'dev',
+    profile: 'dev',
     roots: [await classifyAuthoringRoot(fixture.root)],
   });
   const nonemptyAssembly = {
@@ -579,7 +579,7 @@ test('removing the final service converges watch to one exact empty assembly and
         const request = JSON.parse(init.body);
         activationRequests.push(request);
         active = {
-          environment: 'dev',
+          profile: 'dev',
           generation: active.generation + 1,
           assembly: request.assembly,
           configSnapshot: request.configSnapshot,
@@ -636,7 +636,7 @@ function watchOptions(registryPath) {
     artifactRoot: join(dirname(registryPath), 'artifacts'),
     activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
     activationId: undefined,
-    environment: undefined,
+    profile: undefined,
     pollIntervalMs: 500,
     watch: true,
     buildOnly: true,
@@ -658,7 +658,7 @@ async function writeServiceRoot(root, serviceId) {
 
 function activeTuple(generation, assemblyDigit, snapshotDigit) {
   return {
-    environment: 'dev',
+    profile: 'dev',
     generation,
     assembly: {
       assemblyIdentity:
@@ -675,7 +675,7 @@ function healthResponse(active) {
   return jsonResponse({
     ok: true,
     activeAssembly: {
-      environment: active.environment ?? 'dev',
+      profile: active.profile ?? 'dev',
       generation: active.generation,
       assemblyIdentity: active.assembly.assemblyIdentity,
       configSnapshotId: active.configSnapshot.snapshotId,

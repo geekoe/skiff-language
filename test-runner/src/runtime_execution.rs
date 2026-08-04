@@ -55,7 +55,7 @@ pub fn run_package_cases(
         source_artifact_root,
         options.base_assembly.as_deref(),
         options.base_config_snapshot.as_deref(),
-        &options.target_environment,
+        &options.target_profile,
     )?;
     let run_scope = test_service_run_scope()?;
     let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
@@ -81,7 +81,7 @@ pub fn run_package_cases(
                 base.clone(),
                 &batch_scope,
                 &run_config,
-                &options.target_environment,
+                &options.target_profile,
             )?;
             Ok(ExecutionBatch {
                 context: fixture.records.clone(),
@@ -192,7 +192,7 @@ fn execute_assembly_batches(
                 requested_identity.rsplit(':').next().unwrap_or("assembly")
             );
             let body = activation_request_body(
-                &options.target_environment,
+                &options.target_profile,
                 &activation_id,
                 expected_generation,
                 &assembly_ref,
@@ -217,7 +217,7 @@ fn execute_assembly_batches(
             let receipt = wire::decode_activation_receipt(&activation.response.body)?;
             let target = readiness::target_from_receipt(
                 receipt.clone(),
-                &options.target_environment,
+                &options.target_profile,
                 candidate_generation,
                 &requested_identity,
                 &config_snapshot_ref,
@@ -423,15 +423,15 @@ fn execute_batches_with<Context, Readiness>(
 }
 
 fn activation_request_body(
-    target_environment: &str,
+    target_profile: &str,
     activation_id: &str,
     expected_generation: u64,
     assembly: &RuntimeAssemblyRef,
     config_snapshot: &RuntimeConfigSnapshotRef,
 ) -> Result<Vec<u8>, CanonicalFixtureError> {
     serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": "skiff-assembly-activation-request-v2",
-        "environment": target_environment,
+        "schemaVersion": "skiff-assembly-activation-request-v3",
+        "profile": target_profile,
         "activationId": activation_id,
         "expectedGeneration": expected_generation,
         "assembly": assembly,

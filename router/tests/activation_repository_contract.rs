@@ -13,7 +13,7 @@ mod tests {
     };
     use skiff_deployment::activation_state::{
         activation_audit_event_id, ActivationAuditEvent, ActivationAuditOperation,
-        ActivationAuditOutcome, EnvironmentActivationState,
+        ActivationAuditOutcome, ProfileActivationState,
     };
     use skiff_router::activation::{
         memory::MemoryActivationStateRepository, repository::AbortInput, repository::CommitInput,
@@ -39,13 +39,13 @@ mod tests {
         }
     }
 
-    fn initial_state() -> EnvironmentActivationState {
-        EnvironmentActivationState::initial("test", 7, assembly(0), config(0))
+    fn initial_state() -> ProfileActivationState {
+        ProfileActivationState::initial("test", 7, assembly(0), config(0))
     }
 
     fn prepare_input(activation_id: &str) -> PrepareInput {
         PrepareInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: activation_id.to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -55,10 +55,10 @@ mod tests {
         }
     }
 
-    fn commit_input(prepared: &EnvironmentActivationState) -> CommitInput {
+    fn commit_input(prepared: &ProfileActivationState) -> CommitInput {
         let pending = prepared.pending.as_ref().expect("prepared pending");
         CommitInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: pending.activation_id.clone(),
             expected_generation: pending.expected_generation,
             candidate_generation: pending.candidate_generation,
@@ -69,10 +69,10 @@ mod tests {
         }
     }
 
-    fn abort_input(prepared: &EnvironmentActivationState) -> AbortInput {
+    fn abort_input(prepared: &ProfileActivationState) -> AbortInput {
         let pending = prepared.pending.as_ref().expect("prepared pending");
         AbortInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: pending.activation_id.clone(),
             expected_generation: pending.expected_generation,
         }

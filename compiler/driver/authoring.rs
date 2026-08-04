@@ -32,8 +32,8 @@ use skiff_compiler_source::source_graph::PublicationSourceGraph;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly,
     storage::{
-        CanonicalArtifactStore, PackageArtifactPointer, RuntimeAssemblyPointer,
-        ServiceContractPointer, ServiceDeploymentPointer,
+        CanonicalArtifactStore, EcosystemStorageError, PackageArtifactPointer,
+        RuntimeAssemblyPointer, ServiceContractPointer, ServiceDeploymentPointer,
     },
 };
 
@@ -77,7 +77,7 @@ pub fn build_authoring_object(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
-    _environment: &str,
+    _profile: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     match object {
@@ -277,18 +277,18 @@ fn build_package_after_platform_context_guard(
 /// mutable ServiceDeployment pointer.
 pub fn project_runtime_assembly(
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
-    validate_runtime_assembly_projection_input(environment, root_deployments)?;
+    validate_runtime_assembly_projection_input(profile, root_deployments)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
-    project_runtime_assembly_to_store(&store, environment, root_deployments, publish_pointer)
+    project_runtime_assembly_to_store(&store, profile, root_deployments, publish_pointer)
 }
 
 fn project_runtime_assembly_to_store(
     store: &CanonicalArtifactStore,
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
@@ -305,14 +305,14 @@ fn project_runtime_assembly_to_store(
     let mut output = Map::from_iter([(
         "runtimeAssemblyReceipt".to_string(),
         json!({
-            "environment": environment,
+            "profile": profile,
             "assembly": reference,
             "recordPath": relative_path(store, &record_path)?,
         }),
     )]);
 
     if publish_pointer {
-        let release = environment;
+        let release = profile;
         let candidate = RuntimeAssemblyPointer::new(release, reference.clone())?;
         let expected = store.read_runtime_assembly_pointer(release)?;
         store.compare_and_swap_runtime_assembly_pointer(expected.as_ref(), &candidate)?;
@@ -328,10 +328,10 @@ fn project_runtime_assembly_to_store(
 }
 
 fn validate_runtime_assembly_projection_input(
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
 ) -> AuthoringResult<()> {
-    RuntimeAssemblyPointerPath::new(environment)?;
+    RuntimeAssemblyPointerPath::new(profile)?;
     let mut unique = BTreeSet::new();
     for reference in root_deployments {
         ServiceDeploymentRecordPath::new(reference)?;
@@ -342,6 +342,72 @@ fn validate_runtime_assembly_projection_input(
         }
     }
     Ok(())
+}
+
+/// Canonical std seed for the internal `std-seed` tool action.
+///
+/// Authors the compiler-owned official std candidate and idempotently installs
+/// its exact PackageArtifact records and pointer into one canonical store.
+/// Existing pointer state is validated before any immutable record write;
+/// records are published before the absent-pointer CAS, so a crash can leave
+/// only recoverable orphan records and never a pointer to missing records.
+/// This is the formal-tooling producer behind `skiff stack init`; the
+/// test-runner smoke fixture is not part of the production bootstrap entry.
+pub fn seed_official_std_package(
+    platform_sources: &CompilerPlatformSources,
+    artifact_root: &Path,
+) -> AuthoringResult<Value> {
+    let published = author_official_std_package(platform_sources)?;
+    let artifact = package_artifact_ref(&published.artifact)?;
+    let candidate = PackageArtifactPointer::new(artifact)?;
+    let store = CanonicalArtifactStore::create(artifact_root)?;
+    let current = store.read_package_artifact_pointer(
+        &candidate.artifact.package_id,
+        &candidate.artifact.package_version,
+    )?;
+    if let Some(actual) = current.as_ref() {
+        if actual != &candidate {
+            return Err(invalid_input(format!(
+                "canonical std pointer already selects {actual:?}; exact candidate is {candidate:?}"
+            )));
+        }
+    }
+
+    let package = publish_package_artifact_records(store.root(), &published)?;
+    if current.is_none() {
+        match store.compare_and_swap_package_artifact_pointer(None, &candidate) {
+            Ok(()) => {}
+            Err(EcosystemStorageError::CasMismatch { .. }) => {
+                let actual = store
+                    .read_package_artifact_pointer(
+                        &candidate.artifact.package_id,
+                        &candidate.artifact.package_version,
+                    )?
+                    .ok_or_else(|| EcosystemStorageError::CasMismatch {
+                        path: store.root().to_path_buf(),
+                        message: "canonical std pointer disappeared after concurrent CAS"
+                            .to_string(),
+                    })?;
+                if actual != candidate {
+                    return Err(invalid_input(format!(
+                        "canonical std pointer already selects {actual:?}; exact candidate is {candidate:?}"
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let pointer_path = PackageArtifactPointerPath::new(
+        &candidate.artifact.package_id,
+        &candidate.artifact.package_version,
+    )?
+    .to_string();
+    Ok(json!({
+        "package": package,
+        "pointer": candidate,
+        "pointerPath": pointer_path,
+    }))
 }
 
 fn read_package_source_input(

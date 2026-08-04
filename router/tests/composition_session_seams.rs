@@ -60,7 +60,6 @@ fn test_config() -> RouterConfig {
         activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
-        environment: Some("prod".to_string()),
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1,
         http_max_response_bytes: 8_388_608,
@@ -185,7 +184,7 @@ mod tests {
 
     fn activation_prepared_frame() -> Vec<u8> {
         let control = skiff_artifact_model::AssemblyActivationControl::Prepared {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         activation_id: "activation-1".to_string(),
         expected_generation: 7,
         candidate_generation: 8,

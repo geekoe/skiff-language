@@ -30,7 +30,7 @@ use skiff_artifact_model::{
     AssemblyActivationControl, AssemblyActivationRequest, AssemblyIdentity, RuntimeAssemblyRef,
     RuntimeConfigSnapshotRef, ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_router::activation::{
     repository::PrepareInput, ActivationStateRepository, MongoActivationStateRepository,
     MongoActivationStateRepositoryOptions, SystemClock,
@@ -50,11 +50,11 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONCURRENCY: u64 = 4;
 
 #[derive(Clone)]
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     generation: u64,
     assembly_identity: String,
     config_snapshot_id: String,
@@ -71,7 +71,7 @@ struct LiveEnvironment {
     replica_id: String,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -94,7 +94,7 @@ impl LiveEnvironment {
             mongo_url: required("SKIFF_ACTIVATION_LIVE_MONGO_URL"),
             database: required("SKIFF_ACTIVATION_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ACTIVATION_LIVE_ARTIFACT_ROOT")),
-            environment: required("SKIFF_ACTIVATION_LIVE_ENVIRONMENT"),
+            profile: required("SKIFF_ACTIVATION_LIVE_PROFILE"),
             generation,
             assembly_identity: required("SKIFF_ACTIVATION_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ACTIVATION_LIVE_CONFIG_SNAPSHOT_ID"),
@@ -171,7 +171,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -183,14 +183,10 @@ async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRe
     )
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
     let (assembly, config_snapshot) = live.committed_refs();
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
-        live.generation,
-        assembly,
-        config_snapshot,
-    );
+    let state =
+        ProfileActivationState::initial(&live.profile, live.generation, assembly, config_snapshot);
     repository
         .initialize(&state)
         .await
@@ -198,7 +194,7 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
 }
 
 async fn seed_pending(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     repository: &Arc<dyn ActivationStateRepository>,
     activation_id: &str,
     expected_generation: u64,
@@ -207,7 +203,7 @@ async fn seed_pending(
 ) {
     repository
         .prepare(PrepareInput {
-            environment: live.environment.clone(),
+            profile: live.profile.clone(),
             activation_id: activation_id.to_string(),
             expected_generation,
             candidate_generation: expected_generation + 1,
@@ -219,14 +215,13 @@ async fn seed_pending(
         .expect("seed pending activation");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-activation-{}-{}.yml",
         live.http_port, live.runtime_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -234,7 +229,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          http:\n  port: {}\n  maxRequestBytes: 1048576\n  maxResponseBytes: 1048576\n\
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.runtime_port,
@@ -244,21 +239,19 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join("runtime-activation.yml");
     let contents = format!(
         "router: {}\n\
-         runtime-home: {}\n\
-         environment: {}\n",
+         runtime-home: {}\n",
         live.relay_runtime_url(),
         live.runtime_home.display(),
-        live.environment,
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
 }
 
-fn seed_runtime_home(live: &LiveEnvironment) {
+fn seed_runtime_home(live: &LiveProfile) {
     std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
     std::fs::write(
         live.runtime_home.join("runtime-id"),
@@ -267,7 +260,7 @@ fn seed_runtime_home(live: &LiveEnvironment) {
     .expect("seed runtime-id");
 }
 
-fn task_router(live: &LiveEnvironment, config_path: &Path) -> Child {
+fn task_router(live: &LiveProfile, config_path: &Path) -> Child {
     let stdout_path = live.temp_dir.join("router-activation.stdout.log");
     let stderr_path = live.temp_dir.join("router-activation.stderr.log");
     let stdout = OpenOptions::new()
@@ -289,7 +282,7 @@ fn task_router(live: &LiveEnvironment, config_path: &Path) -> Child {
         .expect("spawn skiff-router")
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path) -> Child {
     let stdout_path = live.temp_dir.join("runtime-activation.stdout.log");
     let stderr_path = live.temp_dir.join("runtime-activation.stderr.log");
     let stdout = OpenOptions::new()
@@ -335,7 +328,7 @@ fn wait_for_exit(
     }
 }
 
-fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
+fn wait_for_listeners(live: &LiveProfile, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_ok()
@@ -358,7 +351,7 @@ fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
     }
 }
 
-fn assert_ports_closed(live: &LiveEnvironment) {
+fn assert_ports_closed(live: &LiveProfile) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_err()
@@ -693,19 +686,19 @@ fn control_kind(control: &AssemblyActivationControl) -> &'static str {
 }
 
 fn assert_register_control(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     control: &AssemblyActivationControl,
     expected_generation: u64,
 ) {
     match control {
         AssemblyActivationControl::Register {
-            environment,
+            profile,
             generation,
             assembly,
             config_snapshot,
             replica_id,
         } => {
-            assert_eq!(environment, &live.environment);
+            assert_eq!(profile, &live.profile);
             assert_eq!(*generation, expected_generation);
             assert_eq!(replica_id, &live.replica_id);
             let _ = (assembly, config_snapshot);
@@ -813,7 +806,7 @@ async fn raw_http(
 }
 
 fn activation_request_json(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     activation_id: &str,
     expected_generation: u64,
     assembly_identity: &str,
@@ -821,7 +814,7 @@ fn activation_request_json(
 ) -> String {
     let request = AssemblyActivationRequest {
         schema_version: ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION.to_string(),
-        environment: live.environment.clone(),
+        profile: live.profile.clone(),
         activation_id: activation_id.to_string(),
         expected_generation,
         assembly: live.assembly_ref(assembly_identity),
@@ -831,7 +824,7 @@ fn activation_request_json(
 }
 
 async fn post_activation(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     activation_id: &str,
     expected_generation: u64,
     assembly_identity: &str,
@@ -860,7 +853,7 @@ async fn post_activation(
     (status, value)
 }
 
-async fn http_service_request(live: &LiveEnvironment, path: &str, version: &str) -> (u16, String) {
+async fn http_service_request(live: &LiveProfile, path: &str, version: &str) -> (u16, String) {
     raw_http(
         live.public_http_addr(),
         "GET",
@@ -901,12 +894,12 @@ async fn recv_binary(
     }
 }
 
-async fn assert_bootstrap_tuple(live: &LiveEnvironment, expected_generation: u64) {
+async fn assert_bootstrap_tuple(live: &LiveProfile, expected_generation: u64) {
     let mut socket = connect_direct(live.runtime_control_addr()).await;
     let bytes = recv_binary(&mut socket).await;
     assert_eq!(frame_type(&bytes), "router.bootstrap");
     let header = decode_router_bootstrap_frame(&bytes).expect("decode bootstrap frame");
-    assert_eq!(header.activation.environment, live.environment);
+    assert_eq!(header.activation.profile, live.profile);
     assert_eq!(header.activation.generation, expected_generation);
     drop(socket);
 }
@@ -915,7 +908,7 @@ async fn assert_bootstrap_tuple(live: &LiveEnvironment, expected_generation: u64
 // Durable / audit helpers.
 // ---------------------------------------------------------------------------
 
-async fn count_audit_events(live: &LiveEnvironment, activation_id: &str) -> u64 {
+async fn count_audit_events(live: &LiveProfile, activation_id: &str) -> u64 {
     let client = mongodb::Client::with_uri_str(&live.mongo_url)
         .await
         .expect("connect mongodb client");
@@ -929,14 +922,14 @@ async fn count_audit_events(live: &LiveEnvironment, activation_id: &str) -> u64 
 }
 
 async fn wait_for_durable(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     repository: &Arc<dyn ActivationStateRepository>,
-    predicate: impl Fn(&EnvironmentActivationState) -> bool,
-) -> EnvironmentActivationState {
+    predicate: impl Fn(&ProfileActivationState) -> bool,
+) -> ProfileActivationState {
     let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
     loop {
         let state = repository
-            .read(&live.environment)
+            .read(&live.profile)
             .await
             .expect("read durable state");
         if predicate(&state) {
@@ -964,7 +957,7 @@ async fn wait_for_durable(
 /// the new connection's handshake. Returns the child and the relay
 /// connection id.
 async fn spawn_runtime_await_handshake(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     relay_state: &Arc<RelayState>,
     runtime_config: &Path,
 ) -> (Child, u64) {
@@ -979,9 +972,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires SKIFF_ACTIVATION_LIVE_* temporary environment managed by the harness"]
+    #[ignore = "requires SKIFF_ACTIVATION_LIVE_* temporary profile managed by the harness"]
     async fn activation_full_chain_live() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live);
         let repository = connect_repository(&live).await;
         repository.ensure_indexes().await.expect("ensure indexes");
@@ -1084,7 +1077,7 @@ mod tests {
         );
 
         let repository = connect_repository(&live).await;
-        let durable = repository.read(&live.environment).await.expect("durable");
+        let durable = repository.read(&live.profile).await.expect("durable");
         assert_eq!(durable.committed.generation, 2);
         assert!(durable.pending.is_none());
         assert_eq!(

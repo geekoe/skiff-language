@@ -14,7 +14,7 @@
       "bootstrapOutcome": "recoverPending"
     },
     {
-      "id": "missing-environment",
+      "id": "missing-profile",
       "kind": "missing",
       "repositoryRead": "reject",
       "bootstrapOutcome": "failClosedMissing"
@@ -42,11 +42,11 @@
     "input": "CommittedActivation { generation, assembly: RuntimeAssemblyRef, config_snapshot: RuntimeConfigSnapshotRef }",
     "output": "CommittedBootstrapRefs { generation, assembly: RuntimeAssemblyRef, config_snapshot: RuntimeConfigSnapshotRef }",
     "pending": "no projection",
-    "wire": "RouterBootstrapActivationFrameHeader { environment, generation, assembly, configSnapshot }"
+    "wire": "RouterBootstrapActivationFrameHeader { profile, generation, assembly, configSnapshot }"
   },
   "epoch": {
     "fields": [
-      "environment",
+      "profile",
       "assemblyGeneration",
       "assemblyIdentity",
       "configSnapshotId",

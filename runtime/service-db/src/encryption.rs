@@ -49,7 +49,7 @@ const MAX_KEY_ID_BYTES: usize = 64;
 /// included accidentally in diagnostics.
 #[derive(Clone, Copy)]
 pub struct DbEncryptedFieldContext<'a> {
-    pub storage_environment: &'a str,
+    pub storage_profile: &'a str,
     pub storage_service_id: &'a str,
     pub collection_name: &'a str,
     pub field_name: &'a str,
@@ -407,7 +407,7 @@ fn derive_field_key(
     let info = binary_tuple(&[
         FIELD_KDF_MARKER,
         key_id.as_bytes(),
-        context.storage_environment.as_bytes(),
+        context.storage_profile.as_bytes(),
         context.storage_service_id.as_bytes(),
         context.collection_name.as_bytes(),
         context.field_name.as_bytes(),
@@ -427,7 +427,7 @@ fn field_aad(
     binary_tuple(&[
         FIELD_AAD_MARKER,
         key_id.as_bytes(),
-        context.storage_environment.as_bytes(),
+        context.storage_profile.as_bytes(),
         context.storage_service_id.as_bytes(),
         context.collection_name.as_bytes(),
         context.field_name.as_bytes(),

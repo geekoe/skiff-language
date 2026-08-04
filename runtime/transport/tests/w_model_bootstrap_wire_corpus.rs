@@ -253,7 +253,7 @@ mod tests {
             service_db: header.service_db.clone(),
             http: header.http.clone(),
             activation: CapturedBootstrapEpoch {
-                environment: header.activation.environment.clone(),
+                profile: header.activation.profile.clone(),
                 generation: header.activation.generation,
                 assembly: header.activation.assembly.clone(),
                 config_snapshot: header.activation.config_snapshot.clone(),

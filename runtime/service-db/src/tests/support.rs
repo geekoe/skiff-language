@@ -357,7 +357,7 @@ pub(super) fn service_id(label: &str) -> String {
     format!("example.com/{label}_{}", uuid::Uuid::new_v4().simple())
 }
 
-pub(super) fn test_environment() -> String {
+pub(super) fn test_profile() -> String {
     "test".to_string()
 }
 

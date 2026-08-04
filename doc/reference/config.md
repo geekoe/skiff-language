@@ -25,7 +25,7 @@ config.<profile>.secret.yml
 
 Service首先是Package，因此service自身配置也使用自己的Package ID。Package dependency alias、source
 path、service id和display name都不能代替Package ID。未知Package ID必须在snapshot构造阶段失败。
-普通Package root不拥有环境配置文件；它的值由最终宿主service这同一组文件中的Package ID分区提供。
+普通Package root不拥有profile配置文件；它的值由最终宿主service这同一组文件中的Package ID分区提供。
 
 Package源码只读取自己分区中的local dotted path：
 
@@ -63,7 +63,7 @@ config.yml
 ## 3. Secret File
 
 `config.<profile>.secret.yml`与普通配置使用完全相同的Package-ID schema和overlay规则。它不是引用表，
-不使用`SecretRef`，也不要求在普通配置中重复声明私密path。文件保存当前环境的明文值：
+不使用`SecretRef`，也不要求在普通配置中重复声明私密path。文件保存当前profile的明文值：
 
 ```yaml
 "agine.ai/aihub":
@@ -98,14 +98,14 @@ CommittedActivationGeneration
 
 两个ref并列属于同一activation generation，彼此不引用。snapshot ID是随机、不透明、不可从内容或
 artifact identity推导的immutable coordinate。snapshot顶层必须保存producer从受信operator输入取得的
-`targetEnvironment`；它不是从source YAML、service配置、路径或ambient environment推断的业务值。
+`profile`；它不是从source YAML、service配置、路径或ambient environment推断的业务值。
 snapshot内部至少按精确`ServiceDeploymentRef`隔离，再把canonical Package ID解析到该deployment闭包中的
 精确Package build。Runtime只把匹配`(ServiceDeploymentRef, PackageBuild)`的只读`ConfigView`交给对应
 执行slot。
 
 配置变化创建新snapshot并提交新activation generation；它不重建PackageArtifact、ServiceDeployment或
 RuntimeAssembly。Runtime在prepare及cold recovery中都必须先严格比较
-`snapshot.targetEnvironment == activation.environment`，失败时不能物化任何`ConfigView`或切换active
+`snapshot.profile == activation.profile`，失败时不能物化任何`ConfigView`或切换active
 generation。冷恢复必须读取generation钉住的精确assembly ref和snapshot ref，不能读取目录中的“最新配置”、
 ambient environment或另一个deployment的snapshot分区。
 

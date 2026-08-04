@@ -19,14 +19,14 @@ import {
 
 export const HTTP_LIVE_SERVICE_ID = 'test.skiff/router-rust-http-live';
 export const HTTP_LIVE_VERSION = '0.1.0';
-export const HTTP_LIVE_ENVIRONMENT = 'http-live';
+export const HTTP_LIVE_PROFILE = 'http-live';
 export const HTTP_LIVE_GENERATION = 1;
 export const HTTP_LIVE_REPLICA_ID = 'skiff-runtime-http-live-replica';
 
 export const RUST_HTTP_LIVE_DATABASE = 'skiff-router';
 export const RUST_HTTP_LIVE_STATE_COLLECTION = 'activation_state';
 
-const ACTIVATION_STATE_SCHEMA_VERSION = 'skiff-environment-activation-state-v2';
+const ACTIVATION_STATE_SCHEMA_VERSION = 'skiff-profile-activation-state-v1';
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
 const ACTOR_ROUTING_PROJECTION_CONTENT =
   '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
@@ -261,7 +261,7 @@ export async function authorHttpLiveArtifact({
   skiffRoot,
   sourceRoot,
   artifactRoot,
-  environment = HTTP_LIVE_ENVIRONMENT,
+  profile = HTTP_LIVE_PROFILE,
 }) {
   await mkdir(artifactRoot, { recursive: true });
   // External HTTP services compile against the canonical skiff.run/std
@@ -282,8 +282,8 @@ export async function authorHttpLiveArtifact({
       '--bootstrap-only',
       '--artifact-root',
       artifactRoot,
-      '--environment',
-      environment,
+      '--profile',
+      profile,
       '--platform-source-root',
       skiffRoot,
     ],
@@ -295,7 +295,7 @@ export async function authorHttpLiveArtifact({
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment,
+    profile,
   });
   const deploymentRef = packageReceipt?.serviceDeploymentReceipt?.deployment;
   if (!isPlainObject(deploymentRef)) {
@@ -306,7 +306,7 @@ export async function authorHttpLiveArtifact({
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment,
+    profile,
     rootDeployments: [deploymentRef],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -318,8 +318,7 @@ export async function authorHttpLiveArtifact({
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    environment,
-    profile: 'dev',
+    profile,
     assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });
@@ -344,7 +343,7 @@ export async function authorHttpLiveArtifact({
 
 export async function seedHttpLiveCommittedState({
   mongoUrl,
-  environment = HTTP_LIVE_ENVIRONMENT,
+  profile = HTTP_LIVE_PROFILE,
   generation = HTTP_LIVE_GENERATION,
   assemblyIdentity,
   configSnapshotId,
@@ -352,7 +351,7 @@ export async function seedHttpLiveCommittedState({
   const mongosh = createMongoshCommand();
   const state = {
     schemaVersion: ACTIVATION_STATE_SCHEMA_VERSION,
-    environment,
+    profile,
     committed: {
       generation,
       assembly: { assemblyIdentity },
@@ -361,7 +360,7 @@ export async function seedHttpLiveCommittedState({
     pending: null,
   };
   const document = {
-    _id: environment,
+    _id: profile,
     revision: 0,
     state,
   };
@@ -376,7 +375,7 @@ export async function seedHttpLiveCommittedState({
     '--eval',
     script,
   ], { cwd: process.cwd() });
-  return { environment, generation, assemblyIdentity, configSnapshotId };
+  return { profile, generation, assemblyIdentity, configSnapshotId };
 }
 
 function isPlainObject(value) {

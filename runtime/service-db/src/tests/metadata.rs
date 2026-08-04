@@ -4,7 +4,7 @@ use super::{super::*, support::*};
 fn object_metadata_accepts_retention_field() {
     for retention in [Value::Null, json!({ "amount": 30, "unit": "days" })] {
         ServiceDbRuntime::new(
-            test_environment(),
+            test_profile(),
             "example.com/test".to_string(),
             "mongodb://127.0.0.1:27017".to_string(),
             &provider_metadata_from_ir(object_metadata_with_retention(retention)),
@@ -123,7 +123,7 @@ fn object_metadata_system_encodes_skiff_prefixed_logical_collection_name() {
         }
     ]));
     let runtime = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &metadata,
@@ -236,7 +236,7 @@ fn object_metadata_rejects_one_package_id_resolved_to_different_builds() {
 #[test]
 fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     let key_error = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &provider_metadata(json!([
@@ -257,7 +257,7 @@ fn object_metadata_rejects_reserved_legacy_skiff_type_key_and_field_names() {
     assert_reserved_legacy_skiff_type_error(&key_error);
 
     let field_error = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         "example.com/test".to_string(),
         "mongodb://127.0.0.1:27017".to_string(),
         &provider_metadata(json!([

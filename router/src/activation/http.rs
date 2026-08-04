@@ -186,7 +186,7 @@ fn committed_response(request: &AssemblyActivationRequest) -> ActivationHttpResp
         "ok": true,
         "committed": committed,
         "activeAssembly": {
-            "environment": request.environment.as_str(),
+            "profile": request.profile.as_str(),
             "generation": request.expected_generation + 1,
             "assemblyIdentity": request.assembly.assembly_identity.as_str(),
             "configSnapshotId": request.config_snapshot.snapshot_id.to_string(),
@@ -336,7 +336,7 @@ mod tests {
         ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_deployment::activation_state::{
-        EnvironmentActivationState, ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+        ProfileActivationState, PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
     };
     use skiff_deployment::projection::actor_routing::{
         ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -370,7 +370,7 @@ mod tests {
     }
 
     fn epoch(
-        environment: &str,
+        profile: &str,
         generation: u64,
         assembly_ref: RuntimeAssemblyRef,
         config_snapshot_ref: RuntimeConfigSnapshotRef,
@@ -390,7 +390,7 @@ mod tests {
             activation_templates: Vec::new(),
             gateway_ingress: Vec::new(),
         };
-        let snapshot = RuntimeConfigSnapshot::new(environment, config_snapshot_ref, Vec::new())
+        let snapshot = RuntimeConfigSnapshot::new(profile, config_snapshot_ref, Vec::new())
             .expect("snapshot fixture");
         let projection = ActorRoutingProjection::new(
             ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -400,7 +400,7 @@ mod tests {
         let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
         Arc::new(
             RoutingEpoch::new(
-                environment,
+                profile,
                 generation,
                 Arc::new(assembly),
                 Arc::new(snapshot),
@@ -410,19 +410,19 @@ mod tests {
         )
     }
 
-    fn tuple(environment: &str, generation: u64) -> RegisteredAssemblyTuple {
+    fn tuple(profile: &str, generation: u64) -> RegisteredAssemblyTuple {
         RegisteredAssemblyTuple {
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             generation,
             assembly: assembly_ref(ASSEMBLY),
             config_snapshot: config_ref(SNAPSHOT),
         }
     }
 
-    fn initial_state(environment: &str, generation: u64) -> EnvironmentActivationState {
-        EnvironmentActivationState {
-            schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-            environment: environment.to_string(),
+    fn initial_state(profile: &str, generation: u64) -> ProfileActivationState {
+        ProfileActivationState {
+            schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+            profile: profile.to_string(),
             committed: CommittedActivation {
                 generation,
                 assembly: assembly_ref(ASSEMBLY),
@@ -433,13 +433,13 @@ mod tests {
     }
 
     fn request(
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
     ) -> AssemblyActivationRequest {
         AssemblyActivationRequest {
             schema_version: ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION.to_string(),
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             activation_id: activation_id.to_string(),
             expected_generation,
             assembly: assembly_ref(ASSEMBLY),
@@ -447,8 +447,8 @@ mod tests {
         }
     }
 
-    fn request_json(environment: &str, activation_id: &str, expected_generation: u64) -> String {
-        serde_json::to_string(&request(environment, activation_id, expected_generation))
+    fn request_json(profile: &str, activation_id: &str, expected_generation: u64) -> String {
+        serde_json::to_string(&request(profile, activation_id, expected_generation))
             .expect("request serializes")
     }
 
@@ -457,7 +457,7 @@ mod tests {
     fn prepared_control(prepare: &AssemblyActivationControl) -> AssemblyActivationControl {
         match prepare {
             AssemblyActivationControl::Prepare {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -466,7 +466,7 @@ mod tests {
                 replica_id,
                 ..
             } => AssemblyActivationControl::Prepared {
-                environment: environment.clone(),
+                profile: profile.clone(),
                 activation_id: activation_id.clone(),
                 expected_generation: *expected_generation,
                 candidate_generation: *candidate_generation,
@@ -488,7 +488,7 @@ mod tests {
             refs: &CandidateEpochRefs,
         ) -> Result<Arc<RoutingEpoch>, CandidateLoadError> {
             Ok(epoch(
-                &refs.environment,
+                &refs.profile,
                 refs.generation,
                 refs.assembly.clone(),
                 refs.config_snapshot.clone(),
@@ -532,7 +532,7 @@ mod tests {
     impl RuntimeCandidateQueryPort for ScriptedCandidates {
         fn freeze(
             &self,
-            _environment: &str,
+            _profile: &str,
         ) -> Result<Vec<RegisteredSessionLease>, crate::activation::ActivationCandidateError>
         {
             Ok(self.leases.lock().expect("leases lock").clone())
@@ -599,13 +599,13 @@ mod tests {
         candidates: Arc<ScriptedCandidates>,
     }
 
-    async fn harness(environment: &str, committed_generation: u64) -> Harness {
+    async fn harness(profile: &str, committed_generation: u64) -> Harness {
         let repo = Arc::new(MemoryActivationStateRepository::new());
-        repo.initialize(&initial_state(environment, committed_generation))
+        repo.initialize(&initial_state(profile, committed_generation))
             .await
             .expect("initialize");
         let candidates = Arc::new(ScriptedCandidates::new(
-            tuple(environment, committed_generation),
+            tuple(profile, committed_generation),
             &[("runtime-a", 1)],
         ));
         let sessions = Arc::new(RecordingSessions::default());
@@ -697,7 +697,7 @@ mod tests {
             &handler,
             &Method::POST,
             request_json("prod", "activation-8", 7)
-                .replace("skiff-assembly-activation-request-v2", "skiff-legacy-v1"),
+                .replace("skiff-assembly-activation-request-v3", "skiff-legacy-v1"),
         )
         .await;
         assert_eq!(status, 400, "schema version mismatch must fail validate");
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(body["committed"]["generation"], 8);
         assert_eq!(body["committed"]["assembly"]["assemblyIdentity"], ASSEMBLY);
         assert_eq!(body["committed"]["configSnapshot"]["snapshotId"], SNAPSHOT);
-        assert_eq!(body["activeAssembly"]["environment"], "prod");
+        assert_eq!(body["activeAssembly"]["profile"], "prod");
         assert_eq!(body["activeAssembly"]["generation"], 8);
         assert_eq!(body["activeAssembly"]["assemblyIdentity"], ASSEMBLY);
         assert_eq!(body["activeAssembly"]["configSnapshotId"], SNAPSHOT);
@@ -906,10 +906,7 @@ mod tests {
         assert_eq!(classify_activation_error("runtime disconnected"), 503);
         assert_eq!(classify_activation_error("activation timed out"), 504);
         assert_eq!(classify_activation_error("invalid request"), 400);
-        assert_eq!(
-            classify_activation_error("environment must be canonical"),
-            400
-        );
+        assert_eq!(classify_activation_error("profile must be canonical"), 400);
         assert_eq!(classify_activation_error("strict JSON parse failed"), 400);
         assert_eq!(classify_activation_error("generation mismatch"), 409);
     }

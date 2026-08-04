@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "skiff-environment-activation-state-v2",
-  "environment": "test",
+  "schemaVersion": "skiff-profile-activation-state-v1",
+  "profile": "test",
   "committed": {
     "generation": 41,
     "assembly": {

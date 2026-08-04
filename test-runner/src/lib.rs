@@ -61,7 +61,7 @@ pub struct SkiffTestOptions {
     pub activation_url: Option<String>,
     pub ingress_url: Option<String>,
     /// Router/Runtime activation target; it never selects a test service config profile.
-    pub target_environment: String,
+    pub target_profile: String,
     pub expected_generation: u64,
 }
 

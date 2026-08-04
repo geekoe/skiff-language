@@ -110,7 +110,7 @@ mod tests {
             match (case.valid, result) {
                 (true, Ok(header)) => {
                     assert_eq!(header.envelope_type, ROUTER_BOOTSTRAP_FRAME_TYPE);
-                    assert_eq!(header.activation.environment, "prod");
+                    assert_eq!(header.activation.profile, "prod");
                     assert_eq!(header.activation.generation, 7);
                     let frame = encode_router_bootstrap_frame(&header)
                         .unwrap_or_else(|error| panic!("{} must encode: {error}", case.id));
@@ -243,7 +243,7 @@ mod tests {
             service_db: header.service_db.clone(),
             http: header.http.clone(),
             activation: CapturedBootstrapEpoch {
-                environment: header.activation.environment.clone(),
+                profile: header.activation.profile.clone(),
                 generation: header.activation.generation,
                 assembly: header.activation.assembly.clone(),
                 config_snapshot: header.activation.config_snapshot.clone(),

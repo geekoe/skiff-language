@@ -52,7 +52,7 @@ export function createHttpLiveRouterSpecs({ repoRoot, devHome }) {
 }
 
 export function renderHttpLiveRouterConfig({
-  environment,
+  profile,
   artifactsPath,
   httpPort,
   runtimePort,
@@ -63,9 +63,8 @@ export function renderHttpLiveRouterConfig({
   runtimeMaxConcurrency = 16,
 }) {
   return renderRouterConfig({
-    profile: 'dev',
     host: '127.0.0.1',
-    environment,
+    profile,
     artifactsPath,
     releaseMode: true,
     devReload: false,
@@ -102,13 +101,12 @@ export async function installHttpLiveRustBinary({
   return installed;
 }
 
-export function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runtimeHome, environment }) {
+export function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runtimeHome }) {
   return open(runtimeConfigPath, 'wx').then(async (handle) => {
     await handle.writeFile(
       renderRuntimeConfig({
         routerUrl: `ws://127.0.0.1:${relayPort}/runtime`,
         runtimeHome,
-        environment,
       }),
       'utf8',
     );
@@ -199,7 +197,7 @@ export function latestBootstrapTupleAfter(records, fromIndex) {
     }
     const activation = record?.header?.activation;
     return {
-      environment: activation?.environment ?? null,
+      profile: activation?.profile ?? null,
       generation: activation?.generation ?? null,
       assemblyIdentity: activation?.assembly?.assemblyIdentity ?? null,
       configSnapshotId: activation?.configSnapshot?.snapshotId ?? null,

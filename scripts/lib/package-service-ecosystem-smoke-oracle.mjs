@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v4';
 const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v2';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
-const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v2';
+const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v3';
 
 const TEST_SERVICE_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
 const TEST_SERVICE_PACKAGE_VERSION = '1.0.0';
@@ -31,17 +31,17 @@ const READINESS_INTERVAL_MS = 100;
 
 export function readPackageServiceFixtureReceipt(
   stdout,
-  expectedEnvironment,
+  expectedProfile,
   {
     packageId = TEST_SERVICE_PACKAGE_ID,
     packageVersion = TEST_SERVICE_PACKAGE_VERSION,
   } = {},
 ) {
   const receipt = parseJson(stdout, 'ecosystem smoke fixture');
-  exactObject(receipt, ['bootstrap', 'candidate', 'environment', 'schemaVersion'], 'fixture receipt');
+  exactObject(receipt, ['bootstrap', 'candidate', 'profile', 'schemaVersion'], 'fixture receipt');
   assert.equal(receipt.schemaVersion, FIXTURE_SCHEMA_VERSION);
-  assert.equal(receipt.environment, expectedEnvironment);
-  assert.equal(receipt.bootstrap, null, 'candidate fixture must not reinitialize the environment');
+  assert.equal(receipt.profile, expectedProfile);
+  assert.equal(receipt.bootstrap, null, 'candidate fixture must not reinitialize the profile');
 
   const candidate = exactObject(
     receipt.candidate,
@@ -115,10 +115,10 @@ export function readPackageServiceFixtureReceipt(
   return receipt;
 }
 
-export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironment) {
-  exactObject(receipt, ['bootstrap', 'environment', 'schemaVersion'], 'bootstrap receipt');
+export function validatePackageServiceBootstrapReceipt(receipt, expectedProfile) {
+  exactObject(receipt, ['bootstrap', 'profile', 'schemaVersion'], 'bootstrap receipt');
   assert.equal(receipt.schemaVersion, BOOTSTRAP_SCHEMA_VERSION);
-  assert.equal(receipt.environment, expectedEnvironment);
+  assert.equal(receipt.profile, expectedProfile);
   const bootstrap = exactObject(
     receipt.bootstrap,
     ['assembly', 'configSnapshot', 'generation', 'std'],
@@ -178,7 +178,7 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironm
 export function validatePackageServiceActivationReceipt(
   activation,
   {
-    environment,
+    profile,
     assemblyIdentity,
     configSnapshotId,
     expectedGeneration = 0,
@@ -191,14 +191,14 @@ export function validatePackageServiceActivationReceipt(
       'activationId',
       'assembly',
       'configSnapshot',
-      'environment',
+      'profile',
       'expectedGeneration',
       'schemaVersion',
     ],
     'assembly activation request receipt',
   );
   assert.equal(request.schemaVersion, ACTIVATION_REQUEST_SCHEMA_VERSION);
-  assert.equal(request.environment, environment);
+  assert.equal(request.profile, profile);
   assert.equal(request.expectedGeneration, expectedGeneration);
   assert.equal(typeof request.activationId, 'string');
   assert.ok(request.activationId.length > 0);
@@ -239,11 +239,11 @@ export function validatePackageServiceActivationReceipt(
   );
   const active = exactObject(
     response.activeAssembly,
-    ['assemblyIdentity', 'configSnapshotId', 'environment', 'generation'],
+    ['assemblyIdentity', 'configSnapshotId', 'profile', 'generation'],
     'activation active tuple',
   );
   assert.deepEqual(active, {
-    environment,
+    profile,
     generation: committedGeneration,
     assemblyIdentity,
     configSnapshotId,
@@ -253,7 +253,7 @@ export function validatePackageServiceActivationReceipt(
 
 export async function waitForPackageServiceAssemblyReady({
   healthUrl,
-  environment,
+  profile,
   assemblyIdentity,
   configSnapshotId,
   generation = 1,
@@ -278,7 +278,7 @@ export async function waitForPackageServiceAssemblyReady({
       );
       const readiness = packageServiceAssemblyReadiness(
         health,
-        { environment, generation, assemblyIdentity, configSnapshotId },
+        { profile, generation, assemblyIdentity, configSnapshotId },
       );
       if (readiness.ready) return readiness;
       lastReason = readiness.reason;
@@ -303,14 +303,14 @@ export async function waitForPackageServiceAssemblyReady({
 
 export function packageServiceAssemblyReadiness(
   health,
-  { environment, generation, assemblyIdentity, configSnapshotId },
+  { profile, generation, assemblyIdentity, configSnapshotId },
 ) {
   if (!isPlainObject(health) || health.ok !== true) {
     return notReady('control health did not return ok:true');
   }
   const active = health.activeAssembly;
   if (!isPlainObject(active)
-    || active.environment !== environment
+    || active.profile !== profile
     || active.generation !== generation
     || active.assemblyIdentity !== assemblyIdentity
     || active.configSnapshotId !== configSnapshotId) {
@@ -326,7 +326,7 @@ export function packageServiceAssemblyReadiness(
     isPlainObject(candidate)
     && typeof candidate.replicaId === 'string'
     && candidate.replicaId.length > 0
-    && candidate.environment === environment
+    && candidate.profile === profile
     && candidate.generation === generation
     && candidate.assemblyIdentity === assemblyIdentity
     && candidate.configSnapshotId === configSnapshotId

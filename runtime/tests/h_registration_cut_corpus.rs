@@ -138,7 +138,7 @@ mod tests {
                     let header = decode_router_bootstrap_frame(&bytes)
                         .unwrap_or_else(|error| panic!("{name} bootstrap decode: {error}"));
                     assert_eq!(header.envelope_type, ROUTER_BOOTSTRAP_FRAME_TYPE);
-                    assert_eq!(header.activation.environment, "prod");
+                    assert_eq!(header.activation.profile, "prod");
                     assert_eq!(header.activation.generation, 42);
                     let reencoded = encode_router_bootstrap_frame(&header)
                         .unwrap_or_else(|error| panic!("{name} bootstrap encode: {error}"));
@@ -182,7 +182,7 @@ mod tests {
                     )
                     .unwrap_or_else(|error| panic!("{name} register decode: {error}"));
                     let AssemblyActivationControl::Register {
-                        environment,
+                        profile,
                         generation,
                         replica_id,
                         ..
@@ -190,7 +190,7 @@ mod tests {
                     else {
                         panic!("{name} must decode as Register");
                     };
-                    assert_eq!(environment, "prod");
+                    assert_eq!(profile, "prod");
                     assert_eq!(
                         *generation,
                         entry.header["control"]["generation"].as_u64().unwrap()

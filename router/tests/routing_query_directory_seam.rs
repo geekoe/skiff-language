@@ -94,7 +94,7 @@ fn epoch(generation: u64) -> Arc<RoutingEpoch> {
 
 fn tuple(generation: u64) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(ASSEMBLY),

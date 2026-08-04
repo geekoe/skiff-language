@@ -3,7 +3,7 @@
 //! C-activation-coordinator).
 //!
 //! Owner invariants:
-//! 1. One live transaction per environment (the durable pending slot is the
+//! 1. One live transaction per profile (the durable pending slot is the
 //!    single slot; CAS enforces it).
 //! 2. Once the durable commit CAS is issued the outcome is durable
 //!    authoritative: disconnect/timeout reconcile through durable state and
@@ -81,12 +81,10 @@ pub enum ActivationRevalidateOutcome {
 /// Fail-closed candidate projection errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActivationCandidateError {
-    #[error("no active routing epoch published for environment {environment}")]
-    NoEpoch { environment: String },
-    #[error(
-        "active routing epoch environment {actual} does not match activation environment {expected}"
-    )]
-    EnvironmentMismatch { expected: String, actual: String },
+    #[error("no active routing epoch published for profile {profile}")]
+    NoEpoch { profile: String },
+    #[error("active routing epoch profile {actual} does not match activation profile {expected}")]
+    ProfileMismatch { expected: String, actual: String },
     #[error("candidate query projection failed: {0}")]
     Query(String),
 }
@@ -185,7 +183,7 @@ impl DecisionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationCoordinatorHealth {
     pub phase: ActivationPhase,
-    pub environment: Option<String>,
+    pub profile: Option<String>,
     pub activation_id: Option<String>,
     pub expected_generation: Option<u64>,
     pub candidate_generation: Option<u64>,
@@ -210,7 +208,7 @@ impl Default for ActivationCoordinatorHealth {
     fn default() -> Self {
         Self {
             phase: ActivationPhase::Idle,
-            environment: None,
+            profile: None,
             activation_id: None,
             expected_generation: None,
             candidate_generation: None,
@@ -251,7 +249,7 @@ pub trait RuntimeCandidateQueryPort: Send + Sync + fmt::Debug {
     /// `RegisteredSessionLease` set. Empty results are the fail-closed signal.
     fn freeze(
         &self,
-        environment: &str,
+        profile: &str,
     ) -> Result<Vec<RegisteredSessionLease>, ActivationCandidateError>;
 
     /// Re-checks session epoch, registration revision, exact tuple and
@@ -355,11 +353,11 @@ impl BlockingLoaderPort for BlockingLoaderCandidatePort {
         let strict_loader = Arc::clone(&self.strict_loader);
         let actor_projection = self.actor_projection.clone();
         let refs = refs.clone();
-        let environment = refs.environment.clone();
+        let profile = refs.profile.clone();
         self.loader
             .run(move || {
                 strict_loader.load_epoch(
-                    &environment,
+                    &profile,
                     refs.generation,
                     &refs.assembly,
                     &refs.config_snapshot,
@@ -409,12 +407,12 @@ impl RoutingCandidateQueryPortAdapter {
     fn freeze_with_epoch(
         &self,
         epoch: &Arc<RoutingEpoch>,
-        environment: &str,
+        profile: &str,
     ) -> Result<Vec<RegisteredSessionLease>, ActivationCandidateError> {
-        if epoch.environment() != environment {
-            return Err(ActivationCandidateError::EnvironmentMismatch {
-                expected: environment.to_string(),
-                actual: epoch.environment().to_string(),
+        if epoch.profile() != profile {
+            return Err(ActivationCandidateError::ProfileMismatch {
+                expected: profile.to_string(),
+                actual: epoch.profile().to_string(),
             });
         }
         let view = self.view_source.view();
@@ -447,15 +445,15 @@ impl RoutingCandidateQueryPortAdapter {
 impl RuntimeCandidateQueryPort for RoutingCandidateQueryPortAdapter {
     fn freeze(
         &self,
-        environment: &str,
+        profile: &str,
     ) -> Result<Vec<RegisteredSessionLease>, ActivationCandidateError> {
         let epoch =
             self.epoch_store
                 .capture()
                 .ok_or_else(|| ActivationCandidateError::NoEpoch {
-                    environment: environment.to_string(),
+                    profile: profile.to_string(),
                 })?;
-        self.freeze_with_epoch(&epoch, environment)
+        self.freeze_with_epoch(&epoch, profile)
     }
 
     fn revalidate(
@@ -465,7 +463,7 @@ impl RuntimeCandidateQueryPort for RoutingCandidateQueryPortAdapter {
     ) -> ActivationRevalidateOutcome {
         let current = match self.epoch_store.capture() {
             Some(epoch) => self
-                .freeze_with_epoch(&epoch, epoch.environment())
+                .freeze_with_epoch(&epoch, epoch.profile())
                 .map(|leases| {
                     leases
                         .into_iter()
@@ -473,7 +471,7 @@ impl RuntimeCandidateQueryPort for RoutingCandidateQueryPortAdapter {
                         .collect::<Vec<_>>()
                 }),
             None => Err(ActivationCandidateError::NoEpoch {
-                environment: "<unknown>".to_string(),
+                profile: "<unknown>".to_string(),
             }),
         };
         let current = match current {
@@ -588,7 +586,7 @@ struct StagedSession {
 
 /// Authoritative per-transaction state (owned by the actor task only).
 struct TransactionState {
-    environment: String,
+    profile: String,
     activation_id: String,
     expected_generation: u64,
     candidate_generation: u64,
@@ -610,7 +608,7 @@ impl fmt::Debug for TransactionState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TransactionState")
-            .field("environment", &self.environment)
+            .field("profile", &self.profile)
             .field("activation_id", &self.activation_id)
             .field("expected_generation", &self.expected_generation)
             .field("candidate_generation", &self.candidate_generation)
@@ -710,7 +708,7 @@ impl Drop for ActivationCoordinatorHandle {
     }
 }
 
-/// Task point (one coordinator per environment; the durable pending slot is
+/// Task point (one coordinator per profile; the durable pending slot is
 /// the single slot).
 pub struct ActivationCoordinator;
 
@@ -764,12 +762,12 @@ impl ActivationCoordinatorHandle {
         self.send(Event::StartLive(request))
     }
 
-    /// Begins cold recovery for one environment (plan §4.2): committed epoch
+    /// Begins cold recovery for one profile (plan §4.2): committed epoch
     /// is published first, then a durable pending (if any) is installed as a
     /// recovery transaction.
-    pub fn start_recovery(&self, environment: impl Into<String>) -> Result<(), CoordinatorError> {
+    pub fn start_recovery(&self, profile: impl Into<String>) -> Result<(), CoordinatorError> {
         self.check_can_begin()?;
-        self.send(Event::StartRecovery(environment.into()))
+        self.send(Event::StartRecovery(profile.into()))
     }
 
     /// Delivers a `Prepared`/`Reject` ACK from a Runtime session. Stale/new
@@ -983,7 +981,7 @@ impl CoordinatorActor {
     async fn process(&mut self, event: Event) {
         match event {
             Event::StartLive(request) => self.on_start_live(request).await,
-            Event::StartRecovery(environment) => self.on_start_recovery(environment).await,
+            Event::StartRecovery(profile) => self.on_start_recovery(profile).await,
             Event::Ack { source, control } => self.on_ack(&source, &control).await,
             Event::Disconnect(session) => self.on_disconnect(&session).await,
             Event::Replacement {
@@ -1004,7 +1002,7 @@ impl CoordinatorActor {
         }
         self.reset_counters();
         self.set_phase(ActivationPhase::Freezing);
-        let state = match self.ports.repository.read(&request.environment).await {
+        let state = match self.ports.repository.read(&request.profile).await {
             Ok(state) => state,
             Err(error) => {
                 self.fail(format!("durable activation state read failed: {error}"));
@@ -1026,7 +1024,7 @@ impl CoordinatorActor {
             }
         };
         let refs = CandidateEpochRefs {
-            environment: request.environment.clone(),
+            profile: request.profile.clone(),
             generation: candidate_generation,
             assembly: request.assembly.clone(),
             config_snapshot: request.config_snapshot.clone(),
@@ -1038,7 +1036,7 @@ impl CoordinatorActor {
                 return;
             }
         };
-        let leases = match self.ports.candidates.freeze(&request.environment) {
+        let leases = match self.ports.candidates.freeze(&request.profile) {
             Ok(leases) => leases,
             Err(error) => {
                 self.fail(format!("candidate freeze failed: {error}"));
@@ -1051,9 +1049,7 @@ impl CoordinatorActor {
         }
         for lease in &leases {
             let tuple = &lease.exact_registered_tuple;
-            if tuple.environment != request.environment
-                || tuple.generation != state.committed.generation
-            {
+            if tuple.profile != request.profile || tuple.generation != state.committed.generation {
                 self.fail(
                     "candidate lease tuple does not match the durable committed epoch".to_string(),
                 );
@@ -1085,7 +1081,7 @@ impl CoordinatorActor {
             .map(|binding| binding.replica_id.clone())
             .collect::<BTreeSet<_>>();
         let prepare_input = PrepareInput {
-            environment: request.environment.clone(),
+            profile: request.profile.clone(),
             activation_id: request.activation_id.clone(),
             expected_generation: request.expected_generation,
             candidate_generation,
@@ -1109,7 +1105,7 @@ impl CoordinatorActor {
             return;
         }
         self.tx = Some(TransactionState {
-            environment: request.environment.clone(),
+            profile: request.profile.clone(),
             activation_id: request.activation_id.clone(),
             expected_generation: request.expected_generation,
             candidate_generation,
@@ -1132,13 +1128,13 @@ impl CoordinatorActor {
         self.set_phase(ActivationPhase::Prepared);
     }
 
-    async fn on_start_recovery(&mut self, environment: String) {
+    async fn on_start_recovery(&mut self, profile: String) {
         if !self.can_begin() {
             return;
         }
         self.reset_counters();
         self.set_phase(ActivationPhase::Freezing);
-        let state = match self.ports.repository.read(&environment).await {
+        let state = match self.ports.repository.read(&profile).await {
             Ok(state) => state,
             Err(error) => {
                 self.fail(format!("durable activation state read failed: {error}"));
@@ -1172,7 +1168,7 @@ impl CoordinatorActor {
                 // abort; the committed epoch stays published.
                 self.fail(format!("recovery candidate load failed: {error}"));
                 let input = AbortInput {
-                    environment: environment.clone(),
+                    profile: profile.clone(),
                     activation_id: recovery.activation_id.clone(),
                     expected_generation: recovery.expected_generation,
                 };
@@ -1189,7 +1185,7 @@ impl CoordinatorActor {
         };
         let expected_replica_ids = recovery.expected_replica_ids.clone();
         self.tx = Some(TransactionState {
-            environment: recovery.environment.clone(),
+            profile: recovery.profile.clone(),
             activation_id: recovery.activation_id.clone(),
             expected_generation: recovery.expected_generation,
             candidate_generation: recovery.candidate_generation,
@@ -1464,14 +1460,14 @@ impl CoordinatorActor {
     }
 
     async fn reconcile_after_durable_failure(&mut self) {
-        let environment = match self.tx.as_ref() {
-            Some(tx) => tx.environment.clone(),
+        let profile = match self.tx.as_ref() {
+            Some(tx) => tx.profile.clone(),
             None => {
                 self.fail("durable reconcile without a transaction".to_string());
                 return;
             }
         };
-        match self.ports.repository.read(&environment).await {
+        match self.ports.repository.read(&profile).await {
             Ok(state) => {
                 let Some(tx) = self.tx.as_ref() else {
                     return;
@@ -1569,7 +1565,7 @@ impl CoordinatorActor {
     fn prepare_control(&self, binding: &ActivationParticipantBinding) -> AssemblyActivationControl {
         let tx = self.tx.as_ref().expect("transaction exists");
         AssemblyActivationControl::Prepare {
-            environment: tx.environment.clone(),
+            profile: tx.profile.clone(),
             activation_id: tx.activation_id.clone(),
             expected_generation: tx.expected_generation,
             candidate_generation: tx.candidate_generation,
@@ -1583,7 +1579,7 @@ impl CoordinatorActor {
     fn commit_control(&self, binding: &ActivationParticipantBinding) -> AssemblyActivationControl {
         let tx = self.tx.as_ref().expect("transaction exists");
         AssemblyActivationControl::Commit {
-            environment: tx.environment.clone(),
+            profile: tx.profile.clone(),
             activation_id: tx.activation_id.clone(),
             expected_generation: tx.expected_generation,
             candidate_generation: tx.candidate_generation,
@@ -1597,7 +1593,7 @@ impl CoordinatorActor {
     fn abort_control(&self, binding: &ActivationParticipantBinding) -> AssemblyActivationControl {
         let tx = self.tx.as_ref().expect("transaction exists");
         AssemblyActivationControl::Abort {
-            environment: tx.environment.clone(),
+            profile: tx.profile.clone(),
             activation_id: tx.activation_id.clone(),
             expected_generation: tx.expected_generation,
             candidate_generation: tx.candidate_generation,
@@ -1666,7 +1662,7 @@ impl CoordinatorActor {
             ..ActivationCoordinatorHealth::default()
         };
         if let Some(tx) = &self.tx {
-            health.environment = Some(tx.environment.clone());
+            health.profile = Some(tx.profile.clone());
             health.activation_id = Some(tx.activation_id.clone());
             health.expected_generation = Some(tx.expected_generation);
             health.candidate_generation = Some(tx.candidate_generation);
@@ -1701,7 +1697,7 @@ impl CoordinatorActor {
 
 fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState) -> bool {
     let (
-        environment,
+        profile,
         activation_id,
         expected_generation,
         candidate_generation,
@@ -1709,7 +1705,7 @@ fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState
         config_snapshot,
     ) = match control {
         AssemblyActivationControl::Prepared {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -1718,7 +1714,7 @@ fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState
             ..
         }
         | AssemblyActivationControl::Reject {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -1726,7 +1722,7 @@ fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState
             config_snapshot,
             ..
         } => (
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -1735,7 +1731,7 @@ fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState
         ),
         _ => return false,
     };
-    *environment == tx.environment
+    *profile == tx.profile
         && *activation_id == tx.activation_id
         && *expected_generation == tx.expected_generation
         && *candidate_generation == tx.candidate_generation
@@ -1745,7 +1741,7 @@ fn control_matches_tx(control: &AssemblyActivationControl, tx: &TransactionState
 
 fn commit_input(tx: &TransactionState) -> CommitInput {
     CommitInput {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,
@@ -1762,7 +1758,7 @@ fn commit_input(tx: &TransactionState) -> CommitInput {
 
 fn abort_input(tx: &TransactionState) -> AbortInput {
     AbortInput {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
     }

@@ -80,7 +80,7 @@ pub fn scenario_files() -> Vec<(&'static str, &'static str)> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EpochFixture {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly_identity: String,
     pub config_snapshot_id: String,
@@ -105,7 +105,7 @@ pub struct QueryFixture {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TupleFixture {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: String,
     pub config_snapshot: String,
@@ -199,7 +199,7 @@ pub fn build_epoch(fixture: &EpochFixture) -> Arc<RoutingEpoch> {
         gateway_ingress: Vec::new(),
     };
     let snapshot = RuntimeConfigSnapshot::new(
-        fixture.environment.clone(),
+        fixture.profile.clone(),
         snapshot_ref(&fixture.config_snapshot_id),
         Vec::new(),
     )
@@ -212,7 +212,7 @@ pub fn build_epoch(fixture: &EpochFixture) -> Arc<RoutingEpoch> {
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
     Arc::new(
         RoutingEpoch::new(
-            fixture.environment.clone(),
+            fixture.profile.clone(),
             fixture.generation,
             Arc::new(assembly),
             Arc::new(snapshot),
@@ -224,7 +224,7 @@ pub fn build_epoch(fixture: &EpochFixture) -> Arc<RoutingEpoch> {
 
 pub fn tuple_from_fixture(tuple: &TupleFixture) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: tuple.environment.clone(),
+        profile: tuple.profile.clone(),
         generation: tuple.generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(tuple.assembly.clone()),
@@ -302,7 +302,7 @@ pub fn expected_counters(fixture: &ScenarioFixture) -> RoutingQueryCounters {
     };
     for session in &fixture.sessions {
         let tuple_matches = session.tuple.as_ref().is_some_and(|tuple| {
-            tuple.environment == fixture.epoch.environment
+            tuple.profile == fixture.epoch.profile
                 && tuple.generation == fixture.epoch.generation
                 && tuple.assembly == fixture.epoch.assembly_identity
                 && tuple.config_snapshot == fixture.epoch.config_snapshot_id

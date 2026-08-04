@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use skiff_artifact_identity::{runtime_assembly_ref, ArtifactRelativePath};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -79,12 +79,12 @@ fn assembly_ref_hex(hex: &str) -> skiff_artifact_model::RuntimeAssemblyRef {
 }
 
 fn state_for(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly: skiff_artifact_model::RuntimeAssemblyRef,
-) -> skiff_deployment::activation_state::EnvironmentActivationState {
-    skiff_deployment::activation_state::EnvironmentActivationState::initial(
-        environment,
+) -> skiff_deployment::activation_state::ProfileActivationState {
+    skiff_deployment::activation_state::ProfileActivationState::initial(
+        profile,
         generation,
         assembly,
         snapshot_ref(),
@@ -98,12 +98,12 @@ struct RealChain {
     assembly_ref: skiff_artifact_model::RuntimeAssemblyRef,
 }
 
-fn materialize(environment: &str) -> RealChain {
+fn materialize(profile: &str) -> RealChain {
     let root = TestRoot::new();
     let snapshot_store =
         RuntimeConfigSnapshotStore::create(root.path()).expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -159,15 +159,12 @@ fn default_pool() -> Arc<BlockingLoader> {
 }
 
 struct TestCannedRepository {
-    read_result: std::sync::Mutex<Result<EnvironmentActivationState, RepositoryError>>,
+    read_result: std::sync::Mutex<Result<ProfileActivationState, RepositoryError>>,
 }
 
 #[async_trait]
 impl ActivationStateRepository for TestCannedRepository {
-    async fn read(
-        &self,
-        _environment: &str,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, _profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         self.read_result
             .lock()
             .expect("canned repository lock")
@@ -176,29 +173,23 @@ impl ActivationStateRepository for TestCannedRepository {
 
     async fn initialize(
         &self,
-        _state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        _state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
     async fn prepare(
         &self,
         _input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
-    async fn commit(
-        &self,
-        _input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn commit(&self, _input: CommitInput) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
-    async fn abort(
-        &self,
-        _input: AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn abort(&self, _input: AbortInput) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
@@ -244,7 +235,7 @@ mod tests {
             outcome.pending.is_none(),
             "committed-only state has no pending"
         );
-        assert_eq!(epoch.environment(), "prod");
+        assert_eq!(epoch.profile(), "prod");
         assert_eq!(epoch.assembly_generation(), 7);
         assert_eq!(
             epoch.assembly_identity(),
@@ -272,7 +263,7 @@ mod tests {
             .await
             .expect("initialize");
         repo.prepare(skiff_router::activation::PrepareInput {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "act-1".to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -330,7 +321,7 @@ mod tests {
         let chain = materialize("prod");
         let canned = TestCannedRepository {
             read_result: std::sync::Mutex::new(Err(RepositoryError::InvalidRecord {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 message: "schemaVersion mismatch".to_string(),
             })),
         };

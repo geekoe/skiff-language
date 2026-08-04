@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_compiler::authoring::{
-    build_authoring_object, project_runtime_assembly, AuthoringObject,
+    build_authoring_object, project_runtime_assembly, seed_official_std_package, AuthoringObject,
 };
 use skiff_compiler::CompilerPlatformSources;
 
 const USAGE: &str = "usage:
-  skiff-compiler package <build|publish> <root> --artifact-root <dir> [--environment <name>] [--json]
-  skiff-compiler assembly <build|publish> --artifact-root <dir> --environment <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]";
+  skiff-compiler package <build|publish> <root> --artifact-root <dir> [--profile <name>] [--json]
+  skiff-compiler assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]";
 
 fn main() {
     if let Err(error) = run() {
@@ -29,6 +29,11 @@ fn run_with_args(
         println!("{USAGE}");
         return Ok(());
     }
+    if object == "std-seed" {
+        // Internal tool action (absent from public help): canonical std seed
+        // used by `skiff stack init` through the Node authoring library.
+        return run_std_seed_action(args);
+    }
     let object = AuthoringObject::parse(&object)?;
     let action = args.next().ok_or(USAGE)?;
     let publish_pointer = match action.as_str() {
@@ -46,14 +51,11 @@ fn run_with_args(
     }
 }
 
-fn run_package_action(
+fn run_std_seed_action(
     mut args: impl Iterator<Item = String>,
-    publish_pointer: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let root = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut artifact_root = None;
     let mut platform_source_root = None;
-    let mut environment = None;
     let mut json = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -74,11 +76,55 @@ fn run_package_action(
                         .ok_or("--platform-source-root requires a path")?,
                 ));
             }
-            "--environment" => {
-                if environment.is_some() {
-                    return Err("--environment was provided more than once".into());
+            "--json" => json = true,
+            _ => return Err(format!("unknown std-seed option {argument}").into()),
+        }
+    }
+    let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
+    let platform_source_root = platform_source_root.ok_or("--platform-source-root is required")?;
+    let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
+    let receipt = seed_official_std_package(&platform_sources, &artifact_root)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+    } else {
+        println!("{}", serde_json::to_string(&receipt)?);
+    }
+    Ok(())
+}
+
+fn run_package_action(
+    mut args: impl Iterator<Item = String>,
+    publish_pointer: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let root = PathBuf::from(args.next().ok_or(USAGE)?);
+    let mut artifact_root = None;
+    let mut platform_source_root = None;
+    let mut profile = None;
+    let mut json = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--artifact-root" => {
+                if artifact_root.is_some() {
+                    return Err("--artifact-root was provided more than once".into());
                 }
-                environment = Some(args.next().ok_or("--environment requires a name")?);
+                artifact_root = Some(PathBuf::from(
+                    args.next().ok_or("--artifact-root requires a path")?,
+                ));
+            }
+            "--platform-source-root" => {
+                if platform_source_root.is_some() {
+                    return Err("--platform-source-root was provided more than once".into());
+                }
+                platform_source_root = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--platform-source-root requires a path")?,
+                ));
+            }
+            "--profile" => {
+                if profile.is_some() {
+                    return Err("--profile was provided more than once".into());
+                }
+                profile = Some(args.next().ok_or("--profile requires a name")?);
             }
             "--json" => json = true,
             _ => return Err(format!("unknown option {argument}\n{USAGE}").into()),
@@ -92,7 +138,7 @@ fn run_package_action(
         AuthoringObject::Package,
         &root,
         &artifact_root,
-        environment.as_deref().unwrap_or("dev"),
+        profile.as_deref().unwrap_or("dev"),
         publish_pointer,
     )?;
     print_receipt(&receipt, json)
@@ -103,7 +149,7 @@ fn run_assembly_action(
     publish_pointer: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut artifact_root = None;
-    let mut environment = None;
+    let mut profile = None;
     let mut root_deployments = Vec::new();
     let mut json = false;
     while let Some(argument) = args.next() {
@@ -116,11 +162,11 @@ fn run_assembly_action(
                     args.next().ok_or("--artifact-root requires a path")?,
                 ));
             }
-            "--environment" => {
-                if environment.is_some() {
-                    return Err("--environment was provided more than once".into());
+            "--profile" => {
+                if profile.is_some() {
+                    return Err("--profile was provided more than once".into());
                 }
-                environment = Some(args.next().ok_or("--environment requires a name")?);
+                profile = Some(args.next().ok_or("--profile requires a name")?);
             }
             "--root-deployment" => {
                 let source = args
@@ -139,13 +185,9 @@ fn run_assembly_action(
         }
     }
     let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
-    let environment = environment.ok_or("--environment is required for assembly projection")?;
-    let receipt = project_runtime_assembly(
-        &artifact_root,
-        &environment,
-        &root_deployments,
-        publish_pointer,
-    )?;
+    let profile = profile.ok_or("--profile is required for assembly projection")?;
+    let receipt =
+        project_runtime_assembly(&artifact_root, &profile, &root_deployments, publish_pointer)?;
     print_receipt(&receipt, json)
 }
 

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value;
 use skiff_artifact_identity::runtime_assembly_ref;
-use skiff_deployment::activation_state::{EnvironmentActivationState, PrepareInput};
+use skiff_deployment::activation_state::{PrepareInput, ProfileActivationState};
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::storage::{CanonicalArtifactStore, CommittedActivation};
 use skiff_router::activation::{
@@ -82,9 +82,9 @@ fn committed(
     }
 }
 
-fn state_for(environment: &str, committed: CommittedActivation) -> EnvironmentActivationState {
-    EnvironmentActivationState::initial(
-        environment,
+fn state_for(profile: &str, committed: CommittedActivation) -> ProfileActivationState {
+    ProfileActivationState::initial(
+        profile,
         committed.generation,
         committed.assembly,
         committed.config_snapshot,
@@ -130,15 +130,12 @@ fn corpus() -> Value {
 
 /// Test double: canned `read` result for malformed/transient/closed cases.
 struct CannedRepository {
-    read_result: Mutex<Result<EnvironmentActivationState, RepositoryError>>,
+    read_result: Mutex<Result<ProfileActivationState, RepositoryError>>,
 }
 
 #[async_trait]
 impl ActivationStateRepository for CannedRepository {
-    async fn read(
-        &self,
-        _environment: &str,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, _profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         self.read_result
             .lock()
             .expect("canned repository lock")
@@ -147,29 +144,29 @@ impl ActivationStateRepository for CannedRepository {
 
     async fn initialize(
         &self,
-        _state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        _state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
     async fn prepare(
         &self,
         _input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
     async fn commit(
         &self,
         _input: skiff_router::activation::CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
     async fn abort(
         &self,
         _input: skiff_router::activation::AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
@@ -230,7 +227,7 @@ mod tests {
                         .await
                         .expect("initialize");
                     repo.prepare(PrepareInput {
-                        environment: "prod".to_string(),
+                        profile: "prod".to_string(),
                         activation_id: "act-1".to_string(),
                         expected_generation: 1,
                         candidate_generation: 2,
@@ -245,7 +242,7 @@ mod tests {
                 "missing" => Arc::new(MemoryActivationStateRepository::new()),
                 "malformed" => Arc::new(CannedRepository {
                     read_result: Mutex::new(Err(RepositoryError::InvalidRecord {
-                        environment: "prod".to_string(),
+                        profile: "prod".to_string(),
                         message: "schemaVersion mismatch".to_string(),
                     })),
                 }),
@@ -319,7 +316,7 @@ mod tests {
             .iter()
             .map(|field| field.as_str().expect("field name"))
             .collect::<Vec<_>>();
-        assert!(names.contains(&"environment"));
+        assert!(names.contains(&"profile"));
         assert!(names.contains(&"assemblyGeneration"));
         assert!(names.contains(&"assemblyIdentity"));
         assert!(names.contains(&"configSnapshotId"));
@@ -338,7 +335,7 @@ mod tests {
             .await
             .expect("initialize");
         repo.prepare(PrepareInput {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "act-pending".to_string(),
             expected_generation: 3,
             candidate_generation: 4,

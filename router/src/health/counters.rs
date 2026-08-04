@@ -57,7 +57,7 @@ pub struct ActiveRoutingEpochCounters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveEpochTuple {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly_identity: String,
     pub config_snapshot_id: String,
@@ -301,7 +301,7 @@ pub struct LeaseHealthDto {
 #[serde(rename_all = "camelCase")]
 pub struct ActivationCounters {
     pub phase: String,
-    pub environment: Option<String>,
+    pub profile: Option<String>,
     pub activation_id: Option<String>,
     pub expected_generation: Option<u64>,
     pub candidate_generation: Option<u64>,
@@ -326,7 +326,7 @@ pub struct ActivationCounters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryCounters {
-    pub environment: Option<String>,
+    pub profile: Option<String>,
     pub committed_generation: Option<u64>,
     pub pending_activation_id: Option<String>,
     pub last_outcome: Option<String>,
@@ -457,7 +457,7 @@ impl From<&crate::bootstrap::EpochStoreHealth> for ActiveRoutingEpochCounters {
         Self {
             publish_count: health.publish_count,
             active: health.current.as_ref().map(|current| ActiveEpochTuple {
-                environment: current.environment.clone(),
+                profile: current.profile.clone(),
                 generation: current.assembly_generation,
                 assembly_identity: current.assembly_identity.clone(),
                 config_snapshot_id: current.config_snapshot_id.clone(),
@@ -696,7 +696,7 @@ impl From<&ActivationCoordinatorHealth> for ActivationCounters {
     fn from(health: &ActivationCoordinatorHealth) -> Self {
         Self {
             phase: health.phase.as_str().to_string(),
-            environment: health.environment.clone(),
+            profile: health.profile.clone(),
             activation_id: health.activation_id.clone(),
             expected_generation: health.expected_generation,
             candidate_generation: health.candidate_generation,
@@ -723,7 +723,7 @@ impl From<&ActivationCoordinatorHealth> for ActivationCounters {
 impl Default for RepositoryCounters {
     fn default() -> Self {
         Self {
-            environment: None,
+            profile: None,
             committed_generation: None,
             pending_activation_id: None,
             last_outcome: None,
@@ -753,7 +753,7 @@ impl Default for RepositoryCounters {
 impl From<&ActivationRepositoryHealth> for RepositoryCounters {
     fn from(health: &ActivationRepositoryHealth) -> Self {
         Self {
-            environment: health.environment.clone(),
+            profile: health.profile.clone(),
             committed_generation: health.committed_generation,
             pending_activation_id: health.pending_activation_id.clone(),
             last_outcome: health

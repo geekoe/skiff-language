@@ -115,7 +115,7 @@ mod tests {
                     let header = decode_router_bootstrap_frame(&bytes)
                         .unwrap_or_else(|error| panic!("{name} bootstrap decode: {error}"));
                     assert_eq!(header.envelope_type, ROUTER_BOOTSTRAP_FRAME_TYPE);
-                    assert_eq!(header.activation.environment, "prod");
+                    assert_eq!(header.activation.profile, "prod");
                     assert_eq!(header.activation.generation, 42);
                     assert_eq!(
                     header.activation.assembly.assembly_identity.as_str(),

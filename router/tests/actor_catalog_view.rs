@@ -71,16 +71,14 @@ struct ModelCase {
     reason: Option<String>,
 }
 
-fn snapshot(environment: &str) -> Arc<RuntimeConfigSnapshot> {
+fn snapshot(profile: &str) -> Arc<RuntimeConfigSnapshot> {
     let reference = skiff_artifact_model::RuntimeConfigSnapshotRef {
         snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
             "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
         .expect("snapshot id"),
     };
-    Arc::new(
-        RuntimeConfigSnapshot::new(environment, reference, Vec::new()).expect("snapshot fixture"),
-    )
+    Arc::new(RuntimeConfigSnapshot::new(profile, reference, Vec::new()).expect("snapshot fixture"))
 }
 
 fn epoch_from_projection(projection: ActorRoutingProjection) -> Arc<RoutingEpoch> {

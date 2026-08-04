@@ -94,7 +94,7 @@ fn prepare_control(
     replica_id: &str,
 ) -> AssemblyActivationControl {
     AssemblyActivationControl::Prepare {
-        environment: "fixture".to_string(),
+        profile: "fixture".to_string(),
         activation_id: activation_id.to_string(),
         expected_generation,
         candidate_generation,
@@ -231,7 +231,7 @@ async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_gener
 
     let abort = match prepare_control {
         AssemblyActivationControl::Prepare {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -240,7 +240,7 @@ async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_gener
             replica_id,
             ..
         } => AssemblyActivationControl::Abort {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,

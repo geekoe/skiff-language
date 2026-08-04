@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
 import {
-  ACTIVATION_LIVE_ENVIRONMENT,
+  ACTIVATION_LIVE_PROFILE,
   ACTIVATION_LIVE_GENERATION,
   ACTIVATION_LIVE_REPLICA_ID,
   authorActivationLiveArtifact,
@@ -56,7 +56,7 @@ try {
     skiffRoot: repoRoot,
     sourceRoot,
     artifactRoot,
-    environment: ACTIVATION_LIVE_ENVIRONMENT,
+    profile: ACTIVATION_LIVE_PROFILE,
   });
 
   console.log('router-live:activation-full-chain: leasing isolated router + relay ports');
@@ -115,7 +115,7 @@ try {
         SKIFF_ACTIVATION_LIVE_MONGO_URL: harness.mongoUrl,
         SKIFF_ACTIVATION_LIVE_DB: DATABASE,
         SKIFF_ACTIVATION_LIVE_ARTIFACT_ROOT: artifactRoot,
-        SKIFF_ACTIVATION_LIVE_ENVIRONMENT: ACTIVATION_LIVE_ENVIRONMENT,
+        SKIFF_ACTIVATION_LIVE_PROFILE: ACTIVATION_LIVE_PROFILE,
         SKIFF_ACTIVATION_LIVE_GENERATION: String(ACTIVATION_LIVE_GENERATION),
         SKIFF_ACTIVATION_LIVE_ASSEMBLY_IDENTITY: identities.committed.assemblyIdentity,
         SKIFF_ACTIVATION_LIVE_CONFIG_SNAPSHOT_ID: identities.committed.configSnapshotId,

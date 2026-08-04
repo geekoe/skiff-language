@@ -524,7 +524,7 @@ struct ConnectionBootstrap {
 fn test_bootstrap_activation(
 ) -> skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader {
     serde_json::from_value(serde_json::json!({
-        "environment": "test",
+        "profile": "test",
         "generation": 0,
         "assembly": {
             "assemblyIdentity": format!(
@@ -835,7 +835,7 @@ async fn dispatch_router_binary_frame_inner(
             }
             let installed = decode_connection_bootstrap(typed, &payload)?;
             host.recover_durable_committed(
-                &installed.activation.environment,
+                &installed.activation.profile,
                 installed.activation.generation,
                 &installed.activation.assembly,
                 &installed.activation.config_snapshot,

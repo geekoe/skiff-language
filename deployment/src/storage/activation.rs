@@ -1,9 +1,9 @@
 use std::{collections::BTreeSet, path::Path};
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use skiff_artifact_identity::EnvironmentActivationStatePath;
+use skiff_artifact_identity::ProfileActivationStatePath;
 use skiff_artifact_model::{
-    validate_activation_environment, validate_activation_generation, validate_activation_token,
+    validate_activation_generation, validate_activation_profile, validate_activation_token,
     validate_runtime_assembly_ref, validate_transition_generations, RuntimeAssemblyRef,
     RuntimeConfigSnapshotRef,
 };
@@ -13,8 +13,7 @@ use super::{
     io::{canonical_bytes, read_locked_bytes, CanonicalArtifactStore},
 };
 
-pub const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION: &str =
-    "skiff-environment-activation-state-v2";
+pub const PROFILE_ACTIVATION_STATE_SCHEMA_VERSION: &str = "skiff-profile-activation-state-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,9 +36,9 @@ pub struct PendingActivation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EnvironmentActivationState {
+pub struct ProfileActivationState {
     pub schema_version: String,
-    pub environment: String,
+    pub profile: String,
     pub committed: CommittedActivation,
     pub pending: Option<PendingActivation>,
 }
@@ -68,9 +67,9 @@ struct RawPendingActivation {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawEnvironmentActivationState {
+struct RawProfileActivationState {
     schema_version: String,
-    environment: String,
+    profile: String,
     committed: RawCommittedActivation,
     pending: RequiredNullable<RawPendingActivation>,
 }
@@ -90,15 +89,15 @@ where
     }
 }
 
-impl<'de> Deserialize<'de> for EnvironmentActivationState {
+impl<'de> Deserialize<'de> for ProfileActivationState {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawEnvironmentActivationState::deserialize(deserializer)?;
+        let raw = RawProfileActivationState::deserialize(deserializer)?;
         let state = Self {
             schema_version: raw.schema_version,
-            environment: raw.environment,
+            profile: raw.profile,
             committed: CommittedActivation {
                 generation: raw.committed.generation,
                 assembly: raw.committed.assembly,
@@ -126,16 +125,16 @@ pub enum ActivationRecoveryAction {
     AbortPending { activation_id: String },
 }
 
-impl EnvironmentActivationState {
+impl ProfileActivationState {
     pub fn initial(
-        environment: impl Into<String>,
+        profile: impl Into<String>,
         generation: u64,
         assembly: RuntimeAssemblyRef,
         config_snapshot: RuntimeConfigSnapshotRef,
     ) -> Self {
         Self {
-            schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-            environment: environment.into(),
+            schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+            profile: profile.into(),
             committed: CommittedActivation {
                 generation,
                 assembly,
@@ -146,12 +145,9 @@ impl EnvironmentActivationState {
     }
 
     pub fn validate(&self) -> StorageResult<()> {
-        map_activation_validation(
-            &self.environment,
-            validate_activation_environment(&self.environment),
-        )?;
-        let path = EnvironmentActivationStatePath::new(&self.environment)?;
-        if self.schema_version != ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION {
+        map_activation_validation(&self.profile, validate_activation_profile(&self.profile))?;
+        let path = ProfileActivationStatePath::new(&self.profile)?;
+        if self.schema_version != PROFILE_ACTIVATION_STATE_SCHEMA_VERSION {
             return invalid(path.as_str(), "activation state schemaVersion mismatch");
         }
         map_activation_validation(
@@ -236,50 +232,47 @@ impl EnvironmentActivationState {
 }
 
 impl CanonicalArtifactStore {
-    pub fn initialize_environment_activation(
+    pub fn initialize_profile_activation(
         &self,
-        state: &EnvironmentActivationState,
+        state: &ProfileActivationState,
     ) -> StorageResult<()> {
         state.validate()?;
         if state.pending.is_some() {
             return invalid(
-                &state.environment,
+                &state.profile,
                 "initial activation state cannot contain pending",
             );
         }
         self.read_runtime_assembly(&state.committed.assembly)?;
-        self.cas_activation_state(&state.environment, None, state)
+        self.cas_activation_state(&state.profile, None, state)
     }
 
-    pub fn read_environment_activation(
-        &self,
-        environment: &str,
-    ) -> StorageResult<EnvironmentActivationState> {
-        let path = EnvironmentActivationStatePath::new(environment)?;
+    pub fn read_profile_activation(&self, profile: &str) -> StorageResult<ProfileActivationState> {
+        let path = ProfileActivationStatePath::new(profile)?;
         let bytes = self.read_bytes(path.as_relative_path())?;
         let host_path = self.root().join(path.as_relative_path().as_path());
         let state = parse_state(&host_path, &bytes)?;
-        if state.environment != environment {
-            return invalid(&host_path, "activation state environment/path mismatch");
+        if state.profile != profile {
+            return invalid(&host_path, "activation state profile/path mismatch");
         }
         self.validate_activation_references(&state)?;
         Ok(state)
     }
 
-    pub fn prepare_environment_activation(
+    pub fn prepare_profile_activation(
         &self,
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
         config_snapshot: RuntimeConfigSnapshotRef,
         participant_replica_ids: Vec<String>,
-    ) -> StorageResult<EnvironmentActivationState> {
+    ) -> StorageResult<ProfileActivationState> {
         self.read_runtime_assembly(&assembly)?;
         let participants = normalized_replica_ids(
             &participant_replica_ids,
-            &EnvironmentActivationStatePath::new(environment)?.to_string(),
+            &ProfileActivationStatePath::new(profile)?.to_string(),
         )?;
         let pending = PendingActivation {
             activation_id: activation_id.to_string(),
@@ -289,10 +282,10 @@ impl CanonicalArtifactStore {
             config_snapshot,
             participant_replica_ids: participants,
         };
-        self.mutate_activation_state(environment, |current| {
+        self.mutate_activation_state(profile, |current| {
             if current.committed.generation != expected_generation {
                 return cas_error(
-                    environment,
+                    profile,
                     format!(
                         "committed generation {} does not equal expected {expected_generation}",
                         current.committed.generation
@@ -301,9 +294,7 @@ impl CanonicalArtifactStore {
             }
             match &current.pending {
                 Some(existing) if existing == &pending => return Ok(current.clone()),
-                Some(_) => {
-                    return cas_error(environment, "a different activation is already pending")
-                }
+                Some(_) => return cas_error(profile, "a different activation is already pending"),
                 None => {}
             }
             let mut next = current.clone();
@@ -313,23 +304,23 @@ impl CanonicalArtifactStore {
         })
     }
 
-    pub fn abort_environment_activation(
+    pub fn abort_profile_activation(
         &self,
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
-    ) -> StorageResult<EnvironmentActivationState> {
-        let path = EnvironmentActivationStatePath::new(environment)?;
+    ) -> StorageResult<ProfileActivationState> {
+        let path = ProfileActivationStatePath::new(profile)?;
         validate_token(activation_id, "activationId", path.as_str())?;
-        self.mutate_activation_state(environment, |current| {
+        self.mutate_activation_state(profile, |current| {
             if current.committed.generation != expected_generation {
-                return cas_error(environment, "abort expected generation is stale");
+                return cas_error(profile, "abort expected generation is stale");
             }
             let Some(pending) = &current.pending else {
                 return Ok(current.clone());
             };
             if pending.activation_id != activation_id {
-                return cas_error(environment, "abort activationId does not match pending");
+                return cas_error(profile, "abort activationId does not match pending");
             }
             let mut next = current.clone();
             next.pending = None;
@@ -337,9 +328,9 @@ impl CanonicalArtifactStore {
         })
     }
 
-    pub fn commit_environment_activation(
+    pub fn commit_profile_activation(
         &self,
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
         candidate_generation: u64,
@@ -347,8 +338,8 @@ impl CanonicalArtifactStore {
         config_snapshot: &RuntimeConfigSnapshotRef,
         connected_replica_ids: &[String],
         prepared_replica_ids: &[String],
-    ) -> StorageResult<EnvironmentActivationState> {
-        let path = EnvironmentActivationStatePath::new(environment)?;
+    ) -> StorageResult<ProfileActivationState> {
+        let path = ProfileActivationStatePath::new(profile)?;
         validate_token(activation_id, "activationId", path.as_str())?;
         let expected_candidate = expected_generation.checked_add(1).ok_or_else(|| {
             EcosystemStorageError::CasMismatch {
@@ -364,7 +355,7 @@ impl CanonicalArtifactStore {
         }
         let connected = normalized_set(connected_replica_ids, "connectedReplicaIds")?;
         let prepared = normalized_set(prepared_replica_ids, "preparedReplicaIds")?;
-        self.mutate_activation_state(environment, |current| {
+        self.mutate_activation_state(profile, |current| {
             if current.pending.is_none()
                 && current.committed.generation == candidate_generation
                 && &current.committed.assembly == assembly
@@ -373,11 +364,11 @@ impl CanonicalArtifactStore {
                 return Ok(current.clone());
             }
             if current.committed.generation != expected_generation {
-                return cas_error(environment, "commit expected generation is stale");
+                return cas_error(profile, "commit expected generation is stale");
             }
             let pending = current.pending.as_ref().ok_or_else(|| {
                 EcosystemStorageError::CasMismatch {
-                    path: environment.into(),
+                    path: profile.into(),
                     message: "commit has no pending activation".to_string(),
                 }
             })?;
@@ -387,7 +378,7 @@ impl CanonicalArtifactStore {
                 || &pending.assembly != assembly
                 || &pending.config_snapshot != config_snapshot
             {
-                return cas_error(environment, "commit tuple does not match pending activation");
+                return cas_error(profile, "commit tuple does not match pending activation");
             }
             let participants = pending
                 .participant_replica_ids
@@ -397,7 +388,7 @@ impl CanonicalArtifactStore {
             if !participants.is_subset(&connected) || participants != prepared
             {
                 return cas_error(
-                    environment,
+                    profile,
                     "commit requires the exact connected and prepared ACK sets for all participants",
                 );
             }
@@ -415,20 +406,20 @@ impl CanonicalArtifactStore {
 
     fn mutate_activation_state(
         &self,
-        environment: &str,
-        mutate: impl FnOnce(&EnvironmentActivationState) -> StorageResult<EnvironmentActivationState>,
-    ) -> StorageResult<EnvironmentActivationState> {
-        let path = EnvironmentActivationStatePath::new(environment)?;
+        profile: &str,
+        mutate: impl FnOnce(&ProfileActivationState) -> StorageResult<ProfileActivationState>,
+    ) -> StorageResult<ProfileActivationState> {
+        let path = ProfileActivationStatePath::new(profile)?;
         self.with_exclusive_pointer_lock(path.as_relative_path(), |destination| {
             let bytes = read_locked_bytes(destination)?.ok_or_else(|| {
                 EcosystemStorageError::CasMismatch {
                     path: destination.to_path_buf(),
-                    message: "environment activation state does not exist".to_string(),
+                    message: "profile activation state does not exist".to_string(),
                 }
             })?;
             let current = parse_state(destination, &bytes)?;
-            if current.environment != environment {
-                return invalid(destination, "activation state environment/path mismatch");
+            if current.profile != profile {
+                return invalid(destination, "activation state profile/path mismatch");
             }
             self.validate_activation_references(&current)?;
             let next = mutate(&current)?;
@@ -443,11 +434,11 @@ impl CanonicalArtifactStore {
 
     fn cas_activation_state(
         &self,
-        environment: &str,
-        expected: Option<&EnvironmentActivationState>,
-        candidate: &EnvironmentActivationState,
+        profile: &str,
+        expected: Option<&ProfileActivationState>,
+        candidate: &ProfileActivationState,
     ) -> StorageResult<()> {
-        let path = EnvironmentActivationStatePath::new(environment)?;
+        let path = ProfileActivationStatePath::new(profile)?;
         self.with_exclusive_pointer_lock(path.as_relative_path(), |destination| {
             let current = read_locked_bytes(destination)?
                 .map(|bytes| parse_state(destination, &bytes))
@@ -462,10 +453,7 @@ impl CanonicalArtifactStore {
         })
     }
 
-    fn validate_activation_references(
-        &self,
-        state: &EnvironmentActivationState,
-    ) -> StorageResult<()> {
+    fn validate_activation_references(&self, state: &ProfileActivationState) -> StorageResult<()> {
         self.read_runtime_assembly(&state.committed.assembly)?;
         if let Some(pending) = &state.pending {
             self.read_runtime_assembly(&pending.assembly)?;
@@ -474,8 +462,8 @@ impl CanonicalArtifactStore {
     }
 }
 
-fn parse_state(path: &Path, bytes: &[u8]) -> StorageResult<EnvironmentActivationState> {
-    let state = serde_json::from_slice::<EnvironmentActivationState>(bytes).map_err(|source| {
+fn parse_state(path: &Path, bytes: &[u8]) -> StorageResult<ProfileActivationState> {
+    let state = serde_json::from_slice::<ProfileActivationState>(bytes).map_err(|source| {
         EcosystemStorageError::Json {
             path: path.to_path_buf(),
             source,

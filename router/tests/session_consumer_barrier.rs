@@ -30,7 +30,6 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
         activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
-        environment: None,
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1,
         http_max_response_bytes: 8_388_608,
@@ -54,7 +53,7 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
 
 fn committed_epoch() -> skiff_router::session::RegisteredAssemblyTuple {
     skiff_router::session::RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation: 42,
         assembly: skiff_artifact_model::RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -253,7 +252,7 @@ fn register_bytes(replica_id: &str) -> Vec<u8> {
         decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &bytes)
             .expect("register decodes");
     let AssemblyActivationControl::Register {
-        environment,
+        profile,
         generation,
         assembly,
         config_snapshot,
@@ -263,7 +262,7 @@ fn register_bytes(replica_id: &str) -> Vec<u8> {
         panic!("expected register");
     };
     let control = AssemblyActivationControl::Register {
-        environment,
+        profile,
         generation,
         assembly,
         config_snapshot,

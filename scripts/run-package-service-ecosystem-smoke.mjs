@@ -11,7 +11,7 @@ import { runPackageServiceSmokeSelfTest } from './lib/package-service-ecosystem-
 const scriptCheckout = await realpath(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
 );
-const environment = 'skiff-cutover';
+const profile = 'skiff-cutover';
 
 const args = parseArgs(process.argv.slice(2));
 const checkout = await realpath(args.checkout ?? scriptCheckout);
@@ -28,7 +28,7 @@ const result = args.selfTest
   : await runPackageServiceI02Combined({
       checkout,
       replicaCount: args.replicas,
-      environment,
+      profile,
     });
 process.stdout.write(`${JSON.stringify(result)}\n`);
 

@@ -32,7 +32,7 @@ import {
 } from './lib/package-service-authoring.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ENVIRONMENT = 'bootstrap-live';
+const PROFILE = 'bootstrap-live';
 const GENERATION = 1;
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
 const ACTOR_ROUTING_PROJECTION_CONTENT =
@@ -75,7 +75,7 @@ try {
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
   });
 
   console.log('router-live:bootstrap: projecting real RuntimeAssembly');
@@ -84,7 +84,7 @@ try {
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
     rootDeployments: [],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -98,8 +98,7 @@ try {
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot: repoRoot,
     artifactRoot,
-    environment: ENVIRONMENT,
-    profile: 'dev',
+    profile: PROFILE,
     assemblyRecord: recordPath,
     sources: [],
   });
@@ -159,7 +158,7 @@ try {
         SKIFF_ROUTER_BOOTSTRAP_LIVE_MONGO_URL: harness.mongoUrl,
         SKIFF_ROUTER_BOOTSTRAP_LIVE_DB: DATABASE,
         SKIFF_ROUTER_BOOTSTRAP_LIVE_ARTIFACT_ROOT: artifactRoot,
-        SKIFF_ROUTER_BOOTSTRAP_LIVE_ENVIRONMENT: ENVIRONMENT,
+        SKIFF_ROUTER_BOOTSTRAP_LIVE_ENVIRONMENT: PROFILE,
         SKIFF_ROUTER_BOOTSTRAP_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_BOOTSTRAP_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_BOOTSTRAP_LIVE_GENERATION: String(GENERATION),

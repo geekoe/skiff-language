@@ -163,27 +163,27 @@ impl HealthAggregator {
         let active = captured_epoch
             .as_ref()
             .map(|epoch| ActiveAssemblyProjection {
-                environment: epoch.environment().to_string(),
+                profile: epoch.profile().to_string(),
                 generation: epoch.assembly_generation(),
                 assembly_identity: epoch.assembly_identity().to_string(),
                 config_snapshot_id: epoch.config_snapshot_id().to_string(),
                 ingress_count: epoch.ingress_projection().len(),
             });
 
-        let environment = active
+        let profile = active
             .as_ref()
-            .map(|active| active.environment.clone())
+            .map(|active| active.profile.clone())
             .or_else(|| {
                 epoch_store_health
                     .current
                     .as_ref()
-                    .map(|current| current.environment.clone())
+                    .map(|current| current.profile.clone())
             });
-        let pending = match environment.as_deref() {
-            Some(environment) => components
+        let pending = match profile.as_deref() {
+            Some(profile) => components
                 .assembly
                 .repository()
-                .read(environment)
+                .read(profile)
                 .await
                 .ok()
                 .and_then(|state| state.pending),

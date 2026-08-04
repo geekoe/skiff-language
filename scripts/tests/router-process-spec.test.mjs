@@ -58,7 +58,7 @@ test('instance paths rejects the retired TS implementation and non-mapping route
 
 function instanceConfigText({ devHome, implementation }) {
   return [
-    'environment: dev',
+    'profile: dev',
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(join(devHome, 'cargo-target'))}`,
     ...(implementation === undefined

@@ -18,7 +18,7 @@ use skiff_artifact_model::{
 };
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::activation_state::{
-    EnvironmentActivationState, ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    ProfileActivationState, PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
@@ -64,7 +64,7 @@ fn session(replica_id: &str, connection_generation: u64) -> RuntimeSessionEpoch 
 }
 
 fn epoch(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_ref: RuntimeAssemblyRef,
     config_snapshot_ref: RuntimeConfigSnapshotRef,
@@ -84,7 +84,7 @@ fn epoch(
         activation_templates: Vec::new(),
         gateway_ingress: Vec::new(),
     };
-    let snapshot = RuntimeConfigSnapshot::new(environment, config_snapshot_ref, Vec::new())
+    let snapshot = RuntimeConfigSnapshot::new(profile, config_snapshot_ref, Vec::new())
         .expect("snapshot fixture");
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -94,7 +94,7 @@ fn epoch(
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
     Arc::new(
         RoutingEpoch::new(
-            environment,
+            profile,
             generation,
             Arc::new(assembly),
             Arc::new(snapshot),
@@ -104,19 +104,19 @@ fn epoch(
     )
 }
 
-fn tuple(environment: &str, generation: u64) -> RegisteredAssemblyTuple {
+fn tuple(profile: &str, generation: u64) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         generation,
         assembly: assembly_ref(ASSEMBLY),
         config_snapshot: config_ref(SNAPSHOT),
     }
 }
 
-fn initial_state(environment: &str, generation: u64) -> EnvironmentActivationState {
-    EnvironmentActivationState {
-        schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-        environment: environment.to_string(),
+fn initial_state(profile: &str, generation: u64) -> ProfileActivationState {
+    ProfileActivationState {
+        schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+        profile: profile.to_string(),
         committed: CommittedActivation {
             generation,
             assembly: assembly_ref(ASSEMBLY),
@@ -126,9 +126,9 @@ fn initial_state(environment: &str, generation: u64) -> EnvironmentActivationSta
     }
 }
 
-fn prepare_input(environment: &str, activation_id: &str, expected: u64) -> PrepareInput {
+fn prepare_input(profile: &str, activation_id: &str, expected: u64) -> PrepareInput {
     PrepareInput {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         activation_id: activation_id.to_string(),
         expected_generation: expected,
         candidate_generation: expected + 1,
@@ -148,7 +148,7 @@ impl BlockingLoaderPort for OkLoader {
         refs: &CandidateEpochRefs,
     ) -> Result<Arc<RoutingEpoch>, CandidateLoadError> {
         Ok(epoch(
-            &refs.environment,
+            &refs.profile,
             refs.generation,
             refs.assembly.clone(),
             refs.config_snapshot.clone(),
@@ -171,7 +171,7 @@ impl BlockingLoaderPort for CandidateFailingLoader {
     ) -> Result<Arc<RoutingEpoch>, CandidateLoadError> {
         if refs.generation == self.committed_generation {
             return Ok(epoch(
-                &refs.environment,
+                &refs.profile,
                 refs.generation,
                 refs.assembly.clone(),
                 refs.config_snapshot.clone(),
@@ -210,7 +210,7 @@ impl ScriptedCandidates {
 impl RuntimeCandidateQueryPort for ScriptedCandidates {
     fn freeze(
         &self,
-        _environment: &str,
+        _profile: &str,
     ) -> Result<Vec<RegisteredSessionLease>, skiff_router::activation::ActivationCandidateError>
     {
         Ok(self.leases.lock().expect("leases lock").clone())
@@ -273,7 +273,7 @@ impl SessionEnqueuePort for RecordingSessions {
 fn prepared_control(prepare: &AssemblyActivationControl) -> AssemblyActivationControl {
     match prepare {
         AssemblyActivationControl::Prepare {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -282,7 +282,7 @@ fn prepared_control(prepare: &AssemblyActivationControl) -> AssemblyActivationCo
             replica_id,
             ..
         } => AssemblyActivationControl::Prepared {
-            environment: environment.clone(),
+            profile: profile.clone(),
             activation_id: activation_id.clone(),
             expected_generation: *expected_generation,
             candidate_generation: *candidate_generation,
@@ -301,23 +301,19 @@ struct Harness {
 }
 
 async fn harness(
-    environment: &str,
+    profile: &str,
     committed_generation: u64,
     loader: Arc<dyn BlockingLoaderPort>,
 ) -> Harness {
     let repo = Arc::new(MemoryActivationStateRepository::new());
-    repo.initialize(&initial_state(environment, committed_generation))
+    repo.initialize(&initial_state(profile, committed_generation))
         .await
         .expect("initialize committed");
-    repo.prepare(prepare_input(
-        environment,
-        "recovery-8",
-        committed_generation,
-    ))
-    .await
-    .expect("prepare pending");
+    repo.prepare(prepare_input(profile, "recovery-8", committed_generation))
+        .await
+        .expect("prepare pending");
     let candidates = Arc::new(ScriptedCandidates::new(
-        tuple(environment, committed_generation),
+        tuple(profile, committed_generation),
         &[("runtime-a", 1)],
     ));
     let sessions = Arc::new(RecordingSessions::default());
@@ -453,12 +449,12 @@ mod tests {
         }
     }
 
-    fn materialize(environment: &str) -> (TestRoot, RuntimeAssemblyRef) {
+    fn materialize(profile: &str) -> (TestRoot, RuntimeAssemblyRef) {
         let root = TestRoot::new();
         std::fs::create_dir_all(root.path()).expect("create artifact root");
         let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
             .expect("create snapshot store");
-        let snapshot = RuntimeConfigSnapshot::new(environment, config_ref(SNAPSHOT), Vec::new())
+        let snapshot = RuntimeConfigSnapshot::new(profile, config_ref(SNAPSHOT), Vec::new())
             .expect("snapshot fixture");
         snapshot_store.publish(&snapshot).expect("publish snapshot");
         let artifact_store =
@@ -485,18 +481,17 @@ mod tests {
         (root, assembly_ref)
     }
 
-    fn config(environment: &str, artifact_root: &std::path::Path) -> RouterConfig {
+    fn config(profile: &str, artifact_root: &std::path::Path) -> RouterConfig {
         RouterConfig {
             activation_prepare_timeout_ms: 1_000,
             artifacts_path: artifact_root.to_path_buf(),
             dev_reload: None,
-            environment: Some(environment.to_string()),
             host: "127.0.0.1".to_string(),
             http_max_request_bytes: 1_048_576,
             http_max_response_bytes: 1_048_576,
             http_port: 0,
             manifests: Vec::new(),
-            profile: "dev".to_string(),
+            profile: profile.to_string(),
             release_mode: Some(true),
             request_timeout_ms: 1_000,
             rewrite: Vec::new(),
@@ -516,9 +511,9 @@ mod tests {
     async fn restart_converges_from_durable_committed_after_exit() {
         let (root, assembly_ref) = materialize("prod");
         let repository = Arc::new(MemoryActivationStateRepository::new());
-        let committed = EnvironmentActivationState {
-            schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-            environment: "prod".to_string(),
+        let committed = ProfileActivationState {
+            schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+            profile: "prod".to_string(),
             committed: CommittedActivation {
                 generation: 7,
                 assembly: assembly_ref.clone(),
@@ -532,7 +527,7 @@ mod tests {
             .expect("seed committed");
         repository
             .prepare(PrepareInput {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 activation_id: "recovery-8".to_string(),
                 expected_generation: 7,
                 candidate_generation: 8,
@@ -564,7 +559,7 @@ mod tests {
         let pending = state.pending.as_ref().expect("pending before commit");
         repository
             .commit(CommitInput {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 activation_id: pending.activation_id.clone(),
                 expected_generation: pending.expected_generation,
                 candidate_generation: pending.candidate_generation,

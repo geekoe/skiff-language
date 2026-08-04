@@ -30,10 +30,8 @@ pub enum BootstrapLoadFailure {
     Snapshot(String),
     #[error("actor routing projection strict read failed: {0}")]
     ActorProjection(String),
-    #[error(
-        "routing epoch environment mismatch: expected {expected}, snapshot environment {actual}"
-    )]
-    EnvironmentMismatch { expected: String, actual: String },
+    #[error("routing epoch profile mismatch: expected {expected}, snapshot profile {actual}")]
+    ProfileMismatch { expected: String, actual: String },
     #[error("routing epoch validation failed: {0}")]
     InvalidEpoch(String),
 }
@@ -103,14 +101,14 @@ impl BootstrapStrictLoader {
     }
 
     /// Strict load order (C-bootstrap §2.3): assembly → snapshot → snapshot
-    /// environment check → actor routing projection/catalog → epoch.
+    /// profile check → actor routing projection/catalog → epoch.
     ///
     /// `actor_projection` is the A3 typed record ref (canonical derivation is
     /// the A1/integration alignment seam; the reader/loader chain never
     /// guesses paths).
     pub fn load_epoch(
         &self,
-        environment: &str,
+        profile: &str,
         generation: u64,
         assembly_ref: &skiff_artifact_model::RuntimeAssemblyRef,
         snapshot_ref: &skiff_artifact_model::RuntimeConfigSnapshotRef,
@@ -124,10 +122,10 @@ impl BootstrapStrictLoader {
             .snapshot_store
             .read(snapshot_ref)
             .map_err(|error| BootstrapLoadFailure::Snapshot(error.to_string()))?;
-        if snapshot.environment() != environment {
-            return Err(BootstrapLoadFailure::EnvironmentMismatch {
-                expected: environment.to_string(),
-                actual: snapshot.environment().to_string(),
+        if snapshot.profile() != profile {
+            return Err(BootstrapLoadFailure::ProfileMismatch {
+                expected: profile.to_string(),
+                actual: snapshot.profile().to_string(),
             });
         }
         let projection = self
@@ -135,13 +133,7 @@ impl BootstrapStrictLoader {
             .load(actor_projection)
             .map_err(BootstrapLoadFailure::from_actor_projection)?;
         let catalog = Arc::new(ActorRoutingCatalog::from_projection(projection));
-        let epoch = RoutingEpoch::new(
-            environment,
-            generation,
-            assembly,
-            Arc::new(snapshot),
-            catalog,
-        )?;
+        let epoch = RoutingEpoch::new(profile, generation, assembly, Arc::new(snapshot), catalog)?;
         Ok(Arc::new(epoch))
     }
 }

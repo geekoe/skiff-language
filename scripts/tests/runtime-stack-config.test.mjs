@@ -18,7 +18,6 @@ const execFileAsync = promisify(execFile);
 const routerConfig = {
   profile: 'dev',
   host: '127.0.0.1',
-  environment: 'f04-host-test',
   artifactsPath: '/tmp/skiff/artifacts',
   devReload: true,
   releaseMode: false,
@@ -34,14 +33,14 @@ const routerConfig = {
 const runtimeConfig = {
   routerUrl: 'ws://127.0.0.1:4101/runtime',
   runtimeHome: '/tmp/skiff/runtime-home',
-  environment: 'f10-runtime-test',
 };
 
-test('router config renders an explicit environment', () => {
+test('router config renders an explicit profile and no environment', () => {
   const rendered = renderRouterConfig(routerConfig);
 
-  assert.match(rendered, /^environment: "f04-host-test"$/m);
-  assert.equal(rendered.match(/^environment:/gm)?.length, 1);
+  assert.match(rendered, /^profile: dev$/m);
+  assert.equal(rendered.match(/^profile:/gm)?.length, 1);
+  assert.doesNotMatch(rendered, /^environment:/m);
   assert.doesNotMatch(rendered, /^ecosystemStoreCliPath:/m);
   assert.match(rendered, /^artifactsPath: "\/tmp\/skiff\/artifacts"$/m);
   assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
@@ -104,15 +103,15 @@ test('router config requires explicit positive safe HTTP byte ceilings', () => {
   }
 });
 
-test('router config fails closed when environment is omitted or empty', () => {
-  const { environment: _environment, ...withoutEnvironment } = routerConfig;
+test('router config fails closed when profile is omitted or empty', () => {
+  const { profile: _profile, ...withoutProfile } = routerConfig;
   assert.throws(
-    () => renderRouterConfig(withoutEnvironment),
-    /router environment is required/,
+    () => renderRouterConfig(withoutProfile),
+    /router profile is required/,
   );
   assert.throws(
-    () => renderRouterConfig({ ...routerConfig, environment: '' }),
-    /router environment is required/,
+    () => renderRouterConfig({ ...routerConfig, profile: '' }),
+    /router profile is required/,
   );
 });
 
@@ -125,8 +124,8 @@ test('router config fails closed when the retired ecosystemStoreCliPath is still
 
 test('router config rejects invalid profile, host, ports, and runtime path', () => {
   assert.throws(
-    () => renderRouterConfig({ ...routerConfig, profile: 'prod-us' }),
-    /router profile must match \[A-Za-z_\]\[A-Za-z0-9_\]\*/,
+    () => renderRouterConfig({ ...routerConfig, profile: '..' }),
+    /router profile must be a canonical ASCII token/,
   );
   assert.throws(
     () => renderRouterConfig({ ...routerConfig, host: '   ' }),
@@ -146,11 +145,11 @@ test('router config rejects invalid profile, host, ports, and runtime path', () 
   );
 });
 
-test('router config rejects invalid environment tokens', () => {
-  for (const environment of ['bad env!', '..', 'a'.repeat(201)]) {
+test('router config rejects invalid profile tokens', () => {
+  for (const profile of ['bad env!', '..', 'a'.repeat(201)]) {
     assert.throws(
-      () => renderRouterConfig({ ...routerConfig, environment }),
-      /router environment must be a canonical ASCII token/,
+      () => renderRouterConfig({ ...routerConfig, profile }),
+      /router profile must be a canonical ASCII token/,
     );
   }
 });
@@ -207,7 +206,6 @@ test('router config renderer emits only the frozen schema keys', async () => {
       'activation',
       'artifactsPath',
       'devReload',
-      'environment',
       'host',
       'http',
       'profile',
@@ -255,34 +253,13 @@ test('router config fails closed when artifact path or Mongo URL is omitted', ()
   );
 });
 
-test('runtime config renders one exact environment without deployment bootstrap ownership', () => {
+test('runtime config renders local facts without any activation identifier', () => {
   const rendered = renderRuntimeConfig(runtimeConfig);
 
-  assert.match(rendered, /^environment: "f10-runtime-test"$/m);
-  assert.equal(rendered.match(/^environment:/gm)?.length, 1);
+  assert.doesNotMatch(rendered, /^(?:profile|environment):/m);
   assert.doesNotMatch(rendered, /^artifactRoots?:/m);
   assert.doesNotMatch(rendered, /mongoUrl/);
   assert.doesNotMatch(rendered, /maxConcurrency|idleTimeoutMs/);
-});
-
-test('runtime config fails closed on missing or empty environment', () => {
-  const { environment: _environment, ...withoutEnvironment } = runtimeConfig;
-  assert.throws(
-    () => renderRuntimeConfig(withoutEnvironment),
-    /runtime environment is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, environment: '' }),
-    /runtime environment is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, environment: null }),
-    /runtime environment is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, environment: '   ' }),
-    /runtime environment is required/,
-  );
 });
 
 test('local dev config writes bootstrap ownership only to router', async () => {
@@ -305,10 +282,12 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     const rendered = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     const router = await readFile(join(devHome, 'router.yml'), 'utf8');
 
-    assert.match(rendered, /^environment: "dev"$/m);
+    assert.doesNotMatch(rendered, /^(?:profile|environment):/m);
     assert.doesNotMatch(rendered, /^artifactRoots?:/m);
     assert.doesNotMatch(rendered, /mongoUrl/);
     assert.doesNotMatch(rendered, /maxConcurrency|idleTimeoutMs/);
+    assert.match(router, /^profile: dev$/m);
+    assert.doesNotMatch(router, /^environment:/m);
     assert.match(router, new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
     assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
     assert.match(router, /^  maxRequestBytes: 67108864$/m);

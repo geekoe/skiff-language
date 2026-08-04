@@ -19,7 +19,7 @@ use skiff_artifact_model::{
     ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_deployment::activation_state::{
-    EnvironmentActivationState, ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    ProfileActivationState, PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -95,7 +95,7 @@ fn deployment() -> ServiceDeploymentRef {
 }
 
 fn epoch(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_ref: RuntimeAssemblyRef,
     config_snapshot_ref: RuntimeConfigSnapshotRef,
@@ -116,7 +116,7 @@ fn epoch(
         activation_templates: Vec::new(),
         gateway_ingress: Vec::new(),
     };
-    let snapshot = RuntimeConfigSnapshot::new(environment, config_snapshot_ref, Vec::new())
+    let snapshot = RuntimeConfigSnapshot::new(profile, config_snapshot_ref, Vec::new())
         .expect("snapshot fixture");
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -126,7 +126,7 @@ fn epoch(
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
     Arc::new(
         RoutingEpoch::new(
-            environment,
+            profile,
             generation,
             Arc::new(assembly),
             Arc::new(snapshot),
@@ -136,9 +136,9 @@ fn epoch(
     )
 }
 
-fn tuple(environment: &str, generation: u64) -> RegisteredAssemblyTuple {
+fn tuple(profile: &str, generation: u64) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         generation,
         assembly: assembly_ref(ASSEMBLY),
         config_snapshot: config_ref(SNAPSHOT),
@@ -152,10 +152,10 @@ fn full_capabilities() -> DispatchCapabilities {
     }
 }
 
-fn initial_state(environment: &str, generation: u64) -> EnvironmentActivationState {
-    EnvironmentActivationState {
-        schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-        environment: environment.to_string(),
+fn initial_state(profile: &str, generation: u64) -> ProfileActivationState {
+    ProfileActivationState {
+        schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+        profile: profile.to_string(),
         committed: CommittedActivation {
             generation,
             assembly: assembly_ref(ASSEMBLY),
@@ -166,13 +166,13 @@ fn initial_state(environment: &str, generation: u64) -> EnvironmentActivationSta
 }
 
 fn request(
-    environment: &str,
+    profile: &str,
     activation_id: &str,
     expected_generation: u64,
 ) -> AssemblyActivationRequest {
     AssemblyActivationRequest {
         schema_version: ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION.to_string(),
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         activation_id: activation_id.to_string(),
         expected_generation,
         assembly: assembly_ref(ASSEMBLY),
@@ -345,7 +345,7 @@ mod tests {
     }
 
     fn materialize_strict_loader(
-        environment: &str,
+        profile: &str,
     ) -> (
         TestRoot,
         Arc<BootstrapStrictLoader>,
@@ -355,7 +355,7 @@ mod tests {
         let snapshot_store =
             skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(root.path())
                 .expect("create snapshot store");
-        let snapshot = RuntimeConfigSnapshot::new(environment, config_ref(SNAPSHOT), Vec::new())
+        let snapshot = RuntimeConfigSnapshot::new(profile, config_ref(SNAPSHOT), Vec::new())
             .expect("snapshot fixture");
         snapshot_store.publish(&snapshot).expect("publish snapshot");
         let artifact_store =
@@ -394,7 +394,7 @@ mod tests {
         let pool = Arc::new(BlockingLoader::new(BlockingLoaderOptions::default()));
         let port = BlockingLoaderCandidatePort::new(pool, strict_loader, actor_ref);
         let refs = CandidateEpochRefs {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 8,
             assembly: skiff_artifact_identity::runtime_assembly_ref(
                 &skiff_deployment::fixtures::empty_runtime_assembly_fixture()
@@ -404,7 +404,7 @@ mod tests {
             config_snapshot: config_ref(SNAPSHOT),
         };
         let epoch = port.load_candidate(&refs).await.expect("load candidate");
-        assert_eq!(epoch.environment(), "prod");
+        assert_eq!(epoch.profile(), "prod");
         assert_eq!(epoch.assembly_generation(), 8);
         assert_eq!(epoch.config_snapshot_id(), SNAPSHOT);
     }
@@ -419,7 +419,7 @@ mod tests {
         }));
         let port = BlockingLoaderCandidatePort::new(Arc::clone(&pool), strict_loader, actor_ref);
         let refs = CandidateEpochRefs {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 8,
             assembly: skiff_artifact_model::RuntimeAssemblyRef {
                 assembly_identity: AssemblyIdentity::new(ASSEMBLY),
@@ -461,7 +461,7 @@ mod tests {
             refs: &CandidateEpochRefs,
         ) -> Result<Arc<RoutingEpoch>, CandidateLoadError> {
             Ok(epoch(
-                &refs.environment,
+                &refs.profile,
                 refs.generation,
                 refs.assembly.clone(),
                 refs.config_snapshot.clone(),
@@ -507,7 +507,7 @@ mod tests {
     impl RuntimeCandidateQueryPort for ScriptedCandidates {
         fn freeze(
             &self,
-            _environment: &str,
+            _profile: &str,
         ) -> Result<Vec<RegisteredSessionLease>, ActivationCandidateError> {
             Ok(self.leases.lock().expect("leases lock").clone())
         }
@@ -584,13 +584,13 @@ mod tests {
     }
 
     async fn harness(
-        environment: &str,
+        profile: &str,
         committed_generation: u64,
         candidates: Arc<ScriptedCandidates>,
         options: ActivationCoordinatorOptions,
     ) -> Harness {
         let repo = Arc::new(MemoryActivationStateRepository::new());
-        repo.initialize(&initial_state(environment, committed_generation))
+        repo.initialize(&initial_state(profile, committed_generation))
             .await
             .expect("initialize");
         let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
@@ -810,7 +810,7 @@ mod tests {
             .deliver_ack(
                 &session("runtime-a", 1),
                 AssemblyActivationControl::Prepared {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: "activation-8".to_string(),
                     expected_generation: 7,
                     candidate_generation: 8,
@@ -860,7 +860,7 @@ mod tests {
             .deliver_ack(
                 &session("runtime-a", 1),
                 AssemblyActivationControl::Prepared {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: "activation-8".to_string(),
                     expected_generation: 7,
                     candidate_generation: 8,
@@ -906,7 +906,7 @@ mod tests {
             .deliver_ack(
                 &session("runtime-a", 1),
                 AssemblyActivationControl::Prepared {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: "activation-9".to_string(),
                     expected_generation: 8,
                     candidate_generation: 9,

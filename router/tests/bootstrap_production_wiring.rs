@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use skiff_artifact_identity::{runtime_assembly_ref, ArtifactRelativePath};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -82,13 +82,13 @@ struct RealChain {
     assembly_ref: skiff_artifact_model::RuntimeAssemblyRef,
 }
 
-fn materialize(environment: &str) -> RealChain {
+fn materialize(profile: &str) -> RealChain {
     let root = TestRoot::new();
     fs::create_dir_all(root.path()).expect("create artifact root");
     let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
         .expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -117,18 +117,17 @@ fn materialize(environment: &str) -> RealChain {
     }
 }
 
-fn config(environment: Option<&str>, artifact_root: &Path) -> RouterConfig {
+fn config(profile: &str, artifact_root: &Path) -> RouterConfig {
     RouterConfig {
         activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
-        environment: environment.map(str::to_string),
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1_048_576,
         http_max_response_bytes: 1_048_576,
         http_port: 0,
         manifests: Vec::new(),
-        profile: "dev".to_string(),
+        profile: profile.to_string(),
         release_mode: Some(true),
         request_timeout_ms: 1_000,
         rewrite: Vec::new(),
@@ -144,21 +143,18 @@ fn config(environment: Option<&str>, artifact_root: &Path) -> RouterConfig {
     }
 }
 
-fn committed_state(chain: &RealChain) -> EnvironmentActivationState {
-    EnvironmentActivationState::initial("prod", 7, chain.assembly_ref.clone(), snapshot_ref())
+fn committed_state(chain: &RealChain) -> ProfileActivationState {
+    ProfileActivationState::initial("prod", 7, chain.assembly_ref.clone(), snapshot_ref())
 }
 
 /// Canned repository for outcomes the memory fake cannot hold (malformed).
 struct CannedRepository {
-    read_result: Mutex<Result<EnvironmentActivationState, RepositoryError>>,
+    read_result: Mutex<Result<ProfileActivationState, RepositoryError>>,
 }
 
 #[async_trait]
 impl ActivationStateRepository for CannedRepository {
-    async fn read(
-        &self,
-        _environment: &str,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, _profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         self.read_result
             .lock()
             .expect("canned repository lock")
@@ -167,29 +163,23 @@ impl ActivationStateRepository for CannedRepository {
 
     async fn initialize(
         &self,
-        _state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        _state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
     async fn prepare(
         &self,
         _input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
-    async fn commit(
-        &self,
-        _input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn commit(&self, _input: CommitInput) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
-    async fn abort(
-        &self,
-        _input: AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn abort(&self, _input: AbortInput) -> Result<ProfileActivationState, RepositoryError> {
         unimplemented!("canned repository is read-only")
     }
 
@@ -225,7 +215,7 @@ mod tests {
             .initialize(&committed_state(&chain))
             .await
             .expect("seed committed state");
-        let config = config(Some("prod"), chain._root.path());
+        let config = config("prod", chain._root.path());
 
         let assembly = RouterBootstrapAssembly::assemble_with(
             &config,
@@ -235,8 +225,8 @@ mod tests {
         .await
         .expect("committed bootstrap must assemble");
 
-        assert_eq!(assembly.environment(), "prod");
-        assert_eq!(assembly.epoch().environment(), "prod");
+        assert_eq!(assembly.profile(), "prod");
+        assert_eq!(assembly.epoch().profile(), "prod");
         assert_eq!(assembly.epoch().assembly_generation(), 7);
         assert_eq!(
             assembly.epoch().assembly_identity(),
@@ -258,7 +248,7 @@ mod tests {
         let header = skiff_runtime_transport::protocol::decode_router_bootstrap_frame(&bootstrap)
             .expect("decode router.bootstrap");
         assert_eq!(header.envelope_type, "router.bootstrap");
-        assert_eq!(header.activation.environment, "prod");
+        assert_eq!(header.activation.profile, "prod");
         assert_eq!(header.activation.generation, 7);
         assert_eq!(
             header.activation.assembly.assembly_identity,
@@ -272,23 +262,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assembly_fails_closed_without_environment() {
-        let chain = materialize("prod");
-        let config = config(None, chain._root.path());
-        let error = RouterBootstrapAssembly::assemble(&config)
-            .await
-            .expect_err("environment-less bootstrap must fail closed");
-        assert!(
-            matches!(error, BootstrapAssemblyError::EnvironmentMissing),
-            "{error}"
-        );
-    }
-
-    #[tokio::test]
     async fn assembly_fails_closed_on_missing_state() {
         let chain = materialize("prod");
         let repository = Arc::new(MemoryActivationStateRepository::new());
-        let config = config(Some("prod"), chain._root.path());
+        let config = config("prod", chain._root.path());
         let error = RouterBootstrapAssembly::assemble_with(
             &config,
             "prod",
@@ -317,7 +294,7 @@ mod tests {
             .expect("seed committed state");
         repository
             .prepare(PrepareInput {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 activation_id: "live-activation-1".to_string(),
                 expected_generation: 7,
                 candidate_generation: 8,
@@ -327,7 +304,7 @@ mod tests {
             })
             .await
             .expect("prepare pending state");
-        let config = config(Some("prod"), chain._root.path());
+        let config = config("prod", chain._root.path());
         let assembly = RouterBootstrapAssembly::assemble_with(
             &config,
             "prod",
@@ -357,11 +334,11 @@ mod tests {
         let chain = materialize("prod");
         let repository = Arc::new(CannedRepository {
             read_result: Mutex::new(Err(RepositoryError::InvalidRecord {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 message: "state is not canonical".to_string(),
             })),
         });
-        let config = config(Some("prod"), chain._root.path());
+        let config = config("prod", chain._root.path());
         let error = RouterBootstrapAssembly::assemble_with(
             &config,
             "prod",
@@ -390,7 +367,7 @@ mod tests {
             .initialize(&state)
             .await
             .expect("seed mismatched committed state");
-        let config = config(Some("prod"), chain._root.path());
+        let config = config("prod", chain._root.path());
         let error = RouterBootstrapAssembly::assemble_with(
             &config,
             "prod",

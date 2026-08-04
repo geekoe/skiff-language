@@ -139,13 +139,13 @@ fn test_dispatch_malformed_error_frame_is_a_wire_failure() {
 #[test]
 fn activation_receipt_and_canonical_pending_decode_strictly() {
     let receipt = decode_activation_receipt(&activation_receipt_body()).unwrap();
-    assert_eq!(receipt.environment, ENVIRONMENT);
+    assert_eq!(receipt.profile, PROFILE);
     assert_eq!(receipt.generation, 2);
     assert_eq!(receipt.assembly.assembly_identity.as_str(), ASSEMBLY_B);
     assert_eq!(receipt.config_snapshot.snapshot_id.as_str(), SNAPSHOT_B);
 
     let health = decode_health_snapshot(&health_body(
-        ENVIRONMENT,
+        PROFILE,
         2,
         ASSEMBLY_B,
         valid_pending(),
@@ -234,7 +234,7 @@ fn pending_candidate_must_remain_within_the_safe_generation_range() {
     );
 
     let result = decode_health_snapshot(&health_body(
-        ENVIRONMENT,
+        PROFILE,
         MAX_SAFE_GENERATION,
         ASSEMBLY_B,
         pending_state,
@@ -326,7 +326,7 @@ fn pending_exact_shape_mutations_fail_closed() {
 fn assert_pending_mutations_fail(cases: Vec<(&'static str, Value)>) {
     for (name, pending) in cases {
         let result = decode_health_snapshot(&health_body(
-            ENVIRONMENT,
+            PROFILE,
             2,
             ASSEMBLY_B,
             pending,
@@ -339,23 +339,18 @@ fn assert_pending_mutations_fail(cases: Vec<(&'static str, Value)>) {
 
 #[test]
 fn activation_state_safe_generation_and_identity_mutations_fail_closed() {
-    for (name, generation, assembly, environment) in [
+    for (name, generation, assembly, profile) in [
         (
             "unsafe generation",
             9_007_199_254_740_992,
             ASSEMBLY_B,
-            ENVIRONMENT,
+            PROFILE,
         ),
-        (
-            "invalid active assembly",
-            2,
-            "invalid-assembly",
-            ENVIRONMENT,
-        ),
-        ("invalid environment", 2, ASSEMBLY_B, "../prod"),
+        ("invalid active assembly", 2, "invalid-assembly", PROFILE),
+        ("invalid profile", 2, ASSEMBLY_B, "../prod"),
     ] {
         let result = decode_health_snapshot(&health_body(
-            environment,
+            profile,
             generation,
             assembly,
             Value::Null,
@@ -366,7 +361,7 @@ fn activation_state_safe_generation_and_identity_mutations_fail_closed() {
     }
 
     let mut invalid_snapshot: Value = serde_json::from_str(&health_body(
-        ENVIRONMENT,
+        PROFILE,
         2,
         ASSEMBLY_B,
         Value::Null,
@@ -383,7 +378,7 @@ fn activation_state_safe_generation_and_identity_mutations_fail_closed() {
 fn health_unknown_missing_and_wrong_typed_fields_fail_closed() {
     let valid = || {
         serde_json::from_str::<Value>(&health_body(
-            ENVIRONMENT,
+            PROFILE,
             2,
             ASSEMBLY_B,
             Value::Null,
@@ -418,7 +413,7 @@ fn health_unknown_missing_and_wrong_typed_fields_fail_closed() {
 fn health_counters_contract_and_optional_registered_at() {
     let valid = || {
         serde_json::from_str::<Value>(&health_body(
-            ENVIRONMENT,
+            PROFILE,
             2,
             ASSEMBLY_B,
             Value::Null,
@@ -475,7 +470,7 @@ fn replica_connection_lifecycle_counts_decode_as_required_safe_integers() {
     replica["connectionPinCount"] = serde_json::json!(MAX_SAFE_INTEGER);
     replica["connectionReleaseAckCount"] = serde_json::json!(17);
     let health = decode_health_snapshot(&health_body(
-        ENVIRONMENT,
+        PROFILE,
         2,
         ASSEMBLY_B,
         Value::Null,
@@ -514,7 +509,7 @@ fn replica_connection_lifecycle_count_mutations_fail_closed() {
 
     for (name, replica) in cases {
         let result = decode_health_snapshot(&health_body(
-            ENVIRONMENT,
+            PROFILE,
             2,
             ASSEMBLY_B,
             Value::Null,

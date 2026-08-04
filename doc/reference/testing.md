@@ -60,12 +60,12 @@ kind: test
 - 需要不同配置时使用另一个test service，不提供per-case config override，也不允许调用方切换
   test service config profile。
 
-测试service配置profile与runtime目标environment是两个概念：
+测试service配置profile与激活target是两个概念：
 
 - `skiff-test`固定选择测试service的配置和secret overlay；
-- live runner的target environment标识外部Router/Runtime中的activation generation，可能是`dev`或
-  其它部署环境；
-- target environment不得反向选择`config.<environment>.yml`。普通隔离测试中两者通常都叫
+- live runner的激活target（`--profile`）标识外部Router/Runtime中的activation generation，可能是`dev`或
+  其它部署profile；
+- 激活target不得反向选择`config.<profile>.yml`。普通隔离测试中两者通常都叫
   `skiff-test`，不能因此在实现里合并两个owner。
 
 test service dependency 可以声明：
@@ -182,8 +182,8 @@ test-only source file 输入：
   batch使用唯一execution scope，并从调用者提供的同一base assembly/config pair独立投影；后一个batch
   不得把前一个test batch当成base或累积其generated deployments。activation、readiness和case dispatch
   随后按batch顺序串行执行，generation从上一个成功commit的精确值安全递增。
-- runner从本次隔离activation的受信target environment写入snapshot顶层；Runtime必须在物化任何case
-  `ConfigView`前验证它与activation environment精确相等。
+- runner从本次隔离activation的受信target profile写入snapshot顶层；Runtime必须在物化任何case
+  `ConfigView`前验证它与activation profile精确相等。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
 - runner负责构造逐case synthetic deployment、contract、gateway entry/ingress binding和root request
   frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。
@@ -275,7 +275,7 @@ Live smoke：
   effect。
 - live只改变runtime target ownership和effect policy；test service仍固定读取
   `config.skiff-test.yml`及可选`config.skiff-test.secret.yml`。
-- activation URL、ingress URL、artifact root、target environment与expected generation是每次运行的
+- activation URL、ingress URL、artifact root、target profile与expected generation是每次运行的
   显式target参数，不属于test service config，也不能写进secret overlay。
 - 应使用 `defaultRun false` 并通过文件路径运行。
 - 没有 live key 时应 skip，而不是失败。
@@ -412,7 +412,7 @@ AI 和 CI 不需要测试配置文件来决定默认测试。它们按改动范�
 - 改 runtime effect、config、HTTP 编码、router activation，运行相关 integration 测试。
 - live smoke 只在用户显式要求、nightly 或 release 验证流程中运行。
 
-Runner flag只控制runtime target ownership、target environment/generation和effect policy，不改变
+Runner flag只控制runtime target ownership、target profile/generation和effect policy，不改变
 测试源码语义，不选择test service config profile，也不把`defaultRun false`文件加入目录默认发现。
 非live与live都不切换到compiler VM。
 

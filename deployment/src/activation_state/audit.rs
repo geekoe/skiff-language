@@ -2,7 +2,7 @@
 //!
 //! The event carries no Mongo URL, secret, or business payload. `event_id` is
 //! a deterministic digest of the dedup key
-//! `(environment, activation_id, operation, expected_generation,
+//! `(profile, activation_id, operation, expected_generation,
 //! candidate_generation)` so retried mutations never append a duplicate event
 //! and the Mongo adapter can use `_id: event_id` as an idempotency anchor.
 
@@ -56,7 +56,7 @@ impl ActivationAuditOutcome {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationAuditEvent {
     pub event_id: String,
-    pub environment: String,
+    pub profile: String,
     pub activation_id: String,
     pub operation: ActivationAuditOperation,
     pub expected_generation: u64,
@@ -71,7 +71,7 @@ pub struct ActivationAuditEvent {
 impl ActivationAuditEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        environment: impl Into<String>,
+        profile: impl Into<String>,
         activation_id: impl Into<String>,
         operation: ActivationAuditOperation,
         expected_generation: u64,
@@ -80,10 +80,10 @@ impl ActivationAuditEvent {
         participant_replica_ids: Option<Vec<String>>,
         timestamp_millis: i64,
     ) -> Self {
-        let environment = environment.into();
+        let profile = profile.into();
         let activation_id = activation_id.into();
         let event_id = activation_audit_event_id(
-            &environment,
+            &profile,
             &activation_id,
             operation,
             expected_generation,
@@ -91,7 +91,7 @@ impl ActivationAuditEvent {
         );
         Self {
             event_id,
-            environment,
+            profile,
             activation_id,
             operation,
             expected_generation,
@@ -104,7 +104,7 @@ impl ActivationAuditEvent {
 }
 
 pub fn activation_audit_event_id(
-    environment: &str,
+    profile: &str,
     activation_id: &str,
     operation: ActivationAuditOperation,
     expected_generation: u64,
@@ -113,7 +113,7 @@ pub fn activation_audit_event_id(
     let mut hasher = Sha256::new();
     for part in [
         EVENT_ID_DOMAIN,
-        environment.as_bytes(),
+        profile.as_bytes(),
         activation_id.as_bytes(),
         operation.as_str().as_bytes(),
         expected_generation.to_string().as_bytes(),
@@ -148,7 +148,7 @@ mod tests {
             7,
             8,
         );
-        let other_environment = activation_audit_event_id(
+        let other_profile = activation_audit_event_id(
             "prod",
             "activation-a",
             ActivationAuditOperation::Prepare,
@@ -170,7 +170,7 @@ mod tests {
             8,
         );
         assert_eq!(first, replay);
-        assert_ne!(first, other_environment);
+        assert_ne!(first, other_profile);
         assert_ne!(first, other_generation);
         assert_ne!(first, other_operation);
         assert!(first.starts_with("skiff-router-activation-audit-event-v1:"));

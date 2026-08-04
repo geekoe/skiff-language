@@ -66,14 +66,14 @@ mod tests {
         let artifacts = root.path().join("artifacts");
         let platform_root = platform_source_root();
         let binary = env!("CARGO_BIN_EXE_skiff-package-service-smoke-fixture");
-        let run = |environment: &str| {
+        let run = |profile: &str| {
             let output = Command::new(binary)
                 .args([
                     "--bootstrap-only",
                     "--artifact-root",
                     artifacts.to_str().unwrap(),
-                    "--environment",
-                    environment,
+                    "--profile",
+                    profile,
                     "--platform-source-root",
                     platform_root.to_str().unwrap(),
                 ])
