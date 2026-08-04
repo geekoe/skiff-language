@@ -46,7 +46,7 @@ fn assembly_projection_rejects_positional_authoring_roots() {
         "/legacy/assembly.yml",
         "--artifact-root",
         "/tmp/skiff-artifacts",
-        "--environment",
+        "--profile",
         "dev",
     ]);
     assert!(error.contains("unknown assembly option /legacy/assembly.yml"));
@@ -60,7 +60,7 @@ fn assembly_projection_requires_inline_exact_reference_json() {
         "build",
         "--artifact-root",
         "/tmp/skiff-artifacts",
-        "--environment",
+        "--profile",
         "dev",
         "--root-deployment",
         "/tmp/deployment.json",

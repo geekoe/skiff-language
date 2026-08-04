@@ -26,7 +26,7 @@ use super::{invalid_input, AuthoringResult};
 
 /// Exact immutable records produced for one compiled package candidate.
 ///
-/// Pointer installation and environment mutation deliberately remain outside
+/// Pointer installation and activation-profile mutation deliberately remain outside
 /// this receipt and outside the canonical package record writer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

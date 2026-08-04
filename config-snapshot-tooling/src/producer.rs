@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    validate_activation_environment, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    validate_activation_profile, PackageArtifact, PackageArtifactRef, PackageBuildId,
     RuntimeAssembly, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
 use skiff_runtime_config_snapshot::{new_runtime_config_snapshot_ref, RuntimeConfigSnapshotStore};
@@ -25,7 +25,6 @@ pub struct ServiceConfigSource {
 
 #[derive(Debug, Clone)]
 pub struct ConfigSnapshotProductionInput {
-    pub environment: String,
     pub profile: String,
     pub assembly: RuntimeAssembly,
     pub package_artifacts: BTreeMap<PackageArtifactRef, PackageArtifact>,
@@ -45,12 +44,11 @@ pub fn produce_runtime_config_snapshot(
     input: ConfigSnapshotProductionInput,
     artifact_root: &Path,
 ) -> ConfigSnapshotToolingResult<ConfigSnapshotProductionReceipt> {
-    validate_activation_environment(&input.environment)
-        .map_err(|message| invalid("<environment>", message))?;
+    validate_activation_profile(&input.profile).map_err(|message| invalid("<profile>", message))?;
     let projection = projection_inputs(&input)?;
     let snapshot_ref = new_runtime_config_snapshot_ref();
     let snapshot =
-        project_runtime_config_snapshot(&input.environment, snapshot_ref.clone(), projection)?;
+        project_runtime_config_snapshot(&input.profile, snapshot_ref.clone(), projection)?;
     let store_root = artifact_root.join("runtime-config");
     let store = RuntimeConfigSnapshotStore::create(&store_root)?;
     let published = store.publish(&snapshot)?;

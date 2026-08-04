@@ -5,12 +5,13 @@ use std::{
     process::ExitCode,
 };
 
+use skiff_artifact_model::validate_activation_profile;
 use skiff_compiler::CompilerPlatformSources;
 use skiff_test_runner::{
     run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -57,7 +58,7 @@ struct RawCliArgs {
     base_config_snapshot: Option<String>,
     activation_url: Option<String>,
     ingress_url: Option<String>,
-    environment: Option<String>,
+    profile: Option<String>,
     expected_generation: Option<u64>,
     live: bool,
     deny_skips: bool,
@@ -98,10 +99,10 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
                 validate_ingress_url(&value)?;
                 set_once(&mut parsed.ingress_url, value, &arg)?;
             }
-            "--environment" => {
+            "--profile" => {
                 let value = next(&mut args, &arg)?;
-                validate_environment(&value)?;
-                set_once(&mut parsed.environment, value, &arg)?;
+                validate_profile(&value)?;
+                set_once(&mut parsed.profile, value, &arg)?;
             }
             "--expected-generation" => {
                 let value = next(&mut args, &arg)?;
@@ -132,7 +133,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         base_config_snapshot,
         activation_url,
         ingress_url,
-        environment,
+        profile,
         expected_generation,
         live,
         deny_skips,
@@ -152,18 +153,18 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     if live
         && (activation_url.is_none()
             || ingress_url.is_none()
-            || environment.is_none()
+            || profile.is_none()
             || expected_generation.is_none())
     {
         return Err(
-            "--live requires --activation-url, --ingress-url, --environment and --expected-generation"
+            "--live requires --activation-url, --ingress-url, --profile and --expected-generation"
                 .to_string(),
         );
     }
     if !live
         && (activation_url.is_some()
             || ingress_url.is_some()
-            || environment.is_some()
+            || profile.is_some()
             || expected_generation.is_some())
     {
         return Err(
@@ -189,12 +190,12 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     if let Some(value) = ingress_url.as_deref() {
         validate_ingress_url(value)?;
     }
-    let target_environment = if live {
-        environment.expect("live environment was checked")
+    let target_profile = if live {
+        profile.expect("live profile was checked")
     } else {
         env::var("SKIFF_TEST_ENVIRONMENT").unwrap_or_else(|_| "skiff-test".to_string())
     };
-    validate_environment(&target_environment)?;
+    validate_profile(&target_profile)?;
     let expected_generation = if live {
         expected_generation.expect("live generation was checked")
     } else {
@@ -214,7 +215,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             base_config_snapshot,
             activation_url,
             ingress_url,
-            target_environment,
+            target_profile,
             expected_generation,
         },
         deny_skips,
@@ -309,16 +310,8 @@ fn parse_generation(value: &str, label: &str) -> Result<u64, String> {
         .map_err(|_| format!("{label} must be an unsigned integer"))
 }
 
-fn validate_environment(value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 200
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err("environment must be a canonical ASCII token".to_string());
-    }
-    Ok(())
+fn validate_profile(value: &str) -> Result<(), String> {
+    validate_activation_profile(value)
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ const MAX_BACKOFF: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReadinessTarget {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: RuntimeAssemblyRef,
     config_snapshot: RuntimeConfigSnapshotRef,
@@ -31,15 +31,15 @@ enum ReadinessStatus {
 
 pub(super) fn target_from_receipt(
     receipt: ActivationReceipt,
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_identity: &str,
     config_snapshot: &RuntimeConfigSnapshotRef,
 ) -> Result<ReadinessTarget, CanonicalFixtureError> {
-    if receipt.environment != environment {
+    if receipt.profile != profile {
         return Err(readiness_error(format!(
-            "activation receipt environment mismatch: expected {environment}, got {}",
-            receipt.environment
+            "activation receipt profile mismatch: expected {profile}, got {}",
+            receipt.profile
         )));
     }
     if receipt.generation != generation {
@@ -61,7 +61,7 @@ pub(super) fn target_from_receipt(
         )));
     }
     Ok(ReadinessTarget {
-        environment: receipt.environment,
+        profile: receipt.profile,
         generation: receipt.generation,
         assembly: receipt.assembly,
         config_snapshot: receipt.config_snapshot,
@@ -130,10 +130,10 @@ fn classify(
     snapshot: &HealthSnapshot,
     target: &ReadinessTarget,
 ) -> Result<ReadinessStatus, CanonicalFixtureError> {
-    if snapshot.active.environment != target.environment {
+    if snapshot.active.profile != target.profile {
         return Err(readiness_error(format!(
-            "router health environment mismatch: expected {}, got {}",
-            target.environment, snapshot.active.environment
+            "router health profile mismatch: expected {}, got {}",
+            target.profile, snapshot.active.profile
         )));
     }
     match snapshot.active.generation.cmp(&target.generation) {
@@ -170,7 +170,7 @@ fn classify(
     }
 
     let matching = snapshot.replicas.iter().filter(|replica| {
-        replica.environment == target.environment
+        replica.profile == target.profile
             && replica.generation == target.generation
             && replica.assembly == target.assembly
             && replica.config_snapshot == target.config_snapshot

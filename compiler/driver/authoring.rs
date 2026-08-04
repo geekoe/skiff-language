@@ -77,7 +77,7 @@ pub fn build_authoring_object(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
-    _environment: &str,
+    _profile: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     match object {
@@ -277,18 +277,18 @@ fn build_package_after_platform_context_guard(
 /// mutable ServiceDeployment pointer.
 pub fn project_runtime_assembly(
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
-    validate_runtime_assembly_projection_input(environment, root_deployments)?;
+    validate_runtime_assembly_projection_input(profile, root_deployments)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
-    project_runtime_assembly_to_store(&store, environment, root_deployments, publish_pointer)
+    project_runtime_assembly_to_store(&store, profile, root_deployments, publish_pointer)
 }
 
 fn project_runtime_assembly_to_store(
     store: &CanonicalArtifactStore,
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
@@ -305,14 +305,14 @@ fn project_runtime_assembly_to_store(
     let mut output = Map::from_iter([(
         "runtimeAssemblyReceipt".to_string(),
         json!({
-            "environment": environment,
+            "profile": profile,
             "assembly": reference,
             "recordPath": relative_path(store, &record_path)?,
         }),
     )]);
 
     if publish_pointer {
-        let release = environment;
+        let release = profile;
         let candidate = RuntimeAssemblyPointer::new(release, reference.clone())?;
         let expected = store.read_runtime_assembly_pointer(release)?;
         store.compare_and_swap_runtime_assembly_pointer(expected.as_ref(), &candidate)?;
@@ -328,10 +328,10 @@ fn project_runtime_assembly_to_store(
 }
 
 fn validate_runtime_assembly_projection_input(
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
 ) -> AuthoringResult<()> {
-    RuntimeAssemblyPointerPath::new(environment)?;
+    RuntimeAssemblyPointerPath::new(profile)?;
     let mut unique = BTreeSet::new();
     for reference in root_deployments {
         ServiceDeploymentRecordPath::new(reference)?;

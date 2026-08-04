@@ -17,11 +17,11 @@ const fixtureRoot = resolve(skiffRoot, 'test-runner/fixtures/http-entry-test-ser
 const cleanup = await runInIsolatedTestRuntime({
   skiffRoot,
   dependencies: {
-    seedBootstrap: async ({ artifactRoot, environment, env, signal }) => {
+    seedBootstrap: async ({ artifactRoot, profile, env, signal }) => {
       signal.throwIfAborted();
       const result = await captureCheckedCommand(
         bootstrap,
-        seedCommittedArgs(artifactRoot, environment),
+        seedCommittedArgs(artifactRoot, profile),
         { cwd: skiffRoot, env },
       );
       signal.throwIfAborted();
@@ -32,7 +32,7 @@ const cleanup = await runInIsolatedTestRuntime({
     assertLoopbackStack(stack, isolatedEnv);
     await captureCheckedCommand(
       bootstrap,
-      bootstrapArgs(stack.sourceArtifactRoot, stack.environment),
+      bootstrapArgs(stack.sourceArtifactRoot, stack.profile),
       { cwd: skiffRoot, env: isolatedEnv },
     );
 
@@ -110,26 +110,26 @@ console.log(JSON.stringify({
   workspaceRemoved: cleanup.tempRoot,
 }));
 
-function bootstrapArgs(artifactRoot, environment) {
+function bootstrapArgs(artifactRoot, profile) {
   return [
     '--bootstrap-only',
     '--artifact-root',
     artifactRoot,
     '--platform-source-root',
     skiffRoot,
-    '--environment',
-    environment,
+    '--profile',
+    profile,
   ];
 }
 
-function seedCommittedArgs(artifactRoot, environment) {
+function seedCommittedArgs(artifactRoot, profile) {
   return [
     '--seed-committed',
     join(fixtureRoot, 'active'),
     '--artifact-root',
     artifactRoot,
-    '--environment',
-    environment,
+    '--profile',
+    profile,
     '--platform-source-root',
     skiffRoot,
   ];
