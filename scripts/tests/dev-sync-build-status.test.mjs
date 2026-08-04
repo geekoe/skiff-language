@@ -121,7 +121,7 @@ test('one-shot dev sync rejects on package compile failure', async () => {
     await assert.rejects(
       runDevSyncOnce({
         roots: [{ kind: 'package', root }],
-        environment: 'dev',
+        profile: 'dev',
         artifactRoot: join(temp, 'artifacts'),
         compilerRunner: async ({ kind }) => {
           if (kind === 'package') {

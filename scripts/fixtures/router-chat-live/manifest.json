@@ -14,7 +14,7 @@
       "commit": "db4ddd9e05936b6fa8beff42ed242c8a73f08de3"
     }
   },
-  "environment": "router-live-chat",
+  "profile": "router-live-chat",
   "generation": 1,
   "assembly": {
     "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:2a8fa377f903002abcbbf972050f64f1fdef183741aebe956290b2e611e5ff3d"

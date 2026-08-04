@@ -9,7 +9,7 @@
 const SCHEMA_VERSION = 'skiff-router-chat-live-manifest-v1';
 
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
-const ENVIRONMENT_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
+const PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
 const SERVICE_ID_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)+$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
@@ -43,7 +43,7 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
   exactKeys(value, [
     'schemaVersion',
     'pinned',
-    'environment',
+    'profile',
     'generation',
     'assembly',
     'configSnapshot',
@@ -56,10 +56,10 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
   }
 
   const pinned = validatePinned(value.pinned, `${label}.pinned`);
-  const environment = validatePattern(
-    value.environment,
-    ENVIRONMENT_PATTERN,
-    `${label}.environment`,
+  const profile = validatePattern(
+    value.profile,
+    PROFILE_PATTERN,
+    `${label}.profile`,
   );
   if (!Number.isSafeInteger(value.generation) || value.generation < 0) {
     throw new Error(`${label}.generation must be a non-negative safe integer`);
@@ -89,7 +89,7 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
   return deepFreeze({
     schemaVersion: SCHEMA_VERSION,
     pinned,
-    environment,
+    profile,
     generation: value.generation,
     assembly: { assemblyIdentity },
     configSnapshot: { snapshotId },

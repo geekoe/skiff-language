@@ -536,7 +536,7 @@ fn pinned_route_test_host() -> RuntimeHost {
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-pinned-route".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-pinned-route-test-home"),
-        environment: "test".to_string(),
+        profile: "test".to_string(),
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

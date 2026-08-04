@@ -69,7 +69,7 @@ terminal retention。普通 FIFO queue 不具备完整 contract；它最多承�
 Task control plane 是 TaskStore、scheduler 与 Runtime task capability 的逻辑 owner。它可以与 Router 共进程，也可以独立部署；
 这种物理位置不改变以下信任边界：
 
-- Runtime submission side 只能使用当前受认证 ActivationContext 注入的 task capability，不能提交任意 owner、environment、
+- Runtime submission side 只能使用当前受认证 ActivationContext 注入的 task capability，不能提交任意 owner、profile、
   execution image 或 target。
 - task control plane 必须把提交方 authority 精确投影成 task owner 与 trusted execution witness；TaskStore 不接受 Runtime 自报的
   service/build/display name 作为 authority。
@@ -135,7 +135,7 @@ enum DetachedCallTarget {
 `TaskExecutionImageRef` 的逻辑内容固定为：
 
 ```text
-targetEnvironment
+targetProfile
 exact PackageVersion label
 RuntimeAssemblyRef
 RuntimeConfigSnapshotRef

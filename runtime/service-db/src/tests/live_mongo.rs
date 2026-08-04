@@ -9,7 +9,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
         service_db_now_ms()
     );
     let runtime = ServiceDbRuntime::new(
-        test_environment(),
+        test_profile(),
         service_id,
         "mongodb://127.0.0.1:27017/?directConnection=true".to_string(),
         &provider_metadata_from_ir(recoverable_provider_metadata_value()),

@@ -480,7 +480,7 @@ async fn shared_test_assembly_isolation() {
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-p3x-foreign-db".to_string(),
         runtime_home: fixture.child("runtime-home"),
-        environment: "skiff-test".to_string(),
+        profile: "skiff-test".to_string(),
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

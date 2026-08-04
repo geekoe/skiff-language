@@ -79,7 +79,7 @@ fn source_and_final_target_index_receipts_are_verified_separately() {
 
 fn endpoint(database: &str, physical_collection: &str) -> StorageEndpoint {
     StorageEndpoint {
-        environment: "dev".to_string(),
+        profile: "dev".to_string(),
         service_id: "skiff.run/agine".to_string(),
         database: database.to_string(),
         package_id: "skiff.run/agent".to_string(),

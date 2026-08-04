@@ -2,12 +2,12 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION =
-  'skiff-environment-activation-state-v2';
+const PROFILE_ACTIVATION_STATE_SCHEMA_VERSION =
+  'skiff-profile-activation-state-v1';
 const BOOTSTRAP_RECEIPT_SCHEMA_VERSION =
   'skiff-package-service-bootstrap-v2';
 const CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION =
-  'skiff-runtime-config-snapshot-record-v2';
+  'skiff-runtime-config-snapshot-record-v3';
 const ASSEMBLY_IDENTITY_PATTERN =
   /^skiff-runtime-assembly-v3:sha256:[a-f0-9]{64}$/;
 const CONFIG_SNAPSHOT_ID_PATTERN =
@@ -18,20 +18,20 @@ const MAX_CONFIG_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 
 export async function buildIsolatedActivationState({
   artifactRoot,
-  environment,
+  profile,
   bootstrap,
 }) {
   if (typeof artifactRoot !== 'string' || artifactRoot.length === 0) {
     throw new Error('isolated bootstrap requires its exact artifact root');
   }
   if (
-    typeof environment !== 'string'
-    || environment.length === 0
+    typeof profile !== 'string'
+    || profile.length === 0
     || bootstrap?.schemaVersion !== BOOTSTRAP_RECEIPT_SCHEMA_VERSION
-    || bootstrap?.environment !== environment
+    || bootstrap?.profile !== profile
   ) {
     throw new Error(
-      'isolated bootstrap environment or receipt schema is invalid',
+      'isolated bootstrap profile or receipt schema is invalid',
     );
   }
   const payload = exactObject(
@@ -60,12 +60,12 @@ export async function buildIsolatedActivationState({
   }
   await validateSecureConfigSnapshotRecord(
     artifactRoot,
-    environment,
+    profile,
     configSnapshot,
   );
   return {
-    schemaVersion: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
-    environment,
+    schemaVersion: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
+    profile,
     committed: {
       generation: payload.generation,
       assembly,
@@ -90,7 +90,7 @@ export function isolatedConfigSnapshotRecordPath(artifactRoot, configSnapshot) {
 
 async function validateSecureConfigSnapshotRecord(
   artifactRoot,
-  environment,
+  profile,
   configSnapshot,
 ) {
   const storeRoot = join(artifactRoot, 'runtime-config');
@@ -125,12 +125,12 @@ async function validateSecureConfigSnapshotRecord(
   }
   exactObject(
     record,
-    ['deployments', 'environment', 'schemaVersion', 'snapshot'],
+    ['deployments', 'profile', 'schemaVersion', 'snapshot'],
     'isolated bootstrap config snapshot record',
   );
   if (
     record.schemaVersion !== CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION
-    || record.environment !== environment
+    || record.profile !== profile
     || !Array.isArray(record.deployments)
     || record.snapshot?.snapshotId !== configSnapshot.snapshotId
   ) {

@@ -67,9 +67,9 @@ export function skiffSourceSubjectPublishArgs({
 export function skiffSourceArtifactBootstrapCargoArgs({
   skiffRoot,
   artifactRoot,
-  environment,
+  profile,
 }) {
-  return bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment });
+  return bootstrapCanonicalArgs({ skiffRoot, artifactRoot, profile });
 }
 
 export function packageServiceHostFixturePaths({ skiffRoot, tempRoot }) {
@@ -89,7 +89,7 @@ export function packageServiceHostFixturePrepareCargoArgs({
   artifactRoot,
   workRoot,
   receipt,
-  environment,
+  profile,
 }) {
   return [
     'run',
@@ -109,27 +109,27 @@ export function packageServiceHostFixturePrepareCargoArgs({
     artifactRoot,
     '--platform-source-root',
     resolve(skiffRoot),
-    '--environment',
-    environment,
+    '--profile',
+    profile,
   ];
 }
 
-export async function readPackageServiceHostFixtureReceipt(path, expectedEnvironment) {
+export async function readPackageServiceHostFixtureReceipt(path, expectedProfile) {
   const receipt = JSON.parse(await readFile(path, 'utf8'));
   exactKeys(receipt, [
     'baseAssembly',
     'baseConfigSnapshot',
     'contracts',
     'deployments',
-    'environment',
+    'profile',
     'packages',
     'schemaVersion',
   ], 'host fixture receipt');
   if (receipt.schemaVersion !== hostReceiptSchemaVersion) {
     throw new Error(`host fixture receipt schemaVersion must be ${hostReceiptSchemaVersion}`);
   }
-  if (receipt.environment !== expectedEnvironment) {
-    throw new Error(`host fixture receipt environment must be ${expectedEnvironment}`);
+  if (receipt.profile !== expectedProfile) {
+    throw new Error(`host fixture receipt profile must be ${expectedProfile}`);
   }
   exactKeys(receipt.contracts, ['consumer', 'payments'], 'host fixture contracts');
   exactKeys(receipt.packages, ['consumer', 'helper', 'provider'], 'host fixture packages');
@@ -177,9 +177,9 @@ export async function runCanonicalSkiffSourceTests({
       if (stack?.sourceArtifactRoot === undefined) {
         throw new Error('isolated runtime owner omitted the canonical source artifact root');
       }
-      const environment = requiredText(
+      const profile = requiredText(
         isolatedEnv.SKIFF_TEST_ENVIRONMENT,
-        'isolated runtime environment',
+        'isolated runtime profile',
       );
       const activationUrl = requiredText(
         isolatedEnv.SKIFF_TEST_ACTIVATION_URL,
@@ -195,7 +195,7 @@ export async function runCanonicalSkiffSourceTests({
         skiffSourceArtifactBootstrapCargoArgs({
           skiffRoot,
           artifactRoot: stack.sourceArtifactRoot,
-          environment,
+          profile,
         }),
         { cwd: skiffRoot, env: isolatedEnv, signal },
       );
@@ -232,7 +232,7 @@ export async function runCanonicalSkiffSourceTests({
         expectedGeneration = await readAdvancedGeneration({
           readActiveGeneration,
           activationUrl,
-          environment,
+          profile,
           previousGeneration: expectedGeneration,
           signal,
           child: entry.id,
@@ -251,11 +251,11 @@ export async function runCanonicalSkiffSourceTests({
           artifactRoot: stack.sourceArtifactRoot,
           workRoot: host.workRoot,
           receipt: host.receipt,
-          environment,
+          profile,
         }),
         { cwd: skiffRoot, env: isolatedEnv, signal },
       );
-      const receipt = await readHostReceipt(host.receipt, environment);
+      const receipt = await readHostReceipt(host.receipt, profile);
       log(`[skiff-tests] running package-service-host: ${hostTestRelativeRoot}`);
       await runCommand(
         'cargo',
@@ -278,7 +278,7 @@ export async function runCanonicalSkiffSourceTests({
       await readAdvancedGeneration({
         readActiveGeneration,
         activationUrl,
-        environment,
+        profile,
         previousGeneration: expectedGeneration,
         signal,
         child: 'package-service-host',
@@ -290,7 +290,7 @@ export async function runCanonicalSkiffSourceTests({
 
 export async function readSkiffSourceActiveGeneration({
   activationUrl,
-  environment,
+  profile,
   signal,
   fetchImpl = fetch,
 }) {
@@ -324,7 +324,7 @@ export async function readSkiffSourceActiveGeneration({
   if (
     health?.ok !== true
     || health.pendingActivation !== null
-    || active?.environment !== environment
+    || active?.profile !== profile
     || !Number.isSafeInteger(active?.generation)
     || active.generation < 0
   ) {
@@ -336,14 +336,14 @@ export async function readSkiffSourceActiveGeneration({
 async function readAdvancedGeneration({
   readActiveGeneration,
   activationUrl,
-  environment,
+  profile,
   previousGeneration,
   signal,
   child,
 }) {
   const generation = await readActiveGeneration({
     activationUrl,
-    environment,
+    profile,
     signal,
   });
   if (!Number.isSafeInteger(generation) || generation <= previousGeneration) {

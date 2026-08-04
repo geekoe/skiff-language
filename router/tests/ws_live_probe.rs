@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::json;
 use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
@@ -58,11 +58,11 @@ const BIG_REQUESTS: usize = 96;
 
 const ID_CORPUS: &str = include_str!("../../runtime/transport/testdata/client-ws/jsonrpc-ids.json");
 
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
@@ -73,7 +73,7 @@ struct LiveEnvironment {
     temp_dir: PathBuf,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -93,7 +93,7 @@ impl LiveEnvironment {
             mongo_url: required("SKIFF_ROUTER_WS_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_WS_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_WS_LIVE_ARTIFACT_ROOT")),
-            environment: required("SKIFF_ROUTER_WS_LIVE_ENVIRONMENT"),
+            profile: required("SKIFF_ROUTER_WS_LIVE_PROFILE"),
             assembly_identity: required("SKIFF_ROUTER_WS_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ROUTER_WS_LIVE_CONFIG_SNAPSHOT_ID"),
             generation,
@@ -129,7 +129,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -141,7 +141,7 @@ async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRe
     )
 }
 
-fn seed_runtime_home(live: &LiveEnvironment) {
+fn seed_runtime_home(live: &LiveProfile) {
     std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
     std::fs::write(
         live.runtime_home.join("runtime-id"),
@@ -150,9 +150,9 @@ fn seed_runtime_home(live: &LiveEnvironment) {
     .expect("seed runtime-id");
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
+    let state = ProfileActivationState::initial(
+        &live.profile,
         live.generation,
         live.assembly_ref(),
         live.snapshot_ref(),
@@ -163,14 +163,13 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
         .expect("seed committed activation state");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-ws-{}-{}.yml",
         live.http_port, live.runtime_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -179,7 +178,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          websocket:\n  path: {WS_PATH}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.runtime_port,
@@ -189,15 +188,13 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join("runtime-ws.yml");
     let contents = format!(
         "router: ws://127.0.0.1:{}/runtime\n\
-         runtime-home: {}\n\
-         environment: {}\n",
+         runtime-home: {}\n",
         live.runtime_port,
         live.runtime_home.display(),
-        live.environment,
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
@@ -227,7 +224,7 @@ fn task_router(config_path: &Path) -> Child {
         .expect("spawn skiff-router")
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path) -> Child {
     let stdout_path = live.temp_dir.join("runtime-ws.stdout.log");
     let stderr_path = live.temp_dir.join("runtime-ws.stderr.log");
     let stdout = OpenOptions::new()
@@ -273,7 +270,7 @@ fn wait_for_exit(
     }
 }
 
-fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
+fn wait_for_listeners(live: &LiveProfile, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if TcpStream::connect(live.public_http_addr()).is_ok()
@@ -296,7 +293,7 @@ fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
     }
 }
 
-fn assert_ports_closed(live: &LiveEnvironment) {
+fn assert_ports_closed(live: &LiveProfile) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if TcpStream::connect(live.public_http_addr()).is_err()
@@ -311,7 +308,7 @@ fn assert_ports_closed(live: &LiveEnvironment) {
     }
 }
 
-fn materialize_projection(live: &LiveEnvironment) {
+fn materialize_projection(live: &LiveProfile) {
     let projection_directory = live.artifact_root.join("records/actor-routing");
     std::fs::create_dir_all(&projection_directory).expect("create projection directory");
     let projection = ActorRoutingProjection::new(
@@ -334,7 +331,7 @@ fn materialize_projection(live: &LiveEnvironment) {
 
 type ClientSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TokioTcpStream>>;
 
-fn client_request(live: &LiveEnvironment) -> Request<()> {
+fn client_request(live: &LiveProfile) -> Request<()> {
     let mut request = format!("ws://127.0.0.1:{}{WS_PATH}?x=1", live.http_port)
         .into_client_request()
         .expect("client request");
@@ -347,7 +344,7 @@ fn client_request(live: &LiveEnvironment) -> Request<()> {
     request
 }
 
-async fn try_connect_client(live: &LiveEnvironment) -> Option<ClientSocket> {
+async fn try_connect_client(live: &LiveProfile) -> Option<ClientSocket> {
     match timeout(
         Duration::from_secs(5),
         tokio_tungstenite::connect_async(client_request(live)),
@@ -373,7 +370,7 @@ async fn try_connect_client(live: &LiveEnvironment) -> Option<ClientSocket> {
     }
 }
 
-async fn connect_client(live: &LiveEnvironment) -> ClientSocket {
+async fn connect_client(live: &LiveProfile) -> ClientSocket {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(socket) = try_connect_client(live).await {
@@ -472,7 +469,7 @@ struct IdCase {
     error_kind: Option<String>,
 }
 
-async fn run_id_corpus(live: &LiveEnvironment) {
+async fn run_id_corpus(live: &LiveProfile) {
     let corpus: IdCorpus = serde_json::from_str(ID_CORPUS).expect("parse jsonrpc id corpus");
     let mut exercised = 0usize;
     for case in &corpus.cases {
@@ -579,7 +576,7 @@ async fn status_roundtrip(socket: &mut ClientSocket, id: &str) -> serde_json::Va
 // Scenarios
 // ---------------------------------------------------------------------------
 
-async fn replacement_and_disconnect_race(live: &LiveEnvironment) -> ClientSocket {
+async fn replacement_and_disconnect_race(live: &LiveProfile) -> ClientSocket {
     // WS#1 (corpus phase) was closed; WS#2 takes the single business slot.
     let mut second = connect_client(live).await;
     let value = status_roundtrip(&mut second, "1").await;
@@ -631,7 +628,7 @@ async fn slow_client_saturation(mut socket: ClientSocket) {
     );
 }
 
-async fn frame_budget_and_binary_closes(live: &LiveEnvironment) {
+async fn frame_budget_and_binary_closes(live: &LiveProfile) {
     // Binary frames are unsupported: close 1003.
     let mut binary = connect_client(live).await;
     timeout(
@@ -667,7 +664,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "driven by scripts/check-router-ws-live.mjs"]
     async fn router_live_ws_roundtrip() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live);
         materialize_projection(&live);
 

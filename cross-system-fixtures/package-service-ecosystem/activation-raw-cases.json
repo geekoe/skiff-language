@@ -3,217 +3,217 @@
     "name": "request baseline",
     "target": "request",
     "outcome": "accept",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v2\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v3\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "request 200 byte token boundary",
     "target": "request",
     "outcome": "accept",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v2\",\"environment\":\"prod\",\"activationId\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v3\",\"profile\":\"prod\",\"activationId\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "request expected generation upper boundary",
     "target": "request",
     "outcome": "accept",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v2\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740990,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v3\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740990,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
-    "name": "environment 200 byte boundary",
+    "name": "profile 200 byte boundary",
     "target": "request",
     "outcome": "accept",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v2\",\"environment\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v3\",\"profile\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
-    "name": "environment 201 byte boundary",
+    "name": "profile 201 byte boundary",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789x\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789x\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
-    "name": "environment dot",
+    "name": "profile dot",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\".\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\".\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
-    "name": "environment dot dot",
+    "name": "profile dot dot",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"..\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"..\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
-    "name": "environment non ASCII",
+    "name": "profile non ASCII",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"pr\\u00f8d\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"pr\\u00f8d\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token FEFF",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\ufeff42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\ufeff42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token NBSP",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\u00a042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\u00a042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token ZWSP",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\u200b42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\u200b42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token C0 control",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\u000142\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\u000142\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token C1 control",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\u008542\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\u008542\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token internal ASCII space",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation 42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation 42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token NFC Unicode",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"caf\\u00e9\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"caf\\u00e9\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token NFD Unicode",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"cafe\\u0301\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"cafe\\u0301\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token paired surrogate scalar",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\ud83d\\ude0042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\ud83d\\ude0042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token lone surrogate",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation\\ud80042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation\\ud80042\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "token 201 byte boundary",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789x\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789x\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation negative zero",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":-0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":-0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation plus sign",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":+1,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":+1,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation leading zero",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":01,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":01,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation fraction",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1.0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1.0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation exponent",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1e0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1e0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation underflow",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1e-999,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":1e-999,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "generation rounding",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740993,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740993,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "request expected generation cannot equal MAX SAFE",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "duplicate request top key",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"first\",\"activationId\":\"second\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"first\",\"activationId\":\"second\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "escaped duplicate request top key",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"first\",\"acti\\u0076ationId\":\"second\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"first\",\"acti\\u0076ationId\":\"second\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "duplicate nested assembly key",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}"
   },
   {
     "name": "unknown request top field",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"buildId\":\"legacy\"}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"buildId\":\"legacy\"}"
   },
   {
     "name": "missing request field",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0}"
   },
   {
     "name": "wrong request schema version",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"legacy\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"legacy\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "unknown nested assembly field",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"buildId\":\"legacy\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"buildId\":\"legacy\"}}"
   },
   {
     "name": "uppercase assembly identity",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}"
   },
   {
     "name": "runtime assembly v1 identity",
     "target": "request",
     "outcome": "reject",
-    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"schemaVersion\":\"skiff-assembly-activation-request-v1\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "invalid UTF-8",
@@ -231,73 +231,73 @@
     "name": "state required nullable pending null",
     "target": "state",
     "outcome": "accept",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v2\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"pending\":null,\"profile\":\"prod\",\"schemaVersion\":\"skiff-profile-activation-state-v1\"}"
   },
   {
     "name": "state dense participants",
     "target": "state",
     "outcome": "accept",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":41},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":42,\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"expectedGeneration\":41,\"participantReplicaIds\":[\"runtime-a\",\"runtime-b\"]},\"schemaVersion\":\"skiff-environment-activation-state-v2\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":41},\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":42,\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"expectedGeneration\":41,\"participantReplicaIds\":[\"runtime-a\",\"runtime-b\"]},\"profile\":\"prod\",\"schemaVersion\":\"skiff-profile-activation-state-v1\"}"
   },
   {
     "name": "state committed generation MAX SAFE",
     "target": "state",
     "outcome": "accept",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740991},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v2\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740991},\"pending\":null,\"profile\":\"prod\",\"schemaVersion\":\"skiff-profile-activation-state-v1\"}"
   },
   {
     "name": "state transition reaches MAX SAFE",
     "target": "state",
     "outcome": "accept",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740990},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":9007199254740991,\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"expectedGeneration\":9007199254740990,\"participantReplicaIds\":[\"A\",\"a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v2\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740990},\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":9007199254740991,\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"expectedGeneration\":9007199254740990,\"participantReplicaIds\":[\"A\",\"a\"]},\"profile\":\"prod\",\"schemaVersion\":\"skiff-profile-activation-state-v1\"}"
   },
   {
     "name": "state missing pending",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state wrong schema version",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"legacy\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"legacy\"}"
   },
   {
     "name": "state unknown top field",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\",\"buildId\":\"legacy\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\",\"buildId\":\"legacy\"}"
   },
   {
     "name": "state generation negative zero",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":-0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":-0},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state generation exponent",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":1e0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":1e0},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state generation rounding",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740993},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":9007199254740993},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state duplicate pending key",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":null,\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":null,\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state escaped duplicate nested key",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdent\\u0069ty\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"generation\":0},\"environment\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdent\\u0069ty\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"generation\":0},\"profile\":\"prod\",\"pending\":null,\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state invalid UTF-8",
@@ -309,133 +309,133 @@
     "name": "state empty participants",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state duplicate participants",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\",\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\",\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state unsorted participants",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"a\",\"A\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"a\",\"A\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state non-string participant",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\",1]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\",1]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state pending generation mismatch",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":1},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":1},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state candidate generation invariant",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":2,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"candidateGeneration\":2,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "state unknown nested pending field",
     "target": "state",
     "outcome": "reject",
-    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"environment\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"buildId\":\"legacy\",\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
+    "text": "{\"committed\":{\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"generation\":0},\"profile\":\"prod\",\"pending\":{\"activationId\":\"activation-42\",\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"buildId\":\"legacy\",\"candidateGeneration\":1,\"expectedGeneration\":0,\"participantReplicaIds\":[\"runtime-a\"]},\"schemaVersion\":\"skiff-environment-activation-state-v1\"}"
   },
   {
     "name": "control prepare",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"prepare\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"prepare\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control prepared",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"prepared\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"prepared\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control commit",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"commit\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"commit\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control abort",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"abort\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"abort\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control reject resolve",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"resolve\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"resolve\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control reject load",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"load\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"load\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control reject link",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"link\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"link\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control reject admission",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"admission\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"admission\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control reject participant disconnected",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"participantDisconnected\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"participantDisconnected\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control register generation MAX SAFE",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"register\",\"environment\":\"prod\",\"generation\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"register\",\"profile\":\"prod\",\"generation\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control transition reaches MAX SAFE",
     "target": "control",
     "outcome": "accept",
-    "text": "{\"type\":\"prepare\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740990,\"candidateGeneration\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+    "text": "{\"type\":\"prepare\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":9007199254740990,\"candidateGeneration\":9007199254740991,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"configSnapshot\":{\"snapshotId\":\"skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
   },
   {
     "name": "control unknown discriminator",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"legacy\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"legacy\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control generation negative zero",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"prepare\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":-0,\"candidateGeneration\":1,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"prepare\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":-0,\"candidateGeneration\":1,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control duplicate discriminator",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"prepare\",\"type\":\"commit\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"prepare\",\"type\":\"commit\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control duplicate nested assembly key",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"prepare\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"prepare\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control invalid UTF-8",
@@ -447,30 +447,30 @@
     "name": "control missing discriminator",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control unknown reject reason",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"legacy\"}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\",\"reason\":\"legacy\"}"
   },
   {
     "name": "control missing reject reason",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"reject\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"reject\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":42,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control register exact fields",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"register\",\"environment\":\"prod\",\"generation\":1,\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"register\",\"profile\":\"prod\",\"generation\":1,\"expectedGeneration\":0,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   },
   {
     "name": "control candidate generation invariant",
     "target": "control",
     "outcome": "reject",
-    "text": "{\"type\":\"prepare\",\"environment\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":43,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
+    "text": "{\"type\":\"prepare\",\"profile\":\"prod\",\"activationId\":\"activation-42\",\"expectedGeneration\":41,\"candidateGeneration\":43,\"assembly\":{\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"replicaId\":\"runtime-a\"}"
   }
 ]

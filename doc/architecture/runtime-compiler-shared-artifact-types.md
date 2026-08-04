@@ -97,13 +97,13 @@ ServiceDeployments + exact contracts/packages
 ```text
 config.yml + config.<profile>.yml + config.<profile>.secret.yml
   + exact ServiceDeployment/package closure
-  + trusted target environment
+  + trusted target profile
   -> RuntimeConfigSnapshot
 ```
 
 配置值、`configLiterals`、`SecretRef`和state binding不进入四类代码artifact或其identity。
-`RuntimeConfigSnapshot`顶层保存该受信target environment；Runtime在prepare和cold recovery中必须先将其
-与activation environment精确比较，再物化Package-scoped `ConfigView`。
+`RuntimeConfigSnapshot`顶层保存该受信target profile；Runtime在prepare和cold recovery中必须先将其
+与activation profile精确比较，再物化Package-scoped `ConfigView`。
 
 这些roots在dev来自watch registry或显式service roots生成的deployment receipts，在production来自平台部署
 状态。源码仓库不author `assembly.yml`；项目间关系仍由各自`package.yml`拥有。RuntimeAssembly是projection
@@ -173,7 +173,7 @@ Runtime不得在load时读取latest pointer或按service/package display name补
 
 RuntimeAssembly不包含业务配置值、secret ref、database namespace或platform resource policy。
 `CommittedActivationGeneration`并列钉住`RuntimeAssemblyRef`和独立`RuntimeConfigSnapshotRef`；
-snapshot顶层携带受信target environment，内部按`ServiceDeploymentRef`隔离并向每个精确Package build
+snapshot顶层携带受信target profile，内部按`ServiceDeploymentRef`隔离并向每个精确Package build
 提供局部`ConfigView`。
 
 ## Runtime Linked Overlay

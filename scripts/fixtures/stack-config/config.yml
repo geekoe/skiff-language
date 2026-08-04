@@ -1,0 +1,13 @@
+profile: prod
+
+remote:
+  host: root@skiff.hanzhe.com
+  remoteSkiff: /root/skiff
+  nodeBin: /root/.local/share/fnm/node-versions/v22.22.1/installation/bin
+  # serviceDbKeyringFile: /run/secrets/skiff-service-db-keyring.json
+
+verify:
+  httpPort: 4000
+  controlPort: 4001
+  telemetryPort: 4002
+  healthPath: /__router/health

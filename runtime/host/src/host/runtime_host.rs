@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, OnceLock},
 };
 
 use skiff_runtime_capability_context::{
@@ -37,7 +37,7 @@ pub struct RuntimeConfig {
     pub router_url: String,
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
-    pub environment: String,
+    pub profile: String,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -53,7 +53,6 @@ pub struct RuntimeProductionConfig {
     pub router_url: String,
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
-    pub environment: String,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -63,7 +62,7 @@ pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
     pub(super) runtime_home: PathBuf,
-    pub(super) environment: String,
+    pub(super) frozen_profile: OnceLock<String>,
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
@@ -85,25 +84,48 @@ pub struct RuntimeHost {
 impl RuntimeHost {
     #[cfg(not(test))]
     pub fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
-        Self::new(RuntimeConfig {
-            db_provider: config.db_provider,
-            router_url: config.router_url,
-            base_runtime_id: config.base_runtime_id,
-            runtime_home: config.runtime_home,
-            environment: config.environment,
-            http_response_max_bytes: config.http_response_max_bytes,
-            http_egress_proxy: config.http_egress_proxy,
-        })
+        Self::new_inner(
+            config.db_provider,
+            config.router_url,
+            config.base_runtime_id,
+            config.runtime_home,
+            None,
+            config.http_response_max_bytes,
+            config.http_egress_proxy,
+        )
     }
 
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
-        let db_provider = config.db_provider.clone();
-        let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
-        skiff_artifact_model::validate_activation_environment(&config.environment)
-            .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
+        Self::new_inner(
+            config.db_provider,
+            config.router_url,
+            config.base_runtime_id,
+            config.runtime_home,
+            Some(config.profile.as_str()),
+            config.http_response_max_bytes,
+            config.http_egress_proxy,
+        )
+    }
+
+    fn new_inner(
+        db_provider: DbProviderSource,
+        router_url: String,
+        base_runtime_id: String,
+        runtime_home: PathBuf,
+        trusted_profile: Option<&str>,
+        http_response_max_bytes: usize,
+        http_egress_proxy: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let http_runtime_options = runtime_http_options_from_config(http_egress_proxy)?;
+        let frozen_profile = OnceLock::new();
+        if let Some(profile) = trusted_profile {
+            skiff_artifact_model::validate_activation_profile(profile)
+                .map_err(|error| anyhow::anyhow!("runtime profile is invalid: {error}"))?;
+            let _ = frozen_profile.set(profile.to_string());
+        }
         let producer_id = format!(
             "{}:proc:{}",
-            config.base_runtime_id,
+            base_runtime_id,
             uuid::Uuid::new_v4()
                 .simple()
                 .to_string()
@@ -113,19 +135,19 @@ impl RuntimeHost {
         );
         let telemetry = TelemetryProducer::new(TelemetryConfig::for_runtime(
             producer_id,
-            config.base_runtime_id.clone(),
+            base_runtime_id.clone(),
         ));
         let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
-            router_url: config.router_url,
-            base_runtime_id: config.base_runtime_id.clone(),
-            runtime_home: config.runtime_home,
-            environment: config.environment,
-            default_http_response_max_bytes: config.http_response_max_bytes,
+            router_url,
+            base_runtime_id: base_runtime_id.clone(),
+            runtime_home,
+            frozen_profile,
+            default_http_response_max_bytes: http_response_max_bytes,
             http_runtime_options,
             memory_budgets: RuntimeMemoryBudgets::default(),
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
-                config.base_runtime_id.clone(),
+                base_runtime_id.clone(),
                 db_provider,
             )),
             blob_store: Arc::new(StdMutex::new(None)),
@@ -143,8 +165,21 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn trusted_environment(&self) -> &str {
-        &self.environment
+    pub(crate) fn trusted_profile(&self) -> Option<&str> {
+        self.frozen_profile.get().map(String::as_str)
+    }
+
+    /// Freezes the trusted activation profile on first router bootstrap and
+    /// fails closed when a later bootstrap disagrees with the frozen value.
+    pub(crate) fn freeze_bootstrap_profile(&self, profile: &str) -> anyhow::Result<()> {
+        skiff_artifact_model::validate_activation_profile(profile)
+            .map_err(|error| anyhow::anyhow!("router bootstrap profile is invalid: {error}"))?;
+        match self.frozen_profile.get_or_init(|| profile.to_string()) {
+            frozen if frozen == profile => Ok(()),
+            frozen => Err(anyhow::anyhow!(
+                "router bootstrap profile {profile} does not match Runtime frozen profile {frozen}"
+            )),
+        }
     }
 
     pub(crate) fn actor_instance_session_lease(

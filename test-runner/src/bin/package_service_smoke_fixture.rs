@@ -12,7 +12,7 @@ use skiff_artifact_model::{
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_compiler::CompilerPlatformSources;
-use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
+use skiff_deployment::storage::{CanonicalArtifactStore, ProfileActivationState};
 use skiff_runtime_config_snapshot::{
     new_runtime_config_snapshot_ref, RuntimeConfigSnapshot, RuntimeConfigSnapshotStore,
 };
@@ -27,7 +27,7 @@ use skiff_test_runner::{
     },
 };
 
-const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment | --seed-committed] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
+const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-profile | --seed-committed] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --profile <id> --platform-source-root <absolute-dir>";
 
 /// Canonical artifact record path of the A3 actor routing projection
 /// (`router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH`); the strict
@@ -52,11 +52,7 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     let args = parse_args()?;
     if args.bootstrap_only {
-        return emit_bootstrap(
-            &args.platform_sources,
-            &args.artifact_root,
-            &args.environment,
-        );
+        return emit_bootstrap(&args.platform_sources, &args.artifact_root, &args.profile);
     }
     if let Some(fixture_root) = args.prepare_host_base.as_deref() {
         let receipt = prepare_package_service_host_fixture(
@@ -66,7 +62,7 @@ fn run() -> anyhow::Result<()> {
                 .as_deref()
                 .expect("prepare mode requires work root"),
             &args.artifact_root,
-            &args.environment,
+            &args.profile,
         )?;
         receipt.write(
             args.receipt
@@ -85,7 +81,7 @@ fn run() -> anyhow::Result<()> {
             &args.platform_sources,
             package_root,
             &args.artifact_root,
-            &args.environment,
+            &args.profile,
         );
     }
     publish_candidate(args)
@@ -94,9 +90,9 @@ fn run() -> anyhow::Result<()> {
 struct FixtureArgs {
     package_root: Option<PathBuf>,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     platform_sources: CompilerPlatformSources,
-    initialize_environment: bool,
+    initialize_profile: bool,
     bootstrap_only: bool,
     seed_committed: bool,
     prepare_host_base: Option<PathBuf>,
@@ -107,9 +103,9 @@ struct FixtureArgs {
 fn parse_args() -> anyhow::Result<FixtureArgs> {
     let mut package_root = None;
     let mut artifact_root = None;
-    let mut environment = None;
+    let mut profile = None;
     let mut platform_source_root = None;
-    let mut initialize_environment = false;
+    let mut initialize_profile = false;
     let mut bootstrap_only = false;
     let mut seed_committed = false;
     let mut prepare_host_base = None;
@@ -125,8 +121,8 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
                     &argument,
                 )?;
             }
-            "--environment" => {
-                set_once(&mut environment, next(&mut args, &argument)?, &argument)?;
+            "--profile" => {
+                set_once(&mut profile, next(&mut args, &argument)?, &argument)?;
             }
             "--platform-source-root" => {
                 set_once(
@@ -135,11 +131,11 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
                     &argument,
                 )?;
             }
-            "--initialize-environment" => {
-                if initialize_environment {
-                    anyhow::bail!("--initialize-environment was provided more than once");
+            "--initialize-profile" => {
+                if initialize_profile {
+                    anyhow::bail!("--initialize-profile was provided more than once");
                 }
-                initialize_environment = true;
+                initialize_profile = true;
             }
             "--bootstrap-only" => {
                 if bootstrap_only {
@@ -178,16 +174,14 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
             value => set_once(&mut package_root, PathBuf::from(value), "package root")?,
         }
     }
-    if bootstrap_only && (package_root.is_some() || initialize_environment) {
-        anyhow::bail!(
-            "--bootstrap-only does not accept a package root or --initialize-environment"
-        );
+    if bootstrap_only && (package_root.is_some() || initialize_profile) {
+        anyhow::bail!("--bootstrap-only does not accept a package root or --initialize-profile");
     }
     if bootstrap_only && seed_committed {
         anyhow::bail!("--bootstrap-only and --seed-committed are mutually exclusive");
     }
     if prepare_host_base.is_some() {
-        if bootstrap_only || seed_committed || package_root.is_some() || initialize_environment {
+        if bootstrap_only || seed_committed || package_root.is_some() || initialize_profile {
             anyhow::bail!(
                 "--prepare-host-base is mutually exclusive with package, bootstrap, and initialization modes"
             );
@@ -198,10 +192,8 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     } else if work_root.is_some() || receipt.is_some() {
         anyhow::bail!("--work-root and --receipt require --prepare-host-base");
     }
-    if seed_committed && (package_root.is_none() || initialize_environment) {
-        anyhow::bail!(
-            "--seed-committed requires a package root and rejects --initialize-environment"
-        );
+    if seed_committed && (package_root.is_none() || initialize_profile) {
+        anyhow::bail!("--seed-committed requires a package root and rejects --initialize-profile");
     }
     let platform_source_root =
         platform_source_root.ok_or_else(|| anyhow::anyhow!("missing --platform-source-root"))?;
@@ -209,9 +201,9 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     Ok(FixtureArgs {
         package_root,
         artifact_root: artifact_root.ok_or_else(|| anyhow::anyhow!("missing --artifact-root"))?,
-        environment: environment.ok_or_else(|| anyhow::anyhow!("missing --environment"))?,
+        profile: profile.ok_or_else(|| anyhow::anyhow!("missing --profile"))?,
         platform_sources,
-        initialize_environment,
+        initialize_profile,
         bootstrap_only,
         seed_committed,
         prepare_host_base,
@@ -223,16 +215,16 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
 fn emit_bootstrap(
     platform_sources: &CompilerPlatformSources,
     artifact_root: &std::path::Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<()> {
     let std = seed_canonical_std(platform_sources, artifact_root)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
-    let bootstrap = initialize_empty_environment(&store, environment)?;
+    let bootstrap = initialize_empty_profile(&store, profile)?;
     println!(
         "{}",
         serde_json::to_string(&json!({
             "schemaVersion": "skiff-package-service-bootstrap-v2",
-            "environment": environment,
+            "profile": profile,
             "bootstrap": {
                 "assembly": bootstrap["assembly"],
                 "configSnapshot": bootstrap["configSnapshot"],
@@ -252,7 +244,7 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         &args.platform_sources,
         &package_root,
         &args.artifact_root,
-        &args.environment,
+        &args.profile,
     )?;
     let case = fixture
         .cases
@@ -261,8 +253,8 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     fixture.publish(&args.artifact_root, &args.artifact_root)?;
 
     let store = CanonicalArtifactStore::open(&args.artifact_root)?;
-    let bootstrap = if args.initialize_environment {
-        Some(initialize_empty_environment(&store, &args.environment)?)
+    let bootstrap = if args.initialize_profile {
+        Some(initialize_empty_profile(&store, &args.profile)?)
     } else {
         None
     };
@@ -326,7 +318,7 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         "{}",
         serde_json::to_string(&json!({
             "schemaVersion": "skiff-package-service-smoke-fixture-v4",
-            "environment": args.environment,
+            "profile": args.profile,
             "bootstrap": bootstrap,
             "candidate": {
                 "assembly": assembly,
@@ -350,7 +342,7 @@ fn assemble_fixture_candidate(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<(CanonicalStdSeedReceipt, CanonicalTestServiceFixture)> {
     let std = seed_canonical_std(platform_sources, artifact_root)?;
     let project = compile_package_project_for_test(platform_sources, package_root, artifact_root)?;
@@ -373,9 +365,9 @@ fn assemble_fixture_candidate(
             Default::default(),
             &run_scope,
             &ingress_url,
-            environment,
+            profile,
         )?,
-        None => assemble_test_service_fixture(&project, &cases, Default::default(), environment)?,
+        None => assemble_test_service_fixture(&project, &cases, Default::default(), profile)?,
     };
     Ok((std, fixture))
 }
@@ -383,7 +375,7 @@ fn assemble_fixture_candidate(
 /// Seeds a canonical committed epoch (generation 0) for one fixture package:
 /// publishes the fixture's immutable records (service deployment, assembly,
 /// config snapshot), writes the canonical actor routing projection record and
-/// initializes the environment activation state against the fixture refs. The
+/// initializes the profile activation state against the fixture refs. The
 /// emitted `skiff-package-service-bootstrap-v2` receipt drives the isolated
 /// activation-state seed, so the router boots a committed epoch with exact
 /// deployments the activation coordinator can freeze.
@@ -391,17 +383,17 @@ fn seed_committed(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<()> {
     let (std, fixture) =
-        assemble_fixture_candidate(platform_sources, package_root, artifact_root, environment)?;
+        assemble_fixture_candidate(platform_sources, package_root, artifact_root, profile)?;
     fixture.publish(artifact_root, artifact_root)?;
     write_actor_routing_projection(artifact_root)?;
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let assembly_ref = runtime_assembly_ref(&fixture.records.assembly)?;
     let config_snapshot_ref = fixture.records.config_snapshot.snapshot_ref().clone();
-    store.initialize_environment_activation(&EnvironmentActivationState::initial(
-        environment,
+    store.initialize_profile_activation(&ProfileActivationState::initial(
+        profile,
         0,
         assembly_ref.clone(),
         config_snapshot_ref.clone(),
@@ -410,7 +402,7 @@ fn seed_committed(
         "{}",
         serde_json::to_string(&json!({
             "schemaVersion": "skiff-package-service-bootstrap-v2",
-            "environment": environment,
+            "profile": profile,
             "bootstrap": {
                 "assembly": assembly_ref,
                 "configSnapshot": config_snapshot_ref,
@@ -435,9 +427,9 @@ fn write_actor_routing_projection(artifact_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn initialize_empty_environment(
+fn initialize_empty_profile(
     store: &CanonicalArtifactStore,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let mut empty = RuntimeAssembly {
         schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
@@ -457,17 +449,17 @@ fn initialize_empty_environment(
     skiff_artifact_identity::assign_runtime_assembly_identity(&mut empty)?;
     store.write_runtime_assembly(&empty)?;
     // The E-bootstrap strict loader requires the canonical actor routing
-    // projection record at the artifact root; the empty environment carries an
+    // projection record at the artifact root; the empty profile carries an
     // empty projection until the A1 producer publishes real routing facts.
     write_actor_routing_projection(store.root())?;
     let reference = runtime_assembly_ref(&empty)?;
     let config_snapshot_ref = new_runtime_config_snapshot_ref();
     let config_snapshot =
-        RuntimeConfigSnapshot::new(environment, config_snapshot_ref.clone(), Vec::new())?;
+        RuntimeConfigSnapshot::new(profile, config_snapshot_ref.clone(), Vec::new())?;
     RuntimeConfigSnapshotStore::create(store.root().join("runtime-config"))?
         .publish(&config_snapshot)?;
-    store.initialize_environment_activation(&EnvironmentActivationState::initial(
-        environment,
+    store.initialize_profile_activation(&ProfileActivationState::initial(
+        profile,
         0,
         reference.clone(),
         config_snapshot_ref.clone(),

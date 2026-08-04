@@ -1,6 +1,6 @@
 {
-  "schemaVersion": "skiff-assembly-activation-request-v2",
-  "environment": "test",
+  "schemaVersion": "skiff-assembly-activation-request-v3",
+  "profile": "test",
   "activationId": "activation-42",
   "expectedGeneration": 41,
   "assembly": {

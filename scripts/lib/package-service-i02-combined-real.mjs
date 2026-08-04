@@ -50,7 +50,7 @@ const I02_PACKAGE_VERSION = '1.0.0';
 export async function runPackageServiceI02Combined({
   checkout,
   replicaCount,
-  environment,
+  profile,
 }, dependencies = {}) {
   assert.equal(replicaCount, 1, 'I02 transaction harness owns exactly one runtime replica');
   const runtimeOwner = dependencies.runtimeOwner ?? runInIsolatedTestRuntime;
@@ -72,10 +72,10 @@ export async function runPackageServiceI02Combined({
   try {
     ledger = await runtimeOwner({
       skiffRoot: checkout,
-      environment,
+      profile,
       signalTarget: deadline.signalTarget,
       validateBootstrapReceipt: (receipt) => {
-        bootstrapReceipt = validatePackageServiceBootstrapReceipt(receipt, environment);
+        bootstrapReceipt = validatePackageServiceBootstrapReceipt(receipt, profile);
       },
       runTest: async (isolatedEnv, signal, stack) => {
         assert.ok(
@@ -97,7 +97,7 @@ export async function runPackageServiceI02Combined({
               checkout,
               fixtureRoot,
               artifactRoot: stack.artifactRoot,
-              environment,
+              profile,
             }),
             { cwd: checkout, env: isolatedEnv, signal },
           );
@@ -106,7 +106,7 @@ export async function runPackageServiceI02Combined({
         }
         const receipt = readPackageServiceFixtureReceipt(
           fixtureOutcome.stdout,
-          environment,
+          profile,
           {
             packageId: I02_PACKAGE_ID,
             packageVersion: I02_PACKAGE_VERSION,
@@ -118,13 +118,13 @@ export async function runPackageServiceI02Combined({
           activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
           activationId,
           expectedGeneration: 0,
-          environment,
+          profile,
           assembly: receipt.candidate.assembly,
           configSnapshot: receipt.candidate.configSnapshot,
           signal,
         });
         const activationResponse = validatePackageServiceActivationReceipt(activation, {
-          environment,
+          profile,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
           configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
           expectedGeneration: 0,
@@ -137,7 +137,7 @@ export async function runPackageServiceI02Combined({
         const generation = activationResponse.activeAssembly.generation;
         const readiness = await waitForReady({
           healthUrl: `${stack.controlUrl}/__router/health`,
-          environment,
+          profile,
           generation,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
           configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
@@ -147,7 +147,7 @@ export async function runPackageServiceI02Combined({
         const committedBefore = captureI02CommittedState(
           await readHealth(`${stack.controlUrl}/__router/health`, signal),
           {
-            environment,
+            profile,
             generation,
             assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
             replicaId: readiness.replicaId,
@@ -196,7 +196,7 @@ export async function runPackageServiceI02Combined({
                 activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
                 activationId: rollbackActivationId,
                 expectedGeneration: 1,
-                environment,
+                profile,
                 assembly: receipt.candidate.assembly,
                 configSnapshot: receipt.candidate.configSnapshot,
                 signal,
@@ -216,7 +216,7 @@ export async function runPackageServiceI02Combined({
 
         await waitForReady({
           healthUrl: `${stack.controlUrl}/__router/health`,
-          environment,
+          profile,
           generation,
           assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
           configSnapshotId: receipt.candidate.configSnapshot.snapshotId,
@@ -226,7 +226,7 @@ export async function runPackageServiceI02Combined({
         const committedAfter = captureI02CommittedState(
           await readHealth(`${stack.controlUrl}/__router/health`, signal),
           {
-            environment,
+            profile,
             generation,
             assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
             replicaId: readiness.replicaId,

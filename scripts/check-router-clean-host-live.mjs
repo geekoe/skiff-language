@@ -47,7 +47,7 @@ import {
   cleanHostEnv,
 } from './lib/clean-host-bundle.mjs';
 import {
-  HTTP_LIVE_ENVIRONMENT,
+  HTTP_LIVE_PROFILE,
   HTTP_LIVE_GENERATION,
   HTTP_LIVE_REPLICA_ID,
   HTTP_LIVE_SERVICE_ID,
@@ -133,7 +133,7 @@ try {
     skiffRoot: repoRoot,
     sourceRoot,
     artifactRoot,
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
   });
 
   console.log('check-router-clean-host-live: leasing isolated router ports');
@@ -160,7 +160,7 @@ try {
   );
   await seedHttpLiveCommittedState({
     mongoUrl,
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
     generation: HTTP_LIVE_GENERATION,
     assemblyIdentity: identities.assemblyIdentity,
     configSnapshotId: identities.configSnapshotId,
@@ -203,7 +203,7 @@ try {
     `${HTTP_LIVE_REPLICA_ID}\n`,
   );
   const routerConfigText = renderHttpLiveRouterConfig({
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
     artifactsPath: join(bundleRoot, 'artifacts'),
     httpPort,
     runtimePort,
@@ -212,7 +212,6 @@ try {
   const runtimeConfigText = renderRuntimeConfig({
     routerUrl: `ws://127.0.0.1:${runtimePort}/runtime`,
     runtimeHome: cleanHostRuntimeHome,
-    environment: HTTP_LIVE_ENVIRONMENT,
   });
 
   console.log(

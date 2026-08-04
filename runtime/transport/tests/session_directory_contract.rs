@@ -17,7 +17,7 @@ struct SessionEpoch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegisteredTuple {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: String,
     config_snapshot: String,
@@ -26,7 +26,7 @@ struct RegisteredTuple {
 impl RegisteredTuple {
     fn new(generation: u64, assembly: &str) -> Self {
         Self {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation,
             assembly: assembly.to_string(),
             config_snapshot: "snapshot-b".to_string(),

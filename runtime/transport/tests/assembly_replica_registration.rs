@@ -49,14 +49,14 @@ mod tests {
     fn two_replicas_register_one_exact_assembly_identity_independently() {
         let assembly = assembly_ref('a');
         let first = AssemblyActivationControl::Register {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 42,
             assembly: assembly.clone(),
             config_snapshot: config_snapshot_ref('a'),
             replica_id: "runtime-a".to_string(),
         };
         let second = AssemblyActivationControl::Register {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 42,
             assembly,
             config_snapshot: config_snapshot_ref('a'),
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn activation_control_rejects_payload_and_legacy_service_fields() {
         let prepare = AssemblyActivationControl::Prepare {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "activation-42".to_string(),
             expected_generation: 41,
             candidate_generation: 42,

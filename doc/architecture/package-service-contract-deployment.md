@@ -535,7 +535,7 @@ selector和policy只由ServiceDeployment及其revision覆盖。只替换实现�
 | ServiceDeployment schema | `skiff-service-deployment-v4` |
 | DeploymentArtifact identity marker / prefix | `skiff-deployment-artifact-identity-v4` / `skiff-deployment-artifact-v4:sha256` |
 | RuntimeAssembly schema / identity marker / prefix | `skiff-runtime-assembly-v3` / `skiff-runtime-assembly-identity-v3` / `skiff-runtime-assembly-v3:sha256` |
-| Router↔Runtime frame schema | `skiff-runtime-frame-v3` |
+| Router↔Runtime frame schema | `skiff-runtime-frame-v4` |
 
 `GatewayEntryIdentity`/GatewayEntry保持v2；ServiceContract/ServiceProtocol、Package artifact/build/local
 ABI/schema与WebSocketEntryId不变。旧Host route字段、裸全局ingress key、旧assembly/wire不得兼容读取。
@@ -1226,22 +1226,22 @@ fail closed。snapshot store目录/文件保持`0700`/`0600`。所有业务配�
 ServiceContract、ServiceDeployment、RuntimeAssembly、上述artifact identity、receipt、control frame或
 日志。tooling把overlay结果与exact dependency closure解析成随机opaque ID的immutable
 `RuntimeConfigSnapshot`。snapshot顶层携带producer从受信operator输入写入的
-`targetEnvironment`；该字段不从source YAML或ambient environment推断。snapshot内部先按
+`profile`；该字段不从source YAML或ambient environment推断。snapshot内部先按
 `ServiceDeploymentRef`隔离，再按exact Package build提供只读`ConfigView`；alias和diamond到达路径不参与
 identity。同build在同deployment内只有一份view，同build跨deployment仍严格隔离。
 
 Committed activation generation并列钉住`RuntimeAssemblyRef`和`RuntimeConfigSnapshotRef`，两者互不
 引用。Runtime prepare和cold recovery都必须在物化任何`ConfigView`前严格比较
-`snapshot.targetEnvironment == activation.environment`。配置变化只创建新snapshot和新generation；
+`snapshot.profile == activation.profile`。配置变化只创建新snapshot和新generation；
 cold recovery必须精确恢复两个ref，不能读取latest或ambient配置。第一版snapshot store可保存明文；未来
 整快照加密属于独立store能力，本契约不定义KMS wire，也不允许它重新引入字段级SecretRef。
 
-一个service只有一个数据库identity，由operator选择的受信Mongo endpoint/storage domain、environment与
+一个service只有一个数据库identity，由operator选择的受信Mongo endpoint/storage domain、profile与
 serviceId共同定界，不引入`platformId`。开发者不能在`package.yml`、service profile或源码中配置
 database/namespace；service version、package version、deployment revision和runtime replica都不改变
 数据库identity。只有activation闭包含DB metadata时才按需提供service DB handle。同一service中的Package
 共享数据库，但保留各自精确Package/schema/collection identity；跨service DB访问禁止。service重命名、
-environment变化或移动到另一个受信storage domain都会产生不同数据库identity，数据迁移必须显式执行。
+profile变化或移动到另一个受信storage domain都会产生不同数据库identity，数据迁移必须显式执行。
 physical database name的编码属于operator/runtime内部实现，但必须对该tuple确定、无碰撞、满足存储后端
 命名限制并避免把任意service字符串直接当作未校验名称。
 
@@ -1256,7 +1256,7 @@ logical collection identity重命名需要显式迁移。
 service数据库。Redis、queue或其它外部系统将来使用独立capability，不保留通用`state`枚举占位。
 
 Runtime从exact provider DB metadata为每个
-`(trusted storage domain, environment, serviceId)`建立完整service DB index plan。同一candidate内该service
+`(trusted storage domain, profile, serviceId)`建立完整service DB index plan。同一candidate内该service
 的全部version必须先合并验证：同logical index identity定义完全相同则去重，不同则在任何storage mutation前
 拒绝；其余不同名字的index取并集。Index physical name由系统稳定编码Package ID、logical collection
 identity与logical index identity，不包含version/build/alias/edge/replica。index field path复用统一DB
@@ -1319,11 +1319,11 @@ Root set不是developer-authored source config，也没有`assembly.yml`。它�
 
 - dev sync/watch从watch registry选择的service roots生成各自deployment，再把这些精确deployment refs作为
   roots；一次性开发、测试或验收命令也可以显式传入service roots或deployment receipts；
-- production由平台部署状态选择当前environment的精确deployment refs；
+- production由平台部署状态选择当前profile的精确deployment refs；
 - 每个项目的package/service依赖仍只由该项目自己的`package.yml`声明；assembly projection从roots沿这些
   已编译依赖闭合，不在仓库顶层复制一份依赖图。
 
-因此，一个放置多个项目的源码仓库仍然只是项目集合，不拥有environment assembly。任何tooling为了调用旧CLI
+因此，一个放置多个项目的源码仓库仍然只是项目集合，不拥有profile assembly。任何tooling为了调用旧CLI
 而临时写出的`assembly.yml`都只是待删除的实现adapter，不能成为公共authoring格式、配置owner或验收输入。
 Host/domain到service selector的映射属于外部ingress，同样不进入root set或RuntimeAssembly。
 
@@ -1345,7 +1345,7 @@ Package link与service binding使用不同的可变性边界：
 pointer可以切换到新的deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。
 API内容变化会产生新的service API identity；旧consumer不能仅凭相同人类版本label被静默迁移。
 
-第一版的完整assembly-per-environment、replica隔离、ActivationIdentity/generation、Router/Runtime
+第一版的完整assembly-per-profile、replica隔离、ActivationIdentity/generation、Router/Runtime
 bootstrap、共享artifact filesystem、HTTP实例限制与未来多assembly扩展属于部署/runtime拓扑，不是
 Package/Service语言对象。完整契约见
 [`runtime-deployment-topology.md`](runtime-deployment-topology.md)。本节只冻结：RuntimeAssembly记录精确
@@ -1382,10 +1382,10 @@ local/dev/CLI backend，不参与production registry，也不与Platform DB dual
 
 `package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`、`StateBindingKind`与
 `ServiceDeployment.stateBindings`全部删除。Compiler从Package自己的DB schema metadata知道它使用service
-DB；Runtime按operator选择的受信Mongo endpoint/storage domain、environment与service identity定界
+DB；Runtime按operator选择的受信Mongo endpoint/storage domain、profile与service identity定界
 数据库，不引入platformId，也不从authoring配置反推。
 
-Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
+Router coordinator仍是profile activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
 自己配置的MongoDB连接持久化activation state；状态CAS与Platform audit在同一事务中追加。不得为了复用其它
 语言实现而要求外部activation backend executable、子进程或NDJSON transport。registry service不能直接写
 prepared/connected集合、伪造participant ACK或维护第二份activation state；它与Router activation state通过

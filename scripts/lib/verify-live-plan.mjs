@@ -35,7 +35,7 @@ export async function liveSelectorTasks(root, selector, {
   runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
-  runtimeLiveEnvironment,
+  runtimeLiveProfile,
   runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env = process.env,
@@ -56,7 +56,7 @@ export async function liveSelectorTasks(root, selector, {
     runtimeLiveActivationUrl,
     runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
-    runtimeLiveEnvironment,
+    runtimeLiveProfile,
     runtimeLiveExpectedGeneration,
     loopRiskConfig,
   }, env);
@@ -199,8 +199,8 @@ async function inspectRuntimeFixtureState(root, entry, values) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if (values.runtimeEnvironment !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(values.runtimeEnvironment)) {
-    failures.push('runtime-live environment must be a canonical ASCII token');
+  if (values.runtimeProfile !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(values.runtimeProfile)) {
+    failures.push('runtime-live profile must be a canonical ASCII token');
   }
   let expectedGenerations;
   if (values.runtimeExpectedGeneration !== undefined) {
@@ -221,7 +221,7 @@ async function inspectRuntimeFixtureState(root, entry, values) {
     artifactRoot,
     activationUrl,
     ingressUrl,
-    environment: values.runtimeEnvironment,
+    profile: values.runtimeProfile,
     expectedGenerations,
     fixtures,
     sourceRoot,
@@ -233,7 +233,7 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
     artifactRoot,
     activationUrl,
     ingressUrl,
-    environment,
+    profile,
     expectedGenerations,
     fixtures,
     sourceRoot,
@@ -287,8 +287,8 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
       activationUrl,
       '--ingress-url',
       ingressUrl,
-      '--environment',
-      environment,
+      '--profile',
+      profile,
       '--expected-generation',
       expectedGenerations[index],
       ...(invocation.canonicalPolicy.forbidSkips ? ['--deny-skips'] : []),

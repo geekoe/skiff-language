@@ -78,7 +78,7 @@ impl TerminalKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterControl {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,
@@ -88,7 +88,7 @@ pub struct RegisterControl {
 impl RegisterControl {
     pub fn tuple(&self) -> RegisteredAssemblyTuple {
         RegisteredAssemblyTuple {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.generation,
             assembly: self.assembly.clone(),
             config_snapshot: self.config_snapshot.clone(),

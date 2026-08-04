@@ -67,7 +67,7 @@ import { startLocalIngress } from './local-ingress.mjs';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultInternalsRoot = resolve(repoRoot, '..', 'internals');
 const defaultSkiffPackagesRoot = resolve(repoRoot, '..', 'skiff-packages');
-const ENVIRONMENT = 'router-live-chat';
+const PROFILE = 'router-live-chat';
 const GENERATION = 1;
 const ACTIVATION_DATABASE = 'skiff-router';
 const ACTIVATION_COLLECTION = 'activation_state';
@@ -162,8 +162,8 @@ try {
       artifactRoot,
       '--platform-source-root',
       repoRoot,
-      '--environment',
-      ENVIRONMENT,
+      '--profile',
+      PROFILE,
     ],
     { cwd: repoRoot, env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDir(repoRoot) } },
   );
@@ -176,7 +176,7 @@ try {
     assemblyIdentity,
     configSnapshotId,
     assemblyRecordPath,
-  } = await authorAgineStack({ repoRoot, artifactRoot, environment: ENVIRONMENT });
+  } = await authorAgineStack({ repoRoot, artifactRoot, profile: PROFILE });
 
   const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
   await mkdir(projectionDirectory, { recursive: true });
@@ -228,7 +228,7 @@ try {
   const routerConfigPath = join(tempRoot, 'router.yml');
   const runtimeConfigPath = join(tempRoot, 'runtime.yml');
   await writeFile(routerConfigPath, renderRouterConfig({
-    environment: ENVIRONMENT,
+    profile: PROFILE,
     artifactRoot,
     httpPort,
     runtimePort,
@@ -243,7 +243,7 @@ try {
   console.log('router-live:chat: seeding committed activation state');
   await seedCommittedActivationState({
     mongoPort: harness.port,
-    environment: ENVIRONMENT,
+    profile: PROFILE,
     generation: GENERATION,
     assemblyIdentity,
     configSnapshotId,
@@ -290,7 +290,7 @@ try {
       internals: { repository: 'internals', commit: internalsSha },
       skiffPackages: { repository: 'skiff-packages', commit: skiffPackagesSha },
     },
-    environment: ENVIRONMENT,
+    profile: PROFILE,
     generation: GENERATION,
     assembly: { assemblyIdentity },
     configSnapshot: { snapshotId: configSnapshotId },
@@ -429,7 +429,7 @@ main().catch((error) => {
 async function authorAgineStack({
   repoRoot: skiffRoot,
   artifactRoot,
-  environment,
+  profile,
 }) {
   const packageArtifactReceipts = [];
   const deployments = [];
@@ -447,7 +447,7 @@ async function authorAgineStack({
           action: 'publish',
           root,
           artifactRoot,
-          environment,
+          profile,
         });
         packageArtifactReceipts.push(receipt.packageArtifactReceipt);
         if (receipt.serviceDeploymentReceipt?.deployment !== undefined) {
@@ -485,7 +485,7 @@ async function authorAgineStack({
     action: 'build',
     rootDeployments,
     artifactRoot,
-    environment,
+    profile,
   });
   const runtimeAssembly = assemblyReceipt?.runtimeAssemblyReceipt;
   const assembly = runtimeAssembly?.assembly;
@@ -498,8 +498,7 @@ async function authorAgineStack({
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    environment,
-    profile: 'dev',
+    profile,
     assemblyRecord: assemblyRecordPath,
     sources: serviceSources,
   });
@@ -530,15 +529,14 @@ function errorMessage(error) {
 }
 
 function renderRouterConfig({
-  environment,
+  profile,
   artifactRoot,
   httpPort,
   runtimePort,
   mongoUrl,
 }) {
   return [
-    'profile: dev',
-    `environment: ${yamlQuote(environment)}`,
+    `profile: ${yamlQuote(profile)}`,
     'host: 127.0.0.1',
     `artifactsPath: ${yamlQuote(artifactRoot)}`,
     'releaseMode: true',
@@ -567,7 +565,6 @@ function renderRuntimeConfig({
   return [
     `router: ${yamlQuote(`ws://127.0.0.1:${runtimePort}/runtime`)}`,
     `runtime-home: ${yamlQuote(runtimeHome)}`,
-    `environment: ${yamlQuote(ENVIRONMENT)}`,
     'serviceDb:',
     '  encryption:',
     `    keyringFile: ${yamlQuote(keyringPath)}`,
@@ -577,14 +574,14 @@ function renderRuntimeConfig({
 
 async function seedCommittedActivationState({
   mongoPort,
-  environment,
+  profile,
   generation,
   assemblyIdentity,
   configSnapshotId,
 }) {
   const state = {
-    schemaVersion: 'skiff-environment-activation-state-v2',
-    environment,
+    schemaVersion: 'skiff-profile-activation-state-v1',
+    profile,
     committed: {
       generation,
       assembly: { assemblyIdentity },
@@ -592,11 +589,11 @@ async function seedCommittedActivationState({
     },
     pending: null,
   };
-  const document = { _id: environment, state };
+  const document = { _id: profile, state };
   const url =
     `mongodb://127.0.0.1:${mongoPort}/${ACTIVATION_DATABASE}?directConnection=true&replicaSet=rs0`;
   const script = [
-    `db.${ACTIVATION_COLLECTION}.deleteMany({ _id: ${JSON.stringify(environment)} });`,
+    `db.${ACTIVATION_COLLECTION}.deleteMany({ _id: ${JSON.stringify(profile)} });`,
     `db.${ACTIVATION_COLLECTION}.insertOne(${JSON.stringify(document)});`,
   ].join('');
   await captureCheckedCommand(

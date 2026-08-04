@@ -18,7 +18,7 @@ pub fn validate_activation_token(value: &str, label: &str) -> Result<(), String>
     Ok(())
 }
 
-pub fn validate_activation_environment(value: &str) -> Result<(), String> {
+pub fn validate_activation_profile(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 200
         || value == "."
@@ -31,7 +31,7 @@ pub fn validate_activation_environment(value: &str) -> Result<(), String> {
         })
     {
         return Err(
-            "environment must be 1-200 ASCII letters, digits, dot, dash, or underscore and must not be . or .."
+            "profile must be 1-200 ASCII letters, digits, dot, dash, or underscore and must not be . or .."
                 .to_string(),
         );
     }

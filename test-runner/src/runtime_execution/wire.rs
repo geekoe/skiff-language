@@ -2,14 +2,14 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{Map, Value};
 use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 use skiff_deployment::storage::{
-    CommittedActivation, EnvironmentActivationState, PendingActivation,
-    ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    CommittedActivation, PendingActivation, ProfileActivationState,
+    PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 use skiff_runtime_model::service_error::{OpaqueServiceError, ServiceErrorEnvelope};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
-const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v3";
+const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v4";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TestDispatchOutcome {
@@ -25,7 +25,7 @@ pub(super) struct ControlErrorResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ActivationReceipt {
-    pub(super) environment: String,
+    pub(super) profile: String,
     pub(super) generation: u64,
     pub(super) assembly: RuntimeAssemblyRef,
     pub(super) config_snapshot: RuntimeConfigSnapshotRef,
@@ -48,7 +48,7 @@ pub(super) struct CapabilityConnection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReplicaSnapshot {
     pub(super) replica_id: String,
-    pub(super) environment: String,
+    pub(super) profile: String,
     pub(super) generation: u64,
     pub(super) assembly: RuntimeAssemblyRef,
     pub(super) config_snapshot: RuntimeConfigSnapshotRef,
@@ -439,9 +439,9 @@ fn validate_activation_state(
     active: &ActivationReceipt,
     pending: Option<PendingActivation>,
 ) -> Result<(), String> {
-    EnvironmentActivationState {
-        schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-        environment: active.environment.clone(),
+    ProfileActivationState {
+        schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+        profile: active.profile.clone(),
         committed: CommittedActivation {
             generation: active.generation,
             assembly: active.assembly.clone(),
@@ -483,7 +483,7 @@ fn decode_active(
 ) -> Result<ActivationReceipt, String> {
     let required = if with_ingress_count {
         &[
-            "environment",
+            "profile",
             "generation",
             "assemblyIdentity",
             "configSnapshotId",
@@ -491,7 +491,7 @@ fn decode_active(
         ][..]
     } else {
         &[
-            "environment",
+            "profile",
             "generation",
             "assemblyIdentity",
             "configSnapshotId",
@@ -502,7 +502,7 @@ fn decode_active(
         u64_field(active, "ingressCount", context)?;
     }
     Ok(ActivationReceipt {
-        environment: string_field(active, "environment", context)?.to_string(),
+        profile: string_field(active, "profile", context)?.to_string(),
         generation: u64_field(active, "generation", context)?,
         assembly: decode_assembly_identity(field(active, "assemblyIdentity", context)?, context)?,
         config_snapshot: decode_config_snapshot_identity(
@@ -621,7 +621,7 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
         value,
         &[
             "replicaId",
-            "environment",
+            "profile",
             "generation",
             "assemblyIdentity",
             "configSnapshotId",
@@ -660,7 +660,7 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
     };
     Ok(ReplicaSnapshot {
         replica_id: string_field(replica, "replicaId", &context)?.to_string(),
-        environment: string_field(replica, "environment", &context)?.to_string(),
+        profile: string_field(replica, "profile", &context)?.to_string(),
         generation: u64_field(replica, "generation", &context)?,
         assembly: decode_assembly_identity(
             field(replica, "assemblyIdentity", &context)?,

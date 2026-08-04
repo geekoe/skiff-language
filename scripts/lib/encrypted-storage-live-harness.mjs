@@ -14,7 +14,7 @@ import {
   runAttachedCommand,
 } from './command-execution.mjs';
 import {
-  ENCRYPTED_STORAGE_TARGET_ENVIRONMENT as TARGET_ENVIRONMENT,
+  ENCRYPTED_STORAGE_TARGET_PROFILE as TARGET_PROFILE,
   encryptedStorageBuildArgs,
   encryptedStorageIngressRequest,
   encryptedStorageProductionAssembly,
@@ -83,7 +83,7 @@ export class EncryptedStorageLiveHarness {
     const { paths, portLease } =
       await createEncryptedStorageLiveInstanceResources({
         repoRoot,
-        environment: TARGET_ENVIRONMENT,
+        profile: TARGET_PROFILE,
       });
     return new EncryptedStorageLiveHarness(paths, portLease);
   }
@@ -134,7 +134,7 @@ export class EncryptedStorageLiveHarness {
       await this.instanceOperations.seedActivationState({
         mongoPort: this.ports.mongo,
         bootstrap: {
-          environment: TARGET_ENVIRONMENT,
+          profile: TARGET_PROFILE,
           bootstrap: {
             generation: this.activationState.currentGeneration,
             assembly: this.activationState.productionAssembly,
@@ -189,7 +189,7 @@ export class EncryptedStorageLiveHarness {
           baseConfigSnapshot,
           activationUrl: this.activationUrl,
           ingressUrl: this.routerHttpUrl,
-          environment: TARGET_ENVIRONMENT,
+          profile: TARGET_PROFILE,
           expectedGeneration,
         }),
         { cwd: repoRoot },
@@ -232,7 +232,7 @@ export class EncryptedStorageLiveHarness {
     if (
       health?.ok !== true
       || health?.pendingActivation !== null
-      || health?.activeAssembly?.environment !== TARGET_ENVIRONMENT
+      || health?.activeAssembly?.profile !== TARGET_PROFILE
       || !Number.isSafeInteger(generation)
       || generation < 0
     ) {
@@ -251,14 +251,14 @@ export class EncryptedStorageLiveHarness {
           const matchingReplica = (health?.replicas ?? []).some((replica) =>
             replica?.connected === true
             && replica?.state === 'healthy'
-            && replica?.environment === TARGET_ENVIRONMENT
+            && replica?.profile === TARGET_PROFILE
             && replica?.generation === this.activationState.currentGeneration
             && replica?.assemblyIdentity
               === this.activationState.productionAssembly.assemblyIdentity);
           if (
             health?.ok === true
             && health?.pendingActivation === null
-            && active?.environment === TARGET_ENVIRONMENT
+            && active?.profile === TARGET_PROFILE
             && active?.generation === this.activationState.currentGeneration
             && active?.assemblyIdentity
               === this.activationState.productionAssembly.assemblyIdentity
@@ -279,12 +279,12 @@ export class EncryptedStorageLiveHarness {
     const activation = await requestAssemblyActivation({
       activationUrl: this.activationUrl,
       expectedGeneration,
-      environment: TARGET_ENVIRONMENT,
+      profile: TARGET_PROFILE,
       assembly: { assemblyIdentity: assembly.assemblyIdentity },
       configSnapshot: { snapshotId: assembly.configSnapshotId },
     });
     validatePackageServiceActivationReceipt(activation, {
-      environment: TARGET_ENVIRONMENT,
+      profile: TARGET_PROFILE,
       assemblyIdentity: assembly.assemblyIdentity,
       configSnapshotId: assembly.configSnapshotId,
       expectedGeneration,

@@ -43,7 +43,7 @@ use skiff_artifact_model::{
     RuntimeConfigSnapshotRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
@@ -93,11 +93,11 @@ const HANDSHAKE_SEQUENCE: [&str; 5] = [
     "runtime.health",
 ];
 
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
@@ -110,7 +110,7 @@ struct LiveEnvironment {
     temp_dir: PathBuf,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -134,7 +134,7 @@ impl LiveEnvironment {
             mongo_url: required("SKIFF_ROUTER_DISPATCH_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_DISPATCH_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_DISPATCH_LIVE_ARTIFACT_ROOT")),
-            environment: required("SKIFF_ROUTER_DISPATCH_LIVE_ENVIRONMENT"),
+            profile: required("SKIFF_ROUTER_DISPATCH_LIVE_PROFILE"),
             assembly_identity: required("SKIFF_ROUTER_DISPATCH_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ROUTER_DISPATCH_LIVE_CONFIG_SNAPSHOT_ID"),
             generation,
@@ -180,7 +180,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -197,9 +197,9 @@ fn seed_runtime_home(home: &Path, replica_id: &str) {
     std::fs::write(home.join("runtime-id"), format!("{replica_id}\n")).expect("seed runtime-id");
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
+    let state = ProfileActivationState::initial(
+        &live.profile,
         live.generation,
         live.assembly_ref(),
         live.snapshot_ref(),
@@ -210,14 +210,13 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
         .expect("seed committed activation state");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-dispatch-{}-{}.yml",
         live.http_port, live.control_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -225,7 +224,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          http:\n  port: {}\n  maxRequestBytes: 1048576\n  maxResponseBytes: 1048576\n\
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.control_port,
@@ -235,21 +234,19 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment, name: &str, home: &Path) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile, name: &str, home: &Path) -> PathBuf {
     let path = live.temp_dir.join(name);
     let contents = format!(
         "router: {}\n\
-         runtime-home: {}\n\
-         environment: {}\n",
+         runtime-home: {}\n",
         live.relay_runtime_url(),
         home.display(),
-        live.environment,
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path, log_suffix: &str) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path, log_suffix: &str) -> Child {
     let stdout_path = live
         .temp_dir
         .join(format!("runtime-{log_suffix}.stdout.log"));
@@ -309,7 +306,7 @@ fn kill_process(child: &mut Child, signal: &str, label: &str) -> u32 {
     pid
 }
 
-fn assert_control_port_closed(live: &LiveEnvironment) {
+fn assert_control_port_closed(live: &LiveProfile) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if TcpStream::connect(live.control_addr()).is_err() {
@@ -322,7 +319,7 @@ fn assert_control_port_closed(live: &LiveEnvironment) {
     }
 }
 
-fn materialize_projection(live: &LiveEnvironment) {
+fn materialize_projection(live: &LiveProfile) {
     let projection_directory = live.artifact_root.join("records/actor-routing");
     std::fs::create_dir_all(&projection_directory).expect("create projection directory");
     let projection = ActorRoutingProjection::new(
@@ -647,7 +644,7 @@ async fn wait_for_pair_closed(state: &Arc<RelayState>, connection: u64) {
     }
 }
 
-fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
+fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
     assert_eq!(records.len(), HANDSHAKE_SEQUENCE.len());
     for (index, expected) in HANDSHAKE_SEQUENCE.iter().enumerate() {
         let RecordKind::Frame {
@@ -664,7 +661,7 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
                 assert_eq!(*direction, Direction::ToRuntime);
                 let header =
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
-                assert_eq!(header.activation.environment, live.environment);
+                assert_eq!(header.activation.profile, live.profile);
                 assert_eq!(header.activation.generation, live.generation);
                 assert_eq!(
                     header.activation.assembly.assembly_identity.as_str(),
@@ -713,19 +710,19 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
     }
 }
 
-fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
+fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
     let control =
         decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
             .expect("decode register frame");
     match control {
         AssemblyActivationControl::Register {
-            environment,
+            profile,
             generation,
             assembly,
             config_snapshot,
             replica_id,
         } => {
-            assert_eq!(environment, live.environment);
+            assert_eq!(profile, live.profile);
             assert_eq!(generation, live.generation);
             assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
             assert_eq!(
@@ -920,7 +917,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "driven by scripts/check-router-dispatch-live.mjs"]
     async fn router_live_dispatch_full_chain() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live.runtime_home_a, REPLICA_A);
         seed_runtime_home(&live.runtime_home_b, REPLICA_B);
         materialize_projection(&live);
@@ -932,7 +929,7 @@ mod tests {
         let config_path = write_router_config(&live);
         let config = load_router_config(config_path.to_str().expect("config path utf8"))
             .expect("router config");
-        let supervisor = RouterSupervisor::assemble_with(&config, &live.environment, repository)
+        let supervisor = RouterSupervisor::assemble_with(&config, &live.profile, repository)
             .await
             .expect("assemble production router composition");
         let components = Arc::clone(supervisor.components());

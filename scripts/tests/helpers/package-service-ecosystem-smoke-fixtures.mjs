@@ -20,7 +20,7 @@ export const smokeFixtureIdentities = Object.freeze({
   stdAbi: identity('skiff-package-local-abi-v7:sha256', 'd'),
 });
 
-export function validSmokeFixtureReceipt(environment) {
+export function validSmokeFixtureReceipt(profile) {
   const testService = {
     packageId: 'test.skiff/package-service-websocket-smoke',
     packageVersion: '1.0.0',
@@ -41,7 +41,7 @@ export function validSmokeFixtureReceipt(environment) {
   };
   return {
     schemaVersion: 'skiff-package-service-smoke-fixture-v4',
-    environment,
+    profile,
     bootstrap: null,
     candidate: {
       assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
@@ -79,7 +79,7 @@ export function validSmokeFixtureReceipt(environment) {
   };
 }
 
-export function validBootstrapReceipt(environment, {
+export function validBootstrapReceipt(profile, {
   packageBuildId = identity('skiff-package-build-v10:sha256', 'a'),
 } = {}) {
   const artifact = {
@@ -92,7 +92,7 @@ export function validBootstrapReceipt(environment, {
     `records/package-artifacts/skiff~drun~sstd/1.0.0/${hash(artifact.packageBuildId)}/package.json`;
   return {
     schemaVersion: 'skiff-package-service-bootstrap-v2',
-    environment,
+    profile,
     bootstrap: {
       assembly: { assemblyIdentity: smokeFixtureIdentities.bootstrapAssembly },
       configSnapshot: {
@@ -119,11 +119,11 @@ export function validBootstrapReceipt(environment, {
   };
 }
 
-export function validActivationReceipt(environment) {
+export function validActivationReceipt(profile) {
   return {
     request: {
-      schemaVersion: 'skiff-assembly-activation-request-v2',
-      environment,
+      schemaVersion: 'skiff-assembly-activation-request-v3',
+      profile,
       activationId: 'p5-f27c-test',
       expectedGeneration: 0,
       assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
@@ -137,7 +137,7 @@ export function validActivationReceipt(environment) {
         configSnapshot: { snapshotId: smokeFixtureIdentities.configSnapshot },
       },
       activeAssembly: {
-        environment,
+        profile,
         generation: 1,
         assemblyIdentity: smokeFixtureIdentities.assembly,
         configSnapshotId: smokeFixtureIdentities.configSnapshot,
@@ -147,12 +147,12 @@ export function validActivationReceipt(environment) {
   };
 }
 
-export function readyAssemblyHealth(environment, overrides = {}) {
+export function readyAssemblyHealth(profile, overrides = {}) {
   const replicaId = 'runtime-f27c';
   const base = {
     ok: true,
     activeAssembly: {
-      environment,
+      profile,
       generation: 1,
       assemblyIdentity: smokeFixtureIdentities.assembly,
       configSnapshotId: smokeFixtureIdentities.configSnapshot,
@@ -167,7 +167,7 @@ export function readyAssemblyHealth(environment, overrides = {}) {
     }],
     replicas: [{
       replicaId,
-      environment,
+      profile,
       generation: 1,
       assemblyIdentity: smokeFixtureIdentities.assembly,
       configSnapshotId: smokeFixtureIdentities.configSnapshot,

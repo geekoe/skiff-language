@@ -20,7 +20,7 @@ import {
 
 export const ACTOR_LIVE_SERVICE_ID = 'test.skiff/router-rust-actor-live';
 export const ACTOR_LIVE_VERSION = '1.0.0';
-export const ACTOR_LIVE_ENVIRONMENT = 'actor-live';
+export const ACTOR_LIVE_PROFILE = 'actor-live';
 
 export const ACTOR_LIVE_ENTRYPOINTS = Object.freeze({
   probe: { path: '/probe', handler: 'main.__skiffHttpProbe' },
@@ -78,7 +78,7 @@ export async function authorActorLiveArtifact({
   skiffRoot,
   sourceRoot,
   artifactRoot,
-  environment = ACTOR_LIVE_ENVIRONMENT,
+  profile = ACTOR_LIVE_PROFILE,
 }) {
   await mkdir(artifactRoot, { recursive: true });
   // Seed the canonical skiff.run/std PackageArtifact records (the same
@@ -97,8 +97,8 @@ export async function authorActorLiveArtifact({
       '--bootstrap-only',
       '--artifact-root',
       artifactRoot,
-      '--environment',
-      environment,
+      '--profile',
+      profile,
       '--platform-source-root',
       skiffRoot,
     ],
@@ -110,7 +110,7 @@ export async function authorActorLiveArtifact({
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment,
+    profile,
   });
   const deploymentRef = packageReceipt?.serviceDeploymentReceipt?.deployment;
   if (
@@ -126,7 +126,7 @@ export async function authorActorLiveArtifact({
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment,
+    profile,
     rootDeployments: [deploymentRef],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -142,8 +142,7 @@ export async function authorActorLiveArtifact({
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    environment,
-    profile: 'dev',
+    profile,
     assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });

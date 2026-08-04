@@ -31,7 +31,7 @@ use skiff_artifact_model::{
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_deployment::activation_state::{
-    EnvironmentActivationState, ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    ProfileActivationState, PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -85,7 +85,7 @@ struct Run {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TxFixture {
-    environment: String,
+    profile: String,
     activation_id: String,
     expected_generation: u64,
     candidate_generation: u64,
@@ -246,7 +246,7 @@ fn session(replica_id: &str, connection_generation: u64) -> RuntimeSessionEpoch 
 }
 
 fn epoch(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_ref: RuntimeAssemblyRef,
     config_snapshot_ref: RuntimeConfigSnapshotRef,
@@ -266,7 +266,7 @@ fn epoch(
         activation_templates: Vec::new(),
         gateway_ingress: Vec::new(),
     };
-    let snapshot = RuntimeConfigSnapshot::new(environment, config_snapshot_ref, Vec::new())
+    let snapshot = RuntimeConfigSnapshot::new(profile, config_snapshot_ref, Vec::new())
         .expect("snapshot fixture");
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -276,7 +276,7 @@ fn epoch(
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
     Arc::new(
         RoutingEpoch::new(
-            environment,
+            profile,
             generation,
             Arc::new(assembly),
             Arc::new(snapshot),
@@ -287,13 +287,13 @@ fn epoch(
 }
 
 fn state_with(
-    environment: &str,
+    profile: &str,
     committed_generation: u64,
     pending: Option<PendingFixture>,
-) -> EnvironmentActivationState {
-    EnvironmentActivationState {
-        schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-        environment: environment.to_string(),
+) -> ProfileActivationState {
+    ProfileActivationState {
+        schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+        profile: profile.to_string(),
         committed: CommittedActivation {
             generation: committed_generation,
             assembly: assembly(0),
@@ -313,7 +313,7 @@ fn state_with(
 fn request(tx: &TxFixture) -> AssemblyActivationRequest {
     AssemblyActivationRequest {
         schema_version: ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION.to_string(),
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         assembly: assembly(1),
@@ -328,7 +328,7 @@ fn ack_control(
 ) -> AssemblyActivationControl {
     match kind {
         "prepared" => AssemblyActivationControl::Prepared {
-            environment: request.environment.clone(),
+            profile: request.profile.clone(),
             activation_id: request.activation_id.clone(),
             expected_generation: request.expected_generation,
             candidate_generation: request.expected_generation + 1,
@@ -337,7 +337,7 @@ fn ack_control(
             replica_id: replica_id.to_string(),
         },
         "reject" => AssemblyActivationControl::Reject {
-            environment: request.environment.clone(),
+            profile: request.profile.clone(),
             activation_id: request.activation_id.clone(),
             expected_generation: request.expected_generation,
             candidate_generation: request.expected_generation + 1,
@@ -409,7 +409,7 @@ impl BlockingLoaderPort for FakeCandidateLoader {
             return Err(failure);
         }
         Ok(epoch(
-            &refs.environment,
+            &refs.profile,
             refs.generation,
             refs.assembly.clone(),
             refs.config_snapshot.clone(),
@@ -455,7 +455,7 @@ impl FakeCandidatePort {
 impl RuntimeCandidateQueryPort for FakeCandidatePort {
     fn freeze(
         &self,
-        _environment: &str,
+        _profile: &str,
     ) -> Result<Vec<RegisteredSessionLease>, ActivationCandidateError> {
         let tuple = self
             .current_tuple
@@ -653,8 +653,8 @@ struct CommitGate {
 #[derive(Debug)]
 struct FakeRepository {
     inner: MemoryActivationStateRepository,
-    read_override: RwLock<Option<EnvironmentActivationState>>,
-    commit_failure: StdMutex<Option<EnvironmentActivationState>>,
+    read_override: RwLock<Option<ProfileActivationState>>,
+    commit_failure: StdMutex<Option<ProfileActivationState>>,
     commit_gate: StdMutex<Option<CommitGate>>,
 }
 
@@ -681,14 +681,14 @@ impl FakeRepository {
     fn set_commit_failure(
         &self,
         durable_outcome: &str,
-        environment: &str,
+        profile: &str,
         committed_generation: u64,
         candidate_generation: u64,
     ) {
         let state = match durable_outcome {
-            "committed" => EnvironmentActivationState {
-                schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-                environment: environment.to_string(),
+            "committed" => ProfileActivationState {
+                schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+                profile: profile.to_string(),
                 committed: CommittedActivation {
                     generation: candidate_generation,
                     assembly: assembly(1),
@@ -696,7 +696,7 @@ impl FakeRepository {
                 },
                 pending: None,
             },
-            "aborted" => state_with(environment, committed_generation, None),
+            "aborted" => state_with(profile, committed_generation, None),
             other => panic!("unknown durable outcome {other}"),
         };
         *self.commit_failure.lock().expect("failure lock") = Some(state);
@@ -705,31 +705,28 @@ impl FakeRepository {
 
 #[async_trait]
 impl ActivationStateRepository for FakeRepository {
-    async fn read(&self, environment: &str) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         if let Some(state) = self.read_override.read().await.clone() {
             return Ok(state);
         }
-        self.inner.read(environment).await
+        self.inner.read(profile).await
     }
 
     async fn initialize(
         &self,
-        state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         self.inner.initialize(state).await
     }
 
     async fn prepare(
         &self,
         input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         self.inner.prepare(input).await
     }
 
-    async fn commit(
-        &self,
-        input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn commit(&self, input: CommitInput) -> Result<ProfileActivationState, RepositoryError> {
         let gate = self.commit_gate.lock().expect("gate lock").clone();
         if let Some(gate) = gate {
             let _ = gate.started_tx.send(true);
@@ -744,17 +741,14 @@ impl ActivationStateRepository for FakeRepository {
         if let Some(failure) = failure {
             *self.read_override.write().await = Some(failure);
             return Err(RepositoryError::CasMismatch {
-                environment: input.environment.clone(),
+                profile: input.profile.clone(),
                 message: "scripted durable commit CAS mismatch".to_string(),
             });
         }
         self.inner.commit(input).await
     }
 
-    async fn abort(
-        &self,
-        input: AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn abort(&self, input: AbortInput) -> Result<ProfileActivationState, RepositoryError> {
         self.inner.abort(input).await
     }
 
@@ -799,7 +793,7 @@ struct HarnessScript {
 }
 
 async fn task_harness(
-    environment: &str,
+    profile: &str,
     script: HarnessScript,
     options: ActivationCoordinatorOptions,
 ) -> (
@@ -817,14 +811,14 @@ async fn task_harness(
         gated_commit,
     } = script;
     let repo = Arc::new(FakeRepository::new());
-    repo.initialize(&state_with(environment, committed_generation, None))
+    repo.initialize(&state_with(profile, committed_generation, None))
         .await
         .expect("initialize committed state");
     if let Some(pending) = initial_pending.clone() {
         let participants = pending.participant_replica_ids.clone();
         let prepared = repo
             .prepare(PrepareInput {
-                environment: environment.to_string(),
+                profile: profile.to_string(),
                 activation_id: pending.activation_id.clone(),
                 expected_generation: pending.expected_generation,
                 candidate_generation: pending.candidate_generation,
@@ -840,7 +834,7 @@ async fn task_harness(
         );
     }
 
-    let current_epoch = epoch(environment, committed_generation, assembly(0), config(0));
+    let current_epoch = epoch(profile, committed_generation, assembly(0), config(0));
     let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
     epoch_store.publish(Arc::clone(&current_epoch));
 
@@ -858,12 +852,7 @@ async fn task_harness(
 
     let sessions = Arc::new(FakeSessionPort::new());
     if let Some(outcome) = &commit_outcome {
-        repo.set_commit_failure(
-            outcome,
-            environment,
-            committed_generation,
-            candidate_generation,
-        );
+        repo.set_commit_failure(outcome, profile, committed_generation, candidate_generation);
     }
     let gate = if gated_commit {
         Some(repo.install_commit_gate().await)
@@ -894,7 +883,7 @@ async fn task_harness(
 
 async fn run_live_case(case: &Case, steps: &[Step], expected: &Expected) {
     let tx = case.tx.as_ref().expect("live tx");
-    let environment = tx.environment.clone();
+    let profile = tx.profile.clone();
     let read_state = steps
         .iter()
         .find_map(|step| match step {
@@ -952,7 +941,7 @@ async fn run_live_case(case: &Case, steps: &[Step], expected: &Expected) {
         commit_outcome: commit_outcome.map(str::to_string),
         gated_commit: gated,
     };
-    let (harness, gate) = task_harness(&environment, script, options()).await;
+    let (harness, gate) = task_harness(&profile, script, options()).await;
     let Harness {
         repo,
         epoch_store,
@@ -1052,7 +1041,7 @@ async fn run_live_case(case: &Case, steps: &[Step], expected: &Expected) {
 
 async fn run_cold_case(case: &Case, steps: &[Step], expected: &Expected) {
     let tx = case.tx.as_ref().expect("cold tx");
-    let environment = tx.environment.clone();
+    let profile = tx.profile.clone();
     let read_state = steps
         .iter()
         .find_map(|step| match step {
@@ -1083,7 +1072,7 @@ async fn run_cold_case(case: &Case, steps: &[Step], expected: &Expected) {
         commit_outcome: None,
         gated_commit: gated,
     };
-    let (harness, gate) = task_harness(&environment, script, options()).await;
+    let (harness, gate) = task_harness(&profile, script, options()).await;
     let Harness {
         repo,
         epoch_store,
@@ -1092,7 +1081,7 @@ async fn run_cold_case(case: &Case, steps: &[Step], expected: &Expected) {
     } = harness;
 
     handle
-        .start_recovery(environment.clone())
+        .start_recovery(profile.clone())
         .expect("start recovery");
     handle
         .wait_for_phase(|phase| {
@@ -1172,12 +1161,7 @@ async fn assert_expected(
 ) {
     let health = handle.health();
     let durable = repo
-        .read(
-            &health
-                .environment
-                .clone()
-                .unwrap_or_else(|| "test".to_string()),
-        )
+        .read(&health.profile.clone().unwrap_or_else(|| "test".to_string()))
         .await
         .expect("durable read for assertions");
     assert_eq!(

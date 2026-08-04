@@ -35,10 +35,10 @@ export const LIVE_INPUTS = deepFreeze({
     description:
       'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
   },
-  runtimeEnvironment: {
-    option: 'runtimeLiveEnvironment',
+  runtimeProfile: {
+    option: 'runtimeLiveProfile',
     environment: 'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
-    description: 'activation environment (SKIFF_RUNTIME_LIVE_ENVIRONMENT or --runtime-live-environment <id>)',
+    description: 'activation profile (SKIFF_RUNTIME_LIVE_ENVIRONMENT or --runtime-live-profile <id>)',
   },
   runtimeExpectedGeneration: {
     option: 'runtimeLiveExpectedGeneration',
@@ -64,7 +64,7 @@ export const LIVE_REGISTRY = deepFreeze([
       {
         selector: 'runtime-live',
         description:
-          'explicit live fixtures; requires canonical activation, ingress, artifact, environment, and generation targets',
+          'explicit live fixtures; requires canonical activation, ingress, artifact, profile, and generation targets',
         plan: LIVE_PLAN_TYPES.RUNTIME_FIXTURES,
         idPrefix: 'live:runtime:',
         ownership: LIVE_OWNERSHIP.EXTERNAL,
@@ -73,7 +73,7 @@ export const LIVE_REGISTRY = deepFreeze([
           'runtimeActivationUrl',
           'runtimeIngressUrl',
           'runtimeArtifactRoot',
-          'runtimeEnvironment',
+          'runtimeProfile',
           'runtimeExpectedGeneration',
         ],
         requiredExecutables: ['cargo', 'node'],

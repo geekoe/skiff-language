@@ -55,7 +55,7 @@ const DEFAULT_TASK_STATUS_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Projects an authenticated `task.submit.request` into the frozen execution
 /// image authority facts (authoritative design "Execution Image And Target
-/// Pinning"): environment / package version / assembly / config snapshot /
+/// Pinning"): profile / package version / assembly / config snapshot /
 /// deployment are taken from the committed routing epoch, never from the
 /// Runtime's self-reported names.
 pub trait TaskExecutionImageSource: Send + Sync + fmt::Debug {
@@ -96,7 +96,7 @@ impl TaskExecutionImageSource for EpochTaskExecutionImageSource {
         })?;
         let tuple = epoch.registered_tuple();
         Some(TaskExecutionImageRef {
-            target_environment: tuple.environment.clone(),
+            target_profile: tuple.profile.clone(),
             package_version: header.service_version.clone(),
             assembly: tuple.assembly.clone(),
             config_snapshot: tuple.config_snapshot.clone(),

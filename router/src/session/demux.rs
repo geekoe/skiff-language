@@ -183,13 +183,13 @@ impl RuntimeFrameDemux {
         };
         match control {
             AssemblyActivationControl::Register {
-                environment,
+                profile,
                 generation,
                 assembly,
                 config_snapshot,
                 replica_id,
             } => DemuxOutcome::Handled(DemuxEvent::Register(RegisterControl {
-                environment,
+                profile,
                 generation,
                 assembly,
                 config_snapshot,

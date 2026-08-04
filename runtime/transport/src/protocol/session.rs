@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_activation_environment, validate_activation_generation,
+    validate_activation_generation, validate_activation_profile,
     validate_runtime_assembly_identity, validate_runtime_config_snapshot_id, AssemblyIdentity,
     RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
@@ -123,7 +123,7 @@ pub struct RouterBootstrapHttpFrameHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterBootstrapActivationFrameHeader {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,
@@ -175,9 +175,9 @@ pub fn decode_router_bootstrap_frame_header(
             "invalid router.bootstrap frame header: http.maxResponseBytes must be a positive safe integer",
         ));
     }
-    validate_activation_environment(&header.activation.environment).map_err(|error| {
+    validate_activation_profile(&header.activation.profile).map_err(|error| {
         TransportError::decode(format!(
-            "invalid router.bootstrap frame header: activation.environment {error}"
+            "invalid router.bootstrap frame header: activation.profile {error}"
         ))
     })?;
     validate_activation_generation(header.activation.generation, "activation.generation").map_err(
@@ -201,7 +201,7 @@ fn is_normalized_absolute_artifacts_path(value: &str) -> bool {
 /// durable `RoutingEpoch` onto this wire-facing view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedBootstrapEpoch {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,
@@ -211,20 +211,20 @@ impl CapturedBootstrapEpoch {
     /// Strict constructor: every wire-visible field is validated the same way
     /// the typed bootstrap header Deserialize path validates it.
     pub fn new(
-        environment: impl Into<String>,
+        profile: impl Into<String>,
         generation: u64,
         assembly_identity: impl Into<String>,
         config_snapshot_id: impl Into<String>,
     ) -> Result<Self, String> {
-        let environment = environment.into();
-        validate_activation_environment(&environment)?;
+        let profile = profile.into();
+        validate_activation_profile(&profile)?;
         validate_activation_generation(generation, "generation")?;
         let assembly_identity = assembly_identity.into();
         validate_runtime_assembly_identity(&assembly_identity)?;
         let config_snapshot_id = config_snapshot_id.into();
         validate_runtime_config_snapshot_id(&config_snapshot_id)?;
         Ok(Self {
-            environment,
+            profile,
             generation,
             assembly: RuntimeAssemblyRef {
                 assembly_identity: AssemblyIdentity::new(assembly_identity),
@@ -238,7 +238,7 @@ impl CapturedBootstrapEpoch {
 
     pub fn to_activation_header(&self) -> RouterBootstrapActivationFrameHeader {
         RouterBootstrapActivationFrameHeader {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.generation,
             assembly: self.assembly.clone(),
             config_snapshot: self.config_snapshot.clone(),

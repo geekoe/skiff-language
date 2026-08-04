@@ -139,14 +139,9 @@ fn config_ref(byte: char) -> RuntimeConfigSnapshotRef {
     }
 }
 
-fn assert_tx_tuple_wire_valid(
-    environment: &str,
-    activation_id: &str,
-    expected: u64,
-    candidate: u64,
-) {
+fn assert_tx_tuple_wire_valid(profile: &str, activation_id: &str, expected: u64, candidate: u64) {
     AssemblyActivationControl::Prepare {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         activation_id: activation_id.to_string(),
         expected_generation: expected,
         candidate_generation: candidate,
@@ -270,7 +265,7 @@ mod tests {
             let tx = case.get("tx").or_else(|| case["runs"][0].get("tx"));
             if let Some(tx) = tx {
                 assert_tx_tuple_wire_valid(
-                    tx["environment"].as_str().expect("environment"),
+                    tx["profile"].as_str().expect("profile"),
                     tx["activationId"].as_str().expect("activationId"),
                     tx["expectedGeneration"]
                         .as_u64()
@@ -283,7 +278,7 @@ mod tests {
             for run in case["runs"].as_array().into_iter().flatten() {
                 if let Some(tx) = run.get("tx") {
                     assert_tx_tuple_wire_valid(
-                        tx["environment"].as_str().expect("environment"),
+                        tx["profile"].as_str().expect("profile"),
                         tx["activationId"].as_str().expect("activationId"),
                         tx["expectedGeneration"]
                             .as_u64()

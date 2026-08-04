@@ -15,7 +15,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use skiff_artifact_identity::{
-    runtime_assembly_ref, EnvironmentActivationStatePath, RuntimeAssemblyRecordPath,
+    runtime_assembly_ref, ProfileActivationStatePath, RuntimeAssemblyRecordPath,
 };
 use skiff_artifact_model::{
     AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
@@ -24,7 +24,7 @@ use skiff_deployment::{
     fixtures::empty_runtime_assembly_fixture,
     storage::{
         ActivationRecoveryAction, CanonicalArtifactStore, CommittedActivation,
-        EnvironmentActivationState,
+        ProfileActivationState,
     },
 };
 
@@ -79,10 +79,10 @@ fn snapshot_ref(fill: char) -> RuntimeConfigSnapshotRef {
     }
 }
 
-fn environment_path(store: &CanonicalArtifactStore, environment: &str) -> PathBuf {
+fn profile_path(store: &CanonicalArtifactStore, profile: &str) -> PathBuf {
     store.root().join(
-        EnvironmentActivationStatePath::new(environment)
-            .expect("environment path")
+        ProfileActivationStatePath::new(profile)
+            .expect("profile path")
             .as_relative_path()
             .as_path(),
     )
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(
             corpus.epoch.fields,
             [
-                "environment",
+                "profile",
                 "assemblyGeneration",
                 "assemblyIdentity",
                 "configSnapshotId",
@@ -208,7 +208,7 @@ mod tests {
             match state.kind.as_str() {
                 "committedOnly" => {
                     store
-                        .initialize_environment_activation(&EnvironmentActivationState::initial(
+                        .initialize_profile_activation(&ProfileActivationState::initial(
                             "prod",
                             1,
                             committed_ref.clone(),
@@ -218,7 +218,7 @@ mod tests {
                 }
                 "pendingPresent" => {
                     store
-                        .initialize_environment_activation(&EnvironmentActivationState::initial(
+                        .initialize_profile_activation(&ProfileActivationState::initial(
                             "prod",
                             1,
                             committed_ref.clone(),
@@ -226,7 +226,7 @@ mod tests {
                         ))
                         .expect("initialize committed state");
                     store
-                        .prepare_environment_activation(
+                        .prepare_profile_activation(
                             "prod",
                             "activation-1",
                             1,
@@ -239,13 +239,13 @@ mod tests {
                 }
                 "missing" => {}
                 "malformed" => {
-                    let path = environment_path(&store, "prod");
+                    let path = profile_path(&store, "prod");
                     fs::create_dir_all(path.parent().expect("parent")).expect("create env dir");
                     fs::write(&path, b"{\"schemaVersion\":").expect("write malformed state");
                 }
                 "committedRefMissing" => {
                     store
-                        .initialize_environment_activation(&EnvironmentActivationState::initial(
+                        .initialize_profile_activation(&ProfileActivationState::initial(
                             "prod",
                             1,
                             committed_ref.clone(),
@@ -257,7 +257,7 @@ mod tests {
                 }
                 "committedRefMismatch" => {
                     let mismatched_ref = assembly_ref('c');
-                    let mut state = EnvironmentActivationState::initial(
+                    let mut state = ProfileActivationState::initial(
                         "prod",
                         1,
                         committed_ref.clone(),
@@ -271,7 +271,7 @@ mod tests {
                     let mut value: Value = serde_json::from_slice(&bytes).expect("state json");
                     value["committed"]["assembly"]["assemblyIdentity"] =
                         json!(mismatched_ref.assembly_identity.as_str());
-                    let path = environment_path(&store, "prod");
+                    let path = profile_path(&store, "prod");
                     fs::create_dir_all(path.parent().expect("parent")).expect("create env dir");
                     fs::write(&path, serde_json::to_vec(&value).expect("state bytes"))
                         .expect("write state");
@@ -288,7 +288,7 @@ mod tests {
             }
 
             // Uniform repository read assertion driven by the corpus.
-            let read = store.read_environment_activation("prod");
+            let read = store.read_profile_activation("prod");
             match state.repository_read.as_str() {
                 "ok" => {
                     let record =
@@ -368,7 +368,7 @@ mod tests {
             .expect("write assembly record");
 
         let mut state =
-            EnvironmentActivationState::initial("prod", 1, assembly_ref('a'), snapshot_ref('a'));
+            ProfileActivationState::initial("prod", 1, assembly_ref('a'), snapshot_ref('a'));
         state.pending = Some(skiff_deployment::storage::PendingActivation {
             activation_id: "activation-1".to_string(),
             expected_generation: 1,
@@ -378,7 +378,7 @@ mod tests {
             participant_replica_ids: vec!["runtime-a".to_string()],
         });
         assert!(
-            store.initialize_environment_activation(&state).is_err(),
+            store.initialize_profile_activation(&state).is_err(),
             "initial activation state cannot contain pending (E-bootstrap fail closed)"
         );
     }

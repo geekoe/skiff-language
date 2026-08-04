@@ -127,7 +127,7 @@ fn test_host() -> super::super::RuntimeHost {
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-base".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
-        environment: "test".to_string(),
+        profile: "test".to_string(),
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })
@@ -955,7 +955,7 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://router-owned" },
             "activation": {
-                "environment": "test",
+                "profile": "test",
                 "generation": 7,
                 "assembly": {
                     "assemblyIdentity": format!(
@@ -992,7 +992,7 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         bootstrap.config_snapshot_store.root(),
         config_snapshot_store.root()
     );
-    assert_eq!(bootstrap.activation.environment, "test");
+    assert_eq!(bootstrap.activation.profile, "test");
     assert_eq!(bootstrap.activation.generation, 7);
     assert_eq!(
         bootstrap.activation.assembly.assembly_identity.as_str(),
@@ -1391,7 +1391,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" },
             "activation": {
-                "environment": "test",
+                "profile": "test",
                 "generation": 0,
                 "assembly": {
                     "assemblyIdentity": format!(
@@ -1490,11 +1490,11 @@ async fn activation_rejects_superseded_transient_service_db_wire() {
 }
 
 #[tokio::test]
-async fn activation_rejects_environment_other_than_runtime_trust_domain_before_resolution() {
+async fn activation_rejects_profile_other_than_runtime_frozen_domain_before_resolution() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
     let artifact_path = std::env::temp_dir().join(format!(
-        "skiff-runtime-bootstrap-environment-{}",
+        "skiff-runtime-bootstrap-profile-{}",
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
@@ -1519,7 +1519,7 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
     activation
         .as_object_mut()
         .expect("activation should be an object")
-        .insert("environment".to_string(), json!("prod"));
+        .insert("profile".to_string(), json!("prod"));
     let activation: skiff_artifact_model::AssemblyActivationControl =
         serde_json::from_value(activation).expect("activation control should decode");
     let frame = encode_assembly_activation_frame(
@@ -1540,11 +1540,11 @@ async fn activation_rejects_environment_other_than_runtime_trust_domain_before_r
         RouterSessionChildTaskDispatch::Detached,
     )
     .await
-    .expect_err("foreign activation environment must fail before snapshot resolution");
+    .expect_err("foreign activation profile must fail before snapshot resolution");
 
     assert!(error
         .to_string()
-        .contains("does not match Runtime trusted environment"));
+        .contains("does not match Runtime frozen profile"));
 }
 
 #[test]
@@ -1567,7 +1567,7 @@ fn assembly_activation_control(
 ) -> skiff_artifact_model::AssemblyActivationControl {
     serde_json::from_value(json!({
         "type": control_type,
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42,

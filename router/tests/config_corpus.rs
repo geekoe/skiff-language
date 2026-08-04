@@ -138,12 +138,12 @@ mod tests {
         assert_eq!(
             env_oss.access_key_id_env.as_deref(),
             Some("SKIFF_OSS_ACCESS_KEY_ID"),
-            "environment reference names must not be redacted"
+            "profile reference names must not be redacted"
         );
         assert_eq!(
             env_oss.access_key_secret_env.as_deref(),
             Some("SKIFF_OSS_ACCESS_KEY_SECRET"),
-            "environment reference names must not be redacted"
+            "profile reference names must not be redacted"
         );
     }
 
@@ -171,7 +171,6 @@ mod tests {
         match name {
             "canonical" => {
                 assert_eq!(config.profile, "dev");
-                assert_eq!(config.environment.as_deref(), Some("dev"));
                 assert_eq!(config.host, "127.0.0.1");
                 assert_eq!(
                     config.artifacts_path,
@@ -224,7 +223,6 @@ mod tests {
                 assert_eq!(config.runtime_max_concurrency, 1);
                 assert_eq!(config.dev_reload, None);
                 assert_eq!(config.release_mode, None);
-                assert_eq!(config.environment, None);
                 assert_eq!(config.telemetry, None);
                 assert_eq!(config.file_backend, None);
                 assert!(config.rewrite.is_empty());
@@ -232,7 +230,6 @@ mod tests {
             "renderer-canonical" => {
                 assert_eq!(config.profile, "dev");
                 assert_eq!(config.host, "127.0.0.1");
-                assert_eq!(config.environment.as_deref(), Some("dev"));
                 assert_eq!(config.artifacts_path, PathBuf::from("/tmp/skiff/artifacts"));
                 assert_eq!(config.dev_reload, Some(true));
                 assert_eq!(config.request_timeout_ms, 20_000);

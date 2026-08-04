@@ -119,7 +119,7 @@ mod tests {
         .expect("assemble second execution");
 
         assert_eq!(first.records.config_snapshot.deployments().len(), 3);
-        assert_eq!(first.records.config_snapshot.environment(), "skiff-test");
+        assert_eq!(first.records.config_snapshot.profile(), "skiff-test");
         let first_deployments = first
             .records
             .config_snapshot

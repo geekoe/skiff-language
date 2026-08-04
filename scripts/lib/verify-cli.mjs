@@ -5,7 +5,7 @@ const runtimeLiveValueOptions = new Map([
   ['--runtime-live-activation-url', 'runtimeLiveActivationUrl'],
   ['--runtime-live-ingress-url', 'runtimeLiveIngressUrl'],
   ['--runtime-live-artifact-root', 'runtimeLiveArtifactRoot'],
-  ['--runtime-live-environment', 'runtimeLiveEnvironment'],
+  ['--runtime-live-profile', 'runtimeLiveProfile'],
   ['--runtime-live-expected-generation', 'runtimeLiveExpectedGeneration'],
 ]);
 
@@ -18,7 +18,7 @@ export function parseVerifyArgs(argv) {
     runtimeLiveActivationUrl: undefined,
     runtimeLiveIngressUrl: undefined,
     runtimeLiveArtifactRoot: undefined,
-    runtimeLiveEnvironment: undefined,
+    runtimeLiveProfile: undefined,
     runtimeLiveExpectedGeneration: undefined,
     loopRiskConfig: undefined,
   };
@@ -145,8 +145,8 @@ options:
                                 explicit runtime ingress origin
   --runtime-live-artifact-root <dir>
                                 explicit existing runtime artifact directory
-  --runtime-live-environment <id>
-                                explicit activation environment
+  --runtime-live-profile <id>
+                                explicit activation profile
   --runtime-live-expected-generation <n>
                                 explicit non-negative expected generation
   --loop-risk-config <path>     canonical loop-risk target/runtime config

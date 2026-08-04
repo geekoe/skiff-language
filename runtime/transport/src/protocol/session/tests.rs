@@ -50,7 +50,7 @@ fn bootstrap_header() -> RouterBootstrapFrameHeader {
             max_response_bytes: 8_388_608,
         },
         activation: crate::protocol::RouterBootstrapActivationFrameHeader {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 42,
             assembly: assembly_ref('a'),
             config_snapshot: config_snapshot_ref('b'),
@@ -179,7 +179,7 @@ fn captured_bootstrap_epoch_strictly_validates_wire_fields() {
     let snapshot = format!("skiff-runtime-config-snapshot-v1:{}", "b".repeat(32));
     let epoch = CapturedBootstrapEpoch::new("prod", 42, assembly.clone(), snapshot.clone())
         .expect("valid captured epoch must construct");
-    assert_eq!(epoch.environment, "prod");
+    assert_eq!(epoch.profile, "prod");
     assert_eq!(epoch.generation, 42);
     assert_eq!(epoch.assembly, assembly_ref('a'));
     assert_eq!(epoch.config_snapshot, config_snapshot_ref('b'));
@@ -227,7 +227,7 @@ fn stateless_provider_builds_bootstrap_header_from_captured_source() {
     let decoded = decode_router_bootstrap_frame(&frame).expect("bootstrap frame must decode");
     assert_eq!(decoded, header);
     assert_eq!(decoded.activation.generation, 42);
-    assert_eq!(decoded.activation.environment, "prod");
+    assert_eq!(decoded.activation.profile, "prod");
     assert_eq!(decoded.activation.assembly, assembly_ref('a'));
     assert_eq!(decoded.activation.config_snapshot, config_snapshot_ref('b'));
 }

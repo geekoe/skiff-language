@@ -41,8 +41,6 @@ pub const ACTOR_ROUTING_PROJECTION_RECORD_PATH: &str = "records/actor-routing/cu
 /// Fail-closed bootstrap assembly errors; no listener is started.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapAssemblyError {
-    #[error("router config environment is required for E-bootstrap")]
-    EnvironmentMissing,
     #[error("activation state repository connect failed: {0}")]
     Repository(String),
     #[error("committed ref validator open failed: {0}")]
@@ -59,7 +57,7 @@ pub enum BootstrapAssemblyError {
 /// store, and the owned blocking loader / repository shut down with the
 /// process.
 pub struct RouterBootstrapAssembly {
-    environment: String,
+    profile: String,
     epoch: Arc<RoutingEpoch>,
     pending_recovery: Option<PendingActivation>,
     epoch_store: Arc<ActiveRoutingEpochStore>,
@@ -74,7 +72,7 @@ impl fmt::Debug for RouterBootstrapAssembly {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RouterBootstrapAssembly")
-            .field("environment", &self.environment)
+            .field("profile", &self.profile)
             .field("epoch", &self.epoch)
             .field("epoch_store", &self.epoch_store)
             .field("loader", &self.loader)
@@ -93,10 +91,7 @@ impl RouterBootstrapAssembly {
     /// for listener startup; on any fail-closed outcome the repository is
     /// closed and no epoch is published.
     pub async fn assemble(config: &RouterConfig) -> Result<Self, BootstrapAssemblyError> {
-        let environment = config
-            .environment
-            .clone()
-            .ok_or(BootstrapAssemblyError::EnvironmentMissing)?;
+        let profile = config.profile.clone();
         let repository = Arc::new(
             MongoActivationStateRepository::connect(
                 &config.service_db.mongo_url,
@@ -106,7 +101,7 @@ impl RouterBootstrapAssembly {
             .await
             .map_err(|error| BootstrapAssemblyError::Repository(error.to_string()))?,
         ) as Arc<dyn ActivationStateRepository>;
-        match Self::assemble_with(config, &environment, Arc::clone(&repository)).await {
+        match Self::assemble_with(config, &profile, Arc::clone(&repository)).await {
             Ok(assembly) => Ok(assembly),
             Err(error) => {
                 let _ = repository.close().await;
@@ -119,7 +114,7 @@ impl RouterBootstrapAssembly {
     /// production entry point connects the Mongo adapter).
     pub async fn assemble_with(
         config: &RouterConfig,
-        environment: &str,
+        profile: &str,
         repository: Arc<dyn ActivationStateRepository>,
     ) -> Result<Self, BootstrapAssemblyError> {
         let validator = Arc::new(
@@ -155,9 +150,9 @@ impl RouterBootstrapAssembly {
             )
             .map_err(|error| BootstrapAssemblyError::ActorProjectionPath(error.to_string()))?,
         );
-        let outcome = runner.run_initial(environment, &actor_projection).await?;
+        let outcome = runner.run_initial(profile, &actor_projection).await?;
         Ok(Self {
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             epoch: outcome.epoch,
             pending_recovery: outcome.pending,
             epoch_store,
@@ -173,8 +168,8 @@ impl RouterBootstrapAssembly {
         Arc::clone(&self.epoch_store)
     }
 
-    pub fn environment(&self) -> &str {
-        &self.environment
+    pub fn profile(&self) -> &str {
+        &self.profile
     }
 
     pub fn epoch(&self) -> &Arc<RoutingEpoch> {

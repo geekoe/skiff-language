@@ -72,7 +72,6 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
         activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
-        environment: None,
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1,
         http_max_response_bytes: 8_388_608,
@@ -96,7 +95,7 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
 
 fn committed_epoch() -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation: 42,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(

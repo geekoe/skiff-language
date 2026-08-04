@@ -74,7 +74,7 @@ impl BootstrapRunner {
         }
     }
 
-    /// Runs the initial bootstrap for one environment.
+    /// Runs the initial bootstrap for one profile.
     ///
     /// `actor_projection` is the A3 typed record ref (canonical derivation is
     /// the A1/integration alignment seam). On success the epoch is atomically
@@ -82,10 +82,10 @@ impl BootstrapRunner {
     /// untouched.
     pub async fn run_initial(
         &self,
-        environment: &str,
+        profile: &str,
         actor_projection: &ActorRoutingProjectionRef,
     ) -> Result<BootstrapRunOutcome, BootstrapError> {
-        let outcome = self.reader.read_committed(environment).await;
+        let outcome = self.reader.read_committed(profile).await;
         let pending = match &outcome {
             BootstrapReadOutcome::CommittedWithPending { pending, .. } => Some(pending.clone()),
             _ => None,
@@ -105,12 +105,12 @@ impl BootstrapRunner {
         };
         let strict_loader = Arc::clone(&self.strict_loader);
         let actor_projection = actor_projection.clone();
-        let environment = environment.to_string();
+        let profile = profile.to_string();
         let epoch = self
             .loader
             .run(move || {
                 strict_loader.load_epoch(
-                    &environment,
+                    &profile,
                     refs.generation,
                     &refs.assembly,
                     &refs.config_snapshot,

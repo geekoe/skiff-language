@@ -57,8 +57,8 @@ HTTP `Host`在这里属于外部request metadata，不是Skiff service route sel
 按Host等平台规则注入可信`x-skiff-service`与`x-skiff-version`；Router必须先用这两个header选出active
 assembly中的唯一精确deployment，再只在该deployment内按method/path选择entry。Skiff不在Router中重做
 Host映射。不同service可以有相同method/path，同一service内部重复selector仍失败。
-该边界随service-scoped ingress及activation config snapshot硬切到`skiff-runtime-frame-v3`；旧frame或
-缺少精确deployment的`request.start`不兼容读取。v3 activation control另行携带generation钉住的exact
+该边界随service-scoped ingress及activation config snapshot硬切到`skiff-runtime-frame-v4`；旧frame或
+缺少精确deployment的`request.start`不兼容读取。v4 activation control另行携带generation钉住的exact
 assembly/config snapshot refs。其余artifact代际由
 [`package-service-contract-deployment.md`](package-service-contract-deployment.md)统一冻结。
 

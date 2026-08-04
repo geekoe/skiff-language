@@ -16,7 +16,7 @@ use skiff_router::session::ConsumerKind;
 
 fn tuple(generation: u64, assembly: &str) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(assembly.to_string()),

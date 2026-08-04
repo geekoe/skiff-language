@@ -95,9 +95,9 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance sync <config> [root] [--environment <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance sync <config> [root] [--profile <name>] [--activation-id <id>] [--build-only] [--json]
       # one-shot build/publish; exits non-zero on build failure
-  skiff instance watch <config> [root] [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff instance watch <config> [root] [--profile <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
       # long-running watcher; retries build failures with backoff (status: dev-home/last-build.json)`;
 
 try {
@@ -541,12 +541,11 @@ async function writeRuntimeConfigs(config, force) {
 
 function routerConfigText(config) {
   return renderRouterConfig({
-    profile: 'dev',
+    profile: config.profile,
     host: '127.0.0.1',
-    environment: config.environment,
     artifactsPath: config.paths.artifactRoot,
     devReload: true,
-    requestTimeoutMs: 20000,
+    requestTimeoutMs: config.router.requestTimeoutMs,
     activationPrepareTimeoutMs: config.activation.prepareTimeoutMs,
     httpPort: config.ports.routerHttp,
     httpMaxRequestBytes: config.http.maxRequestBytes,
@@ -562,7 +561,6 @@ function runtimeConfigText(config) {
   return renderRuntimeConfig({
     routerUrl: config.urls.routerRuntime,
     runtimeHome: config.paths.runtimeHome,
-    environment: config.environment,
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
   });
 }

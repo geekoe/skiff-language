@@ -49,7 +49,7 @@ pub struct DriverHealth {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActivationRepositoryHealth {
-    pub environment: Option<String>,
+    pub profile: Option<String>,
     pub committed_generation: Option<u64>,
     pub pending_activation_id: Option<String>,
     pub last_outcome: Option<RepositoryMutationOutcome>,
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn default_health_is_empty_and_deterministic() {
         let health = ActivationRepositoryHealth::default();
-        assert_eq!(health.environment, None);
+        assert_eq!(health.profile, None);
         assert_eq!(health.committed_generation, None);
         assert_eq!(health.pending_activation_id, None);
         assert_eq!(health.last_outcome, None);

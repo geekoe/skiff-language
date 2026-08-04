@@ -5,16 +5,16 @@
   },
   "workflow": [
     {
-      "operation": "ensureEnvironmentBootstrap",
-      "environment": "test"
+      "operation": "ensureProfileBootstrap",
+      "profile": "test"
     },
     {
-      "operation": "readEnvironment",
-      "environment": "test"
+      "operation": "readProfile",
+      "profile": "test"
     },
     {
-      "operation": "prepareEnvironment",
-      "environment": "test",
+      "operation": "prepareProfile",
+      "profile": "test",
       "activationId": "activation-1",
       "expectedGeneration": 0,
       "candidateGeneration": 1,
@@ -24,14 +24,14 @@
       "participantReplicaIds": ["runtime-a", "runtime-b"]
     },
     {
-      "operation": "abortEnvironment",
-      "environment": "test",
+      "operation": "abortProfile",
+      "profile": "test",
       "activationId": "activation-1",
       "expectedGeneration": 0
     },
     {
-      "operation": "prepareEnvironment",
-      "environment": "test",
+      "operation": "prepareProfile",
+      "profile": "test",
       "activationId": "activation-2",
       "expectedGeneration": 0,
       "candidateGeneration": 1,
@@ -41,8 +41,8 @@
       "participantReplicaIds": ["runtime-a", "runtime-b"]
     },
     {
-      "operation": "commitEnvironment",
-      "environment": "test",
+      "operation": "commitProfile",
+      "profile": "test",
       "activationId": "activation-2",
       "expectedGeneration": 0,
       "candidateGeneration": 1,
@@ -53,8 +53,8 @@
       "preparedReplicaIds": ["runtime-a", "runtime-b"]
     },
     {
-      "operation": "ensureEnvironmentBootstrap",
-      "environment": "test"
+      "operation": "ensureProfileBootstrap",
+      "profile": "test"
     },
     {
       "operation": "readRouterSnapshot",
@@ -67,15 +67,15 @@
     {
       "name": "unknown operation",
       "request": {
-        "operation": "latestEnvironment",
-        "environment": "test"
+        "operation": "latestProfile",
+        "profile": "test"
       }
     },
     {
       "name": "unknown common artifact field",
       "request": {
-        "operation": "readEnvironment",
-        "environment": "test",
+        "operation": "readProfile",
+        "profile": "test",
         "artifactKind": "RuntimeAssembly"
       }
     },
@@ -92,8 +92,8 @@
     {
       "name": "stale prepare generation",
       "request": {
-        "operation": "prepareEnvironment",
-        "environment": "test",
+        "operation": "prepareProfile",
+        "profile": "test",
         "activationId": "activation-stale",
         "expectedGeneration": 99,
         "candidateGeneration": 100,
@@ -106,8 +106,8 @@
     {
       "name": "empty participants",
       "request": {
-        "operation": "prepareEnvironment",
-        "environment": "test",
+        "operation": "prepareProfile",
+        "profile": "test",
         "activationId": "activation-empty",
         "expectedGeneration": 0,
         "candidateGeneration": 1,

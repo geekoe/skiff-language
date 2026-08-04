@@ -26,7 +26,7 @@ mod tests {
         RuntimeConfigSnapshotRef, ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
         RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
-    use skiff_deployment::activation_state::EnvironmentActivationState;
+    use skiff_deployment::activation_state::ProfileActivationState;
     use skiff_deployment::projection::actor_routing::{
         ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
     };
@@ -73,7 +73,7 @@ mod tests {
     }
 
     fn epoch(
-        environment: &str,
+        profile: &str,
         generation: u64,
         assembly_ref: RuntimeAssemblyRef,
         config_snapshot_ref: RuntimeConfigSnapshotRef,
@@ -93,7 +93,7 @@ mod tests {
             activation_templates: Vec::new(),
             gateway_ingress: Vec::new(),
         };
-        let snapshot = RuntimeConfigSnapshot::new(environment, config_snapshot_ref, Vec::new())
+        let snapshot = RuntimeConfigSnapshot::new(profile, config_snapshot_ref, Vec::new())
             .expect("snapshot fixture");
         let projection = ActorRoutingProjection::new(
             ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -103,7 +103,7 @@ mod tests {
         let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
         Arc::new(
             RoutingEpoch::new(
-                environment,
+                profile,
                 generation,
                 Arc::new(assembly),
                 Arc::new(snapshot),
@@ -123,7 +123,7 @@ mod tests {
             refs: &CandidateEpochRefs,
         ) -> Result<Arc<RoutingEpoch>, CandidateLoadError> {
             Ok(epoch(
-                &refs.environment,
+                &refs.profile,
                 refs.generation,
                 refs.assembly.clone(),
                 refs.config_snapshot.clone(),
@@ -154,7 +154,7 @@ mod tests {
     impl RuntimeCandidateQueryPort for ProbeCandidates {
         fn freeze(
             &self,
-            _environment: &str,
+            _profile: &str,
         ) -> Result<Vec<RegisteredSessionLease>, skiff_router::activation::ActivationCandidateError>
         {
             Ok(self.leases.lock().expect("leases lock").clone())
@@ -238,12 +238,12 @@ mod tests {
     }
 
     fn prepared_control(
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
     ) -> AssemblyActivationControl {
         AssemblyActivationControl::Prepared {
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             activation_id: activation_id.to_string(),
             expected_generation,
             candidate_generation: expected_generation + 1,
@@ -274,7 +274,7 @@ mod tests {
         .expect("connect repository")
     }
 
-    async fn count_audit(database: &str, environment: &str, activation_id: &str) -> usize {
+    async fn count_audit(database: &str, profile: &str, activation_id: &str) -> usize {
         let mongo_url = std::env::var("SKIFF_ACTIVATION_MONGO_URL").expect("mongo url");
         let client = mongodb::Client::with_uri_str(&mongo_url)
             .await
@@ -283,14 +283,14 @@ mod tests {
             .database(database)
             .collection::<mongodb::bson::Document>("activation_audit")
             .count_documents(doc! {
-                "environment": environment,
+                "profile": profile,
                 "activationId": activation_id
             })
             .await
             .expect("count audit documents") as usize
     }
 
-    async fn count_audit_total(database: &str, environment: &str) -> usize {
+    async fn count_audit_total(database: &str, profile: &str) -> usize {
         let mongo_url = std::env::var("SKIFF_ACTIVATION_MONGO_URL").expect("mongo url");
         let client = mongodb::Client::with_uri_str(&mongo_url)
             .await
@@ -298,7 +298,7 @@ mod tests {
         client
             .database(database)
             .collection::<mongodb::bson::Document>("activation_audit")
-            .count_documents(doc! { "environment": environment })
+            .count_documents(doc! { "profile": profile })
             .await
             .expect("count audit documents") as usize
     }
@@ -311,7 +311,7 @@ mod tests {
         let repository = Arc::new(connect(&database).await);
         repository.ensure_indexes().await.expect("ensure indexes");
         repository
-            .initialize(&EnvironmentActivationState::initial(
+            .initialize(&ProfileActivationState::initial(
                 "probe",
                 7,
                 assembly(0),
@@ -326,7 +326,7 @@ mod tests {
             leases: StdMutex::new(Vec::new()),
         });
         candidates.set(RegisteredAssemblyTuple {
-            environment: "probe".to_string(),
+            profile: "probe".to_string(),
             generation: 7,
             assembly: assembly(0),
             config_snapshot: config(0),
@@ -375,7 +375,7 @@ mod tests {
         // Cycle 2: stale ACK is rejected (wrong session epoch), the real ACK
         // commits, and the second swap advances to generation 9.
         candidates.set(RegisteredAssemblyTuple {
-            environment: "probe".to_string(),
+            profile: "probe".to_string(),
             generation: 8,
             assembly: assembly(0),
             config_snapshot: config(0),
@@ -452,13 +452,13 @@ mod tests {
     }
 
     fn request(
-        environment: &str,
+        profile: &str,
         activation_id: &str,
         expected_generation: u64,
     ) -> AssemblyActivationRequest {
         AssemblyActivationRequest {
             schema_version: ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION.to_string(),
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             activation_id: activation_id.to_string(),
             expected_generation,
             assembly: assembly(1),

@@ -83,7 +83,7 @@ struct Catalog {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Tuple {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: String,
     config_snapshot: String,
@@ -397,7 +397,7 @@ struct SnapshotValue {
 
 #[derive(Debug, Clone, Deserialize)]
 struct EpochValue {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: AssemblyValue,
     #[serde(rename = "configSnapshot")]
@@ -408,7 +408,7 @@ struct EpochValue {
 impl EpochValue {
     fn tuple(&self) -> Tuple {
         Tuple {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.generation,
             assembly: self.assembly.assembly_identity.clone(),
             config_snapshot: self.config_snapshot.snapshot_id.clone(),
@@ -418,7 +418,7 @@ impl EpochValue {
 
 #[derive(Debug, Clone, Deserialize)]
 struct PendingValue {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: AssemblyValue,
     #[serde(rename = "configSnapshot")]
@@ -428,7 +428,7 @@ struct PendingValue {
 impl PendingValue {
     fn tuple(&self) -> Tuple {
         Tuple {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.generation,
             assembly: self.assembly.assembly_identity.clone(),
             config_snapshot: self.config_snapshot.snapshot_id.clone(),
@@ -554,14 +554,14 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
             assert_eq!(reencoded, bytes, "register frame must be byte-exact");
             match control {
                 AssemblyActivationControl::Register {
-                    environment,
+                    profile,
                     generation,
                     assembly,
                     config_snapshot,
                     replica_id,
                 } => SemanticFrame::Register {
                     tuple: Tuple {
-                        environment,
+                        profile,
                         generation,
                         assembly: assembly.assembly_identity.as_str().to_string(),
                         config_snapshot: config_snapshot.snapshot_id.as_str().to_string(),

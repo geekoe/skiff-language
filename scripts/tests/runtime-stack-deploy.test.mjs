@@ -1,377 +1,218 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { renderRuntimeConfig } from '../lib/runtime-stack-config.mjs';
+import { deployStack, renderEcosystemConfig } from '../lib/stack-deploy.mjs';
 
-const scriptsDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const repoRoot = path.dirname(scriptsDir);
-const deployScript = path.join(scriptsDir, 'deploy-runtime-stack.mjs');
+const skiffRoot = resolve(import.meta.dirname, '..', '..');
 
-test('runtime config renders an optional host keyring mount path', () => {
-  const common = {
-    routerUrl: 'ws://127.0.0.1:4001/runtime',
-    runtimeHome: '/srv/skiff/runtime-home',
-    environment: 'prod',
-  };
+test('deploy copies the three YAML files verbatim from configDir', async (t) => {
+  const { configDir, buildRoot, shell, calls } = await deployFixture(t);
+  const result = await deployStack({ configDir, skiffRoot, shell });
 
-  assert.doesNotMatch(
-    renderRuntimeConfig(common),
-    /serviceDb|keyringFile|maxRequestBytes|maxResponseBytes|maxConcurrency|idleTimeoutMs/,
-  );
-  assert.match(
-    renderRuntimeConfig({
-      ...common,
-      serviceDbEncryptionKeyringFile: '/run/secrets/skiff-service-db-keyring.json',
-    }),
-    /serviceDb:\n  encryption:\n    keyringFile: "\/run\/secrets\/skiff-service-db-keyring\.json"/,
-  );
+  const configRsyncs = calls.filter((call) => (
+    call.op === 'rsync'
+    && call.destination.startsWith('deploy.test:/srv/skiff/config/')
+    && call.destination.endsWith('.yml')
+  ));
+  assert.equal(configRsyncs.length, 3);
+  for (const file of ['router.yml', 'runtime.yml', 'telemetry.yml']) {
+    const call = calls.find((entry) => (
+      entry.op === 'rsync'
+      && entry.destination === `deploy.test:/srv/skiff/config/${file}`
+    ));
+    assert.ok(call, `missing rsync for ${file}`);
+    const copied = await readFile(call.source, 'utf8');
+    assert.equal(copied, await readFile(join(configDir, file), 'utf8'));
+    assert.ok(!copied.includes('deploy.test'), `${file} must be copied verbatim`);
+  }
+  assert.equal(result.config.length, 3);
 });
 
-test('deploy CLI writes only the remote keyring path to runtime.yml', async () => {
-  const mountPath = '/run/secrets/skiff-service-db-keyring.json';
-  const result = await runDeploy({
-    args: ['--service-db-encryption-keyring-file', mountPath],
-  });
-  try {
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.runtimeConfig, /^environment: "prod"$/m);
-    assert.doesNotMatch(result.runtimeConfig, /^artifactRoots?:/m);
-    assert.doesNotMatch(result.runtimeConfig, /mongoUrl/);
-    assert.doesNotMatch(
-      result.runtimeConfig,
-      /maxRequestBytes|maxResponseBytes|maxConcurrency|idleTimeoutMs|bodyLimitBytes/,
-    );
-    assert.match(result.runtimeConfig, new RegExp(`keyringFile: ${JSON.stringify(mountPath)}`));
+test('deploy uploads manifest binaries, installs telemetry, and PM2 deletes before startOrReload', async (t) => {
+  const { configDir, shell, calls, buildRoot } = await deployFixture(t);
+  await deployStack({ configDir, skiffRoot, shell });
 
-    const summary = JSON.parse(result.stdout);
-    assert.equal(summary.serviceDb.encryptionKeyringConfigured, true);
-    assert.equal(result.stdout.includes(mountPath), false);
-    assert.equal(result.commandLog.includes(mountPath), false);
-    assert.equal(result.commandLog.includes('skiff-service-db-keyring.json'), false);
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('deploy CLI accepts the keyring mount path from the environment', async () => {
-  const mountPath = '/var/run/skiff/keyring.json';
-  const result = await runDeploy({
-    env: { SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE: mountPath },
-  });
-  try {
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.runtimeConfig, new RegExp(`keyringFile: ${JSON.stringify(mountPath)}`));
-    assert.equal(JSON.parse(result.stdout).serviceDb.encryptionKeyringConfigured, true);
-    assert.equal(result.stdout.includes(mountPath), false);
-    assert.equal(result.commandLog.includes(mountPath), false);
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('deploy CLI omits keyring config unless explicitly configured', async () => {
-  const result = await runDeploy();
-  try {
-    assert.equal(result.code, 0, result.stderr);
-    assert.doesNotMatch(result.runtimeConfig, /serviceDb|keyringFile/);
-    assert.equal(JSON.parse(result.stdout).serviceDb.encryptionKeyringConfigured, false);
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('deploy CLI rejects a relative remote keyring path before running commands', async () => {
-  const result = await runDeploy({
-    args: ['--service-db-encryption-keyring-file', 'secrets/keyring.json'],
-  });
-  try {
-    assert.notEqual(result.code, 0);
-    assert.match(
-      result.stderr,
-      /--service-db-encryption-keyring-file must be an absolute path on the remote runtime host/,
-    );
-    assert.equal(result.commandLog, '');
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('deploy CLI fails closed without the Router-owned Mongo URL', async () => {
-  const result = await runDeploy({ includeServiceDbMongoUrl: false });
-  try {
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /service DB Mongo URL is required/);
-    assert.equal(result.commandLog, '');
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('deploy CLI requires explicit positive HTTP byte ceilings', async () => {
-  const missing = await runDeploy({ includeHttpByteCeilings: false });
-  try {
-    assert.notEqual(missing.code, 0);
-    assert.match(missing.stderr, /SKIFF_HTTP_MAX_REQUEST_BYTES must be a positive safe integer/);
-    assert.equal(missing.commandLog, '');
-  } finally {
-    await missing.cleanup();
-  }
-
-  for (const [option, value] of [
-    ['--http-max-request-bytes', '0'],
-    ['--http-max-response-bytes', '1.5'],
+  for (const [unit, target] of [
+    ['router', 'skiff-router'],
+    ['runtime', 'skiff-runtime'],
+    ['compiler', 'skiff-compiler'],
   ]) {
-    const invalid = await runDeploy({ args: [option, value] });
-    try {
-      assert.notEqual(invalid.code, 0);
-      assert.match(invalid.stderr, new RegExp(`${option} must be a positive safe integer`));
-      assert.equal(invalid.commandLog, '');
-    } finally {
-      await invalid.cleanup();
-    }
+    const upload = calls.find((call) => (
+      call.op === 'rsync'
+      && call.destination === `deploy.test:/srv/skiff/bin/${target}`
+    ));
+    assert.ok(upload, `missing binary upload for ${unit}`);
+    assert.equal(upload.source, join(buildRoot, 'bin', target));
+    const chmod = calls.find((call) => (
+      call.op === 'ssh'
+      && call.command === `chmod +x /srv/skiff/bin/${target}`
+    ));
+    assert.ok(chmod, `missing chmod for ${target}`);
   }
+
+  assert.ok(calls.some((call) => (
+    call.op === 'ssh'
+    && call.command === 'cd /srv/skiff/telemetry && PATH=/opt/node/bin:$PATH pnpm install --prod=false --ignore-scripts'
+  )), 'telemetry dependencies must be installed');
+
+  const deletes = calls
+    .filter((call) => call.op === 'ssh' && call.command.includes('pm2 delete'))
+    .map((call) => call.command);
+  const reloads = calls
+    .filter((call) => call.op === 'ssh' && call.command.includes('startOrReload'))
+    .map((call) => call.command);
+  assert.equal(deletes.length, 3);
+  assert.equal(reloads.length, 3);
+  for (const app of ['skiff-router', 'skiff-runtime', 'skiff-telemetry']) {
+    const deleteIndex = calls.findIndex((call) => (
+      call.op === 'ssh' && call.command.includes(`pm2 delete ${app} || true`)
+    ));
+    const reloadIndex = calls.findIndex((call) => (
+      call.op === 'ssh' && call.command.includes(`startOrReload ecosystem.config.cjs --only ${app}`)
+    ));
+    assert.ok(deleteIndex !== -1 && reloadIndex !== -1, app);
+    assert.ok(deleteIndex < reloadIndex, `${app} must be deleted before startOrReload`);
+  }
+  assert.ok(calls.some((call) => (
+    call.op === 'ssh' && call.command === 'PATH=/opt/node/bin:$PATH pm2 save'
+  )), 'pm2 save must run');
 });
 
-test('deploy CLI renders an independent activation prepare timeout', async () => {
-  const result = await runDeploy({
-    only: 'router',
-    args: ['--activation-prepare-timeout-ms', '130000'],
+test('deploy fails closed on profile mismatch before any remote command', async (t) => {
+  const { configDir, shell, calls } = await deployFixture(t, {
+    router: 'profile: other\nhost: 127.0.0.1\n',
   });
-  try {
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.routerConfig, /^activation:\n  prepareTimeoutMs: 130000$/m);
-    assert.match(result.routerConfig, /^requestTimeoutMs: 20000$/m);
-  } finally {
-    await result.cleanup();
-  }
+  await assert.rejects(
+    deployStack({ configDir, skiffRoot, shell }),
+    /stack profile mismatch/,
+  );
+  assert.equal(calls.length, 0);
+});
 
-  const invalid = await runDeploy({
-    only: 'router',
-    args: ['--activation-prepare-timeout-ms', '0'],
+test('deploy fails closed when the router or runtime build unit is missing', async (t) => {
+  const { configDir, shell, calls, buildRoot } = await deployFixture(t);
+  const manifestPath = join(buildRoot, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  delete manifest.units.router;
+  await writeFile(manifestPath, JSON.stringify(manifest));
+
+  await assert.rejects(
+    deployStack({ configDir, skiffRoot, shell }),
+    /router is missing from .*manifest\.json/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('deploy requires a build manifest and rejects missing binaries before remote commands', async (t) => {
+  const { configDir, shell, calls, buildRoot } = await deployFixture(t);
+  await rm(join(buildRoot, 'bin', 'skiff-runtime'), { force: true });
+
+  await assert.rejects(
+    deployStack({ configDir, skiffRoot, shell }),
+    /runtime binary does not exist/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('ecosystem template targets the copied config files and node bin', () => {
+  const text = renderEcosystemConfig({
+    remoteSkiff: '/srv/skiff',
+    nodeBin: '/opt/node/bin',
   });
-  try {
-    assert.notEqual(invalid.code, 0);
-    assert.match(
-      invalid.stderr,
-      /--activation-prepare-timeout-ms must be a positive safe integer/,
-    );
-    assert.equal(invalid.commandLog, '');
-  } finally {
-    await invalid.cleanup();
-  }
+  assert.match(text, /script: '\/srv\/skiff\/bin\/skiff-router'/);
+  assert.match(text, /args: '\/srv\/skiff\/config\/router\.yml'/);
+  assert.match(text, /args: '--config \/srv\/skiff\/config\/telemetry\.yml'/);
+  assert.match(text, /interpreter: NODE_BIN \+ '\/node'/);
+  assert.doesNotMatch(text, /mongoUrl|httpMaxRequestBytes|prepareTimeoutMs/);
 });
 
-test('router deploy uploads the Rust binary and writes only supported PM2 args', async () => {
-  const result = await runDeploy({ only: 'router' });
-  try {
-    assert.equal(result.code, 0, result.stderr);
-    assert.doesNotMatch(result.routerConfig, /^ecosystemStoreCliPath:/m);
-    assert.match(result.routerConfig, /^artifactsPath: "\/srv\/skiff\/artifacts"$/m);
-    assert.match(result.routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
-    assert.match(result.routerConfig, /^  maxRequestBytes: 67108864$/m);
-    assert.match(result.routerConfig, /^  maxResponseBytes: 8388608$/m);
-    assert.match(result.routerConfig, /^activation:\n  prepareTimeoutMs: 120000$/m);
-    assert.match(
-      result.routerConfig,
-      /^runtime:\n  port: 4001\n  path: \/runtime\n  maxConcurrency: 128$/m,
-    );
-    assert.doesNotMatch(result.routerConfig, /idleTimeoutMs/);
-    assert.doesNotMatch(result.routerConfig, /bodyLimitBytes/);
-    assert.doesNotMatch(result.routerConfig, /^artifactRoots?:/m);
-    assert.match(
-      result.ecosystemConfig,
-      /script: '\/srv\/skiff\/bin\/skiff-router'/,
-    );
-    assert.match(
-      result.ecosystemConfig,
-      /args: '\/srv\/skiff\/config\/router\.yml'/,
-    );
-    assert.match(result.ecosystemConfig, /interpreter: 'none'/);
-    assert.doesNotMatch(result.ecosystemConfig, /src\/router\/server\.ts/);
-    const routerApp = result.ecosystemConfig.split("name: 'skiff-telemetry'")[0];
-    assert.doesNotMatch(routerApp, /--import tsx/);
-    assert.doesNotMatch(result.ecosystemConfig, /--release-mode/);
-
-    const commands = result.commandLog.trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(commands.some(({ command, args }) =>
-      command === 'rsync'
-      && args.at(-1) === 'deploy.test:/srv/skiff/bin/skiff-router'
-      && path.resolve(repoRoot, args.at(-2)) === process.execPath
-    ), true);
-    assert.equal(commands.some(({ command, args }) =>
-      command === 'ssh'
-      && args.at(-1) === 'chmod +x /srv/skiff/bin/skiff-router'
-    ), true);
-    assert.equal(commands.some(({ command, args }) =>
-      command === 'rsync'
-      && args.at(-1) === 'deploy.test:/srv/skiff/bin/skiff-compiler'
-    ), false, '--only router must not implicitly deploy the compiler');
-    assert.equal(JSON.parse(result.stdout).deployed.router.artifacts.length, 1);
-  } finally {
-    await result.cleanup();
-  }
-});
-
-test('router deploy fails before remote commands when the router build artifact is missing', async () => {
-  const result = await runDeploy({ only: 'router', omitRouter: true });
-  try {
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /router is missing from .*manifest\.json/);
-    assert.equal(result.commandLog, '');
-  } finally {
-    await result.cleanup();
-  }
-});
-
-async function runDeploy({
-  args = [],
-  env = {},
-  only = 'runtime',
-  omitCompiler = false,
-  omitRouter = false,
-  includeServiceDbMongoUrl = true,
-  includeHttpByteCeilings = true,
+async function deployFixture(t, {
+  router = undefined,
 } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'skiff-deploy-test-'));
-  const fakeBin = path.join(root, 'bin');
-  const captureRoot = path.join(root, 'capture');
-  const commandLogPath = path.join(captureRoot, 'commands.jsonl');
-  const runtimeConfigPath = path.join(captureRoot, 'runtime.yml');
-  const routerConfigPath = path.join(captureRoot, 'router.yml');
-  const ecosystemConfigPath = path.join(captureRoot, 'ecosystem.config.cjs');
-  const manifestPath = path.join(root, 'manifest.json');
-  await mkdir(fakeBin, { recursive: true });
-  await mkdir(captureRoot, { recursive: true });
+  const root = await mkdtemp(join(tmpdir(), 'skiff-stack-deploy-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configDir = join(root, 'configDir');
+  const buildRoot = join(root, 'build');
+  await mkdir(join(buildRoot, 'bin'), { recursive: true });
+  await mkdir(configDir, { recursive: true });
 
-  const binaryPath = path.relative(repoRoot, process.execPath);
-  await writeFile(manifestPath, JSON.stringify({
+  await writeFile(join(configDir, 'build.yml'), [
+    'target: x86_64-unknown-linux-gnu',
+    'zigDir: /cache/zig',
+    `buildRoot: ${buildRoot}`,
+    `cargoTargetDir: ${join(root, 'cargo-target')}`,
+    '',
+  ].join('\n'));
+  await writeFile(join(configDir, 'config.yml'), [
+    'profile: prod',
+    'remote:',
+    '  host: deploy.test',
+    '  remoteSkiff: /srv/skiff',
+    '  nodeBin: /opt/node/bin',
+    'verify:',
+    '  httpPort: 4000',
+    '  controlPort: 4001',
+    '  telemetryPort: 4002',
+    '  healthPath: /__router/health',
+    '',
+  ].join('\n'));
+  await writeFile(join(configDir, 'router.yml'), router ?? [
+    'profile: prod',
+    'host: 127.0.0.1',
+    'artifactsPath: /srv/skiff/artifacts',
+    'serviceDb:',
+    '  mongoUrl: mongodb://127.0.0.1:27017',
+    '',
+  ].join('\n'));
+  await writeFile(
+    join(configDir, 'runtime.yml'),
+    'router: ws://127.0.0.1:4001/runtime\nruntime-home: /srv/skiff/runtime-home\n',
+  );
+  await writeFile(
+    join(configDir, 'telemetry.yml'),
+    'telemetry:\n  host: 127.0.0.1\n  port: 4002\n  path: /telemetry\n',
+  );
+
+  for (const name of ['skiff-router', 'skiff-runtime', 'skiff-compiler']) {
+    await writeFile(join(buildRoot, 'bin', name), `fake-${name}\n`);
+  }
+  await writeFile(join(buildRoot, 'manifest.json'), JSON.stringify({
     schemaVersion: 'skiff-runtime-stack-build-v1',
+    target: 'x86_64-unknown-linux-gnu',
     commit: 'test-commit',
     units: {
-      runtime: rustBuildUnit(binaryPath),
-      ...(omitCompiler ? {} : { compiler: rustBuildUnit(binaryPath) }),
-      ...(omitRouter ? {} : { router: rustBuildUnit(binaryPath) }),
+      router: binaryUnit(join(buildRoot, 'bin', 'skiff-router')),
+      runtime: binaryUnit(join(buildRoot, 'bin', 'skiff-runtime')),
+      compiler: binaryUnit(join(buildRoot, 'bin', 'skiff-compiler')),
+      telemetry: {
+        kind: 'ts',
+        commit: 'test-commit',
+        sourceKey: 'test-telemetry',
+        artifacts: [],
+      },
     },
-  }));
-  await writeFakeCommand(path.join(fakeBin, 'ssh'));
-  await writeFakeCommand(path.join(fakeBin, 'rsync'));
+  }, null, 2));
 
-  const childEnv = {
-    ...process.env,
-    PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
-    SKIFF_DEPLOY_TEST_COMMAND_LOG: commandLogPath,
-    SKIFF_DEPLOY_TEST_RUNTIME_CONFIG: runtimeConfigPath,
-    SKIFF_DEPLOY_TEST_ROUTER_CONFIG: routerConfigPath,
-    SKIFF_DEPLOY_TEST_ECOSYSTEM_CONFIG: ecosystemConfigPath,
+  const calls = [];
+  const shell = {
+    remoteRun: async (host, command) => {
+      calls.push({ op: 'ssh', host, command });
+    },
+    rsync: async (source, destination, extra = []) => {
+      calls.push({ op: 'rsync', source, destination, extra });
+    },
   };
-  delete childEnv.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE;
-  delete childEnv.SKIFF_SERVICE_DB_MONGO_URL;
-  delete childEnv.SERVICE_DB_MONGO_URL;
-  delete childEnv.SKIFF_HTTP_MAX_REQUEST_BYTES;
-  delete childEnv.SKIFF_HTTP_MAX_RESPONSE_BYTES;
-  delete childEnv.SKIFF_ACTIVATION_PREPARE_TIMEOUT_MS;
-  Object.assign(childEnv, env);
-
-  const child = await spawnCapture(process.execPath, [
-    deployScript,
-    '--remote',
-    'deploy.test',
-    '--only',
-    only,
-    '--remote-skiff',
-    '/srv/skiff',
-    '--build-manifest',
-    manifestPath,
-    ...(includeServiceDbMongoUrl
-      ? ['--service-db-mongo-url', 'mongodb://127.0.0.1:27017/skiff']
-      : []),
-    ...(includeHttpByteCeilings
-      ? [
-          '--http-max-request-bytes',
-          '67108864',
-          '--http-max-response-bytes',
-          '8388608',
-        ]
-      : []),
-    ...args,
-  ], childEnv);
-
-  return {
-    ...child,
-    commandLog: await readOptionalFile(commandLogPath),
-    ecosystemConfig: await readOptionalFile(ecosystemConfigPath),
-    routerConfig: await readOptionalFile(routerConfigPath),
-    runtimeConfig: await readOptionalFile(runtimeConfigPath),
-    cleanup: () => rm(root, { recursive: true, force: true }),
-  };
+  return { configDir, buildRoot, shell, calls, root };
 }
 
-function rustBuildUnit(binaryPath) {
+function binaryUnit(pathValue) {
   return {
     kind: 'rs',
     commit: 'test-commit',
     sourceKey: 'test-source',
-    artifacts: [{ kind: 'binary', path: binaryPath }],
+    artifacts: [{ kind: 'binary', path: pathValue }],
   };
-}
-
-async function writeFakeCommand(file) {
-  await writeFile(file, `#!/usr/bin/env node
-import { appendFileSync, copyFileSync } from 'node:fs';
-const args = process.argv.slice(2);
-appendFileSync(process.env.SKIFF_DEPLOY_TEST_COMMAND_LOG, JSON.stringify({
-  command: ${JSON.stringify(path.basename(file))},
-  args,
-}) + '\\n');
-if (${JSON.stringify(path.basename(file))} === 'rsync' && args.at(-2)?.endsWith('/runtime.yml')) {
-  copyFileSync(args.at(-2), process.env.SKIFF_DEPLOY_TEST_RUNTIME_CONFIG);
-}
-if (${JSON.stringify(path.basename(file))} === 'rsync' && args.at(-2)?.endsWith('/router.yml')) {
-  copyFileSync(args.at(-2), process.env.SKIFF_DEPLOY_TEST_ROUTER_CONFIG);
-}
-if (${JSON.stringify(path.basename(file))} === 'rsync' && args.at(-2)?.endsWith('/ecosystem.config.cjs')) {
-  copyFileSync(args.at(-2), process.env.SKIFF_DEPLOY_TEST_ECOSYSTEM_CONFIG);
-}
-`);
-  await chmod(file, 0o755);
-}
-
-function spawnCapture(command, args, env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: repoRoot,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
-}
-
-async function readOptionalFile(file) {
-  try {
-    return await readFile(file, 'utf8');
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return '';
-    }
-    throw error;
-  }
 }

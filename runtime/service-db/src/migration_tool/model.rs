@@ -40,7 +40,7 @@ pub(crate) struct ValidatedCollectionMapping {
 
 #[derive(Clone)]
 pub(crate) struct StorageEndpoint {
-    pub(crate) environment: String,
+    pub(crate) profile: String,
     pub(crate) service_id: String,
     pub(crate) database: String,
     pub(crate) package_id: String,
@@ -58,10 +58,10 @@ impl ValidatedMigrationPlan {
     pub(crate) fn parse(
         allowlist_bytes: &[u8],
         sanitization_bytes: &[u8],
-        environment: &str,
+        profile: &str,
         allowlist_file_name: &str,
     ) -> Result<Self, MigrationToolError> {
-        validate_environment(environment)?;
+        validate_profile(profile)?;
         let (allowlist, sanitizer) =
             parse_validated_receipts(allowlist_bytes, sanitization_bytes, allowlist_file_name)?;
 
@@ -70,7 +70,7 @@ impl ValidatedMigrationPlan {
         let mut targets = BTreeSet::new();
         let mut mappings = Vec::with_capacity(allowlist.len());
         for entry in allowlist {
-            let mapping = validate_mapping(entry, environment, &sanitizer)?;
+            let mapping = validate_mapping(entry, profile, &sanitizer)?;
             if !mapping_ids.insert(mapping.mapping_id.clone())
                 || !sources.insert((
                     mapping.source.database.clone(),
@@ -96,7 +96,7 @@ impl ValidatedMigrationPlan {
 impl ValidatedCollectionMapping {
     pub(crate) fn target_context(&self) -> MigrationTargetContext<'_> {
         MigrationTargetContext {
-            environment: &self.target.environment,
+            profile: &self.target.profile,
             service_id: &self.target.service_id,
             collection_name: &self.target.physical_collection,
         }
@@ -126,7 +126,7 @@ impl ValidatedCollectionMapping {
 
 fn validate_mapping(
     entry: AllowlistEntry,
-    environment: &str,
+    profile: &str,
     sanitizer: &ValidatedSanitization,
 ) -> Result<ValidatedCollectionMapping, MigrationToolError> {
     if entry.disposition != "retain" {
@@ -164,7 +164,7 @@ fn validate_mapping(
         return Err(MigrationToolError::InvalidPlan);
     }
 
-    let target_database = service_storage_database_name(environment, &semantic.service_id)
+    let target_database = service_storage_database_name(profile, &semantic.service_id)
         .map_err(|_| MigrationToolError::InvalidPlan)?;
     let target_collection = service_storage_collection_name(
         &semantic.package_id,
@@ -197,7 +197,7 @@ fn validate_mapping(
     };
 
     let source = StorageEndpoint {
-        environment: environment.to_owned(),
+        profile: profile.to_owned(),
         service_id: semantic.service_id.clone(),
         database: entry.physical_target.old.database,
         package_id: semantic.package_id.clone(),
@@ -205,7 +205,7 @@ fn validate_mapping(
         physical_collection: entry.physical_target.old.collection,
     };
     let target = StorageEndpoint {
-        environment: environment.to_owned(),
+        profile: profile.to_owned(),
         service_id: semantic.service_id,
         database: entry.physical_target.new.database,
         package_id: semantic.package_id,
@@ -302,7 +302,7 @@ fn mapping_id(source: &StorageEndpoint, target: &StorageEndpoint) -> String {
     format!("m-{}", &hex::encode(hasher.finalize())[..32])
 }
 
-fn validate_environment(value: &str) -> Result<(), MigrationToolError> {
+pub(crate) fn validate_profile(value: &str) -> Result<(), MigrationToolError> {
     validate_canonical_value(value)?;
     service_storage_database_name(value, "example.test/service")
         .map(|_| ())

@@ -105,7 +105,7 @@ struct ConnectWireMutation {
 
 fn canonical_task_header(test_effects_enabled: bool) -> Value {
     let mut header = json!({
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "task-request-1",
         "mode": "unary",
@@ -789,7 +789,7 @@ fn runtime_assembly_websocket_jsonrpc_response_mutations_fail_closed() {
 #[test]
 fn runtime_assembly_websocket_jsonrpc_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame_with_payload(
-        br#"{"schemaVersion":"skiff-runtime-frame-v3","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
+        br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
         b"null",
     );
     assert!(decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame).is_err());
@@ -865,7 +865,7 @@ fn runtime_assembly_websocket_connect_response_mutations_fail_closed() {
 #[test]
 fn runtime_assembly_websocket_connect_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame(
-        br#"{"schemaVersion":"skiff-runtime-frame-v3","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
+        br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
     );
     assert!(decode_runtime_assembly_websocket_connect_response_end_frame(&frame).is_err());
 }
@@ -931,7 +931,7 @@ fn websocket_jsonrpc_request_header() -> Value {
 
 fn websocket_jsonrpc_response_header(outcome: &str, payload_present: bool) -> Value {
     serde_json::json!({
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.end",
         "requestId": "request-websocket-jsonrpc-1",
         "payloadPresent": payload_present,

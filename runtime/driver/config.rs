@@ -5,7 +5,6 @@ use std::{
 };
 
 use serde::Deserialize;
-use skiff_artifact_model::validate_activation_environment;
 use url::Url;
 
 pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -63,7 +62,6 @@ pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 128 * 1024 * 1024;
 pub struct RuntimeFileConfig {
     pub router: String,
     pub runtime_home: PathBuf,
-    pub environment: String,
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
@@ -75,8 +73,6 @@ struct RawRuntimeFileConfig {
     router: String,
     #[serde(alias = "runtime-home")]
     runtime_home: PathBuf,
-    #[serde(default)]
-    environment: Option<String>,
     #[serde(default)]
     service_db: Option<RawRuntimeServiceDbConfig>,
     #[serde(default)]
@@ -119,7 +115,6 @@ impl RuntimeFileConfig {
         })?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let runtime_home = resolve_relative_path(base_dir, raw.runtime_home);
-        let environment = required_runtime_environment(raw.environment)?;
         if raw.services.is_some() {
             anyhow::bail!(
                 "runtime config no longer supports services; Router bootstrap owns artifact loading"
@@ -129,7 +124,6 @@ impl RuntimeFileConfig {
         Ok(Self {
             router: raw.router,
             runtime_home,
-            environment,
             service_db_encryption_keyring_file: runtime_service_db_encryption_keyring_file(
                 base_dir,
                 raw.service_db,
@@ -138,14 +132,6 @@ impl RuntimeFileConfig {
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
         })
     }
-}
-
-fn required_runtime_environment(environment: Option<String>) -> anyhow::Result<String> {
-    let environment =
-        environment.ok_or_else(|| anyhow::anyhow!("runtime config environment is required"))?;
-    validate_activation_environment(&environment)
-        .map_err(|error| anyhow::anyhow!("runtime config environment is invalid: {error}"))?;
-    Ok(environment)
 }
 
 fn runtime_service_db_encryption_keyring_file(

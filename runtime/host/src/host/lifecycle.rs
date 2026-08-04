@@ -42,7 +42,7 @@ impl RuntimeHost {
 
     pub(super) async fn recover_durable_committed(
         &self,
-        environment: &str,
+        profile: &str,
         generation: u64,
         assembly: &skiff_artifact_model::RuntimeAssemblyRef,
         config_snapshot: &skiff_artifact_model::RuntimeConfigSnapshotRef,
@@ -50,12 +50,11 @@ impl RuntimeHost {
         config_snapshot_resolver: &skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
         service_db: &skiff_artifact_model::AssemblyActivationServiceDb,
     ) -> Result<()> {
-        if environment != self.environment {
-            return Err(RuntimeError::invalid_artifact(format!(
-                "router bootstrap activation environment {environment} does not match Runtime environment {}",
-                self.environment
-            )));
-        }
+        self.freeze_bootstrap_profile(profile).map_err(|error| {
+            RuntimeError::invalid_artifact(format!(
+                "router bootstrap activation profile check failed: {error:#}"
+            ))
+        })?;
         self.assembly_admission
             .discard_transient_for_reconnect()
             .map_err(|error| {
@@ -65,7 +64,7 @@ impl RuntimeHost {
             })?;
         self.assembly_admission
             .recover_committed(
-                environment,
+                profile,
                 generation,
                 assembly,
                 config_snapshot,

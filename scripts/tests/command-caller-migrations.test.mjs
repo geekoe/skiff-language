@@ -84,7 +84,7 @@ test('isolated status checked adapter rejects nonzero and invalid JSON before cl
     let ownershipReceipt = await claimIsolatedTestWorkspace(fixture);
     await mkdir(scriptsRoot, { recursive: true });
     await mkdir(dirname(configPath), { recursive: true });
-    await writeFile(configPath, 'environment: isolated-test\n');
+    await writeFile(configPath, 'profile: isolated-test\n');
     ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(instancePath, [
       "process.stdout.write('status stdout');",

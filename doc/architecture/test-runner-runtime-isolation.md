@@ -54,8 +54,8 @@ assembly前冻结一次；后续batch只能克隆该内存snapshot，不能重�
 每个batch内的case各自生成fresh synthetic `ServiceDeployment`、对应`ServiceContract`和gateway
 entry/ingress binding，再作为多个root链接进一个`RuntimeAssembly`。runner同时为batch内每个generated
 deployment构造独立snapshot分区，汇入一个`RuntimeConfigSnapshot`，并从本次隔离activation的受信输入
-写入snapshot顶层target environment。每个batch只提交一次activation transaction，并列钉住assembly
-ref与snapshot ref；Runtime先验证snapshot target与activation environment精确相等，再物化逐case
+写入snapshot顶层target profile。每个batch只提交一次activation transaction，并列钉住assembly
+ref与snapshot ref；Runtime先验证snapshot target与activation profile精确相等，再物化逐case
 ConfigView。一个case只属于一个batch，使用该batch的activation generation，不拥有单独assembly、snapshot
 或generation。
 

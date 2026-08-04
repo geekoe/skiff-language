@@ -79,7 +79,7 @@ export function selectI02TransitivePackageRecord({
 
 export function captureI02CommittedState(
   health,
-  { environment, generation, assemblyIdentity, replicaId },
+  { profile, generation, assemblyIdentity, replicaId },
 ) {
   assert.equal(health?.ok, true, 'I02 control health must return ok:true');
   assert.equal(
@@ -89,11 +89,11 @@ export function captureI02CommittedState(
   );
   assert.deepEqual(
     {
-      environment: health?.activeAssembly?.environment,
+      profile: health?.activeAssembly?.profile,
       generation: health?.activeAssembly?.generation,
       assemblyIdentity: health?.activeAssembly?.assemblyIdentity,
     },
-    { environment, generation, assemblyIdentity },
+    { profile, generation, assemblyIdentity },
     'I02 committed tuple must remain exact',
   );
   const replicas = (health.replicas ?? []).filter(
@@ -101,7 +101,7 @@ export function captureI02CommittedState(
   );
   assert.equal(replicas.length, 1, 'I02 must observe its exact runtime replica once');
   const [replica] = replicas;
-  assert.equal(replica.environment, environment);
+  assert.equal(replica.profile, profile);
   assert.equal(replica.generation, generation);
   assert.equal(replica.assemblyIdentity, assemblyIdentity);
   assert.equal(replica.state, 'healthy');
@@ -124,7 +124,7 @@ export function captureI02CommittedState(
   assertPlainObject(capability.capabilities, 'I02 runtime capabilities');
 
   return Object.freeze({
-    committedTuple: Object.freeze({ environment, generation, assemblyIdentity }),
+    committedTuple: Object.freeze({ profile, generation, assemblyIdentity }),
     replica: Object.freeze({
       replicaId,
       connected: replica.connected,

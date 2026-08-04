@@ -46,7 +46,7 @@ struct Run {
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TxFixture {
-    environment: String,
+    profile: String,
     activation_id: String,
     expected_generation: u64,
     candidate_generation: u64,
@@ -210,7 +210,7 @@ enum Decision {
 
 #[derive(Clone, Debug)]
 struct Tx {
-    environment: String,
+    profile: String,
     activation_id: String,
     expected_generation: u64,
     candidate_generation: u64,
@@ -240,7 +240,7 @@ impl Harness {
     fn new(tx: TxFixture) -> Self {
         Self {
             tx: Tx {
-                environment: tx.environment,
+                profile: tx.profile,
                 activation_id: tx.activation_id,
                 expected_generation: tx.expected_generation,
                 candidate_generation: tx.candidate_generation,
@@ -879,7 +879,7 @@ fn runtime_to_router(control: &AssemblyActivationControl) {
 
 fn assert_prepare_wire(tx: &Tx, replica_id: &str) {
     router_to_runtime(&AssemblyActivationControl::Prepare {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,
@@ -892,7 +892,7 @@ fn assert_prepare_wire(tx: &Tx, replica_id: &str) {
 
 fn assert_prepared_wire(tx: &Tx, replica_id: &str) {
     runtime_to_router(&AssemblyActivationControl::Prepared {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,
@@ -904,7 +904,7 @@ fn assert_prepared_wire(tx: &Tx, replica_id: &str) {
 
 fn assert_reject_wire(tx: &Tx, replica_id: &str) {
     runtime_to_router(&AssemblyActivationControl::Reject {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,
@@ -917,7 +917,7 @@ fn assert_reject_wire(tx: &Tx, replica_id: &str) {
 
 fn assert_commit_wire(tx: &Tx, replica_id: &str) {
     router_to_runtime(&AssemblyActivationControl::Commit {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,
@@ -930,7 +930,7 @@ fn assert_commit_wire(tx: &Tx, replica_id: &str) {
 
 fn assert_abort_wire(tx: &Tx, replica_id: &str) {
     router_to_runtime(&AssemblyActivationControl::Abort {
-        environment: tx.environment.clone(),
+        profile: tx.profile.clone(),
         activation_id: tx.activation_id.clone(),
         expected_generation: tx.expected_generation,
         candidate_generation: tx.candidate_generation,

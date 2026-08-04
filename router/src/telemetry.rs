@@ -74,10 +74,10 @@ struct RouterTelemetryConfig {
 
 impl RouterTelemetryConfig {
     fn from_router(config: &RouterConfig, telemetry: &crate::config::TelemetryConfig) -> Self {
-        let environment = config.environment.as_deref().unwrap_or("router");
+        let profile = config.profile.as_str();
         let topics = parse_topics(&telemetry.topics);
         Self {
-            producer_id: format!("router:{environment}"),
+            producer_id: format!("router:{profile}"),
             source: TelemetrySource::Router,
             protocol: TelemetryProtocol::SkiffTelemetryV1,
             topics,

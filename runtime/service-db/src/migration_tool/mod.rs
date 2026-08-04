@@ -41,6 +41,7 @@ async fn run(arguments: Arguments) -> Result<(), MigrationToolError> {
     let sanitization_bytes =
         fs::read(&arguments.sanitization).map_err(|_| MigrationToolError::PlanUnreadable)?;
     let operator = load_operator_runtime(&arguments.runtime_config)?;
+    let router = load_operator_router(&arguments.router_config)?;
     let allowlist_file_name = arguments
         .allowlist
         .file_name()
@@ -49,18 +50,17 @@ async fn run(arguments: Arguments) -> Result<(), MigrationToolError> {
     let plan = model::ValidatedMigrationPlan::parse(
         &allowlist_bytes,
         &sanitization_bytes,
-        &operator.environment,
+        &router.profile,
         allowlist_file_name,
     )?;
-    let mongo_url = load_operator_mongo_url(&arguments.router_config)?;
+    let mongo_url = router.mongo_url;
     let keyring = Arc::new(
         DbEncryptionKeyring::load(&operator.keyring_path)
             .map_err(|_| MigrationToolError::Keyring)?,
     );
     let keyring_fingerprint = keyring.fingerprint().to_owned();
     let crypto = DbMigrationCrypto::new(keyring);
-    let canonical_plan =
-        exact_plan_input(&allowlist_bytes, &sanitization_bytes, &operator.environment);
+    let canonical_plan = exact_plan_input(&allowlist_bytes, &sanitization_bytes, &router.profile);
     let plan_commitment = hex::encode(
         crypto
             .plan_commitment(&canonical_plan)
@@ -122,7 +122,6 @@ async fn mongo_client(mongo_url: &str) -> Result<Client, MigrationToolError> {
 }
 
 struct OperatorRuntime {
-    environment: String,
     keyring_path: PathBuf,
 }
 
@@ -130,7 +129,6 @@ fn load_operator_runtime(runtime_config: &Path) -> Result<OperatorRuntime, Migra
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct RuntimeConfig {
-        environment: Option<String>,
         service_db: Option<ServiceDb>,
     }
     #[derive(serde::Deserialize)]
@@ -146,10 +144,6 @@ fn load_operator_runtime(runtime_config: &Path) -> Result<OperatorRuntime, Migra
     let bytes = fs::read(runtime_config).map_err(|_| MigrationToolError::RuntimeConfig)?;
     let config: RuntimeConfig =
         serde_yaml::from_slice(&bytes).map_err(|_| MigrationToolError::RuntimeConfig)?;
-    let environment = config
-        .environment
-        .filter(|value| !value.trim().is_empty() && value == value.trim())
-        .ok_or(MigrationToolError::RuntimeConfig)?;
     let raw = config
         .service_db
         .and_then(|service_db| service_db.encryption)
@@ -165,28 +159,31 @@ fn load_operator_runtime(runtime_config: &Path) -> Result<OperatorRuntime, Migra
             .ok_or(MigrationToolError::RuntimeConfig)?
             .join(path)
     };
-    Ok(OperatorRuntime {
-        environment,
-        keyring_path,
-    })
+    Ok(OperatorRuntime { keyring_path })
 }
 
-fn exact_plan_input(allowlist: &[u8], sanitization: &[u8], environment: &str) -> Vec<u8> {
+fn exact_plan_input(allowlist: &[u8], sanitization: &[u8], profile: &str) -> Vec<u8> {
     let mut input = Vec::with_capacity(
-        allowlist.len() + sanitization.len() + environment.len() + 3 * size_of::<u64>(),
+        allowlist.len() + sanitization.len() + profile.len() + 3 * size_of::<u64>(),
     );
     input.extend_from_slice(b"skiff-service-db-filtered-execution-plan-v1");
-    for value in [allowlist, sanitization, environment.as_bytes()] {
+    for value in [allowlist, sanitization, profile.as_bytes()] {
         input.extend_from_slice(&(value.len() as u64).to_be_bytes());
         input.extend_from_slice(value);
     }
     input
 }
 
-fn load_operator_mongo_url(router_config: &Path) -> Result<Zeroizing<String>, MigrationToolError> {
+struct RouterOperatorConfig {
+    profile: String,
+    mongo_url: Zeroizing<String>,
+}
+
+fn load_operator_router(router_config: &Path) -> Result<RouterOperatorConfig, MigrationToolError> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct RouterConfig {
+        profile: Option<String>,
         service_db: Option<ServiceDb>,
     }
     #[derive(serde::Deserialize)]
@@ -199,12 +196,20 @@ fn load_operator_mongo_url(router_config: &Path) -> Result<Zeroizing<String>, Mi
         Zeroizing::new(fs::read(router_config).map_err(|_| MigrationToolError::RouterConfig)?);
     let config: RouterConfig =
         serde_yaml::from_slice(&bytes).map_err(|_| MigrationToolError::RouterConfig)?;
+    let profile = config
+        .profile
+        .filter(|value| !value.trim().is_empty() && value == value.trim())
+        .ok_or(MigrationToolError::RouterConfig)?;
+    model::validate_profile(&profile)?;
     let url = config
         .service_db
         .and_then(|service_db| service_db.mongo_url)
         .filter(|url| !url.trim().is_empty())
         .ok_or(MigrationToolError::RouterConfig)?;
-    Ok(Zeroizing::new(url))
+    Ok(RouterOperatorConfig {
+        profile,
+        mongo_url: Zeroizing::new(url),
+    })
 }
 
 #[derive(Serialize)]
@@ -245,7 +250,7 @@ impl<'a> From<&'a model::ValidatedCollectionMapping> for PlanMappingOutput<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanEndpointOutput<'a> {
-    environment: &'a str,
+    profile: &'a str,
     service_id: &'a str,
     database: &'a str,
     package_id: &'a str,
@@ -256,7 +261,7 @@ struct PlanEndpointOutput<'a> {
 impl<'a> From<&'a model::StorageEndpoint> for PlanEndpointOutput<'a> {
     fn from(endpoint: &'a model::StorageEndpoint) -> Self {
         Self {
-            environment: &endpoint.environment,
+            profile: &endpoint.profile,
             service_id: &endpoint.service_id,
             database: &endpoint.database,
             package_id: &endpoint.package_id,

@@ -105,7 +105,7 @@ test('bootstrap comes from current checkout and writes only canonical generation
   const args = bootstrapCanonicalArgs({
     skiffRoot: '/checkout/skiff',
     artifactRoot: '/tmp/isolated/dev-home/artifacts',
-    environment: 'isolated-test',
+    profile: 'isolated-test',
   });
   assert.deepEqual(args, [
     'run',
@@ -122,7 +122,7 @@ test('bootstrap comes from current checkout and writes only canonical generation
     '/tmp/isolated/dev-home/artifacts',
     '--platform-source-root',
     '/checkout/skiff',
-    '--environment',
+    '--profile',
     'isolated-test',
   ]);
   assert.equal(args.some((value) => value.includes('.skiff-instance')), false);
@@ -138,7 +138,7 @@ test('default owner shutdown invokes current checkout instance down command', as
     let ownershipReceipt = await claimIsolatedTestWorkspace(root);
     await mkdir(scriptsRoot, { recursive: true });
     await mkdir(join(root, 'instance'), { recursive: true });
-    await writeFile(configPath, 'environment: "skiff-test"\n');
+    await writeFile(configPath, 'profile: "skiff-test"\n');
     ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
       "import { writeFile } from 'node:fs/promises';",
@@ -172,7 +172,7 @@ test('default config creation is exclusive and preserves a foreign destination',
     await assert.rejects(
       operations.writeConfig(
         configPath,
-        'environment: "skiff-test"\n',
+        'profile: "skiff-test"\n',
         ownershipReceipt,
       ),
       { code: 'EEXIST' },
@@ -188,7 +188,7 @@ test('readiness requires one exact connected replica and its own capability hand
   const configSnapshotId =
     `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`;
   const bootstrap = {
-    environment: 'skiff-test',
+    profile: 'skiff-test',
     bootstrap: {
       generation: 0,
       assembly: { assemblyIdentity },
@@ -197,7 +197,7 @@ test('readiness requires one exact connected replica and its own capability hand
   };
   const readyHealth = {
     activeAssembly: {
-      environment: 'skiff-test',
+      profile: 'skiff-test',
       generation: 0,
       assemblyIdentity,
       configSnapshotId,
@@ -205,7 +205,7 @@ test('readiness requires one exact connected replica and its own capability hand
     capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
     replicas: [{
       replicaId: 'runtime-1',
-      environment: 'skiff-test',
+      profile: 'skiff-test',
       connected: true,
       state: 'healthy',
       generation: 0,
@@ -224,8 +224,8 @@ test('readiness requires one exact connected replica and its own capability hand
   assert.equal(isolatedRuntimeHealthReady(readyHealth, bootstrap), true);
 
   const healthMutations = [
-    ['active environment differs', (health) => { health.activeAssembly.environment = 'other'; }],
-    ['active environment is missing', (health) => { delete health.activeAssembly.environment; }],
+    ['active profile differs', (health) => { health.activeAssembly.profile = 'other'; }],
+    ['active profile is missing', (health) => { delete health.activeAssembly.profile; }],
     ['active generation differs', (health) => { health.activeAssembly.generation = 1; }],
     ['active generation is missing', (health) => { delete health.activeAssembly.generation; }],
     ['active assembly differs', (health) => { health.activeAssembly.assemblyIdentity = 'other'; }],
@@ -234,8 +234,8 @@ test('readiness requires one exact connected replica and its own capability hand
     ['active config snapshot is missing', (health) => { delete health.activeAssembly.configSnapshotId; }],
     ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
     ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
-    ['replica environment differs', (health) => { health.replicas[0].environment = 'other'; }],
-    ['replica environment is missing', (health) => { delete health.replicas[0].environment; }],
+    ['replica profile differs', (health) => { health.replicas[0].profile = 'other'; }],
+    ['replica profile is missing', (health) => { delete health.replicas[0].profile; }],
     ['replica connected is false', (health) => { health.replicas[0].connected = false; }],
     ['replica connected is missing', (health) => { delete health.replicas[0].connected; }],
     ['replica state is not healthy', (health) => { health.replicas[0].state = 'draining'; }],
@@ -262,7 +262,7 @@ test('readiness requires one exact connected replica and its own capability hand
   splitRuntimeHealth.replicas.push({
     ...structuredClone(readyHealth.replicas[0]),
     replicaId: 'runtime-2',
-    environment: 'other',
+    profile: 'other',
   });
   assert.equal(
     isolatedRuntimeHealthReady(splitRuntimeHealth, bootstrap),
@@ -271,7 +271,7 @@ test('readiness requires one exact connected replica and its own capability hand
   );
 
   const receiptMutations = [
-    ['bootstrap environment is missing', (receipt) => { delete receipt.environment; }],
+    ['bootstrap profile is missing', (receipt) => { delete receipt.profile; }],
     ['bootstrap generation is missing', (receipt) => { delete receipt.bootstrap.generation; }],
     ['bootstrap assembly is missing', (receipt) => { delete receipt.bootstrap.assembly; }],
     ['bootstrap config snapshot is missing', (receipt) => { delete receipt.bootstrap.configSnapshot; }],
@@ -293,7 +293,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     writeConfig: async (_configPath, config) => { observed.config = config; },
     seedBootstrap: async (input) => {
       observed.bootstrap = input;
-      observed.bootstrapReceipt = { environment: 'skiff-test', bootstrap: {} };
+      observed.bootstrapReceipt = { profile: 'skiff-test', bootstrap: {} };
       return observed.bootstrapReceipt;
     },
     seedActivationState: async (input) => {
@@ -337,7 +337,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     observed.activationState.artifactRoot,
     '/tmp/isolated-runtime-double/instance/dev-home/artifacts',
   );
-  assert.equal(observed.activationState.environment, 'skiff-test');
+  assert.equal(observed.activationState.profile, 'skiff-test');
   assert.strictEqual(
     observed.activationState.bootstrap,
     observed.bootstrapReceipt,

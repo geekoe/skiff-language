@@ -108,7 +108,7 @@ mod tests {
             encode_assembly_activation_frame, AssemblyActivationFrameDirection,
         };
         let prepared = AssemblyActivationControl::Prepared {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         activation_id: "activation-1".to_string(),
         expected_generation: 42,
         candidate_generation: 43,
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn session_payload_presence_violation_is_malformed() {
         let header = json!({
-            "schemaVersion": "skiff-runtime-frame-v3",
+            "schemaVersion": "skiff-runtime-frame-v4",
             "type": "runtime.capabilities",
             "runtimeId": "runtime-a",
             "capabilities": {

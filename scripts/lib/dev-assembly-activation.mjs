@@ -16,7 +16,7 @@ export async function activateDevAssembly({
   fetchImpl = fetch,
   activationUrl = defaultAssemblyActivationUrl,
   activationId = `skiff-dev-${randomUUID()}`,
-  environment,
+  profile,
   assembly,
   configSnapshot,
   wait = delay,
@@ -28,11 +28,11 @@ export async function activateDevAssembly({
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const active = await readRouterActivationState({ fetchImpl, activationUrl });
-    assertMatchingRouterEnvironment(active, environment);
-    if (matchesActivationTarget(active, { environment, assembly, configSnapshot })) {
+    assertMatchingRouterProfile(active, profile);
+    if (matchesActivationTarget(active, { profile, assembly, configSnapshot })) {
       return alreadyCommittedActivation({
         activationId,
-        environment,
+        profile,
         assembly,
         configSnapshot,
         active,
@@ -44,18 +44,18 @@ export async function activateDevAssembly({
         activationUrl,
         activationId,
         expectedGeneration: active.generation,
-        environment,
+        profile,
         assembly,
         configSnapshot,
       });
     } catch (error) {
       lastError = error;
       const observed = await readRouterActivationState({ fetchImpl, activationUrl });
-      assertMatchingRouterEnvironment(observed, environment);
-      if (matchesActivationTarget(observed, { environment, assembly, configSnapshot })) {
+      assertMatchingRouterProfile(observed, profile);
+      if (matchesActivationTarget(observed, { profile, assembly, configSnapshot })) {
         return alreadyCommittedActivation({
           activationId,
-          environment,
+          profile,
           assembly,
           configSnapshot,
           active: observed,
@@ -98,7 +98,7 @@ export async function readRouterActivationState({
   if (
     body?.ok !== true
     || !isPlainObject(active)
-    || typeof active.environment !== 'string'
+    || typeof active.profile !== 'string'
     || !Number.isSafeInteger(active.generation)
     || active.generation < 0
     || active.generation > maxExpectedAssemblyGeneration
@@ -110,7 +110,7 @@ export async function readRouterActivationState({
     throw new Error(`router health ${healthUrl} did not return an exact active assembly tuple`);
   }
   return {
-    environment: active.environment,
+    profile: active.profile,
     generation: active.generation,
     assembly: { assemblyIdentity: active.assemblyIdentity },
     configSnapshot: { snapshotId: active.configSnapshotId },
@@ -119,15 +119,15 @@ export async function readRouterActivationState({
 
 function alreadyCommittedActivation({
   activationId,
-  environment,
+  profile,
   assembly,
   configSnapshot,
   active,
 }) {
   return {
     request: {
-      schemaVersion: 'skiff-assembly-activation-request-v2',
-      environment,
+      schemaVersion: 'skiff-assembly-activation-request-v3',
+      profile,
       activationId,
       expectedGeneration: active.generation,
       assembly,
@@ -136,13 +136,13 @@ function alreadyCommittedActivation({
     response: {
       ok: true,
       committed: {
-        environment,
+        profile,
         generation: active.generation,
         assembly,
         configSnapshot,
       },
       activeAssembly: {
-        environment,
+        profile,
         generation: active.generation,
         assemblyIdentity: assembly.assemblyIdentity,
         configSnapshotId: configSnapshot.snapshotId,
@@ -152,16 +152,16 @@ function alreadyCommittedActivation({
   };
 }
 
-function assertMatchingRouterEnvironment(active, environment) {
-  if (active.environment !== environment) {
+function assertMatchingRouterProfile(active, profile) {
+  if (active.profile !== profile) {
     throw new Error(
-      `router coordinates environment ${active.environment}, not requested ${environment}`,
+      `router coordinates profile ${active.profile}, not requested ${profile}`,
     );
   }
 }
 
 function matchesActivationTarget(active, target) {
-  return active.environment === target.environment
+  return active.profile === target.profile
     && active.assembly.assemblyIdentity === target.assembly.assemblyIdentity
     && active.configSnapshot.snapshotId === target.configSnapshot.snapshotId;
 }

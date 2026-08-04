@@ -1,6 +1,6 @@
-//! Binary lifecycle probe for the E-bootstrap wiring: without an explicit
-//! `environment` the committed epoch cannot be read, so `run_router` must
-//! fail closed before binding any listener and exit non-zero. The real
+//! Binary lifecycle probe for the E-bootstrap wiring: without committed
+//! activation state the epoch cannot be read, so `run_router` must fail
+//! closed before binding any listener and exit non-zero. The real
 //! success path (committed state -> published epoch -> listeners ->
 //! `router.bootstrap` over a real socket) is covered by the ignored
 //! `bootstrap_live_probe` driven by `scripts/run-router-bootstrap-live.mjs`.
@@ -17,7 +17,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(not(unix), ignore = "SIGTERM delivery is exercised on unix")]
-    fn binary_fails_closed_without_bootstrap_environment() {
+    fn binary_fails_closed_without_bootstrap_state() {
         let http_port = reserve_port();
         let control_port = reserve_port();
         assert_ne!(http_port, control_port, "ports must not collide");
@@ -27,7 +27,7 @@ mod tests {
         let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(15));
         assert!(
             !status.success(),
-            "bootstrap without environment must exit non-zero, got {status}"
+            "bootstrap without profile must exit non-zero, got {status}"
         );
         assert!(
             stderr.contains("bootstrap failed closed"),

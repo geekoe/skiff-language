@@ -269,7 +269,7 @@ pub struct TaskTraceContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskExecutionImageRef {
-    pub target_environment: String,
+    pub target_profile: String,
     pub package_version: String,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,

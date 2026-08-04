@@ -27,7 +27,7 @@ import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
 import {
-  HTTP_LIVE_ENVIRONMENT,
+  HTTP_LIVE_PROFILE,
   HTTP_LIVE_GENERATION,
   HTTP_LIVE_REPLICA_ID,
   HTTP_LIVE_SERVICE_ID,
@@ -97,7 +97,7 @@ try {
     skiffRoot: repoRoot,
     sourceRoot,
     artifactRoot,
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
   });
 
   console.log('router-live:http: leasing isolated router + relay ports');
@@ -120,7 +120,7 @@ try {
   console.log('router-live:http: seeding committed activation state (Rust namespace)');
   const committed = await seedHttpLiveCommittedState({
     mongoUrl,
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
     generation: HTTP_LIVE_GENERATION,
     assemblyIdentity: identities.assemblyIdentity,
     configSnapshotId: identities.configSnapshotId,
@@ -154,7 +154,7 @@ try {
   await writeHttpLiveRouterConfig(
     routerConfigPath,
     renderHttpLiveRouterConfig({
-      environment: HTTP_LIVE_ENVIRONMENT,
+      profile: HTTP_LIVE_PROFILE,
       artifactsPath: artifactRoot,
       httpPort,
       runtimePort,
@@ -168,7 +168,7 @@ try {
   await writeHttpLiveRuntimeConfig(runtimeConfigPath, {
     relayPort,
     runtimeHome,
-    environment: HTTP_LIVE_ENVIRONMENT,
+    profile: HTTP_LIVE_PROFILE,
   });
 
   // Each Router phase owns a fresh relay + Runtime process pair: when the
@@ -198,7 +198,7 @@ try {
   await writeHttpLiveRouterConfig(
     backpressureConfigPath,
     renderHttpLiveRouterConfig({
-      environment: HTTP_LIVE_ENVIRONMENT,
+      profile: HTTP_LIVE_PROFILE,
       artifactsPath: artifactRoot,
       httpPort,
       runtimePort,

@@ -9,14 +9,14 @@
 //! transaction machinery lives in [`super::coordinator`].
 
 use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 
 /// Typed refs used by the blocking loader to construct a whole `RoutingEpoch`
 /// (committed epoch on recovery startup, candidate epoch for live or recovery
 /// activation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateEpochRefs {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,
@@ -25,9 +25,9 @@ pub struct CandidateEpochRefs {
 impl CandidateEpochRefs {
     /// Durable→shared projection of the committed activation
     /// (C-bootstrap §2.2; total for a committed record).
-    pub fn committed(state: &EnvironmentActivationState) -> Self {
+    pub fn committed(state: &ProfileActivationState) -> Self {
         Self {
-            environment: state.environment.clone(),
+            profile: state.profile.clone(),
             generation: state.committed.generation,
             assembly: state.committed.assembly.clone(),
             config_snapshot: state.committed.config_snapshot.clone(),
@@ -40,7 +40,7 @@ impl CandidateEpochRefs {
 /// participant bindings are created later when replicas register.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryTransaction {
-    pub environment: String,
+    pub profile: String,
     pub activation_id: String,
     pub expected_generation: u64,
     pub candidate_generation: u64,
@@ -52,7 +52,7 @@ pub struct RecoveryTransaction {
 impl RecoveryTransaction {
     pub fn candidate_refs(&self) -> CandidateEpochRefs {
         CandidateEpochRefs {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.candidate_generation,
             assembly: self.assembly.clone(),
             config_snapshot: self.config_snapshot.clone(),
@@ -62,13 +62,13 @@ impl RecoveryTransaction {
 
 /// Projects a recovery transaction from the durable pending record.
 ///
-/// `None` means the environment has no pending activation: recovery reduces
+/// `None` means the profile has no pending activation: recovery reduces
 /// to committed-only startup (publish the committed epoch and open the
 /// listener; readiness is an E-session gate).
-pub fn project_recovery(state: &EnvironmentActivationState) -> Option<RecoveryTransaction> {
+pub fn project_recovery(state: &ProfileActivationState) -> Option<RecoveryTransaction> {
     let pending = state.pending.as_ref()?;
     Some(RecoveryTransaction {
-        environment: state.environment.clone(),
+        profile: state.profile.clone(),
         activation_id: pending.activation_id.clone(),
         expected_generation: pending.expected_generation,
         candidate_generation: pending.candidate_generation,
@@ -113,8 +113,8 @@ mod tests {
         }
     }
 
-    fn state(pending: bool) -> EnvironmentActivationState {
-        let mut state = EnvironmentActivationState::initial("test", 7, assembly(0), config(0));
+    fn state(pending: bool) -> ProfileActivationState {
+        let mut state = ProfileActivationState::initial("test", 7, assembly(0), config(0));
         if pending {
             state.pending = Some(skiff_deployment::storage::PendingActivation {
                 activation_id: "activation-8".to_string(),
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn committed_refs_project_the_committed_tuple() {
         let refs = CandidateEpochRefs::committed(&state(false));
-        assert_eq!(refs.environment, "test");
+        assert_eq!(refs.profile, "test");
         assert_eq!(refs.generation, 7);
         assert_eq!(refs.assembly, assembly(0));
         assert_eq!(refs.config_snapshot, config(0));
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(
             recovery.candidate_refs(),
             CandidateEpochRefs {
-                environment: "test".to_string(),
+                profile: "test".to_string(),
                 generation: 8,
                 assembly: assembly(1),
                 config_snapshot: config(1),
