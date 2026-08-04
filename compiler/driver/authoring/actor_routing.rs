@@ -8,8 +8,12 @@
 //! the producer. It never forwards module paths, actor/method names, source
 //! spans, executable coordinates or payload bytes.
 
+use std::collections::BTreeSet;
+
 use skiff_artifact_identity::{package_artifact_ref, service_deployment_ref};
-use skiff_artifact_model::{FileIrUnit, PackageArtifact, ServiceDeployment};
+use skiff_artifact_model::{
+    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBinding, ServiceDeployment,
+};
 use skiff_deployment::{
     projection::actor_routing::{
         project_actor_routing, ActorRoutingActorInput, ActorRoutingPackageInput,
@@ -65,11 +69,8 @@ fn project_deployment_actor_routing(
 ) -> AuthoringResult<ActorRoutingProjection> {
     let deployment_ref = service_deployment_ref(deployment);
     let mut package_inputs = Vec::new();
-    for package_ref in deployment
-        .package_bindings
-        .iter()
-        .map(|binding| &binding.package)
-        .chain(std::iter::once(&deployment.implementation))
+    for package_ref in
+        deployment_package_refs(&deployment.package_bindings, &deployment.implementation)
     {
         let artifact = packages
             .iter()
@@ -84,7 +85,7 @@ fn project_deployment_actor_routing(
             })?;
         let canonical_package_ref = package_artifact_ref(artifact)
             .map_err(|error| invalid_input(format!("actor routing projection: {error}")))?;
-        if &canonical_package_ref != package_ref {
+        if canonical_package_ref != package_ref {
             return Err(invalid_input(format!(
                 "actor routing projection: package artifact identity does not match the deployment binding for {}@{}",
                 package_ref.package_id, package_ref.package_version
@@ -124,6 +125,24 @@ fn project_deployment_actor_routing(
         packages: package_inputs,
     })
     .map_err(projection_error)
+}
+
+/// Returns the unique package refs in one deployment closure: the
+/// implementation package plus every package bound through a
+/// (caller, requirement) edge. The same dependency can be bound by multiple
+/// callers, and the implementation may also appear in the bindings, so each
+/// package must be projected once regardless of how many edges reference it.
+pub(super) fn deployment_package_refs(
+    bindings: &[PackageBinding],
+    implementation: &PackageArtifactRef,
+) -> Vec<PackageArtifactRef> {
+    bindings
+        .iter()
+        .map(|binding| binding.package.clone())
+        .chain(std::iter::once(implementation.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Extracts only the generated framed identities from one lowered File IR

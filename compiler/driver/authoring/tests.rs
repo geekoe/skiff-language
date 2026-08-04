@@ -8,8 +8,9 @@ use super::{
 use serde_json::json;
 use skiff_artifact_identity::{package_schema_index_identity, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX};
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, PackageArtifact, PackageLocalAbiIdentity,
-    PackageRequirement, ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageLocalAbiIdentity, PackageRequirement,
+    PackageRequirementKey, ServiceDeploymentRef,
 };
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
@@ -142,6 +143,38 @@ fn p5_f149_reachable_package_closure_fails_closed_on_each_exact_edge() {
     })
     .unwrap_err();
     assert!(error.to_string().contains("missing pointer/record"));
+}
+
+#[test]
+fn actor_routing_deployment_package_refs_deduplicates_bindings_and_implementation() {
+    let shared = package_ref("example.com/shared", "1.0.0", "shared-abi");
+    let middle = package_ref("example.com/middle", "1.0.0", "middle-abi");
+    let implementation = package_ref("example.com/service", "1.0.0", "service-abi");
+    let bindings = vec![
+        PackageBinding {
+            key: requirement_key("impl", "shared"),
+            package: shared.clone(),
+        },
+        PackageBinding {
+            key: requirement_key("middle", "shared"),
+            package: shared.clone(),
+        },
+        PackageBinding {
+            key: requirement_key("impl", "middle"),
+            package: middle.clone(),
+        },
+        PackageBinding {
+            key: requirement_key("impl", "service"),
+            package: implementation.clone(),
+        },
+    ];
+
+    let refs = super::actor_routing::deployment_package_refs(&bindings, &implementation);
+    assert_eq!(
+        refs,
+        vec![middle, implementation, shared],
+        "each closure package must be projected exactly once"
+    );
 }
 
 #[test]
@@ -317,6 +350,22 @@ fn requirement(alias: &str, package: &PackageArtifact) -> PackageRequirement {
             package.package_local_abi.local_abi_identity.as_ref(),
         ),
         expected_package_build: None,
+    }
+}
+
+fn package_ref(id: &str, version: &str, local_abi: &str) -> PackageArtifactRef {
+    PackageArtifactRef {
+        package_id: id.to_string(),
+        package_version: version.to_string(),
+        package_build_id: PackageBuildId::new(format!("build:{id}:{version}:{local_abi}")),
+        package_local_abi_identity: PackageLocalAbiIdentity::new(local_abi),
+    }
+}
+
+fn requirement_key(caller_build_id: &str, alias: &str) -> PackageRequirementKey {
+    PackageRequirementKey {
+        caller_package_build_id: PackageBuildId::new(caller_build_id),
+        package_requirement_alias: alias.to_string(),
     }
 }
 

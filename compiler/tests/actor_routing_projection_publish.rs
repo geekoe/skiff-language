@@ -135,17 +135,41 @@ fn seed_std(artifact_root: &Path) {
 }
 
 fn write_service_root(root: &Path, package_id: &str, service_id: &str, source: &str) {
+    write_package_root(root, package_id, source, &[], Some(service_id));
+}
+
+fn write_package_root(
+    root: &Path,
+    package_id: &str,
+    source: &str,
+    dependencies: &[(&str, &str, &str)],
+    service_id: Option<&str>,
+) {
     fs::create_dir_all(root).expect("create service root");
+    let dependency_lines = dependencies
+        .iter()
+        .map(|(id, version, alias)| {
+            format!("  - id: {id}\n    version: {version}\n    alias: {alias}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let packages_section = if dependencies.is_empty() {
+        String::new()
+    } else {
+        format!("\npackages:\n{dependency_lines}")
+    };
     fs::write(
         root.join("package.yml"),
-        format!("id: {package_id}\nversion: 1.0.0\n"),
+        format!("id: {package_id}\nversion: 1.0.0{packages_section}\n"),
     )
     .expect("write package.yml");
-    fs::write(
-        root.join("service.yml"),
-        format!("id: {service_id}\nserviceCalls: []\n"),
-    )
-    .expect("write service.yml");
+    if let Some(service_id) = service_id {
+        fs::write(
+            root.join("service.yml"),
+            format!("id: {service_id}\nserviceCalls: []\n"),
+        )
+        .expect("write service.yml");
+    }
     fs::write(root.join("api.yml"), "ping: main.ping\n").expect("write api.yml");
     fs::write(root.join("main.skiff"), source).expect("write main.skiff");
 }
@@ -353,6 +377,104 @@ mod tests {
             projection.methods.is_empty(),
             "an assembly without root deployments must publish the empty projection"
         );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn compiler_publish_deduplicates_shared_dependency_bindings() {
+        let temp = unique_root("actor-routing-shared-dependency");
+        let artifact_root = temp.join("artifacts");
+        seed_std(&artifact_root);
+        let store = CanonicalArtifactStore::open(&artifact_root).expect("open artifact store");
+
+        let shared_root = temp.join("shared");
+        write_package_root(
+            &shared_root,
+            "example.com/shared-package",
+            ALPHA_SOURCE,
+            &[],
+            None,
+        );
+        let shared_receipt = build_authoring_object(
+            &platform_sources(),
+            AuthoringObject::Package,
+            &shared_root,
+            &artifact_root,
+            "dev",
+            true,
+        )
+        .expect("shared package publish");
+        let shared_package = package_ref(&shared_receipt);
+
+        let middle_root = temp.join("middle");
+        write_package_root(
+            &middle_root,
+            "example.com/middle-package",
+            "function ping() -> string { return \"middle\" }\n",
+            &[("example.com/shared-package", "1.0.0", "shared")],
+            None,
+        );
+        build_authoring_object(
+            &platform_sources(),
+            AuthoringObject::Package,
+            &middle_root,
+            &artifact_root,
+            "dev",
+            true,
+        )
+        .expect("middle package publish");
+
+        let service_root = temp.join("service");
+        write_package_root(
+            &service_root,
+            "example.com/service-package",
+            "function ping() -> string { return \"ok\" }\n",
+            &[
+                ("example.com/middle-package", "1.0.0", "middle"),
+                ("example.com/shared-package", "1.0.0", "shared"),
+            ],
+            Some("example.com/service"),
+        );
+        let service_receipt = build_authoring_object(
+            &platform_sources(),
+            AuthoringObject::Package,
+            &service_root,
+            &artifact_root,
+            "dev",
+            true,
+        )
+        .expect("service publish must project each shared dependency binding only once");
+        let service_deployment = deployment_ref(&service_receipt);
+
+        let projection = load_projection(&artifact_root);
+        let shared_expected = expected_methods(&store, &shared_package);
+        assert_eq!(
+            method_keys(&projection),
+            shared_expected,
+            "shared dependency methods must appear exactly once despite duplicate bindings"
+        );
+        for entry in &projection.methods {
+            assert_eq!(
+                entry.deployment, service_deployment,
+                "exact deployment binding"
+            );
+            assert_eq!(
+                entry.package, shared_package,
+                "exact owning package binding"
+            );
+        }
+
+        project_runtime_assembly(&artifact_root, "dev", &[service_deployment.clone()], false)
+            .expect(
+                "assembly publish must project the deployment closure without duplicate methods",
+            );
+        let merged = load_projection(&artifact_root);
+        assert_eq!(
+            method_keys(&merged),
+            shared_expected,
+            "assembly projection must also deduplicate per-deployment bindings"
+        );
+
         fs::remove_dir_all(temp).unwrap();
     }
 }
