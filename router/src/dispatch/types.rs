@@ -110,6 +110,11 @@ pub struct TaskAttemptSubmit {
     pub task_id: String,
     pub attempt_id: String,
     pub lease_id: String,
+    /// Exact origin session for test-case attempts (F2a). When set the
+    /// dispatcher admits only that Runtime connection and fails closed when
+    /// it is not a current candidate; production attempts leave it `None`
+    /// and keep location-transparent selection.
+    pub prefer_session: Option<RuntimeSessionEpoch>,
 }
 
 impl TaskAttemptSubmit {

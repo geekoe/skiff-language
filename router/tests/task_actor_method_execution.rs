@@ -56,7 +56,7 @@ use skiff_task_control::model::{
     ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
     ActorDeclarationOwnerUnit, DurableDuration, DurableUtcTimestamp, RecoverablePayload,
     ServiceOwner, TaskExecutionImageRef, TaskId, TaskRecord, TaskState, TaskStatusKind,
-    TaskTraceContext,
+    TaskTestCaseAuthority, TaskTraceContext,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
@@ -188,6 +188,7 @@ fn actor_record(
         },
         created_at: due_at,
         retry_not_before: None,
+        test_case: None,
     }
 }
 
@@ -628,6 +629,121 @@ async fn branch1_live_incarnation_same_implementation_admits_ordinary_invocation
     assert_eq!(header.activation_bootstrap, None);
     assert_eq!(payload, br#"[1,2,3]"#);
     assert_eq!(header.invoke.actor_implementation_identity, implementation());
+    assert_eq!(
+        header.invoke.test_case_capability, None,
+        "ordinary production actor attempts must not carry test-case capability"
+    );
+    assert_eq!(header.invoke.test_case_parent_request_id, None);
+    rig.worker.abort();
+}
+
+#[tokio::test]
+async fn test_case_actor_attempt_carries_capability_and_parent_on_invoke() {
+    let rig = rig();
+    commit_owner(&rig, &implementation(), b"[]");
+    let mut record = actor_record(
+        "task-actor",
+        &implementation(),
+        b"[]",
+        rig.store.now().await.expect("now"),
+    );
+    record.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-a".to_string(),
+        origin_connection_generation: 1,
+    });
+    let claimed = create_and_claim(&rig, record).await;
+    let decision = rig.admission.admit(&claimed).await;
+    assert_eq!(decision, AdmissionDecision::Accepted);
+    let frames = rig.port.frames.lock().expect("frames");
+    assert_eq!(frames.len(), 1, "exactly one owner invoke");
+    let (header, _) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
+    assert_eq!(
+        header.invoke.test_case_capability.as_deref(),
+        Some("test-case:cap-1")
+    );
+    assert_eq!(
+        header.invoke.test_case_parent_request_id.as_deref(),
+        Some("parent-request")
+    );
+    let invocation_id = header.invoke.invocation_id;
+    assert_eq!(
+        rig.actor
+            .relay
+            .parent_test_capability("runtime-a#1", &invocation_id),
+        Some("test-case:cap-1".to_string()),
+        "the relay must retain the invocation's case capability for recursive task submits"
+    );
+    rig.worker.abort();
+}
+
+#[tokio::test]
+async fn test_case_actor_attempt_without_origin_candidate_is_permanent_failure() {
+    let rig = rig();
+    commit_owner(&rig, &implementation(), b"[]");
+    let mut record = actor_record(
+        "task-actor",
+        &implementation(),
+        b"[]",
+        rig.store.now().await.expect("now"),
+    );
+    record.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-missing".to_string(),
+        origin_connection_generation: 9,
+    });
+    let claimed = create_and_claim(&rig, record).await;
+    let decision = rig.admission.admit(&claimed).await;
+    assert!(
+        matches!(decision, AdmissionDecision::PermanentFailure { .. }),
+        "test-case actor task with a missing origin connection must fail closed: {decision:?}"
+    );
+    assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
+    rig.worker.abort();
+}
+
+#[tokio::test]
+async fn test_case_actor_attempt_cross_service_is_permanent_failure() {
+    let rig = rig();
+    commit_owner(&rig, &implementation(), b"[]");
+    let mut record = actor_record(
+        "task-actor",
+        &implementation(),
+        b"[]",
+        rig.store.now().await.expect("now"),
+    );
+    if let skiff_task_control::model::DetachedCallTarget::ActorMethod {
+        actor, activation, ..
+    } = &mut record.target
+    {
+        actor.service_id = "example.com/service-2".to_string();
+        activation.key = RecoverablePayload::new(
+            serde_json::to_vec(&serde_json::json!({
+                "serviceId": "example.com/service-2",
+                "actorTypeIdentity": actor_type_identity(),
+                "actorIdTypeIdentity": actor_id_type_identity(),
+                "actorIdEncodingVersion": "v1",
+                "canonicalActorIdKeyBytesBase64": "a2V5",
+                "actorIdHash": format!("sha256:{}", "a".repeat(64)),
+            }))
+            .expect("cross-service key json"),
+        );
+    }
+    record.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-a".to_string(),
+        origin_connection_generation: 1,
+    });
+    let claimed = create_and_claim(&rig, record).await;
+    let decision = rig.admission.admit(&claimed).await;
+    assert!(
+        matches!(decision, AdmissionDecision::PermanentFailure { ref reason } if reason.contains("differs from the parent service")),
+        "test-case actor tasks must not cross the parent service: {decision:?}"
+    );
+    assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
     rig.worker.abort();
 }
 

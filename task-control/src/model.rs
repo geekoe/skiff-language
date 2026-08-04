@@ -378,6 +378,33 @@ pub struct TaskRecord {
     /// submission leaves it `None`, and `claim` does not clear it (a past
     /// value is inert). It is not a user-facing retry policy.
     pub retry_not_before: Option<DurableUtcTimestamp>,
+    /// Test-case authority captured at submission (F2a). When present the
+    /// task attempt is a derived request of the parent test case: it carries
+    /// the same opaque capability and test-effects-enabled admission, and it
+    /// must execute on the exact origin Runtime connection with the parent
+    /// service. Ordinary production tasks leave this `None` and keep the
+    /// location-transparent scheduler semantics unchanged.
+    pub test_case: Option<TaskTestCaseAuthority>,
+}
+
+/// Router-derived test-case authority persisted with one task record.
+///
+/// The wire `task.submit.request` deliberately carries only `callerRequestId`
+/// (never the capability or parent id); the Router derives these facts from
+/// the still-active parent request / Actor invocation on the exact same
+/// Runtime connection. Durable attempts later re-enter the case through the
+/// same capability, and admission enforces the origin connection / service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTestCaseAuthority {
+    /// Opaque Router-issued test case capability (test-runner-runtime
+    /// isolation contract; never a Skiff value or business effect API).
+    pub test_case_capability: String,
+    /// Active parent request / Actor invocation id that submitted the task.
+    pub parent_request_id: String,
+    /// Exact origin Runtime replica that submitted the task.
+    pub origin_runtime_id: String,
+    /// Exact origin WebSocket connection generation on that replica.
+    pub origin_connection_generation: u64,
 }
 
 impl TaskRecord {

@@ -26,8 +26,9 @@ use skiff_router::supervisor::actor_sink::ActorFrameSink;
 use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
-    DurableTaskControl, DurableTaskFrameSink, NoopActorAttemptTerminalSink,
-    RouterTaskAttemptAdmission, TaskActorOwnerPort, TaskControlCounters, TaskExecutionImageSource,
+    DurableTaskControl, DurableTaskFrameSink, FirstAdmissionOutcome, NoopActorAttemptTerminalSink,
+    NoopTaskSubmitParentResolver, RouterTaskAttemptAdmission, TaskActorOwnerPort,
+    TaskControlCounters, TaskExecutionImageSource, TaskSubmitParentResolver,
 };
 use skiff_router::telemetry::{NoopTaskTelemetrySink, TaskTelemetrySink};
 use skiff_router::ws::Clock;
@@ -49,7 +50,7 @@ use skiff_runtime_transport::protocol::{
 use skiff_task_control::model::{
     DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
     TaskExecutionImageRef, TaskId, TaskOutcome, TaskRecord, TaskState, TaskStatusKind,
-    TaskTerminal, TaskTraceContext,
+    TaskTestCaseAuthority, TaskTerminal, TaskTraceContext,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
@@ -537,6 +538,7 @@ fn record(
         },
         created_at: due_at,
         retry_not_before: None,
+        test_case: None,
     }
 }
 
@@ -662,6 +664,8 @@ fn sink_rig() -> (
         store_dyn,
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
         noop_telemetry(),
@@ -692,6 +696,8 @@ fn scripted_control_rig(
         store,
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
         noop_telemetry(),
@@ -756,7 +762,84 @@ async fn submit_success_creates_record_and_returns_task_ref() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].task_id.as_str(), TASK_ID);
     assert_eq!(records[0].state, TaskState::Scheduled);
+    assert_eq!(
+        records[0].test_case, None,
+        "ordinary production submissions must not carry test-case authority"
+    );
     assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
+}
+
+/// Scripted parent resolver: returns a configured capability only for one
+/// exact caller request id on one exact session.
+#[derive(Debug)]
+struct ScriptedTaskSubmitParentResolver {
+    capability: Option<String>,
+    caller_request_id: String,
+    session: RuntimeSessionEpoch,
+}
+
+impl TaskSubmitParentResolver for ScriptedTaskSubmitParentResolver {
+    fn resolve(
+        &self,
+        session: &RuntimeSessionEpoch,
+        _caller_kind: TaskCallerKind,
+        caller_request_id: &str,
+    ) -> Option<String> {
+        if session == &self.session && caller_request_id == self.caller_request_id {
+            self.capability.clone()
+        } else {
+            None
+        }
+    }
+}
+
+#[tokio::test]
+async fn submit_from_test_request_parent_captures_test_case_authority() {
+    let store = Arc::new(MemoryTaskStore::new());
+    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+    let scheduler = Arc::new(Scheduler::new(
+        Arc::clone(&store_dyn),
+        Arc::new(NoopAdmission),
+        Arc::new(skiff_task_control::SystemClock),
+        SchedulerConfig::default(),
+        RetryBackoffPolicy::default(),
+    ));
+    let writer = Arc::new(FakeWriter::default());
+    let counters = Arc::new(TaskControlCounters::default());
+    let session = RuntimeSessionEpoch {
+        replica_id: "runtime-a".to_string(),
+        connection_generation: 1,
+    };
+    let sink = Arc::new(DurableTaskFrameSink::new(
+        store_dyn,
+        Arc::clone(&scheduler),
+        Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::new(ScriptedTaskSubmitParentResolver {
+            capability: Some("test-case:cap-1".to_string()),
+            caller_request_id: "parent-request".to_string(),
+            session: session.clone(),
+        }) as Arc<dyn TaskSubmitParentResolver>,
+        None,
+        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+        Arc::clone(&counters),
+        noop_telemetry(),
+        4096,
+    ));
+    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+    sink.handle(&session, &bytes).expect("handle");
+    let _ = poll_writer(&writer, 1).await;
+
+    let records = store.records().await;
+    assert_eq!(records.len(), 1);
+    let authority = records[0]
+        .test_case
+        .as_ref()
+        .expect("test parent task must persist its test-case authority");
+    assert_eq!(authority.test_case_capability, "test-case:cap-1");
+    assert_eq!(authority.parent_request_id, "parent-request");
+    assert_eq!(authority.origin_runtime_id, "runtime-a");
+    assert_eq!(authority.origin_connection_generation, 1);
 }
 
 #[tokio::test]
@@ -904,6 +987,8 @@ async fn submit_transient_create_queries_same_task_id() {
             RetryBackoffPolicy::default(),
         )),
         Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         Arc::clone(&ambiguous_writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
         noop_telemetry(),
@@ -956,6 +1041,8 @@ async fn immediate_submit_wakes_scheduler_without_waiting_for_scan() {
         Arc::clone(&store),
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
         noop_telemetry(),
@@ -993,6 +1080,16 @@ struct ControlRig {
 }
 
 fn control_rig() -> ControlRig {
+    control_rig_with_sessions(vec![dispatch_harness::session_state(
+        "s1",
+        "runtime-a",
+        1,
+    )])
+}
+
+fn control_rig_with_sessions(
+    sessions: Vec<dispatch_harness::SessionState>,
+) -> ControlRig {
     let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
     let clock = Arc::new(TestClock::default());
     clock.now_ms.store(1_700_000_000_000, Ordering::SeqCst);
@@ -1013,9 +1110,7 @@ fn control_rig() -> ControlRig {
     let peer = dispatch_harness::FakeRuntimePeer::new();
     let abort = dispatch_harness::FakeSessionAbort::new();
     let epoch = dispatch_harness::corpus_epoch();
-    let candidate = dispatch_harness::FakeCandidateViewSource::new(vec![
-        dispatch_harness::session_state("s1", "runtime-a", 1),
-    ]);
+    let candidate = dispatch_harness::FakeCandidateViewSource::new(sessions);
     let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
     let admission = Arc::new(RouterTaskAttemptAdmission::new(
         Arc::new(dispatch_harness::FakeEpochSource {
@@ -1093,6 +1188,99 @@ async fn admission_accepted_writes_task_attempt_request() {
     let request_id = &rig.peer.record.lock().unwrap().attempts[0];
     assert!(rig.dispatcher.is_task_attempt(request_id));
     assert_eq!(rig.dispatcher.pending_count(), 1);
+}
+
+#[tokio::test]
+async fn test_case_function_attempt_carries_capability_and_prefers_origin_session() {
+    let rig = control_rig_with_sessions(vec![
+        dispatch_harness::session_state("s1", "runtime-a", 1),
+        dispatch_harness::session_state("s2", "runtime-b", 2),
+    ]);
+    let now = rig.store.now().await.expect("now");
+    rig.store
+        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+        .await
+        .expect("create");
+    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+    claimed.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-b".to_string(),
+        origin_connection_generation: 2,
+    });
+    let decision = rig.admission.admit(&claimed).await;
+    assert_eq!(decision, AdmissionDecision::Accepted);
+    let peer = rig.peer.record.lock().unwrap();
+    assert_eq!(peer.attempts.len(), 1);
+    let header = &peer.attempt_headers[0];
+    assert!(header.test_effects_enabled);
+    assert_eq!(header.test_case_capability.as_deref(), Some("test-case:cap-1"));
+    let request_id = &peer.attempts[0];
+    let lease = rig
+        .dispatcher
+        .pending_lease(request_id)
+        .expect("test task attempt must be pending");
+    assert_eq!(lease.session_epoch.replica_id, "runtime-b");
+    assert_eq!(lease.session_epoch.connection_generation, 2);
+}
+
+#[tokio::test]
+async fn test_case_function_attempt_without_origin_candidate_is_permanent_failure() {
+    let rig = control_rig();
+    let now = rig.store.now().await.expect("now");
+    rig.store
+        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+        .await
+        .expect("create");
+    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+    claimed.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-missing".to_string(),
+        origin_connection_generation: 9,
+    });
+    let decision = rig.admission.admit(&claimed).await;
+    assert!(
+        matches!(decision, AdmissionDecision::PermanentFailure { .. }),
+        "a test-case task with no origin connection must fail closed permanently: {decision:?}"
+    );
+    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
+}
+
+#[tokio::test]
+async fn test_case_submission_gate_observes_first_admission_outcome() {
+    let rig = control_rig();
+    let now = rig.store.now().await.expect("now");
+    rig.store
+        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+        .await
+        .expect("create");
+    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+    claimed.test_case = Some(TaskTestCaseAuthority {
+        test_case_capability: "test-case:cap-1".to_string(),
+        parent_request_id: "parent-request".to_string(),
+        origin_runtime_id: "runtime-a".to_string(),
+        origin_connection_generation: 1,
+    });
+    let task_id = claimed.task_id.clone();
+    let admit = tokio::spawn({
+        let admission = Arc::clone(&rig.admission);
+        let record = claimed.clone();
+        async move {
+            admission.admit(&record).await
+        }
+    });
+    let outcome = rig
+        .control
+        .wait_for_first_admission(&task_id, Duration::from_secs(2))
+        .await;
+    let decision = admit.await.expect("admission task");
+    assert_eq!(decision, AdmissionDecision::Accepted);
+    assert_eq!(
+        outcome,
+        Some(FirstAdmissionOutcome::Accepted),
+        "the test-case submission gate must observe the first admitted attempt"
+    );
 }
 
 #[tokio::test]
@@ -1601,6 +1789,8 @@ async fn status_and_cancel_unknown_owner_is_not_found_error() {
             image: corpus_image(),
             services: Vec::new(),
         }),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
         noop_telemetry(),

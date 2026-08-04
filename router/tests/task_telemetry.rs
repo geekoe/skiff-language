@@ -16,8 +16,8 @@ use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::demux::InboundFrameSink;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
-    DurableTaskFrameSink, RouterTaskSchedulerObservation, TaskControlCounters,
-    TaskExecutionImageSource,
+    DurableTaskFrameSink, NoopTaskSubmitParentResolver, RouterTaskSchedulerObservation,
+    TaskControlCounters, TaskExecutionImageSource,
 };
 use skiff_router::telemetry::{
     backlog_metric_event, task_event, RouterTelemetryProducer, TaskTelemetrySink,
@@ -243,6 +243,7 @@ fn task_record(due_at: DurableUtcTimestamp) -> TaskRecord {
         },
         created_at: DurableUtcTimestamp::from_millis(due_at.millis() - 1_000),
         retry_not_before: None,
+        test_case: None,
     }
 }
 
@@ -266,6 +267,8 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
         store,
         scheduler,
         Arc::new(FakeImageSource::known()),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
         telemetry.clone(),
@@ -325,6 +328,8 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
         store,
         scheduler,
         Arc::new(FakeImageSource::known()),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         quota_writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
         telemetry.clone(),
@@ -367,6 +372,8 @@ async fn task_sink_cancel_unknown_owner_emits_not_found() {
         store,
         scheduler,
         Arc::new(FakeImageSource::unknown()),
+        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        None,
         writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
         telemetry.clone(),

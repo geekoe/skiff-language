@@ -154,6 +154,7 @@ pub struct PeerRecord {
     pub starts: Vec<String>,
     pub cancels: Vec<(String, String)>,
     pub attempts: Vec<String>,
+    pub attempt_headers: Vec<RuntimeAssemblyTaskRequestStartFrameHeader>,
     pub fail_start: bool,
     pub fail_cancel: bool,
     pub fail_attempt: bool,
@@ -212,6 +213,7 @@ impl RuntimePeer for FakeRuntimePeer {
             return Err("writer queue full".to_string());
         }
         record.attempts.push(attempt.request_id().to_string());
+        record.attempt_headers.push(attempt.header.clone());
         Ok(())
     }
 }
@@ -484,5 +486,6 @@ pub fn task_attempt(
         task_id: task_id.to_string(),
         attempt_id: attempt_id.to_string(),
         lease_id: lease_id.to_string(),
+        prefer_session: None,
     }
 }

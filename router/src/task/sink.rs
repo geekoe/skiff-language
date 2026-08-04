@@ -8,6 +8,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
@@ -34,7 +35,7 @@ use skiff_task_control::model::{
     ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
     ActorDeclarationOwnerUnit, DetachedCallTarget, DurableDuration, DurableUtcTimestamp,
     RecoverablePayload, ServiceOwner, TaskCancelResultKind, TaskExecutionImageRef, TaskId,
-    TaskRecord, TaskState, TaskStatusKind, TaskTraceContext,
+    TaskRecord, TaskState, TaskStatusKind, TaskTestCaseAuthority, TaskTraceContext,
 };
 use skiff_task_control::scheduler::Scheduler;
 use skiff_task_control::store::{CancelInput, StatusInput, TaskStore};
@@ -46,6 +47,8 @@ use crate::session::TerminalKind;
 use crate::supervisor::ws::WsSessionWriter;
 use crate::telemetry::{task_event, TaskTelemetrySink};
 use super::health::TaskControlCounters;
+use super::control::DurableTaskControl;
+use super::parent::TaskSubmitParentResolver;
 use super::project_runtime_expected_type_plan;
 
 /// Default status/cancel retention horizon (task-control `StatusInput`).
@@ -120,6 +123,8 @@ pub struct DurableTaskFrameSink {
     store: Arc<dyn TaskStore>,
     scheduler: Arc<Scheduler>,
     image_source: Arc<dyn TaskExecutionImageSource>,
+    parent_resolver: Arc<dyn TaskSubmitParentResolver>,
+    control: Option<Arc<DurableTaskControl>>,
     writer: Arc<dyn WsSessionWriter>,
     counters: Arc<TaskControlCounters>,
     telemetry: Arc<dyn TaskTelemetrySink>,
@@ -143,6 +148,8 @@ impl DurableTaskFrameSink {
         store: Arc<dyn TaskStore>,
         scheduler: Arc<Scheduler>,
         image_source: Arc<dyn TaskExecutionImageSource>,
+        parent_resolver: Arc<dyn TaskSubmitParentResolver>,
+        control: Option<Arc<DurableTaskControl>>,
         writer: Arc<dyn WsSessionWriter>,
         counters: Arc<TaskControlCounters>,
         telemetry: Arc<dyn TaskTelemetrySink>,
@@ -152,6 +159,8 @@ impl DurableTaskFrameSink {
             store,
             scheduler,
             image_source,
+            parent_resolver,
+            control,
             writer,
             counters,
             telemetry,
@@ -378,6 +387,28 @@ impl DurableTaskFrameSink {
             .unwrap_or_else(|| {
                 TaskId::new(format!("task-{}", self.seq.fetch_add(1, Ordering::Relaxed)))
             });
+        // F2a: derive the parent test-case authority on the exact session.
+        // The wire only carries callerRequestId; the capability never leaves
+        // the Router boundary at submit time.
+        let test_case = (!header.caller_request_id.is_empty())
+            .then(|| {
+                self.parent_resolver
+                    .resolve(&session, header.caller_kind, &header.caller_request_id)
+                    .map(|test_case_capability| TaskTestCaseAuthority {
+                        test_case_capability,
+                        parent_request_id: header.caller_request_id.clone(),
+                        origin_runtime_id: session.replica_id.clone(),
+                        origin_connection_generation: session.connection_generation,
+                    })
+            })
+            .flatten();
+        let gate_admission = test_case.is_some() && due_at <= now;
+        // Subscribe before waking the scheduler so an immediate admission
+        // cannot be missed by the submit gate.
+        let mut admission_rx = gate_admission
+            .then(|| self.control.as_ref())
+            .flatten()
+            .map(|control| control.subscribe_first_admission());
         let record = TaskRecord {
             task_id: task_id.clone(),
             owner: ServiceOwner::new(header.service_id.clone()),
@@ -398,6 +429,7 @@ impl DurableTaskFrameSink {
             },
             created_at: now,
             retry_not_before: None,
+            test_case,
         };
         match self.store.create(record).await {
             Ok(_) => {
@@ -413,6 +445,21 @@ impl DurableTaskFrameSink {
                 );
                 if due_at <= now {
                     self.scheduler.wake();
+                }
+                if let Some(mut rx) = admission_rx.take() {
+                    // F2a: keep the parent test request active until the
+                    // first attempt is admitted on the exact origin
+                    // connection. The durable task itself is already
+                    // committed; this only waits for admission convergence
+                    // (never terminal), mirroring the old volatile spawn
+                    // admission wait so the attempt can join the still-active
+                    // test case.
+                    let _ = DurableTaskControl::wait_for_first_admission_rx(
+                        &mut rx,
+                        &task_id,
+                        Duration::from_secs(5),
+                    )
+                    .await;
                 }
                 let bytes =
                     Self::submit_response(&rpc_id, &task_id, &header.service_id)?;

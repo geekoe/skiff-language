@@ -109,6 +109,11 @@ struct PendingInvocation {
     owner_connection: String,
     correlation: String,
     deadline_at: Option<u64>,
+    /// Opaque test case capability of the admitted invocation (F2a). Kept
+    /// while the invocation is pending so a `task.submit.request` from the
+    /// executing Actor method can derive the same capability for its durable
+    /// child on the exact owner connection.
+    test_case_capability: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -171,9 +176,27 @@ impl ActorInvocationRelay {
                 owner_connection: input.owner_connection.clone(),
                 correlation: input.correlation.clone(),
                 deadline_at,
+                test_case_capability: input.test_case_capability.clone(),
             },
         );
         Ok(())
+    }
+
+    /// Opaque test case capability retained by one pending Actor invocation
+    /// executing on the exact owner connection (F2a task-submit parent
+    /// derivation). Returns `None` for ordinary invocations and when the
+    /// invocation is not active on the exact connection.
+    pub fn parent_test_capability(
+        &self,
+        owner_connection: &str,
+        invocation_id: &str,
+    ) -> Option<String> {
+        let inner = self.lock();
+        inner.pending.get(invocation_id).and_then(|pending| {
+            (pending.owner_connection == owner_connection)
+                .then(|| pending.test_case_capability.clone())
+                .flatten()
+        })
     }
 
     /// Settles a pending invocation from the exact admitted owner
