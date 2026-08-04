@@ -32,7 +32,7 @@ const V1_ENVELOPE_VERSION: i64 = 1;
 /// material never belong in diagnostics emitted by the offline tool.
 #[derive(Clone, Copy)]
 pub struct MigrationTargetContext<'a> {
-    pub environment: &'a str,
+    pub profile: &'a str,
     pub service_id: &'a str,
     pub collection_name: &'a str,
 }
@@ -113,7 +113,7 @@ impl DbMigrationCrypto {
         for (field_name, plaintext) in &plaintexts {
             let encrypted = self.v2_cipher.encrypt_string(
                 DbEncryptedFieldContext {
-                    storage_environment: target.environment,
+                    storage_profile: target.profile,
                     storage_service_id: target.service_id,
                     collection_name: target.collection_name,
                     field_name,
@@ -142,7 +142,7 @@ impl DbMigrationCrypto {
             let stored = document.get(field_name).ok_or(DbEncryptionError::Decode)?;
             let plaintext = Zeroizing::new(self.v2_cipher.decrypt_string(
                 DbEncryptedFieldContext {
-                    storage_environment: target.environment,
+                    storage_profile: target.profile,
                     storage_service_id: target.service_id,
                     collection_name: target.collection_name,
                     field_name,
@@ -235,7 +235,7 @@ impl DbMigrationCrypto {
             }
         }
         let context = binary_tuple(&[
-            target.environment.as_bytes(),
+            target.profile.as_bytes(),
             target.service_id.as_bytes(),
             target.collection_name.as_bytes(),
         ])

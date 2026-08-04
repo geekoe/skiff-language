@@ -39,10 +39,10 @@ impl skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver for EmptySnaps
     }
 }
 
-fn empty_snapshot(environment: &str) -> (RuntimeConfigSnapshotRef, EmptySnapshotResolver) {
+fn empty_snapshot(profile: &str) -> (RuntimeConfigSnapshotRef, EmptySnapshotResolver) {
     let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
     let snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        environment,
+        profile,
         reference.clone(),
         Vec::new(),
     )
@@ -135,7 +135,7 @@ fn runtime_host(replica_id: &str) -> RuntimeHost {
         router_url: "ws://127.0.0.1:1/runtime".to_string(),
         base_runtime_id: replica_id.to_string(),
         runtime_home: std::env::temp_dir().join(replica_id),
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         http_response_max_bytes: skiff_runtime_host::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         http_egress_proxy: None,
     })
@@ -161,7 +161,7 @@ fn transition(
         (
             "prepare",
             (
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -170,7 +170,7 @@ fn transition(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Prepare {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -182,7 +182,7 @@ fn transition(
         (
             "commit",
             (
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -191,7 +191,7 @@ fn transition(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Commit {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -203,7 +203,7 @@ fn transition(
         (
             "abort",
             (
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -212,7 +212,7 @@ fn transition(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Abort {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -344,7 +344,7 @@ mod tests {
                 &config_resolver,
             )
             .await
-            .expect("environment mismatch is a fail-closed activation reply")
+            .expect("profile mismatch is a fail-closed activation reply")
             .expect("prepare must receive a reply");
 
         assert!(matches!(
@@ -385,7 +385,7 @@ mod tests {
         assert_ne!(first_registration, second_registration);
 
         let staged_successor = AssemblyActivationControl::Prepare {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "activation-2".to_string(),
             expected_generation: 1,
             candidate_generation: 2,
@@ -412,7 +412,7 @@ mod tests {
         );
         let abort = match staged_successor {
             AssemblyActivationControl::Prepare {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -421,7 +421,7 @@ mod tests {
                 replica_id,
                 ..
             } => AssemblyActivationControl::Abort {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -453,7 +453,7 @@ mod tests {
         let rejected = first
             .apply_assembly_activation_control(
                 AssemblyActivationControl::Prepare {
-                    environment: "prod".to_string(),
+                    profile: "prod".to_string(),
                     activation_id: "activation-2".to_string(),
                     expected_generation: 1,
                     candidate_generation: 2,

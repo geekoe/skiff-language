@@ -183,13 +183,13 @@ impl RecoverableArtifactRetentionRootStore for CollectedRecoverableRootStore {
 
 impl ServiceDbRuntime {
     pub fn new(
-        environment: String,
+        profile: String,
         service_id: String,
         mongo_url: String,
         runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
         Self::new_with_config(
-            environment,
+            profile,
             service_id,
             ServiceDbConfig {
                 mongo_url,
@@ -200,12 +200,12 @@ impl ServiceDbRuntime {
     }
 
     pub fn new_with_config(
-        environment: String,
+        profile: String,
         service_id: String,
         config: ServiceDbConfig,
         runtime_program_db: &[DbProviderTargetMetadata],
     ) -> Result<Self> {
-        let database_name = service_storage_database_name(&environment, &service_id)?;
+        let database_name = service_storage_database_name(&profile, &service_id)?;
         validate_service_database_name(&database_name)?;
         let mongo_url = config.mongo_url;
         let client = service_db_client_cell(&mongo_url);
@@ -214,7 +214,7 @@ impl ServiceDbRuntime {
             database_name,
             metadata: Arc::new(ServiceDbMetadata::from_runtime_program_db_with_encryption(
                 runtime_program_db,
-                &environment,
+                &profile,
                 &service_id,
                 config.encryption_cipher,
             )?),

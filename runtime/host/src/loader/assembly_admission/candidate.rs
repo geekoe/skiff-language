@@ -88,7 +88,7 @@ impl AssemblyAdmissionController {
         config_snapshot_resolver: &C,
         resolution_context: &'static str,
         service_db: Option<&AssemblyActivationServiceDb>,
-        environment: &str,
+        profile: &str,
     ) -> Result<PreparedAssembly, (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -140,11 +140,11 @@ impl AssemblyAdmissionController {
                 ),
             ));
         }
-        if let Err(error) = super::super::config_snapshot::validate_snapshot_environment(
+        if let Err(error) = super::super::config_snapshot::validate_snapshot_profile(
             &config_snapshot,
-            environment,
+            profile,
         ) {
-            let _ = self.fail_candidate_config_snapshot_environment(
+            let _ = self.fail_candidate_config_snapshot_profile(
                 generation,
                 &identity,
                 config_snapshot_reference,
@@ -157,7 +157,7 @@ impl AssemblyAdmissionController {
             assembly,
             resolver,
             service_db,
-            Some(environment),
+            Some(profile),
             Some(config_snapshot_reference),
             Some(&config_snapshot),
         )

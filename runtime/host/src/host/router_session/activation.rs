@@ -466,7 +466,7 @@ fn activation_transaction_tuple(
 ) -> Option<ActivationTransactionTuple<'_>> {
     match control {
         AssemblyActivationControl::Prepare {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -476,7 +476,7 @@ fn activation_transaction_tuple(
             ..
         }
         | AssemblyActivationControl::Prepared {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -485,7 +485,7 @@ fn activation_transaction_tuple(
             replica_id,
         }
         | AssemblyActivationControl::Reject {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -495,7 +495,7 @@ fn activation_transaction_tuple(
             ..
         }
         | AssemblyActivationControl::Commit {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -505,7 +505,7 @@ fn activation_transaction_tuple(
             ..
         }
         | AssemblyActivationControl::Abort {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -513,7 +513,7 @@ fn activation_transaction_tuple(
             config_snapshot,
             replica_id,
         } => Some((
-            environment,
+            profile,
             activation_id,
             *expected_generation,
             *candidate_generation,
@@ -529,7 +529,7 @@ fn abort_control_for_prepare(
     prepare: &AssemblyActivationControl,
 ) -> Result<AssemblyActivationControl> {
     let AssemblyActivationControl::Prepare {
-        environment,
+        profile,
         activation_id,
         expected_generation,
         candidate_generation,
@@ -544,7 +544,7 @@ fn abort_control_for_prepare(
         ));
     };
     Ok(AssemblyActivationControl::Abort {
-        environment: environment.clone(),
+        profile: profile.clone(),
         activation_id: activation_id.clone(),
         expected_generation: *expected_generation,
         candidate_generation: *candidate_generation,

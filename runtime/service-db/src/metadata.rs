@@ -31,7 +31,7 @@ pub struct DbCollectionMetadata {
     constraint_target: DbConstraintTarget,
     pub key_field: String,
     pub key_ty: Option<db_boundary::DbBoundaryValuePlan>,
-    pub storage_environment: String,
+    pub storage_profile: String,
     pub storage_service_id: String,
     pub encryption_cipher: Option<DbEncryptionCipher>,
     pub fields: HashMap<String, DbFieldMetadata>,
@@ -82,7 +82,7 @@ impl ServiceDbMetadata {
 
     pub fn from_runtime_program_db_with_encryption(
         entries: &[DbProviderTargetMetadata],
-        storage_environment: &str,
+        storage_profile: &str,
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
     ) -> Result<Self> {
@@ -104,7 +104,7 @@ impl ServiceDbMetadata {
                 &entry.metadata,
                 index,
                 &package.package_id,
-                storage_environment,
+                storage_profile,
                 storage_service_id,
                 encryption_cipher.clone(),
             )?;
@@ -223,7 +223,7 @@ impl DbCollectionMetadata {
         ir: &DbMetadataIr,
         index: usize,
         package_id: &str,
-        storage_environment: &str,
+        storage_profile: &str,
         storage_service_id: &str,
         encryption_cipher: Option<DbEncryptionCipher>,
     ) -> Result<Self> {
@@ -257,7 +257,7 @@ impl DbCollectionMetadata {
             constraint_target,
             key_field: key.name,
             key_ty: key.ty,
-            storage_environment: storage_environment.to_string(),
+            storage_profile: storage_profile.to_string(),
             storage_service_id: storage_service_id.to_string(),
             encryption_cipher,
             fields,

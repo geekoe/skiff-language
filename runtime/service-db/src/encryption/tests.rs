@@ -14,7 +14,7 @@ const SENTINEL_PLAINTEXT: &str = "unique-plaintext-sentinel-4c91";
 struct GoldenVector {
     root_key_hex: String,
     key_id: String,
-    storage_environment: String,
+    storage_profile: String,
     storage_service_id: String,
     collection_name: String,
     field_name: String,
@@ -36,7 +36,7 @@ fn fixture() -> GoldenVector {
 
 fn context<'a>(fixture: &'a GoldenVector) -> DbEncryptedFieldContext<'a> {
     DbEncryptedFieldContext {
-        storage_environment: &fixture.storage_environment,
+        storage_profile: &fixture.storage_profile,
         storage_service_id: &fixture.storage_service_id,
         collection_name: &fixture.collection_name,
         field_name: &fixture.field_name,
@@ -86,7 +86,7 @@ fn normative_encryption_and_fingerprint_vectors_match_fixed_fixture() {
     let info = binary_tuple(&[
         FIELD_KDF_MARKER,
         fixture.key_id.as_bytes(),
-        fixture.storage_environment.as_bytes(),
+        fixture.storage_profile.as_bytes(),
         fixture.storage_service_id.as_bytes(),
         fixture.collection_name.as_bytes(),
         fixture.field_name.as_bytes(),
@@ -245,7 +245,7 @@ fn ciphertext_nonce_tag_key_id_and_all_context_changes_fail_closed() {
             ..context(&fixture)
         },
         DbEncryptedFieldContext {
-            storage_environment: "other",
+            storage_profile: "other",
             ..context(&fixture)
         },
         DbEncryptedFieldContext {

@@ -4,16 +4,16 @@ use std::{
     time::Duration,
 };
 
-use skiff_artifact_identity::{EnvironmentActivationStatePath, RuntimeAssemblyRecordPath};
+use skiff_artifact_identity::{ProfileActivationStatePath, RuntimeAssemblyRecordPath};
 use skiff_artifact_model::RuntimeAssemblyRef;
-use skiff_deployment::{fixtures::runtime_assembly_fixture, storage::EnvironmentActivationState};
+use skiff_deployment::{fixtures::runtime_assembly_fixture, storage::ProfileActivationState};
 use tokio::{net::TcpListener, time::timeout};
 
 use super::*;
 
-fn activation_path(root: &Path, environment: &str) -> PathBuf {
+fn activation_path(root: &Path, profile: &str) -> PathBuf {
     root.join(
-        EnvironmentActivationStatePath::new(environment)
+        ProfileActivationStatePath::new(profile)
             .unwrap()
             .as_relative_path()
             .as_path(),
@@ -77,13 +77,13 @@ async fn exercise_missing_and_invalid_state_failures(router_url: &str) {
     .await;
 }
 
-async fn exercise_cross_environment_failure(router_url: &str) {
-    let root = TestArtifactRoot::new("cross-environment");
+async fn exercise_cross_profile_failure(router_url: &str) {
+    let root = TestArtifactRoot::new("cross-profile");
     let store = CanonicalArtifactStore::create(&root.path).unwrap();
     let assembly = empty_assembly();
     store.write_runtime_assembly(&assembly).unwrap();
     store
-        .initialize_environment_activation(&EnvironmentActivationState::initial(
+        .initialize_profile_activation(&ProfileActivationState::initial(
             "other",
             0,
             runtime_assembly_ref(&assembly).unwrap(),
@@ -93,7 +93,7 @@ async fn exercise_cross_environment_failure(router_url: &str) {
     fs::create_dir_all(test_path.parent().unwrap()).unwrap();
     fs::copy(activation_path(&root.path, "other"), &test_path).unwrap();
     assert_preconnect_failure(
-        "activation environment/path mismatch",
+        "activation profile/path mismatch",
         &runtime_host(&root.path, router_url.to_string()),
     )
     .await;
@@ -145,7 +145,7 @@ async fn exercise_record_reference_failures(router_url: &str) {
         .write_runtime_assembly(&pending_assembly)
         .unwrap();
     pending_store
-        .prepare_environment_activation(
+        .prepare_profile_activation(
             "test",
             "activation-1",
             0,
@@ -168,7 +168,7 @@ async fn committed_recovery_failures_never_open_a_router_socket() {
     let router_url = format!("ws://{}/runtime", listener.local_addr().unwrap());
 
     exercise_missing_and_invalid_state_failures(&router_url).await;
-    exercise_cross_environment_failure(&router_url).await;
+    exercise_cross_profile_failure(&router_url).await;
     exercise_record_reference_failures(&router_url).await;
 
     assert!(
