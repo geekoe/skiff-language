@@ -88,7 +88,7 @@ assert.equal(request.expectedGeneration, 41);
 assert.deepEqual(request, requestWire);
 assert.deepEqual(Object.keys(request), [
   "schemaVersion",
-  "environment",
+  "profile",
   "activationId",
   "expectedGeneration",
   "assembly",
@@ -191,8 +191,8 @@ assert.deepEqual(checkpoint.runtimeAssemblyProjection, {
     "<build|publish>",
     "--artifact-root",
     "<artifact-root>",
-    "--environment",
-    "<environment>",
+    "--profile",
+    "<profile>",
     "--root-deployment",
     "<exact ServiceDeploymentRef JSON>",
     "...",
@@ -218,7 +218,7 @@ assert.notEqual(
 );
 assert.deepEqual(checkpoint.activationRequest.fields, [
   "schemaVersion",
-  "environment",
+  "profile",
   "activationId",
   "expectedGeneration",
   "assembly",
@@ -228,8 +228,8 @@ assert.equal(
   ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT,
 );
 assert.equal(
-  checkpoint.pointerPaths.EnvironmentActivationState,
-  "environments/<environment>/activation.json",
+  checkpoint.pointerPaths.ProfileActivationState,
+  "profiles/<profile>/activation.json",
 );
 assert.equal(
   Object.values(checkpoint.recordPaths).some((path) =>
@@ -536,13 +536,13 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
   assert.deepEqual(
     storeCorpus.workflow.map((request) => request.operation),
     [
-      "ensureEnvironmentBootstrap",
-      "readEnvironment",
-      "prepareEnvironment",
-      "abortEnvironment",
-      "prepareEnvironment",
-      "commitEnvironment",
-      "ensureEnvironmentBootstrap",
+      "ensureProfileBootstrap",
+      "readProfile",
+      "prepareProfile",
+      "abortProfile",
+      "prepareProfile",
+      "commitProfile",
+      "ensureProfileBootstrap",
       "readRouterSnapshot",
     ],
   );
