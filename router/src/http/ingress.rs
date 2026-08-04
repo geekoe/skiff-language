@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{
     DeploymentGatewayEntry, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryKey,
@@ -160,6 +160,17 @@ pub struct EpochHttpIngressResolver {
     /// surface from the live active epoch (activation swap visibility);
     /// absent keeps the static captured surface.
     live: Option<LiveHttpSurfaceSource>,
+    /// Cache of the live surface view, keyed by the active epoch generation.
+    /// The view is rebuilt only when an activation swap changes the
+    /// generation, instead of re-reading and canonical-validating every
+    /// deployment record from disk on each request.
+    cached_live: Arc<Mutex<Option<CachedLiveSurface>>>,
+}
+
+#[derive(Clone)]
+struct CachedLiveSurface {
+    generation: u64,
+    view: Arc<HttpGatewaySurfaceView>,
 }
 
 impl fmt::Debug for EpochHttpIngressResolver {
@@ -182,6 +193,7 @@ impl EpochHttpIngressResolver {
         Self {
             surfaces,
             live: None,
+            cached_live: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -196,6 +208,7 @@ impl EpochHttpIngressResolver {
                 epoch_store,
                 artifact_store,
             }),
+            cached_live: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -210,9 +223,25 @@ impl EpochHttpIngressResolver {
         let Some(current) = live.epoch_store.capture() else {
             return Ok(Arc::clone(&self.surfaces));
         };
-        http_surface_view_from_epoch(&live.artifact_store, &current)
-            .map(Arc::new)
-            .map_err(|message| HttpError::internal(message))
+        let generation = current.assembly_generation();
+        let mut cached = self
+            .cached_live
+            .lock()
+            .expect("live HTTP surface cache lock should not be poisoned");
+        if let Some(entry) = cached.as_ref() {
+            if entry.generation == generation {
+                return Ok(Arc::clone(&entry.view));
+            }
+        }
+        let view = Arc::new(
+            http_surface_view_from_epoch(&live.artifact_store, &current)
+                .map_err(HttpError::internal)?,
+        );
+        *cached = Some(CachedLiveSurface {
+            generation,
+            view: Arc::clone(&view),
+        });
+        Ok(view)
     }
 }
 
