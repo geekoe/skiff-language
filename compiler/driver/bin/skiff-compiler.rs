@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_compiler::authoring::{
-    build_authoring_object, project_runtime_assembly, AuthoringObject,
+    build_authoring_object, project_runtime_assembly, seed_official_std_package,
+    AuthoringObject,
 };
 use skiff_compiler::CompilerPlatformSources;
 
@@ -29,6 +30,11 @@ fn run_with_args(
         println!("{USAGE}");
         return Ok(());
     }
+    if object == "std-seed" {
+        // Internal tool action (absent from public help): canonical std seed
+        // used by `skiff stack init` through the Node authoring library.
+        return run_std_seed_action(args);
+    }
     let object = AuthoringObject::parse(&object)?;
     let action = args.next().ok_or(USAGE)?;
     let publish_pointer = match action.as_str() {
@@ -44,6 +50,47 @@ fn run_with_args(
         AuthoringObject::Package => run_package_action(args, publish_pointer),
         AuthoringObject::Assembly => run_assembly_action(args, publish_pointer),
     }
+}
+
+fn run_std_seed_action(
+    mut args: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut artifact_root = None;
+    let mut platform_source_root = None;
+    let mut json = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--artifact-root" => {
+                if artifact_root.is_some() {
+                    return Err("--artifact-root was provided more than once".into());
+                }
+                artifact_root = Some(PathBuf::from(
+                    args.next().ok_or("--artifact-root requires a path")?,
+                ));
+            }
+            "--platform-source-root" => {
+                if platform_source_root.is_some() {
+                    return Err("--platform-source-root was provided more than once".into());
+                }
+                platform_source_root = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--platform-source-root requires a path")?,
+                ));
+            }
+            "--json" => json = true,
+            _ => return Err(format!("unknown std-seed option {argument}").into()),
+        }
+    }
+    let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
+    let platform_source_root = platform_source_root.ok_or("--platform-source-root is required")?;
+    let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
+    let receipt = seed_official_std_package(&platform_sources, &artifact_root)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+    } else {
+        println!("{}", serde_json::to_string(&receipt)?);
+    }
+    Ok(())
 }
 
 fn run_package_action(
