@@ -562,7 +562,9 @@ impl RuntimeHost {
             http_options: self.http_runtime_options.clone(),
             outbound_requests: Arc::clone(&self.outbound_requests),
             actor_method_outbound: Arc::clone(&self.actor_method_outbound),
-            telemetry_context: None,
+            telemetry_context: Some(crate::telemetry::RequestTelemetryContext::new(
+                self.telemetry.clone(),
+            )),
             router_sender: Some(sender.clone()),
             connection_requests: Arc::clone(&self.connection_requests),
             router_session: skiff_runtime_capability_context::ConnectionRequestSession::new(
@@ -683,7 +685,9 @@ fn build_owner_control_execution(
         http_options: host.http_runtime_options.clone(),
         outbound_requests: Arc::clone(&host.outbound_requests),
         actor_method_outbound: Arc::clone(&host.actor_method_outbound),
-        telemetry_context: None,
+        telemetry_context: Some(crate::telemetry::RequestTelemetryContext::new(
+            host.telemetry.clone(),
+        )),
         router_sender: Some(sender.clone()),
         connection_requests: Arc::clone(&host.connection_requests),
         router_session: skiff_runtime_capability_context::ConnectionRequestSession::new(

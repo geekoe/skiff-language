@@ -55,6 +55,7 @@ pub struct RuntimeProductionConfig {
     pub runtime_home: PathBuf,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
+    pub telemetry_endpoint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -83,8 +84,8 @@ pub struct RuntimeHost {
 
 impl RuntimeHost {
     #[cfg(not(test))]
-    pub fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
-        Self::new_inner(
+    pub async fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
+        let host = Self::new_inner(
             config.db_provider,
             config.router_url,
             config.base_runtime_id,
@@ -92,7 +93,19 @@ impl RuntimeHost {
             None,
             config.http_response_max_bytes,
             config.http_egress_proxy,
-        )
+        )?;
+        if let Some(endpoint) = config.telemetry_endpoint {
+            if !endpoint.trim().is_empty() {
+                let exporter = super::telemetry::TelemetryExporter::new(
+                    endpoint,
+                    host.telemetry.clone(),
+                )
+                .start();
+                let mut slot = host.telemetry_exporter.lock().await;
+                *slot = Some(exporter);
+            }
+        }
+        Ok(host)
     }
 
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {

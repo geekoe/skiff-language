@@ -67,6 +67,7 @@ pub struct RuntimeFileConfig {
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
+    pub telemetry_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -79,6 +80,16 @@ struct RawRuntimeFileConfig {
     service_db: Option<RawRuntimeServiceDbConfig>,
     #[serde(default)]
     services: Option<serde_yaml::Value>,
+    #[serde(default)]
+    telemetry: Option<RawRuntimeTelemetryConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeTelemetryConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    endpoint: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -132,8 +143,22 @@ impl RuntimeFileConfig {
             )?,
             http_response_max_bytes: runtime_http_response_max_bytes_from_value(&value)?,
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
+            telemetry_endpoint: runtime_telemetry_endpoint(raw.telemetry)?,
         })
     }
+}
+
+fn runtime_telemetry_endpoint(telemetry: Option<RawRuntimeTelemetryConfig>) -> anyhow::Result<Option<String>> {
+    let Some(telemetry) = telemetry else {
+        return Ok(None);
+    };
+    if telemetry.enabled == Some(false) {
+        return Ok(None);
+    }
+    if telemetry.endpoint.trim().is_empty() {
+        anyhow::bail!("runtime config telemetry.endpoint must not be empty when telemetry is enabled");
+    }
+    Ok(Some(telemetry.endpoint))
 }
 
 fn runtime_service_db_encryption_keyring_file(
