@@ -217,6 +217,7 @@ async function runOwnedFixture(fixture, runTest) {
     baseEnv: { PATH: '/bin' },
     signalTarget: new EventEmitter(),
     dependencies: fixture.dependencies,
+    ensureRuntimeBinaries: async () => {},
     runTest,
   });
 }
@@ -404,7 +405,7 @@ async function mutateOwnedPath({ outerRoot, receipt, mutation }) {
       return async () => {
         assert.equal((await lstat(instanceRoot)).isSymbolicLink(), true);
         assert.equal(await readFile(receipt.config.path, 'utf8'), await readFile(
-          join(movedInstanceRoot, 'config.yml'),
+          join(movedInstanceRoot, 'instance.yml'),
           'utf8',
         ));
       };

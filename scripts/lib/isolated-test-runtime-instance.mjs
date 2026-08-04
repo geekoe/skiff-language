@@ -13,40 +13,60 @@ import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-worksp
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
 
-export function isolatedTestInstanceConfigText({
+export function isolatedTestInstanceYml({
   devHome,
-  cargoTarget,
   basePort,
   mongoPort,
   profile = 'skiff-test',
+  routerBinary,
+  runtimeBinary,
+  mongoBinary = 'mongod',
 }) {
   if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
     throw new Error('isolated test instance mongoPort must be a positive integer');
   }
+  const httpPort = basePort;
+  const controlPort = basePort + 1;
+  const pidDir = join(devHome, 'pids');
+  const logDir = join(devHome, 'logs');
   return [
-    `devHome: ${JSON.stringify(devHome)}`,
-    `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
+    'schemaVersion: skiff-instance-v1',
     `profile: ${JSON.stringify(profile)}`,
-    'packageDirs:',
-    'ports:',
-    `  base: ${basePort}`,
-    `  mongo: ${mongoPort}`,
-    'http:',
-    '  maxRequestBytes: 67108864',
-    '  maxResponseBytes: 8388608',
-    'router:',
-    '  requestTimeoutMs: 20000',
-    'components:',
-    '  telemetry: disabled',
-    '  mongo: managed',
-    '  watch: disabled',
-    'telemetry:',
-    '  memory: true',
-    'mongo:',
-    '  binary: mongod',
-    '  dbPath: service-db',
-    'watch:',
-    '  config: watch.json',
+    `devHome: ${JSON.stringify(devHome)}`,
+    `artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}`,
+    `pidDir: ${JSON.stringify(pidDir)}`,
+    `logDir: ${JSON.stringify(logDir)}`,
+    `mongoDbPath: ${JSON.stringify(join(devHome, 'mongo-data'))}`,
+    `activationUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__skiff/activate-assembly`)}`,
+    'processes:',
+    '  - name: mongo',
+    `    command: ${JSON.stringify(mongoBinary)}`,
+    '    args:',
+    `      - ${JSON.stringify('--dbpath')}`,
+    `      - ${JSON.stringify(join(devHome, 'mongo-data'))}`,
+    '      - --port',
+    `      - ${JSON.stringify(String(mongoPort))}`,
+    '      - --replSet',
+    '      - rs0',
+    '      - --bind_ip',
+    '      - 127.0.0.1',
+    `    cwd: ${JSON.stringify(devHome)}`,
+    `    ports: [${mongoPort}]`,
+    '    healthUrl: null',
+    '  - name: router',
+    `    command: ${JSON.stringify(routerBinary)}`,
+    '    args:',
+    `      - ${JSON.stringify(join(devHome, 'router.yml'))}`,
+    `    cwd: ${JSON.stringify(devHome)}`,
+    `    ports: [${httpPort}, ${controlPort}]`,
+    `    healthUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__router/health`)}`,
+    '  - name: runtime',
+    `    command: ${JSON.stringify(runtimeBinary)}`,
+    '    args:',
+    `      - ${JSON.stringify(join(devHome, 'runtime.yml'))}`,
+    `    cwd: ${JSON.stringify(devHome)}`,
+    '    ports: []',
+    '    healthUrl: null',
     '',
   ].join('\n');
 }
@@ -175,9 +195,10 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       return spawnSupervisorChild(
         'node',
         [
-          join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
+          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
           'supervise',
-          configPath,
+          '--runtime',
+          dirname(configPath),
           '--startup-gate',
           startupGate,
           '--startup-ready',
@@ -204,9 +225,10 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       return runOwnedCommand(
         'node',
         [
-          join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
+          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
           'down',
-          ownershipReceipt.config.path,
+          '--runtime',
+          dirname(ownershipReceipt.config.path),
         ],
         { cwd: skiffRoot, env: baseEnv },
       );
@@ -371,17 +393,18 @@ async function verifyInstanceStopped({ skiffRoot, ownershipReceipt, env }) {
   await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
   const configPath = ownershipReceipt.config.path;
   const result = await runCommandCapture('node', [
-    join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
+    join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
     'status',
-    configPath,
+    '--runtime',
+    dirname(configPath),
     '--json',
   ], { cwd: skiffRoot, env });
   const status = JSON.parse(result.stdout);
   const active = (status.processes ?? []).filter((processStatus) =>
     ['mongo', 'router', 'runtime'].includes(processStatus.name)
-    && processStatus.category !== 'stopped');
+    && processStatus.alive === true);
   if (active.length > 0) {
-    throw new Error(`isolated instance still owns active components: ${active.map((entry) => `${entry.name}:${entry.category}`).join(', ')}`);
+    throw new Error(`isolated instance still owns active components: ${active.map((entry) => `${entry.name}:${entry.pid ?? 'unknown'}`).join(', ')}`);
   }
 }
 

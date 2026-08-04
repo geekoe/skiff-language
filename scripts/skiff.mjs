@@ -26,7 +26,7 @@ import { parseStackConfigDirArg } from './lib/stack-config.mjs';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = dirname(scriptDir);
 const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
-const defaultDevHome = join(skiffRoot, '.skiff-instance', 'dev-home');
+const defaultDevHome = join(skiffRoot, '.stack', 'dev-home');
 const defaultResolvedDevHome = resolveDevHome(process.env.SKIFF_DEV_HOME);
 const defaultWatchRegistryPath = join(defaultResolvedDevHome, 'watch.json');
 const defaultBinDir = join(homeDir, 'bin');

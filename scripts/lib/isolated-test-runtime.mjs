@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './cargo-target-dir.mjs';
 import {
   isolatedInstanceOperations,
-  isolatedTestInstanceConfigText,
+  isolatedTestInstanceYml,
   isolatedTestRunnerEnvironment,
 } from './isolated-test-runtime-instance.mjs';
 import { assertPortsClosed, leaseConsecutiveLocalPorts } from './local-port-lease.mjs';
@@ -20,7 +20,6 @@ import {
   ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY,
   retainIsolatedRuntimeLogEvidence,
 } from './isolated-test-runtime-log-evidence.mjs';
-import { runtimeBinaryName } from './dev-runtime-paths.mjs';
 import { renderRuntimeConfig } from './runtime-stack-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +40,7 @@ export async function runInIsolatedTestRuntime({
   validateBootstrapReceipt,
   runtimeReplicas = 1,
   dependencies = {},
+  ensureRuntimeBinaries = ensureRuntimeStackDebugBinaries,
 }) {
   if (!Number.isSafeInteger(runtimeReplicas) || runtimeReplicas < 1 || runtimeReplicas > 2) {
     throw new Error('isolated test runtimeReplicas must be 1 or 2');
@@ -53,6 +53,9 @@ export async function runInIsolatedTestRuntime({
     SKIFF_TEST_PLATFORM_SOURCE_ROOT: absoluteSkiffRoot,
   };
   const ops = isolatedRuntimeOperations(dependencies, absoluteSkiffRoot, isolatedBaseEnv);
+  const effectiveEnsureBinaries = Object.keys(dependencies ?? {}).length === 0
+    ? ensureRuntimeBinaries
+    : async () => {};
   const abortController = new AbortController();
   let stack;
   let interruptedBy;
@@ -78,6 +81,7 @@ export async function runInIsolatedTestRuntime({
       signal: abortController.signal,
       validateBootstrapReceipt,
       runtimeReplicas,
+      ensureRuntimeBinaries: effectiveEnsureBinaries,
     });
     value = await runTest(stack.testRunnerEnv, abortController.signal, stack);
   } catch (error) {
@@ -131,6 +135,7 @@ async function startIsolatedTestRuntime({
   signal,
   validateBootstrapReceipt,
   runtimeReplicas,
+  ensureRuntimeBinaries,
 }) {
   const portLease = await ops.leasePorts();
   let tempRoot;
@@ -146,7 +151,7 @@ async function startIsolatedTestRuntime({
     const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
     await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
-    const configPath = join(instanceRoot, 'config.yml');
+    const configPath = join(instanceRoot, 'instance.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
     const startupGate = join(instanceRoot, 'activation-seeded.ready');
@@ -154,12 +159,16 @@ async function startIsolatedTestRuntime({
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
     const mongoPort = portLease.ports[3];
-    const config = isolatedTestInstanceConfigText({
+    const routerBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router');
+    const runtimeBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-runtime');
+    await ensureRuntimeBinaries({ routerBinary, runtimeBinary });
+    const config = isolatedTestInstanceYml({
       devHome,
-      cargoTarget,
       basePort,
       mongoPort,
       profile,
+      routerBinary,
+      runtimeBinary,
     });
     configOwnershipRequired = true;
     await ops.writeConfig(configPath, config, ownershipReceipt);
@@ -239,7 +248,7 @@ async function startIsolatedTestRuntime({
       }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       // child-process-owner: isolated-additional-runtime
       const child = spawnAdditionalRuntimeChild(
-        join(devHome, 'bin', runtimeBinaryName()),
+        runtimeBinary,
         [runtimeConfig],
         {
           cwd: skiffRoot,
@@ -298,6 +307,23 @@ async function startIsolatedTestRuntime({
       );
     }
     throw error;
+  }
+}
+
+async function ensureRuntimeStackDebugBinaries({ routerBinary, runtimeBinary }) {
+  const { access } = await import('node:fs/promises');
+  const missing = [];
+  for (const file of [routerBinary, runtimeBinary]) {
+    try {
+      await access(file);
+    } catch {
+      missing.push(file);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `runtime-stack debug binaries missing (${missing.join(', ')}); run "skiff stack build --configDir .stack --profile debug" first`,
+    );
   }
 }
 

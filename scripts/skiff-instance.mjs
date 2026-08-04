@@ -20,7 +20,7 @@ const DEFAULT_RUNTIME_DIR = join(skiffRoot, 'build', 'runtime-stack');
 const STARTUP_TIMEOUT_MS = 30_000;
 
 const usage = `usage:
-  skiff instance <up|restart|status|down|supervise|repair> [--runtime <dir>] [component]`;
+  skiff instance <up|restart|status|down|supervise|repair> [--runtime <dir>] [--startup-gate <file>] [--startup-ready <file>] [component]`;
 
 try {
   await main(process.argv.slice(2));
@@ -54,7 +54,7 @@ async function main(rawArgs) {
       await repairInstance(spec);
       return;
     case 'supervise':
-      await superviseInstance(spec);
+      await superviseInstance(spec, parsed.startupGate, parsed.startupReady);
       return;
     default:
       throw new Error(`unknown instance command ${command}\n${usage}`);
@@ -64,6 +64,8 @@ async function main(rawArgs) {
 function parseArgs(rawArgs) {
   let runtimeDir = DEFAULT_RUNTIME_DIR;
   let component;
+  let startupGate;
+  let startupReady;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
     if (argument === '--runtime') {
@@ -75,13 +77,29 @@ function parseArgs(rawArgs) {
       index += 1;
     } else if (argument.startsWith('--runtime=')) {
       runtimeDir = resolve(argument.slice('--runtime='.length));
+    } else if (argument === '--startup-gate') {
+      startupGate = resolve(requireValue(rawArgs, ++index, argument));
+    } else if (argument.startsWith('--startup-gate=')) {
+      startupGate = resolve(argument.slice('--startup-gate='.length));
+    } else if (argument === '--startup-ready') {
+      startupReady = resolve(requireValue(rawArgs, ++index, argument));
+    } else if (argument.startsWith('--startup-ready=')) {
+      startupReady = resolve(argument.slice('--startup-ready='.length));
     } else if (component === undefined) {
       component = argument;
     } else {
       throw new Error(`unexpected argument ${argument}\n${usage}`);
     }
   }
-  return { runtimeDir, component };
+  return { runtimeDir, component, startupGate, startupReady };
+}
+
+function requireValue(rawArgs, index, label) {
+  const value = rawArgs[index];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${label} requires a value`);
+  }
+  return value;
 }
 
 async function loadInstanceSpec(runtimeDir) {
@@ -163,8 +181,29 @@ async function repairInstance(spec) {
   await waitForRouterHealth(spec);
 }
 
-async function superviseInstance(spec) {
-  await upInstance(spec);
+async function superviseInstance(spec, startupGate, startupReady) {
+  const gate = startupGate;
+  const ready = startupReady;
+  const preRouter = spec.processes.filter((process) => process.name !== 'router' && process.name !== 'runtime');
+  const routerAndRuntime = spec.processes.filter((process) => process.name === 'router' || process.name === 'runtime');
+  for (const process of preRouter) {
+    if (!await isProcessRunning(spec, process)) {
+      await startProcess(spec, process);
+    }
+  }
+  if (ready !== undefined) {
+    await mkdir(dirname(ready), { recursive: true });
+    await writeFile(ready, 'ready\n');
+  }
+  if (gate !== undefined) {
+    await waitForFile(gate, STARTUP_TIMEOUT_MS, `startup gate ${gate}`);
+  }
+  for (const process of routerAndRuntime) {
+    if (!await isProcessRunning(spec, process)) {
+      await startProcess(spec, process);
+    }
+  }
+  await waitForRouterHealth(spec);
   console.log('instance supervising; Ctrl-C to stop');
   let stopping = false;
   process.on('SIGINT', async () => {
@@ -184,6 +223,19 @@ async function superviseInstance(spec) {
       }
     }
   }
+}
+
+async function waitForFile(file, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(file);
+      return;
+    } catch {
+      await sleep(100);
+    }
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 async function instanceStatus(spec) {

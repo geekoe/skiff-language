@@ -15,7 +15,8 @@ config.*.secret.yml
 .browser-screenshot/
 .playwright-profile/
 .skiff-package-store/
-.skiff-instance/
+.stack/
+.skiff-instance.bak/
 skiff.local.yml
 router/router.yml
 runtime/runtime.yml

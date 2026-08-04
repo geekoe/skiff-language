@@ -96,10 +96,12 @@ export function parseStackConfigDirArg(rawArgs, { options = [] } = {}) {
     } else {
       throw new Error(`unknown stack option ${argument}`);
     }
-    if (configDir !== undefined) {
-      throw new Error('--configDir was provided more than once');
+    if (argument === '--configDir' || argument.startsWith('--configDir=')) {
+      if (configDir !== undefined) {
+        throw new Error('--configDir was provided more than once');
+      }
+      configDir = value;
     }
-    configDir = value;
   }
   if (configDir === undefined) {
     throw new Error('stack command requires --configDir <dir>');
@@ -229,38 +231,47 @@ function validateStackConfig(value) {
     readRequiredString(value, 'profile', label),
     `${label} profile`,
   );
-  const remote = readRequiredObject(value, 'remote', label);
-  const remoteHost = readRequiredString(remote, 'host', `${label} remote`);
-  const remoteSkiff = readRequiredPosixPath(
-    readRequiredString(remote, 'remoteSkiff', `${label} remote`),
-    `${label} remote.remoteSkiff`,
-  );
-  const nodeBin = readRequiredPosixPath(
-    readRequiredString(remote, 'nodeBin', `${label} remote`),
-    `${label} remote.nodeBin`,
-  );
-  const serviceDbKeyringFile = remote.serviceDbKeyringFile === undefined
+  const rawRemote = readOptionalObject(value, 'remote', label);
+  const remote = rawRemote === undefined
     ? undefined
-    : readRequiredPosixPath(
-        readRequiredString(remote, 'serviceDbKeyringFile', `${label} remote`),
-        `${label} remote.serviceDbKeyringFile`,
-      );
-  const verify = readRequiredObject(value, 'verify', label);
+    : {
+        host: readRequiredString(rawRemote, 'host', `${label} remote`),
+        remoteSkiff: readRequiredPosixPath(
+          readRequiredString(rawRemote, 'remoteSkiff', `${label} remote`),
+          `${label} remote.remoteSkiff`,
+        ),
+        nodeBin: readRequiredPosixPath(
+          readRequiredString(rawRemote, 'nodeBin', `${label} remote`),
+          `${label} remote.nodeBin`,
+        ),
+        serviceDbKeyringFile: rawRemote.serviceDbKeyringFile === undefined
+          ? undefined
+          : readRequiredPosixPath(
+              readRequiredString(rawRemote, 'serviceDbKeyringFile', `${label} remote`),
+              `${label} remote.serviceDbKeyringFile`,
+            ),
+      };
+  const rawVerify = readOptionalObject(value, 'verify', label);
+  const verify = rawVerify === undefined
+    ? undefined
+    : {
+        httpPort: readRequiredPort(rawVerify, 'httpPort', `${label} verify`),
+        controlPort: readRequiredPort(rawVerify, 'controlPort', `${label} verify`),
+        telemetryPort: readRequiredPort(rawVerify, 'telemetryPort', `${label} verify`),
+        healthPath: readRequiredHealthPath(rawVerify, 'healthPath', `${label} verify`),
+      };
   return {
     profile,
-    remote: {
-      host: remoteHost,
-      remoteSkiff,
-      nodeBin,
-      serviceDbKeyringFile,
-    },
-    verify: {
-      httpPort: readRequiredPort(verify, 'httpPort', `${label} verify`),
-      controlPort: readRequiredPort(verify, 'controlPort', `${label} verify`),
-      telemetryPort: readRequiredPort(verify, 'telemetryPort', `${label} verify`),
-      healthPath: readRequiredHealthPath(verify, 'healthPath', `${label} verify`),
-    },
+    remote,
+    verify,
   };
+}
+
+export function requireRemoteStackConfig(stack, command) {
+  if (stack.config?.remote === undefined || stack.config?.verify === undefined) {
+    throw new Error(`${command} requires config.yml remote and verify`);
+  }
+  return stack;
 }
 
 function validateRouterConfig(value) {
@@ -284,6 +295,17 @@ function readRequiredString(value, field, label) {
 
 function readRequiredObject(value, field, label) {
   const fieldValue = value?.[field];
+  if (!isPlainObject(fieldValue)) {
+    throw new Error(`${label} ${field} must be an object`);
+  }
+  return fieldValue;
+}
+
+function readOptionalObject(value, field, label) {
+  const fieldValue = value?.[field];
+  if (fieldValue === undefined) {
+    return undefined;
+  }
   if (!isPlainObject(fieldValue)) {
     throw new Error(`${label} ${field} must be an object`);
   }

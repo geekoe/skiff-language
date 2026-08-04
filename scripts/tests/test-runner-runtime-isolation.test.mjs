@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
-  isolatedTestInstanceConfigText,
+  isolatedTestInstanceYml,
   isolatedTestRunnerEnvironment,
 } from '../lib/isolated-test-runtime-instance.mjs';
 
@@ -42,19 +42,22 @@ test('non-live runner receives canonical activation and Host-ingress targets', (
   assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
 });
 
-test('isolated config is rooted in its temporary dev home and dynamic ports', () => {
-  const config = isolatedTestInstanceConfigText({
+test('isolated instance spec is rooted in its temporary dev home and dynamic ports', () => {
+  const config = isolatedTestInstanceYml({
     devHome: '/tmp/skiff-owned/dev-home',
-    cargoTarget: '/tmp/skiff-owned/cargo-target',
     basePort: 46100,
     mongoPort: 46103,
+    routerBinary: '/checkout/skiff/build/runtime-stack/bin/skiff-router',
+    runtimeBinary: '/checkout/skiff/build/runtime-stack/bin/skiff-runtime',
   });
 
   assert.match(config, /devHome: "\/tmp\/skiff-owned\/dev-home"/);
-  assert.match(config, /cargoTargetDir: "\/tmp\/skiff-owned\/cargo-target"/);
-  assert.match(config, /base: 46100/);
-  assert.match(config, /mongo: 46103/);
-  assert.match(config, /mongo: managed/);
+  assert.match(config, /^schemaVersion: skiff-instance-v1$/m);
+  assert.match(config, /^  - name: mongo$/m);
+  assert.match(config, /^  - name: router$/m);
+  assert.match(config, /^  - name: runtime$/m);
+  assert.match(config, /46100/);
+  assert.match(config, /46103/);
   assert.doesNotMatch(config, /27017/);
   assert.match(config, /profile: "skiff-test"/);
   assert.doesNotMatch(config, /\.skiff-instance/);

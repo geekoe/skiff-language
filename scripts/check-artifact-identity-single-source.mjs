@@ -11,7 +11,7 @@ import {
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const skippedRustScanDirectories = new Set([
   '.git',
-  '.skiff-instance',
+  '.stack',
   'build',
   'node_modules',
   'target',

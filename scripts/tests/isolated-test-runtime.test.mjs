@@ -15,10 +15,9 @@ import {
   bootstrapCanonicalArgs,
   isolatedInstanceOperations,
   isolatedRuntimeHealthReady,
-  isolatedTestInstanceConfigText,
+  isolatedTestInstanceYml,
   isolatedTestRunnerEnvironment,
 } from '../lib/isolated-test-runtime-instance.mjs';
-import { readInstanceConfig } from '../lib/local-instance-config.mjs';
 import { leaseConsecutiveLocalPorts } from '../lib/local-port-lease.mjs';
 import { runOwnedCommand } from '../lib/owned-command.mjs';
 import {
@@ -28,21 +27,25 @@ import {
 
 import './isolated-test-runtime-workspace-cases.mjs';
 
-test('isolated instance config and runner env stay inside dynamic temp boundaries', () => {
+test('isolated instance spec and runner env stay inside dynamic temp boundaries', () => {
   const devHome = '/tmp/skiff-test-runtime/instance/dev-home';
-  const config = isolatedTestInstanceConfigText({
+  const config = isolatedTestInstanceYml({
     devHome,
-    cargoTarget: '/checkout/build/cargo-target',
     basePort: 46042,
     mongoPort: 46045,
+    routerBinary: '/checkout/build/runtime-stack/bin/skiff-router',
+    runtimeBinary: '/checkout/build/runtime-stack/bin/skiff-runtime',
   });
-  assert.match(config, /devHome: "\/tmp\/skiff-test-runtime\/instance\/dev-home"/);
-  assert.match(config, /cargoTargetDir: "\/checkout\/build\/cargo-target"/);
-  assert.match(config, /base: 46042/);
-  assert.match(config, /mongo: 46045/);
-  assert.match(config, /telemetry: disabled/);
-  assert.match(config, /mongo: managed/);
-  assert.match(config, /watch: disabled/);
+  assert.match(config, /^schemaVersion: skiff-instance-v1$/m);
+  assert.match(config, /^  - name: mongo$/m);
+  assert.match(config, /^  - name: router$/m);
+  assert.match(config, /^  - name: runtime$/m);
+  assert.match(config, /46042/);
+  assert.match(config, /46045/);
+  assert.match(config, /skiff-router/);
+  assert.match(config, /skiff-runtime/);
+  assert.doesNotMatch(config, /telemetry/);
+  assert.doesNotMatch(config, /watch/);
   assert.doesNotMatch(config, /400[0-7]/);
 
   const environment = isolatedTestRunnerEnvironment({
@@ -68,34 +71,25 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
   assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout');
 });
 
-test('isolated instance derives its ecosystem store CLI inside its owned dev-home', async () => {
+test('isolated instance spec pins runtime-stack binaries and derived URLs', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-store-cli-'));
-  const configPath = join(root, 'instance', 'config.yml');
+  const configPath = join(root, 'instance', 'instance.yml');
   const devHome = join(root, 'instance', 'dev-home');
   try {
     await mkdir(join(root, 'instance'), { recursive: true });
-    await writeFile(configPath, isolatedTestInstanceConfigText({
+    const configText = isolatedTestInstanceYml({
       devHome,
-      cargoTarget: join(root, 'checkout', 'build', 'cargo-target'),
       basePort: 46042,
       mongoPort: 46045,
-    }));
-    const config = await readInstanceConfig({
-      configPath,
-      repoRoot: join(root, 'checkout'),
+      routerBinary: join(root, 'checkout', 'build', 'runtime-stack', 'bin', 'skiff-router'),
+      runtimeBinary: join(root, 'checkout', 'build', 'runtime-stack', 'bin', 'skiff-runtime'),
     });
-    assert.equal(config.ports.mongo, 46045);
-    assert.equal(config.components.mongo, 'managed');
-    assert.equal(config.paths.serviceDbPath, join(devHome, 'service-db'));
-    assert.equal(
-      config.paths.ecosystemStoreCli,
-      join(
-        devHome,
-        'bin',
-        process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
-      ),
-    );
-    assert.equal(config.paths.ecosystemStoreCli.startsWith(`${devHome}/`), true);
+    await writeFile(configPath, configText);
+    assert.match(configText, /^  - name: mongo$/m);
+    assert.match(configText, /^  - name: router$/m);
+    assert.match(configText, /^  - name: runtime$/m);
+    assert.match(configText, /http:\/\/127\.0\.0\.1:46043\/__skiff\/activate-assembly/);
+    assert.match(configText, /http:\/\/127\.0\.0\.1:46043\/__router\/health/);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -133,14 +127,14 @@ test('default owner shutdown invokes current checkout instance down command', as
   const root = await mkdtemp(join(tmpdir(), 'skiff-owner-shutdown-test-'));
   const scriptsRoot = join(root, 'scripts');
   const capturePath = join(root, 'capture.json');
-  const configPath = join(root, 'instance', 'config.yml');
+  const configPath = join(root, 'instance', 'instance.yml');
   try {
     let ownershipReceipt = await claimIsolatedTestWorkspace(root);
     await mkdir(scriptsRoot, { recursive: true });
     await mkdir(join(root, 'instance'), { recursive: true });
     await writeFile(configPath, 'profile: "skiff-test"\n');
     ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
-    await writeFile(join(scriptsRoot, 'skiff-instance-legacy.mjs'), [
+    await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
       "import { writeFile } from 'node:fs/promises';",
       "await writeFile(process.env.SKIFF_OWNER_SHUTDOWN_CAPTURE, JSON.stringify(process.argv.slice(2)));",
     ].join('\n'));
@@ -154,7 +148,10 @@ test('default owner shutdown invokes current checkout instance down command', as
 
     await operations.stopOwnedInstance(ownershipReceipt);
 
-    assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['down', configPath]);
+    assert.deepEqual(
+      JSON.parse(await readFile(capturePath, 'utf8')),
+      ['down', '--runtime', join(root, 'instance')],
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -162,7 +159,7 @@ test('default owner shutdown invokes current checkout instance down command', as
 
 test('default config creation is exclusive and preserves a foreign destination', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-config-no-clobber-test-'));
-  const configPath = join(root, 'instance', 'config.yml');
+  const configPath = join(root, 'instance', 'instance.yml');
   const foreignConfig = 'foreign: true\n';
   try {
     const ownershipReceipt = await claimIsolatedTestWorkspace(root);
@@ -323,12 +320,16 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
 
   assert.equal(isAbsolute(expectedCargoTarget), true);
   assert.notEqual(expectedCargoTarget, resolve(expectedSkiffRoot, relativeCargoTarget));
-  assert.equal(
-    observed.config.includes(`cargoTargetDir: ${JSON.stringify(expectedCargoTarget)}`),
-    true,
-  );
-  assert.match(observed.config, /mongo: 46003/);
+  assert.match(observed.config, /^schemaVersion: skiff-instance-v1$/m);
+  assert.match(observed.config, /^  - name: mongo$/m);
+  assert.match(observed.config, /^  - name: router$/m);
+  assert.match(observed.config, /^  - name: runtime$/m);
+  assert.match(observed.config, /46003/);
   assert.doesNotMatch(observed.config, /27017/);
+  assert.match(
+    observed.config,
+    new RegExp(JSON.stringify(join(expectedSkiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router'))),
+  );
   assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);
   assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
   assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);

@@ -5,7 +5,7 @@ const JAVASCRIPT_EXTENSIONS = new Set(['.cjs', '.js', '.mjs']);
 
 export const DEFAULT_EXCLUDED_DIRECTORIES = new Set([
   '.git',
-  '.skiff-instance',
+  '.stack',
   '.skiff-package-store',
   '.turbo',
   'build',

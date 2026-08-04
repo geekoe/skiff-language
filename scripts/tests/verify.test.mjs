@@ -1178,7 +1178,7 @@ test('filesystem discovery finds new tests and excludes generated or local direc
       write(fixture, 'build/ignored.mjs'),
       write(fixture, 'target/ignored.js'),
       write(fixture, 'var/ignored.cjs'),
-      write(fixture, '.skiff-instance/ignored.mjs'),
+      write(fixture, '.stack/ignored.mjs'),
     ]);
 
     assert.deepEqual(await discoverScriptTests(fixture), [

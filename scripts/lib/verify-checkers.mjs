@@ -31,9 +31,6 @@ export const CHECKER_REGISTRY = Object.freeze([
   checker('scripts/check-javascript-syntax.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('javascript:syntax', 'scripts-syntax')],
   }),
-  checker('scripts/check-local-instance.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
-    invocations: [invocation('checks:local-instance', 'checks')],
-  }),
   checker(
     'scripts/check-artifact-identity-single-source.mjs',
     CHECKER_CLASSIFICATIONS.DEFAULT,

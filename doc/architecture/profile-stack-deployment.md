@@ -104,7 +104,7 @@
   `skiff package build/publish`、config-snapshot-tooling、测试 fixture 与 live harness。
 - dev sync 删除 `profile = environment` 绑定，直接传 profile。
 - instance 配置 `environment: dev` 改为 `profile: dev`；
-  `.skiff-instance/config.yml` 保持本地专用，不并入 stack 配置。
+  `.stack/` 作为本地默认 configDir/状态目录，不再使用 `.skiff-instance`。
 - watch 仅存在于本地 instance/dev；stack 命令族不提供 watch。
 - durable task 的 `TaskExecutionImageRef.target_environment` 改为
   `target_profile`；持久化 schema 随阶段 D 重置迁移。
