@@ -37,6 +37,7 @@ dispatch 用户面收尾：
 | F0b actor_submit_context | actor-method dispatch 提交上下文（E2a 记录的 HTTP 内 dispatch 限制） | integration@62d8ee99 | actor-submit-context / skiff-f0b-actor-ctx | f7da8cfb（tree 22e30f50） | 见交接 + 集成探针 | merged |
 | F0 golden_fix | fixture/golden/测试期望收尾（E1 遗留两项基线失败） | integration@c9cc1d31 | golden-fix / skiff-f0-golden | 4c24526c（tree ccf51442） | 见交接 + 集成探针 | merged |
 | F1 gate_fix | F1 机械 gate 期望同步（compiler golden / std_package_imports / test-runner wire / boundary subject / crate-dag / loop-risk / i02 regex / artifact-identity 路径） | integration@96431bd7 | gate-fix / skiff-fix-gate | f7f247f8（tree 70c8d701） | 见交接 + 集成探针 | merged |
+| F2a task_case_capability | durable task 丢失 test-case capability 修复（actor-method + function 路径） | integration@b2aae64a | task-case-capability / skiff-f2a-capability | da857f0e（tree 8445c595） | 见交接 + 集成探针 | merged |
 
 节点串行；集成 Agent 每轮核对 branch/worktree/commit/tree/写集后合并。
 
@@ -70,6 +71,8 @@ dispatch 用户面收尾：
 | 7 | F0b actor_submit_context | actor-submit-context | 63e0f17e（tree f456ebec） | PASS：cargo check eval/host/router；eval lib 465/465（actor_submit 7/7）、host lib 429/429、router task_control_unit 18/18 + task_actor_method_execution 10/10 + dispatch_admission_corpus 2/2；零冲突（探针在代码一致的 F0b worktree 温缓存执行） | 已清理 | merged |
 | 8 | F0 golden_fix | golden-fix | 4b31b481（tree ccf51442） | PASS：artifact-model 183/183（native_callable_semantics 修复）、syntax 163/163（Phase 0 baseline 重生成）；零冲突；纯 fixture/golden/叶子文档 | 已清理 | merged |
 | 9 | F1 gate_fix | gate-fix | 9c201f87（tree 70c8d701） | PASS：cargo check compiler/test-runner；compiler lib 41/41 + builtin_canonical_spelling 9/9 + std_package_imports 7/7；test-runner 全绿（含 http_entry_test_service isolated router）；脚本 boundary-checker 5/5、loop-risk-health 8/8、loop-risk-stress 7/7、package-service-i02 6/6（此前两个 loop-risk 失败已修复）；零冲突 | 已清理 | merged |
+| 10 | main advance 8551edbe | main | 5dfd7be4（tree c43bc75f） | PASS：deploy 脚本测试 runtime-stack-deploy 10/10；零冲突 | 已清理（无临时分支） | merged |
+| 11 | F2a task_case_capability | task-case-capability | 0ac5d847（tree b924f1df） | PASS：cargo check router/task-control/transport/runtime；router task_control_unit 22/22 + task_actor_method_execution 13/13 + task_telemetry 5/5 + dispatch_admission_corpus 2/2 + w_model_task_consumer 4/4、task-control 25+3+10、transport lib 141/141 + task_wire_corpus 11/11；零冲突（探针在代码一致的 F2a worktree 温缓存执行） | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新
 commit/tree、合并任务、探针结果与 worktree 审计清单。
