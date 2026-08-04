@@ -88,6 +88,10 @@ watch首次启动且尚无last-known-good时，同样不能投影空assembly；�
 `RuntimeAssembly`和同profile、零deployment分区的empty `RuntimeConfigSnapshot`，再通过普通CAS提交
 新generation。empty activation负责撤下先前全部dev services，不是特殊的Router清理旁路。
 
+Router activation freeze对zero-deployment epoch仍以exact registered sessions作为参与方
+（此时session的capability binding为空，也照常参与），否则`stack init`种下的empty generation 0
+无法通过普通CAS提交第一个真实assembly。
+
 命令行显式root是本次进程的静态输入，与每轮重新读取的registry entries组成canonical union。只有最终
 effective root集合为空时才生成empty pair。
 

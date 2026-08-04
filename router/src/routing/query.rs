@@ -174,26 +174,77 @@ impl RuntimeCandidateQuery {
             ..RoutingQueryCounters::default()
         };
         let expected_tuple = epoch.registered_tuple();
+        let leases = Self::project_sessions(&expected_tuple, view, query.mode, &mut counters, true);
+        Ok((leases, counters))
+    }
+
+    /// Empty-epoch activation projection (dev/bootstrap first activation).
+    ///
+    /// A captured epoch with no deployments still has exact registered
+    /// sessions as activation participants: managed dev watch seeds a
+    /// canonical empty generation 0 and then commits the first real assembly
+    /// through the ordinary CAS transition
+    /// (`doc/architecture/managed-dev-watch.md`). Projection rules are
+    /// identical to the deployment-scoped query except the capability rule:
+    /// an empty epoch has no dispatch surfaces, so every exact registered
+    /// session participates regardless of its (necessarily empty)
+    /// capability binding.
+    pub fn query_empty_epoch(
+        &self,
+        epoch: &Arc<RoutingEpoch>,
+        view: &CandidateDirectoryView,
+        mode: DispatchMode,
+    ) -> Vec<RegisteredSessionLease> {
+        self.query_empty_epoch_with_counters(epoch, view, mode).0
+    }
+
+    /// Counter-bearing empty-epoch projection (same shape as
+    /// [`RuntimeCandidateQuery::query_with_counters`]).
+    pub fn query_empty_epoch_with_counters(
+        &self,
+        epoch: &Arc<RoutingEpoch>,
+        view: &CandidateDirectoryView,
+        mode: DispatchMode,
+    ) -> (Vec<RegisteredSessionLease>, RoutingQueryCounters) {
+        let mut counters = RoutingQueryCounters {
+            queries: 1,
+            ..RoutingQueryCounters::default()
+        };
+        let expected_tuple = epoch.registered_tuple();
+        let leases = Self::project_sessions(&expected_tuple, view, mode, &mut counters, false);
+        (leases, counters)
+    }
+
+    /// Project one dispatch mode across a coherent view.
+    ///
+    /// One current session per replica (directory invariant); defensively
+    /// de-duplicate the view so a session never projects twice.
+    fn project_sessions(
+        expected_tuple: &RegisteredAssemblyTuple,
+        view: &CandidateDirectoryView,
+        mode: DispatchMode,
+        counters: &mut RoutingQueryCounters,
+        require_capability: bool,
+    ) -> Vec<RegisteredSessionLease> {
         let mut leases = Vec::new();
-        // One current session per replica (directory invariant); defensively
-        // de-duplicate the view so a session never projects twice.
         let mut seen = HashSet::new();
         for session in &view.sessions {
             if !seen.insert(session.session_epoch.clone()) {
                 continue;
             }
-            if let Some(lease) = project_session(
-                &expected_tuple,
+            if let Some(lease) = project_session_with_capability(
+                expected_tuple,
                 view.revision,
-                query.mode,
+                mode,
                 session,
-                &mut counters,
+                counters,
+                require_capability,
             ) {
                 counters.candidates_returned += 1;
                 leases.push(lease);
             }
         }
-        Ok((leases, counters))
+        leases
     }
 
     /// Directory seam (W-routing-query delivery obligation 2): snapshots the
@@ -251,14 +302,21 @@ impl RuntimeCandidateQuery {
 
 /// Frozen per-session projection (C-routing-query §3). Checks run in the
 /// order: registered → exact tuple → one complete revision → cancelled →
-/// capability; an excluded session increments exactly one counter (the first
-/// failing rule; `registered == false` has no dedicated counter in §5.6).
-fn project_session(
+/// capability (when required); an excluded session increments exactly one
+/// counter (the first failing rule; `registered == false` has no dedicated
+/// counter in §5.6).
+///
+/// `require_capability == false` is only used by the empty-epoch activation
+/// projection: an empty bootstrap epoch has no deployments and therefore no
+/// dispatch surfaces, so every exact registered session is still a valid
+/// activation participant even though its capability binding is empty.
+fn project_session_with_capability(
     expected_tuple: &RegisteredAssemblyTuple,
     view_revision: Option<u64>,
     mode: DispatchMode,
     session: &CandidateSession,
     counters: &mut RoutingQueryCounters,
+    require_capability: bool,
 ) -> Option<RegisteredSessionLease> {
     if !session.registered {
         return None;
@@ -275,7 +333,7 @@ fn project_session(
         counters.excluded_cancelled += 1;
         return None;
     }
-    if !session.capabilities.supports(mode) {
+    if require_capability && !session.capabilities.supports(mode) {
         counters.excluded_capability += 1;
         return None;
     }

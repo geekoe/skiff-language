@@ -419,6 +419,21 @@ impl RoutingCandidateQueryPortAdapter {
         let query = RuntimeCandidateQuery;
         let mut leases = Vec::new();
         let mut seen = HashSet::new();
+        if epoch.deployment_projection().is_empty() {
+            // Empty-epoch activation bootstrap: the captured epoch has no
+            // deployments, but its exact registered sessions are still the
+            // participants for the ordinary CAS transition (managed dev
+            // watch first activation; `doc/architecture/managed-dev-watch.md`).
+            for mode in [DispatchMode::Unary, DispatchMode::ServerStream] {
+                let candidates = query.query_empty_epoch(epoch, &view, mode);
+                for lease in candidates {
+                    if seen.insert(lease.session_epoch.clone()) {
+                        leases.push(lease);
+                    }
+                }
+            }
+            return Ok(leases);
+        }
         for deployment in epoch.deployment_projection() {
             for mode in [DispatchMode::Unary, DispatchMode::ServerStream] {
                 let candidates = query
@@ -1378,6 +1393,7 @@ impl CoordinatorActor {
 
     async fn on_timeout(&mut self) {
         if self.tx.as_ref().is_some_and(|tx| tx.decision.is_none()) {
+            self.last_failure = Some("assembly activation prepare timed out".to_string());
             self.durable_abort_and_enqueue().await;
         }
     }

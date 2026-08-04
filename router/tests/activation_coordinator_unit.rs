@@ -292,6 +292,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routing_query_adapter_projects_exact_sessions_for_empty_epoch() {
+        // Managed dev watch seeds a canonical empty generation 0 and then
+        // commits the first real assembly through the ordinary CAS path.
+        // The empty captured epoch still has its exact registered sessions as
+        // activation participants.
+        let current = epoch(
+            "prod",
+            7,
+            assembly_ref(ASSEMBLY),
+            config_ref(SNAPSHOT),
+            Vec::new(),
+        );
+        let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
+        epoch_store.publish(Arc::clone(&current));
+
+        let directory = Arc::new(StdMutex::new(RuntimeRegistrationDirectory::new(
+            &ConsumerManifest::installed(FULL_SET),
+        )));
+        let mut capabilities = HashMap::new();
+        capabilities.insert(
+            session("runtime-a", 1),
+            // An empty bootstrap epoch has no dispatch surfaces, so the
+            // runtime's capability binding is empty; the empty-epoch
+            // projection must still treat the exact session as a participant.
+            DispatchCapabilities::default(),
+        );
+        {
+            let mut directory = directory.lock().expect("directory lock");
+            register_and_ack(&mut directory, &session("runtime-a", 1), &tuple("prod", 7));
+        }
+
+        let adapter = RoutingCandidateQueryPortAdapter::new(
+            Arc::clone(&epoch_store),
+            Arc::new(DirectoryViewSource {
+                directory: Arc::clone(&directory),
+                capabilities,
+            }),
+        );
+        let leases = adapter.freeze("prod").expect("empty epoch freeze");
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].session_epoch.replica_id, "runtime-a");
+        assert_eq!(
+            leases[0].exact_registered_tuple,
+            tuple("prod", 7),
+            "empty epoch participants must still carry the exact epoch tuple"
+        );
+
+        let frozen = leases
+            .into_iter()
+            .map(|lease| ActivationParticipantBinding {
+                replica_id: lease.session_epoch.replica_id.clone(),
+                session_epoch: lease.session_epoch,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            adapter.revalidate("activation-8", &frozen),
+            ActivationRevalidateOutcome::Ok
+        );
+    }
+
+    #[tokio::test]
     async fn routing_query_adapter_fails_closed_without_published_epoch() {
         let adapter = RoutingCandidateQueryPortAdapter::new(
             Arc::new(ActiveRoutingEpochStore::new()),
@@ -694,6 +755,38 @@ mod tests {
                 "abort".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn ack_timeout_aborts_with_timeout_reason_and_clears_pending() {
+        let candidates = Arc::new(ScriptedCandidates::new(
+            tuple("test", 7),
+            &[("runtime-a", 1)],
+        ));
+        let harness = harness("test", 7, candidates, default_options()).await;
+        let Harness { repo, handle, .. } = harness;
+        handle
+            .start_live(request("test", "activation-8", 7))
+            .expect("start live");
+        wait_prepared(&handle).await;
+        assert_eq!(handle.phase(), ActivationPhase::Prepared);
+
+        handle.force_ack_timeout().expect("force ack timeout");
+        handle
+            .wait_for_phase(|phase| phase == ActivationPhase::Aborted)
+            .await;
+
+        // The control response must be able to surface the exact timeout
+        // reason as HTTP 504 (runtime-deployment-topology.md), not a generic
+        // "not committed" 409.
+        let health = handle.health();
+        assert_eq!(
+            health.last_failure.as_deref(),
+            Some("assembly activation prepare timed out")
+        );
+        let durable = repo.read("test").await.expect("read");
+        assert_eq!(durable.committed.generation, 7);
+        assert_eq!(durable.pending, None);
     }
 
     #[tokio::test]
