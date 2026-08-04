@@ -21,7 +21,6 @@ fn config() -> RouterConfig {
         activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
-        environment: None,
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1,
         http_max_response_bytes: 8_388_608,
@@ -45,7 +44,7 @@ fn config() -> RouterConfig {
 
 fn epoch() -> skiff_router::session::RegisteredAssemblyTuple {
     skiff_router::session::RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation: 42,
         assembly: skiff_artifact_model::RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(

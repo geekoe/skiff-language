@@ -10,6 +10,8 @@ mod strict_yaml;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
+use skiff_artifact_model::validate_activation_profile;
+
 use strict_yaml::JsonValue;
 
 pub const ROUTER_CONFIG_REDACTED_VALUE: &str = "[REDACTED]";
@@ -35,7 +37,6 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "activation",
     "artifactsPath",
     "devReload",
-    "environment",
     "fileBackend",
     "host",
     "http",
@@ -88,7 +89,6 @@ pub struct RouterConfig {
     pub activation_prepare_timeout_ms: u64,
     pub artifacts_path: PathBuf,
     pub dev_reload: Option<bool>,
-    pub environment: Option<String>,
     pub host: String,
     pub http_max_request_bytes: u64,
     pub http_max_response_bytes: u64,
@@ -286,16 +286,6 @@ fn parse_router_config(
         DEFAULT_WEBSOCKET_PATH,
     )?;
 
-    let environment = read_optional_non_empty_string(get(&root, "environment"), "environment")?;
-    let environment = match environment {
-        Some(value) => {
-            if !is_valid_environment(&value) {
-                return Err(error("router config environment is invalid"));
-            }
-            Some(value)
-        }
-        None => None,
-    };
     let file_backend = read_file_backend_config(get(&root, "fileBackend"), config_dir)?;
     let telemetry = read_telemetry_config(get(&root, "telemetry"))?;
 
@@ -303,7 +293,6 @@ fn parse_router_config(
         activation_prepare_timeout_ms,
         artifacts_path,
         dev_reload,
-        environment,
         host,
         http_max_request_bytes,
         http_max_response_bytes,
@@ -625,7 +614,7 @@ fn read_required_profile(
     let profile = read_string(Some(value), name, String::new())?;
     if !is_valid_profile(&profile) {
         return Err(error(format!(
-            "router config {name} must match [A-Za-z_][A-Za-z0-9_]* so it can be used in config.<profile>.yml"
+            "router config {name} must be 1-200 ASCII letters, digits, dot, dash, or underscore and must not be . or .."
         )));
     }
     Ok(profile)
@@ -970,21 +959,7 @@ fn is_valid_version(value: &str) -> bool {
 }
 
 fn is_valid_profile(value: &str) -> bool {
-    let mut characters = value.chars();
-    match characters.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-        _ => return false,
-    }
-    characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
-}
-
-fn is_valid_environment(value: &str) -> bool {
-    if value.is_empty() || value.len() > 200 || value == "." || value == ".." {
-        return false;
-    }
-    value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    validate_activation_profile(value).is_ok()
 }
 
 fn is_js_safe_positive_integer(number: f64) -> bool {

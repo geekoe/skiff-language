@@ -139,7 +139,7 @@ fn semantic_frame(entry: &FrameEntry) -> SemanticFrame {
             )
             .expect("register decodes");
             let AssemblyActivationControl::Register {
-                environment,
+                profile,
                 generation,
                 assembly,
                 config_snapshot,
@@ -150,7 +150,7 @@ fn semantic_frame(entry: &FrameEntry) -> SemanticFrame {
             };
             SemanticFrame::Register {
                 tuple: RegisteredAssemblyTuple {
-                    environment,
+                    profile,
                     generation,
                     assembly,
                     config_snapshot,
@@ -340,7 +340,7 @@ impl Harness {
             }
             SemanticFrame::Register { tuple, replica_id } => {
                 let register = RegisterControl {
-                    environment: tuple.environment.clone(),
+                    profile: tuple.profile.clone(),
                     generation: tuple.generation,
                     assembly: tuple.assembly.clone(),
                     config_snapshot: tuple.config_snapshot.clone(),
@@ -447,7 +447,7 @@ struct RefValue {
 
 #[derive(Debug, Clone, Deserialize)]
 struct EpochValue {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: RefValue,
     #[serde(rename = "configSnapshot")]
@@ -457,7 +457,7 @@ struct EpochValue {
 
 #[derive(Debug, Clone, Deserialize)]
 struct PendingValue {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: RefValue,
     #[serde(rename = "configSnapshot")]
@@ -540,11 +540,11 @@ fn scenarios() -> Vec<Scenario> {
 fn tuple(
     assembly: &RefValue,
     snapshot: &RefValue,
-    environment: &str,
+    profile: &str,
     generation: u64,
 ) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -568,7 +568,7 @@ fn epoch_tuple(epoch: &EpochValue) -> RegisteredAssemblyTuple {
     tuple(
         &epoch.assembly,
         &epoch.config_snapshot,
-        &epoch.environment,
+        &epoch.profile,
         epoch.generation,
     )
 }
@@ -578,7 +578,7 @@ fn pending_tuple(epoch: &EpochValue) -> Option<RegisteredAssemblyTuple> {
         tuple(
             &pending.assembly,
             &pending.config_snapshot,
-            &pending.environment,
+            &pending.profile,
             pending.generation,
         )
     })

@@ -25,7 +25,6 @@ fn config() -> RouterConfig {
         activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
-        environment: None,
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1,
         http_max_response_bytes: 8_388_608,
@@ -56,11 +55,10 @@ fn snapshot_ref() -> RuntimeConfigSnapshotRef {
     }
 }
 
-fn epoch(environment: &str, generation: u64) -> Arc<RoutingEpoch> {
+fn epoch(profile: &str, generation: u64) -> Arc<RoutingEpoch> {
     let assembly = Arc::new(empty_runtime_assembly_fixture().expect("assembly fixture"));
     let snapshot = Arc::new(
-        RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-            .expect("snapshot fixture"),
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture"),
     );
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -69,14 +67,13 @@ fn epoch(environment: &str, generation: u64) -> Arc<RoutingEpoch> {
     .expect("empty projection");
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
     Arc::new(
-        RoutingEpoch::new(environment, generation, assembly, snapshot, catalog)
-            .expect("epoch fixture"),
+        RoutingEpoch::new(profile, generation, assembly, snapshot, catalog).expect("epoch fixture"),
     )
 }
 
-fn tuple(environment: &str, generation: u64) -> RegisteredAssemblyTuple {
+fn tuple(profile: &str, generation: u64) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(format!(
@@ -115,7 +112,7 @@ mod tests {
         store.publish(Arc::clone(&first));
         let bytes = layer.bootstrap_bytes().expect("bootstrap bytes");
         let header = decode_router_bootstrap_frame(&bytes).expect("bootstrap frame");
-        assert_eq!(header.activation.environment, "prod");
+        assert_eq!(header.activation.profile, "prod");
         assert_eq!(header.activation.generation, 42);
         assert_eq!(
             header.activation.assembly,

@@ -24,8 +24,7 @@ use mongodb::{
 };
 use serde_json::Value as JsonValue;
 use skiff_deployment::activation_state::{
-    abort, commit, prepare, ActivationAuditEvent, ActivationAuditOperation,
-    EnvironmentActivationState,
+    abort, commit, prepare, ActivationAuditEvent, ActivationAuditOperation, ProfileActivationState,
 };
 
 use super::{
@@ -33,7 +32,7 @@ use super::{
     health::{ActivationRepositoryHealth, AuditHealth, RepositoryMutationOutcome, RetryHealth},
     index::{
         activation_audit_maintenance_index, activation_audit_query_index,
-        activation_state_environment_index,
+        activation_state_profile_index,
     },
     retry::{ActivationClock, RetryOutcome, RetryPolicy},
 };
@@ -46,25 +45,19 @@ pub const DEFAULT_ACTIVATION_AUDIT_COLLECTION: &str = "activation_audit";
 
 #[async_trait]
 pub trait ActivationStateRepository: Send + Sync {
-    async fn read(&self, environment: &str) -> Result<EnvironmentActivationState, RepositoryError>;
+    async fn read(&self, profile: &str) -> Result<ProfileActivationState, RepositoryError>;
 
     async fn initialize(
         &self,
-        state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError>;
+        state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError>;
 
-    async fn prepare(
-        &self,
-        input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError>;
+    async fn prepare(&self, input: PrepareInput)
+        -> Result<ProfileActivationState, RepositoryError>;
 
-    async fn commit(
-        &self,
-        input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError>;
+    async fn commit(&self, input: CommitInput) -> Result<ProfileActivationState, RepositoryError>;
 
-    async fn abort(&self, input: AbortInput)
-        -> Result<EnvironmentActivationState, RepositoryError>;
+    async fn abort(&self, input: AbortInput) -> Result<ProfileActivationState, RepositoryError>;
 
     async fn append_audit(&self, event: &ActivationAuditEvent) -> Result<(), RepositoryError>;
 
@@ -165,12 +158,12 @@ impl MongoActivationStateRepository {
 
     async fn mutate<F>(
         &self,
-        environment: &str,
+        profile: &str,
         operation: ActivationAuditOperation,
         reduce: F,
-    ) -> Result<EnvironmentActivationState, RepositoryError>
+    ) -> Result<ProfileActivationState, RepositoryError>
     where
-        F: Fn(&EnvironmentActivationState) -> Result<EnvironmentActivationState, RepositoryError>
+        F: Fn(&ProfileActivationState) -> Result<ProfileActivationState, RepositoryError>
             + Send
             + Sync,
     {
@@ -181,7 +174,7 @@ impl MongoActivationStateRepository {
             .options
             .retry
             .run(self.clock.as_ref(), || {
-                self.mutate_attempt(environment, operation, &reduce, &audit_flag)
+                self.mutate_attempt(profile, operation, &reduce, &audit_flag)
             })
             .await;
         let trace = MutationTrace {
@@ -189,20 +182,19 @@ impl MongoActivationStateRepository {
             audit_failed: audit_failure.load(Ordering::SeqCst),
         };
         let result = result.map(|(state, _)| state);
-        self.record_mutation_health(environment, operation, &result, &outcome, &trace);
+        self.record_mutation_health(profile, operation, &result, &outcome, &trace);
         result
     }
 
     async fn mutate_attempt<F>(
         &self,
-        environment: &str,
+        profile: &str,
         operation: ActivationAuditOperation,
         reduce: &F,
         audit_flag: &AtomicBool,
-    ) -> Result<(EnvironmentActivationState, Option<ActivationAuditEvent>), RepositoryError>
+    ) -> Result<(ProfileActivationState, Option<ActivationAuditEvent>), RepositoryError>
     where
-        F: Fn(&EnvironmentActivationState) -> Result<EnvironmentActivationState, RepositoryError>
-            + Sync,
+        F: Fn(&ProfileActivationState) -> Result<ProfileActivationState, RepositoryError> + Sync,
     {
         let mut session = self
             .client
@@ -221,7 +213,7 @@ impl MongoActivationStateRepository {
             .await
             .map_err(map_driver_error)?;
         let attempt = self
-            .mutate_once(&mut session, environment, operation, reduce)
+            .mutate_once(&mut session, profile, operation, reduce)
             .await;
         match attempt {
             Ok((next, event)) => match session.commit_transaction().await {
@@ -251,34 +243,34 @@ impl MongoActivationStateRepository {
     async fn mutate_once<F>(
         &self,
         session: &mut ClientSession,
-        environment: &str,
+        profile: &str,
         operation: ActivationAuditOperation,
         reduce: &F,
-    ) -> Result<(EnvironmentActivationState, Option<ActivationAuditEvent>), MutationFailure>
+    ) -> Result<(ProfileActivationState, Option<ActivationAuditEvent>), MutationFailure>
     where
-        F: Fn(&EnvironmentActivationState) -> Result<EnvironmentActivationState, RepositoryError>,
+        F: Fn(&ProfileActivationState) -> Result<ProfileActivationState, RepositoryError>,
     {
         let document = self
             .states
-            .find_one(doc! { "_id": environment })
+            .find_one(doc! { "_id": profile })
             .session(&mut *session)
             .await
             .map_err(map_driver_error)
             .map_err(MutationFailure::Repository)?;
         let Some(document) = document else {
             return Err(MutationFailure::Repository(cas_mismatch(
-                environment,
+                profile,
                 "activation state does not exist",
             )));
         };
         let current =
-            decode_state_document(&document, environment).map_err(MutationFailure::Repository)?;
+            decode_state_document(&document, profile).map_err(MutationFailure::Repository)?;
         let next = reduce(&current).map_err(MutationFailure::Repository)?;
         if next == current {
             return Ok((next, None));
         }
         let cas_filter =
-            cas_filter(environment, operation, &current).map_err(MutationFailure::Repository)?;
+            cas_filter(profile, operation, &current).map_err(MutationFailure::Repository)?;
         let next_document = state_document(&next).map_err(MutationFailure::Repository)?;
         let update = self
             .states
@@ -289,7 +281,7 @@ impl MongoActivationStateRepository {
             .map_err(MutationFailure::Repository)?;
         if update.matched_count != 1 {
             return Err(MutationFailure::Repository(cas_mismatch(
-                environment,
+                profile,
                 format!(
                     "activation state CAS conflict during {}",
                     operation.as_str()
@@ -311,9 +303,9 @@ impl MongoActivationStateRepository {
 
     fn record_mutation_health(
         &self,
-        environment: &str,
+        profile: &str,
         operation: ActivationAuditOperation,
-        result: &Result<EnvironmentActivationState, RepositoryError>,
+        result: &Result<ProfileActivationState, RepositoryError>,
         outcome: &RetryOutcome,
         trace: &MutationTrace,
     ) {
@@ -327,7 +319,7 @@ impl MongoActivationStateRepository {
         health.last_outcome_operation = Some(operation.as_str().to_string());
         match result {
             Ok(state) => {
-                health.environment = Some(environment.to_string());
+                health.profile = Some(profile.to_string());
                 health.committed_generation = Some(state.committed.generation);
                 health.pending_activation_id = state
                     .pending
@@ -372,8 +364,8 @@ fn record_audit_health(audit: &mut AuditHealth, event: &ActivationAuditEvent) {
 
 fn audit_event_for(
     operation: ActivationAuditOperation,
-    current: &EnvironmentActivationState,
-    next: &EnvironmentActivationState,
+    current: &ProfileActivationState,
+    next: &ProfileActivationState,
     timestamp_millis: i64,
 ) -> ActivationAuditEvent {
     let (activation_id, expected_generation, candidate_generation, participants) = match operation {
@@ -406,7 +398,7 @@ fn audit_event_for(
         }
     };
     ActivationAuditEvent::new(
-        current.environment.clone(),
+        current.profile.clone(),
         activation_id,
         operation,
         expected_generation,
@@ -418,12 +410,12 @@ fn audit_event_for(
 }
 
 fn cas_filter(
-    environment: &str,
+    profile: &str,
     operation: ActivationAuditOperation,
-    current: &EnvironmentActivationState,
+    current: &ProfileActivationState,
 ) -> Result<Document, RepositoryError> {
     let generation = Bson::Int64(i64::try_from(current.committed.generation).unwrap_or(i64::MAX));
-    let base = doc! { "_id": environment, "state.committed.generation": generation };
+    let base = doc! { "_id": profile, "state.committed.generation": generation };
     match operation {
         ActivationAuditOperation::Prepare => {
             let mut filter = base;
@@ -432,10 +424,7 @@ fn cas_filter(
         }
         ActivationAuditOperation::Abort => {
             let pending = current.pending.as_ref().ok_or_else(|| {
-                invalid_record(
-                    environment,
-                    "abort CAS filter requires a pending activation",
-                )
+                invalid_record(profile, "abort CAS filter requires a pending activation")
             })?;
             let mut filter = base;
             filter.insert("state.pending.activationId", pending.activation_id.clone());
@@ -443,10 +432,7 @@ fn cas_filter(
         }
         ActivationAuditOperation::Commit => {
             let pending = current.pending.as_ref().ok_or_else(|| {
-                invalid_record(
-                    environment,
-                    "commit CAS filter requires a pending activation",
-                )
+                invalid_record(profile, "commit CAS filter requires a pending activation")
             })?;
             let mut filter = base;
             filter.insert(
@@ -485,16 +471,16 @@ fn cas_filter(
     }
 }
 
-fn state_document(state: &EnvironmentActivationState) -> Result<Document, RepositoryError> {
+fn state_document(state: &ProfileActivationState) -> Result<Document, RepositoryError> {
     let value = serde_json::to_value(state).map_err(|error| {
         invalid_record(
-            &state.environment,
+            &state.profile,
             format!("serialize activation state: {error}"),
         )
     })?;
     to_document(&value).map_err(|error| {
         invalid_record(
-            &state.environment,
+            &state.profile,
             format!("convert activation state to BSON: {error}"),
         )
     })
@@ -502,38 +488,38 @@ fn state_document(state: &EnvironmentActivationState) -> Result<Document, Reposi
 
 fn decode_state_document(
     document: &Document,
-    environment: &str,
-) -> Result<EnvironmentActivationState, RepositoryError> {
+    profile: &str,
+) -> Result<ProfileActivationState, RepositoryError> {
     let state_document = document.get_document("state").map_err(|error| {
         invalid_record(
-            environment,
+            profile,
             format!("activation state document has no state member: {error}"),
         )
     })?;
     let value: JsonValue =
         mongodb::bson::from_document(state_document.clone()).map_err(|error| {
             invalid_record(
-                environment,
+                profile,
                 format!("strict BSON decode of activation state failed: {error}"),
             )
         })?;
-    let state: EnvironmentActivationState =
+    let state: ProfileActivationState =
         serde_json::from_value(normalize_non_negative_integers(value)).map_err(|error| {
             invalid_record(
-                environment,
+                profile,
                 format!("strict activation state decode failed: {error}"),
             )
         })?;
     state.validate().map_err(|error| {
         invalid_record(
-            environment,
+            profile,
             format!("activation state validation failed: {error}"),
         )
     })?;
-    if state.environment != environment {
+    if state.profile != profile {
         return Err(invalid_record(
-            environment,
-            "activation state environment/_id mismatch",
+            profile,
+            "activation state profile/_id mismatch",
         ));
     }
     Ok(state)
@@ -541,14 +527,11 @@ fn decode_state_document(
 
 fn audit_document(event: &ActivationAuditEvent) -> Result<Document, RepositoryError> {
     let value = serde_json::to_value(event).map_err(|error| {
-        invalid_record(
-            &event.environment,
-            format!("serialize audit event: {error}"),
-        )
+        invalid_record(&event.profile, format!("serialize audit event: {error}"))
     })?;
     let mut document = to_document(&value).map_err(|error| {
         invalid_record(
-            &event.environment,
+            &event.profile,
             format!("convert audit event to BSON: {error}"),
         )
     })?;
@@ -597,7 +580,7 @@ fn map_driver_error(error: MongoError) -> RepositoryError {
         RepositoryError::Transient { message }
     } else {
         RepositoryError::InvalidRecord {
-            environment: "<mongo-driver>".to_string(),
+            profile: "<mongo-driver>".to_string(),
             message,
         }
     }
@@ -613,19 +596,19 @@ fn is_duplicate_key(error: &MongoError) -> bool {
 
 #[async_trait]
 impl ActivationStateRepository for MongoActivationStateRepository {
-    async fn read(&self, environment: &str) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         self.check_open()?;
         let document = self
             .states
-            .find_one(doc! { "_id": environment })
+            .find_one(doc! { "_id": profile })
             .await
             .map_err(map_driver_error)?;
         let Some(document) = document else {
-            return Err(cas_mismatch(environment, "activation state does not exist"));
+            return Err(cas_mismatch(profile, "activation state does not exist"));
         };
-        let state = decode_state_document(&document, environment)?;
+        let state = decode_state_document(&document, profile)?;
         let mut health = self.health_state.lock().expect("health lock");
-        health.environment = Some(environment.to_string());
+        health.profile = Some(profile.to_string());
         health.committed_generation = Some(state.committed.generation);
         health.pending_activation_id = state
             .pending
@@ -638,35 +621,35 @@ impl ActivationStateRepository for MongoActivationStateRepository {
 
     async fn initialize(
         &self,
-        state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         self.check_open()?;
         if state.pending.is_some() {
             return Err(invalid_record(
-                &state.environment,
+                &state.profile,
                 "initial activation state cannot contain pending",
             ));
         }
         state.validate().map_err(|error| {
             invalid_record(
-                &state.environment,
+                &state.profile,
                 format!("initial activation state validation failed: {error}"),
             )
         })?;
-        let environment = state.environment.clone();
+        let profile = state.profile.clone();
         let document = state_document(state)?;
         let update = self
             .states
             .update_one(
-                doc! { "_id": &environment },
-                doc! { "$setOnInsert": { "_id": &environment, "state": &document } },
+                doc! { "_id": &profile },
+                doc! { "$setOnInsert": { "_id": &profile, "state": &document } },
             )
             .upsert(true)
             .await
             .map_err(map_driver_error)?;
         if update.upserted_id.is_some() {
             let mut health = self.health_state.lock().expect("health lock");
-            health.environment = Some(environment);
+            health.profile = Some(profile);
             health.committed_generation = Some(state.committed.generation);
             health.pending_activation_id = None;
             health.last_outcome = Some(RepositoryMutationOutcome::Ok);
@@ -675,16 +658,16 @@ impl ActivationStateRepository for MongoActivationStateRepository {
         }
         let existing_document = self
             .states
-            .find_one(doc! { "_id": &environment })
+            .find_one(doc! { "_id": &profile })
             .await
             .map_err(map_driver_error)?
-            .ok_or_else(|| cas_mismatch(&environment, "activation state disappeared"))?;
-        let existing = decode_state_document(&existing_document, &environment)?;
+            .ok_or_else(|| cas_mismatch(&profile, "activation state disappeared"))?;
+        let existing = decode_state_document(&existing_document, &profile)?;
         if existing == *state {
             Ok(existing)
         } else {
             Err(cas_mismatch(
-                &environment,
+                &profile,
                 "activation state already exists with a different tuple",
             ))
         }
@@ -693,31 +676,25 @@ impl ActivationStateRepository for MongoActivationStateRepository {
     async fn prepare(
         &self,
         input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
-        let environment = input.environment.clone();
-        self.mutate(&environment, ActivationAuditOperation::Prepare, |current| {
+    ) -> Result<ProfileActivationState, RepositoryError> {
+        let profile = input.profile.clone();
+        self.mutate(&profile, ActivationAuditOperation::Prepare, |current| {
             prepare(current, &input).map_err(map_reducer_error)
         })
         .await
     }
 
-    async fn commit(
-        &self,
-        input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
-        let environment = input.environment.clone();
-        self.mutate(&environment, ActivationAuditOperation::Commit, |current| {
+    async fn commit(&self, input: CommitInput) -> Result<ProfileActivationState, RepositoryError> {
+        let profile = input.profile.clone();
+        self.mutate(&profile, ActivationAuditOperation::Commit, |current| {
             commit(current, &input).map_err(map_reducer_error)
         })
         .await
     }
 
-    async fn abort(
-        &self,
-        input: AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
-        let environment = input.environment.clone();
-        self.mutate(&environment, ActivationAuditOperation::Abort, |current| {
+    async fn abort(&self, input: AbortInput) -> Result<ProfileActivationState, RepositoryError> {
+        let profile = input.profile.clone();
+        self.mutate(&profile, ActivationAuditOperation::Abort, |current| {
             abort(current, &input).map_err(map_reducer_error)
         })
         .await
@@ -740,7 +717,7 @@ impl ActivationStateRepository for MongoActivationStateRepository {
     async fn ensure_indexes(&self) -> Result<(), RepositoryError> {
         self.check_open()?;
         self.states
-            .create_index(activation_state_environment_index())
+            .create_index(activation_state_profile_index())
             .await
             .map_err(map_driver_error)?;
         self.audit
@@ -779,8 +756,8 @@ mod tests {
 
     use super::*;
 
-    fn test_state() -> EnvironmentActivationState {
-        EnvironmentActivationState::initial(
+    fn test_state() -> ProfileActivationState {
+        ProfileActivationState::initial(
             "test",
             7,
             skiff_artifact_model::RuntimeAssemblyRef {

@@ -16,7 +16,7 @@ use skiff_artifact_model::{
     AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -40,7 +40,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
-pub const ENVIRONMENT: &str = "prod";
+pub const PROFILE: &str = "prod";
 pub const GENERATION: u64 = 7;
 pub const REPLICA_A: &str = "runtime-health-a";
 pub const REPLICA_B: &str = "runtime-health-b";
@@ -92,13 +92,13 @@ pub fn snapshot_ref() -> RuntimeConfigSnapshotRef {
     }
 }
 
-pub fn materialize(environment: &str) -> RealChain {
+pub fn materialize(profile: &str) -> RealChain {
     let root = TestRoot::new();
     std::fs::create_dir_all(root.path()).expect("create artifact root");
     let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
         .expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -132,7 +132,6 @@ pub fn config(artifact_root: &Path) -> RouterConfig {
         activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
-        environment: Some(ENVIRONMENT.to_string()),
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1_048_576,
         http_max_response_bytes: 1_048_576,
@@ -154,9 +153,9 @@ pub fn config(artifact_root: &Path) -> RouterConfig {
     }
 }
 
-pub fn committed_state(chain: &RealChain) -> EnvironmentActivationState {
-    EnvironmentActivationState::initial(
-        ENVIRONMENT,
+pub fn committed_state(chain: &RealChain) -> ProfileActivationState {
+    ProfileActivationState::initial(
+        PROFILE,
         GENERATION,
         chain.assembly_ref.clone(),
         chain.config_snapshot_ref.clone(),
@@ -172,7 +171,7 @@ pub async fn assemble(chain: &RealChain) -> RouterSupervisor {
     let config = config(chain._root.path());
     RouterSupervisor::assemble_with(
         &config,
-        ENVIRONMENT,
+        PROFILE,
         repository as std::sync::Arc<dyn ActivationStateRepository>,
     )
     .await
@@ -278,13 +277,13 @@ pub fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
 
 pub fn register_bytes(
     replica_id: &str,
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly: &RuntimeAssemblyRef,
     config_snapshot: &RuntimeConfigSnapshotRef,
 ) -> Vec<u8> {
     let control = AssemblyActivationControl::Register {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         generation,
         assembly: assembly.clone(),
         config_snapshot: config_snapshot.clone(),
@@ -331,7 +330,7 @@ pub async fn complete_handshake(socket: &mut PeerSocket, replica_id: &str, chain
         socket,
         register_bytes(
             replica_id,
-            ENVIRONMENT,
+            PROFILE,
             GENERATION,
             &chain.assembly_ref,
             &chain.config_snapshot_ref,

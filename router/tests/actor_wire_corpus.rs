@@ -299,7 +299,7 @@ mod tests {
                 "{name}: decodeAs"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v3",
+                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
                 "{name}"
             );
             assert_eq!(

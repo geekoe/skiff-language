@@ -12,16 +12,10 @@ use skiff_deployment::activation_state::ActivationStateError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RepositoryError {
-    #[error("activation state CAS mismatch for environment {environment}: {message}")]
-    CasMismatch {
-        environment: String,
-        message: String,
-    },
-    #[error("invalid activation state for environment {environment}: {message}")]
-    InvalidRecord {
-        environment: String,
-        message: String,
-    },
+    #[error("activation state CAS mismatch for profile {profile}: {message}")]
+    CasMismatch { profile: String, message: String },
+    #[error("invalid activation state for profile {profile}: {message}")]
+    InvalidRecord { profile: String, message: String },
     #[error("transient activation state repository failure: {message}")]
     Transient { message: String },
     #[error("activation state repository is closed")]
@@ -53,33 +47,25 @@ pub enum RepositoryErrorClass {
 
 pub(crate) fn map_reducer_error(error: ActivationStateError) -> RepositoryError {
     match error {
-        ActivationStateError::CasMismatch {
-            environment,
-            message,
-        } => RepositoryError::CasMismatch {
-            environment,
-            message,
-        },
-        ActivationStateError::InvalidRecord {
-            environment,
-            message,
-        } => RepositoryError::InvalidRecord {
-            environment,
-            message,
-        },
+        ActivationStateError::CasMismatch { profile, message } => {
+            RepositoryError::CasMismatch { profile, message }
+        }
+        ActivationStateError::InvalidRecord { profile, message } => {
+            RepositoryError::InvalidRecord { profile, message }
+        }
     }
 }
 
-pub(crate) fn cas_mismatch(environment: &str, message: impl Into<String>) -> RepositoryError {
+pub(crate) fn cas_mismatch(profile: &str, message: impl Into<String>) -> RepositoryError {
     RepositoryError::CasMismatch {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         message: message.into(),
     }
 }
 
-pub(crate) fn invalid_record(environment: &str, message: impl Into<String>) -> RepositoryError {
+pub(crate) fn invalid_record(profile: &str, message: impl Into<String>) -> RepositoryError {
     RepositoryError::InvalidRecord {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         message: message.into(),
     }
 }
@@ -107,23 +93,23 @@ mod tests {
     #[test]
     fn reducer_errors_map_without_class_change() {
         let cas = map_reducer_error(ActivationStateError::CasMismatch {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             message: "conflict".to_string(),
         });
         assert!(matches!(
             cas,
             RepositoryError::CasMismatch {
-                environment,
+                profile,
                 ..
-            } if environment == "test"
+            } if profile == "test"
         ));
         let invalid = map_reducer_error(ActivationStateError::InvalidRecord {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             message: "corrupt".to_string(),
         });
         assert!(matches!(
             invalid,
-            RepositoryError::InvalidRecord { environment, .. } if environment == "test"
+            RepositoryError::InvalidRecord { profile, .. } if profile == "test"
         ));
     }
 }

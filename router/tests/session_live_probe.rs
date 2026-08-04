@@ -28,7 +28,7 @@ use skiff_artifact_model::{
     AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
@@ -66,11 +66,11 @@ const HANDSHAKE_SEQUENCE: [&str; 5] = [
     "runtime.health",
 ];
 
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
@@ -82,7 +82,7 @@ struct LiveEnvironment {
     temp_dir: PathBuf,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -105,7 +105,7 @@ impl LiveEnvironment {
             mongo_url: required("SKIFF_ROUTER_SESSION_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_SESSION_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_SESSION_LIVE_ARTIFACT_ROOT")),
-            environment: required("SKIFF_ROUTER_SESSION_LIVE_ENVIRONMENT"),
+            profile: required("SKIFF_ROUTER_SESSION_LIVE_PROFILE"),
             assembly_identity: required("SKIFF_ROUTER_SESSION_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ROUTER_SESSION_LIVE_CONFIG_SNAPSHOT_ID"),
             generation,
@@ -150,7 +150,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -162,7 +162,7 @@ async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRe
     )
 }
 
-fn seed_runtime_home(live: &LiveEnvironment) {
+fn seed_runtime_home(live: &LiveProfile) {
     std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
     std::fs::write(
         live.runtime_home.join("runtime-id"),
@@ -171,9 +171,9 @@ fn seed_runtime_home(live: &LiveEnvironment) {
     .expect("seed runtime-id");
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
+    let state = ProfileActivationState::initial(
+        &live.profile,
         live.generation,
         live.assembly_ref(),
         live.snapshot_ref(),
@@ -184,14 +184,13 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
         .expect("seed committed activation state");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-session-{}-{}.yml",
         live.http_port, live.runtime_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -199,7 +198,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          http:\n  port: {}\n  maxRequestBytes: 1048576\n  maxResponseBytes: 1048576\n\
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.runtime_port,
@@ -209,15 +208,13 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join("runtime-session.yml");
     let contents = format!(
         "router: {}\n\
-         runtime-home: {}\n\
-         environment: {}\n",
+         runtime-home: {}\n",
         live.relay_runtime_url(),
         live.runtime_home.display(),
-        live.environment,
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
@@ -233,7 +230,7 @@ fn task_router(config_path: &Path) -> Child {
         .expect("spawn skiff-router")
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path) -> Child {
     let stdout_path = live.temp_dir.join("runtime.stdout.log");
     let stderr_path = live.temp_dir.join("runtime.stderr.log");
     let stdout = OpenOptions::new()
@@ -279,7 +276,7 @@ fn wait_for_exit(
     }
 }
 
-fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
+fn wait_for_listeners(live: &LiveProfile, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_ok()
@@ -302,7 +299,7 @@ fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
     }
 }
 
-fn assert_ports_closed(live: &LiveEnvironment) {
+fn assert_ports_closed(live: &LiveProfile) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_err()
@@ -317,7 +314,7 @@ fn assert_ports_closed(live: &LiveEnvironment) {
     }
 }
 
-fn materialize_projection(live: &LiveEnvironment) {
+fn materialize_projection(live: &LiveProfile) {
     let projection_directory = live.artifact_root.join("records/actor-routing");
     std::fs::create_dir_all(&projection_directory).expect("create projection directory");
     let projection = ActorRoutingProjection::new(
@@ -348,9 +345,9 @@ fn capabilities_frame(replica_id: &str) -> Vec<u8> {
     encode_binary_frame(&header, &[]).expect("encode capabilities frame")
 }
 
-fn register_frame(live: &LiveEnvironment, replica_id: &str) -> Vec<u8> {
+fn register_frame(live: &LiveProfile, replica_id: &str) -> Vec<u8> {
     let control = AssemblyActivationControl::Register {
-        environment: live.environment.clone(),
+        profile: live.profile.clone(),
         generation: live.generation,
         assembly: live.assembly_ref(),
         config_snapshot: live.snapshot_ref(),
@@ -676,7 +673,7 @@ async fn wait_for_pair_closed(state: &Arc<RelayState>, connection: u64) {
     }
 }
 
-fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
+fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
     assert_eq!(records.len(), HANDSHAKE_SEQUENCE.len());
     for (index, expected) in HANDSHAKE_SEQUENCE.iter().enumerate() {
         let RecordKind::Frame {
@@ -694,7 +691,7 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
                 let header =
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
                 assert_eq!(header.envelope_type, "router.bootstrap");
-                assert_eq!(header.activation.environment, live.environment);
+                assert_eq!(header.activation.profile, live.profile);
                 assert_eq!(header.activation.generation, live.generation);
                 assert_eq!(
                     header.activation.assembly.assembly_identity.as_str(),
@@ -734,19 +731,19 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
     }
 }
 
-fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
+fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
     let control =
         decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
             .expect("decode register frame");
     match control {
         AssemblyActivationControl::Register {
-            environment,
+            profile,
             generation,
             assembly,
             config_snapshot,
             replica_id,
         } => {
-            assert_eq!(environment, live.environment);
+            assert_eq!(profile, live.profile);
             assert_eq!(generation, live.generation);
             assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
             assert_eq!(
@@ -856,14 +853,10 @@ async fn expect_refused_without_handshake(socket: &mut PeerSocket) {
     }
 }
 
-async fn complete_direct_handshake(
-    live: &LiveEnvironment,
-    socket: &mut PeerSocket,
-    replica_id: &str,
-) {
+async fn complete_direct_handshake(live: &LiveProfile, socket: &mut PeerSocket, replica_id: &str) {
     let bootstrap = recv_bootstrap(socket).await;
     let header = decode_router_bootstrap_frame(&bootstrap).expect("decode bootstrap frame");
-    assert_eq!(header.activation.environment, live.environment);
+    assert_eq!(header.activation.profile, live.profile);
     assert_eq!(header.activation.generation, live.generation);
     send_binary(socket, capabilities_frame(replica_id)).await;
     send_binary(socket, register_frame(live, replica_id)).await;
@@ -878,7 +871,7 @@ async fn complete_direct_handshake(
 // Process-level scenario probes.
 // ---------------------------------------------------------------------------
 
-async fn pre_auth_limit_test(live: &LiveEnvironment) {
+async fn pre_auth_limit_test(live: &LiveProfile) {
     // maxConcurrency=4 is the pre-auth pool limit; upgraded registered
     // sessions no longer hold the pre-upgrade listener permit, so four
     // pre-auth connections fit and the fifth is refused without handshake.
@@ -915,7 +908,7 @@ async fn pre_auth_limit_test(live: &LiveEnvironment) {
     let _ = accepted.close(None).await;
 }
 
-async fn bootstrap_timeout_test(live: &LiveEnvironment) {
+async fn bootstrap_timeout_test(live: &LiveProfile) {
     // Process-level default bootstrap deadline is 10s; the connection must be
     // closed without ever becoming registered.
     let mut socket = connect_direct(live.runtime_control_addr()).await;
@@ -929,7 +922,7 @@ async fn bootstrap_timeout_test(live: &LiveEnvironment) {
     );
 }
 
-async fn ingress_saturation_test(live: &LiveEnvironment, state: &Arc<RelayState>) {
+async fn ingress_saturation_test(live: &LiveProfile, state: &Arc<RelayState>) {
     let health_before = count_health_frames(state, 3);
     let mut socket = connect_direct(live.runtime_control_addr()).await;
     complete_direct_handshake(live, &mut socket, SATURATION_REPLICA_ID).await;
@@ -963,7 +956,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "driven by scripts/check-router-session-live.mjs"]
     async fn router_live_session_roundtrip() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live);
         materialize_projection(&live);
 

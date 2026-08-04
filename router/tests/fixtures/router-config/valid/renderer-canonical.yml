@@ -1,6 +1,5 @@
 profile: dev
 host: 127.0.0.1
-environment: "dev"
 artifactsPath: "/tmp/skiff/artifacts"
 devReload: true
 requestTimeoutMs: 20000

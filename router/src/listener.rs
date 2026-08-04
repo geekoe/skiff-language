@@ -362,8 +362,7 @@ pub async fn run_router(config: RouterConfig) -> Result<(), ListenerError> {
         .await
         .map_err(|error| {
             let message = match &error {
-                crate::supervisor::SupervisorError::EnvironmentMissing
-                | crate::supervisor::SupervisorError::Bootstrap(_) => {
+                crate::supervisor::SupervisorError::Bootstrap(_) => {
                     format!("bootstrap failed closed: {error}")
                 }
                 _ => format!("router composition failed: {error}"),

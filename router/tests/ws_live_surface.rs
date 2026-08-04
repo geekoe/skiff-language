@@ -560,7 +560,7 @@ mod tests {
     }
 
     fn epoch_with_models_deployments(
-        environment: &str,
+        profile: &str,
         aihub_ref: &skiff_artifact_model::ServiceDeploymentRef,
         relay_ref: &skiff_artifact_model::ServiceDeploymentRef,
         aihub_identity: skiff_artifact_model::GatewayEntryIdentity,
@@ -592,7 +592,7 @@ mod tests {
             },
         ];
         let snapshot = RuntimeConfigSnapshotValue::new(
-            environment,
+            profile,
             skiff_artifact_model::RuntimeConfigSnapshotRef {
                 snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
                     "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -609,14 +609,8 @@ mod tests {
         .expect("empty projection");
         let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
         Arc::new(
-            RoutingEpoch::new(
-                environment,
-                1,
-                Arc::new(assembly),
-                Arc::new(snapshot),
-                catalog,
-            )
-            .expect("epoch fixture"),
+            RoutingEpoch::new(profile, 1, Arc::new(assembly), Arc::new(snapshot), catalog)
+                .expect("epoch fixture"),
         )
     }
 }

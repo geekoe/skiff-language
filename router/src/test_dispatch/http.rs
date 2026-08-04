@@ -603,7 +603,7 @@ mod tests {
     use super::*;
 
     static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    const ENVIRONMENT: &str = "prod";
+    const PROFILE: &str = "prod";
     const GENERATION: u64 = 7;
     const GATEWAY_KEY: &str = "echo";
     const ECHO_PATH: &str = "/echo";
@@ -693,7 +693,7 @@ mod tests {
         let assembly_ref =
             skiff_artifact_identity::runtime_assembly_ref(&assembly).expect("assembly ref");
 
-        let snapshot = RuntimeConfigSnapshot::new(ENVIRONMENT, snapshot_ref(), Vec::new())
+        let snapshot = RuntimeConfigSnapshot::new(PROFILE, snapshot_ref(), Vec::new())
             .expect("snapshot fixture");
         let projection = ActorRoutingProjection::new(
             ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
@@ -703,7 +703,7 @@ mod tests {
         let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
         let epoch = Arc::new(
             RoutingEpoch::new(
-                ENVIRONMENT,
+                PROFILE,
                 GENERATION,
                 Arc::new(assembly),
                 Arc::new(snapshot),

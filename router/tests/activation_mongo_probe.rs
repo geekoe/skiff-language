@@ -18,7 +18,7 @@ mod tests {
         AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
     };
     use skiff_deployment::activation_state::{
-        activation_audit_event_id, ActivationAuditOperation, EnvironmentActivationState,
+        activation_audit_event_id, ActivationAuditOperation, ProfileActivationState,
     };
     use skiff_router::activation::{
         repository::CommitInput, repository::PrepareInput, ActivationStateRepository,
@@ -45,13 +45,13 @@ mod tests {
         }
     }
 
-    fn initial_state() -> EnvironmentActivationState {
-        EnvironmentActivationState::initial("probe", 7, assembly(0), config(0))
+    fn initial_state() -> ProfileActivationState {
+        ProfileActivationState::initial("probe", 7, assembly(0), config(0))
     }
 
     fn prepare_input(activation_id: &str) -> PrepareInput {
         PrepareInput {
-            environment: "probe".to_string(),
+            profile: "probe".to_string(),
             activation_id: activation_id.to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -61,10 +61,10 @@ mod tests {
         }
     }
 
-    fn commit_input(prepared: &EnvironmentActivationState) -> CommitInput {
+    fn commit_input(prepared: &ProfileActivationState) -> CommitInput {
         let pending = prepared.pending.as_ref().expect("prepared pending");
         CommitInput {
-            environment: "probe".to_string(),
+            profile: "probe".to_string(),
             activation_id: pending.activation_id.clone(),
             expected_generation: pending.expected_generation,
             candidate_generation: pending.candidate_generation,
@@ -159,7 +159,7 @@ mod tests {
         // The pending slot must be free first, so abort the concurrent prepare.
         repository
             .abort(skiff_router::activation::repository::AbortInput {
-                environment: "probe".to_string(),
+                profile: "probe".to_string(),
                 activation_id: "activation-8".to_string(),
                 expected_generation: 7,
             })
@@ -263,11 +263,7 @@ mod tests {
             .expect("pre-insert conflicting audit event");
     }
 
-    async fn count_audit_documents(
-        database: &str,
-        environment: &str,
-        activation_id: &str,
-    ) -> usize {
+    async fn count_audit_documents(database: &str, profile: &str, activation_id: &str) -> usize {
         let mongo_url = std::env::var("SKIFF_ACTIVATION_MONGO_URL").expect("mongo url");
         let client = mongodb::Client::with_uri_str(&mongo_url)
             .await
@@ -276,7 +272,7 @@ mod tests {
             .database(database)
             .collection::<mongodb::bson::Document>("activation_audit")
             .count_documents(doc! {
-                "environment": environment,
+                "profile": profile,
                 "activationId": activation_id
             })
             .await
@@ -309,7 +305,7 @@ mod tests {
             .expect("state index names");
         assert!(states
             .iter()
-            .any(|name| name == "activation_state_environment_unique"));
+            .any(|name| name == "activation_state_profile_unique"));
         let audit = client
             .database(database)
             .collection::<mongodb::bson::Document>("activation_audit")

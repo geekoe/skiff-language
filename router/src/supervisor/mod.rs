@@ -86,8 +86,6 @@ use crate::telemetry::{
 /// bootstrap state is shut down before the error is returned.
 #[derive(Debug, thiserror::Error)]
 pub enum SupervisorError {
-    #[error("router config environment is required")]
-    EnvironmentMissing,
     #[error("activation state repository connect failed: {0}")]
     Repository(String),
     #[error("bootstrap assembly failed: {0}")]
@@ -178,10 +176,7 @@ impl RouterComponents {
     /// Production entry: connects the Mongo activation repository and runs
     /// the full bootstrap + component assembly.
     pub async fn assemble(config: &RouterConfig) -> Result<Arc<Self>, SupervisorError> {
-        let environment = config
-            .environment
-            .clone()
-            .ok_or(SupervisorError::EnvironmentMissing)?;
+        let profile = config.profile.clone();
         let repository = Arc::new(
             MongoActivationStateRepository::connect(
                 &config.service_db.mongo_url,
@@ -203,18 +198,18 @@ impl RouterComponents {
             .ensure_indexes()
             .await
             .map_err(|error| SupervisorError::TaskStore(error.to_string()))?;
-        Self::assemble_with_task_store(config, &environment, repository, task_store).await
+        Self::assemble_with_task_store(config, &profile, repository, task_store).await
     }
 
     /// Assembly with an injected repository (tests use the memory fake).
     pub async fn assemble_with(
         config: &RouterConfig,
-        environment: &str,
+        profile: &str,
         repository: Arc<dyn ActivationStateRepository>,
     ) -> Result<Arc<Self>, SupervisorError> {
         Self::assemble_with_task_store(
             config,
-            environment,
+            profile,
             repository,
             Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>,
         )
@@ -225,13 +220,12 @@ impl RouterComponents {
     /// tests memory / scripted fakes).
     pub async fn assemble_with_task_store(
         config: &RouterConfig,
-        environment: &str,
+        profile: &str,
         repository: Arc<dyn ActivationStateRepository>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Arc<Self>, SupervisorError> {
-        let assembly = Arc::new(
-            RouterBootstrapAssembly::assemble_with(config, environment, repository).await?,
-        );
+        let assembly =
+            Arc::new(RouterBootstrapAssembly::assemble_with(config, profile, repository).await?);
         match Self::assemble_components(config, Arc::clone(&assembly), task_store).await {
             Ok(components) => Ok(components),
             Err(error) => {
@@ -470,7 +464,7 @@ impl RouterComponents {
         // registration observer above.
         if assembly.pending_recovery().is_some() {
             coordinator
-                .start_recovery(assembly.environment().to_string())
+                .start_recovery(assembly.profile().to_string())
                 .map_err(|error| SupervisorError::Recovery(error.to_string()))?;
         }
 
@@ -680,10 +674,10 @@ impl RouterSupervisor {
 
     pub async fn assemble_with(
         config: &RouterConfig,
-        environment: &str,
+        profile: &str,
         repository: Arc<dyn ActivationStateRepository>,
     ) -> Result<Self, SupervisorError> {
-        let components = RouterComponents::assemble_with(config, environment, repository).await?;
+        let components = RouterComponents::assemble_with(config, profile, repository).await?;
         Ok(Self { components })
     }
 
@@ -693,12 +687,12 @@ impl RouterSupervisor {
     /// endpoint without changing the default assembly path.
     pub async fn assemble_with_task_store(
         config: &RouterConfig,
-        environment: &str,
+        profile: &str,
         repository: Arc<dyn ActivationStateRepository>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Self, SupervisorError> {
         let components =
-            RouterComponents::assemble_with_task_store(config, environment, repository, task_store)
+            RouterComponents::assemble_with_task_store(config, profile, repository, task_store)
                 .await?;
         Ok(Self { components })
     }

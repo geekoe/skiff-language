@@ -20,7 +20,7 @@ use skiff_artifact_model::{
     GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector, RuntimeAssemblyRef,
     RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::{runtime_assembly_fixture, service_deployment_fixture};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -36,7 +36,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-const ENVIRONMENT: &str = "prod";
+const PROFILE: &str = "prod";
 const GENERATION: u64 = 7;
 const GATEWAY_KEY: &str = "echo";
 const ECHO_PATH: &str = "/echo";
@@ -92,8 +92,8 @@ fn materialize() -> RealChain {
     fs::create_dir_all(root.path()).expect("create artifact root");
     let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
         .expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(ENVIRONMENT, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(PROFILE, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -155,7 +155,6 @@ fn config(artifact_root: &Path) -> RouterConfig {
         activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
-        environment: Some(ENVIRONMENT.to_string()),
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1_048_576,
         http_max_response_bytes: 1_048_576,
@@ -177,9 +176,9 @@ fn config(artifact_root: &Path) -> RouterConfig {
     }
 }
 
-fn committed_state(chain: &RealChain) -> EnvironmentActivationState {
-    EnvironmentActivationState::initial(
-        ENVIRONMENT,
+fn committed_state(chain: &RealChain) -> ProfileActivationState {
+    ProfileActivationState::initial(
+        PROFILE,
         GENERATION,
         chain.assembly_ref.clone(),
         snapshot_ref(),
@@ -266,7 +265,7 @@ async fn start_stack() -> (
     let config = config(chain._root.path());
     let supervisor = RouterSupervisor::assemble_with(
         &config,
-        ENVIRONMENT,
+        PROFILE,
         Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
     )
     .await

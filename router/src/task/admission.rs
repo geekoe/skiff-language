@@ -132,7 +132,7 @@ impl RouterTaskAttemptAdmission {
     fn image_authority(&self, record: &TaskRecord) -> Option<RequestAuthority> {
         let epoch = self.epoch.capture()?;
         let tuple = epoch.registered_tuple();
-        if tuple.environment != record.execution.target_environment
+        if tuple.profile != record.execution.target_profile
             || tuple.assembly != record.execution.assembly
             || tuple.config_snapshot != record.execution.config_snapshot
         {

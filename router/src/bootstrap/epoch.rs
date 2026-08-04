@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{
-    validate_activation_environment, validate_activation_generation, GatewayIngressBinding,
+    validate_activation_generation, validate_activation_profile, GatewayIngressBinding,
     RuntimeAssembly, ServiceDeploymentRef,
 };
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
@@ -25,7 +25,7 @@ use super::strict_loader::BootstrapLoadFailure;
 /// Complete immutable routing epoch (authority design §3.3).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoutingEpoch {
-    environment: String,
+    profile: String,
     assembly_generation: u64,
     assembly: Arc<RuntimeAssembly>,
     snapshot: Arc<RuntimeConfigSnapshot>,
@@ -35,30 +35,29 @@ pub struct RoutingEpoch {
 impl RoutingEpoch {
     /// Builds an epoch from strict-loaded inputs.
     ///
-    /// Validation is fail-closed: the snapshot environment must exactly match
-    /// the caller environment, and the generation/environment must satisfy the
+    /// Validation is fail-closed: the snapshot profile must exactly match
+    /// the caller profile, and the generation/profile must satisfy the
     /// frozen lexical rules. All artifact inputs were already validated by the
     /// strict stores before this constructor is reached.
     pub fn new(
-        environment: impl Into<String>,
+        profile: impl Into<String>,
         assembly_generation: u64,
         assembly: Arc<RuntimeAssembly>,
         snapshot: Arc<RuntimeConfigSnapshot>,
         actor_catalog: Arc<ActorRoutingCatalog>,
     ) -> Result<Self, BootstrapLoadFailure> {
-        let environment = environment.into();
-        validate_activation_environment(&environment)
-            .map_err(BootstrapLoadFailure::invalid_epoch)?;
+        let profile = profile.into();
+        validate_activation_profile(&profile).map_err(BootstrapLoadFailure::invalid_epoch)?;
         validate_activation_generation(assembly_generation, "assemblyGeneration")
             .map_err(BootstrapLoadFailure::invalid_epoch)?;
-        if snapshot.environment() != environment {
-            return Err(BootstrapLoadFailure::EnvironmentMismatch {
-                expected: environment.clone(),
-                actual: snapshot.environment().to_string(),
+        if snapshot.profile() != profile {
+            return Err(BootstrapLoadFailure::ProfileMismatch {
+                expected: profile.clone(),
+                actual: snapshot.profile().to_string(),
             });
         }
         Ok(Self {
-            environment,
+            profile,
             assembly_generation,
             assembly,
             snapshot,
@@ -66,8 +65,8 @@ impl RoutingEpoch {
         })
     }
 
-    pub fn environment(&self) -> &str {
-        &self.environment
+    pub fn profile(&self) -> &str {
+        &self.profile
     }
 
     pub fn assembly_generation(&self) -> u64 {
@@ -108,7 +107,7 @@ impl RoutingEpoch {
     /// this epoch (plan §3.2/§3.5).
     pub fn registered_tuple(&self) -> RegisteredAssemblyTuple {
         RegisteredAssemblyTuple {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.assembly_generation,
             assembly: skiff_artifact_model::RuntimeAssemblyRef {
                 assembly_identity: self.assembly.assembly_identity.clone(),
@@ -121,7 +120,7 @@ impl RoutingEpoch {
 /// Read-only epoch projection for health (`activeRoutingEpoch.*`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingEpochHealth {
-    pub environment: String,
+    pub profile: String,
     pub assembly_generation: u64,
     pub assembly_identity: String,
     pub config_snapshot_id: String,
@@ -130,7 +129,7 @@ pub struct RoutingEpochHealth {
 impl RoutingEpochHealth {
     pub fn from_epoch(epoch: &RoutingEpoch) -> Self {
         Self {
-            environment: epoch.environment.clone(),
+            profile: epoch.profile.clone(),
             assembly_generation: epoch.assembly_generation,
             assembly_identity: epoch.assembly_identity().to_string(),
             config_snapshot_id: epoch.config_snapshot_id().to_string(),

@@ -27,7 +27,6 @@ mod tests {
             activation_prepare_timeout_ms: 120_000,
             artifacts_path: PathBuf::from("/tmp/skiff-artifacts"),
             dev_reload: None,
-            environment: None,
             host: "127.0.0.1".to_string(),
             http_max_request_bytes: 1,
             http_max_response_bytes: 1,
