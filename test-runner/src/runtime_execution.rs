@@ -12,10 +12,12 @@ use std::{
 
 use skiff_artifact_identity::runtime_assembly_ref;
 use skiff_artifact_model::{
-    IngressProtocol, PackageArtifact, PackageArtifactRef, RuntimeAssemblyRef,
+    IngressProtocol, PackageArtifact, PackageArtifactRef, PackageBuildId, RuntimeAssemblyRef,
     RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
-use skiff_compiler::authoring::project_assembly_actor_routing;
+use skiff_compiler::authoring::{
+    package_actor_routing_input, project_assembly_actor_routing_from_inputs,
+};
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
 
@@ -165,6 +167,7 @@ fn execute_assembly_batches(
     // reads across activation batches instead of re-running canonical JSON and
     // SHA-256 admission for the same package closure on every batch.
     let mut package_reads = BTreeMap::<PackageArtifactRef, Arc<PackageArtifact>>::new();
+    let mut actor_routing_inputs = BTreeMap::<PackageBuildId, _>::new();
     execute_batches_with(
         batches,
         options.expected_generation,
@@ -215,14 +218,23 @@ fn execute_assembly_batches(
                     }
                 }
             }
+            for artifact in &packages {
+                if !actor_routing_inputs.contains_key(&artifact.package_build_id) {
+                    let input = package_actor_routing_input(&store, artifact).map_err(|error| {
+                        CanonicalFixtureError::InvalidInput(format!(
+                            "actor routing package input failed for the activation batch: {error}"
+                        ))
+                    })?;
+                    actor_routing_inputs.insert(artifact.package_build_id.clone(), input);
+                }
+            }
             let projection =
-                project_assembly_actor_routing(&store, &records.deployments, &packages).map_err(
-                    |error| {
+                project_assembly_actor_routing_from_inputs(&records.deployments, &actor_routing_inputs)
+                    .map_err(|error| {
                         CanonicalFixtureError::InvalidInput(format!(
                             "actor routing projection failed for the activation batch: {error}"
                         ))
-                    },
-                )?;
+                    })?;
             store
                 .write_actor_routing_projection(&projection)
                 .map_err(|error| {

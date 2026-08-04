@@ -4,6 +4,14 @@ use crate::test_discovery::TestServiceCase;
 
 pub(super) const MAX_NON_LIVE_CASES_PER_ACTIVATION: usize = 16;
 
+pub(super) fn max_non_live_cases_per_activation() -> usize {
+    std::env::var("SKIFF_TEST_MAX_CASES_PER_ACTIVATION")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_NON_LIVE_CASES_PER_ACTIVATION)
+}
+
 pub(super) fn partition_cases(
     cases: Vec<TestServiceCase>,
     live: bool,
@@ -44,11 +52,12 @@ fn pack_file_cases(
     current_batch: &mut Vec<TestServiceCase>,
     file_cases: Vec<TestServiceCase>,
 ) {
+    let cap = max_non_live_cases_per_activation();
     if file_cases.is_empty() {
         return;
     }
-    if file_cases.len() <= MAX_NON_LIVE_CASES_PER_ACTIVATION {
-        if current_batch.len() + file_cases.len() > MAX_NON_LIVE_CASES_PER_ACTIVATION {
+    if file_cases.len() <= cap {
+        if current_batch.len() + file_cases.len() > cap {
             batches.push(std::mem::take(current_batch));
         }
         current_batch.extend(file_cases);
@@ -62,12 +71,12 @@ fn pack_file_cases(
     loop {
         let chunk = remaining
             .by_ref()
-            .take(MAX_NON_LIVE_CASES_PER_ACTIVATION)
+            .take(cap)
             .collect::<Vec<_>>();
         if chunk.is_empty() {
             return;
         }
-        if chunk.len() == MAX_NON_LIVE_CASES_PER_ACTIVATION {
+        if chunk.len() == cap {
             batches.push(chunk);
         } else {
             *current_batch = chunk;

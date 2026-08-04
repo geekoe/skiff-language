@@ -8,11 +8,12 @@
 //! the producer. It never forwards module paths, actor/method names, source
 //! spans, executable coordinates or payload bytes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{package_artifact_ref, service_deployment_ref};
 use skiff_artifact_model::{
-    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBinding, ServiceDeployment,
+    FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    ServiceDeployment,
 };
 use skiff_deployment::{
     projection::actor_routing::{
@@ -56,6 +57,87 @@ pub fn project_assembly_actor_routing(
     let mut methods = Vec::new();
     for deployment in deployments {
         let projection = project_deployment_actor_routing(store, deployment, packages)?;
+        methods.extend(projection.methods);
+    }
+    ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
+        .map_err(projection_error)
+}
+
+/// Builds the source-free actor routing facts for one package artifact.
+///
+/// This is the expensive per-package step: it reads the published record and
+/// every File IR unit to extract actor declaration identities. The caller can
+/// compute it once per package build and reuse the typed facts across many
+/// deployments/assemblies that share the same package closure.
+pub fn package_actor_routing_input(
+    store: &CanonicalArtifactStore,
+    artifact: &PackageArtifact,
+) -> AuthoringResult<ActorRoutingPackageInput> {
+    let canonical_package_ref = package_artifact_ref(artifact)
+        .map_err(|error| invalid_input(format!("actor routing projection: {error}")))?;
+    // File refs are read from the published record (not the in-memory
+    // emission candidate) so their declared artifact paths are the canonical
+    // ecosystem-store paths.
+    let stored = store
+        .read_package_artifact(&canonical_package_ref)
+        .map_err(|error| {
+            invalid_input(format!(
+                "actor routing projection: read package artifact for {}@{}: {error}",
+                artifact.package_id,
+                artifact.package_version
+            ))
+        })?;
+    let mut actor_inputs = Vec::new();
+    for file_ref in &stored.files {
+        let unit = store
+            .read_file_ir(&canonical_package_ref, file_ref)
+            .map_err(|error| {
+                invalid_input(format!(
+                    "actor routing projection: read File IR record for package {}@{}: {error}",
+                    artifact.package_id,
+                    artifact.package_version
+                ))
+            })?;
+        collect_actor_inputs(&unit, &mut actor_inputs);
+    }
+    Ok(ActorRoutingPackageInput {
+        package: canonical_package_ref,
+        actors: actor_inputs,
+    })
+}
+
+/// Projects actor routing for an assembly using precomputed per-package
+/// facts. Unlike [`project_assembly_actor_routing`], this never re-reads the
+/// artifact store, so callers that activate many deployments over the same
+/// package closure can avoid repeated canonical JSON admission and File IR
+/// reads.
+pub fn project_assembly_actor_routing_from_inputs(
+    deployments: &[ServiceDeployment],
+    package_inputs: &BTreeMap<PackageBuildId, ActorRoutingPackageInput>,
+) -> AuthoringResult<ActorRoutingProjection> {
+    let mut methods = Vec::new();
+    for deployment in deployments {
+        let deployment_ref = service_deployment_ref(deployment);
+        let mut package_inputs_for_deployment = Vec::new();
+        for package_ref in
+            deployment_package_refs(&deployment.package_bindings, &deployment.implementation)
+        {
+            let input = package_inputs.get(&package_ref.package_build_id).ok_or_else(|| {
+                invalid_input(format!(
+                    "actor routing projection: deployment package {}@{} ({}) is missing from the precomputed package input set",
+                    package_ref.package_id,
+                    package_ref.package_version,
+                    package_ref.package_build_id
+                ))
+            })?;
+            package_inputs_for_deployment.push(input.clone());
+        }
+        let projection = project_actor_routing(ActorRoutingProducerInput {
+            schema_version: ACTOR_ROUTING_PRODUCER_INPUT_SCHEMA_VERSION.to_string(),
+            deployment: deployment_ref,
+            packages: package_inputs_for_deployment,
+        })
+        .map_err(projection_error)?;
         methods.extend(projection.methods);
     }
     ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)

@@ -46,7 +46,10 @@ use crate::{
 mod actor_routing;
 mod package_publication;
 
-pub use actor_routing::project_assembly_actor_routing;
+pub use actor_routing::{
+    package_actor_routing_input, project_assembly_actor_routing,
+    project_assembly_actor_routing_from_inputs,
+};
 use package_publication::publish_package_artifact_records_to_store;
 pub use package_publication::{
     author_official_std_package, publish_package_artifact_records, PublishedPackageArtifactReceipt,

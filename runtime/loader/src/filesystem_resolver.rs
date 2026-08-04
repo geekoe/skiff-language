@@ -1,4 +1,8 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use skiff_artifact_model::{
     FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
@@ -21,17 +25,28 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct FilesystemRuntimeAssemblyContentResolver {
     store: CanonicalArtifactStore,
+    cache: Arc<FilesystemRuntimeAssemblyContentCache>,
+}
+
+#[derive(Debug, Default)]
+struct FilesystemRuntimeAssemblyContentCache {
+    packages: RwLock<HashMap<PackageArtifactRef, Arc<PackageArtifact>>>,
+    file_ir: RwLock<HashMap<(PackageArtifactRef, FileIrRef), Arc<FileIrUnit>>>,
 }
 
 impl FilesystemRuntimeAssemblyContentResolver {
     pub fn open(artifact_root: impl AsRef<Path>) -> anyhow::Result<Self> {
         Ok(Self {
             store: CanonicalArtifactStore::open(artifact_root)?,
+            cache: Arc::new(FilesystemRuntimeAssemblyContentCache::default()),
         })
     }
 
     pub fn from_store(store: CanonicalArtifactStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            cache: Arc::new(FilesystemRuntimeAssemblyContentCache::default()),
+        }
     }
 
     pub fn store(&self) -> &CanonicalArtifactStore {
@@ -79,7 +94,22 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         &self,
         reference: &PackageArtifactRef,
     ) -> anyhow::Result<Arc<PackageArtifact>> {
-        Ok(self.store.read_package_artifact(reference)?)
+        if let Some(artifact) = self
+            .cache
+            .packages
+            .read()
+            .expect("package artifact cache poisoned")
+            .get(reference)
+        {
+            return Ok(artifact.clone());
+        }
+        let artifact = self.store.read_package_artifact(reference)?;
+        self.cache
+            .packages
+            .write()
+            .expect("package artifact cache poisoned")
+            .insert(reference.clone(), artifact.clone());
+        Ok(artifact)
     }
 
     fn resolve_file_ir(
@@ -87,7 +117,23 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         package: &PackageArtifactRef,
         reference: &FileIrRef,
     ) -> anyhow::Result<Arc<FileIrUnit>> {
-        Ok(self.store.read_file_ir(package, reference)?)
+        let key = (package.clone(), reference.clone());
+        if let Some(unit) = self
+            .cache
+            .file_ir
+            .read()
+            .expect("file IR cache poisoned")
+            .get(&key)
+        {
+            return Ok(unit.clone());
+        }
+        let unit = self.store.read_file_ir(package, reference)?;
+        self.cache
+            .file_ir
+            .write()
+            .expect("file IR cache poisoned")
+            .insert(key, unit.clone());
+        Ok(unit)
     }
 
     fn resolve_static_resource(
