@@ -85,17 +85,37 @@
 - 需触碰 runtime/transport、router、test-runner、scripts、文档或共享 corpus 时停止上报。
 - 发现 design 空洞或需用户决策的语义变化时停止，不自行补设计。
 
-## 自验收矩阵（实现后回填）
+## 自验收矩阵（已回填）
 
 | 设计/任务条款 | 代码证据 | 反向搜索证据 | 测试 |
 | --- | --- | --- | --- |
-| runtime.yml 不再读 environment | `RuntimeFileConfig` 无 environment 字段；raw serde 拒绝 | `rg "environment" runtime/driver` 仅 test 断言拒绝 | `cargo test -p <runtime-driver> config::tests` |
-| RuntimeHost 无 environment 字段/生命周期校验 | `RuntimeHost.frozen_profile`；`freeze_bootstrap_profile` | `rg "trusted_environment|\.environment" runtime/host/src/host` 无生产残留 | `cargo test -p <runtime-host>` |
-| 首次 bootstrap 冻结 profile，后续不一致 fail closed | `freeze_bootstrap_profile` + 重连/activation 校验 | 测试覆盖 foreign profile 拒绝 | 聚焦测试 |
-| 物化 ConfigView 前校验 snapshot.profile == bootstrap.profile | `validate_snapshot_profile` 在 `materialize_snapshot_config` 前调用 | `rg "validate_snapshot_environment|snapshot\.environment" runtime/host` 无残留 | recovery 冷启动负例 |
-| 加密域/KDF/AAD 用 bootstrap profile 值 | `DbEncryptedFieldContext.storage_profile` 贯穿 metadata/mapping | `rg "storage_environment" runtime/service-db` 无残留 | `cargo test -p <service-db>` |
-| runtime/tests 消费已迁移 corpus | consumers 断言 `activation.profile` | `rg "activation\.environment" runtime/tests` 无残留 | `cargo test -p <runtime>` corpus 测试 |
-| 写集边界 | 提交 diff 仅限上述文件 | `git diff --stat` 核对 | — |
+| runtime.yml 不再读 environment | `RuntimeFileConfig` 无 environment 字段；`deny_unknown_fields` 拒绝 `environment` 键 | `rg environment runtime/driver` 仅 config/tests.rs 断言拒绝 | `cargo test -p runtime` config::tests 全绿 |
+| RuntimeHost 无 environment 字段/生命周期校验 | `RuntimeHost.frozen_profile: OnceLock<String>`；`freeze_bootstrap_profile`；`trusted_profile` | `rg trusted_environment runtime/host/src/host` 无残留；生产路径仅剩 `DbProviderBuildInput.environment`（capability-context 跨 crate 字段，非本节点） | host 生产 lib `cargo check -p skiff-runtime-host --lib` 通过 |
+| 首次 bootstrap 冻结 profile，后续不一致 fail closed | `freeze_bootstrap_profile` get_or_init 冻结 + lifecycle/activation 双向校验 | foreign-profile 测试保留（test-only） | 用例：`activation_rejects_profile_other_than_runtime_frozen_domain_before_resolution`、activation_prepare foreign-profile |
+| 物化 ConfigView 前校验 snapshot.profile == bootstrap.profile | `validate_snapshot_profile` 在 `build_started_candidate`（materialize）之前调用 | `rg validate_snapshot_environment\|snapshot\.environment runtime/host` 无残留 | recovery `cold_recovery_rejects_config_snapshot_from_another_profile_before_config_views`（test 已同步，host 套件待依赖节点合流后运行） |
+| 加密域/KDF/AAD 用 bootstrap profile 值 | `DbEncryptedFieldContext.storage_profile` 贯穿 metadata/mapping/encryption | `rg storage_environment runtime/service-db` 无残留（仅 migration_tool CLI 面保留 environment，属后续工具层节点） | `cargo test -p skiff-runtime-service-db`：145 passed / 0 failed |
+| runtime/tests 消费已迁移 corpus | consumers 断言 `activation.profile`，schema 断言 v4 | `rg activation\.environment\|frame-v3 runtime/tests` 无残留 | `cargo test -p runtime` 全 corpus 消费者通过 |
+| 写集边界 | 提交 diff 仅限 runtime + 本叶子文档 | `git diff --stat` 核对 | — |
+
+## 自验收证据（命令与结果）
+
+1. `cargo test -p skiff-runtime-service-db`（隔离 CARGO_TARGET_DIR=worktree/target）：
+   145 passed / 0 failed / 6 ignored。
+2. `cargo check -p skiff-runtime-host --lib`：通过（14 个既有 dead-code 警告，与本节点无关）。
+3. `cargo test -p runtime`：完整套件中除 1 个既有环境敏感栈压力测试外全部通过
+   （lib 118 + 全部 runtime/tests corpus 消费者）。
+
+### 已知阻塞（不属于本节点写集）
+
+- `cargo test -p skiff-runtime-host --tests` 被基线已损坏的越界 crate 阻断：
+  `skiff-config-snapshot-tooling`（producer.rs/projection.rs 仍引用已删除的
+  `validate_activation_environment` / `snapshot.environment()`，3 errors），
+  其后再到 `skiff-test-runner`（`EnvironmentActivationState` 等未迁移）。两者均为
+  后续节点（工具层/test-runner）范围；host 单元/集成测试需其合流后运行。
+- `runtime_program_non_tail_recursion_128_layers_fit_diet_stack`（eval 栈压力测试，
+  48 MiB debug 栈）在本机 rustc 1.88.0 下进程级栈溢出 abort；本节点 diff 不涉及
+  eval 路径，且 `SKIFF_NON_TAIL_DEPTH_STACK_KIB=262144` 时同一测试通过，归类为
+  既有环境敏感失败，非本节点回归。
 
 ## 交接
 

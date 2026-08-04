@@ -102,9 +102,9 @@ fn generation_one_control(
     );
     match (kind, common) {
         (
-            "prepare",
-            (
-                environment,
+        "prepare",
+        (
+            profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -113,7 +113,7 @@ fn generation_one_control(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Prepare {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -123,9 +123,9 @@ fn generation_one_control(
             service_db: None,
         },
         (
-            "abort",
-            (
-                environment,
+        "abort",
+        (
+            profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -134,7 +134,7 @@ fn generation_one_control(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Abort {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -143,9 +143,9 @@ fn generation_one_control(
             replica_id,
         },
         (
-            "commit",
-            (
-                environment,
+        "commit",
+        (
+            profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -154,7 +154,7 @@ fn generation_one_control(
                 replica_id,
             ),
         ) => AssemblyActivationControl::Commit {
-            environment,
+            profile,
             activation_id,
             expected_generation,
             candidate_generation,
@@ -280,7 +280,7 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
 }
 
 #[tokio::test]
-async fn cold_recovery_rejects_config_snapshot_from_another_environment_before_config_views() {
+async fn cold_recovery_rejects_config_snapshot_from_another_profile_before_config_views() {
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let assembly = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
     let (snapshot, snapshot_resolver) =
@@ -305,7 +305,7 @@ async fn cold_recovery_rejects_config_snapshot_from_another_environment_before_c
         .expect_err("dev config snapshot must not recover into prod");
     let message = error.to_string();
     assert!(message.contains(&snapshot_id), "{message}");
-    assert!(message.contains("environment mismatch"), "{message}");
+    assert!(message.contains("profile mismatch"), "{message}");
     assert!(!message.contains("dev"), "{message}");
     assert!(!message.contains("prod"), "{message}");
     assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 1);
@@ -314,7 +314,7 @@ async fn cold_recovery_rejects_config_snapshot_from_another_environment_before_c
 
     let outcome = controller.health().unwrap().last_outcome.unwrap();
     assert_eq!(outcome.stage, AssemblyCandidateStage::Load);
-    let expected_health_error = format!("RuntimeConfigSnapshot {snapshot_id} environment mismatch");
+    let expected_health_error = format!("RuntimeConfigSnapshot {snapshot_id} profile mismatch");
     assert_eq!(
         outcome.error.as_deref(),
         Some(expected_health_error.as_str())

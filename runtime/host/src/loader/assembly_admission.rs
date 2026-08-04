@@ -56,7 +56,7 @@ struct PreparedAssembly {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AssemblyTransition {
-    environment: String,
+    profile: String,
     activation_id: String,
     expected_generation: u64,
     candidate_generation: u64,
@@ -72,7 +72,7 @@ struct StagedAssembly {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommittedAssembly {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: RuntimeAssemblyRef,
     config_snapshot: RuntimeConfigSnapshotRef,
@@ -523,7 +523,7 @@ impl AssemblyAdmissionController {
         assembly: Arc<RuntimeAssembly>,
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
-        environment: Option<&str>,
+        profile: Option<&str>,
         config_snapshot_ref: Option<&RuntimeConfigSnapshotRef>,
         config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<PreparedAssembly>
@@ -592,7 +592,7 @@ impl AssemblyAdmissionController {
             &self.runtime_replica_id,
             &self.db_provider,
             service_db,
-            environment,
+            profile,
             config_snapshot,
         )
         .await
@@ -796,7 +796,7 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
-    fn fail_candidate_config_snapshot_environment(
+    fn fail_candidate_config_snapshot_profile(
         &self,
         generation: u64,
         identity: &AssemblyIdentity,
@@ -807,7 +807,7 @@ impl AssemblyAdmissionController {
             identity,
             AssemblyCandidateStage::Load,
             format!(
-                "RuntimeConfigSnapshot {} environment mismatch",
+                "RuntimeConfigSnapshot {} profile mismatch",
                 config_snapshot.snapshot_id
             ),
         )
@@ -884,10 +884,15 @@ impl RuntimeHost {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
-        if activation_control_environment(&control) != self.trusted_environment() {
-            anyhow::bail!(
-                "assembly activation environment does not match Runtime trusted environment"
-            );
+        let profile = activation_control_profile(&control);
+        match self.trusted_profile() {
+            Some(frozen) if frozen == profile => {}
+            Some(frozen) => anyhow::bail!(
+                "assembly activation profile {profile} does not match Runtime frozen profile {frozen}"
+            ),
+            None => anyhow::bail!(
+                "assembly activation profile {profile} requires a router bootstrap profile first"
+            ),
         }
         self.assembly_admission
             .apply_activation_control(control, resolver, config_snapshot_resolver, service_db)
@@ -911,10 +916,15 @@ impl RuntimeHost {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
-        if activation_control_environment(&control) != self.trusted_environment() {
-            anyhow::bail!(
-                "assembly activation environment does not match Runtime trusted environment"
-            );
+        let profile = activation_control_profile(&control);
+        match self.trusted_profile() {
+            Some(frozen) if frozen == profile => {}
+            Some(frozen) => anyhow::bail!(
+                "assembly activation profile {profile} does not match Runtime frozen profile {frozen}"
+            ),
+            None => anyhow::bail!(
+                "assembly activation profile {profile} requires a router bootstrap profile first"
+            ),
         }
         self.assembly_admission
             .apply_cancellable_activation_control(
@@ -978,14 +988,14 @@ impl RuntimeHost {
     }
 }
 
-fn activation_control_environment(control: &AssemblyActivationControl) -> &str {
+fn activation_control_profile(control: &AssemblyActivationControl) -> &str {
     match control {
-        AssemblyActivationControl::Prepare { environment, .. }
-        | AssemblyActivationControl::Prepared { environment, .. }
-        | AssemblyActivationControl::Reject { environment, .. }
-        | AssemblyActivationControl::Commit { environment, .. }
-        | AssemblyActivationControl::Abort { environment, .. }
-        | AssemblyActivationControl::Register { environment, .. } => environment,
+        AssemblyActivationControl::Prepare { profile, .. }
+        | AssemblyActivationControl::Prepared { profile, .. }
+        | AssemblyActivationControl::Reject { profile, .. }
+        | AssemblyActivationControl::Commit { profile, .. }
+        | AssemblyActivationControl::Abort { profile, .. }
+        | AssemblyActivationControl::Register { profile, .. } => profile,
     }
 }
 

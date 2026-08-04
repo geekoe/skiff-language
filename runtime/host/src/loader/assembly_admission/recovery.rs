@@ -7,7 +7,7 @@ impl AssemblyAdmissionController {
     /// activated here. Any staged heap state from the previous session is discarded.
     pub(crate) async fn recover_committed<R, C>(
         &self,
-        environment: &str,
+        profile: &str,
         generation: u64,
         assembly: &RuntimeAssemblyRef,
         config_snapshot: &RuntimeConfigSnapshotRef,
@@ -21,7 +21,7 @@ impl AssemblyAdmissionController {
     {
         let _reload = self.reload.lock().await;
         self.discard_transient_for_reconnect()?;
-        skiff_artifact_model::validate_activation_environment(environment)
+        skiff_artifact_model::validate_activation_profile(profile)
             .map_err(anyhow::Error::msg)?;
         skiff_artifact_model::validate_activation_generation(generation, "committed.generation")
             .map_err(anyhow::Error::msg)?;
@@ -31,7 +31,7 @@ impl AssemblyAdmissionController {
             .map_err(anyhow::Error::msg)?;
 
         let committed = CommittedAssembly {
-            environment: environment.to_string(),
+            profile: profile.to_string(),
             generation,
             assembly: assembly.clone(),
             config_snapshot: config_snapshot.clone(),
@@ -48,7 +48,7 @@ impl AssemblyAdmissionController {
                 config_snapshot_resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
-                environment,
+                profile,
             )
             .await
             .map_err(|(_, error)| error)?;
@@ -72,8 +72,8 @@ impl AssemblyAdmissionController {
             .read()
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         if let Some(current) = &state.committed {
-            if current.environment != durable.environment {
-                anyhow::bail!("durable committed environment changed across reconnect");
+            if current.profile != durable.profile {
+                anyhow::bail!("durable committed profile changed across reconnect");
             }
             if durable.generation < current.generation {
                 anyhow::bail!("durable committed generation rolled back across reconnect");

@@ -32,7 +32,7 @@ fn v1_fixture_rewraps_to_v2_and_wrong_target_context_is_rejected() {
     let old = v1_fixture(&keyring, PLAINTEXT_SENTINEL);
     let crypto = DbMigrationCrypto::new(keyring);
     let target = MigrationTargetContext {
-        environment: "dev",
+        profile: "dev",
         service_id: "skiff.run/agine",
         collection_name: "_skiff_c1_target",
     };
@@ -50,16 +50,16 @@ fn v1_fixture_rewraps_to_v2_and_wrong_target_context_is_rejected() {
         .expect("new context must verify");
     assert_eq!(verified.as_bytes(), migrated.commitment.as_bytes());
 
-    let wrong_environment = MigrationTargetContext {
-        environment: "prod",
+    let wrong_profile = MigrationTargetContext {
+        profile: "prod",
         ..target
     };
     let error = match crypto.verify_v2_document(
-        wrong_environment,
+        wrong_profile,
         &["token".to_string()],
         &migrated.document,
     ) {
-        Ok(_) => panic!("wrong environment must not authenticate"),
+        Ok(_) => panic!("wrong profile must not authenticate"),
         Err(error) => error,
     };
     assert!(!error.to_string().contains(PLAINTEXT_SENTINEL));
@@ -93,7 +93,7 @@ fn ordinary_document_copy_preserves_non_string_id_without_plaintext_lane() {
         );
     let crypto = DbMigrationCrypto::new(keyring);
     let target = MigrationTargetContext {
-        environment: "dev",
+        profile: "dev",
         service_id: "skiff.run/plain",
         collection_name: "_skiff_c1_plain",
     };

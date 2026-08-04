@@ -66,7 +66,6 @@ async fn run() -> anyhow::Result<()> {
         router_url: file_config.router,
         base_runtime_id,
         runtime_home: file_config.runtime_home,
-        environment: file_config.environment,
         http_response_max_bytes: file_config.http_response_max_bytes,
         http_egress_proxy: file_config.http_egress_proxy,
     })?;

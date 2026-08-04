@@ -71,7 +71,7 @@ impl HandshakeSession {
                 "skiff-runtime-h-registration-cut-{label}-{}",
                 uuid::Uuid::new_v4()
             )),
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             http_response_max_bytes: 1024,
             http_egress_proxy: None,
         })
@@ -107,7 +107,7 @@ impl HandshakeSession {
                 "artifactsPath": self.artifact_root,
                 "serviceDb": { "mongoUrl": "mongodb://h-registration-cut" },
                 "activation": {
-                    "environment": "test",
+                    "profile": "test",
                     "generation": 1,
                     "assembly": self.assembly_ref,
                     "configSnapshot": self.config_snapshot_ref,
@@ -224,7 +224,7 @@ async fn accept_sequence_registers_then_ack_then_health() {
 
     let register = session.recv_register().await;
     let AssemblyActivationControl::Register {
-        environment,
+        profile,
         generation,
         replica_id,
         ..
@@ -232,7 +232,7 @@ async fn accept_sequence_registers_then_ack_then_health() {
     else {
         panic!("bootstrap must be answered with assembly.activation:Register");
     };
-    assert_eq!(environment, "test");
+    assert_eq!(profile, "test");
     assert_eq!(generation, 1);
     assert_eq!(replica_id, RUNTIME_ID);
 
@@ -317,7 +317,7 @@ async fn business_frame_before_ack_is_wrong_order_terminal() {
     let prepare = encode_assembly_activation_frame(
         AssemblyActivationFrameDirection::RouterToRuntime,
         &AssemblyActivationControl::Prepare {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: "pre-ack".to_string(),
             expected_generation: 1,
             candidate_generation: 2,

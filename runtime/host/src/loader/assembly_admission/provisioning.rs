@@ -64,7 +64,7 @@ impl AssemblyAdmissionController {
         control.validate().map_err(anyhow::Error::msg)?;
         match control {
             AssemblyActivationControl::Prepare {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -80,7 +80,7 @@ impl AssemblyAdmissionController {
                 }
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
-                    environment,
+                    profile,
                     activation_id,
                     expected_generation,
                     candidate_generation,
@@ -115,7 +115,7 @@ impl AssemblyAdmissionController {
                 Ok(reply)
             }
             AssemblyActivationControl::Commit {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -131,7 +131,7 @@ impl AssemblyAdmissionController {
                 }
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
-                    environment,
+                    profile,
                     activation_id,
                     expected_generation,
                     candidate_generation,
@@ -162,7 +162,7 @@ impl AssemblyAdmissionController {
                 Ok(Some(reply))
             }
             AssemblyActivationControl::Abort {
-                environment,
+                profile,
                 activation_id,
                 expected_generation,
                 candidate_generation,
@@ -172,7 +172,7 @@ impl AssemblyAdmissionController {
             } => {
                 self.ensure_replica(&replica_id)?;
                 self.abort_transition(&AssemblyTransition {
-                    environment,
+                    profile,
                     activation_id,
                     expected_generation,
                     candidate_generation,
@@ -199,7 +199,7 @@ impl AssemblyAdmissionController {
             .committed
             .as_ref()
             .map(|committed| AssemblyActivationControl::Register {
-                environment: committed.environment.clone(),
+                profile: committed.profile.clone(),
                 generation: committed.generation,
                 assembly: committed.assembly.clone(),
                 config_snapshot: committed.config_snapshot.clone(),
@@ -239,7 +239,7 @@ impl AssemblyAdmissionController {
                 ));
             }
             if let Some(committed) = &state.committed {
-                if committed.environment != transition.environment
+                if committed.profile != transition.profile
                     || committed.generation != transition.expected_generation
                 {
                     return Err(admission_reject(
@@ -269,7 +269,7 @@ impl AssemblyAdmissionController {
             config_snapshot_resolver,
             "exact RuntimeAssembly record resolution failed",
             service_db,
-            &transition.environment,
+            &transition.profile,
         );
         let prepared = if let Some(cancellation) = cancellation {
             tokio::select! {
@@ -331,7 +331,7 @@ impl AssemblyAdmissionController {
                 return Ok(());
             }
             if let Some(committed) = &state.committed {
-                if committed.environment != transition.environment
+                if committed.profile != transition.profile
                     || committed.generation != transition.expected_generation
                 {
                     return Err(admission_reject(
@@ -377,7 +377,7 @@ impl AssemblyAdmissionController {
                 config_snapshot_resolver,
                 "committed RuntimeAssembly recovery resolution failed",
                 service_db,
-                &transition.environment,
+                &transition.profile,
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)
@@ -528,7 +528,7 @@ impl AssemblyAdmissionController {
             .take()
             .expect("staged assembly was checked above");
         let committed = CommittedAssembly {
-            environment: transition.environment.clone(),
+            profile: transition.profile.clone(),
             generation: transition.candidate_generation,
             assembly: transition.assembly.clone(),
             config_snapshot: transition.config_snapshot.clone(),
@@ -551,7 +551,7 @@ enum PrepareTransitionOutcome {
 
 impl AssemblyTransition {
     fn same_tuple(&self, other: &Self) -> bool {
-        self.environment == other.environment
+        self.profile == other.profile
             && self.activation_id == other.activation_id
             && self.expected_generation == other.expected_generation
             && self.candidate_generation == other.candidate_generation
@@ -561,7 +561,7 @@ impl AssemblyTransition {
 
     fn prepared_control(&self, replica_id: String) -> AssemblyActivationControl {
         AssemblyActivationControl::Prepared {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             activation_id: self.activation_id.clone(),
             expected_generation: self.expected_generation,
             candidate_generation: self.candidate_generation,
@@ -577,7 +577,7 @@ impl AssemblyTransition {
         reason: AssemblyActivationRejectReason,
     ) -> AssemblyActivationControl {
         AssemblyActivationControl::Reject {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             activation_id: self.activation_id.clone(),
             expected_generation: self.expected_generation,
             candidate_generation: self.candidate_generation,
@@ -590,7 +590,7 @@ impl AssemblyTransition {
 
     fn register_control(&self, replica_id: String) -> AssemblyActivationControl {
         AssemblyActivationControl::Register {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.candidate_generation,
             assembly: self.assembly.clone(),
             config_snapshot: self.config_snapshot.clone(),
@@ -604,7 +604,7 @@ fn committed_matches_transition(
     transition: &AssemblyTransition,
 ) -> bool {
     committed.is_some_and(|committed| {
-        committed.environment == transition.environment
+        committed.profile == transition.profile
             && committed.generation == transition.candidate_generation
             && committed.assembly == transition.assembly
             && committed.config_snapshot == transition.config_snapshot

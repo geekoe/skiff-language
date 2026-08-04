@@ -55,7 +55,7 @@ impl ActiveAssemblyContextSet {
         runtime_replica_id: &str,
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
-        environment: Option<&str>,
+        profile: Option<&str>,
         config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<Self> {
         if runtime_replica_id.trim().is_empty() {
@@ -80,7 +80,7 @@ impl ActiveAssemblyContextSet {
             candidate,
             &runtime_program_db_by_deployment,
             service_db,
-            environment,
+            profile,
         )?;
         // This is intentionally one provider call for the whole candidate. Services can have
         // multiple exact deployments in one generation while sharing one system database, so
@@ -136,13 +136,13 @@ impl ActiveAssemblyContextSet {
             let db_source = if runtime_program_db.is_empty() {
                 DbCapabilitySource::unavailable()
             } else {
-                let environment = environment.ok_or_else(|| {
+                let profile = profile.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "activation {:?} with DB metadata requires a trusted environment",
+                        "activation {:?} with DB metadata requires a trusted profile",
                         deployment
                     )
                 })?;
-                skiff_artifact_model::validate_activation_environment(environment)
+                skiff_artifact_model::validate_activation_profile(profile)
                     .map_err(anyhow::Error::msg)?;
                 let provider = service_db.ok_or_else(|| {
                     anyhow::anyhow!(
@@ -152,7 +152,7 @@ impl ActiveAssemblyContextSet {
                 })?;
                 db_provider
                     .build(DbProviderBuildInput {
-                        environment: environment.to_string(),
+                        environment: profile.to_string(),
                         service_id: deployment.service_id.clone(),
                         config: DbProviderConfig::mongo(provider.mongo_url.as_str())
                             .map_err(provider_error)?,
@@ -308,7 +308,7 @@ fn candidate_db_provider_inputs(
         Vec<DbProviderTargetMetadata>,
     >,
     service_db: Option<&AssemblyActivationServiceDb>,
-    environment: Option<&str>,
+    profile: Option<&str>,
 ) -> anyhow::Result<Vec<DbProviderBuildInput>> {
     let mut inputs = Vec::new();
     for (deployment, _) in candidate.activations() {
@@ -324,13 +324,13 @@ fn candidate_db_provider_inputs(
         if runtime_program_db.is_empty() {
             continue;
         }
-        let environment = environment.ok_or_else(|| {
+        let profile = profile.ok_or_else(|| {
             anyhow::anyhow!(
-                "activation {:?} with DB metadata requires a trusted environment",
+                "activation {:?} with DB metadata requires a trusted profile",
                 deployment
             )
         })?;
-        skiff_artifact_model::validate_activation_environment(environment)
+        skiff_artifact_model::validate_activation_profile(profile)
             .map_err(anyhow::Error::msg)?;
         let provider = service_db.ok_or_else(|| {
             anyhow::anyhow!(
@@ -339,7 +339,7 @@ fn candidate_db_provider_inputs(
             )
         })?;
         inputs.push(DbProviderBuildInput {
-            environment: environment.to_string(),
+            environment: profile.to_string(),
             service_id: deployment.service_id.clone(),
             config: DbProviderConfig::mongo(provider.mongo_url.as_str()).map_err(provider_error)?,
             runtime_program_db,
