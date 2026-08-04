@@ -254,6 +254,63 @@ export async function runConfigSnapshotAuthoring({
   return result;
 }
 
+export async function runStdSeedAuthoring({ skiffRoot, artifactRoot }) {
+  const invocation = stdSeedAuthoringInvocation({ skiffRoot, artifactRoot });
+  const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: cargoTargetDir(skiffRoot),
+    },
+  });
+  if (outcome.error !== null || outcome.signal !== null || outcome.code !== 0) {
+    const detail = outcome.stderr.trim() || outcome.stdout.trim()
+      || outcome.error?.message || `cargo exited ${outcome.signal ?? outcome.code}`;
+    throw new Error(`std seed failed: ${detail}`);
+  }
+  let result;
+  try {
+    result = JSON.parse(outcome.stdout);
+  } catch (error) {
+    throw new Error(`std seed returned invalid JSON: ${error.message}`);
+  }
+  if (
+    !isPlainObject(result)
+    || !isPlainObject(result.package)
+    || !isPlainObject(result.pointer)
+    || typeof result.pointerPath !== 'string'
+    || result.pointerPath.length === 0
+  ) {
+    throw new Error('std seed did not return an exact PackageArtifact seed receipt');
+  }
+  return result;
+}
+
+export function stdSeedAuthoringInvocation({ skiffRoot, artifactRoot }) {
+  if (!isAbsolute(skiffRoot) || !isAbsolute(artifactRoot)) {
+    throw new Error('std seed authoring requires absolute skiffRoot and artifactRoot');
+  }
+  return {
+    command: 'cargo',
+    cwd: skiffRoot,
+    args: [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      resolve(skiffRoot, 'compiler', 'Cargo.toml'),
+      '--bin',
+      'skiff-compiler',
+      '--',
+      'std-seed',
+      '--artifact-root',
+      artifactRoot,
+      '--platform-source-root',
+      skiffRoot,
+      '--json',
+    ],
+  };
+}
+
 export function configSnapshotAuthoringInvocation({
   skiffRoot,
   artifactRoot,

@@ -146,6 +146,10 @@ path = "tests/timeout_artifact_lowering.rs"
 name = "actor_routing_projection_publish"
 path = "tests/actor_routing_projection_publish.rs"
 
+[[test]]
+name = "std_seed_authoring"
+path = "tests/std_seed_authoring.rs"
+
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }

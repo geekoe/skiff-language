@@ -5,9 +5,55 @@ use super::{render_authoring_receipt, run_with_args, USAGE};
 #[test]
 fn internal_actions_are_absent_from_public_help() {
     assert!(!USAGE.contains("platform-source"));
+    assert!(!USAGE.contains("std-seed"));
     for object in ["package", "assembly"] {
         assert!(USAGE.contains(object));
     }
+}
+
+#[test]
+fn std_seed_action_requires_exactly_one_platform_source_root() {
+    let missing = run_error(&[
+        "std-seed",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+    ]);
+    assert_eq!(missing, "--platform-source-root is required");
+
+    let duplicate = run_error(&[
+        "std-seed",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--platform-source-root",
+        "/missing-platform-root-a",
+        "--platform-source-root",
+        "/missing-platform-root-b",
+    ]);
+    assert_eq!(
+        duplicate,
+        "--platform-source-root was provided more than once"
+    );
+}
+
+#[test]
+fn std_seed_action_requires_artifact_root_and_rejects_unknown_options() {
+    let missing = run_error(&[
+        "std-seed",
+        "--platform-source-root",
+        "/missing-platform-root",
+    ]);
+    assert_eq!(missing, "--artifact-root is required");
+
+    let unknown = run_error(&[
+        "std-seed",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--platform-source-root",
+        "/missing-platform-root",
+        "--profile",
+        "dev",
+    ]);
+    assert_eq!(unknown, "unknown std-seed option --profile");
 }
 
 #[test]
