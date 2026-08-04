@@ -14,7 +14,7 @@
 
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use skiff_compiler::CompilerPlatformSources;
@@ -131,20 +131,32 @@ fn is_canonical_http_authority(authority: &str) -> bool {
 }
 
 pub fn run_skiff_tests_with_options(
-    input: &Path,
+    inputs: &[PathBuf],
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, SkiffTestError> {
-    let metadata = fs::metadata(input).map_err(|source| SkiffTestError::Metadata {
-        path: input.display().to_string(),
+    if inputs.is_empty() {
+        return Err(SkiffTestError::Metadata {
+            path: "<missing input>".to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "at least one input path is required",
+            ),
+        });
+    }
+    let first = inputs
+        .first()
+        .expect("inputs was checked to be non-empty");
+    let first_metadata = fs::metadata(first).map_err(|source| SkiffTestError::Metadata {
+        path: first.display().to_string(),
         source,
     })?;
-    if options.live && !metadata.is_file() {
+    if options.live && !first_metadata.is_file() {
         return Err(SkiffTestError::InvalidLiveOptions);
     }
     let package_root =
-        canonical_package::find_package_root(input, metadata.is_file()).ok_or_else(|| {
+        canonical_package::find_package_root(first, first_metadata.is_file()).ok_or_else(|| {
             SkiffTestError::MissingPackageRoot {
-                path: input.display().to_string(),
+                path: first.display().to_string(),
             }
         })?;
     let artifact_root = options
@@ -156,8 +168,29 @@ pub fn run_skiff_tests_with_options(
         &package_root,
         artifact_root,
     )?;
-    let cases =
-        canonical_fixture::discover_test_service_cases(input, &package_root, metadata.is_file())?;
+    let mut cases = Vec::new();
+    for input in inputs {
+        let metadata = fs::metadata(input).map_err(|source| SkiffTestError::Metadata {
+            path: input.display().to_string(),
+            source,
+        })?;
+        let input_package_root =
+            canonical_package::find_package_root(input, metadata.is_file()).ok_or_else(|| {
+                SkiffTestError::MissingPackageRoot {
+                    path: input.display().to_string(),
+                }
+            })?;
+        if input_package_root != package_root {
+            return Err(SkiffTestError::MissingPackageRoot {
+                path: input.display().to_string(),
+            });
+        }
+        cases.extend(canonical_fixture::discover_test_service_cases(
+            input,
+            &package_root,
+            metadata.is_file(),
+        )?);
+    }
     if cases.is_empty() {
         return Ok(SkiffTestSummary {
             passed: 0,

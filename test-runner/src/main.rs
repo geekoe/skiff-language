@@ -11,7 +11,7 @@ use skiff_test_runner::{
     run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir>... --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -43,7 +43,7 @@ fn run(stdout: &mut impl Write) -> Result<(), String> {
 }
 
 struct CliArgs {
-    input: PathBuf,
+    inputs: Vec<PathBuf>,
     options: SkiffTestOptions,
     deny_skips: bool,
     require_tests: bool,
@@ -51,7 +51,7 @@ struct CliArgs {
 
 #[derive(Default)]
 struct RawCliArgs {
-    input: Option<PathBuf>,
+    inputs: Vec<PathBuf>,
     artifact_root: Option<PathBuf>,
     platform_source_root: Option<PathBuf>,
     base_assembly: Option<String>,
@@ -118,7 +118,7 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
             "--deny-skips" => set_flag(&mut parsed.deny_skips, &arg)?,
             "--require-tests" => set_flag(&mut parsed.require_tests, &arg)?,
             value if value.starts_with('-') => return Err(format!("unknown option {value}")),
-            value => set_once_path(&mut parsed.input, value.to_string(), "input")?,
+            value => parsed.inputs.push(PathBuf::from(value)),
         }
     }
     finish_args(parsed).map(Some)
@@ -126,7 +126,7 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
 
 fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     let RawCliArgs {
-        input,
+        inputs,
         artifact_root,
         platform_source_root,
         base_assembly,
@@ -139,7 +139,12 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         deny_skips,
         require_tests,
     } = parsed;
-    let input = input.ok_or_else(|| "missing input path".to_string())?;
+    if inputs.is_empty() {
+        return Err("missing input path".to_string());
+    }
+    if live && inputs.len() != 1 {
+        return Err("--live requires exactly one explicit test file".to_string());
+    }
     let artifact_root = artifact_root.ok_or_else(|| "missing --artifact-root".to_string())?;
     let platform_source_root =
         platform_source_root.ok_or_else(|| "missing --platform-source-root".to_string())?;
@@ -205,7 +210,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         }
     };
     Ok(CliArgs {
-        input,
+        inputs,
         options: SkiffTestOptions {
             live,
             artifact_root: Some(artifact_root),
@@ -224,7 +229,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
 }
 
 fn execute(args: CliArgs, stdout: &mut impl Write) -> Result<(), String> {
-    let summary = run_skiff_tests_with_options(&args.input, &args.options)
+    let summary = run_skiff_tests_with_options(&args.inputs, &args.options)
         .map_err(|error| error.to_string())?;
     report_summary(&summary, args.deny_skips, args.require_tests, stdout)
 }

@@ -34,7 +34,7 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
@@ -287,7 +287,11 @@ async function test(rawArgs) {
       throw new Error('--profile must be a canonical ASCII token');
     }
   }
-  const kind = await detectRootKind(args.root);
+  const kinds = await Promise.all(args.roots.map(detectRootKind));
+  if (args.roots.length > 1 && kinds.some((kind) => kind.kind !== 'file')) {
+    throw new Error('multiple skiff test roots must be explicit test files');
+  }
+  const kind = kinds[0];
   if (kind.kind !== 'package' && kind.kind !== 'file') {
     throw new Error(kind.message);
   }
@@ -301,7 +305,7 @@ async function test(rawArgs) {
     '--bin',
     'skiff-test-runner',
     '--',
-    args.root,
+    ...args.roots,
   ];
   if (!shouldUseIsolatedTestRuntime(live)) {
     testArgs.push('--live');
@@ -560,7 +564,7 @@ function parseRegistryCommandArgs(rawArgs, spec) {
 function parseRootCommand(rawArgs, spec) {
   const options = {};
   const flags = new Set();
-  let root;
+  const roots = [];
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (spec.flags.has(arg)) {
@@ -609,15 +613,12 @@ function parseRootCommand(rawArgs, spec) {
     if (arg.startsWith('-')) {
       throw new Error(`unknown option ${arg}`);
     }
-    if (root !== undefined) {
-      throw new Error(`unexpected argument ${arg}`);
-    }
-    root = resolve(arg);
+    roots.push(resolve(arg));
   }
-  if (!root) {
+  if (roots.length === 0) {
     throw new Error('missing root path');
   }
-  return { flags, options, root };
+  return { flags, options, roots };
 }
 
 function resolveDevHome(envValue) {

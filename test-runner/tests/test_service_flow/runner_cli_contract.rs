@@ -318,19 +318,19 @@ mod tests {
         };
 
         let nested = run_skiff_tests_with_options(
-            &service,
+            &[service.clone()],
             &options(nested_runtime, Some("http://127.0.0.1:9".to_string())),
         )
         .unwrap_err();
         assert!(matches!(nested, SkiffTestError::MissingIsolatedRuntimeRoot));
 
         let missing =
-            run_skiff_tests_with_options(&service, &options(separate_runtime.clone(), None))
+            run_skiff_tests_with_options(&[service.clone()], &options(separate_runtime.clone(), None))
                 .unwrap_err();
         assert!(matches!(missing, SkiffTestError::MissingCanonicalRuntime));
 
         let invalid = run_skiff_tests_with_options(
-            &service,
+            &[service],
             &options(
                 separate_runtime,
                 Some("http://127.0.0.1:9/not-an-origin".to_string()),
