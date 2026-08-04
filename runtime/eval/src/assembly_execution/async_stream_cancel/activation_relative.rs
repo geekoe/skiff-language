@@ -11,7 +11,6 @@ use crate::{
     assembly_execution::service_error_channel::ServiceErrorImportContext,
     error::{Result, RuntimeError},
     eval_context::EvalContext,
-    program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind},
 };
 
 #[cfg(test)]
@@ -96,10 +95,7 @@ impl EvalContext<'_> {
         instruction: &ActivationRelativeServiceCall,
         args: Vec<RuntimeValue>,
     ) -> Result<PreparedActivationRelativeServiceCall> {
-        self.context.checkpoint(ExecutionCheckpoint::new(
-            ExecutionCheckpointKind::GeneratedChunk,
-            0,
-        ))?;
+        self.context.poll_execution_scope()?;
         let target = self
             .context
             .runtime_assembly_target()?

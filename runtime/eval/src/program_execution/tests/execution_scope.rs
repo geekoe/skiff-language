@@ -223,6 +223,82 @@ impl OwnedExecutionControlApi for ScopeAwareControl {
     }
 }
 
+#[derive(Clone)]
+struct RequestBudgetControl {
+    owned: skiff_runtime_request::OwnedExecutionControl,
+}
+
+impl ExecutionControlApi for RequestBudgetControl {
+    fn owned(&self) -> OwnedExecutionControl {
+        OwnedExecutionControl::new(self.clone())
+    }
+
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.owned.borrow().cancel_flag()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.owned.borrow().cancellation_token()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.owned.borrow().deadline()
+    }
+
+    fn execution_scope(&self) -> Result<ExecutionScope, ExecutionScopeAccessError> {
+        Ok(self.owned.borrow().execution_scope().clone())
+    }
+
+    fn derive_scope(
+        &self,
+        local_deadline: Instant,
+        site: InstructionSourceSite,
+    ) -> Result<OwnedExecutionControl, ExecutionScopeAccessError> {
+        let owned = self
+            .owned
+            .derive_scope(local_deadline, site)
+            .map_err(ExecutionScopeAccessError::from)?;
+        Ok(OwnedExecutionControl::new(RequestBudgetControl { owned }))
+    }
+
+    fn check_cancelled(&self) -> ExecutionControlResult<()> {
+        self.owned.borrow().check_cancelled()
+    }
+
+    fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()> {
+        self.owned.borrow().add_instruction_units(units)
+    }
+
+    fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
+        self.owned.borrow().poll_execution_budget()
+    }
+
+    fn file_source_stream_context(
+        &self,
+        stream_runtime: StreamRuntime,
+    ) -> FileSourceStreamContext<'static> {
+        test_runtime::file_source_stream_context(stream_runtime)
+    }
+}
+
+impl OwnedExecutionControlApi for RequestBudgetControl {
+    fn borrow(&self) -> ExecutionControl<'_> {
+        ExecutionControl::new(self.clone())
+    }
+
+    fn cancelled(&self) -> &AtomicBool {
+        self.owned.cancelled()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.owned.cancellation_token()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.owned.deadline()
+    }
+}
+
 fn context(control: ScopeAwareControl) -> ProgramExecutionContext<'static> {
     context_with_overrides(control, ContextOverrides::default())
 }
@@ -241,7 +317,13 @@ fn context_with_overrides(
     control: ScopeAwareControl,
     overrides: ContextOverrides,
 ) -> ProgramExecutionContext<'static> {
-    let execution = ExecutionControl::new(control);
+    context_from_execution(ExecutionControl::new(control), overrides)
+}
+
+fn context_from_execution(
+    execution: ExecutionControl<'static>,
+    overrides: ContextOverrides,
+) -> ProgramExecutionContext<'static> {
     let runtime_factory = test_runtime::runtime_factory();
     let stream_runtime = runtime_factory.stream_runtime();
     let test_effect_doubles =
@@ -1243,13 +1325,17 @@ fn program_execution_scope_owned_round_trip_preserves_current_scripted_clock_seq
 
     context
         .checkpoint(checkpoint)
-        .expect("first scripted checkpoint remains before the deadline");
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+        .expect("counter-only checkpoints do not consult the clock");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
 
     let owned = OwnedProgramExecutionContext::capture(&context);
     let borrowed = owned.borrow();
+    borrowed
+        .poll_execution_scope()
+        .expect("first full poll remains before the deadline");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
     let error = borrowed
-        .checkpoint(checkpoint)
+        .poll_execution_scope()
         .expect_err("owned round-trip must continue the same scripted clock");
     assert!(matches!(
         error.scope_terminal().map(|carrier| carrier.terminal()),
@@ -1337,21 +1423,14 @@ fn program_execution_scope_checkpoint_kinds_account_explicit_units() {
 }
 
 #[test]
-fn program_execution_scope_scripted_clock_crosses_on_bounded_checkpoint() {
+fn program_execution_scope_checkpoint_is_counter_only_and_poll_crosses_scripted_deadline() {
     let base = Instant::now();
     let (cancellation, root) = root_scope(None);
     let scope = root
         .derive(base + Duration::from_millis(3), site())
         .expect("local scope");
     let calls = Arc::new(AtomicU64::new(0));
-    let clock = ScriptedClock::new(
-        vec![
-            base,
-            base + Duration::from_millis(2),
-            base + Duration::from_millis(3),
-        ],
-        Arc::clone(&calls),
-    );
+    let clock = ScriptedClock::new(vec![base + Duration::from_millis(3)], Arc::clone(&calls));
     let context = context(ScopeAwareControl::available(
         scope.clone(),
         cancellation.token(),
@@ -1359,28 +1438,40 @@ fn program_execution_scope_scripted_clock_crosses_on_bounded_checkpoint() {
     .with_execution_clock(ExecutionClock::new(clock));
 
     let checkpoint = ExecutionCheckpoint::new(ExecutionCheckpointKind::GeneratedChunk, 1);
-    context.checkpoint(checkpoint).expect("first checkpoint");
-    context.checkpoint(checkpoint).expect("second checkpoint");
-    let error = context
+    context
         .checkpoint(checkpoint)
-        .expect_err("third checkpoint crosses deadline");
+        .expect("first counter-only checkpoint");
+    context
+        .checkpoint(checkpoint)
+        .expect("second counter-only checkpoint");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "cheap per-node checkpoints must not read the execution clock"
+    );
+    let error = context
+        .poll_execution_scope()
+        .expect_err("full poll crosses deadline");
     assert!(matches!(
         error.scope_terminal().map(|carrier| carrier.terminal()),
         Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
     ));
-    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-fn program_execution_scope_checkpoint_normalizes_cancel_and_keeps_instruction_limit() {
+fn program_execution_scope_checkpoint_defers_full_check_to_poll() {
     let (cancellation, scope) = root_scope(None);
     let cancelled_context = context(ScopeAwareControl::available(scope, cancellation.token()));
     cancellation.cancel();
-    assert!(matches!(
-        cancelled_context.checkpoint(ExecutionCheckpoint::new(
+    cancelled_context
+        .checkpoint(ExecutionCheckpoint::new(
             ExecutionCheckpointKind::FunctionEntry,
             1,
-        )),
+        ))
+        .expect("counter-only checkpoint defers cancellation to the next full check");
+    assert!(matches!(
+        cancelled_context.poll_execution_scope(),
         Err(RuntimeError::Cancelled)
     ));
 
@@ -1395,11 +1486,14 @@ fn program_execution_scope_checkpoint_normalizes_cancel_and_keeps_instruction_li
         ScopeAwareControl::available(active_scope, active_cancellation.token())
             .with_budget_error(limit),
     );
-    assert!(matches!(
-        limit_context.checkpoint(ExecutionCheckpoint::new(
+    limit_context
+        .checkpoint(ExecutionCheckpoint::new(
             ExecutionCheckpointKind::LoopBackedge,
             1,
-        )),
+        ))
+        .expect("counter-only checkpoint defers the budget failure");
+    assert!(matches!(
+        limit_context.poll_execution_scope(),
         Err(RuntimeError::ExecutionBudgetExceeded {
             reason: BudgetReason::InstructionLimitExceeded,
             instruction_count: 11,
@@ -1433,10 +1527,7 @@ fn program_execution_scope_generic_deadline_race_recovers_current_owner() {
     )));
 
     let error = context
-        .checkpoint(ExecutionCheckpoint::new(
-            ExecutionCheckpointKind::LoopCondition,
-            1,
-        ))
+        .poll_execution_scope()
         .expect_err("generic deadline must recover scope owner");
     let carrier = error.scope_terminal().expect("internal scope terminal");
     assert!(matches!(

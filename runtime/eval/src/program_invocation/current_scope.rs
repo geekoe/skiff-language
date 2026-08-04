@@ -67,8 +67,12 @@ fn current_terminal(scope: &ExecutionScope) -> RuntimeError {
 }
 
 fn checkpoint(context: &ProgramExecutionContext<'_>, units: u64) -> Result<()> {
-    context.checkpoint(ExecutionCheckpoint::new(
-        ExecutionCheckpointKind::GeneratedChunk,
-        units,
-    ))
+    if units == 0 {
+        context.poll_execution_scope()
+    } else {
+        context.checkpoint(ExecutionCheckpoint::new(
+            ExecutionCheckpointKind::GeneratedChunk,
+            units,
+        ))
+    }
 }

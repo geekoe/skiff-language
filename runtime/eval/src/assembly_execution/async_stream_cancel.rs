@@ -51,10 +51,7 @@ use crate::{
     error::{is_deadline_or_scope_terminal, stream_runtime_error_from_eval, Result, RuntimeError},
     eval_context::EvalContext,
     heap_access::HeapAccess,
-    program_execution::{
-        ExecutionCheckpoint, ExecutionCheckpointKind, OwnedProgramExecutionContext,
-        ProgramExecutionContext,
-    },
+    program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_stream::{executable_body_contains_emit, linked_stream_item_type},
     runtime_ops::{runtime_from_wire, runtime_from_wire_required_plan, runtime_to_wire},
     type_projection::EvalTypeProjection,
@@ -80,10 +77,7 @@ pub(crate) async fn execute_service_call(
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    if let Err(error) = context.context.checkpoint(ExecutionCheckpoint::new(
-        ExecutionCheckpointKind::GeneratedChunk,
-        0,
-    )) {
+    if let Err(error) = context.context.poll_execution_scope() {
         target.provider_request().cancel();
         return Err(error);
     }

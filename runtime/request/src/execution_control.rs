@@ -117,7 +117,11 @@ impl<'a> ExecutionControl<'a> {
     }
 
     pub fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()> {
-        self.add_instruction_units_at(units, Instant::now())
+        if self.execution_budget.add_units(units) {
+            self.poll_execution_budget()
+        } else {
+            Ok(())
+        }
     }
 
     pub fn add_instruction_units_at(&self, units: u64, now: Instant) -> ExecutionControlResult<()> {

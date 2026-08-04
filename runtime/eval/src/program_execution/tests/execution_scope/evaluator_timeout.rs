@@ -552,14 +552,7 @@ async fn f445h_e4r_tail_call_negative_timeout_keeps_ordinary_depth_and_deadline_
     let deadline_run = fixture
         .execute(context_with_clock(
             deadline_control.clone(),
-            ScriptedClock::new(
-                {
-                    let mut values = vec![base; 9];
-                    values.push(deadline);
-                    values
-                },
-                Arc::clone(&deadline_calls),
-            ),
+            ScriptedClock::new(vec![base, deadline], Arc::clone(&deadline_calls)),
         ))
         .await;
     let deadline_error = deadline_run
@@ -574,8 +567,8 @@ async fn f445h_e4r_tail_call_negative_timeout_keeps_ordinary_depth_and_deadline_
     );
     assert_eq!(
         deadline_calls.load(Ordering::Relaxed),
-        10,
-        "the deadline must cross on the timed body's post-call continuation"
+        2,
+        "the deadline must cross on the timeout scope's success-path exit poll"
     );
     assert_parent_restored(&deadline_control);
 }
@@ -686,8 +679,45 @@ async fn f445h_e4r_timeout_expression_value_uses_child_and_restores_parent() {
         &RuntimeValue::String("value".to_string())
     );
     assert!(
-        calls.load(Ordering::Relaxed) >= 6,
-        "real root expression, timeout derivation, and child expression all consume the scripted clock"
+        calls.load(Ordering::Relaxed) >= 2,
+        "timeout derivation and the success-path exit poll consume the scripted clock"
+    );
+    assert_parent_restored(&control);
+}
+
+#[tokio::test]
+async fn f445h_e4r_timeout_fewer_than_poll_interval_nodes_materializes_on_success_exit() {
+    let base = Instant::now();
+    let deadline = base + Duration::from_millis(5);
+    let wrapper_site = source_site(120);
+    let (cancellation, root) = root_scope(None);
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let fixture = LinkedTimeoutFixture::new(
+        vec![
+            null_expr(),
+            LinkedExprIr::Timeout {
+                duration_ms: 5,
+                value: ExprRefIr { expression: 0 },
+                site: wrapper_site.clone(),
+            },
+        ],
+        vec![return_statement(1)],
+    );
+    let run = fixture
+        .execute(context_with_clock(
+            control.clone(),
+            crossing_clock(base, deadline, 2),
+        ))
+        .await;
+    let error = run
+        .result
+        .expect_err("a short timeout body must not silently escape its deadline");
+    assert_timeout_exception(
+        uncaught_exception(&error),
+        &run.heap,
+        &wrapper_site,
+        &wrapper_site,
+        1,
     );
     assert_parent_restored(&control);
 }
@@ -744,7 +774,7 @@ async fn f445h_e4r_timeout_local_owner_inner_catch_misses_outer_catch_hits_and_c
     let run = fixture
         .execute(context_with_clock(
             control.clone(),
-            crossing_clock(base, deadline, 7),
+            crossing_clock(base, deadline, 2),
         ))
         .await;
     let flow = run
@@ -790,7 +820,7 @@ async fn f445h_e4r_timeout_nested_inner_earlier_materializes_inner_only() {
     let run = nested_timeout_fixture(10, 5, outer_site, inner_site.clone())
         .execute(context_with_clock(
             control.clone(),
-            crossing_clock(base, inner_deadline, 8),
+            crossing_clock(base, inner_deadline, 3),
         ))
         .await;
     let error = run
@@ -817,7 +847,7 @@ async fn f445h_e4r_timeout_nested_outer_earlier_passes_inner_and_materializes_ou
     let run = nested_timeout_fixture(5, 10, outer_site.clone(), inner_site)
         .execute(context_with_clock(
             control.clone(),
-            crossing_clock(base, outer_deadline, 8),
+            crossing_clock(base, outer_deadline, 3),
         ))
         .await;
     let error = run
@@ -844,7 +874,7 @@ async fn f445h_e4r_timeout_equal_absolute_deadline_materializes_outer_only() {
     let run = nested_timeout_fixture(5, 5, outer_site.clone(), inner_site)
         .execute(context_with_clock(
             control.clone(),
-            crossing_clock(base, deadline, 8),
+            crossing_clock(base, deadline, 3),
         ))
         .await;
     let error = run
@@ -887,7 +917,7 @@ async fn f445h_e4r_timeout_inherited_request_deadline_is_not_extended_materializ
     let run = fixture
         .execute(context_with_clock(
             control.clone(),
-            crossing_clock(base, request_deadline, 7),
+            crossing_clock(base, request_deadline, 2),
         ))
         .await;
     let error = run
@@ -952,7 +982,7 @@ async fn f445h_e4r_timeout_ancestor_cancel_wins_same_poll_and_lifecycle_returns_
             CancelAtCallClock {
                 base,
                 deadline,
-                cancel_at: 6,
+                cancel_at: 2,
                 calls: Arc::new(AtomicU64::new(0)),
                 cancellation,
             },

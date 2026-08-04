@@ -80,7 +80,9 @@ impl ExecutionCheckpoint {
 
 impl ProgramExecutionContext<'_> {
     pub(crate) fn with_execution_control(mut self, execution: OwnedExecutionControl) -> Self {
+        let execution_control = borrow_owned_execution_control(&execution);
         self.execution = execution;
+        self.execution_control = execution_control;
         self
     }
 
@@ -102,16 +104,24 @@ impl ProgramExecutionContext<'_> {
     }
 
     pub(crate) fn checkpoint(&self, checkpoint: ExecutionCheckpoint) -> Result<()> {
+        self.execution()
+            .add_instruction_units(checkpoint.units())
+            .map_err(|error| recover_execution_control_error(self, error))
+    }
+
+    /// Full deadline/cancel/instruction-limit check for key safety points.
+    ///
+    /// Per-node checkpoints only count instruction units and defer this check
+    /// to interval crossings. Callers that sit on a control-flow boundary
+    /// (async waits, derived-scope exits, provider starts) must use this when
+    /// the bounded overshoot of a cheap checkpoint is not acceptable.
+    pub(crate) fn poll_execution_scope(&self) -> Result<()> {
         let now = self.execution_clock.now();
         let execution = self.execution();
         let scope = execution.execution_scope().map_err(scope_access_error)?;
         if let Some(terminal) = scope.terminal_at(now) {
             return Err(ScopeTerminalCarrier::runtime_error(terminal));
         }
-
-        execution
-            .add_instruction_units(checkpoint.units())
-            .map_err(|error| recover_execution_control_error(self, error))?;
         execution
             .poll_execution_budget()
             .map_err(|error| recover_execution_control_error(self, error))

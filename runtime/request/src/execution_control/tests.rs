@@ -28,6 +28,77 @@ fn budget(deadline: Option<Instant>) -> Arc<ExecutionBudget> {
 }
 
 #[test]
+fn add_instruction_units_defers_full_check_until_interval_crossing_or_limit() {
+    let now = Instant::now();
+    let request_budget = Arc::new(ExecutionBudget::new(
+        ExecutionBudgetConfig {
+            enabled: true,
+            instruction_limit: Some(10_000),
+            poll_interval: 1024,
+        },
+        Some(now + Duration::from_secs(60)),
+    ));
+    let control = ExecutionControl::new(CancellationSource::new().token(), &request_budget);
+
+    for _ in 0..1023 {
+        control
+            .add_instruction_units(1)
+            .expect("accounting below the poll interval must not fail");
+    }
+    assert_eq!(
+        request_budget.stats_snapshot().poll_count,
+        0,
+        "per-node accounting must not poll the budget until an interval crossing"
+    );
+
+    control
+        .add_instruction_units(1)
+        .expect("crossing the poll interval performs a full check that still passes");
+    assert_eq!(
+        request_budget.stats_snapshot().poll_count,
+        1,
+        "the interval-crossing unit must run the full check"
+    );
+
+    let limited_budget = Arc::new(ExecutionBudget::new(
+        ExecutionBudgetConfig {
+            enabled: true,
+            instruction_limit: Some(5),
+            poll_interval: 1024,
+        },
+        None,
+    ));
+    let limited = ExecutionControl::new(CancellationSource::new().token(), &limited_budget);
+    for _ in 0..4 {
+        limited
+            .add_instruction_units(1)
+            .expect("accounting below the instruction limit must not fail");
+    }
+    let error = limited
+        .add_instruction_units(1)
+        .expect_err("reaching the instruction limit must run the full check");
+    assert!(matches!(
+        error,
+        ExecutionControlError::BudgetExceeded(failure)
+            if failure.reason == ExecutionBudgetReason::InstructionLimitExceeded
+    ));
+    assert_eq!(limited_budget.stats_snapshot().poll_count, 1);
+}
+
+#[test]
+fn add_instruction_units_observes_cancel_on_interval_crossing() {
+    let request_budget = budget(None);
+    let ancestor = CancellationSource::new();
+    let control = ExecutionControl::new(ancestor.token(), &request_budget);
+    ancestor.cancel();
+
+    assert_eq!(
+        control.add_instruction_units(1),
+        Err(ExecutionControlError::Cancelled)
+    );
+}
+
+#[test]
 fn derived_control_shares_instruction_and_poll_accounting_but_not_local_failure_telemetry() {
     let now = Instant::now();
     let request_budget = budget(None);
