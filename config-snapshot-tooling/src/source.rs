@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, fs, path::Path, process::Command};
 use std::os::unix::fs::PermissionsExt;
 
 use serde_json::{Map, Number, Value};
+use skiff_artifact_model::validate_activation_profile;
 
 use crate::error::{invalid, io_error};
 use crate::ConfigSnapshotToolingResult;
@@ -233,19 +234,7 @@ fn yaml_to_json(value: serde_yaml::Value, path: &Path) -> ConfigSnapshotToolingR
 }
 
 fn validate_profile(profile: &str) -> ConfigSnapshotToolingResult<()> {
-    if profile.is_empty()
-        || profile == "."
-        || profile == ".."
-        || !profile
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(invalid(
-            "<profile>",
-            "config profile must be a canonical ASCII profile token",
-        ));
-    }
-    Ok(())
+    validate_activation_profile(profile).map_err(|message| invalid("<profile>", message))
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> ConfigSnapshotToolingResult<String> {

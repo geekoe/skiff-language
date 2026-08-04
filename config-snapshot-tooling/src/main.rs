@@ -25,7 +25,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let packages = discover_exact_packages(&arguments.artifact_root, &assembly)?;
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
-            environment: arguments.environment,
             profile: arguments.profile,
             assembly,
             package_artifacts: packages,
@@ -40,10 +39,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct Arguments {
     artifact_root: PathBuf,
     assembly_record: PathBuf,
-    environment: String,
     profile: String,
     sources: Vec<ServiceConfigSource>,
 }
@@ -52,7 +51,6 @@ impl Arguments {
     fn parse(arguments: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut artifact_root = None;
         let mut assembly_record = None;
-        let mut environment = None;
         let mut profile = None;
         let mut sources = Vec::new();
         let mut arguments = arguments.peekable();
@@ -67,14 +65,13 @@ impl Arguments {
                 "--assembly-record" if assembly_record.is_none() => {
                     assembly_record = Some(PathBuf::from(value));
                 }
-                "--environment" if environment.is_none() => environment = Some(value),
                 "--profile" if profile.is_none() => profile = Some(value),
                 "--source" => {
                     let source = serde_json::from_str::<ServiceConfigSource>(&value)
                         .map_err(|error| format!("--source must be strict JSON: {error}"))?;
                     sources.push(source);
                 }
-                "--artifact-root" | "--assembly-record" | "--environment" | "--profile" => {
+                "--artifact-root" | "--assembly-record" | "--profile" => {
                     return Err(format!("{argument} was provided more than once"));
                 }
                 _ => return Err(format!("unknown option {argument}")),
@@ -87,7 +84,6 @@ impl Arguments {
         Ok(Self {
             artifact_root,
             assembly_record: assembly_record.ok_or("--assembly-record is required")?,
-            environment: environment.ok_or("--environment is required")?,
             profile: profile.ok_or("--profile is required")?,
             sources,
         })

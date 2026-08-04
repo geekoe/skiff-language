@@ -1,7 +1,7 @@
 use serde_json::Value;
 use skiff_artifact_model::RuntimeConfigSnapshotRef;
 
-pub(super) const ENVIRONMENT: &str = "package-tests";
+pub(super) const PROFILE: &str = "package-tests";
 pub(super) const ASSEMBLY_A: &str = concat!(
     "skiff-runtime-assembly-v3:sha256:",
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -30,7 +30,7 @@ pub(super) fn activation_receipt_body() -> String {
             "configSnapshot": { "snapshotId": SNAPSHOT_B },
         },
         "activeAssembly": {
-            "environment": ENVIRONMENT,
+            "profile": PROFILE,
             "generation": 2,
             "assemblyIdentity": ASSEMBLY_B,
             "configSnapshotId": SNAPSHOT_B,
@@ -41,7 +41,7 @@ pub(super) fn activation_receipt_body() -> String {
 }
 
 pub(super) fn health_body(
-    environment: &str,
+    profile: &str,
     generation: u64,
     assembly_identity: &str,
     pending: Value,
@@ -51,7 +51,7 @@ pub(super) fn health_body(
     serde_json::json!({
         "ok": true,
         "activeAssembly": {
-            "environment": environment,
+            "profile": profile,
             "generation": generation,
             "assemblyIdentity": assembly_identity,
             "configSnapshotId": snapshot_for_assembly(assembly_identity),
@@ -131,7 +131,7 @@ pub(super) fn counters() -> Value {
     });
     let activation = serde_json::json!({
         "phase": "idle",
-        "environment": null,
+        "profile": null,
         "activationId": null,
         "expectedGeneration": null,
         "candidateGeneration": null,
@@ -151,7 +151,7 @@ pub(super) fn counters() -> Value {
         "shutdown": false,
         "lastFailure": null,
         "repository": {
-            "environment": null,
+            "profile": null,
             "committedGeneration": null,
             "pendingActivationId": null,
             "lastOutcome": null,
@@ -180,7 +180,7 @@ pub(super) fn counters() -> Value {
         "activeRoutingEpoch": {
             "publishCount": 1,
             "active": {
-                "environment": ENVIRONMENT,
+                "profile": PROFILE,
                 "generation": 1,
                 "assemblyIdentity": ASSEMBLY_A,
                 "configSnapshotId": SNAPSHOT_A,
@@ -289,7 +289,7 @@ pub(super) fn replica(
 ) -> Value {
     serde_json::json!({
         "replicaId": REPLICA,
-        "environment": ENVIRONMENT,
+        "profile": PROFILE,
         "generation": generation,
         "assemblyIdentity": assembly_identity,
         "configSnapshotId": snapshot_for_assembly(assembly_identity),

@@ -79,15 +79,15 @@ fn readiness_requires_every_dispatch_ready_dimension() {
 
 #[test]
 fn exact_replica_tuple_is_required() {
-    let mut wrong_environment = replica(2, ASSEMBLY_B, "healthy", true);
-    wrong_environment["environment"] = Value::String("other-environment".to_string());
+    let mut wrong_profile = replica(2, ASSEMBLY_B, "healthy", true);
+    wrong_profile["profile"] = Value::String("other-profile".to_string());
     let wrong_generation = replica(1, ASSEMBLY_B, "healthy", true);
     let wrong_assembly = replica(2, ASSEMBLY_A, "healthy", true);
     let mut wrong_snapshot = replica(2, ASSEMBLY_B, "healthy", true);
     wrong_snapshot["configSnapshotId"] = Value::String(SNAPSHOT_A.to_string());
 
     for (name, non_matching) in [
-        ("environment", wrong_environment),
+        ("profile", wrong_profile),
         ("generation", wrong_generation),
         ("assembly", wrong_assembly),
         ("config snapshot", wrong_snapshot),
@@ -174,11 +174,11 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
             )),
         ),
         (
-            "environment mismatch",
+            "profile mismatch",
             Ok(HttpResponse {
                 status: 200,
                 body: health_body(
-                    "other-environment",
+                    "other-profile",
                     2,
                     ASSEMBLY_B,
                     Value::Null,
@@ -241,36 +241,31 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
 fn activation_receipt_must_match_the_requested_tuple() {
     let receipt = || wire::decode_activation_receipt(&activation_receipt_body()).unwrap();
     let snapshot_b = snapshot_ref(SNAPSHOT_B);
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_B, &snapshot_b).is_ok());
+    assert!(target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_B, &snapshot_b).is_ok());
     assert!(target_from_receipt(receipt(), "other", 2, ASSEMBLY_B, &snapshot_b).is_err());
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 3, ASSEMBLY_B, &snapshot_b).is_err());
-    assert!(target_from_receipt(receipt(), ENVIRONMENT, 2, ASSEMBLY_A, &snapshot_b).is_err());
-    assert!(target_from_receipt(
-        receipt(),
-        ENVIRONMENT,
-        2,
-        ASSEMBLY_B,
-        &snapshot_ref(SNAPSHOT_A),
-    )
-    .is_err());
+    assert!(target_from_receipt(receipt(), PROFILE, 3, ASSEMBLY_B, &snapshot_b).is_err());
+    assert!(target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_A, &snapshot_b).is_err());
+    assert!(
+        target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_B, &snapshot_ref(SNAPSHOT_A),).is_err()
+    );
 }
 
 #[test]
-fn readiness_target_preserves_dev_target_environment() {
+fn readiness_target_preserves_dev_target_profile() {
     let mut receipt: Value = serde_json::from_str(&activation_receipt_body()).unwrap();
-    receipt["activeAssembly"]["environment"] = Value::String("dev".to_string());
+    receipt["activeAssembly"]["profile"] = Value::String("dev".to_string());
     let receipt = wire::decode_activation_receipt(&receipt.to_string()).unwrap();
 
     let target =
         target_from_receipt(receipt, "dev", 2, ASSEMBLY_B, &snapshot_ref(SNAPSHOT_B)).unwrap();
 
-    assert_eq!(target.environment, "dev");
+    assert_eq!(target.profile, "dev");
 }
 
 fn target() -> ReadinessTarget {
     target_from_receipt(
         wire::decode_activation_receipt(&activation_receipt_body()).unwrap(),
-        ENVIRONMENT,
+        PROFILE,
         2,
         ASSEMBLY_B,
         &snapshot_ref(SNAPSHOT_B),
@@ -288,7 +283,7 @@ fn ok_health(
     HttpResponse {
         status: 200,
         body: health_body(
-            ENVIRONMENT,
+            PROFILE,
             generation,
             assembly_identity,
             pending,

@@ -31,27 +31,27 @@ pub struct ConfigSnapshotDeploymentInput {
 }
 
 pub fn project_runtime_config_snapshot(
-    environment: &str,
+    profile: &str,
     snapshot: RuntimeConfigSnapshotRef,
     inputs: Vec<ConfigSnapshotDeploymentInput>,
 ) -> ConfigSnapshotToolingResult<RuntimeConfigSnapshot> {
-    project_runtime_config_snapshot_with_base(environment, snapshot, None, inputs)
+    project_runtime_config_snapshot_with_base(profile, snapshot, None, inputs)
 }
 
 pub fn project_runtime_config_snapshot_with_base(
-    environment: &str,
+    profile: &str,
     snapshot: RuntimeConfigSnapshotRef,
     base: Option<&RuntimeConfigSnapshot>,
     mut inputs: Vec<ConfigSnapshotDeploymentInput>,
 ) -> ConfigSnapshotToolingResult<RuntimeConfigSnapshot> {
     if let Some(base) = base {
-        if base.environment() != environment {
+        if base.profile() != profile {
             return Err(invalid(
                 "<projection>",
                 format!(
-                    "base config snapshot environment {:?} does not match target environment {:?}",
-                    base.environment(),
-                    environment
+                    "base config snapshot profile {:?} does not match target profile {:?}",
+                    base.profile(),
+                    profile
                 ),
             ));
         }
@@ -77,7 +77,7 @@ pub fn project_runtime_config_snapshot_with_base(
         "<projection>",
         "deployment",
     )?;
-    RuntimeConfigSnapshot::new(environment, snapshot, deployments).map_err(Into::into)
+    RuntimeConfigSnapshot::new(profile, snapshot, deployments).map_err(Into::into)
 }
 
 fn project_deployment(

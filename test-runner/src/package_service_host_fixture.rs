@@ -19,7 +19,7 @@ pub const PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageServiceHostFixtureReceipt {
-    pub environment: String,
+    pub profile: String,
     pub payments_contract: ServiceContractRef,
     pub consumer_contract: ServiceContractRef,
     pub helper_package: PackageArtifactRef,
@@ -35,7 +35,7 @@ impl PackageServiceHostFixtureReceipt {
     pub fn to_json(&self) -> Value {
         json!({
             "schemaVersion": PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
-            "environment": self.environment,
+            "profile": self.profile,
             "contracts": {
                 "payments": self.payments_contract,
                 "consumer": self.consumer_contract,
@@ -74,10 +74,10 @@ pub fn prepare_package_service_host_fixture(
     fixture_root: &Path,
     work_root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<PackageServiceHostFixtureReceipt> {
-    if environment.trim().is_empty() {
-        anyhow::bail!("host fixture environment must not be empty");
+    if profile.trim().is_empty() {
+        anyhow::bail!("host fixture profile must not be empty");
     }
     fs::create_dir_all(work_root)?;
 
@@ -85,30 +85,30 @@ pub fn prepare_package_service_host_fixture(
         platform_sources,
         &fixture_root.join("helper"),
         artifact_root,
-        environment,
+        profile,
     )?;
     let provider_root = prepare_service_root(
         &fixture_root.join("provider"),
         &work_root.join("provider"),
-        environment,
+        profile,
         false,
     )?;
     let provider =
-        publish_service_package(platform_sources, &provider_root, artifact_root, environment)?;
+        publish_service_package(platform_sources, &provider_root, artifact_root, profile)?;
     let consumer_root = prepare_service_root(
         &fixture_root.join("consumer"),
         &work_root.join("consumer"),
-        environment,
+        profile,
         true,
     )?;
     let consumer =
-        publish_service_package(platform_sources, &consumer_root, artifact_root, environment)?;
+        publish_service_package(platform_sources, &consumer_root, artifact_root, profile)?;
 
     let root_deployments = [provider.deployment.clone(), consumer.deployment.clone()];
-    let base_assembly = project_assembly(artifact_root, environment, &root_deployments)?;
+    let base_assembly = project_assembly(artifact_root, profile, &root_deployments)?;
     let base_config_snapshot = project_config_snapshot(
         artifact_root,
-        environment,
+        profile,
         &base_assembly,
         [
             (provider.deployment.clone(), provider_root),
@@ -117,7 +117,7 @@ pub fn prepare_package_service_host_fixture(
     )?;
 
     Ok(PackageServiceHostFixtureReceipt {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         payments_contract: provider.contract,
         consumer_contract: consumer.contract,
         helper_package,
@@ -140,14 +140,14 @@ fn publish_service_package(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<ServicePackageReceipt> {
     let receipt = author(
         platform_sources,
         AuthoringObject::Package,
         root,
         artifact_root,
-        environment,
+        profile,
     )?;
     Ok(ServicePackageReceipt {
         package: serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())?,
@@ -161,7 +161,7 @@ fn publish_service_package(
 fn prepare_service_root(
     source: &Path,
     target: &Path,
-    environment: &str,
+    profile: &str,
     configured: bool,
 ) -> anyhow::Result<std::path::PathBuf> {
     copy_fixture_tree(source, target)?;
@@ -174,7 +174,7 @@ fn prepare_service_root(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("fixture package.yml must declare a string id"))?;
         fs::write(
-            target.join(format!("config.{environment}.yml")),
+            target.join(format!("config.{profile}.yml")),
             format!("\"{package_id}\":\n  app:\n    token: owned-by-base\n"),
         )?;
     }
@@ -203,7 +203,6 @@ fn project_config_snapshot(
             >>()?;
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
-            environment: profile.to_string(),
             profile: profile.to_string(),
             assembly,
             package_artifacts,
@@ -287,14 +286,14 @@ fn publish_package(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<PackageArtifactRef> {
     let receipt = author(
         platform_sources,
         AuthoringObject::Package,
         root,
         artifact_root,
-        environment,
+        profile,
     )?;
     Ok(serde_json::from_value(
         receipt["packageArtifactReceipt"]["artifact"].clone(),
@@ -303,10 +302,10 @@ fn publish_package(
 
 fn project_assembly(
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
     root_deployments: &[ServiceDeploymentRef],
 ) -> anyhow::Result<RuntimeAssemblyRef> {
-    let receipt = project_runtime_assembly(artifact_root, environment, root_deployments, true)
+    let receipt = project_runtime_assembly(artifact_root, profile, root_deployments, true)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(serde_json::from_value(
         receipt["runtimeAssemblyReceipt"]["assembly"].clone(),
@@ -318,17 +317,10 @@ fn author(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
-    environment: &str,
+    profile: &str,
 ) -> anyhow::Result<Value> {
-    build_authoring_object(
-        platform_sources,
-        object,
-        root,
-        artifact_root,
-        environment,
-        true,
-    )
-    .map_err(|error| anyhow::anyhow!(error.to_string()))
+    build_authoring_object(platform_sources, object, root, artifact_root, profile, true)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use skiff_test_runner::{run_skiff_tests_with_options, SkiffTestError, SkiffTestO
 
 use super::*;
 
-const RUNNER_ENVIRONMENT_KEYS: &[&str] = &[
+const RUNNER_OS_ENV_KEYS: &[&str] = &[
     "SKIFF_TEST_ARTIFACT_ROOT",
     "SKIFF_TEST_RUNTIME_ARTIFACT_ROOT",
     "SKIFF_TEST_ACTIVATION_URL",
@@ -20,14 +20,14 @@ const RUNNER_ENVIRONMENT_KEYS: &[&str] = &[
 fn run_runner<'a>(
     binary: &str,
     args: impl IntoIterator<Item = &'a str>,
-    environment: &[(&str, &str)],
+    os_env: &[(&str, &str)],
 ) -> Output {
     let mut command = Command::new(binary);
     command.args(args);
-    for key in RUNNER_ENVIRONMENT_KEYS {
+    for key in RUNNER_OS_ENV_KEYS {
         command.env_remove(key);
     }
-    for (key, value) in environment {
+    for (key, value) in os_env {
         command.env(key, value);
     }
     command.output().unwrap()
@@ -88,7 +88,7 @@ mod tests {
             "--live",
             "--activation-url",
             "--ingress-url",
-            "--environment",
+            "--profile",
             "--expected-generation",
             "--deny-skips",
             "--require-tests",
@@ -96,7 +96,7 @@ mod tests {
             assert!(help.contains(option), "help omitted {option}");
         }
         for retired in [
-            "--profile",
+            "--environment",
             "--test-config-literals",
             "--service-artifact-root",
             "--config",
@@ -176,7 +176,7 @@ mod tests {
                     "--bootstrap-only",
                     "--artifact-root",
                     "/missing-artifacts",
-                    "--environment",
+                    "--profile",
                     "platform-context",
                 ])
                 .args(extra)
@@ -231,15 +231,11 @@ mod tests {
 
         let incomplete_live = run_runner(runner, base.into_iter().chain(["--live"]), &[]);
         assert_failure_contains(
-        &incomplete_live,
-        "--live requires --activation-url, --ingress-url, --environment and --expected-generation",
-    );
-
-        let cli_target = run_runner(
-            runner,
-            base.into_iter().chain(["--environment", "dev"]),
-            &[],
+            &incomplete_live,
+            "--live requires --activation-url, --ingress-url, --profile and --expected-generation",
         );
+
+        let cli_target = run_runner(runner, base.into_iter().chain(["--profile", "dev"]), &[]);
         assert_failure_contains(
             &cli_target,
             "non-live targets are supplied only by the isolated runtime harness",
@@ -289,12 +285,7 @@ mod tests {
         ] {
             let output = Command::new(fixture)
                 .args(args)
-                .args([
-                    "--artifact-root",
-                    "artifacts",
-                    "--environment",
-                    "cli-contract",
-                ])
+                .args(["--artifact-root", "artifacts", "--profile", "cli-contract"])
                 .output()
                 .unwrap();
             assert_failure_contains(&output, expected);
@@ -322,7 +313,7 @@ mod tests {
             base_config_snapshot: None,
             activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
             ingress_url,
-            target_environment: "runner-preflight".to_string(),
+            target_profile: "runner-preflight".to_string(),
             expected_generation: 0,
         };
 

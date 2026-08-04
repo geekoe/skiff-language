@@ -178,11 +178,11 @@ fn runtime_assembly_projection_rejects_operation_input_before_store_reads() {
     let root = unique_temp_root("runtime-assembly-operation-validation");
     let reference = exact_deployment_ref("provider");
 
-    let invalid_environment =
+    let invalid_profile =
         project_runtime_assembly(&root, "../dev", std::slice::from_ref(&reference), false)
             .unwrap_err()
             .to_string();
-    assert!(invalid_environment.contains("assembly release"));
+    assert!(invalid_profile.contains("assembly release"));
 
     let duplicate =
         project_runtime_assembly(&root, "dev", &[reference.clone(), reference.clone()], false)
@@ -211,7 +211,7 @@ fn runtime_assembly_projection_publishes_the_canonical_empty_assembly_determinis
 
     let first_receipt = &first["runtimeAssemblyReceipt"];
     let second_receipt = &second["runtimeAssemblyReceipt"];
-    assert_eq!(first_receipt["environment"], json!("dev"));
+    assert_eq!(first_receipt["profile"], json!("dev"));
     assert_eq!(first_receipt["assembly"], second_receipt["assembly"]);
     assert_eq!(first_receipt["recordPath"], second_receipt["recordPath"]);
 
