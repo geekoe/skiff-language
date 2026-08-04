@@ -18,9 +18,9 @@ use super::{
     },
     program_mutation::{program_mutable_receiver_handle, runtime_u64},
     runtime_ops::{
-        runtime_array_item_carriers, runtime_array_items, runtime_debug_value_for_error,
-        runtime_deep_clone, runtime_deep_clone_carrier, runtime_map_get, runtime_map_get_carrier,
-        runtime_map_has, runtime_number_value, runtime_numeric,
+        runtime_debug_value_for_error, runtime_deep_clone, runtime_deep_clone_carrier,
+        runtime_map_get, runtime_map_get_carrier, runtime_map_has, runtime_number_value,
+        runtime_numeric,
     },
     runtime_value_view::RuntimeValueView,
 };
@@ -124,13 +124,13 @@ impl<'a> ReceiverMethodDispatch<'a> {
         receiver: RuntimeValueCarrier,
         args: &[RuntimeValueCarrier],
     ) -> Result<RuntimeValueCarrier> {
-        let Some(items) = runtime_array_item_carriers(&receiver, self.heap)? else {
+        let Some(len) = runtime_array_len(receiver.value(), self.heap)? else {
             return Err(RuntimeError::Decode("receiver is not an Array".to_string()));
         };
         let handle =
             program_mutable_receiver_handle(receiver.value(), self.heap, "Array receiver")?;
         match method {
-            BuiltinReceiverMethod::Length => Ok(RuntimeValue::Number(items.len() as f64).into()),
+            BuiltinReceiverMethod::Length => Ok(RuntimeValue::Number(len as f64).into()),
             BuiltinReceiverMethod::Push => {
                 self.heap.push_array_item_carrier(
                     handle,
@@ -322,12 +322,12 @@ impl ArrayReceiverMethods {
         ) {
             return Ok(None);
         }
-        let Some(items) = runtime_array_items(receiver, heap)? else {
+        let Some(len) = runtime_array_len(receiver, heap)? else {
             return Ok(None);
         };
 
         match op_method {
-            BuiltinReceiverMethod::Length => Ok(Some(RuntimeValue::Number(items.len() as f64))),
+            BuiltinReceiverMethod::Length => Ok(Some(RuntimeValue::Number(len as f64))),
             BuiltinReceiverMethod::Push => {
                 let item = args.first().cloned().unwrap_or(RuntimeValue::Null);
                 let handle = program_mutable_receiver_handle(receiver, heap, "Array.push")?;
@@ -366,6 +366,16 @@ impl ArrayReceiverMethods {
             BuiltinReceiverMethod::Clone => runtime_deep_clone(receiver, heap).map(Some),
             _ => Ok(None),
         }
+    }
+}
+
+fn runtime_array_len(value: &RuntimeValue, heap: &RequestHeap) -> Result<Option<usize>> {
+    let RuntimeValue::Heap(handle) = value else {
+        return Ok(None);
+    };
+    match heap.get(*handle)? {
+        HeapNode::Array(items) => Ok(Some(items.len())),
+        _ => Ok(None),
     }
 }
 

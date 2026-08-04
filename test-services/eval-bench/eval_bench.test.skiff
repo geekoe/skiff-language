@@ -1,0 +1,65 @@
+import std
+
+// Pure-CPU micro-benchmarks for the Skiff evaluator.
+//
+// No DB / HTTP / file / websocket / telemetry IO: every workload is bounded
+// arithmetic, control flow, tail recursion, or request-heap allocation.
+// Sizes are chosen to stay below the default 10M instruction budget per test
+// request while remaining large enough to be measurable as wall time.
+
+function benchSumWhile(limit: number) -> number {
+  let total = 0
+  let i = 0
+  while i < limit {
+    total = total + i
+    i = i + 1
+  }
+  return total
+}
+
+function benchSumTail(remaining: number, accumulator: number) -> number {
+  if remaining == 0 {
+    return accumulator
+  }
+  return benchSumTail(remaining - 1, accumulator + remaining)
+}
+
+function benchArraySum(size: number) -> number {
+  const items = Array.empty<number>()
+  let i = 0
+  while i < size {
+    items.push(i)
+    i = i + 1
+  }
+  let total = 0
+  for item in items {
+    total = total + item
+  }
+  return total
+}
+
+function benchStringConcat(count: number) -> number {
+  let text = ""
+  let i = 0
+  while i < count {
+    text = text.concat("x")
+    i = i + 1
+  }
+  return text.length()
+}
+
+test "benchmark: while sum 200_000" {
+  assert benchSumWhile(200000) == 19999900000
+}
+
+test "benchmark: tail recursion sum 50_000" {
+  assert benchSumTail(50000, 0) == 1250025000
+}
+
+test "benchmark: array build + sum 200_000" {
+  assert benchArraySum(200000) == 19999900000
+}
+
+test "benchmark: string concat 2_000" {
+  assert benchStringConcat(2000) == 2000
+}
