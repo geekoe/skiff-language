@@ -200,9 +200,15 @@ impl CanonicalTestRecords {
 pub(crate) struct CanonicalPublishSession {
     package_admissions: PackageArtifactAdmissionCache,
     owned_package_publications: BTreeMap<(PathBuf, PackageArtifactRef), PublishedPackageArtifact>,
+    trusted_source: bool,
 }
 
 impl CanonicalPublishSession {
+    pub(crate) fn with_trusted_source(mut self, trusted: bool) -> Self {
+        self.trusted_source = trusted;
+        self
+    }
+
     pub(crate) fn owned_package_publication_count(&self) -> usize {
         self.owned_package_publications.len()
     }
@@ -215,8 +221,13 @@ fn copy_package(
     session: &mut CanonicalPublishSession,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
-    let admitted = session.package_admissions.admit(source, reference)?;
-    written.extend(target.write_validated_package_copy_records(admitted)?);
+    if session.trusted_source {
+        let records = source.read_package_copy_records_raw(reference)?;
+        written.extend(target.write_package_copy_records_raw(&records)?);
+    } else {
+        let admitted = session.package_admissions.admit(source, reference)?;
+        written.extend(target.write_validated_package_copy_records(admitted)?);
+    }
     Ok(())
 }
 

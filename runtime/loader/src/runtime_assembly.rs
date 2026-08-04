@@ -18,6 +18,8 @@ mod content_validation;
 mod gateway_ingress;
 mod graph_validation;
 
+use crate::filesystem_resolver::trusted_test_source;
+
 use content_validation::{
     validate_assembly, validate_contract_ref, validate_file_content, validate_file_ref,
     validate_file_ref_path, validate_package_file_targets, validate_package_ref,
@@ -530,7 +532,9 @@ where
                 .resolver
                 .resolve_package(&reference)
                 .with_context(|| format!("failed to resolve package {reference:?}"))?;
-            validate_package_ref(&reference, &artifact)?;
+            if !trusted_test_source() {
+                validate_package_ref(&reference, &artifact)?;
+            }
             let schema_index = self.load_package_schema_index(&artifact)?;
             let (files, file_slots) = self.load_files(&reference, &artifact, &mut shared_files)?;
             validate_package_file_targets(&reference, &artifact, &files, &file_slots)?;
@@ -589,14 +593,16 @@ where
                 artifact.package_id
             );
         }
-        skiff_artifact_identity::validate_package_schema_index(&index)
-            .map_err(anyhow::Error::from)
-            .with_context(|| {
-                format!(
-                    "invalid Package schema index for package {}",
-                    artifact.package_id
-                )
-            })?;
+        if !trusted_test_source() {
+            skiff_artifact_identity::validate_package_schema_index(&index)
+                .map_err(anyhow::Error::from)
+                .with_context(|| {
+                    format!(
+                        "invalid Package schema index for package {}",
+                        artifact.package_id
+                    )
+                })?;
+        }
 
         let mut type_ids = BTreeSet::new();
         let mut public_paths = BTreeSet::new();

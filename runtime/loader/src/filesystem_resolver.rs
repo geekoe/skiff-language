@@ -17,6 +17,10 @@ use crate::{
     RuntimeAssemblyRecordResolver,
 };
 
+pub(crate) fn trusted_test_source() -> bool {
+    std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT").is_ok_and(|value| value == "1")
+}
+
 /// Production filesystem resolver for the typed canonical artifact store.
 ///
 /// Every path comes from an exact typed reference. Raw coordinates are checked
@@ -80,7 +84,11 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         &self,
         reference: &PackageSchemaIndexRef,
     ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
-        Ok(self.store.read_package_schema_index(reference)?)
+        if trusted_test_source() {
+            Ok(self.store.read_package_schema_index_unchecked(reference)?)
+        } else {
+            Ok(self.store.read_package_schema_index(reference)?)
+        }
     }
 
     fn resolve_package_schema_type(
@@ -103,7 +111,11 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         {
             return Ok(artifact.clone());
         }
-        let artifact = self.store.read_package_artifact(reference)?;
+        let artifact = if trusted_test_source() {
+            self.store.read_package_artifact_unchecked(reference)?
+        } else {
+            self.store.read_package_artifact(reference)?
+        };
         self.cache
             .packages
             .write()

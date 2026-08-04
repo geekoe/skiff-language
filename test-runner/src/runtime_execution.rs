@@ -86,7 +86,9 @@ pub fn run_package_cases(
     let ingress_url = ingress_url.strip_suffix('/').unwrap_or(ingress_url);
     let run_config = load_test_service_run_config(&project, Some(ingress_url))?;
     let case_batches = batching::partition_cases(cases, options.live);
-    let mut publish_session = CanonicalPublishSession::default();
+    let trusted_source = std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT")
+        .is_ok_and(|value| value == "1");
+    let mut publish_session = CanonicalPublishSession::default().with_trusted_source(trusted_source);
     let mut package_admissions = PackageAdmissionCache::default();
     let execution_batches = prepare_execution_batches_with(
         case_batches,
@@ -168,6 +170,8 @@ fn execute_assembly_batches(
     // SHA-256 admission for the same package closure on every batch.
     let mut package_reads = BTreeMap::<PackageArtifactRef, Arc<PackageArtifact>>::new();
     let mut actor_routing_inputs = BTreeMap::<PackageBuildId, _>::new();
+    let trusted_source = std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT")
+        .is_ok_and(|value| value == "1");
     execute_batches_with(
         batches,
         options.expected_generation,
@@ -202,14 +206,25 @@ fn execute_assembly_batches(
                         let artifact = match package_reads.get(package_ref) {
                             Some(artifact) => artifact.clone(),
                             None => {
-                                let artifact = store
-                                    .read_package_artifact(package_ref)
-                                    .map_err(|error| {
+                                let artifact = if trusted_source {
+                                    store
+                                        .read_package_artifact_unchecked(package_ref)
+                                        .map_err(|error| {
+                                            CanonicalFixtureError::InvalidInput(format!(
+                                                "read package artifact {}@{} for actor routing projection: {error}",
+                                                package_ref.package_id, package_ref.package_version
+                                            ))
+                                        })?
+                                } else {
+                                    store
+                                        .read_package_artifact(package_ref)
+                                        .map_err(|error| {
                                         CanonicalFixtureError::InvalidInput(format!(
                                             "read package artifact {}@{} for actor routing projection: {error}",
                                             package_ref.package_id, package_ref.package_version
                                         ))
-                                    })?;
+                                    })?
+                                };
                                 package_reads.insert(package_ref.clone(), artifact.clone());
                                 artifact
                             }

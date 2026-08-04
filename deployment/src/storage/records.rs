@@ -51,6 +51,26 @@ impl CanonicalArtifactStore {
         self.read_validated_package_artifact_record(reference)
     }
 
+    /// Reads and parses a package artifact without re-running canonical JSON
+    /// admission or identity recomputation.
+    ///
+    /// This is only safe for stores produced and owned by the same trusted
+    /// workflow; callers must gate it behind an explicit trust decision.
+    pub fn read_package_artifact_unchecked(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> StorageResult<Arc<PackageArtifact>> {
+        let path = PackageArtifactRecordPath::new(reference)?;
+        let bytes = self.read_bytes(path.as_relative_path())?;
+        let host_path = self.root().join(path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &bytes)?;
+        raw_package_ref(&host_path, &value, reference)?;
+        Ok(Arc::new(typed_from_value::<PackageArtifact>(
+            &host_path,
+            value,
+        )?))
+    }
+
     pub fn write_package_schema_index(&self, index: &PackageSchemaIndex) -> StorageResult<PathBuf> {
         validate_package_schema_index(index)?;
         let reference = PackageSchemaIndexRef {
@@ -87,6 +107,35 @@ impl CanonicalArtifactStore {
             );
         }
         ensure_canonical(&host_path, &bytes, &index)?;
+        Ok(Arc::new(index))
+    }
+
+    /// Reads and parses a package schema index without canonical admission.
+    /// Only safe for stores owned by the same trusted workflow.
+    pub fn read_package_schema_index_unchecked(
+        &self,
+        reference: &PackageSchemaIndexRef,
+    ) -> StorageResult<Arc<PackageSchemaIndex>> {
+        let path = PackageSchemaIndexRecordPath::new(reference)?;
+        let bytes = self.read_bytes(path.as_relative_path())?;
+        let host_path = self.root().join(path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &bytes)?;
+        raw_string(&host_path, &value, &["packageId"], &reference.package_id)?;
+        raw_string(
+            &host_path,
+            &value,
+            &["packageSchemaIndexIdentity"],
+            reference.package_schema_index_identity.as_str(),
+        )?;
+        let index = typed_from_value::<PackageSchemaIndex>(&host_path, value)?;
+        if index.package_id != reference.package_id
+            || index.package_schema_index_identity != reference.package_schema_index_identity
+        {
+            return invalid(
+                &host_path,
+                "typed PackageSchemaIndex does not match exact reference",
+            );
+        }
         Ok(Arc::new(index))
     }
 

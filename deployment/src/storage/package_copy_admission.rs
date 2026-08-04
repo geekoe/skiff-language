@@ -58,6 +58,18 @@ struct ValidatedPackageArtifactRecord {
     record: ValidatedPackageRecord,
 }
 
+/// Raw bytes of one exact package closure, read without canonical
+/// re-validation.
+///
+/// This is only safe when the source store was produced and owned by the same
+/// trusted workflow (for example the canonical isolated service test fixture).
+/// The bytes are still content-addressed by their record paths, so the target
+/// store's immutable writer rejects any conflicting content.
+#[derive(Debug)]
+pub struct RawPackageCopyRecords {
+    records: Vec<(ArtifactRelativePath, Vec<u8>)>,
+}
+
 impl ValidatedPackageCopyRecords {
     pub fn artifact(&self) -> &PackageArtifact {
         &self.artifact
@@ -106,6 +118,64 @@ impl PackageArtifactAdmissionCache {
 }
 
 impl CanonicalArtifactStore {
+    pub fn read_package_copy_records_raw(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> StorageResult<RawPackageCopyRecords> {
+        let package_path = PackageArtifactRecordPath::new(reference)?;
+        let package_bytes = self.read_bytes(package_path.as_relative_path())?;
+        let host_path = self.root().join(package_path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &package_bytes)?;
+        let package = typed_from_value::<PackageArtifact>(&host_path, value)?;
+        let mut records = Vec::with_capacity(
+            package.files.len()
+                + package.static_resources.len()
+                + package.package_schema_type_records.len()
+                + 2,
+        );
+        records.push((package_path.as_relative_path().clone(), package_bytes));
+        for file_reference in &package.files {
+            let path = PackageFileIrRecordPath::new(reference, file_reference)?;
+            let bytes = self.read_bytes(path.as_relative_path())?;
+            records.push((path.as_relative_path().clone(), bytes));
+        }
+        for resource_reference in &package.static_resources {
+            let path = PackageResourceRecordPath::new(reference, resource_reference)?;
+            let bytes = self.read_bytes(path.as_relative_path())?;
+            records.push((path.as_relative_path().clone(), bytes));
+        }
+        for record in package.package_schema_type_records.values() {
+            let record_reference = PackageSchemaTypeRecordRef {
+                package_id: record.package_id.clone(),
+                package_schema_type_id: record.package_schema_type_id.clone(),
+            };
+            let path = PackageSchemaTypeRecordPath::new(&record_reference)?;
+            let bytes = self.read_bytes(path.as_relative_path())?;
+            records.push((path.as_relative_path().clone(), bytes));
+        }
+        let index_path = PackageSchemaIndexRecordPath::new(&PackageSchemaIndexRef {
+            package_id: package.package_schema_index.package_id.clone(),
+            package_schema_index_identity: package
+                .package_schema_index
+                .package_schema_index_identity
+                .clone(),
+        })?;
+        let index_bytes = self.read_bytes(index_path.as_relative_path())?;
+        records.push((index_path.as_relative_path().clone(), index_bytes));
+        Ok(RawPackageCopyRecords { records })
+    }
+
+    pub fn write_package_copy_records_raw(
+        &self,
+        records: &RawPackageCopyRecords,
+    ) -> StorageResult<Vec<PathBuf>> {
+        records
+            .records
+            .iter()
+            .map(|(path, bytes)| self.write_immutable(path, bytes))
+            .collect()
+    }
+
     pub(super) fn read_validated_package_artifact_record(
         &self,
         reference: &PackageArtifactRef,
