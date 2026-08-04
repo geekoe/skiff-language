@@ -243,8 +243,14 @@ impl Scheduler {
     /// recovery + renewal + due-scan cycle. Runs forever until the task is
     /// aborted or the store is closed.
     pub async fn run(&self) {
+        // The wake receiver is cloned once and reused for every cycle.
+        // Cloning inside the wait would copy the receiver's "seen version"
+        // from `wake_rx`, which is never advanced by `borrow_and_update`; a
+        // fresh clone would then see every new wake as already seen and the
+        // loop would never sleep after the first wake.
+        let mut wake = self.wake_rx.clone();
         loop {
-            self.wait_for_cycle().await;
+            self.wait_for_cycle(&mut wake).await;
             self.run_cycle().await;
         }
     }
@@ -498,8 +504,7 @@ impl Scheduler {
         }
     }
 
-    async fn wait_for_cycle(&self) {
-        let mut wake = self.wake_rx.clone();
+    async fn wait_for_cycle(&self, wake: &mut watch::Receiver<u64>) {
         let interval_ms = i64::try_from(self.config.scan_interval.as_millis()).unwrap_or(i64::MAX);
         let next = self.clock.now_millis().saturating_add(interval_ms);
         loop {
@@ -551,6 +556,57 @@ mod tests {
         scheduler.wake();
         scheduler.wake();
         assert_eq!(*scheduler.wake_tx.borrow(), first + 2);
+    }
+
+    #[test]
+    fn wake_is_consumed_exactly_once_per_wake() {
+        let store: TaskStoreHandle = Arc::new(crate::MemoryTaskStore::new());
+        let admission = Arc::new(NoopAdmission);
+        let scheduler = Scheduler::new(
+            store,
+            admission,
+            Arc::new(SystemClock),
+            SchedulerConfig::default(),
+            RetryBackoffPolicy::default(),
+        );
+        let mut wake = scheduler.wake_rx.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            // One wake makes the first wait return immediately.
+            scheduler.wake();
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                scheduler.wait_for_cycle(&mut wake),
+            )
+            .await
+            .expect("first wait should return immediately after wake");
+
+            // Without another wake the next wait must not return immediately:
+            // the wake notification was consumed, so the wait falls through to
+            // the scan-interval sleep and the timeout wins.
+            let second = tokio::time::timeout(
+                Duration::from_millis(100),
+                scheduler.wait_for_cycle(&mut wake),
+            )
+            .await;
+            assert!(
+                second.is_err(),
+                "second wait without a new wake must not return immediately (hot loop)"
+            );
+
+            // A fresh wake is observed again and returns immediately.
+            scheduler.wake();
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                scheduler.wait_for_cycle(&mut wake),
+            )
+            .await
+            .expect("third wait should return immediately after a fresh wake");
+        });
     }
 
     struct NoopAdmission;
