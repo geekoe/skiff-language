@@ -77,7 +77,7 @@ sequence test。
 关键不变式：
 
 - active routing 只有 `ActiveRoutingEpochStore` 一个 authority：immutable
-  `RoutingEpoch`（environment、assembly generation/identity、config snapshot
+  `RoutingEpoch`（profile、assembly generation/identity、config snapshot
   id、ingress/deployment/actor projection）原子 `Arc` 发布；admission 捕获
   完整 epoch，不允许混合新旧 epoch。
 - `RuntimeRegistrationDirectory` 使用 `current_by_replica` 与

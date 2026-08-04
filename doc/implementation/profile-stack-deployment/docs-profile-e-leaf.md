@@ -151,15 +151,27 @@ doc/architecture/package-service-contract-deployment.md
 - 对语义存在歧义（如测试例外、OS env 键、migration-tool 操作面字段名）时
   按设计 §2/§12 与基线代码事实判断；超出设计范围的变化不自行补设计。
 
-## 自验收矩阵（同步完成后回填）
+## 自验收矩阵（已回填）
 
 | 设计/任务条款 | 文档证据 | 反向搜索证据 | 验收命令 |
 | --- | --- | --- | --- |
-| CLI/示例 environment → profile | AGENTS.md、router/README.md、runtime/README.md | `rg -- '--environment' doc/` 零残留（除测试负例/历史白名单） | rg |
-| frame v4 / request v3 / snapshot record v3 / activation state v1 表述一致 | router/README、runtime.md、gateway、package-service 表 | `rg 'frame-v3|targetEnvironment|activation\.environment' doc/` 零残留（白名单除外） | rg |
-| storage/加密域 profile | db.md、db-capability-architecture.md、overview.md 等 | `rg 'storageEnvironment|environment \+ serviceId' doc/` 零残留 | rg |
-| 测试体系例外保留 | testing.md、service-yml.md 表述 | `skiff-test` 固定配置 + 激活 target 独立语义仍在 | rg + 人工核对 |
-| 历史实现记录与设计文档未动 | — | `git diff --stat 1d4ac521..HEAD -- doc/implementation doc/architecture/profile-stack-deployment.md` 仅含本叶子 | git diff |
+| CLI/示例 environment → profile | AGENTS.md `--profile <profile>`；router/README.md 删除 `environment: dev`、必需字段改 profile；runtime/README.md 删除 `environment: production`、必需字段收敛为 router/runtime-home | `rg -- '--environment'`（doc/、根与组件 README，排除 doc/implementation 与设计）零残留 | rg |
+| frame/schema 表述与基线一致 | router/README、runtime.md、gateway-runtime-adapter-boundary、package-service-contract-deployment 表、runtime-deployment-topology 均为 `skiff-runtime-frame-v4`/frame v4 | `rg 'frame-v3|frame v3|targetEnvironment|activation\.environment|EnvironmentActivation|activation-request-v[12]|config-snapshot-record-v[12]' doc/`（排除历史与设计）零残留 | rg |
+| storage/加密域 profile | db.md `storageProfile`、`profile + serviceId`；db-capability-architecture、open-issues、overview、runtime.md、package-service-contract-deployment 等定界表述均改 profile | `rg 'storageEnvironment|environment \+ serviceId' doc/` 零残留 | rg |
+| 测试体系例外保留（§2） | testing.md“测试service配置profile与激活target是两个概念”：`skiff-test` 固定选择配置/secret overlay，激活target（`--profile`）独立且不得反向选择 `config.<profile>.yml`；service-yml.md live激活target不改变该config profile | 例外语义仍在（人工核对） | rg + 人工 |
+| 历史实现记录与设计文档未动 | `git diff 1d4ac521 -- doc/architecture/profile-stack-deployment.md` 为空；`git status --short doc/implementation` 无历史改动（仅已提交的本叶子） | — | git diff/status |
+| 写集边界 | `git status --short` 21 个文件全部为 .md（AGENTS.md、router/runtime README、doc/overview.md、doc/reference ×5、doc/architecture ×12） | 零代码/配置/fixtures 改动 | git status |
+
+## 自验收证据（命令与结果）
+
+1. 旧语义反向搜索（doc/，排除 doc/implementation 与设计文档）：
+   `targetEnvironment|activation\.environment|EnvironmentActivation|storageEnvironment|--environment|environments/|assembly-per-environment|environment root|Environment assembly|Environment activation|Environment rollback|target environment|activation environment|effective environment|committed environment|runtime frame v3|skiff-runtime-frame-v[123]|environment \+ serviceId|environment 从|environment 变化|environment 与|environment、`
+   → 0 命中。
+2. `rg -i environment doc/`（同样排除项）仅剩 9 处，全部为通用 OS/ambient 环境语义或
+   `SKIFF_TEST_ENVIRONMENT` OS env 键（设计 §12 白名单），逐处人工核对无需改动。
+3. `git diff --check` 干净；`git status --short` 仅 21 个 .md，零代码/配置/fixtures。
+4. 设计文档相对基线逐字节未变；`doc/implementation/**` 历史记录未动。
+5. 未运行 build/test（纯文档节点，风险低）。
 
 ## 交接
 

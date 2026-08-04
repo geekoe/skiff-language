@@ -220,7 +220,7 @@ runtime-home: /opt/skiff/runtime-home
 ```bash
 node scripts/skiff.mjs assembly activate \
   --artifact-root /path/to/artifacts \
-  --environment <environment> \
+  --profile <profile> \
   --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' \
   --expected-generation <n> \
   --activation-url http://127.0.0.1:4001/__skiff/activate-assembly

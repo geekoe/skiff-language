@@ -8,7 +8,7 @@ plane契约，不是语言语义，也不定义production平台发布流程。
 
 Managed watch的期望状态由以下输入共同决定：
 
-- dev registry的schema版本、environment和entries；
+- dev registry的schema版本、profile和entries；
 - 命令行显式追加的静态root；
 - effective root集合的源码、control files、三层配置和Package解析输入。
 
@@ -16,7 +16,7 @@ Router当前committed activation tuple是CAS观察状态，不是期望状态输
 watch自己的每次成功activation都会凭generation变化再次触发下一次activation。
 
 watch不能只在进程启动时展开一次registry。每轮poll及registry文件变化后都必须重新读取registry，重新计算
-effective environment与root集合，再验证live roots。registry schema、effective environment、canonical
+effective profile与root集合，再验证live roots。registry schema、effective profile、canonical
 entry/root集合及root内容都进入同一个语义fingerprint；只比较启动时root的mtime不是合法实现。
 
 watch内部至少区分：
@@ -24,7 +24,7 @@ watch内部至少区分：
 - `lastKnownGoodRegistry`：最近一次结构合法且live root验证通过的registry；
 - `pendingFingerprint`：当前等待构建或重试的期望状态；
 - `lastSuccessfulFingerprint`：已经完成build、snapshot publish和activation commit的状态；
-- Router返回的exact committed environment、generation、assembly ref与config snapshot ref。
+- Router返回的exact committed profile、generation、assembly ref与config snapshot ref。
 
 这些状态不能折叠为一个“最近看过的fingerprint”。失败的输入从未成功生效，因此不能被标记为已处理。
 
@@ -35,7 +35,7 @@ Registry使用`skiff-package-service-dev-registry-v2`。顶层只有：
 ```json
 {
   "schemaVersion": "skiff-package-service-dev-registry-v2",
-  "environment": "dev",
+  "profile": "dev",
   "roots": [
     {
       "kind": "service",
@@ -85,7 +85,7 @@ registry暂时不存在、JSON损坏、schema错误或任一live root验证失�
 
 watch首次启动且尚无last-known-good时，同样不能投影空assembly；它保持无本地期望状态并按失败退避重新
 读取。显式移除最后一个合法entry则不同：这是一个结构合法的空root集合，必须生成canonical empty
-`RuntimeAssembly`和同environment、零deployment分区的empty `RuntimeConfigSnapshot`，再通过普通CAS提交
+`RuntimeAssembly`和同profile、零deployment分区的empty `RuntimeConfigSnapshot`，再通过普通CAS提交
 新generation。empty activation负责撤下先前全部dev services，不是特殊的Router清理旁路。
 
 命令行显式root是本次进程的静态输入，与每轮重新读取的registry entries组成canonical union。只有最终
@@ -97,13 +97,13 @@ Managed watch启动后、第一次activation前必须先读取`GET /__router/hea
 exact committed tuple：
 
 ```text
-environment
+profile
 generation
 runtimeAssemblyRef
 runtimeConfigSnapshotRef
 ```
 
-watch校验Router environment与本次effective environment一致，并以health中的generation作为第一次
+watch校验Router profile与本次effective profile一致，并以health中的generation作为第一次
 activation的`expectedGeneration`。不得在managed instance launcher或watch内部写死`0`。低层
 `skiff assembly activate`仍保留显式expected generation，因为它是调用方直接操作CAS的接口。
 
@@ -119,7 +119,7 @@ HTTP 409不表示可以盲目递增本地generation。watch必须重读health：
 - 若Router committed tuple已经精确等于本次目标assembly/snapshot，视为幂等成功；
 - 若generation相对本次CAS的expected generation已经前进且目标tuple不同，采用新generation并在有界
   退避后重新提交；
-- 若generation没有变化、environment不符、health缺字段或tuple无法精确判断，则本次失败，回到正常
+- 若generation没有变化、profile不符、health缺字段或tuple无法精确判断，则本次失败，回到正常
   health/read重试，不能用原expected generation紧循环。
 
 CAS始终保留；读取health只是获得当前比较基线，不允许改成无条件“latest wins”写入。

@@ -14,7 +14,7 @@ Service首先是Package，因此root仍必须包含`package.yml`与`api.yml`。S
 `root.*` namespace，不能被Skiff源码import。`service.yml`中的`http`/`websocket`字段非法；Skiff尚未发布，
 不读取旧内联格式。
 
-三种`config*`文件同样只属于service root；普通Package不能自带一份环境配置。dependency Package的值写在
+三种`config*`文件同样只属于service root；普通Package不能自带一份profile配置。dependency Package的值写在
 宿主service同一文件中，以该Package的canonical ID为key。完整shape与snapshot语义见
 [`config.md`](config.md)。
 
@@ -48,7 +48,7 @@ serviceCalls:
   business request只使用Router operator配置的`requestTimeoutMs`。未来平台policy/resource必须由
   operator-owned独立配置拥有。
 - `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
-  ignored `config.skiff-test.secret.yml`；live target environment不改变该profile。
+  ignored `config.skiff-test.secret.yml`；live激活target不改变该config profile。
 
 只改变`serviceCalls`会改变ServiceContract/ServiceProtocolIdentity，但不改变PackageArtifact。HTTP或
 WebSocket文件变化不改变ServiceContract。配置文件变化只创建新的`RuntimeConfigSnapshot`与activation

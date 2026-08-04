@@ -116,7 +116,7 @@ registration重新推断。不同service可以共享相同method/path；同一se
 歧义header、同一service/version多revision和跨deployment substitution都fail closed。
 
 该路由模型以ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、RuntimeAssembly v3和
-runtime frame v3一次硬切；旧Host-bearing route、裸全局ingress或旧frame不兼容读取。v3 activation
+runtime frame v4一次硬切；旧Host-bearing route、裸全局ingress或旧frame不兼容读取。v4 activation
 control携带generation钉住的exact assembly/config snapshot refs；普通request仍通过已验证generation pin
 选择对应ActivationContext。
 
@@ -136,7 +136,7 @@ Runtime activation对Package diamond保留每条真实dependency edge，但同�
 physical-name encoding collision都fail closed。
 
 每个service只获得一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain、
-activation environment与serviceId共同定界；语言模型不引入`platformId`。Package不声明database state
+activation profile与serviceId共同定界；语言模型不引入`platformId`。Package不声明database state
 requirement，service/profile也不配置namespace；只有activation闭包含DB metadata时Runtime才按需提供
 service DB handle。同一service的Package共享该数据库，但每次DB operation仍以精确PackageArtifact/File
 IR/type identity选择schema和collection。跨service DB访问禁止。
@@ -145,7 +145,7 @@ Package使用相同裸collection名字不会共享storage。Package dependency�
 没有author-provided collection-name mapping。
 
 每个committed activation generation并列钉住`RuntimeAssemblyRef`与`RuntimeConfigSnapshotRef`。Runtime
-必须在prepare和cold recovery中先验证snapshot顶层受信`targetEnvironment`与activation environment精确
+必须在prepare和cold recovery中先验证snapshot顶层受信`profile`与activation profile精确
 相等，再按`ServiceDeploymentRef`隔离snapshot并按精确Package build向slot注入只读配置；比较失败前不得
 物化任何`ConfigView`。cold recovery必须读取generation固定的两个ref，不能读取ambient或latest配置。
 

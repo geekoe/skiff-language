@@ -88,7 +88,7 @@ Skiff 把常见后端能力做成语言能理解的平台入口，而不是让�
 同一份service配置文件中，但由canonical Package ID分区；配置变化形成独立runtime配置快照，不改变代码、
 deployment或assembly identity。详见`reference/config.md`。
 
-`db object`面向宿主service唯一、由平台按environment与service identity派生的数据库。开发者不选择
+`db object`面向宿主service唯一、由平台按profile与service identity派生的数据库。开发者不选择
 数据库名；同一service中的所有Package共享该数据库，同时保留各自精确Package/schema/collection identity。
 业务代码描述对象schema、查询和显式写入操作，而不是暴露连接串、Mongo filter或update operator。
 
