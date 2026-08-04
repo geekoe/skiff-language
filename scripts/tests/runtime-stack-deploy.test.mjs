@@ -189,7 +189,7 @@ test('router deploy uploads the Rust binary and writes only supported PM2 args',
     );
     assert.match(
       result.ecosystemConfig,
-      /args: '--config \/srv\/skiff\/config\/router\.yml'/,
+      /args: '\/srv\/skiff\/config\/router\.yml'/,
     );
     assert.match(result.ecosystemConfig, /interpreter: 'none'/);
     assert.doesNotMatch(result.ecosystemConfig, /src\/router\/server\.ts/);
