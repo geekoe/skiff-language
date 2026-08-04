@@ -88,7 +88,12 @@ const runtimeDag = new Map([
   ],
   [
     'skiff-runtime-capability-context',
-    ['skiff-runtime-native-contract', 'skiff-runtime-boundary', 'skiff-runtime-model'],
+    [
+      'skiff-runtime-native-contract',
+      'skiff-runtime-boundary',
+      'skiff-runtime-model',
+      'skiff-runtime-request-contract',
+    ],
   ],
   [
     'skiff-runtime-activation',
@@ -119,14 +124,11 @@ const runtimeDag = new Map([
     ],
   ],
   ['skiff-runtime-linked-program', ['skiff-runtime-model']],
-  [
-    'skiff-runtime-request-contract',
-    ['skiff-runtime-capability-context'],
-  ],
+  ['skiff-runtime-request-contract', []],
   ['skiff-runtime-native-contract', ['skiff-runtime-model']],
   ['skiff-runtime-loader', ['skiff-runtime-model']],
   ['skiff-runtime-boundary', ['skiff-runtime-model']],
-  ['skiff-runtime-model', []],
+  ['skiff-runtime-model', ['skiff-runtime-request-contract']],
 ]);
 
 const expectedPromotedRuntimePackages = new Set([

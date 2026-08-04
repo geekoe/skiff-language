@@ -320,7 +320,7 @@ function mutationMatrix() {
       (root) => replace(
         root,
         'runtime/host/src/host/request_entry/assembly_wire.rs',
-        'self.spawn_request_on_active_assembly_route(request).await;',
+        'self.task_request_on_active_assembly_route(request).await;',
         'self.reject_admitted_request(request).await;',
       ),
     ),
@@ -513,7 +513,7 @@ async function writeSafeFixture(root) {
       'runtime/host/src/host/request_entry/assembly.rs',
       [
         'impl RuntimeHost {',
-        '    async fn spawn_request_on_active_assembly_route(&self, request: AdmittedRequest) {',
+        '    async fn task_request_on_active_assembly_route(&self, request: AdmittedRequest) {',
         '        let route: ActiveAssemblyRoute = request.route;',
         '        let target = route.request_target();',
         '        tokio::spawn(async move {',
@@ -553,7 +553,7 @@ async function writeSafeFixture(root) {
         'impl RuntimeHost {',
         '    async fn spawn_runtime_assembly_request(&self, header: WireHeader) {',
         '        let request = self.http_gateway_request_from_wire(header);',
-        '        self.spawn_request_on_active_assembly_route(request).await;',
+        '        self.task_request_on_active_assembly_route(request).await;',
         '    }',
         '}',
         '',

@@ -781,7 +781,7 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         .expect("section object checked above");
     u64_field(request_pending, "unary", &context("requestPending"))?;
     u64_field(request_pending, "stream", &context("requestPending"))?;
-    u64_field(request_pending, "derivedTask", &context("requestPending"))?;
+    u64_field(request_pending, "taskAttempt", &context("requestPending"))?;
     bool_field(request_pending, "stopped", &context("requestPending"))?;
 
     let terminal = counters["terminal"]
@@ -823,7 +823,6 @@ fn decode_counters(value: &Value) -> Result<(), String> {
         "invocation",
         "control",
         "lease",
-        "task",
     ] {
         if !actor.get(name).is_some_and(Value::is_object) {
             return Err(format!(

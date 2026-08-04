@@ -25,9 +25,9 @@ use super::*;
 use crate::authoring::{build_authoring_object, AuthoringObject};
 
 const EXPECTED_STD_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:e97d5e98087dde314b486859fc2fc02affdba21c32539523b16f594289520306";
+    "skiff-package-build-v10:sha256:293e1908d0a1b4bb749c7b9781a2da81968d779c1c2ab4ecc72c8924e1aef66b";
 const EXPECTED_PRELUDE_ID: &str =
-    "skiff-prelude-v1:sha256:9146f375b4b4b34c9c4993b3ef41df6f89c89762c04392fc406ae80d33e55878";
+    "skiff-prelude-v1:sha256:9e7d3f17f413582137306544eef42997faa25f57d3e66580da400031a4cddfa0";
 
 #[test]
 fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {

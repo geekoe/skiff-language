@@ -128,15 +128,6 @@ pub(super) fn counters() -> Value {
             "evictionRetries": 0,
             "evictionExhausted": 0,
         },
-        "task": {
-            "capacityInUse": 0,
-            "accepted": 0,
-            "rejected": 0,
-            "legacyRejected": 0,
-            "requestAccepted": 0,
-            "actorInvocationAccepted": 0,
-            "byError": {},
-        },
     });
     let activation = serde_json::json!({
         "phase": "idle",
@@ -230,7 +221,7 @@ pub(super) fn counters() -> Value {
         "requestPending": {
             "unary": 0,
             "stream": 0,
-            "derivedTask": 0,
+            "taskAttempt": 0,
             "httpPending": 0,
             "httpOverflowTerminals": 0,
             "stopped": false,

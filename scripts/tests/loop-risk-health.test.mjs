@@ -245,7 +245,7 @@ function zeroHealth() {
           outboundStreamLeasesActive: 0,
           streamRuntimeStreamsActive: 0,
           flagBackedCancelWaitersActive: 0,
-          spawnedTasksActive: 0,
+          taskRequestsActive: 0,
         },
       }],
     },
