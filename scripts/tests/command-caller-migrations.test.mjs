@@ -13,7 +13,7 @@ import {
 } from '../lib/isolated-test-runtime-workspace.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const instanceCli = join(root, 'scripts', 'skiff-instance.mjs');
+const instanceCli = join(root, 'scripts', 'skiff-instance-legacy.mjs');
 
 test('instance status treats missing lsof as unavailable and missing ps as process fallback', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-instance-command-outcome-'));
@@ -74,7 +74,7 @@ test('instance status treats missing lsof as unavailable and missing ps as proce
 test('isolated status checked adapter rejects nonzero and invalid JSON before cleanup verification', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-isolated-status-command-'));
   const scriptsRoot = join(fixture, 'scripts');
-  const instancePath = join(scriptsRoot, 'skiff-instance.mjs');
+  const instancePath = join(scriptsRoot, 'skiff-instance-legacy.mjs');
   const configPath = join(fixture, 'instance', 'config.yml');
   const operations = isolatedInstanceOperations({
     skiffRoot: fixture,

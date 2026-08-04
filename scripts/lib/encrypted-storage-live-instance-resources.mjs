@@ -81,6 +81,8 @@ export function encryptedStorageLiveInstanceConfigText({
     'http:',
     '  maxRequestBytes: 67108864',
     '  maxResponseBytes: 8388608',
+    'router:',
+    '  requestTimeoutMs: 20000',
     'components:',
     '  telemetry: disabled',
     '  mongo: managed',

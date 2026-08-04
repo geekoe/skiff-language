@@ -16,7 +16,7 @@ import {
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(testDir, '..', '..');
-const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance.mjs');
+const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs');
 
 test('instance config defaults profile to dev and exposes it in the summary', () => {
   const configPath = '/tmp/skiff-instance/config.yml';
@@ -197,6 +197,8 @@ test('instance config owns an explicit positive activation prepare timeout', asy
       'http:',
       '  maxRequestBytes: 67108864',
       '  maxResponseBytes: 8388608',
+      'router:',
+      '  requestTimeoutMs: 20000',
       '',
     ].join('\n'));
     const oldConfig = await readInstanceConfig({
@@ -235,8 +237,8 @@ test('instance config owns an explicit positive router request timeout', async (
     assert.equal(config.router.requestTimeoutMs, 45000);
     assert.equal(instanceSummary(config).routerRequestTimeoutMs, 45000);
 
-    const oldConfigPath = join(root, 'without-router.yml');
-    await writeFile(oldConfigPath, [
+    const missingRouterPath = join(root, 'without-router.yml');
+    await writeFile(missingRouterPath, [
       'profile: dev',
       `devHome: ${JSON.stringify(join(root, 'old-home'))}`,
       'http:',
@@ -246,11 +248,10 @@ test('instance config owns an explicit positive router request timeout', async (
       '  prepareTimeoutMs: 120000',
       '',
     ].join('\n'));
-    const oldConfig = await readInstanceConfig({
-      configPath: oldConfigPath,
-      repoRoot: skiffRoot,
-    });
-    assert.equal(oldConfig.router.requestTimeoutMs, 20000);
+    await assert.rejects(
+      readInstanceConfig({ configPath: missingRouterPath, repoRoot: skiffRoot }),
+      /router\.requestTimeoutMs is required/,
+    );
 
     for (const [index, value] of ['0', '-1', '1.5', '"20000"'].entries()) {
       const invalidPath = join(root, `invalid-${index}.yml`);

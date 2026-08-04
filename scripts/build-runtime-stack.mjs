@@ -33,6 +33,10 @@ const rustTargetDir = cargoTargetDir(skiffRoot);
 
 const args = parseArgs(process.argv.slice(2));
 const target = args.target || DEFAULT_TARGET;
+const profile = args.profile || 'release';
+if (profile !== 'debug' && profile !== 'release') {
+  throw new Error(`invalid --profile ${profile}; expected debug or release`);
+}
 const buildRoot = path.resolve(args.buildRoot || path.join(skiffRoot, 'build', 'runtime-stack'));
 const manifestPath = path.join(buildRoot, 'manifest.json');
 const previousManifest = await readJsonIfExists(manifestPath);
@@ -46,6 +50,7 @@ for (const unitName of selectedUnits) {
 await writeJsonAtomic(manifestPath, {
   schemaVersion: 'skiff-runtime-stack-build-v1',
   target,
+  profile,
   commit: await currentCommit(),
   generatedAt: new Date().toISOString(),
   units,
@@ -54,6 +59,7 @@ await writeJsonAtomic(manifestPath, {
 console.log(JSON.stringify({
   manifest: manifestPath,
   target,
+  profile,
   units: selectedUnits,
 }, null, 2));
 
@@ -85,7 +91,8 @@ async function buildUnit(unitName, previousUnit) {
     sourceHash: sourceSnapshot.sourceHash,
     sourceKey: sourceSnapshot.sourceKey,
     status: spec.kind === 'ts' ? 'verified' : 'built',
-    target: spec.kind === 'rs' ? target : undefined,
+    profile: spec.kind === 'rs' ? profile : undefined,
+    target: spec.kind === 'rs' && profile === 'release' ? target : undefined,
     artifacts,
     verifiedAt: new Date().toISOString(),
   };
@@ -138,6 +145,22 @@ async function unitSpec(unitName) {
 
 function rsUnit({ unitName, manifest, cargoBin, outputName, inputs, testArgs }) {
   const manifestDir = path.dirname(manifest);
+  const isDebug = profile === 'debug';
+  const buildPhase = isDebug
+    ? {
+        name: `${unitName}:debug-build`,
+        command: 'cargo',
+        args: ['build', '--manifest-path', manifest, '--bin', cargoBin],
+      }
+    : {
+        name: `${unitName}:linux-build`,
+        command: 'cargo',
+        args: ['zigbuild', '--manifest-path', manifest, '--release', '--target', target, '--bin', cargoBin],
+        env: buildEnv(),
+      };
+  const binarySource = isDebug
+    ? path.join(rustTargetDir, 'debug', cargoBin)
+    : path.join(rustTargetDir, target, 'release', cargoBin);
   return {
     kind: 'rs',
     unitName,
@@ -148,17 +171,12 @@ function rsUnit({ unitName, manifest, cargoBin, outputName, inputs, testArgs }) 
         command: 'cargo',
         args: testArgs || ['test', '--manifest-path', manifest, '--no-fail-fast'],
       },
-      {
-        name: `${unitName}:linux-build`,
-        command: 'cargo',
-        args: ['zigbuild', '--manifest-path', manifest, '--release', '--target', target, '--bin', cargoBin],
-        env: buildEnv(),
-      },
+      buildPhase,
     ],
     outputs: [
       {
         kind: 'binary',
-        source: path.join(rustTargetDir, target, 'release', cargoBin),
+        source: binarySource,
         path: path.join(buildRoot, 'bin', outputName),
       },
     ],
@@ -261,7 +279,10 @@ async function isReusable(previousUnit, sourceSnapshot, spec) {
   if (previousUnit.commit !== sourceSnapshot.commit || previousUnit.sourceKey !== sourceSnapshot.sourceKey) {
     return false;
   }
-  if (spec.kind === 'rs' && previousUnit.target !== target) {
+  if (spec.kind === 'rs' && previousUnit.profile !== profile) {
+    return false;
+  }
+  if (spec.kind === 'rs' && profile === 'release' && previousUnit.target !== target) {
     return false;
   }
   for (const output of spec.outputs) {
@@ -357,6 +378,9 @@ async function isFile(file) {
 }
 
 function buildEnv() {
+  if (profile === 'debug') {
+    return cargoBuildEnv(skiffRoot);
+  }
   const zigDir = args.zigDir || DEFAULT_ZIG_DIR;
   return {
     ...cargoBuildEnv(skiffRoot),
@@ -400,6 +424,8 @@ function optionKey(arg) {
       return 'target';
     case '--zig-dir':
       return 'zigDir';
+    case '--profile':
+      return 'profile';
     default:
       return null;
   }

@@ -34,6 +34,8 @@ export function isolatedTestInstanceConfigText({
     'http:',
     '  maxRequestBytes: 67108864',
     '  maxResponseBytes: 8388608',
+    'router:',
+    '  requestTimeoutMs: 20000',
     'components:',
     '  telemetry: disabled',
     '  mongo: managed',
@@ -173,7 +175,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       return spawnSupervisorChild(
         'node',
         [
-          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
+          join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
           'supervise',
           configPath,
           '--startup-gate',
@@ -202,7 +204,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       return runOwnedCommand(
         'node',
         [
-          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
+          join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
           'down',
           ownershipReceipt.config.path,
         ],
@@ -369,7 +371,7 @@ async function verifyInstanceStopped({ skiffRoot, ownershipReceipt, env }) {
   await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
   const configPath = ownershipReceipt.config.path;
   const result = await runCommandCapture('node', [
-    join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
+    join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs'),
     'status',
     configPath,
     '--json',

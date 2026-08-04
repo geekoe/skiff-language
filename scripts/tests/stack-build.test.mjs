@@ -23,6 +23,7 @@ test('stack build maps build.yml onto build-runtime-stack args and CARGO_TARGET_
     invocation.args[invocation.args.indexOf('--build-root') + 1],
     join(skiffRoot, 'build', 'runtime-stack'),
   );
+  assert.equal(invocation.args[invocation.args.indexOf('--profile') + 1], 'release');
   assert.equal(invocation.args[invocation.args.indexOf('--only') + 1], 'router,runtime');
   assert.equal(invocation.env.CARGO_TARGET_DIR, join(skiffRoot, 'build', 'cargo-target'));
 });

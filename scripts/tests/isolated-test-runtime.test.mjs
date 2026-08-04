@@ -140,7 +140,7 @@ test('default owner shutdown invokes current checkout instance down command', as
     await mkdir(join(root, 'instance'), { recursive: true });
     await writeFile(configPath, 'profile: "skiff-test"\n');
     ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
-    await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
+    await writeFile(join(scriptsRoot, 'skiff-instance-legacy.mjs'), [
       "import { writeFile } from 'node:fs/promises';",
       "await writeFile(process.env.SKIFF_OWNER_SHUTDOWN_CAPTURE, JSON.stringify(process.argv.slice(2)));",
     ].join('\n'));

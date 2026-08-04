@@ -67,8 +67,10 @@ export async function readStackYamlFile(file, label) {
   return parseStackYaml(source, label);
 }
 
-export function parseStackConfigDirArg(rawArgs) {
+export function parseStackConfigDirArg(rawArgs, { options = [] } = {}) {
+  const allowed = new Set(['--configDir', ...options]);
   let configDir;
+  const extra = {};
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
     let value;
@@ -80,6 +82,17 @@ export function parseStackConfigDirArg(rawArgs) {
       index += 1;
     } else if (argument.startsWith('--configDir=')) {
       value = argument.slice('--configDir='.length);
+    } else if (allowed.has(argument)) {
+      value = rawArgs[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error(`${argument} requires a value`);
+      }
+      index += 1;
+      const key = argument.slice(2);
+      if (extra[key] !== undefined) {
+        throw new Error(`${argument} was provided more than once`);
+      }
+      extra[key] = value;
     } else {
       throw new Error(`unknown stack option ${argument}`);
     }
@@ -91,7 +104,7 @@ export function parseStackConfigDirArg(rawArgs) {
   if (configDir === undefined) {
     throw new Error('stack command requires --configDir <dir>');
   }
-  return { configDir: resolve(configDir) };
+  return { configDir: resolve(configDir), ...extra };
 }
 
 export async function loadStackConfig(configDir, {
@@ -157,7 +170,57 @@ function validateBuildConfig(value) {
     buildRoot: readRequiredString(value, 'buildRoot', label),
     cargoTargetDir: readRequiredString(value, 'cargoTargetDir', label),
     units: readOptionalUnits(value.units, label),
+    profile: readOptionalProfile(value.profile, label),
+    process: normalizeBuildProcess(value.process, label),
   };
+}
+
+function readOptionalProfile(value, label) {
+  if (value === undefined) {
+    return 'release';
+  }
+  if (value !== 'debug' && value !== 'release') {
+    throw new Error(`${label} profile must be "debug" or "release"`);
+  }
+  return value;
+}
+
+function normalizeBuildProcess(value, label) {
+  if (value === undefined) {
+    return {
+      mongo: 'disabled',
+      telemetry: 'managed',
+      mongoBinary: 'mongod',
+      mongoDbPath: undefined,
+      devHome: undefined,
+    };
+  }
+  if (!isPlainObject(value)) {
+    throw new Error(`${label} process must be an object`);
+  }
+  const mongo = value.mongo === undefined
+    ? 'disabled'
+    : readOptionalManagedFlag(value.mongo, `${label} process.mongo`);
+  const telemetry = value.telemetry === undefined
+    ? 'managed'
+    : readOptionalManagedFlag(value.telemetry, `${label} process.telemetry`);
+  const mongoBinary = value.mongoBinary === undefined
+    ? 'mongod'
+    : readRequiredString(value, 'mongoBinary', `${label} process`);
+  const mongoDbPath = value.mongoDbPath === undefined
+    ? undefined
+    : readRequiredString(value, 'mongoDbPath', `${label} process`);
+  const devHome = value.devHome === undefined
+    ? undefined
+    : readRequiredString(value, 'devHome', `${label} process`);
+  return { mongo, telemetry, mongoBinary, mongoDbPath, devHome };
+}
+
+function readOptionalManagedFlag(value, label) {
+  if (value !== 'managed' && value !== 'disabled') {
+    throw new Error(`${label} must be "managed" or "disabled"`);
+  }
+  return value;
 }
 
 function validateStackConfig(value) {

@@ -20,11 +20,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 test('actual production ledger passes with exactly eighteen explicit lifecycle owners', async () => {
   await assertCommandExecutionPolicy(root);
-  assert.equal(COMMAND_EXECUTION_LEDGER.length, 18);
-  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 18);
+  assert.equal(COMMAND_EXECUTION_LEDGER.length, 19);
+  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 19);
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'spawn').length,
-    14,
+    15,
   );
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'execFile').length,

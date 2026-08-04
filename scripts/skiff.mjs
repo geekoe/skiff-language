@@ -40,30 +40,16 @@ const usage = `usage:
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
-  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
-  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff service dev registry list [--config <path>]
   skiff service dev registry add <package-or-service-root> [--profile <name>] [--config <path>]
   skiff service dev registry remove <service-id-or-root> [--config <path>]
-  skiff instance init <config> [--force]
-  skiff instance paths <config> [--json]
-  skiff instance status <config> [--json]
-  skiff instance doctor <config>
-  skiff instance repair <config>
-  skiff instance build <config>
-  skiff instance refresh-binaries <config>
-  skiff instance up <config> [--repair-owned-conflicts]
-  skiff instance restart <config> [component]
-  skiff instance supervise <config>
-  skiff instance run <config>  # deprecated alias for supervise
-  skiff instance down <config>
-  skiff instance sync <config> [root] [--profile <name>] [--activation-id <id>] [--build-only] [--json]
-  skiff instance watch <config> [root] [--profile <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff instance <up|restart|status|down|supervise|repair> [--runtime <dir>] [component]
+  skiff watch [--once] [--runtime <dir>] --config <watchDir> [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff package build <root> --artifact-root <dir> [--profile <name>] [--json]
   skiff package publish <root> --artifact-root <dir> [--profile <name>] [--json]
   skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff assembly activate --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
-  skiff stack build --configDir <dir>
+  skiff stack build --configDir <dir> [--profile debug|release]
   skiff stack init --configDir <dir>
   skiff stack deploy --configDir <dir>
   skiff stack status --configDir <dir>
@@ -96,6 +82,9 @@ async function main(args) {
       return;
     case 'dev':
       await devCommand(args);
+      return;
+    case 'watch':
+      await run('node', [join(scriptDir, 'skiff-watch.mjs'), ...args], process.cwd());
       return;
     case 'service':
       await serviceCommand(args);
@@ -141,8 +130,20 @@ async function stackCommand(args) {
 }
 
 async function stackBuild(rawArgs) {
-  const parsed = parseStackConfigDirArg(rawArgs);
-  const result = await buildStack({ configDir: parsed.configDir, skiffRoot });
+  const parsed = parseStackConfigDirArg(rawArgs, { options: ['--profile'] });
+  const profileOverride = parsed.profile;
+  if (
+    profileOverride !== undefined
+    && profileOverride !== 'debug'
+    && profileOverride !== 'release'
+  ) {
+    throw new Error(`--profile must be "debug" or "release"; got ${profileOverride}`);
+  }
+  const result = await buildStack({
+    configDir: parsed.configDir,
+    skiffRoot,
+    profileOverride,
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -171,12 +172,6 @@ async function devCommand(args) {
       return;
     case 'status':
       await devStatus(args);
-      return;
-    case 'sync':
-      await run('node', [join(scriptDir, 'skiff-dev-sync.mjs'), ...args], process.cwd());
-      return;
-    case 'watch':
-      await run('node', [join(scriptDir, 'skiff-dev-sync.mjs'), '--watch', ...args], process.cwd());
       return;
     default:
       throw new Error(`unknown dev command ${subcommand || '(missing)'}\n${usage}`);

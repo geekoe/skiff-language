@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(testDir, '..', '..');
-const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance.mjs');
+const instanceScript = join(skiffRoot, 'scripts', 'skiff-instance-legacy.mjs');
 
 test('instance paths accepts the default rust router implementation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-router-process-spec-'));
@@ -46,7 +46,7 @@ test('instance paths rejects the retired TS implementation and non-mapping route
     const scalar = join(root, 'scalar.yml');
     await writeFile(
       scalar,
-      `${instanceConfigText({ devHome })}\nrouter: ts\n`,
+      `${instanceConfigText({ devHome, includeRouter: false })}\nrouter: ts\n`,
     );
     outcome = await runInstance('paths', scalar, ['--json']);
     assert.notEqual(outcome.code, 0);
@@ -56,14 +56,20 @@ test('instance paths rejects the retired TS implementation and non-mapping route
   }
 });
 
-function instanceConfigText({ devHome, implementation }) {
+function instanceConfigText({ devHome, implementation, includeRouter = true }) {
   return [
     'profile: dev',
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(join(devHome, 'cargo-target'))}`,
-    ...(implementation === undefined
-      ? []
-      : ['router:', `  implementation: ${implementation}`]),
+    ...(includeRouter
+      ? [
+          'router:',
+          '  requestTimeoutMs: 20000',
+          ...(implementation === undefined
+            ? []
+            : [`  implementation: ${implementation}`]),
+        ]
+      : []),
     'http:',
     '  maxRequestBytes: 67108864',
     '  maxResponseBytes: 8388608',

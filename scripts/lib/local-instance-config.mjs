@@ -255,7 +255,7 @@ function normalizeActivation(value) {
 
 function normalizeRouter(value) {
   if (value === undefined || value === null) {
-    return { ...defaultInstanceRouter };
+    throw new Error('router.requestTimeoutMs is required');
   }
   if (!isRecord(value)) {
     throw new Error('router must be a mapping with explicit requestTimeoutMs');
