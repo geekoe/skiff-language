@@ -596,7 +596,6 @@ async fn invoke_actor_method(
             )
         })?;
 
-    let response_committed = lease.response_committed();
     let send_cancel = |reason| {
         let cancel = ActorMethodFrame::Cancel(ActorMethodCancelFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -612,21 +611,6 @@ async fn invoke_actor_method(
     tokio::select! {
         biased;
         outcome = lease.receive() => {
-            let _ = scope_completion.complete();
-            match outcome {
-                Ok(Ok(outcome)) => Ok(outcome),
-                Ok(Err(error)) => Err(capability_contract::CapabilityError::protocol(
-                    "actor.method.invoke",
-                    format!("Actor owner transport failure {}: {}", error.code, error.message),
-                )),
-                Err(_) => Err(capability_contract::CapabilityError::provider_unavailable(
-                    "actor.method.invoke",
-                    "Actor invocation response channel closed",
-                )),
-            }
-        },
-        _ = response_committed.wait() => {
-            let outcome = lease.receive().await;
             let _ = scope_completion.complete();
             match outcome {
                 Ok(Ok(outcome)) => Ok(outcome),
