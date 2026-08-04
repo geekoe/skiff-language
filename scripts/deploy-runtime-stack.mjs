@@ -399,7 +399,7 @@ module.exports = {
       name: 'skiff-router',
       cwd: '${options.remoteSkiff}',
       script: '${options.remoteSkiff}/bin/skiff-router',
-      args: '--config ${options.remoteSkiff}/config/router.yml',
+      args: '${options.remoteSkiff}/config/router.yml',
       interpreter: 'none',
       watch: false,
       autorestart: true,
