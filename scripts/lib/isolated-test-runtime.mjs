@@ -173,6 +173,13 @@ async function startIsolatedTestRuntime({
     configOwnershipRequired = true;
     await ops.writeConfig(configPath, config, ownershipReceipt);
     ownershipReceipt = await ops.captureConfigOwnership(ownershipReceipt, configPath);
+    await ops.initializeInstance({
+      profile,
+      devHome,
+      basePort,
+      mongoPort,
+      ownershipReceipt,
+    });
     const isolatedEnv = isolatedTestRunnerEnvironment({
       baseEnv,
       skiffRoot,

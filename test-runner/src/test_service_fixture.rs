@@ -96,7 +96,16 @@ pub fn assemble_test_service_fixture(
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let scope = test_service_execution_nonce()?;
     let config = load_test_service_run_config(project, None)?;
-    assemble_test_service_fixture_inner(project, cases, base, &scope, &config, target_profile)
+    let mut admissions = PackageAdmissionCache::default();
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        &scope,
+        &config,
+        target_profile,
+        &mut admissions,
+    )
 }
 
 pub fn assemble_test_service_fixture_for_run(
@@ -107,7 +116,16 @@ pub fn assemble_test_service_fixture_for_run(
     target_profile: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let config = load_test_service_run_config(project, None)?;
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, &config, target_profile)
+    let mut admissions = PackageAdmissionCache::default();
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        run_scope,
+        &config,
+        target_profile,
+        &mut admissions,
+    )
 }
 
 pub fn assemble_test_service_fixture_for_run_with_ingress(
@@ -119,7 +137,16 @@ pub fn assemble_test_service_fixture_for_run_with_ingress(
     target_profile: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let config = load_test_service_run_config(project, Some(ingress_url))?;
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, &config, target_profile)
+    let mut admissions = PackageAdmissionCache::default();
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        run_scope,
+        &config,
+        target_profile,
+        &mut admissions,
+    )
 }
 
 pub(crate) fn load_test_service_run_config(
@@ -154,8 +181,17 @@ pub(crate) fn assemble_test_service_fixture_for_run_with_config(
     run_scope: &str,
     config: &CanonicalTestServiceRunConfig,
     target_profile: &str,
+    admissions: &mut PackageAdmissionCache,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
-    assemble_test_service_fixture_inner(project, cases, base, run_scope, config, target_profile)
+    assemble_test_service_fixture_inner(
+        project,
+        cases,
+        base,
+        run_scope,
+        config,
+        target_profile,
+        admissions,
+    )
 }
 
 fn assemble_test_service_fixture_inner(
@@ -165,6 +201,7 @@ fn assemble_test_service_fixture_inner(
     run_scope: &str,
     config: &CanonicalTestServiceRunConfig,
     target_profile: &str,
+    admissions: &mut PackageAdmissionCache,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     if cases.is_empty() {
         return Err(CanonicalFixtureError::InvalidInput(
@@ -197,9 +234,8 @@ fn assemble_test_service_fixture_inner(
     deployment_packages.extend(project.dependency_packages.iter().cloned());
     let validated_deployment_packages = deployment_packages
         .iter()
-        .map(ValidatedPackageArtifact::admit_clone)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        .map(|package| admissions.admit_clone(package))
+        .collect::<Result<Vec<_>, _>>()?;
     let test_service_ref = validated_deployment_packages[0].reference().clone();
     let package_bindings = canonical_package_bindings(&validated_deployment_packages)?;
     let service_selectors = test_service_selectors(&deployment_packages, &base)?;
@@ -209,6 +245,7 @@ fn assemble_test_service_fixture_inner(
         &mut all_packages,
         &mut validated_all_packages,
         &base.packages,
+        admissions,
     )?;
     let package_identity_admission_count = validated_all_packages.len();
     let generated_deployment_admissions = skiff_compiler::GeneratedServicePackageAdmissions::admit(
@@ -568,6 +605,48 @@ pub(crate) fn canonical_package_bindings(
         .collect()
 }
 
+/// Memoized in-memory admission for one exact immutable package closure.
+///
+/// Every activation batch assembles the same project/dependency/base package
+/// closure. Admission recomputes canonical JSON and SHA-256 per package, which
+/// dominates debug-build run planning, so admit each exact reference once and
+/// reuse the validated token across batches. Rejecting conflicting content
+/// under one reference preserves the previous fail-closed behavior.
+#[derive(Debug, Default)]
+pub(crate) struct PackageAdmissionCache {
+    by_reference: BTreeMap<PackageArtifactRef, ValidatedPackageArtifact>,
+}
+
+impl PackageAdmissionCache {
+    pub(crate) fn admit_clone(
+        &mut self,
+        artifact: &PackageArtifact,
+    ) -> Result<ValidatedPackageArtifact, CanonicalFixtureError> {
+        let reference = declared_package_ref(artifact);
+        if let Some(admitted) = self.by_reference.get(&reference) {
+            if !admitted.exactly_matches(artifact) {
+                return Err(CanonicalFixtureError::InvalidInput(format!(
+                    "package reference {reference:?} has conflicting exact content"
+                )));
+            }
+            return Ok(admitted.clone());
+        }
+        let admitted = ValidatedPackageArtifact::admit_clone(artifact)
+            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        self.by_reference.insert(reference, admitted.clone());
+        Ok(admitted)
+    }
+}
+
+fn declared_package_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
+    PackageArtifactRef {
+        package_id: artifact.package_id.clone(),
+        package_version: artifact.package_version.clone(),
+        package_build_id: artifact.package_build_id.clone(),
+        package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
+    }
+}
+
 fn test_service_selectors(
     packages: &[PackageArtifact],
     base: &CanonicalBaseAssembly,
@@ -656,14 +735,10 @@ fn extend_unique_validated_packages(
     packages: &mut Vec<PackageArtifact>,
     validated: &mut Vec<ValidatedPackageArtifact>,
     candidates: &[PackageArtifact],
+    admissions: &mut PackageAdmissionCache,
 ) -> Result<(), CanonicalFixtureError> {
     for candidate in candidates {
-        let declared = PackageArtifactRef {
-            package_id: candidate.package_id.clone(),
-            package_version: candidate.package_version.clone(),
-            package_build_id: candidate.package_build_id.clone(),
-            package_local_abi_identity: candidate.package_local_abi.local_abi_identity.clone(),
-        };
+        let declared = declared_package_ref(candidate);
         if let Some(existing) = validated
             .iter()
             .find(|existing| existing.reference() == &declared)
@@ -675,8 +750,7 @@ fn extend_unique_validated_packages(
             }
             continue;
         }
-        let admission = ValidatedPackageArtifact::admit_clone(candidate)
-            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        let admission = admissions.admit_clone(candidate)?;
         packages.push(candidate.clone());
         validated.push(admission);
     }

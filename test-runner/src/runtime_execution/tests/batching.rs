@@ -183,6 +183,7 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
         .assembly_identity
         .clone();
     let mut publication = CanonicalPublishSession::default();
+    let mut package_admissions = PackageAdmissionCache::default();
     let batches = prepare_execution_batches_with(
         case_batches,
         |batch_index, cases| {
@@ -193,6 +194,7 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
                 &batching::batch_execution_scope("fixture-run", batch_index),
                 &run_config,
                 "skiff-test",
+                &mut package_admissions,
             )?;
             Ok(ExecutionBatch {
                 context: fixture.records,

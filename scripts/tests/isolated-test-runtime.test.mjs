@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,6 +14,7 @@ import {
 import {
   bootstrapCanonicalArgs,
   isolatedInstanceOperations,
+  isolatedTestInstanceRuntimeFiles,
   isolatedRuntimeHealthReady,
   isolatedTestInstanceYml,
   isolatedTestRunnerEnvironment,
@@ -175,6 +176,51 @@ test('default config creation is exclusive and preserves a foreign destination',
       { code: 'EEXIST' },
     );
     assert.equal(await readFile(configPath, 'utf8'), foreignConfig);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('isolated instance initialization provisions runnable configs and dirs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-init-test-'));
+  const instanceRoot = join(root, 'instance');
+  const configPath = join(instanceRoot, 'instance.yml');
+  const devHome = join(instanceRoot, 'dev-home');
+  try {
+    let ownershipReceipt = await claimIsolatedTestWorkspace(root);
+    await mkdir(instanceRoot, { recursive: true });
+    await writeFile(configPath, 'profile: "skiff-test"\n');
+    ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
+    const operations = isolatedInstanceOperations({
+      skiffRoot: root,
+      baseEnv: process.env,
+    });
+    await operations.initializeInstance({
+      profile: 'skiff-test',
+      devHome,
+      basePort: 46042,
+      mongoPort: 46045,
+      ownershipReceipt,
+    });
+
+    const files = isolatedTestInstanceRuntimeFiles({
+      profile: 'skiff-test',
+      devHome,
+      basePort: 46042,
+      mongoPort: 46045,
+    });
+    const routerConfig = await readFile(files.routerConfigPath, 'utf8');
+    const runtimeConfig = await readFile(files.runtimeConfigPath, 'utf8');
+    assert.match(routerConfig, /^profile: skiff-test$/m);
+    assert.match(routerConfig, /^serviceDb:$/m);
+    assert.match(routerConfig, /mongoUrl: "mongodb:\/\/127\.0\.0\.1:46045\//);
+    assert.match(runtimeConfig, /router: "ws:\/\/127\.0\.0\.1:46043\/runtime"/);
+    assert.match(runtimeConfig, /service-db-keyring\.json/);
+    assert.equal((await stat(files.keyringPath)).isFile(), true);
+    assert.equal((await stat(join(devHome, 'mongo-data'))).isDirectory(), true);
+    assert.equal((await stat(join(devHome, 'pids'))).isDirectory(), true);
+    assert.equal((await stat(join(devHome, 'logs'))).isDirectory(), true);
+    assert.equal((await stat(join(devHome, 'secrets'))).isDirectory(), true);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -374,7 +420,7 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
     }
     assert.deepEqual(actions, [
       'lease', 'temp', 'workspace-claim', 'source-artifacts', 'config', 'config-owner',
-      'spawn', 'mongo-started', 'mongo-primary', 'bootstrap', 'activation-state',
+      'instance-init', 'spawn', 'mongo-started', 'mongo-primary', 'bootstrap', 'activation-state',
       'startup-gate', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
@@ -691,6 +737,7 @@ function lifecycleDouble(overrides = {}) {
         config: { path: configPath, identity: { dev: '1', ino: '4' } },
       };
     },
+    initializeInstance: async () => { actions.push('instance-init'); },
     seedBootstrap: async () => { actions.push('bootstrap'); },
     spawnSupervisor: () => {
       actions.push('spawn');

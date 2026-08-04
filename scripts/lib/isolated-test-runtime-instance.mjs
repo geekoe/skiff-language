@@ -9,6 +9,8 @@ import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
 import { buildIsolatedActivationState } from './isolated-test-activation-seed.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
+import { renderRouterConfig, renderRuntimeConfig } from './runtime-stack-config.mjs';
+import { ensureLocalServiceDbKeyring } from './service-db-keyring.mjs';
 
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
@@ -93,6 +95,55 @@ export function isolatedTestRunnerEnvironment({
     SKIFF_TEST_ENVIRONMENT: profile,
     SKIFF_TEST_EXPECTED_GENERATION: '0',
     SKIFF_TEST_PLATFORM_SOURCE_ROOT: skiffRoot,
+  };
+}
+
+export function isolatedTestInstanceRuntimeFiles({
+  profile,
+  devHome,
+  basePort,
+  mongoPort,
+}) {
+  if (!Number.isSafeInteger(basePort) || basePort <= 0) {
+    throw new Error('isolated test instance basePort must be a positive integer');
+  }
+  if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
+    throw new Error('isolated test instance mongoPort must be a positive integer');
+  }
+  const controlPort = basePort + 1;
+  const secretsDir = join(devHome, 'secrets');
+  return {
+    routerConfigPath: join(devHome, 'router.yml'),
+    runtimeConfigPath: join(devHome, 'runtime.yml'),
+    keyringPath: join(secretsDir, 'service-db-keyring.json'),
+    dirs: {
+      mongoData: join(devHome, 'mongo-data'),
+      pids: join(devHome, 'pids'),
+      logs: join(devHome, 'logs'),
+      secrets: secretsDir,
+      runtimeHome: join(devHome, 'runtime-home'),
+      artifacts: join(devHome, 'artifacts'),
+    },
+    routerConfig: renderRouterConfig({
+      profile,
+      host: '127.0.0.1',
+      artifactsPath: join(devHome, 'artifacts'),
+      devReload: true,
+      requestTimeoutMs: 20000,
+      activationPrepareTimeoutMs: 120000,
+      httpPort: basePort,
+      httpMaxRequestBytes: 67108864,
+      httpMaxResponseBytes: 8388608,
+      runtimePort: controlPort,
+      runtimePath: '/runtime',
+      serviceDbMongoUrl:
+        `mongodb://127.0.0.1:${mongoPort}/?directConnection=true&replicaSet=rs0&retryWrites=false`,
+    }),
+    runtimeConfig: renderRuntimeConfig({
+      routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
+      runtimeHome: join(devHome, 'runtime-home'),
+      serviceDbEncryptionKeyringFile: join(secretsDir, 'service-db-keyring.json'),
+    }),
   };
 }
 
@@ -206,6 +257,36 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         ],
         { cwd: skiffRoot, env, stdio: 'inherit' },
       );
+    },
+    initializeInstance: async ({
+      profile,
+      devHome,
+      basePort,
+      mongoPort,
+      ownershipReceipt,
+    }) => {
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
+      const files = isolatedTestInstanceRuntimeFiles({
+        profile,
+        devHome,
+        basePort,
+        mongoPort,
+      });
+      for (const [name, directory] of Object.entries(files.dirs)) {
+        await mkdir(directory, {
+          recursive: true,
+          mode: name === 'secrets' ? 0o700 : undefined,
+        });
+      }
+      await ensureLocalServiceDbKeyring(files.keyringPath);
+      await writeFile(files.routerConfigPath, files.routerConfig, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      await writeFile(files.runtimeConfigPath, files.runtimeConfig, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
     },
     waitMongoStarted,
     waitMongoPrimary: initializeSingleNodeReplicaSet,

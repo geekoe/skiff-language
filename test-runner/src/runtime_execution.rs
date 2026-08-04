@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     net::SocketAddr,
     path::Path,
     sync::{
@@ -10,7 +11,10 @@ use std::{
 };
 
 use skiff_artifact_identity::runtime_assembly_ref;
-use skiff_artifact_model::{IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
+use skiff_artifact_model::{
+    IngressProtocol, PackageArtifact, PackageArtifactRef, RuntimeAssemblyRef,
+    RuntimeConfigSnapshotRef,
+};
 use skiff_compiler::authoring::project_assembly_actor_routing;
 use skiff_deployment::storage::CanonicalArtifactStore;
 
@@ -22,7 +26,7 @@ use crate::{
     test_discovery::TestServiceCase,
     test_service_fixture::{
         assemble_test_service_fixture_for_run_with_config, load_test_service_run_config,
-        CanonicalTestServiceEntrypoint,
+        CanonicalTestServiceEntrypoint, PackageAdmissionCache,
     },
     SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
@@ -67,6 +71,7 @@ pub fn run_package_cases(
     let run_config = load_test_service_run_config(&project, Some(ingress_url))?;
     let case_batches = batching::partition_cases(cases, options.live);
     let mut publish_session = CanonicalPublishSession::default();
+    let mut package_admissions = PackageAdmissionCache::default();
     let execution_batches = prepare_execution_batches_with(
         case_batches,
         |batch_index, cases| {
@@ -82,6 +87,7 @@ pub fn run_package_cases(
                 &batch_scope,
                 &run_config,
                 &options.target_profile,
+                &mut package_admissions,
             )?;
             Ok(ExecutionBatch {
                 context: fixture.records.clone(),
@@ -124,6 +130,10 @@ fn execute_assembly_batches(
     ingress_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    // The runtime store is immutable for package records; reuse validated
+    // reads across activation batches instead of re-running canonical JSON and
+    // SHA-256 admission for the same package closure on every batch.
+    let mut package_reads = BTreeMap::<PackageArtifactRef, Arc<PackageArtifact>>::new();
     execute_batches_with(
         batches,
         options.expected_generation,
@@ -155,14 +165,21 @@ fn execute_assembly_batches(
                     .chain(std::iter::once(&deployment.implementation));
                 for package_ref in refs {
                     if loaded_builds.insert(package_ref.package_build_id.clone()) {
-                        let artifact = store
-                            .read_package_artifact(package_ref)
-                            .map_err(|error| {
-                                CanonicalFixtureError::InvalidInput(format!(
-                                    "read package artifact {}@{} for actor routing projection: {error}",
-                                    package_ref.package_id, package_ref.package_version
-                                ))
-                            })?;
+                        let artifact = match package_reads.get(package_ref) {
+                            Some(artifact) => artifact.clone(),
+                            None => {
+                                let artifact = store
+                                    .read_package_artifact(package_ref)
+                                    .map_err(|error| {
+                                        CanonicalFixtureError::InvalidInput(format!(
+                                            "read package artifact {}@{} for actor routing projection: {error}",
+                                            package_ref.package_id, package_ref.package_version
+                                        ))
+                                    })?;
+                                package_reads.insert(package_ref.clone(), artifact.clone());
+                                artifact
+                            }
+                        };
                         packages.push((*artifact).clone());
                     }
                 }
