@@ -310,20 +310,12 @@ fn service_db_runtime_does_not_share_client_cell_for_different_mongo_urls() {
 fn service_db_client_cache_drops_dead_cells_and_urls() {
     let stale_url = inert_mongo_url("drop_stale");
     let stale_cell = {
-        let first = ServiceDbRuntime::new(
-            test_profile(),
-            service_id("drop_a"),
-            stale_url.clone(),
-            &[],
-        )
-        .expect("first service DB runtime should build");
-        let second = ServiceDbRuntime::new(
-            test_profile(),
-            service_id("drop_b"),
-            stale_url.clone(),
-            &[],
-        )
-        .expect("second service DB runtime should build");
+        let first =
+            ServiceDbRuntime::new(test_profile(), service_id("drop_a"), stale_url.clone(), &[])
+                .expect("first service DB runtime should build");
+        let second =
+            ServiceDbRuntime::new(test_profile(), service_id("drop_b"), stale_url.clone(), &[])
+                .expect("second service DB runtime should build");
 
         assert!(
             Arc::ptr_eq(&first.client, &second.client),
@@ -427,13 +419,8 @@ async fn service_db_client_cache_does_not_store_failed_initialization() {
         &[],
     )
     .expect("first service DB runtime should build before connecting");
-    let second = ServiceDbRuntime::new(
-        test_profile(),
-        service_id("invalid_b"),
-        invalid_url,
-        &[],
-    )
-    .expect("second service DB runtime should build before connecting");
+    let second = ServiceDbRuntime::new(test_profile(), service_id("invalid_b"), invalid_url, &[])
+        .expect("second service DB runtime should build before connecting");
 
     assert!(
         Arc::ptr_eq(&first.client, &second.client),

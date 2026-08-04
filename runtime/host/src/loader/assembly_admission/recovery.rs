@@ -21,8 +21,7 @@ impl AssemblyAdmissionController {
     {
         let _reload = self.reload.lock().await;
         self.discard_transient_for_reconnect()?;
-        skiff_artifact_model::validate_activation_profile(profile)
-            .map_err(anyhow::Error::msg)?;
+        skiff_artifact_model::validate_activation_profile(profile).map_err(anyhow::Error::msg)?;
         skiff_artifact_model::validate_activation_generation(generation, "committed.generation")
             .map_err(anyhow::Error::msg)?;
         skiff_artifact_model::validate_runtime_assembly_ref(assembly)

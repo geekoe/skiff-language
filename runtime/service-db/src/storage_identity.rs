@@ -18,8 +18,7 @@ const COLLECTION_READABLE_MAX_BYTES: usize = 32;
 const COLLECTION_DIGEST_BYTES: usize = 9;
 
 pub(crate) fn service_storage_database_name(profile: &str, service_id: &str) -> Result<String> {
-    skiff_artifact_model::validate_activation_profile(profile)
-        .map_err(ServiceDbError::Decode)?;
+    skiff_artifact_model::validate_activation_profile(profile).map_err(ServiceDbError::Decode)?;
     validate_publication_id(service_id)?;
     Ok(service_id.replace('.', "~").replace('/', "~~"))
 }

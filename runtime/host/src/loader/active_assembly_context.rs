@@ -330,8 +330,7 @@ fn candidate_db_provider_inputs(
                 deployment
             )
         })?;
-        skiff_artifact_model::validate_activation_profile(profile)
-            .map_err(anyhow::Error::msg)?;
+        skiff_artifact_model::validate_activation_profile(profile).map_err(anyhow::Error::msg)?;
         let provider = service_db.ok_or_else(|| {
             anyhow::anyhow!(
                 "activation {:?} requires Router-supplied serviceDb",

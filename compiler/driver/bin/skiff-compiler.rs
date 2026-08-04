@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_compiler::authoring::{
-    build_authoring_object, project_runtime_assembly, seed_official_std_package,
-    AuthoringObject,
+    build_authoring_object, project_runtime_assembly, seed_official_std_package, AuthoringObject,
 };
 use skiff_compiler::CompilerPlatformSources;
 

@@ -140,10 +140,9 @@ impl AssemblyAdmissionController {
                 ),
             ));
         }
-        if let Err(error) = super::super::config_snapshot::validate_snapshot_profile(
-            &config_snapshot,
-            profile,
-        ) {
+        if let Err(error) =
+            super::super::config_snapshot::validate_snapshot_profile(&config_snapshot, profile)
+        {
             let _ = self.fail_candidate_config_snapshot_profile(
                 generation,
                 &identity,
