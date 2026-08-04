@@ -149,6 +149,13 @@ pub trait ActivationExecutionContextRebinder: Send + Sync {
 
 pub struct ProgramExecutionContext<'a> {
     execution: OwnedExecutionControl,
+    /// Long-lived `ExecutionControl` view over `execution`, rebuilt whenever
+    /// the owned control is replaced (e.g. deriving a timeout child scope).
+    ///
+    /// Caching it here turns the per-checkpoint `execution()` call into an
+    /// `Arc` clone instead of allocating a fresh `Arc<dyn ExecutionControlApi>`
+    /// bridge on every statement/expression checkpoint.
+    execution_control: ExecutionControl<'static>,
     execution_clock: execution_scope::ExecutionClock,
     config: ConfigCapabilityContext<'a>,
     db: DbCapabilityContext,
@@ -303,6 +310,7 @@ impl<'a> Clone for ProgramExecutionContext<'a> {
     fn clone(&self) -> Self {
         Self {
             execution: self.execution.clone(),
+            execution_control: self.execution_control.clone(),
             execution_clock: self.execution_clock.clone(),
             config: self.config.clone(),
             db: self.db.clone(),
@@ -338,8 +346,11 @@ impl<'a> ProgramExecutionContext<'a> {
             .trace_id()
             .filter(|trace_id| !trace_id.trim().is_empty())
             .map(str::to_string);
+        let execution = input.execution.owned();
+        let execution_control = execution_scope::borrow_owned_execution_control(&execution);
         Self {
-            execution: input.execution.owned(),
+            execution,
+            execution_control,
             execution_clock: execution_scope::ExecutionClock::production(),
             config: input.config,
             db: input.db,
@@ -533,7 +544,7 @@ impl<'a> ProgramExecutionContext<'a> {
     }
 
     pub fn execution(&self) -> ExecutionControl<'static> {
-        execution_scope::borrow_owned_execution_control(&self.execution)
+        self.execution_control.clone()
     }
 
     pub fn config_context(&self) -> ConfigCapabilityContext<'a> {
@@ -1123,7 +1134,6 @@ impl Interpreter {
     ) -> Result<RuntimeValueCarrier> {
         let context = context.enter_program_call()?;
         context.execution().add_instruction_units(1)?;
-        context.execution().poll_execution_budget()?;
 
         if let Some(projection) = context
             .runtime_assembly_target_if_present()
@@ -1196,7 +1206,6 @@ impl Interpreter {
         let flow = invocation
             .exec(self, context.clone(), heap, &mut env)
             .await?;
-        context.execution().poll_execution_budget()?;
         let value = if context.actor_execution_frame().is_some() {
             FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
         } else {
@@ -1260,7 +1269,6 @@ impl Interpreter {
                 invocation.executable,
             )
             .await?;
-        context.execution().poll_execution_budget()?;
         let value = if context.actor_execution_frame().is_some() {
             FlowCompletionPolicy::actor_callable_value(flow, &invocation.executable.symbol)
         } else {
@@ -1391,7 +1399,6 @@ impl Interpreter {
     ) -> Result<RuntimeValueCarrier> {
         let context = context.enter_program_call()?;
         context.execution().add_instruction_units(1)?;
-        context.execution().poll_execution_budget()?;
 
         if let Some(projection) = context
             .runtime_assembly_target_if_present()
@@ -1415,7 +1422,6 @@ impl Interpreter {
                     )
                     .await?
                 {
-                    context.execution().poll_execution_budget()?;
                     return Ok(value.into());
                 }
             }
@@ -1432,7 +1438,6 @@ impl Interpreter {
                     invocation.executable,
                 )
                 .await?;
-            context.execution().poll_execution_budget()?;
             let value = FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)?;
             return materialize_local_callable_return(
                 RuntimeExecutionProjection::Assembly(projection.clone()),
@@ -1463,7 +1468,6 @@ impl Interpreter {
                 )
                 .await?
             {
-                context.execution().poll_execution_budget()?;
                 return Ok(value.into());
             }
         }
@@ -1475,7 +1479,6 @@ impl Interpreter {
         let flow = invocation
             .exec(self, context.clone(), heap, &mut env)
             .await?;
-        context.execution().poll_execution_budget()?;
         let value = FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)?;
         materialize_local_callable_return(
             RuntimeExecutionProjection::Legacy(invocation.program_projection()),

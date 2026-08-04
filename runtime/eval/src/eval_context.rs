@@ -1827,11 +1827,11 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn account_tail_transfer(&mut self, site: &InstructionSourceSite) -> Result<()> {
-        let result: Result<()> = (|| {
-            self.context.execution().add_instruction_units(1)?;
-            self.context.execution().poll_execution_budget()?;
-            Ok(())
-        })();
+        let result = self
+            .context
+            .execution()
+            .add_instruction_units(1)
+            .map_err(RuntimeError::from);
         self.promote_call_site_error(result, site)
     }
 

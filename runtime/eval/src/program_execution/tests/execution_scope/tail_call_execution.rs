@@ -49,6 +49,7 @@ struct ScheduledBudgetControl {
     instruction_units: Arc<AtomicU64>,
     polls: Arc<AtomicU64>,
     fail_on_poll: u64,
+    poll_interval: u64,
 }
 
 impl ScheduledBudgetControl {
@@ -60,6 +61,7 @@ impl ScheduledBudgetControl {
             instruction_units: Arc::new(AtomicU64::new(0)),
             polls: Arc::new(AtomicU64::new(0)),
             fail_on_poll,
+            poll_interval: 1,
         }
     }
 }
@@ -100,6 +102,7 @@ impl ExecutionControlApi for ScheduledBudgetControl {
             instruction_units: Arc::clone(&self.instruction_units),
             polls: Arc::clone(&self.polls),
             fail_on_poll: self.fail_on_poll,
+            poll_interval: self.poll_interval,
         }))
     }
 
@@ -112,8 +115,14 @@ impl ExecutionControlApi for ScheduledBudgetControl {
     }
 
     fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()> {
-        self.instruction_units.fetch_add(units, Ordering::Relaxed);
-        Ok(())
+        let previous = self.instruction_units.fetch_add(units, Ordering::Relaxed);
+        let current = previous.saturating_add(units);
+        let interval = self.poll_interval.max(1);
+        if units > 0 && current / interval != previous / interval {
+            self.poll_execution_budget()
+        } else {
+            Ok(())
+        }
     }
 
     fn poll_execution_budget(&self) -> ExecutionControlResult<()> {

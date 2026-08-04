@@ -100,11 +100,22 @@ impl LinkedCheckpointFixture {
         context: ProgramExecutionContext<'static>,
         control: &ScopeAwareControl,
     ) -> Result<crate::env::Flow, RuntimeError> {
+        let result = self.execute_unchecked(context).await;
+        assert!(
+            control.instruction_units.load(Ordering::Relaxed) > 0,
+            "real evaluator must account instruction units before terminating"
+        );
+        result
+    }
+
+    async fn execute_unchecked(
+        &self,
+        context: ProgramExecutionContext<'static>,
+    ) -> Result<crate::env::Flow, RuntimeError> {
         let heap = RequestHeap::default();
         let mut env = Env::for_program_executable(&self.file.executables[0], None, 0)
             .expect("fixture slot layout must be installable");
-        let result = self
-            .interpreter
+        self.interpreter
             .exec_program_executable(
                 context,
                 &mut HeapAccess::private(heap),
@@ -113,17 +124,12 @@ impl LinkedCheckpointFixture {
                 &self.file,
                 &self.file.executables[0],
             )
-            .await;
-        assert!(
-            control.instruction_units.load(Ordering::Relaxed) > 0,
-            "real evaluator must account instruction units before terminating"
-        );
-        result
+            .await
     }
 }
 
 #[tokio::test]
-async fn f445h_e4r_spine_scripted_clock_terminates_pure_cpu_for_loop() {
+async fn f445h_e4r_spine_pure_cpu_for_loop_completes_without_clock_reads() {
     let item_count = 16;
     let expressions = (0..item_count)
         .map(|_| LinkedExprIr::Literal {
@@ -170,31 +176,21 @@ async fn f445h_e4r_spine_scripted_clock_terminates_pure_cpu_for_loop() {
     );
     let base = Instant::now();
     let (cancellation, root) = root_scope(None);
-    let scope = root
-        .derive(base + Duration::from_millis(1), site())
-        .expect("local scope");
-    let control = ScopeAwareControl::available(scope, cancellation.token());
-    let context =
-        context(control.clone()).with_execution_clock(ExecutionClock::new(ScriptedClock::new(
-            vec![
-                base,
-                base,
-                base,
-                base,
-                base,
-                base + Duration::from_millis(1),
-            ],
-            Arc::new(AtomicU64::new(0)),
-        )));
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let calls = Arc::new(AtomicU64::new(0));
+    let context = context(control.clone()).with_execution_clock(ExecutionClock::new(
+        ScriptedClock::new(vec![base], Arc::clone(&calls)),
+    ));
 
-    let error = fixture
+    fixture
         .execute(context, &control)
         .await
-        .expect_err("loop checkpoints must observe the current scope deadline");
-    assert!(matches!(
-        error.scope_terminal().map(|carrier| carrier.terminal()),
-        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
-    ));
+        .expect("the finite for-in loop must complete");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "per-node loop checkpoints must not read the execution clock"
+    );
 }
 
 #[tokio::test]
@@ -571,7 +567,7 @@ async fn while_continue_skips_remaining_body_statements() {
 }
 
 #[tokio::test]
-async fn while_condition_and_backedge_checkpoints_observe_scope_deadline() {
+async fn while_true_observes_deadline_within_poll_interval() {
     let fixture = LinkedCheckpointFixture::with_body(
         vec![LinkedExprIr::Literal {
             value: skiff_artifact_model::LiteralIr::Bool { value: true },
@@ -595,39 +591,153 @@ async fn while_condition_and_backedge_checkpoints_observe_scope_deadline() {
         ],
         SlotLayoutIr::default(),
     );
-    let base = Instant::now();
-    let (cancellation, root) = root_scope(None);
-    let scope = root
-        .derive(base + Duration::from_millis(1), site())
-        .expect("local scope");
-    let control = ScopeAwareControl::available(scope, cancellation.token());
-    let context =
-        context(control.clone()).with_execution_clock(ExecutionClock::new(ScriptedClock::new(
-            vec![
-                base,
-                base,
-                base,
-                base,
-                base,
-                base,
-                base,
-                base + Duration::from_millis(1),
-            ],
-            Arc::new(AtomicU64::new(0)),
-        )));
-
-    let error = fixture
-        .execute(context, &control)
-        .await
-        .expect_err("while checkpoints must observe the current scope deadline");
+    let budget = Arc::new(
+        skiff_runtime_request::execution_budget::ExecutionBudget::new(
+            skiff_runtime_request::execution_budget::ExecutionBudgetConfig {
+                enabled: true,
+                instruction_limit: Some(1_000_000),
+                poll_interval: 4,
+            },
+            None,
+        ),
+    );
+    let root = skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+    let owned = root
+        .derive_scope(Instant::now() - Duration::from_millis(1), site())
+        .expect("expired derived scope");
+    let context = context_from_execution(
+        ExecutionControl::new(RequestBudgetControl { owned }),
+        ContextOverrides::default(),
+    );
+    let error = fixture.execute_unchecked(context).await.expect_err(
+        "while checkpoints must observe the expired derived deadline at an interval crossing",
+    );
     assert!(matches!(
         error.scope_terminal().map(|carrier| carrier.terminal()),
         Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
     ));
+    assert!(
+        budget.stats_snapshot().instruction_count <= 8,
+        "deadline must be observed within a poll interval of the loop's first checkpoints"
+    );
 }
 
 #[tokio::test]
-async fn f445h_e4r_spine_scripted_clock_terminates_generated_array_chunk() {
+async fn empty_while_true_hits_instruction_limit_exactly() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![LinkedExprIr::Literal {
+            value: skiff_artifact_model::LiteralIr::Bool { value: true },
+        }],
+        vec![
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 0 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Continue,
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 1 }],
+            },
+        ],
+        SlotLayoutIr::default(),
+    );
+    let budget = Arc::new(
+        skiff_runtime_request::execution_budget::ExecutionBudget::new(
+            skiff_runtime_request::execution_budget::ExecutionBudgetConfig {
+                enabled: true,
+                instruction_limit: Some(30),
+                poll_interval: 1024,
+            },
+            None,
+        ),
+    );
+    let root = skiff_runtime_request::ExecutionControl::new(CancellationToken::new(), &budget);
+    let context = context_from_execution(
+        ExecutionControl::new(RequestBudgetControl {
+            owned: root.owned(),
+        }),
+        ContextOverrides::default(),
+    );
+    let error = fixture
+        .execute_unchecked(context)
+        .await
+        .expect_err("an empty while-true loop must still hit the instruction limit");
+    assert!(matches!(
+        error,
+        RuntimeError::ExecutionBudgetExceeded {
+            reason: BudgetReason::InstructionLimitExceeded,
+            instruction_count: 30,
+            limit: Some(30),
+            ..
+        }
+    ));
+    assert_eq!(budget.stats_snapshot().instruction_count, 30);
+}
+
+#[tokio::test]
+async fn empty_while_true_observes_cancel_within_poll_interval() {
+    let fixture = LinkedCheckpointFixture::with_body(
+        vec![LinkedExprIr::Literal {
+            value: skiff_artifact_model::LiteralIr::Bool { value: true },
+        }],
+        vec![
+            LinkedStmtIr::While {
+                condition: ExprRefIr { expression: 0 },
+                body: "loop".to_string(),
+            },
+            LinkedStmtIr::Continue,
+        ],
+        vec![
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            },
+            BlockIr {
+                label: "loop".to_string(),
+                statements: vec![StmtRefIr { statement: 1 }],
+            },
+        ],
+        SlotLayoutIr::default(),
+    );
+    let budget = Arc::new(
+        skiff_runtime_request::execution_budget::ExecutionBudget::new(
+            skiff_runtime_request::execution_budget::ExecutionBudgetConfig {
+                enabled: true,
+                instruction_limit: Some(1_000_000),
+                poll_interval: 4,
+            },
+            None,
+        ),
+    );
+    let cancellation = CancellationToken::new();
+    let root = skiff_runtime_request::ExecutionControl::new(cancellation.clone(), &budget);
+    cancellation.cancel();
+    let context = context_from_execution(
+        ExecutionControl::new(RequestBudgetControl {
+            owned: root.owned(),
+        }),
+        ContextOverrides::default(),
+    );
+    let error = fixture
+        .execute_unchecked(context)
+        .await
+        .expect_err("an empty while-true loop must observe cancellation at an interval crossing");
+    assert!(matches!(error, RuntimeError::Cancelled));
+    assert_eq!(
+        budget.stats_snapshot().instruction_count,
+        4,
+        "cancellation must be observed at the first poll interval crossing"
+    );
+}
+
+#[tokio::test]
+async fn f445h_e4r_spine_array_chunk_completes_without_clock_reads() {
     let item_count = 12;
     let expressions = (0..item_count)
         .map(|_| LinkedExprIr::Literal {
@@ -649,24 +759,21 @@ async fn f445h_e4r_spine_scripted_clock_terminates_generated_array_chunk() {
     );
     let base = Instant::now();
     let (cancellation, root) = root_scope(None);
-    let scope = root
-        .derive(base + Duration::from_millis(1), site())
-        .expect("local scope");
-    let control = ScopeAwareControl::available(scope, cancellation.token());
-    let context =
-        context(control.clone()).with_execution_clock(ExecutionClock::new(ScriptedClock::new(
-            vec![base, base, base + Duration::from_millis(1)],
-            Arc::new(AtomicU64::new(0)),
-        )));
+    let control = ScopeAwareControl::available(root, cancellation.token());
+    let calls = Arc::new(AtomicU64::new(0));
+    let context = context(control.clone()).with_execution_clock(ExecutionClock::new(
+        ScriptedClock::new(vec![base], Arc::clone(&calls)),
+    ));
 
-    let error = fixture
+    fixture
         .execute(context, &control)
         .await
-        .expect_err("generated array checkpoints must observe the current scope deadline");
-    assert!(matches!(
-        error.scope_terminal().map(|carrier| carrier.terminal()),
-        Some(ExecutionScopeTerminal::LocalDeadlineExceeded(_))
-    ));
+        .expect("the generated array literal must complete");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "per-item zero-unit checkpoints must not read the execution clock"
+    );
 }
 
 #[tokio::test]

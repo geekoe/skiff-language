@@ -34,7 +34,7 @@ use crate::{
     },
     error::{extract_actor_instance_store_error, RuntimeError, ScopeTerminalCarrier},
     heap_access::HeapAccess,
-    program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind, ProgramExecutionContext},
+    program_execution::ProgramExecutionContext,
     Interpreter,
 };
 
@@ -183,12 +183,9 @@ impl<'a> ActorMethodExecutor<'a> {
             .await?;
         }
         // A create-less materialization has no evaluator body in which to observe execution
-        // control. Cross a zero-unit checkpoint while the exact admission guard is still owned.
+        // control. Run a full scope check while the exact admission guard is still owned.
         context
-            .checkpoint(ExecutionCheckpoint::new(
-                ExecutionCheckpointKind::GeneratedChunk,
-                0,
-            ))
+            .poll_execution_scope()
             .map_err(ActorMethodExecutorError::Execution)?;
         admission.admit(&self.authority).map_err(Into::into)
     }

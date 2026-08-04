@@ -2,10 +2,7 @@ use super::*;
 use crate::program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind};
 
 pub(super) fn actual_pending_checkpoint(context: &ProgramExecutionContext<'_>) -> Result<()> {
-    context.checkpoint(ExecutionCheckpoint::new(
-        ExecutionCheckpointKind::GeneratedChunk,
-        0,
-    ))
+    context.poll_execution_scope()
 }
 
 impl EvalContext<'_> {

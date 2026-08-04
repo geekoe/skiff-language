@@ -4,7 +4,6 @@ use skiff_runtime_linked_program::ExprRefIr;
 use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 
 use super::*;
-use crate::program_execution::{ExecutionCheckpoint, ExecutionCheckpointKind};
 
 impl EvalContext<'_> {
     #[async_recursion]
@@ -70,8 +69,16 @@ impl EvalContext<'_> {
         child_scope: &ExecutionScope,
         site: &InstructionSourceSite,
     ) -> Result<T> {
-        let Err(error) = result else {
-            return result;
+        // A successful body can still outlive the derived deadline by up to a
+        // poll interval (the cheap per-node path defers full checks). Observe
+        // the terminal here, before the child scope is dropped, so a short
+        // timeout body cannot silently escape its own deadline.
+        let error = match result {
+            Ok(value) => match owner_context.poll_execution_scope() {
+                Ok(()) => return Ok(value),
+                Err(error) => error,
+            },
+            Err(error) => error,
         };
         let Some(terminal) = error.scope_terminal() else {
             return Err(error);
@@ -79,10 +86,7 @@ impl EvalContext<'_> {
         let payload = if terminal.is_owned_by(child_scope) {
             terminal.terminal().ordinary_payload()
         } else {
-            match owner_context.checkpoint(ExecutionCheckpoint::new(
-                ExecutionCheckpointKind::GeneratedChunk,
-                0,
-            )) {
+            match owner_context.poll_execution_scope() {
                 Ok(()) => return Err(error),
                 Err(owner_error) => {
                     let Some(owner_terminal) = owner_error.scope_terminal() else {

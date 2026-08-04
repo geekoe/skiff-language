@@ -2501,6 +2501,7 @@ dependencies = [
  "skiff-runtime-model",
  "skiff-runtime-native",
  "skiff-runtime-native-contract",
+ "skiff-runtime-request",
  "skiff-test-runner",
  "thiserror",
  "tokio",

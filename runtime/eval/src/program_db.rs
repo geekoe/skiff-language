@@ -178,6 +178,18 @@ impl Interpreter {
             .await;
         match result {
             Ok(value) => {
+                if let Err(error) = program_context.poll_execution_scope() {
+                    let error = abort_transaction_and_rollback(
+                        lifecycle,
+                        &program_context,
+                        heap,
+                        env,
+                        checkpoint,
+                        error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
                     let error =
                         rollback_after_transaction(&program_context, heap, env, checkpoint, error)?;
@@ -291,6 +303,18 @@ impl Interpreter {
                         return Err(error);
                     }
                 };
+                if let Err(error) = program_context.poll_execution_scope() {
+                    let error = abort_transaction_and_rollback(
+                        lifecycle,
+                        &program_context,
+                        heap,
+                        env,
+                        checkpoint,
+                        error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
                 if let Err(error) = lifecycle.commit(&program_context, heap).await {
                     let error = rollback::rollback_transaction_live_roots(
                         heap.heap_mut(),
@@ -464,6 +488,13 @@ impl Interpreter {
             ));
         }
         release?;
+        let flow = match flow {
+            Ok(flow) => {
+                program_context.poll_execution_scope()?;
+                Ok(flow)
+            }
+            Err(error) => Err(error),
+        };
         match flow {
             Ok(Flow::Continue) => Ok(RuntimeValue::Bool(true)),
             Ok(Flow::Return(_)) => Err(RuntimeError::Decode(

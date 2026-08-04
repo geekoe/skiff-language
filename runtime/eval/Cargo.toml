@@ -37,6 +37,7 @@ skiff-compiler = { path = "../../compiler" }
 skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
+skiff-runtime-request = { path = "../request" }
 skiff-test-runner = { path = "../../test-runner" }
 
 [lints]
