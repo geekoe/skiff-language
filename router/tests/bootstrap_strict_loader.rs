@@ -76,7 +76,7 @@ fn actor_projection_ref(root: &Path) -> ActorRoutingProjectionRef {
 }
 
 fn materialize(
-    environment: &str,
+    profile: &str,
 ) -> (
     TestRoot,
     Arc<BootstrapStrictLoader>,
@@ -85,8 +85,8 @@ fn materialize(
     let root = TestRoot::new();
     let snapshot_store =
         RuntimeConfigSnapshotStore::create(root.path()).expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -128,7 +128,7 @@ mod tests {
                 &actor_ref,
             )
             .expect("epoch must load");
-        assert_eq!(epoch.environment(), "prod");
+        assert_eq!(epoch.profile(), "prod");
         assert_eq!(epoch.assembly_generation(), 7);
         assert_eq!(
             epoch.assembly_identity(),
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_environment_mismatch_fails_closed() {
+    fn snapshot_profile_mismatch_fails_closed() {
         let (_root, loader, actor_ref) = materialize("stage");
         let refs = committed_refs();
         let error = loader
@@ -204,9 +204,9 @@ mod tests {
                 &refs.config_snapshot,
                 &actor_ref,
             )
-            .expect_err("snapshot environment mismatch must fail closed");
+            .expect_err("snapshot profile mismatch must fail closed");
         assert!(
-            matches!(error, BootstrapLoadFailure::EnvironmentMismatch { .. }),
+            matches!(error, BootstrapLoadFailure::ProfileMismatch { .. }),
             "{error}"
         );
     }

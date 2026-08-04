@@ -1,5 +1,4 @@
 profile: dev
-environment: dev
 host: 127.0.0.1
 artifactsPath: ../var/skiff-artifacts
 devReload: true

@@ -101,3 +101,60 @@
 完成后提交到 dev/router-profile，报告给 `skiff_integration`：
 分支、worktree、implementation commit/tree、实际写集、自验收矩阵
 （设计/任务条款 | 代码证据 | 反向搜索证据 | 测试）、verify.mjs 处置决策。
+
+## 结果与证据（提交前记录）
+
+### 写集
+
+- `router/src/**`：environment 域符号全量迁移到 profile：
+  config 删除 `environment` 字段/键、`is_valid_profile` 委托
+  `skiff_artifact_model::validate_activation_profile`；bootstrap/supervisor
+  删除 `EnvironmentMissing`，E-bootstrap 直接使用 `config.profile`；
+  activation repository `_id == profile`、索引 `state.profile`/audit
+  `profile`；health wire `activeAssembly.profile`/`replicas[].profile`；
+  telemetry `router:{profile}`；session bootstrap/demux/identity/handshake
+  使用 `profile`；task admission/sink 消费 `target_profile`；
+  epoch/snapshot 校验 `profile`。
+- `router/tests/**` 与 fixtures：同步新语义；`invalid-environment.yml`
+  重命名为 `unsupported-environment.yml`（拒绝未知键断言），
+  `invalid-profile.yml` 改为 `profile: "."`（拒绝 `.` 断言），
+  两个 corpus 期望同步；live probe 的 OS env 名改为 `*_PROFILE`，
+  router.yml 使用 `profile: <live.profile>`，runtime.yml 不再写
+  environment/profile；遗留 `skiff-runtime-frame-v3` 硬编码全部同步为 v4。
+- `router/router.example.yml`：删除 `environment: dev`。
+- `cross-system-fixtures/package-service-ecosystem/verify.mjs`：删除
+  （legacy 断链 checker；决策见上）。
+- 本叶子任务文件。
+
+未修改：`router/README.md`（文档归阶段 E）、其他 crate、scripts、
+其他 cross-system fixture。
+
+### 反向搜索（限定路径）
+
+`router/src`、`router/tests`、`router/tests/fixtures`、
+`router/router.example.yml` 中仅剩两处白名单用途：
+1. `invalid/unsupported-environment.yml` + corpus.json 同名条目：
+   负例断言 `environment` 顶层键被拒绝；
+2. `bootstrap_live_probe.rs` 的 `"skiff-environment-activation-state-v1"`
+   legacy schema 种子：负例断言旧命名空间 fail closed。
+
+### 自验收矩阵
+
+| 设计/任务条款 | 代码证据 | 反向搜索证据 | 测试 |
+| --- | --- | --- | --- |
+| config 删除 environment、profile 必需、validator 收敛 | `router/src/config/mod.rs`（TOP_LEVEL_KEYS/RouterConfig/is_valid_profile） | 无 environment 域残留；unsupported-environment 负例 | `cargo test -p skiff-router`（config_corpus 4/4） |
+| E-bootstrap 按 config.profile 读取 committed state | `router/src/bootstrap/assembly.rs`（`config.profile.clone()`） | 无 EnvironmentMissing | bootstrap_production_wiring 6/6、bootstrap_* 全过 |
+| repository `_id=profile`、唯一索引、audit 索引 | `router/src/activation/{repository,index}.rs` | 索引键/名均为 profile | activation_repository_contract 5/5、activation_mongo_probe（ignored live） |
+| health wire `profile` | `router/src/health/wire.rs` | 无 environment 字段 | health_http 3/3、health_projection 5/5 |
+| telemetry `router:{profile}` | `router/src/telemetry.rs` | 无环境残留 | task_telemetry 5/5 |
+| session 消费 v4 activation.profile | `router/src/session/{bootstrap,demux,identity,handshake}.rs` | frame v3 硬编码已清零 | session_* 全过、w_model_* 全过 |
+| task 消费 target_profile | `router/src/task/{admission,sink}.rs` | `target_environment` 清零 | task_* 全过 |
+| tests/fixture 同步 | router/tests + fixtures diff | 限定路径搜索仅白名单 | 完整套件 |
+| verify.mjs legacy 断链处置 | 文件删除 | 无仓库内引用 | 不适用 |
+
+### 完整套件
+
+`CARGO_TARGET_DIR=/Users/geek/workspace/.cargo-targets/router-profile
+cargo test -p skiff-router`：全 target 0 failed；lib 69、bin 2、
+全部集成测试套件通过；`#[ignore]` 的 live probe（需外部 Mongo/harness）
+不在默认运行范围。`cargo check --all-targets` 通过；`git diff --check` 通过。

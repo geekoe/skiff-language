@@ -682,7 +682,6 @@ mod tests {
                 activation_prepare_timeout_ms: 120_000,
                 artifacts_path: "/opt/skiff/artifacts".into(),
                 dev_reload: None,
-                environment: Some("prod".to_string()),
                 host: "127.0.0.1".to_string(),
                 http_max_request_bytes: 1,
                 http_max_response_bytes: 8_388_608,
@@ -710,7 +709,7 @@ mod tests {
         let (_layer, handle, writer, session) = session_layer_with_writer();
         let port = ActivationSessionEnqueuePort::new(handle);
         let control = skiff_artifact_model::AssemblyActivationControl::Prepare {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "activation-1".to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -784,7 +783,7 @@ mod tests {
             ActivationCoordinator::spawn(ports, ActivationCoordinatorOptions::default());
         let sink = ActivationTransactionSink::new(coordinator.clone());
         let control = skiff_artifact_model::AssemblyActivationControl::Prepared {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             activation_id: "activation-1".to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -813,23 +812,23 @@ mod tests {
     impl skiff_router::activation::ActivationStateRepository for NoopRepository {
         async fn read(
             &self,
-            _environment: &str,
+            _profile: &str,
         ) -> Result<
-            skiff_deployment::activation_state::EnvironmentActivationState,
+            skiff_deployment::activation_state::ProfileActivationState,
             skiff_router::activation::RepositoryError,
         > {
             Err(
                 skiff_router::activation::error::RepositoryError::CasMismatch {
-                    environment: "prod".to_string(),
+                    profile: "prod".to_string(),
                     message: "noop".to_string(),
                 },
             )
         }
         async fn initialize(
             &self,
-            _state: &skiff_deployment::activation_state::EnvironmentActivationState,
+            _state: &skiff_deployment::activation_state::ProfileActivationState,
         ) -> Result<
-            skiff_deployment::activation_state::EnvironmentActivationState,
+            skiff_deployment::activation_state::ProfileActivationState,
             skiff_router::activation::RepositoryError,
         > {
             unimplemented!("noop repository")
@@ -838,7 +837,7 @@ mod tests {
             &self,
             _input: skiff_router::activation::PrepareInput,
         ) -> Result<
-            skiff_deployment::activation_state::EnvironmentActivationState,
+            skiff_deployment::activation_state::ProfileActivationState,
             skiff_router::activation::RepositoryError,
         > {
             unimplemented!("noop repository")
@@ -847,7 +846,7 @@ mod tests {
             &self,
             _input: skiff_router::activation::CommitInput,
         ) -> Result<
-            skiff_deployment::activation_state::EnvironmentActivationState,
+            skiff_deployment::activation_state::ProfileActivationState,
             skiff_router::activation::RepositoryError,
         > {
             unimplemented!("noop repository")
@@ -856,7 +855,7 @@ mod tests {
             &self,
             _input: skiff_router::activation::AbortInput,
         ) -> Result<
-            skiff_deployment::activation_state::EnvironmentActivationState,
+            skiff_deployment::activation_state::ProfileActivationState,
             skiff_router::activation::RepositoryError,
         > {
             unimplemented!("noop repository")
@@ -898,7 +897,7 @@ mod tests {
     impl skiff_router::activation::RuntimeCandidateQueryPort for NoopCandidates {
         fn freeze(
             &self,
-            _environment: &str,
+            _profile: &str,
         ) -> Result<
             Vec<RegisteredSessionLease>,
             skiff_router::activation::coordinator::ActivationCandidateError,

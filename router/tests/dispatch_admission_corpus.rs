@@ -153,7 +153,7 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Tuple {
-    environment: String,
+    profile: String,
     generation: u64,
     assembly: String,
     #[serde(rename = "configSnapshot")]
@@ -163,7 +163,7 @@ struct Tuple {
 impl Tuple {
     fn to_registered(&self) -> RegisteredAssemblyTuple {
         RegisteredAssemblyTuple {
-            environment: self.environment.clone(),
+            profile: self.profile.clone(),
             generation: self.generation,
             assembly: RuntimeAssemblyRef {
                 assembly_identity: AssemblyIdentity::new(self.assembly.clone()),
@@ -213,7 +213,7 @@ struct Deployment {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Epoch {
-    environment: String,
+    profile: String,
     generation: u64,
     #[serde(rename = "assemblyIdentity")]
     assembly_identity: String,
@@ -366,7 +366,7 @@ impl Harness {
     fn new(scenario: Scenario) -> Self {
         let deployment = scenario_deployment_ref(&scenario.epoch);
         let epoch = build_epoch(
-            &scenario.epoch.environment,
+            &scenario.epoch.profile,
             scenario.epoch.generation,
             &scenario.epoch.assembly_identity,
             &scenario.epoch.config_snapshot_id,
@@ -519,7 +519,7 @@ impl Harness {
         let deployment = scenario_deployment_ref(epoch);
         DispatchSubmit {
             header: RuntimeAssemblyRequestStartFrameHeader {
-                schema_version: "skiff-runtime-frame-v3".to_string(),
+                schema_version: "skiff-runtime-frame-v4".to_string(),
                 frame_type: "request.start".to_string(),
                 request_id: request_id.to_string(),
                 mode: mode.to_string(),

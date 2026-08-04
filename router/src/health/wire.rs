@@ -34,7 +34,7 @@ pub struct SessionFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveAssemblyProjection {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly_identity: String,
     pub config_snapshot_id: String,
@@ -63,7 +63,7 @@ pub struct CapabilitiesProjection {
 #[serde(rename_all = "camelCase")]
 pub struct ReplicaProjection {
     pub replica_id: String,
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly_identity: String,
     pub config_snapshot_id: String,
@@ -168,7 +168,7 @@ pub fn project_replicas(
             };
             ReplicaProjection {
                 replica_id: fact.session.replica_id.clone(),
-                environment: fact.tuple.environment.clone(),
+                profile: fact.tuple.profile.clone(),
                 generation: fact.tuple.generation,
                 assembly_identity: fact.tuple.assembly_identity().to_string(),
                 config_snapshot_id: fact.tuple.snapshot_id().to_string(),
@@ -291,7 +291,7 @@ mod tests {
                 connection_generation: 1,
             },
             RuntimeHealthFrameHeader {
-                schema_version: "skiff-runtime-frame-v3".to_string(),
+                schema_version: "skiff-runtime-frame-v4".to_string(),
                 envelope_type: "runtime.health".to_string(),
                 runtime_id: "runtime-a".to_string(),
                 observed_at: "2026-08-02T00:00:00.000Z".to_string(),
@@ -310,7 +310,7 @@ mod tests {
                 connection_generation: 1,
             },
             tuple: RegisteredAssemblyTuple {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 generation: 7,
                 assembly: RuntimeAssemblyRef {
                     assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -346,7 +346,7 @@ mod tests {
                 connection_generation: 1,
             },
             tuple: RegisteredAssemblyTuple {
-                environment: "prod".to_string(),
+                profile: "prod".to_string(),
                 generation: 7,
                 assembly: RuntimeAssemblyRef {
                     assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -378,7 +378,7 @@ mod tests {
                     connection_generation: 1,
                 },
                 RuntimeHealthFrameHeader {
-                    schema_version: "skiff-runtime-frame-v3".to_string(),
+                    schema_version: "skiff-runtime-frame-v4".to_string(),
                     envelope_type: "runtime.health".to_string(),
                     runtime_id: "runtime-a".to_string(),
                     observed_at: observed_at.to_string(),

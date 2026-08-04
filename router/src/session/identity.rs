@@ -28,7 +28,7 @@ pub struct RuntimeSessionEpoch {
 /// captured by `RuntimeRegistrationTransition`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredAssemblyTuple {
-    pub environment: String,
+    pub profile: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
     pub config_snapshot: RuntimeConfigSnapshotRef,

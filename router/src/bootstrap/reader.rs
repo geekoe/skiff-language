@@ -199,11 +199,11 @@ impl CommittedActivationBootstrapReader {
         }
     }
 
-    /// Reads one committed environment and fail-closes on every non-stable
+    /// Reads one committed profile and fail-closes on every non-stable
     /// outcome. Each call independently validates the repository read and the
     /// committed refs (no cache).
-    pub async fn read_committed(&self, environment: &str) -> BootstrapReadOutcome {
-        let state = match self.repository.read(environment).await {
+    pub async fn read_committed(&self, profile: &str) -> BootstrapReadOutcome {
+        let state = match self.repository.read(profile).await {
             Ok(state) => state,
             Err(RepositoryError::CasMismatch { .. }) => {
                 self.missing.fetch_add(1, Ordering::Relaxed);

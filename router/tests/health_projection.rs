@@ -32,7 +32,7 @@ mod tests {
 
     fn tuple() -> RegisteredAssemblyTuple {
         RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation: 7,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(
@@ -72,7 +72,7 @@ mod tests {
         (
             session(replica),
             RuntimeHealthFrameHeader {
-                schema_version: "skiff-runtime-frame-v3".to_string(),
+                schema_version: "skiff-runtime-frame-v4".to_string(),
                 envelope_type: "runtime.health".to_string(),
                 runtime_id: replica.to_string(),
                 observed_at: observed_at.to_string(),
@@ -93,7 +93,7 @@ mod tests {
         };
         let coordinator = ActivationCoordinatorHealth {
             phase: ActivationPhase::Idle,
-            environment: None,
+            profile: None,
             activation_id: None,
             expected_generation: None,
             candidate_generation: None,
@@ -156,7 +156,7 @@ mod tests {
             active_routing_epoch: skiff_router::health::counters::ActiveRoutingEpochCounters {
                 publish_count: 1,
                 active: Some(skiff_router::health::counters::ActiveEpochTuple {
-                    environment: "prod".to_string(),
+                    profile: "prod".to_string(),
                     generation: 7,
                     assembly_identity: tuple().assembly_identity().to_string(),
                     config_snapshot_id: tuple().snapshot_id().to_string(),
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn base_render_keeps_ts_shape_and_exposes_all_counter_sections() {
         let active = ActiveAssemblyProjection {
-            environment: "prod".to_string(),
+            profile: "prod".to_string(),
             generation: 7,
             assembly_identity: tuple().assembly_identity().to_string(),
             config_snapshot_id: tuple().snapshot_id().to_string(),
@@ -308,7 +308,7 @@ mod tests {
         };
         let coordinator = ActivationCoordinatorHealth {
             phase: ActivationPhase::Prepared,
-            environment: Some("prod".to_string()),
+            profile: Some("prod".to_string()),
             activation_id: Some("activation-x".to_string()),
             expected_generation: Some(6),
             candidate_generation: Some(7),

@@ -24,10 +24,9 @@ fn snapshot_ref() -> RuntimeConfigSnapshotRef {
     }
 }
 
-fn snapshot(environment: &str) -> Arc<RuntimeConfigSnapshot> {
+fn snapshot(profile: &str) -> Arc<RuntimeConfigSnapshot> {
     Arc::new(
-        RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-            .expect("snapshot fixture"),
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture"),
     )
 }
 
@@ -40,13 +39,13 @@ fn catalog() -> Arc<ActorRoutingCatalog> {
     Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)))
 }
 
-fn epoch(environment: &str, generation: u64) -> Arc<RoutingEpoch> {
+fn epoch(profile: &str, generation: u64) -> Arc<RoutingEpoch> {
     Arc::new(
         RoutingEpoch::new(
-            environment,
+            profile,
             generation,
             assembly(),
-            snapshot(environment),
+            snapshot(profile),
             catalog(),
         )
         .expect("epoch fixture"),
@@ -60,7 +59,7 @@ mod tests {
     #[test]
     fn epoch_exposes_frozen_corpus_fields() {
         let epoch = epoch("prod", 7);
-        assert_eq!(epoch.environment(), "prod");
+        assert_eq!(epoch.profile(), "prod");
         assert_eq!(epoch.assembly_generation(), 7);
         assert_eq!(
             epoch.assembly_identity(),
@@ -76,20 +75,17 @@ mod tests {
     }
 
     #[test]
-    fn epoch_rejects_snapshot_environment_mismatch() {
+    fn epoch_rejects_snapshot_profile_mismatch() {
         let result = RoutingEpoch::new("prod", 1, assembly(), snapshot("stage"), catalog());
-        let error = result.expect_err("environment mismatch must fail closed");
-        assert!(
-            error.to_string().contains("environment mismatch"),
-            "{error}"
-        );
+        let error = result.expect_err("profile mismatch must fail closed");
+        assert!(error.to_string().contains("profile mismatch"), "{error}");
     }
 
     #[test]
     fn epoch_maps_to_registered_assembly_tuple_for_session_seam() {
         let epoch = epoch("prod", 7);
         let tuple = epoch.registered_tuple();
-        assert_eq!(tuple.environment, "prod");
+        assert_eq!(tuple.profile, "prod");
         assert_eq!(tuple.generation, 7);
         assert_eq!(tuple.assembly_identity(), epoch.assembly_identity());
         assert_eq!(tuple.snapshot_id(), epoch.config_snapshot_id());
@@ -125,7 +121,7 @@ mod tests {
         let health = store.health();
         assert_eq!(health.publish_count, 1);
         let current = health.current.expect("current epoch");
-        assert_eq!(current.environment, "prod");
+        assert_eq!(current.profile, "prod");
         assert_eq!(current.assembly_generation, 42);
         assert_eq!(current.assembly_identity, epoch.assembly_identity());
         assert_eq!(

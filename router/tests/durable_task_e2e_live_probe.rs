@@ -53,7 +53,7 @@ use serde_json::Value;
 use skiff_artifact_model::{
     AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_router::activation::{
     ActivationStateRepository, MongoActivationStateRepository,
     MongoActivationStateRepositoryOptions, SystemClock,
@@ -91,12 +91,12 @@ const HANDSHAKE_SEQUENCE: [&str; 5] = [
     "runtime.health",
 ];
 
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     service_database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
@@ -115,7 +115,7 @@ struct Entrypoint {
     path: String,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -172,7 +172,7 @@ impl LiveEnvironment {
             database: required("SKIFF_DURABLE_TASK_E2E_DB"),
             service_database: required("SKIFF_DURABLE_TASK_E2E_SERVICE_DATABASE"),
             artifact_root: PathBuf::from(required("SKIFF_DURABLE_TASK_E2E_ARTIFACT_ROOT")),
-            environment: required("SKIFF_DURABLE_TASK_E2E_ENVIRONMENT"),
+            profile: required("SKIFF_DURABLE_TASK_E2E_PROFILE"),
             assembly_identity: required("SKIFF_DURABLE_TASK_E2E_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_DURABLE_TASK_E2E_CONFIG_SNAPSHOT_ID"),
             generation,
@@ -264,7 +264,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -276,7 +276,7 @@ async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRe
     )
 }
 
-async fn connect_task_store(live: &LiveEnvironment) -> Arc<dyn TaskStore> {
+async fn connect_task_store(live: &LiveProfile) -> Arc<dyn TaskStore> {
     let options = MongoTaskStoreOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -293,9 +293,9 @@ fn seed_runtime_home(home: &Path) {
     std::fs::write(home.join("runtime-id"), format!("{REPLICA_ID}\n")).expect("seed runtime-id");
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
+    let state = ProfileActivationState::initial(
+        &live.profile,
         live.generation,
         live.assembly_ref(),
         live.snapshot_ref(),
@@ -306,14 +306,13 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
         .expect("seed committed activation state");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-durable-task-{}-{}.yml",
         live.http_port, live.runtime_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -321,7 +320,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          http:\n  port: {}\n  maxRequestBytes: 1048576\n  maxResponseBytes: 1048576\n\
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.runtime_port,
@@ -331,23 +330,21 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join("runtime.yml");
     let contents = format!(
         "router: {}\n\
          runtime-home: {}\n\
-         environment: {}\n\
          serviceDb:\n  encryption:\n    keyringFile: {}\n",
         live.relay_runtime_url(),
         live.runtime_home.display(),
-        live.environment,
         live.keyring_file.display(),
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path, label: &str) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path, label: &str) -> Child {
     let stdout_path = live.temp_dir.join(format!("{label}.stdout.log"));
     let stderr_path = live.temp_dir.join(format!("{label}.stderr.log"));
     let stdout = OpenOptions::new()
@@ -710,7 +707,7 @@ async fn wait_for_pair_closed(state: &Arc<RelayState>, connection: u64) {
     }
 }
 
-fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
+fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
     assert_eq!(records.len(), HANDSHAKE_SEQUENCE.len());
     for (index, expected) in HANDSHAKE_SEQUENCE.iter().enumerate() {
         let RecordKind::Frame {
@@ -727,7 +724,7 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
                 assert_eq!(*direction, Direction::ToRuntime);
                 let header =
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
-                assert_eq!(header.activation.environment, live.environment);
+                assert_eq!(header.activation.profile, live.profile);
                 assert_eq!(header.activation.generation, live.generation);
                 assert_eq!(
                     header.activation.assembly.assembly_identity.as_str(),
@@ -772,21 +769,21 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
     }
 }
 
-fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
+fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
     let control =
         decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
             .expect("decode register frame");
     match control {
         AssemblyActivationControl::Register {
             replica_id,
-            environment,
+            profile,
             generation,
             assembly,
             config_snapshot,
             ..
         } => {
             assert_eq!(replica_id, REPLICA_ID);
-            assert_eq!(environment, live.environment);
+            assert_eq!(profile, live.profile);
             assert_eq!(generation, live.generation);
             assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
             assert_eq!(
@@ -799,7 +796,7 @@ fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
 }
 
 async fn wait_for_replica_handshake(
-    _live: &LiveEnvironment,
+    _live: &LiveProfile,
     state: &Arc<RelayState>,
     after_records: usize,
 ) -> u64 {
@@ -941,7 +938,7 @@ async fn raw_http(addr: SocketAddr, method: &str, path: &str, body: &[u8]) -> (u
     (status, decoded)
 }
 
-async fn http_post(live: &LiveEnvironment, entry: &str, body: &Value) -> (u16, Value) {
+async fn http_post(live: &LiveProfile, entry: &str, body: &Value) -> (u16, Value) {
     let entrypoint = live.entrypoint(entry);
     let (status, text) = raw_http(
         live.public_http_addr(),
@@ -959,7 +956,7 @@ async fn http_post(live: &LiveEnvironment, entry: &str, body: &Value) -> (u16, V
     (status, value)
 }
 
-async fn submit_task(live: &LiveEnvironment, entry: &str, id: &str, tag: &str) {
+async fn submit_task(live: &LiveProfile, entry: &str, id: &str, tag: &str) {
     let (status, body) = http_post(live, entry, &serde_json::json!({ "id": id, "tag": tag })).await;
     assert_eq!(status, 200, "{entry} submit {id} failed: {body}");
     assert_eq!(
@@ -969,7 +966,7 @@ async fn submit_task(live: &LiveEnvironment, entry: &str, id: &str, tag: &str) {
     );
 }
 
-async fn status_kind(live: &LiveEnvironment, id: &str) -> String {
+async fn status_kind(live: &LiveProfile, id: &str) -> String {
     let (status, body) = http_post(live, "status", &serde_json::json!({ "id": id })).await;
     assert_eq!(status, 200, "status {id} failed: {body}");
     body["kind"]
@@ -978,7 +975,7 @@ async fn status_kind(live: &LiveEnvironment, id: &str) -> String {
         .to_string()
 }
 
-async fn wait_status_kind(live: &LiveEnvironment, id: &str, expected: &str, deadline: Duration) {
+async fn wait_status_kind(live: &LiveProfile, id: &str, expected: &str, deadline: Duration) {
     let deadline = tokio::time::Instant::now() + deadline;
     loop {
         let kind = status_kind(live, id).await;
@@ -992,14 +989,14 @@ async fn wait_status_kind(live: &LiveEnvironment, id: &str, expected: &str, dead
     }
 }
 
-async fn effect_count(live: &LiveEnvironment, tag: &str) -> i64 {
+async fn effect_count(live: &LiveProfile, tag: &str) -> i64 {
     let (status, body) = http_post(live, "effect", &serde_json::json!({ "id": tag })).await;
     assert_eq!(status, 200, "effect {tag} failed: {body}");
     body.as_i64()
         .unwrap_or_else(|| panic!("effect {tag} is not a number: {body}"))
 }
 
-async fn actor_count(live: &LiveEnvironment, id: &str) -> i64 {
+async fn actor_count(live: &LiveProfile, id: &str) -> i64 {
     let (status, body) = http_post(live, "actor-count", &serde_json::json!({ "id": id })).await;
     assert_eq!(status, 200, "actor-count {id} failed: {body}");
     body.as_i64()
@@ -1010,7 +1007,7 @@ async fn actor_count(live: &LiveEnvironment, id: &str) -> i64 {
 // Direct Mongo evidence helpers (probe-owned database only).
 // ---------------------------------------------------------------------------
 
-async fn task_collection(live: &LiveEnvironment) -> (Client, Collection<Document>) {
+async fn task_collection(live: &LiveProfile) -> (Client, Collection<Document>) {
     let client = live.mongo_client().await;
     let collection = client
         .database(&live.database)
@@ -1020,7 +1017,7 @@ async fn task_collection(live: &LiveEnvironment) -> (Client, Collection<Document
 
 /// Reads the newest task record (each harness run starts with a fresh probe
 /// store, so the newest record is the scenario task under assertion).
-async fn read_task_facts(live: &LiveEnvironment) -> (String, i64) {
+async fn read_task_facts(live: &LiveProfile) -> (String, i64) {
     let (_client, tasks) = task_collection(live).await;
     let document = tasks
         .find_one(doc! {})
@@ -1039,7 +1036,7 @@ async fn read_task_facts(live: &LiveEnvironment) -> (String, i64) {
     (state, generation)
 }
 
-async fn drop_probe_databases(live: &LiveEnvironment) {
+async fn drop_probe_databases(live: &LiveProfile) {
     let client = live.mongo_client().await;
     for database in [&live.database, &live.service_database] {
         let db: Database = client.database(database);
@@ -1060,7 +1057,7 @@ async fn drop_probe_databases(live: &LiveEnvironment) {
 // ---------------------------------------------------------------------------
 
 async fn assemble_supervisor(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     config_path: &Path,
 ) -> (
     Arc<RouterSupervisor>,
@@ -1078,7 +1075,7 @@ async fn assemble_supervisor(
     let supervisor = Arc::new(
         RouterSupervisor::assemble_with_task_store(
             &config,
-            &live.environment,
+            &live.profile,
             repository,
             Arc::clone(&task_store),
         )
@@ -1147,7 +1144,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "driven by scripts/check-durable-task-e2e-live.mjs"]
     async fn durable_task_e2e_live_vertical_chain() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live.runtime_home);
         drop_probe_databases(&live).await;
 

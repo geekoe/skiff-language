@@ -5,7 +5,7 @@
 
 use skiff_artifact_identity::runtime_assembly_ref;
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -69,13 +69,13 @@ struct RealChain {
     assembly_ref: skiff_artifact_model::RuntimeAssemblyRef,
 }
 
-fn materialize(environment: &str) -> RealChain {
+fn materialize(profile: &str) -> RealChain {
     let root = TestRoot::new();
     fs::create_dir_all(root.path()).expect("create artifact root");
     let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
         .expect("create snapshot store");
-    let snapshot = RuntimeConfigSnapshot::new(environment, snapshot_ref(), Vec::new())
-        .expect("snapshot fixture");
+    let snapshot =
+        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
     snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
@@ -109,7 +109,6 @@ fn config(artifact_root: &Path) -> RouterConfig {
         activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
-        environment: Some("prod".to_string()),
         host: "127.0.0.1".to_string(),
         http_max_request_bytes: 1_048_576,
         http_max_response_bytes: 1_048_576,
@@ -131,8 +130,8 @@ fn config(artifact_root: &Path) -> RouterConfig {
     }
 }
 
-fn committed_state(chain: &RealChain) -> EnvironmentActivationState {
-    EnvironmentActivationState::initial("prod", 7, chain.assembly_ref.clone(), snapshot_ref())
+fn committed_state(chain: &RealChain) -> ProfileActivationState {
+    ProfileActivationState::initial("prod", 7, chain.assembly_ref.clone(), snapshot_ref())
 }
 
 async fn raw_get(addr: std::net::SocketAddr, path: &str) -> (String, String) {
@@ -333,7 +332,7 @@ mod tests {
         // Strict decode rejects unknown fields.
         let unknown = br#"{
             "schemaVersion": "skiff-assembly-activation-request-v2",
-            "environment": "prod",
+            "profile": "prod",
             "activationId": "activation-8",
             "expectedGeneration": 7,
             "assembly": {"assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

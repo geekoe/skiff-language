@@ -192,7 +192,7 @@ fn actor_record(
 
 fn corpus_image() -> TaskExecutionImageRef {
     TaskExecutionImageRef {
-        target_environment: dispatch_harness::CORPUS_ENVIRONMENT.to_string(),
+        target_profile: dispatch_harness::CORPUS_PROFILE.to_string(),
         package_version: dispatch_harness::CORPUS_CONTRACT_VERSION.to_string(),
         assembly: RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
@@ -232,7 +232,7 @@ fn actor_epoch() -> Arc<RoutingEpoch> {
         },
     };
     dispatch_harness::build_epoch_with_actor_methods(
-        dispatch_harness::CORPUS_ENVIRONMENT,
+        dispatch_harness::CORPUS_PROFILE,
         dispatch_harness::CORPUS_GENERATION,
         dispatch_harness::CORPUS_ASSEMBLY_IDENTITY,
         dispatch_harness::CORPUS_CONFIG_SNAPSHOT_ID,

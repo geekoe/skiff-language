@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use skiff_deployment::activation_state::{
-    abort, commit, prepare, ActivationAuditEvent, ActivationAuditOperation,
-    EnvironmentActivationState,
+    abort, commit, prepare, ActivationAuditEvent, ActivationAuditOperation, ProfileActivationState,
 };
 use tokio::sync::RwLock;
 
@@ -24,7 +23,7 @@ use super::{
 
 #[derive(Debug)]
 struct MemoryState {
-    current: Option<EnvironmentActivationState>,
+    current: Option<ProfileActivationState>,
     audit: Vec<ActivationAuditEvent>,
     fail_audit_inserts: u64,
     transient_failures: u64,
@@ -86,18 +85,18 @@ impl MemoryActivationStateRepository {
 
 #[async_trait]
 impl ActivationStateRepository for MemoryActivationStateRepository {
-    async fn read(&self, environment: &str) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn read(&self, profile: &str) -> Result<ProfileActivationState, RepositoryError> {
         let state = self.inner.read().await;
         state
             .current
             .clone()
-            .ok_or_else(|| cas_mismatch(environment, "activation state does not exist"))
+            .ok_or_else(|| cas_mismatch(profile, "activation state does not exist"))
     }
 
     async fn initialize(
         &self,
-        state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         let (result, _outcome) = self
             .retry
             .run(&SystemClock, || self.initialize_once(state))
@@ -108,27 +107,21 @@ impl ActivationStateRepository for MemoryActivationStateRepository {
     async fn prepare(
         &self,
         input: PrepareInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    ) -> Result<ProfileActivationState, RepositoryError> {
         self.mutate(ActivationAuditOperation::Prepare, |current| {
             prepare(current, &input).map_err(map_reducer_error)
         })
         .await
     }
 
-    async fn commit(
-        &self,
-        input: CommitInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn commit(&self, input: CommitInput) -> Result<ProfileActivationState, RepositoryError> {
         self.mutate(ActivationAuditOperation::Commit, |current| {
             commit(current, &input).map_err(map_reducer_error)
         })
         .await
     }
 
-    async fn abort(
-        &self,
-        input: AbortInput,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+    async fn abort(&self, input: AbortInput) -> Result<ProfileActivationState, RepositoryError> {
         self.mutate(ActivationAuditOperation::Abort, |current| {
             abort(current, &input).map_err(map_reducer_error)
         })
@@ -156,7 +149,7 @@ impl ActivationStateRepository for MemoryActivationStateRepository {
         let mut health = ActivationRepositoryHealth::default();
         if let Ok(state) = self.inner.try_read() {
             if let Some(current) = &state.current {
-                health.environment = Some(current.environment.clone());
+                health.profile = Some(current.profile.clone());
                 health.committed_generation = Some(current.committed.generation);
                 health.pending_activation_id = current
                     .pending
@@ -179,9 +172,9 @@ impl MemoryActivationStateRepository {
         &self,
         operation: ActivationAuditOperation,
         reduce: F,
-    ) -> Result<EnvironmentActivationState, RepositoryError>
+    ) -> Result<ProfileActivationState, RepositoryError>
     where
-        F: Fn(&EnvironmentActivationState) -> Result<EnvironmentActivationState, RepositoryError>
+        F: Fn(&ProfileActivationState) -> Result<ProfileActivationState, RepositoryError>
             + Send
             + Sync,
     {
@@ -194,12 +187,12 @@ impl MemoryActivationStateRepository {
 
     async fn initialize_once(
         &self,
-        state: &EnvironmentActivationState,
-    ) -> Result<EnvironmentActivationState, RepositoryError> {
+        state: &ProfileActivationState,
+    ) -> Result<ProfileActivationState, RepositoryError> {
         self.transient_gate().await?;
         if state.pending.is_some() {
             return Err(invalid_record(
-                &state.environment,
+                &state.profile,
                 "initial activation state cannot contain pending",
             ));
         }
@@ -207,7 +200,7 @@ impl MemoryActivationStateRepository {
         match &inner.current {
             Some(existing) if existing == state => Ok(existing.clone()),
             Some(_) => Err(cas_mismatch(
-                &state.environment,
+                &state.profile,
                 "activation state already exists with a different tuple",
             )),
             None => {
@@ -221,10 +214,9 @@ impl MemoryActivationStateRepository {
         &self,
         operation: ActivationAuditOperation,
         reduce: &F,
-    ) -> Result<EnvironmentActivationState, RepositoryError>
+    ) -> Result<ProfileActivationState, RepositoryError>
     where
-        F: Fn(&EnvironmentActivationState) -> Result<EnvironmentActivationState, RepositoryError>
-            + Sync,
+        F: Fn(&ProfileActivationState) -> Result<ProfileActivationState, RepositoryError> + Sync,
     {
         self.transient_gate().await?;
         let mut inner = self.inner.write().await;
@@ -251,8 +243,8 @@ impl MemoryActivationStateRepository {
 
 fn memory_audit_event(
     operation: ActivationAuditOperation,
-    current: &EnvironmentActivationState,
-    next: &EnvironmentActivationState,
+    current: &ProfileActivationState,
+    next: &ProfileActivationState,
 ) -> ActivationAuditEvent {
     let (activation_id, expected_generation, candidate_generation, participants) = match operation {
         ActivationAuditOperation::Prepare => {
@@ -284,7 +276,7 @@ fn memory_audit_event(
         }
     };
     ActivationAuditEvent::new(
-        current.environment.clone(),
+        current.profile.clone(),
         activation_id,
         operation,
         expected_generation,

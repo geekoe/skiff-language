@@ -74,7 +74,7 @@ fn epoch(deployments: Vec<ServiceDeploymentRef>) -> Arc<RoutingEpoch> {
 
 fn tuple(generation: u64, assembly: &str, snapshot: &str) -> RegisteredAssemblyTuple {
     RegisteredAssemblyTuple {
-        environment: "prod".to_string(),
+        profile: "prod".to_string(),
         generation,
         assembly: RuntimeAssemblyRef {
             assembly_identity: AssemblyIdentity::new(assembly),
@@ -206,13 +206,9 @@ mod tests {
     #[test]
     fn routing_query_every_tuple_field_is_matched_exactly() {
         let epoch = epoch(vec![deployment("example.com/service-1")]);
-        let mut environment = exact_session("runtime-a");
-        environment.registered_tuple = Some(tuple(42, ASSEMBLY, SNAPSHOT));
-        environment
-            .registered_tuple
-            .as_mut()
-            .expect("tuple")
-            .environment = "stage".to_string();
+        let mut profile = exact_session("runtime-a");
+        profile.registered_tuple = Some(tuple(42, ASSEMBLY, SNAPSHOT));
+        profile.registered_tuple.as_mut().expect("tuple").profile = "stage".to_string();
 
         let mut generation = exact_session("runtime-b");
         generation.registered_tuple = Some(tuple(43, ASSEMBLY, SNAPSHOT));
@@ -233,7 +229,7 @@ mod tests {
 
         let view = view(
             Some(1),
-            vec![environment, generation, assembly, config_snapshot],
+            vec![profile, generation, assembly, config_snapshot],
         );
         let (leases, counters) = RuntimeCandidateQuery
             .query_with_counters(&epoch, &view, &query())

@@ -31,7 +31,7 @@ use futures_util::{SinkExt, StreamExt};
 use skiff_artifact_model::{
     AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
-use skiff_deployment::activation_state::EnvironmentActivationState;
+use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
@@ -73,11 +73,11 @@ const HANDSHAKE_SEQUENCE: [&str; 5] = [
     "runtime.health",
 ];
 
-struct LiveEnvironment {
+struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
-    environment: String,
+    profile: String,
     assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
@@ -100,7 +100,7 @@ struct Entrypoint {
     gateway_entry_identity: String,
 }
 
-impl LiveEnvironment {
+impl LiveProfile {
     fn from_env() -> Self {
         fn required(name: &str) -> String {
             std::env::var(name).unwrap_or_else(|_| {
@@ -175,7 +175,7 @@ impl LiveEnvironment {
             mongo_url: required("SKIFF_ROUTER_ACTOR_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_ACTOR_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_ACTOR_LIVE_ARTIFACT_ROOT")),
-            environment: required("SKIFF_ROUTER_ACTOR_LIVE_ENVIRONMENT"),
+            profile: required("SKIFF_ROUTER_ACTOR_LIVE_PROFILE"),
             assembly_identity: required("SKIFF_ROUTER_ACTOR_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ROUTER_ACTOR_LIVE_CONFIG_SNAPSHOT_ID"),
             generation,
@@ -229,7 +229,7 @@ impl LiveEnvironment {
     }
 }
 
-async fn connect_repository(live: &LiveEnvironment) -> Arc<dyn ActivationStateRepository> {
+async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
     let options = MongoActivationStateRepositoryOptions {
         database: live.database.clone(),
         ..Default::default()
@@ -246,9 +246,9 @@ fn seed_runtime_home(home: &Path, replica_id: &str) {
     std::fs::write(home.join("runtime-id"), format!("{replica_id}\n")).expect("seed runtime-id");
 }
 
-async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = EnvironmentActivationState::initial(
-        &live.environment,
+async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
+    let state = ProfileActivationState::initial(
+        &live.profile,
         live.generation,
         live.assembly_ref(),
         live.snapshot_ref(),
@@ -259,14 +259,13 @@ async fn seed_committed(live: &LiveEnvironment, repository: &Arc<dyn ActivationS
         .expect("seed committed activation state");
 }
 
-fn write_router_config(live: &LiveEnvironment) -> PathBuf {
+fn write_router_config(live: &LiveProfile) -> PathBuf {
     let path = live.temp_dir.join(format!(
         "router-actor-{}-{}.yml",
         live.http_port, live.runtime_port
     ));
     let contents = format!(
-        "profile: dev\n\
-         environment: {}\n\
+        "profile: {}\n\
          host: 127.0.0.1\n\
          artifactsPath: {}\n\
          releaseMode: true\n\
@@ -274,7 +273,7 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
          http:\n  port: {}\n  maxRequestBytes: 1048576\n  maxResponseBytes: 1048576\n\
          runtime:\n  port: {}\n  path: /runtime\n  maxConcurrency: {MAX_CONCURRENCY}\n\
          serviceDb:\n  mongoUrl: {}\n",
-        live.environment,
+        live.profile,
         live.artifact_root.display(),
         live.http_port,
         live.runtime_port,
@@ -284,15 +283,13 @@ fn write_router_config(live: &LiveEnvironment) -> PathBuf {
     path
 }
 
-fn write_runtime_config(live: &LiveEnvironment, relay_port: u16, home: &Path) -> PathBuf {
+fn write_runtime_config(live: &LiveProfile, relay_port: u16, home: &Path) -> PathBuf {
     let path = live.temp_dir.join(format!("runtime-{relay_port}.yml"));
     let contents = format!(
         "router: {}\n\
-         runtime-home: {}\n\
-         environment: {}\n",
+         runtime-home: {}\n",
         live.relay_runtime_url(relay_port),
         home.display(),
-        live.environment,
     );
     std::fs::write(&path, contents).expect("write runtime config");
     path
@@ -314,7 +311,7 @@ fn task_router(config_path: &Path) -> Child {
         .expect("spawn skiff-router")
 }
 
-fn spawn_runtime(live: &LiveEnvironment, config_path: &Path, label: &str) -> Child {
+fn spawn_runtime(live: &LiveProfile, config_path: &Path, label: &str) -> Child {
     let stdout_path = live.temp_dir.join(format!("{label}.stdout.log"));
     let stderr_path = live.temp_dir.join(format!("{label}.stderr.log"));
     let stdout = OpenOptions::new()
@@ -360,7 +357,7 @@ fn wait_for_exit(
     }
 }
 
-fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
+fn wait_for_listeners(live: &LiveProfile, child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_ok()
@@ -383,7 +380,7 @@ fn wait_for_listeners(live: &LiveEnvironment, child: &mut Child) {
     }
 }
 
-fn assert_ports_closed(live: &LiveEnvironment) {
+fn assert_ports_closed(live: &LiveProfile) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if TcpStream::connect(("127.0.0.1", live.http_port)).is_err()
@@ -398,7 +395,7 @@ fn assert_ports_closed(live: &LiveEnvironment) {
     }
 }
 
-fn materialize_projection(live: &LiveEnvironment) {
+fn materialize_projection(live: &LiveProfile) {
     // E-actor-parity: the harness writes the canonical actor-routing
     // projection record (test-side A1 producer) before invoking this probe.
     // The probe must consume that exact record rather than overwrite it with
@@ -783,7 +780,7 @@ async fn wait_for_frame_type(
 /// Waits until a full handshake exists for `expected_replica` on any
 /// connection newer than `after_records`; returns that connection id.
 async fn wait_for_replica_handshake(
-    _live: &LiveEnvironment,
+    _live: &LiveProfile,
     state: &Arc<RelayState>,
     expected_replica: &str,
     after_records: usize,
@@ -838,7 +835,7 @@ async fn wait_for_replica_handshake(
 }
 
 async fn wait_for_two_handshakes(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     state: &Arc<RelayState>,
 ) -> BTreeMap<String, u64> {
     let one = wait_for_replica_handshake(live, state, REPLICA_ONE_ID, 0).await;
@@ -910,7 +907,7 @@ struct DispatchResult {
 }
 
 async fn dispatch_unary(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     state: &Arc<RelayState>,
     connection: u64,
     entrypoint: &Entrypoint,
@@ -1035,7 +1032,7 @@ async fn dispatch_unary(
 }
 
 async fn dispatch_unary_ok(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     state: &Arc<RelayState>,
     connection: u64,
     entrypoint: &Entrypoint,
@@ -1050,7 +1047,7 @@ async fn dispatch_unary_ok(
 }
 
 async fn wait_for_actor_value(
-    live: &LiveEnvironment,
+    live: &LiveProfile,
     state: &Arc<RelayState>,
     connection: u64,
     entrypoint: &Entrypoint,
@@ -1208,7 +1205,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "driven by scripts/check-router-actor-live.mjs"]
     async fn router_live_actor_two_replica_roundtrip() {
-        let live = LiveEnvironment::from_env();
+        let live = LiveProfile::from_env();
         seed_runtime_home(&live.runtime_one_home, REPLICA_ONE_ID);
         seed_runtime_home(&live.runtime_two_home, REPLICA_TWO_ID);
         materialize_projection(&live);
