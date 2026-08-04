@@ -63,8 +63,8 @@ fn assembly_activation_typed_leafs_reject_non_ascii_and_expected_max() {
     assert!(validate_activation_token("visible!~", "token").is_ok());
     assert!(validate_activation_token("not visible", "token").is_err());
     assert!(validate_activation_token("caf\u{e9}", "token").is_err());
-    assert!(validate_activation_environment("prod.us-1",).is_ok());
-    assert!(validate_activation_environment(".").is_err());
+    assert!(validate_activation_profile("prod.us-1",).is_ok());
+    assert!(validate_activation_profile(".").is_err());
     assert!(validate_expected_activation_generation(
         crate::MAX_EXPECTED_ACTIVATION_GENERATION,
         "expectedGeneration"
@@ -81,7 +81,7 @@ fn assembly_activation_typed_leafs_reject_non_ascii_and_expected_max() {
 fn service_db_is_strict_and_only_allowed_on_router_provisioning_controls() {
     let transition = serde_json::json!({
         "type": "prepare",
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-1",
         "expectedGeneration": 0,
         "candidateGeneration": 1,
@@ -137,7 +137,7 @@ fn service_db_is_strict_and_only_allowed_on_router_provisioning_controls() {
 fn public_activation_request_cannot_supply_service_db() {
     let request = serde_json::json!({
         "schemaVersion": ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-1",
         "expectedGeneration": 0,
         "assembly": {
@@ -152,13 +152,20 @@ fn public_activation_request_cannot_supply_service_db() {
 }
 
 #[test]
-fn activation_v2_hard_cut_rejects_v1_and_missing_snapshot_refs() {
+fn activation_v3_hard_cut_rejects_legacy_and_missing_snapshot_refs() {
     let mut request: Value = serde_json::from_str(include_str!(
         "../../../cross-system-fixtures/package-service-ecosystem/activation-request.json"
     ))
     .unwrap();
-    request["schemaVersion"] = Value::String("skiff-assembly-activation-request-v1".into());
-    assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_err());
+    for legacy in [
+        "skiff-assembly-activation-request-v1",
+        "skiff-assembly-activation-request-v2",
+    ] {
+        request["schemaVersion"] = Value::String(legacy.into());
+        assert!(serde_json::from_value::<AssemblyActivationRequest>(request.clone()).is_err());
+    }
+    request["schemaVersion"] = Value::String("skiff-assembly-activation-request-v3".into());
+    assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_ok());
 
     let mut request: Value = serde_json::from_str(include_str!(
         "../../../cross-system-fixtures/package-service-ecosystem/activation-request.json"

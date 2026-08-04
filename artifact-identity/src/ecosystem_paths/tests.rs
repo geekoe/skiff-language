@@ -115,7 +115,7 @@ fn wrong_identity_domains_and_noncanonical_declared_paths_fail() {
         )),
     };
     assert!(PackageArtifactRecordPath::new(&package).is_err());
-    assert!(EnvironmentActivationStatePath::new("../prod").is_err());
+    assert!(ProfileActivationStatePath::new("../prod").is_err());
 }
 
 #[test]

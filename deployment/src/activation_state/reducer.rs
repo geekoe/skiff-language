@@ -15,13 +15,13 @@ use skiff_artifact_model::{
     validate_activation_token, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
 
-use crate::storage::{EnvironmentActivationState, PendingActivation};
+use crate::storage::{PendingActivation, ProfileActivationState};
 
 use super::error::{cas_error, invalid_error, ActivationStateError, ActivationStateResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrepareInput {
-    pub environment: String,
+    pub profile: String,
     pub activation_id: String,
     pub expected_generation: u64,
     pub candidate_generation: u64,
@@ -32,7 +32,7 @@ pub struct PrepareInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitInput {
-    pub environment: String,
+    pub profile: String,
     pub activation_id: String,
     pub expected_generation: u64,
     pub candidate_generation: u64,
@@ -44,20 +44,20 @@ pub struct CommitInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbortInput {
-    pub environment: String,
+    pub profile: String,
     pub activation_id: String,
     pub expected_generation: u64,
 }
 
 pub fn prepare(
-    current: &EnvironmentActivationState,
+    current: &ProfileActivationState,
     input: &PrepareInput,
-) -> ActivationStateResult<EnvironmentActivationState> {
-    let participants = canonical_replica_ids(&input.environment, &input.participant_replica_ids)?;
-    validate_current(current, &input.environment)?;
+) -> ActivationStateResult<ProfileActivationState> {
+    let participants = canonical_replica_ids(&input.profile, &input.participant_replica_ids)?;
+    validate_current(current, &input.profile)?;
     if current.committed.generation != input.expected_generation {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             format!(
                 "committed generation {} does not equal expected {}",
                 current.committed.generation, input.expected_generation
@@ -76,7 +76,7 @@ pub fn prepare(
         Some(existing) if existing == &pending => return Ok(current.clone()),
         Some(_) => {
             return Err(cas_error(
-                &input.environment,
+                &input.profile,
                 "a different activation is already pending",
             ))
         }
@@ -89,14 +89,14 @@ pub fn prepare(
 }
 
 pub fn abort(
-    current: &EnvironmentActivationState,
+    current: &ProfileActivationState,
     input: &AbortInput,
-) -> ActivationStateResult<EnvironmentActivationState> {
-    validate_token(&input.environment, &input.activation_id, "activationId")?;
-    validate_current(current, &input.environment)?;
+) -> ActivationStateResult<ProfileActivationState> {
+    validate_token(&input.profile, &input.activation_id, "activationId")?;
+    validate_current(current, &input.profile)?;
     if current.committed.generation != input.expected_generation {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "abort expected generation is stale",
         ));
     }
@@ -105,7 +105,7 @@ pub fn abort(
     };
     if pending.activation_id != input.activation_id {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "abort activationId does not match pending",
         ));
     }
@@ -116,25 +116,25 @@ pub fn abort(
 }
 
 pub fn commit(
-    current: &EnvironmentActivationState,
+    current: &ProfileActivationState,
     input: &CommitInput,
-) -> ActivationStateResult<EnvironmentActivationState> {
-    validate_token(&input.environment, &input.activation_id, "activationId")?;
+) -> ActivationStateResult<ProfileActivationState> {
+    validate_token(&input.profile, &input.activation_id, "activationId")?;
     let expected_candidate = input.expected_generation.checked_add(1).ok_or_else(|| {
         ActivationStateError::CasMismatch {
-            environment: input.environment.clone(),
+            profile: input.profile.clone(),
             message: "commit generation overflow".to_string(),
         }
     })?;
     if input.candidate_generation != expected_candidate {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "candidateGeneration must be expectedGeneration + 1",
         ));
     }
-    let connected = canonical_ack_set(&input.environment, &input.connected_replica_ids)?;
-    let prepared = canonical_ack_set(&input.environment, &input.prepared_replica_ids)?;
-    validate_current(current, &input.environment)?;
+    let connected = canonical_ack_set(&input.profile, &input.connected_replica_ids)?;
+    let prepared = canonical_ack_set(&input.profile, &input.prepared_replica_ids)?;
+    validate_current(current, &input.profile)?;
     if current.pending.is_none()
         && current.committed.generation == input.candidate_generation
         && current.committed.assembly == input.assembly
@@ -144,7 +144,7 @@ pub fn commit(
     }
     if current.committed.generation != input.expected_generation {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "commit expected generation is stale",
         ));
     }
@@ -152,7 +152,7 @@ pub fn commit(
         .pending
         .as_ref()
         .ok_or_else(|| ActivationStateError::CasMismatch {
-            environment: input.environment.clone(),
+            profile: input.profile.clone(),
             message: "commit has no pending activation".to_string(),
         })?;
     if pending.activation_id != input.activation_id
@@ -162,7 +162,7 @@ pub fn commit(
         || pending.config_snapshot != input.config_snapshot
     {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "commit tuple does not match pending activation",
         ));
     }
@@ -173,7 +173,7 @@ pub fn commit(
         .collect::<BTreeSet<_>>();
     if !participants.is_subset(&connected) || participants != prepared {
         return Err(cas_error(
-            &input.environment,
+            &input.profile,
             "commit requires the exact connected and prepared ACK sets for all participants",
         ));
     }
@@ -188,54 +188,45 @@ pub fn commit(
     Ok(next)
 }
 
-fn validate_current(
-    current: &EnvironmentActivationState,
-    environment: &str,
-) -> ActivationStateResult<()> {
-    if current.environment != environment {
-        return Err(invalid_error(environment, "unknown activation environment"));
+fn validate_current(current: &ProfileActivationState, profile: &str) -> ActivationStateResult<()> {
+    if current.profile != profile {
+        return Err(invalid_error(profile, "unknown activation profile"));
     }
     current
         .validate()
-        .map_err(|error| invalid_error(environment, error.to_string()))
+        .map_err(|error| invalid_error(profile, error.to_string()))
 }
 
-fn validate_next(next: &EnvironmentActivationState) -> ActivationStateResult<()> {
+fn validate_next(next: &ProfileActivationState) -> ActivationStateResult<()> {
     next.validate()
-        .map_err(|error| invalid_error(&next.environment, error.to_string()))
+        .map_err(|error| invalid_error(&next.profile, error.to_string()))
 }
 
-fn validate_token(environment: &str, value: &str, label: &str) -> ActivationStateResult<()> {
-    validate_activation_token(value, label).map_err(|message| invalid_error(environment, message))
+fn validate_token(profile: &str, value: &str, label: &str) -> ActivationStateResult<()> {
+    validate_activation_token(value, label).map_err(|message| invalid_error(profile, message))
 }
 
-fn canonical_replica_ids(
-    environment: &str,
-    values: &[String],
-) -> ActivationStateResult<Vec<String>> {
+fn canonical_replica_ids(profile: &str, values: &[String]) -> ActivationStateResult<Vec<String>> {
     if values.is_empty() {
         return Err(invalid_error(
-            environment,
+            profile,
             "participant/ACK replica set must not be empty",
         ));
     }
-    let set = canonical_ack_set(environment, values)?;
+    let set = canonical_ack_set(profile, values)?;
     if set.len() != values.len() {
-        return Err(invalid_error(environment, "replica ids must be unique"));
+        return Err(invalid_error(profile, "replica ids must be unique"));
     }
     Ok(set.into_iter().collect())
 }
 
-fn canonical_ack_set(
-    environment: &str,
-    values: &[String],
-) -> ActivationStateResult<BTreeSet<String>> {
+fn canonical_ack_set(profile: &str, values: &[String]) -> ActivationStateResult<BTreeSet<String>> {
     let mut result = BTreeSet::new();
     for value in values {
-        validate_token(environment, value, "replica id")?;
+        validate_token(profile, value, "replica id")?;
         if !result.insert(value.clone()) {
             return Err(invalid_error(
-                environment,
+                profile,
                 format!("replica ids must be unique: duplicate {value}"),
             ));
         }
@@ -246,7 +237,7 @@ fn canonical_ack_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION;
+    use crate::storage::PROFILE_ACTIVATION_STATE_SCHEMA_VERSION;
     use skiff_artifact_model::AssemblyIdentity;
 
     fn refs() -> (
@@ -275,11 +266,11 @@ mod tests {
         (assembly, config, other_config)
     }
 
-    fn initial() -> EnvironmentActivationState {
+    fn initial() -> ProfileActivationState {
         let (assembly, config, _) = refs();
-        EnvironmentActivationState {
-            schema_version: ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-            environment: "test".to_string(),
+        ProfileActivationState {
+            schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
+            profile: "test".to_string(),
             committed: crate::storage::CommittedActivation {
                 generation: 7,
                 assembly,
@@ -292,7 +283,7 @@ mod tests {
     fn prepare_input(activation_id: &str, expected: u64) -> PrepareInput {
         let (assembly, _, config) = refs();
         PrepareInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: activation_id.to_string(),
             expected_generation: expected,
             candidate_generation: expected + 1,
@@ -338,7 +329,7 @@ mod tests {
         let input = prepare_input("activation-8", 7);
         let prepared = prepare(&state, &input).expect("prepare");
         let partial = CommitInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: "activation-8".to_string(),
             expected_generation: 7,
             candidate_generation: 8,
@@ -370,7 +361,7 @@ mod tests {
         let aborted = abort(
             &prepared,
             &AbortInput {
-                environment: "test".to_string(),
+                profile: "test".to_string(),
                 activation_id: "activation-8".to_string(),
                 expected_generation: 7,
             },
@@ -380,7 +371,7 @@ mod tests {
         let replay = abort(
             &aborted,
             &AbortInput {
-                environment: "test".to_string(),
+                profile: "test".to_string(),
                 activation_id: "activation-8".to_string(),
                 expected_generation: 7,
             },
@@ -416,7 +407,7 @@ mod tests {
     fn overflow_commit_is_cas_mismatch() {
         let state = initial();
         let input = CommitInput {
-            environment: "test".to_string(),
+            profile: "test".to_string(),
             activation_id: "activation-8".to_string(),
             expected_generation: u64::MAX,
             candidate_generation: 0,

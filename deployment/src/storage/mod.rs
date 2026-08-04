@@ -13,8 +13,8 @@ mod activation;
 mod pointers;
 
 pub use activation::{
-    ActivationRecoveryAction, CommittedActivation, EnvironmentActivationState, PendingActivation,
-    ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    ActivationRecoveryAction, CommittedActivation, PendingActivation, ProfileActivationState,
+    PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 pub use pointers::{
     PackageArtifactPointer, RuntimeAssemblyPointer, ServiceContractPointer,

@@ -13,8 +13,8 @@ pub mod error;
 pub mod reducer;
 
 pub use crate::storage::{
-    ActivationRecoveryAction, CommittedActivation, EnvironmentActivationState, PendingActivation,
-    ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
+    ActivationRecoveryAction, CommittedActivation, PendingActivation, ProfileActivationState,
+    PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 pub use audit::{
     activation_audit_event_id, ActivationAuditEvent, ActivationAuditOperation,

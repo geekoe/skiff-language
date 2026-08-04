@@ -48,9 +48,9 @@ pub use deployment::{
     DeploymentArtifactIdentityProjection,
 };
 pub use ecosystem_paths::{
-    EnvironmentActivationStatePath, PackageArtifactPointerPath, PackageArtifactRecordPath,
-    PackageFileIrRecordPath, PackageResourceRecordPath, PackageSchemaIndexRecordPath,
-    PackageSchemaTypeRecordPath, RuntimeAssemblyPointerPath, RuntimeAssemblyRecordPath,
+    PackageArtifactPointerPath, PackageArtifactRecordPath, PackageFileIrRecordPath,
+    PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
+    ProfileActivationStatePath, RuntimeAssemblyPointerPath, RuntimeAssemblyRecordPath,
     ServiceContractPointerPath, ServiceContractRecordPath, ServiceDeploymentPointerPath,
     ServiceDeploymentRecordPath,
 };

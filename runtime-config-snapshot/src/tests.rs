@@ -125,8 +125,8 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
         value["schemaVersion"],
         RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION
     );
-    assert_eq!(value["environment"], "dev");
-    assert_eq!(record.environment(), "dev");
+    assert_eq!(value["profile"], "dev");
+    assert_eq!(record.profile(), "dev");
     assert_eq!(
         record.deployments()[0].packages()[0].config_value(),
         json!({"apiKey": "secret", "nested": {"a": 1, "z": 2}})
@@ -144,20 +144,17 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
     unknown["plaintext"] = json!("must reject");
     assert!(serde_json::from_value::<RuntimeConfigSnapshot>(unknown).is_err());
 
-    let mut missing_environment = value.clone();
-    missing_environment
-        .as_object_mut()
-        .unwrap()
-        .remove("environment");
-    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(missing_environment).is_err());
+    let mut missing_profile = value.clone();
+    missing_profile.as_object_mut().unwrap().remove("profile");
+    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(missing_profile).is_err());
 
     let mut legacy_schema = value.clone();
     legacy_schema["schemaVersion"] = json!("skiff-runtime-config-snapshot-record-v1");
     assert!(serde_json::from_value::<RuntimeConfigSnapshot>(legacy_schema).is_err());
 
-    let mut invalid_environment = value.clone();
-    invalid_environment["environment"] = json!("..");
-    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(invalid_environment).is_err());
+    let mut invalid_profile = value.clone();
+    invalid_profile["profile"] = json!("..");
+    assert!(serde_json::from_value::<RuntimeConfigSnapshot>(invalid_profile).is_err());
     assert!(RuntimeConfigSnapshot::new("..", fixed_ref(), Vec::new()).is_err());
 
     let mut reversed = value.clone();
@@ -178,8 +175,8 @@ fn record_wire_is_strict_sorted_bounded_and_contains_no_assembly_ref() {
     assert!(serde_json::from_value::<RuntimeConfigSnapshot>(package_duplicate).is_err());
 
     let duplicate_nested_key = br#"{
-        "schemaVersion":"skiff-runtime-config-snapshot-record-v2",
-        "environment":"dev",
+        "schemaVersion":"skiff-runtime-config-snapshot-record-v3",
+        "profile":"dev",
         "snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},
         "deployments":[{
             "deployment":{
@@ -274,7 +271,7 @@ fn secure_store_publishes_once_reads_strictly_and_resolves() {
     .unwrap();
     store.publish(&production).unwrap();
     assert_eq!(
-        store.read(production.snapshot_ref()).unwrap().environment(),
+        store.read(production.snapshot_ref()).unwrap().profile(),
         "prod"
     );
     assert!(!production
@@ -312,7 +309,7 @@ fn secure_store_rejects_symlinks_nonregular_files_permissions_and_duplicate_json
     assert!(store.read(&fixed_ref()).is_err());
 
     fs::remove_file(&path).unwrap();
-    let duplicate = br#"{"schemaVersion":"skiff-runtime-config-snapshot-record-v2","environment":"dev","snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},"deployments":[{"deployment":{"serviceId":"a","contractVersion":"1.0.0","deploymentRevision":"dev","deploymentArtifactIdentity":"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"packages":[{"packageBuildId":"build-a","config":{"same":1,"same":2}}]}]}"#;
+    let duplicate = br#"{"schemaVersion":"skiff-runtime-config-snapshot-record-v3","profile":"dev","snapshot":{"snapshotId":"skiff-runtime-config-snapshot-v1:0123456789abcdef0123456789abcdef"},"deployments":[{"deployment":{"serviceId":"a","contractVersion":"1.0.0","deploymentRevision":"dev","deploymentArtifactIdentity":"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"packages":[{"packageBuildId":"build-a","config":{"same":1,"same":2}}]}]}"#;
     fs::write(&path, duplicate).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(store.read(&fixed_ref()).is_err());

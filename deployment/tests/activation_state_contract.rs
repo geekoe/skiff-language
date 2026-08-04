@@ -20,7 +20,7 @@ use skiff_deployment::{
     fixtures::{empty_runtime_assembly_fixture, runtime_assembly_fixture},
     storage::{
         ActivationRecoveryAction, CanonicalArtifactStore, EcosystemStorageError,
-        EnvironmentActivationState,
+        ProfileActivationState,
     },
 };
 
@@ -174,14 +174,14 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             config,
         } => {
             assert_eq!(assembly, "committed", "initialize assembly must exist");
-            let state = EnvironmentActivationState::initial(
+            let state = ProfileActivationState::initial(
                 "test",
                 *committed_generation,
                 refs.committed.clone(),
                 config_ref(refs, config),
             );
             store
-                .initialize_environment_activation(&state)
+                .initialize_profile_activation(&state)
                 .expect("initialize activation state");
         }
         Step::Prepare {
@@ -193,7 +193,7 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             participants,
             expected,
         } => {
-            let result = store.prepare_environment_activation(
+            let result = store.prepare_profile_activation(
                 "test",
                 activation_id,
                 *expected_generation,
@@ -210,7 +210,7 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             expected,
         } => {
             let result =
-                store.abort_environment_activation("test", activation_id, *expected_generation);
+                store.abort_profile_activation("test", activation_id, *expected_generation);
             assert_expected_result(result, expected, "abort");
         }
         Step::Commit {
@@ -221,7 +221,7 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             prepared,
             expected,
         } => {
-            let result = store.commit_environment_activation(
+            let result = store.commit_profile_activation(
                 "test",
                 activation_id,
                 *expected_generation,
@@ -239,7 +239,7 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             expected_participants,
         } => {
             let state = store
-                .read_environment_activation("test")
+                .read_profile_activation("test")
                 .expect("read activation state");
             assert_eq!(
                 state.committed.generation, *expected_generation,
@@ -263,7 +263,7 @@ fn run_step(store: &CanonicalArtifactStore, refs: &Refs, step: &Step) {
             expected_replica_ids,
         } => {
             let state = store
-                .read_environment_activation("test")
+                .read_profile_activation("test")
                 .expect("read activation state for recovery");
             let action = state
                 .recovery_action(connected, prepared)

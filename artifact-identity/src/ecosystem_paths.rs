@@ -46,7 +46,7 @@ typed_path!(PackageArtifactPointerPath);
 typed_path!(ServiceContractPointerPath);
 typed_path!(ServiceDeploymentPointerPath);
 typed_path!(RuntimeAssemblyPointerPath);
-typed_path!(EnvironmentActivationStatePath);
+typed_path!(ProfileActivationStatePath);
 
 impl PackageArtifactRecordPath {
     pub fn new(reference: &PackageArtifactRef) -> Result<Self> {
@@ -218,10 +218,10 @@ impl RuntimeAssemblyPointerPath {
     }
 }
 
-impl EnvironmentActivationStatePath {
-    pub fn new(environment: &str) -> Result<Self> {
-        let environment = safe_segment(environment, "environment")?;
-        relative(format!("environments/{environment}/activation.json")).map(Self)
+impl ProfileActivationStatePath {
+    pub fn new(profile: &str) -> Result<Self> {
+        let profile = safe_segment(profile, "profile")?;
+        relative(format!("profiles/{profile}/activation.json")).map(Self)
     }
 }
 
