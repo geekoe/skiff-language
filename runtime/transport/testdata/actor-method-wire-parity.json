@@ -4,7 +4,7 @@
     "accepted": true,
     "payloadBase64": "AQID",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.invoke",
       "invocationId": "inv:1",
       "actorRef": {
@@ -34,7 +34,7 @@
     "accepted": true,
     "payloadBase64": "BA==",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.return",
       "invocationId": "inv:1",
       "returnEncodingVersion": "skiff-actor-return-v1"
@@ -45,7 +45,7 @@
     "accepted": true,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -68,7 +68,7 @@
     "accepted": true,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.cancel",
       "invocationId": "inv:1",
       "cancellationCorrelation": "cancel:1",
@@ -80,7 +80,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.invoke",
       "invocationId": "inv:1",
       "actorRef": {
@@ -109,7 +109,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.invoke",
       "invocationId": "inv:1",
       "actorRef": {
@@ -139,7 +139,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.cancel",
       "invocationId": "inv:1",
       "cancellationCorrelation": "cancel:1",
@@ -164,7 +164,7 @@
     "accepted": false,
     "payloadBase64": "AQ==",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -187,7 +187,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -210,7 +210,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -233,7 +233,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -256,7 +256,7 @@
     "accepted": true,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -280,7 +280,7 @@
     "accepted": true,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -303,7 +303,7 @@
     "accepted": false,
     "payloadBase64": "",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.error",
       "invocationId": "inv:1",
       "error": {
@@ -326,7 +326,7 @@
     "accepted": true,
     "payloadBase64": "AQID",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.invoke",
       "invocationId": "inv:1",
       "actorRef": {
@@ -357,7 +357,7 @@
     "accepted": false,
     "payloadBase64": "AQID",
     "header": {
-      "schemaVersion": "skiff-runtime-frame-v3",
+      "schemaVersion": "skiff-runtime-frame-v4",
       "type": "actor.method.invoke",
       "invocationId": "inv:1",
       "actorRef": {

@@ -5,7 +5,7 @@
     {
       "id": "wrong-schema-version",
       "decodeAs": "RequestStartHttpUnary",
-      "expectErrorContains": "request.start schemaVersion must be skiff-runtime-frame-v3",
+      "expectErrorContains": "request.start schemaVersion must be skiff-runtime-frame-v4",
       "json": {
         "schemaVersion": "skiff-runtime-frame-v2",
         "type": "request.start",
@@ -41,7 +41,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "binary frame type must be request.start",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.begin",
         "requestId": "req-1",
         "mode": "unary",
@@ -75,7 +75,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "request.start mode must be unary or serverStream",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "stream",
@@ -109,7 +109,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "runtimeAssembly caller.kind must be gateway",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -143,7 +143,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "request.start routing.kind must be runtimeAssembly",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -177,7 +177,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "request.start routing.deployment.deploymentArtifactIdentity must be skiff-deployment-artifact-v4:sha256:<64 lowercase hex>",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -211,7 +211,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "routing.ingress.path must be an absolute path",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -245,7 +245,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "testEffectsEnabled must match testCaseCapability presence",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -279,7 +279,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "testCaseParentRequestId requires testCaseCapability",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",
@@ -314,7 +314,7 @@
       "decodeAs": "RequestStartHttpUnary",
       "expectErrorContains": "unknown field",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "request.start",
         "requestId": "req-1",
         "mode": "unary",

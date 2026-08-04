@@ -140,7 +140,7 @@
       "id": "canonical",
       "valid": true,
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -150,7 +150,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -166,7 +166,7 @@
       "valid": false,
       "expectErrorContains": "assemblyIdentity must use",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -176,7 +176,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "not-an-assembly-identity"
@@ -192,7 +192,7 @@
       "valid": false,
       "expectErrorContains": "must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -202,7 +202,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -214,11 +214,11 @@
       }
     },
     {
-      "id": "invalid-environment",
+      "id": "invalid-profile",
       "valid": false,
-      "expectErrorContains": "environment must be 1-200 ASCII",
+      "expectErrorContains": "profile must be 1-200 ASCII",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -228,7 +228,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod env",
+          "profile": "prod env",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -244,7 +244,7 @@
       "valid": false,
       "expectErrorContains": "generation must be between 0 and",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -254,7 +254,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 9007199254740992,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -270,7 +270,7 @@
       "valid": false,
       "expectErrorContains": "type must be router.bootstrap",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.capabilities",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -280,7 +280,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -306,7 +306,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -322,7 +322,7 @@
       "valid": false,
       "expectErrorContains": "unknown field",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -332,7 +332,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -349,7 +349,7 @@
       "valid": false,
       "expectErrorContains": "missing field",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -365,7 +365,7 @@
       "valid": false,
       "expectErrorContains": "unknown field",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -375,7 +375,7 @@
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "environment": "prod",
+          "profile": "prod",
           "generation": 7,
           "assembly": {
             "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

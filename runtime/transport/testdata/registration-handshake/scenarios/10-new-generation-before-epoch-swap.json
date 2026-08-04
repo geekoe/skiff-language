@@ -3,12 +3,12 @@
   "scenario": "new-generation-before-epoch-swap",
   "mainConnection": "c1",
   "epoch": {
-    "environment": "prod",
+    "profile": "prod",
     "generation": 42,
     "assembly": { "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     "configSnapshot": { "snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
     "pending": {
-      "environment": "prod",
+      "profile": "prod",
       "generation": 43,
       "assembly": { "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
       "configSnapshot": { "snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }

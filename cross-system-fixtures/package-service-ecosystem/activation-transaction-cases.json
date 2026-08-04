@@ -5,7 +5,7 @@
       "name": "live-commit-happy-path",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -50,7 +50,7 @@
       "name": "live-stale-ack-old-session-rejected",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -95,7 +95,7 @@
       "name": "live-ack-from-nonparticipant-rejected-then-disconnect-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -134,7 +134,7 @@
       "name": "live-duplicate-ack-rejected",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -179,7 +179,7 @@
       "name": "live-reject-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -218,7 +218,7 @@
       "name": "live-disconnect-pre-decision-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -257,7 +257,7 @@
       "name": "live-replacement-pre-decision-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -296,7 +296,7 @@
       "name": "live-timeout-pre-decision-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -336,7 +336,7 @@
       "name": "live-queue-full-prepare-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -373,7 +373,7 @@
       "name": "live-queue-full-commit-aborts-session-only",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -417,7 +417,7 @@
       "name": "live-disconnect-after-commit-reconciles",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -460,7 +460,7 @@
       "name": "live-commit-cas-mismatch-durable-committed",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -501,7 +501,7 @@
       "name": "live-commit-cas-mismatch-durable-aborted",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -542,7 +542,7 @@
       "name": "live-shutdown-before-decision-aborts",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -582,7 +582,7 @@
       "name": "live-revalidation-stale-fails-closed",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -612,7 +612,7 @@
       "name": "live-prepare-cas-mismatch-fails-closed",
       "contract": "live",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -660,7 +660,7 @@
       "name": "cold-recovery-committed-only",
       "contract": "coldRecovery",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -683,7 +683,7 @@
       "name": "cold-recovery-rebind-and-commit",
       "contract": "coldRecovery",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -728,7 +728,7 @@
       "name": "cold-recovery-waiting-for-participants",
       "contract": "coldRecovery",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -770,7 +770,7 @@
       "name": "cold-recovery-candidate-load-failure-aborts",
       "contract": "coldRecovery",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -803,7 +803,7 @@
       "name": "cold-recovery-stale-ack-after-rebind-rejected",
       "contract": "coldRecovery",
       "tx": {
-        "environment": "test",
+        "profile": "test",
         "activationId": "activation-42",
         "expectedGeneration": 41,
         "candidateGeneration": 42
@@ -851,7 +851,7 @@
       "runs": [
         {
           "tx": {
-            "environment": "test",
+            "profile": "test",
             "activationId": "activation-42",
             "expectedGeneration": 41,
             "candidateGeneration": 42
@@ -891,7 +891,7 @@
         },
         {
           "tx": {
-            "environment": "test",
+            "profile": "test",
             "activationId": "activation-42",
             "expectedGeneration": 42,
             "candidateGeneration": 43
