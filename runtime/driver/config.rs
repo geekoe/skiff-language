@@ -45,7 +45,9 @@ pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// - release (production deploy profile): 128 MiB, comfortably above the
 ///   measured ~34 MiB (pre-unification) / ~60-80 MiB (post-unification) for a
 ///   full 128-layer chain; see
-///   `runtime_program_non_tail_recursion_deep_chain_hits_raised_guard` tests.
+///   `runtime_program_non_tail_recursion_deep_chain_hits_raised_guard` tests
+///   (ignored by default; run with `--ignored` and a larger
+///   `SKIFF_NON_TAIL_DEPTH_STACK_KIB` for stack characterization).
 /// - debug (`debug_assertions`, used by `cargo test`, the dev instance and CI):
 ///   384 MiB. After the HeapAccess unification the measured per-layer native
 ///   stack is ~1.5 MiB, so a 128-layer chain alone reaches ~192 MiB and real
