@@ -276,7 +276,7 @@ async function isReusable(previousUnit, sourceSnapshot, spec) {
   if (!previousUnit) {
     return false;
   }
-  if (previousUnit.commit !== sourceSnapshot.commit || previousUnit.sourceKey !== sourceSnapshot.sourceKey) {
+  if (previousUnit.sourceKey !== sourceSnapshot.sourceKey) {
     return false;
   }
   if (spec.kind === 'rs' && previousUnit.profile !== profile) {
