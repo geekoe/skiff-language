@@ -75,5 +75,29 @@ async function buildFixture(t) {
     '  - runtime',
     '',
   ].join('\n'));
+  await writeFile(join(configDir, 'config.yml'), [
+    'profile: dev',
+    '',
+  ].join('\n'));
+  await writeFile(join(configDir, 'router.yml'), [
+    'profile: dev',
+    'host: 127.0.0.1',
+    'http:',
+    '  port: 4100',
+    'runtime:',
+    '  port: 4101',
+    'serviceDb:',
+    '  mongoUrl: mongodb://127.0.0.1:27017',
+    '',
+  ].join('\n'));
+  await writeFile(join(configDir, 'runtime.yml'), [
+    'router: ws://127.0.0.1:4101/runtime',
+    '',
+  ].join('\n'));
+  await writeFile(join(configDir, 'telemetry.yml'), [
+    'telemetry:',
+    '  port: 4102',
+    '',
+  ].join('\n'));
   return { configDir, root };
 }
