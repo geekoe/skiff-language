@@ -16,6 +16,7 @@ use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, Of
 use tokio::sync::mpsc;
 
 use crate::error::{Result, RuntimeError};
+use crate::telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext};
 use skiff_runtime_boundary::value::decode_base64;
 use skiff_runtime_model::runtime_value::ActorRef;
 use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
@@ -25,7 +26,6 @@ use skiff_runtime_transport::protocol::{
     TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader, TaskSubmitRejectionCode,
     TaskSubmitResponseFrameHeader, TelemetryLevel, TelemetrySource, TelemetryTopic,
 };
-use crate::telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext};
 
 const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
 const ACTOR_REPLACE_TARGET: &str = "actor.replace";
@@ -628,8 +628,7 @@ trait ControlContext {
         request_id: &str,
         command: OutboundControlMessage,
     ) -> Result<()>;
-    fn send_task_submit(&self, request_id: &str, message: TaskSubmitControlMessage)
-        -> Result<()>;
+    fn send_task_submit(&self, request_id: &str, message: TaskSubmitControlMessage) -> Result<()>;
     fn cancellation_token(&self) -> CancellationToken;
     fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender>;
 }
@@ -662,11 +661,7 @@ impl ControlContext for ActorClientContext<'_> {
         send_outbound_request(self.router_sender, request_id, command)
     }
 
-    fn send_task_submit(
-        &self,
-        request_id: &str,
-        message: TaskSubmitControlMessage,
-    ) -> Result<()> {
+    fn send_task_submit(&self, request_id: &str, message: TaskSubmitControlMessage) -> Result<()> {
         send_task_submit(self.router_sender, request_id, message)
     }
 
@@ -707,11 +702,7 @@ impl ControlContext for RequestClientContext<'_> {
         send_outbound_request(self.router_sender, request_id, command)
     }
 
-    fn send_task_submit(
-        &self,
-        request_id: &str,
-        message: TaskSubmitControlMessage,
-    ) -> Result<()> {
+    fn send_task_submit(&self, request_id: &str, message: TaskSubmitControlMessage) -> Result<()> {
         send_task_submit(self.router_sender, request_id, message)
     }
 

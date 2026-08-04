@@ -718,13 +718,12 @@ fn runtime_error_from_capability_ref(
                 message: message.clone(),
             }
         }
-        skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected {
-            code,
-            message,
-        } => RuntimeError::ProviderUnavailable {
-            target: "task.submit.request".to_string(),
-            reason: format!("task.submit rejected ({code}): {message}"),
-        },
+        skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected { code, message } => {
+            RuntimeError::ProviderUnavailable {
+                target: "task.submit.request".to_string(),
+                reason: format!("task.submit rejected ({code}): {message}"),
+            }
+        }
         skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
             code,
             message,

@@ -551,8 +551,7 @@ fn classify_request_or_notification(members: &[(String, LexNode)]) -> ProfileAct
     }
     let method = match member("method") {
         Some(LexNode::String(method))
-            if !method.is_empty()
-                && method.len() <= CONNECTION_REQUEST_MAX_METHOD_BYTES =>
+            if !method.is_empty() && method.len() <= CONNECTION_REQUEST_MAX_METHOD_BYTES =>
         {
             method.clone()
         }
@@ -646,9 +645,7 @@ fn classify_response(members: &[(String, LexNode)]) -> ProfileAction {
 
 fn parse_peer_id(node: Option<&LexNode>) -> Option<OpaquePeerId> {
     match node? {
-        LexNode::String(value)
-            if !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES =>
-        {
+        LexNode::String(value) if !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES => {
             Some(OpaquePeerId::String(value.clone()))
         }
         LexNode::Number(lexeme) => Some(OpaquePeerId::SafeInteger(parse_safe_integer(lexeme)?)),

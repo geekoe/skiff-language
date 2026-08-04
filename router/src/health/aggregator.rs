@@ -21,10 +21,10 @@ use crate::telemetry::backlog_metric_event;
 use super::counters::{
     ActivationCounters, ActiveRoutingEpochCounters, ActorCounters, AdmissionCounters,
     BarrierCounters, BlockingLoaderCounters, BootstrapCounters, BrokerCounters, CapabilityCounters,
-    ClientConnectionCounters, CoordinatorMailboxCounters, GenerationLeaseCounters, HealthCounters,
-    HealthObservationCounters, HttpCounters, MailboxCounters, ReaderFailClosedCountersDto,
-    RepositoryCounters, RequestPendingCounters, SessionCounters, ShutdownResidueCounters,
-    TerminalCounters, WriterQueueCounters, DurableTaskCounters,
+    ClientConnectionCounters, CoordinatorMailboxCounters, DurableTaskCounters,
+    GenerationLeaseCounters, HealthCounters, HealthObservationCounters, HttpCounters,
+    MailboxCounters, ReaderFailClosedCountersDto, RepositoryCounters, RequestPendingCounters,
+    SessionCounters, ShutdownResidueCounters, TerminalCounters, WriterQueueCounters,
 };
 use super::time::format_iso_millis;
 use super::wire::{
@@ -252,7 +252,9 @@ impl HealthAggregator {
                 backlog_scheduled: task_backlog.scheduled,
                 backlog_ready: task_backlog.ready,
                 backlog_leased: task_backlog.leased,
-                oldest_due_at_ms: task_backlog.oldest_due_at.map(|timestamp| timestamp.millis()),
+                oldest_due_at_ms: task_backlog
+                    .oldest_due_at
+                    .map(|timestamp| timestamp.millis()),
                 submissions_accepted: components
                     .task_control
                     .counters()

@@ -105,7 +105,10 @@ fn compiler_builtin_registry_owns_identity_kind_and_arity() {
     assert_eq!(cancel_result.symbol, "std.task.TaskCancelResult");
     assert_eq!(cancel_result.arity, 0);
     assert_eq!(cancel_result.kind, CompilerBuiltinTypeKind::Value);
-    assert_eq!(compiler_builtin_type(cancel_result.symbol), Some(cancel_result));
+    assert_eq!(
+        compiler_builtin_type(cancel_result.symbol),
+        Some(cancel_result)
+    );
 
     assert!(compiler_builtin_type("ActorRef").is_none());
     assert!(compiler_builtin_type("NotABuiltin").is_none());

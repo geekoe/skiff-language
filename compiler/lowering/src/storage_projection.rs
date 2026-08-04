@@ -75,12 +75,13 @@ mod task_tests {
     fn task_wrapper_matches_shared_core_for_empty_projection() {
         let wrapper_targets = service_task_targets_with_packages(&[], &[], "proto")
             .expect("wrapper should accept empty input");
-        let core_targets = skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
-            &[],
-            &[],
-            "proto",
-        )
-        .expect("core should accept empty input");
+        let core_targets =
+            skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
+                &[],
+                &[],
+                "proto",
+            )
+            .expect("core should accept empty input");
 
         assert_eq!(wrapper_targets, core_targets);
     }

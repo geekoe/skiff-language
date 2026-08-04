@@ -21,9 +21,9 @@ use skiff_task_control::scheduler::{
     SchedulerObservation,
 };
 use skiff_task_control::store::{
-    BacklogObservation, CancelInput, ClaimInput, ClaimRejection, ClaimOutcome, DueScanInput,
-    LeaseRecoveryInput, LeaseRecoveryOutcome, RenewInput, RenewOutcome, RenewRejection,
-    ReleaseInput, ReleaseOutcome, ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput,
+    BacklogObservation, CancelInput, ClaimInput, ClaimOutcome, ClaimRejection, DueScanInput,
+    LeaseRecoveryInput, LeaseRecoveryOutcome, ReleaseInput, ReleaseOutcome, RenewInput,
+    RenewOutcome, RenewRejection, ScanExpiredLeasesInput, SettleInput, SettleOutcome, StatusInput,
     TaskStore,
 };
 use skiff_task_control::{MemoryTaskStore, TaskClock, TaskStoreError};
@@ -104,12 +104,7 @@ impl SchedulerObservation for RecordingObservation {
         self.push(format!("renewed:{}", task_id.as_str()));
     }
 
-    fn on_renew_lost(
-        &self,
-        task_id: &TaskId,
-        _lease_id: &LeaseId,
-        rejection: RenewRejection,
-    ) {
+    fn on_renew_lost(&self, task_id: &TaskId, _lease_id: &LeaseId, rejection: RenewRejection) {
         self.push(format!("renewLost:{}:{rejection:?}", task_id.as_str()));
     }
 
@@ -161,7 +156,10 @@ impl TaskStore for ScriptedDuplicateStore {
         self.inner.settle(input).await
     }
 
-    async fn cancel(&self, input: CancelInput) -> Result<skiff_task_control::model::TaskCancelResult, TaskStoreError> {
+    async fn cancel(
+        &self,
+        input: CancelInput,
+    ) -> Result<skiff_task_control::model::TaskCancelResult, TaskStoreError> {
         self.inner.cancel(input).await
     }
 
@@ -187,7 +185,10 @@ impl TaskStore for ScriptedDuplicateStore {
         self.inner.scan_expired_leases(input).await
     }
 
-    async fn status(&self, input: StatusInput) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
+    async fn status(
+        &self,
+        input: StatusInput,
+    ) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
         self.inner.status(input).await
     }
 

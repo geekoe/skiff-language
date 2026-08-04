@@ -264,10 +264,7 @@ mod task_route_tests {
     #[test]
     fn metadata_target_not_matching_linked_symbol_fails_linking() {
         let mut file = FileIrUnit::empty("task.fixture", "source:canonical-task");
-        file.executables = vec![
-            caller_executable("task.fixture.other"),
-            target_executable(),
-        ];
+        file.executables = vec![caller_executable("task.fixture.other"), target_executable()];
         skiff_artifact_identity::assign_file_ir_identity(&mut file)
             .expect("canonical task File IR should receive an identity");
         let mut package = private_package(&file);

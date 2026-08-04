@@ -275,8 +275,7 @@ impl RuntimeHost {
             .activation(&header.routing.deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "task routing deployment is not active in the pinned assembly"
-                    .to_string(),
+                message: "task routing deployment is not active in the pinned assembly".to_string(),
             })?;
         let activation = active
             .contexts()

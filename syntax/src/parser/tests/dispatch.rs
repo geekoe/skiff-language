@@ -29,11 +29,7 @@ fn parses_dispatch_call_statement() {
     let [stmt] = body.as_slice() else {
         panic!("expected one statement");
     };
-    let Stmt::Expr(Expr::Dispatch {
-        call,
-        timing: None,
-    }) = stmt
-    else {
+    let Stmt::Expr(Expr::Dispatch { call, timing: None }) = stmt else {
         panic!("expected dispatch expression statement, got {stmt:?}");
     };
     let Expr::Call { callee, args } = call.as_ref() else {
@@ -71,10 +67,7 @@ fn parses_dispatch_in_assignment_and_argument_positions() {
         panic!("expected consume call statement, got {second:?}");
     };
     assert!(
-        matches!(
-            args.as_slice(),
-            [Expr::Dispatch { timing: None, .. }]
-        ),
+        matches!(args.as_slice(), [Expr::Dispatch { timing: None, .. }]),
         "unexpected call args {args:?}"
     );
 }
@@ -113,7 +106,10 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     };
     assert_eq!(object.as_ref(), &Expr::Identifier("Duration".to_string()));
     assert_eq!(field, "milliseconds");
-    assert_eq!(args, &vec![Expr::Literal(crate::ast::Literal::Number(200.0))]);
+    assert_eq!(
+        args,
+        &vec![Expr::Literal(crate::ast::Literal::Number(200.0))]
+    );
 
     let Stmt::Expr(Expr::Dispatch {
         timing: Some(DispatchTiming::At(value)),

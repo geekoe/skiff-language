@@ -21,15 +21,14 @@ use skiff_runtime_transport::protocol::{
     decode_task_submit_request_frame, encode_task_cancel_error_frame,
     encode_task_cancel_response_frame, encode_task_status_error_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
-    encode_task_submit_response_frame, ActorTaskRuntimeErrorFrameHeader,
-    RuntimeErrorFramePayload, RuntimeFrameFamily, TaskCancelRequestFrameHeader,
-    TaskCancelResultKindWire, TaskCancelResultWire, TaskCancelResponseFrameHeader,
-    TaskControlRejectionCode, TaskRef, TaskStatusKindWire, TaskStatusRequestFrameHeader,
-    TaskStatusResponseFrameHeader, TaskStatusWire, TaskSubmitRejectionCode,
-    TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader, TaskTargetKind,
-    RUNTIME_FRAME_SCHEMA_VERSION, TASK_CANCEL_ERROR_FRAME_TYPE,
-    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED, TASK_STATUS_ERROR_FRAME_TYPE,
-    TelemetryLevel,
+    encode_task_submit_response_frame, ActorTaskRuntimeErrorFrameHeader, RuntimeErrorFramePayload,
+    RuntimeFrameFamily, TaskCancelRequestFrameHeader, TaskCancelResponseFrameHeader,
+    TaskCancelResultKindWire, TaskCancelResultWire, TaskControlRejectionCode, TaskRef,
+    TaskStatusKindWire, TaskStatusRequestFrameHeader, TaskStatusResponseFrameHeader,
+    TaskStatusWire, TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
+    TaskSubmitResponseFrameHeader, TaskTargetKind, TelemetryLevel, RUNTIME_FRAME_SCHEMA_VERSION,
+    TASK_CANCEL_ERROR_FRAME_TYPE, TASK_STATUS_ERROR_FRAME_TYPE,
+    TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
 use skiff_task_control::model::{
     ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
@@ -40,16 +39,16 @@ use skiff_task_control::model::{
 use skiff_task_control::scheduler::Scheduler;
 use skiff_task_control::store::{CancelInput, StatusInput, TaskStore};
 
+use super::control::DurableTaskControl;
+use super::health::TaskControlCounters;
+use super::parent::TaskSubmitParentResolver;
+use super::project_runtime_expected_type_plan;
 use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::ws::WsSessionWriter;
 use crate::telemetry::{task_event, TaskTelemetrySink};
-use super::health::TaskControlCounters;
-use super::control::DurableTaskControl;
-use super::parent::TaskSubmitParentResolver;
-use super::project_runtime_expected_type_plan;
 
 /// Default status/cancel retention horizon (task-control `StatusInput`).
 const DEFAULT_TASK_STATUS_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -106,14 +105,12 @@ impl TaskExecutionImageSource for EpochTaskExecutionImageSource {
     }
 
     fn contains_service(&self, service_id: &str) -> bool {
-        self.epoch_store
-            .capture()
-            .is_some_and(|epoch| {
-                epoch
-                    .deployment_projection()
-                    .iter()
-                    .any(|deployment| deployment.service_id == service_id)
-            })
+        self.epoch_store.capture().is_some_and(|epoch| {
+            epoch
+                .deployment_projection()
+                .iter()
+                .any(|deployment| deployment.service_id == service_id)
+        })
     }
 }
 
@@ -224,7 +221,11 @@ impl DurableTaskFrameSink {
         }
     }
 
-    fn submit_response(rpc_id: &str, task_id: &TaskId, owner: &str) -> Result<Vec<u8>, TerminalKind> {
+    fn submit_response(
+        rpc_id: &str,
+        task_id: &TaskId,
+        owner: &str,
+    ) -> Result<Vec<u8>, TerminalKind> {
         let header = TaskSubmitResponseFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "task.submit.response".to_string(),
@@ -249,8 +250,8 @@ impl DurableTaskFrameSink {
         attrs: Map<String, Value>,
     ) {
         let mut event = task_event(name, level, task_id, attrs);
-        event.request_id = (!header.caller_request_id.is_empty())
-            .then(|| header.caller_request_id.clone());
+        event.request_id =
+            (!header.caller_request_id.is_empty()).then(|| header.caller_request_id.clone());
         event.trace_id = header.trace_id.clone();
         event.runtime_id = Some(header.runtime_id.clone());
         event.service_id = Some(header.service_id.clone());
@@ -298,11 +299,8 @@ impl DurableTaskFrameSink {
                     header.task_id.as_deref(),
                     Self::attrs(json!({ "reason": message })),
                 );
-                let bytes = Self::error_frame(
-                    &rpc_id,
-                    TaskSubmitRejectionCode::Rejected,
-                    &message,
-                )?;
+                let bytes =
+                    Self::error_frame(&rpc_id, TaskSubmitRejectionCode::Rejected, &message)?;
                 return self.write(&session, bytes);
             }
         };
@@ -380,13 +378,9 @@ impl DurableTaskFrameSink {
             )?;
             return self.write(&session, bytes);
         }
-        let task_id = header
-            .task_id
-            .clone()
-            .map(TaskId::new)
-            .unwrap_or_else(|| {
-                TaskId::new(format!("task-{}", self.seq.fetch_add(1, Ordering::Relaxed)))
-            });
+        let task_id = header.task_id.clone().map(TaskId::new).unwrap_or_else(|| {
+            TaskId::new(format!("task-{}", self.seq.fetch_add(1, Ordering::Relaxed)))
+        });
         // F2a: derive the parent test-case authority on the exact session.
         // The wire only carries callerRequestId; the capability never leaves
         // the Router boundary at submit time.
@@ -461,8 +455,7 @@ impl DurableTaskFrameSink {
                     )
                     .await;
                 }
-                let bytes =
-                    Self::submit_response(&rpc_id, &task_id, &header.service_id)?;
+                let bytes = Self::submit_response(&rpc_id, &task_id, &header.service_id)?;
                 self.write(&session, bytes)
             }
             Err(skiff_task_control::TaskStoreError::Transient { .. })
@@ -543,9 +536,7 @@ impl DurableTaskFrameSink {
         session: RuntimeSessionEpoch,
         request: TaskStatusRequestFrameHeader,
     ) -> Result<(), TerminalKind> {
-        self.counters
-            .status_queries
-            .fetch_add(1, Ordering::Relaxed);
+        self.counters.status_queries.fetch_add(1, Ordering::Relaxed);
         if !self.owner_is_known(&request.task_ref) {
             // Owner scope is not a service of the active routing epoch: the
             // TaskId cannot be resolved by this caller, which is the wire
@@ -574,9 +565,7 @@ impl DurableTaskFrameSink {
                     kind: wire_status_kind(status.kind),
                 };
                 if wire.kind == TaskStatusKindWire::Expired {
-                    self.counters
-                        .status_expired
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.counters.status_expired.fetch_add(1, Ordering::Relaxed);
                 }
                 let header = TaskStatusResponseFrameHeader {
                     schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -692,9 +681,7 @@ impl DurableTaskFrameSink {
                         );
                     }
                     TaskCancelResultKindWire::Expired => {
-                        self.counters
-                            .cancel_expired
-                            .fetch_add(1, Ordering::Relaxed);
+                        self.counters.cancel_expired.fetch_add(1, Ordering::Relaxed);
                         self.emit_cancel_event(
                             "task.cancel.expired",
                             TelemetryLevel::Info,
@@ -785,12 +772,13 @@ fn resolve_target(header: &TaskSubmitRequestFrameHeaderV2) -> Result<DetachedCal
                 "actor-method task target is missing actorMethod metadata".to_string()
             })?;
             let key_bytes = decode_snapshot_base64(&actor_method.activation.key, "activation.key")?;
-            let create_input_bytes =
-                decode_snapshot_base64(&actor_method.activation.create_input, "activation.createInput")?;
-            let expected_type_plan = project_runtime_expected_type_plan(
-                &actor_method.activation.expected_type_plan,
-            )
-            .map_err(|error| format!("actor task snapshot plan is invalid: {error}"))?;
+            let create_input_bytes = decode_snapshot_base64(
+                &actor_method.activation.create_input,
+                "activation.createInput",
+            )?;
+            let expected_type_plan =
+                project_runtime_expected_type_plan(&actor_method.activation.expected_type_plan)
+                    .map_err(|error| format!("actor task snapshot plan is invalid: {error}"))?;
             Ok(DetachedCallTarget::ActorMethod {
                 actor: ActorRoutingRef {
                     service_id: actor_method.actor_ref.service_id.clone(),
@@ -818,9 +806,7 @@ fn decode_snapshot_base64(value: &str, label: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("task {label} is not canonical base64: {error}"))
 }
 
-fn declaration_owner_from_frame(
-    owner: &ActorDeclarationOwnerFrameHeader,
-) -> ActorDeclarationOwner {
+fn declaration_owner_from_frame(owner: &ActorDeclarationOwnerFrameHeader) -> ActorDeclarationOwner {
     ActorDeclarationOwner {
         unit: match owner.unit {
             ActorOwnerUnitFrameHeader::Service => ActorDeclarationOwnerUnit::Service,
@@ -888,24 +874,24 @@ impl InboundFrameSink for DurableTaskFrameSink {
             .to_string();
         match frame_type.as_str() {
             "task.submit.request" => {
-                let (header, payload) =
-                    decode_task_submit_request_frame(raw).map_err(|_| TerminalKind::MalformedFrame)?;
+                let (header, payload) = decode_task_submit_request_frame(raw)
+                    .map_err(|_| TerminalKind::MalformedFrame)?;
                 tokio::spawn(async move {
                     let _ = this.handle_submit(session, header, payload).await;
                 });
                 Ok(())
             }
             "task.status.request" => {
-                let request =
-                    decode_task_status_request_frame(raw).map_err(|_| TerminalKind::MalformedFrame)?;
+                let request = decode_task_status_request_frame(raw)
+                    .map_err(|_| TerminalKind::MalformedFrame)?;
                 tokio::spawn(async move {
                     let _ = this.handle_status(session, request).await;
                 });
                 Ok(())
             }
             "task.cancel.request" => {
-                let request =
-                    decode_task_cancel_request_frame(raw).map_err(|_| TerminalKind::MalformedFrame)?;
+                let request = decode_task_cancel_request_frame(raw)
+                    .map_err(|_| TerminalKind::MalformedFrame)?;
                 tokio::spawn(async move {
                     let _ = this.handle_cancel(session, request).await;
                 });

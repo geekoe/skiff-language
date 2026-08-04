@@ -81,10 +81,7 @@ impl ActorExecutionFrame {
     /// `None` when the referenced incarnation is not a live authenticated
     /// handle; task submission treats that as a definite rejection.
     pub(crate) fn find_handle(&self, actor_ref: &ActorRef) -> Option<ActorInstanceHandle> {
-        self.suspension
-            .shared
-            .store
-            .handle_for_actor_ref(actor_ref)
+        self.suspension.shared.store.handle_for_actor_ref(actor_ref)
     }
 
     fn ensure_active(&self) -> Result<MutexGuard<'_, Option<SegmentLease>>, RuntimeError> {

@@ -19,14 +19,12 @@ use skiff_artifact_model::{
     RecoverableExpectedTypeRoot, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
     RuntimeConfigSnapshotRef, TypeRefIr,
 };
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingMethod, ActorRoutingRef,
-};
+use skiff_deployment::projection::actor_routing::{ActorRoutingMethod, ActorRoutingRef};
 use skiff_router::actor::{
     ActivateInitialControlRequest, ActivationControlPort, ActorActivationBrokerOptions,
     ActorActivationRequestBroker, ActorInvocationRelay, ActorInvocationRelayOptions,
     ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorOwnerControlBroker,
-    ActorOwnershipRegistry, ActorOwnerRouteAuthority, CommitFenceFacts, IdleEvictControlPort,
+    ActorOwnerRouteAuthority, ActorOwnershipRegistry, CommitFenceFacts, IdleEvictControlPort,
     LeaseSchedulerOptions,
 };
 use skiff_router::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
@@ -48,8 +46,8 @@ use skiff_runtime_transport::actor_method::{
     ACTOR_RETURN_ENCODING_V1,
 };
 use skiff_runtime_transport::actor_owner::{
-    decode_actor_owner_invoke_frame, ActorOwnerFailureFrameHeader, ActorOwnerFailureReasonFrameHeader,
-    ACTOR_OWNER_FAILURE_FRAME_TYPE,
+    decode_actor_owner_invoke_frame, ActorOwnerFailureFrameHeader,
+    ActorOwnerFailureReasonFrameHeader, ACTOR_OWNER_FAILURE_FRAME_TYPE,
 };
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_task_control::model::{
@@ -254,7 +252,6 @@ impl TestClock {
             now_ms: AtomicU64::new(millis),
         }
     }
-
 }
 
 impl Clock for TestClock {
@@ -311,7 +308,10 @@ struct FakeActivationControl {
 
 impl ActivationControlPort for FakeActivationControl {
     fn send_activate_initial(&self, request: &ActivateInitialControlRequest) -> Result<(), String> {
-        self.requests.lock().expect("control requests").push(request.clone());
+        self.requests
+            .lock()
+            .expect("control requests")
+            .push(request.clone());
         Ok(())
     }
 }
@@ -397,10 +397,7 @@ fn rig() -> Rig {
     };
     let port = Arc::new(FakeTaskActorOwnerPort {
         candidates: Mutex::new(vec![session.clone()]),
-        sessions: Mutex::new(HashMap::from([(
-            "runtime-a".to_string(),
-            session.clone(),
-        )])),
+        sessions: Mutex::new(HashMap::from([("runtime-a".to_string(), session.clone())])),
         frames: Mutex::new(Vec::new()),
     });
     let sink = Arc::new(ActorFrameSink::new(
@@ -451,7 +448,10 @@ fn rig() -> Rig {
 }
 
 async fn claim_ready(store: &dyn TaskStore, task_id: &str) -> TaskRecord {
-    let records = store.scan_due(DueScanInput { limit: 100 }).await.expect("scan");
+    let records = store
+        .scan_due(DueScanInput { limit: 100 })
+        .await
+        .expect("scan");
     let record = records
         .into_iter()
         .find(|record| record.task_id.as_str() == task_id)
@@ -479,10 +479,7 @@ async fn claim_ready(store: &dyn TaskStore, task_id: &str) -> TaskRecord {
 
 async fn create_and_claim(rig: &Rig, record: TaskRecord) -> TaskRecord {
     let task_id = record.task_id.as_str().to_string();
-    rig.store
-        .create(record)
-        .await
-        .expect("create actor task");
+    rig.store.create(record).await.expect("create actor task");
     claim_ready(rig.store.as_ref(), &task_id).await
 }
 
@@ -566,10 +563,7 @@ fn owner_return_frame(invocation_id: &str) -> Vec<u8> {
     .expect("return frame")
 }
 
-fn owner_error_frame(
-    invocation_id: &str,
-    error: ActorMethodErrorFramePayload,
-) -> Vec<u8> {
+fn owner_error_frame(invocation_id: &str, error: ActorMethodErrorFramePayload) -> Vec<u8> {
     encode_actor_method_frame(&ActorMethodFrame::Error(ActorMethodErrorFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "actor.method.error".to_string(),
@@ -628,7 +622,10 @@ async fn branch1_live_incarnation_same_implementation_admits_ordinary_invocation
     let (header, payload) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
     assert_eq!(header.activation_bootstrap, None);
     assert_eq!(payload, br#"[1,2,3]"#);
-    assert_eq!(header.invoke.actor_implementation_identity, implementation());
+    assert_eq!(
+        header.invoke.actor_implementation_identity,
+        implementation()
+    );
     assert_eq!(
         header.invoke.test_case_capability, None,
         "ordinary production actor attempts must not carry test-case capability"
@@ -774,7 +771,10 @@ async fn branch2_entry_exists_uses_entry_create_input_to_activate() {
     let record = claimed.clone();
     let admit = tokio::spawn(async move { admission.admit(&record).await });
     let request = wait_for_activation_request(&rig).await;
-    assert_eq!(request.bootstrap_bytes, br#"[9]"#, "entry create input wins");
+    assert_eq!(
+        request.bootstrap_bytes, br#"[9]"#,
+        "entry create input wins"
+    );
     let ack = rig.actor.activation_broker.on_activation_ack(
         &request.request_id,
         &request.owner_runtime_id,
@@ -833,10 +833,21 @@ async fn branch3_snapshot_restores_minimal_entry_and_first_restore_wins() {
     let decision = admit.await.expect("admit task");
     assert_eq!(decision, AdmissionDecision::Accepted);
     assert_eq!(
-        rig.actor.registry.entry(&actor_key()).expect("restored entry").create_input,
+        rig.actor
+            .registry
+            .entry(&actor_key())
+            .expect("restored entry")
+            .create_input,
         br#"[7]"#
     );
-    assert_eq!(rig.activation_control.requests.lock().expect("requests").len(), 1);
+    assert_eq!(
+        rig.activation_control
+            .requests
+            .lock()
+            .expect("requests")
+            .len(),
+        1
+    );
     rig.worker.abort();
 }
 
@@ -877,7 +888,11 @@ async fn branch3_concurrent_snapshot_restores_put_if_absent_once() {
     assert_eq!(decision_a, AdmissionDecision::Accepted);
     assert_eq!(decision_b, AdmissionDecision::Accepted);
     assert_eq!(
-        rig.activation_control.requests.lock().expect("requests").len(),
+        rig.activation_control
+            .requests
+            .lock()
+            .expect("requests")
+            .len(),
         1,
         "concurrent restores share one identity-fenced claim"
     );
@@ -909,7 +924,10 @@ async fn branch4_upgrading_error_releases_attempt_with_backoff() {
         rig.store.now().await.expect("now"),
     );
     let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(rig.admission.admit(&claimed).await, AdmissionDecision::Accepted);
+    assert_eq!(
+        rig.admission.admit(&claimed).await,
+        AdmissionDecision::Accepted
+    );
     let invocation_id = invoke_invocation_id(&rig);
     let bytes = owner_error_frame(
         &invocation_id,
@@ -1020,7 +1038,10 @@ async fn actor_attempt_return_settles_succeeded() {
         rig.store.now().await.expect("now"),
     );
     let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(rig.admission.admit(&claimed).await, AdmissionDecision::Accepted);
+    assert_eq!(
+        rig.admission.admit(&claimed).await,
+        AdmissionDecision::Accepted
+    );
     let invocation_id = invoke_invocation_id(&rig);
     rig.sink
         .handle(&rig.session, &owner_return_frame(&invocation_id))
@@ -1040,7 +1061,10 @@ async fn actor_attempt_owner_failure_settles_failed() {
         rig.store.now().await.expect("now"),
     );
     let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(rig.admission.admit(&claimed).await, AdmissionDecision::Accepted);
+    assert_eq!(
+        rig.admission.admit(&claimed).await,
+        AdmissionDecision::Accepted
+    );
     let invocation_id = invoke_invocation_id(&rig);
     rig.sink
         .handle(&rig.session, &owner_failure_frame(&invocation_id))
@@ -1060,7 +1084,10 @@ async fn actor_attempt_version_rejected_settles_platform_failed() {
         rig.store.now().await.expect("now"),
     );
     let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(rig.admission.admit(&claimed).await, AdmissionDecision::Accepted);
+    assert_eq!(
+        rig.admission.admit(&claimed).await,
+        AdmissionDecision::Accepted
+    );
     let invocation_id = invoke_invocation_id(&rig);
     let bytes = owner_error_frame(
         &invocation_id,
@@ -1099,7 +1126,10 @@ async fn actor_attempt_owner_disconnect_is_uncertain_no_settlement() {
         rig.store.now().await.expect("now"),
     );
     let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(rig.admission.admit(&claimed).await, AdmissionDecision::Accepted);
+    assert_eq!(
+        rig.admission.admit(&claimed).await,
+        AdmissionDecision::Accepted
+    );
     // The owner session closes: no settlement, the attempt stays leased and
     // lease expiry recovery owns the next attempt.
     rig.sink.on_runtime_session_closed(&rig.session);
@@ -1110,9 +1140,7 @@ async fn actor_attempt_owner_disconnect_is_uncertain_no_settlement() {
     rig.worker.abort();
 }
 
-async fn wait_for_activation_request(
-    rig: &Rig,
-) -> ActivateInitialControlRequest {
+async fn wait_for_activation_request(rig: &Rig) -> ActivateInitialControlRequest {
     timeout(Duration::from_secs(2), async {
         loop {
             let requests = rig.activation_control.requests.lock().expect("requests");

@@ -155,12 +155,7 @@ pub fn coerce_runtime_value_plan_impl(
     plan: &RuntimeTypePlan,
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
-    coerce_runtime_value_plan_impl_with_handles(
-        value,
-        plan,
-        heap,
-        InternalHandlePolicy::Refuse,
-    )
+    coerce_runtime_value_plan_impl_with_handles(value, plan, heap, InternalHandlePolicy::Refuse)
 }
 
 pub fn coerce_runtime_value_plan_impl_with_handles(

@@ -55,7 +55,8 @@ pub trait SchedulerObservation: Send + Sync {
     fn on_claim_duplicate(&self, _task_id: &TaskId, _reason: &ClaimRejection) {}
 
     /// One accepted lease was renewed at store authority time.
-    fn on_renewed(&self, _task_id: &TaskId, _lease_id: &LeaseId, _new_expiry: DurableUtcTimestamp) {}
+    fn on_renewed(&self, _task_id: &TaskId, _lease_id: &LeaseId, _new_expiry: DurableUtcTimestamp) {
+    }
 
     /// Renewal of one accepted lease was rejected (stale / expired / terminal /
     /// missing); bookkeeping for that exact lease ends.
@@ -304,8 +305,7 @@ impl Scheduler {
                     record
                 }
                 Ok(ClaimOutcome::Rejected(reason)) => {
-                    self.observer
-                        .on_claim_duplicate(&record.task_id, &reason);
+                    self.observer.on_claim_duplicate(&record.task_id, &reason);
                     continue;
                 }
                 Err(_) => continue,
@@ -351,8 +351,7 @@ impl Scheduler {
                 })
                 .await;
             if matches!(recovered, Ok(LeaseRecoveryOutcome::Recovered(_))) {
-                self.observer
-                    .on_recover(&record.task_id, &lease.lease_id);
+                self.observer.on_recover(&record.task_id, &lease.lease_id);
                 self.remove_active_lease_if(&record.task_id, &lease.lease_id);
             }
         }
@@ -386,16 +385,15 @@ impl Scheduler {
                 .await;
             match renewed {
                 Ok(RenewOutcome::Renewed(record)) => {
-                    self.observer
-                        .on_renewed(
-                            &task_id,
-                            &lease.lease_id,
-                            record
-                                .active_lease
-                                .as_ref()
-                                .map(|next| next.expiry)
-                                .unwrap_or(new_expiry),
-                        );
+                    self.observer.on_renewed(
+                        &task_id,
+                        &lease.lease_id,
+                        record
+                            .active_lease
+                            .as_ref()
+                            .map(|next| next.expiry)
+                            .unwrap_or(new_expiry),
+                    );
                     if let Some(next) = record.active_lease.as_ref().cloned() {
                         let mut guard = self.active_leases.lock().expect("active leases lock");
                         if guard

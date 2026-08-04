@@ -32,5 +32,5 @@ fn package_visible_type_text_does_not_follow_cyclic_mapping_outputs() {
     assert_eq!(
         package_service_visible_type_text("Array<Left?>", &mappings),
         "Array<Right?>"
-        );
+    );
 }

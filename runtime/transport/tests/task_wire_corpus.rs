@@ -22,12 +22,12 @@ use skiff_runtime_transport::protocol::{
     decode_task_cancel_response_frame, decode_task_status_error_frame,
     decode_task_status_request_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_request_frame,
-    decode_task_submit_response_frame, encode_task_cancel_request_frame,
-    encode_task_cancel_response_frame, encode_task_cancel_error_frame,
+    decode_task_submit_response_frame, encode_task_cancel_error_frame,
+    encode_task_cancel_request_frame, encode_task_cancel_response_frame,
     encode_task_status_error_frame, encode_task_status_request_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
-    encode_task_submit_request_frame, encode_task_submit_response_frame,
-    TaskControlRejectionCode, TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
+    encode_task_submit_request_frame, encode_task_submit_response_frame, TaskControlRejectionCode,
+    TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
@@ -415,9 +415,7 @@ const TASK_SCENARIOS: [(&str, &str); 10] = [
     ),
     (
         "parent-connection-mismatch-rejected",
-        include_str!(
-            "../testdata/task-wire/scenarios/07-parent-connection-mismatch-rejected.json"
-        ),
+        include_str!("../testdata/task-wire/scenarios/07-parent-connection-mismatch-rejected.json"),
     ),
     (
         "authority-mismatch-rejected",
@@ -462,10 +460,11 @@ mod tests {
     fn task_family_rule_is_mixed_direction_with_required_payload_and_frame_table() {
         use skiff_runtime_transport::protocol::task_submit_frame_direction;
         use skiff_runtime_transport::protocol::{
-            FrameDirection, PayloadPresenceRule, RuntimeFrameFamily, TASK_SUBMIT_ERROR_FRAME_TYPE,
-            TASK_SUBMIT_REQUEST_FRAME_TYPE, TASK_SUBMIT_RESPONSE_FRAME_TYPE,
+            FrameDirection, PayloadPresenceRule, RuntimeFrameFamily,
             TASK_CANCEL_REQUEST_FRAME_TYPE, TASK_CANCEL_RESPONSE_FRAME_TYPE,
             TASK_STATUS_REQUEST_FRAME_TYPE, TASK_STATUS_RESPONSE_FRAME_TYPE,
+            TASK_SUBMIT_ERROR_FRAME_TYPE, TASK_SUBMIT_REQUEST_FRAME_TYPE,
+            TASK_SUBMIT_RESPONSE_FRAME_TYPE,
         };
         assert_eq!(
             RuntimeFrameFamily::Task.direction(),
@@ -518,44 +517,39 @@ mod tests {
             );
             let (frame_type, decode_as, presence) = match name.as_str() {
                 "task.submit.request.function"
-                | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
+                | "task.submit.request.actorMethod"
+                | "task.submit.request.actorMethod.snapshot"
                 | "task.submit.request.legacy-no-caller-kind"
                 | "task.submit.request.timing.after"
                 | "task.submit.request.timing.at" => {
                     ("task.submit.request", "TaskSubmitRequest", "required")
                 }
-                "task.submit.response" => {
-                    ("task.submit.response", "TaskSubmitResponse", "empty")
-                }
+                "task.submit.response" => ("task.submit.response", "TaskSubmitResponse", "empty"),
                 "task.submit.error.parentNotFound"
                 | "task.submit.error.invalidTiming"
                 | "task.submit.error.payloadInvalid"
                 | "task.submit.error.quotaExceeded"
                 | "task.submit.error.storeUnavailable"
-                | "task.submit.error.rejected" => {
-                    ("task.submit.error", "TaskSubmitError", "empty")
-                }
-                "task.status.request" => {
-                    ("task.status.request", "TaskStatusRequest", "empty")
-                }
+                | "task.submit.error.rejected" => ("task.submit.error", "TaskSubmitError", "empty"),
+                "task.status.request" => ("task.status.request", "TaskStatusRequest", "empty"),
                 "task.status.response.scheduled" => {
                     ("task.status.response", "TaskStatusResponse", "empty")
                 }
                 "task.status.error.notFound" | "task.status.error.storeUnavailable" => {
                     ("task.status.error", "TaskStatusError", "empty")
                 }
-                "task.cancel.request" => {
-                    ("task.cancel.request", "TaskCancelRequest", "empty")
-                }
+                "task.cancel.request" => ("task.cancel.request", "TaskCancelRequest", "empty"),
                 "task.cancel.response.canceled" => {
                     ("task.cancel.response", "TaskCancelResponse", "empty")
                 }
                 "task.cancel.error.notFound" | "task.cancel.error.storeUnavailable" => {
                     ("task.cancel.error", "TaskCancelError", "empty")
                 }
-                "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
-                    ("request.start", "RuntimeAssemblyTaskRequestStart", "required")
-                }
+                "request.start.task.without-attempt" | "request.start.task.with-attempt" => (
+                    "request.start",
+                    "RuntimeAssemblyTaskRequestStart",
+                    "required",
+                ),
                 _ => panic!("unexpected task frame {name}"),
             };
             assert_eq!(entry.frame_type, frame_type, "{name}: frameType");
@@ -567,7 +561,8 @@ mod tests {
     fn expected_direction(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
+            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at"
@@ -622,9 +617,7 @@ mod tests {
         .0;
         assert_eq!(
             after.timing,
-            Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After {
-                duration_ms: 5_000
-            })
+            Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After { duration_ms: 5_000 })
         );
         let at = decode_task_submit_request_frame(&hex_bytes(
             &catalog.frames["task.submit.request.timing.at"].frame_hex,
@@ -797,7 +790,10 @@ mod tests {
             (
                 "task.status.error.notFound",
                 decode_task_status_error_frame as fn(&[u8]) -> _,
-                encode_task_status_error_frame as fn(&skiff_runtime_transport::protocol::ActorTaskRuntimeErrorFrameHeader) -> _,
+                encode_task_status_error_frame
+                    as fn(
+                        &skiff_runtime_transport::protocol::ActorTaskRuntimeErrorFrameHeader,
+                    ) -> _,
                 TaskControlRejectionCode::NotFound,
             ),
             (
@@ -906,9 +902,7 @@ mod tests {
         }
         for name in required {
             assert!(
-                TASK_SCENARIOS
-                    .iter()
-                    .any(|(scenario, _)| *scenario == name),
+                TASK_SCENARIOS.iter().any(|(scenario, _)| *scenario == name),
                 "required task scenario {name} is missing"
             );
         }

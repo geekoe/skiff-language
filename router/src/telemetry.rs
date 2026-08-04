@@ -241,10 +241,7 @@ impl RouterTelemetryProducer {
     }
 
     pub fn queue_len(&self) -> usize {
-        self.events
-            .lock()
-            .map(|events| events.len())
-            .unwrap_or(0)
+        self.events.lock().map(|events| events.len()).unwrap_or(0)
     }
 }
 
@@ -286,11 +283,7 @@ pub struct RouterTelemetryExporterHandle {
 impl RouterTelemetryExporterHandle {
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(true);
-        let _ = timeout(
-            EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
-            self.task,
-        )
-        .await;
+        let _ = timeout(EXPORTER_SHUTDOWN_FLUSH_TIMEOUT, self.task).await;
     }
 }
 
@@ -313,9 +306,9 @@ async fn exporter_loop(
                         run_connected_exporter(&mut writer, &mut reader, &producer, &mut shutdown)
                             .await;
                     }
-                    Err(error) => eprintln!(
-                        "[router-telemetry] register send failed for {endpoint}: {error}"
-                    ),
+                    Err(error) => {
+                        eprintln!("[router-telemetry] register send failed for {endpoint}: {error}")
+                    }
                 }
             }
             Ok(Err(error)) => {
@@ -475,7 +468,10 @@ pub fn backlog_metric_event(
     attrs.insert("scheduled".to_string(), json!(observation.scheduled));
     attrs.insert("ready".to_string(), json!(observation.ready));
     attrs.insert("leased".to_string(), json!(observation.leased));
-    attrs.insert("terminalCount".to_string(), json!(observation.terminal_count));
+    attrs.insert(
+        "terminalCount".to_string(),
+        json!(observation.terminal_count),
+    );
     if let Some(oldest_due_at) = observation.oldest_due_at {
         attrs.insert("oldestDueAtMs".to_string(), json!(oldest_due_at.millis()));
         if let Some(observed_at) = observation.observed_at {
@@ -531,7 +527,11 @@ fn build_batches(
                 || serialized_batch_size(producer_id, next_seq.load(Ordering::Relaxed), &candidate)
                     > max_bytes)
         {
-            batches.push(make_batch(producer_id, next_seq, std::mem::take(&mut current)));
+            batches.push(make_batch(
+                producer_id,
+                next_seq,
+                std::mem::take(&mut current),
+            ));
         }
         current.push(event);
     }
@@ -555,11 +555,7 @@ fn make_batch(
     }
 }
 
-fn serialized_batch_size(
-    producer_id: &str,
-    seq: u64,
-    events: &[TelemetryEvent],
-) -> usize {
+fn serialized_batch_size(producer_id: &str, seq: u64, events: &[TelemetryEvent]) -> usize {
     serde_json::to_vec(&TelemetryBatchEnvelope {
         envelope_type: TELEMETRY_BATCH_TYPE.to_string(),
         producer_id: producer_id.to_string(),
@@ -593,20 +589,20 @@ fn redact_event(
     event.target = truncate_option(event.target, string_max_chars);
     event.name = truncate_option(event.name, string_max_chars);
     event.message = truncate_option(event.message, string_max_chars);
-    event.attrs = event
-        .attrs
-        .map(|attrs| redact_map(attrs, string_max_chars));
-    event.error = event
-        .error
-        .map(|error| redact_map(error, string_max_chars));
-    if serde_json::to_vec(&event).map(|bytes| bytes.len()).unwrap_or(usize::MAX)
+    event.attrs = event.attrs.map(|attrs| redact_map(attrs, string_max_chars));
+    event.error = event.error.map(|error| redact_map(error, string_max_chars));
+    if serde_json::to_vec(&event)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
         > event_max_bytes
     {
         event.attrs = Some(Map::from_iter([
             ("truncated".to_string(), Value::Bool(true)),
             (
                 "originalSizeBytes".to_string(),
-                json!(serde_json::to_vec(&event).map(|bytes| bytes.len()).unwrap_or(0)),
+                json!(serde_json::to_vec(&event)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0)),
             ),
         ]));
         event.message = None;
@@ -638,12 +634,15 @@ fn redact_map(map: Map<String, Value>, string_max_chars: usize) -> Map<String, V
 
 fn redact_value(value: Value, string_max_chars: usize) -> Value {
     match value {
-        Value::String(value) => Value::String(
-            truncate_option(Some(value), string_max_chars).unwrap_or_default(),
-        ),
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(|value| redact_value(value, string_max_chars)).collect())
+        Value::String(value) => {
+            Value::String(truncate_option(Some(value), string_max_chars).unwrap_or_default())
         }
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_value(value, string_max_chars))
+                .collect(),
+        ),
         Value::Object(object) => Value::Object(redact_map(object, string_max_chars)),
         other => other,
     }
@@ -651,7 +650,14 @@ fn redact_value(value: Value, string_max_chars: usize) -> Value {
 
 fn is_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    ["secret", "token", "password", "authorization", "mongo", "endpoint"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "secret",
+        "token",
+        "password",
+        "authorization",
+        "mongo",
+        "endpoint",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }

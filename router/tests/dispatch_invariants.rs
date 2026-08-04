@@ -253,7 +253,10 @@ mod tests {
         assert_eq!(rig.dispatcher.pending_count(), 1);
         assert_eq!(rig.dispatcher.health().admission.permits_held, 1);
         assert!(rig.dispatcher.is_task_attempt("task-attempt-1"));
-        assert_eq!(rig.peer.record.lock().unwrap().attempts, vec!["task-attempt-1"]);
+        assert_eq!(
+            rig.peer.record.lock().unwrap().attempts,
+            vec!["task-attempt-1"]
+        );
     }
 
     #[test]
@@ -507,14 +510,7 @@ mod tests {
     #[test]
     fn dispatch_duplicate_task_attempt_request_id_is_rejected() {
         let rig = Rig::new(2);
-        let task = || {
-            task_attempt(
-                "task-attempt-1",
-                "task-1",
-                "attempt-1",
-                "lease-1",
-            )
-        };
+        let task = || task_attempt("task-attempt-1", "task-1", "attempt-1", "lease-1");
         assert!(matches!(
             rig.dispatcher.task_attempt_submit(task()),
             TaskAttemptSubmitResult::Accepted { .. }

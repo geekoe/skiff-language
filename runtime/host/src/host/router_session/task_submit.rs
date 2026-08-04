@@ -19,9 +19,8 @@ use skiff_runtime_transport::actor_method::{
 use skiff_runtime_transport::protocol::{
     encode_task_submit_request_frame, ActivationIdentityFrameMetadata,
     TaskActorActivationSnapshotFrameMetadata, TaskActorMethodTargetFrameMetadata,
-    TaskCallerKind as WireTaskCallerKind,
-    TaskSubmitRequestFrameHeaderV2, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
-    TASK_SUBMIT_REQUEST_FRAME_TYPE,
+    TaskCallerKind as WireTaskCallerKind, TaskSubmitRequestFrameHeaderV2, TaskTargetKind,
+    RUNTIME_FRAME_SCHEMA_VERSION, TASK_SUBMIT_REQUEST_FRAME_TYPE,
 };
 
 use crate::error::{Result, RuntimeError};
@@ -66,9 +65,8 @@ fn task_submit_request_header_v2(
             .clone()
             .ok_or_else(|| RuntimeError::Protocol {
                 target: TASK_SUBMIT_REQUEST_FRAME_TYPE.to_string(),
-                message:
-                    "task.submit.request callerRequestId is required after H-task-parent-cut"
-                        .to_string(),
+                message: "task.submit.request callerRequestId is required after H-task-parent-cut"
+                    .to_string(),
             })?;
     let target_kind = match request.target_kind.as_str() {
         "function" => TaskTargetKind::Function,
@@ -119,9 +117,7 @@ fn task_submit_request_header_v2(
         timing: match request.timing {
             TaskSubmitTimingControl::Immediate => None,
             TaskSubmitTimingControl::After { duration_ms } => {
-                Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After {
-                    duration_ms,
-                })
+                Some(skiff_runtime_transport::protocol::TaskSubmitTiming::After { duration_ms })
             }
             TaskSubmitTimingControl::At { utc_millis } => {
                 Some(skiff_runtime_transport::protocol::TaskSubmitTiming::At { utc_millis })

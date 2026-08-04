@@ -125,7 +125,11 @@ impl BrokerRef {
     }
 
     fn writer(&mut self, gen_key: &str) -> &mut PeerWriter {
-        &mut self.generations.get_mut(gen_key).expect("generation").writer
+        &mut self
+            .generations
+            .get_mut(gen_key)
+            .expect("generation")
+            .writer
     }
 
     fn handle_runtime_request(
@@ -146,8 +150,9 @@ impl BrokerRef {
             request_id.to_string(),
         );
         if self.outbound_by_runtime.contains_key(&runtime_key) {
-            self.protocol_violations
-                .push(format!("duplicate connection.request correlation {request_id}"));
+            self.protocol_violations.push(format!(
+                "duplicate connection.request correlation {request_id}"
+            ));
             return RuntimeOutcome::ProtocolError;
         }
         if generation.outbound_active >= self.outbound_per_generation {
@@ -162,7 +167,8 @@ impl BrokerRef {
             return RuntimeOutcome::TransportUnavailable;
         }
         generation.outbound_active += 1;
-        self.outbound_by_peer.insert(peer_key.clone(), gen_key.to_string());
+        self.outbound_by_peer
+            .insert(peer_key.clone(), gen_key.to_string());
         self.outbound_by_runtime.insert(runtime_key, peer_key);
         RuntimeOutcome::Success
     }
@@ -175,7 +181,8 @@ impl BrokerRef {
             self.outbound_by_peer.insert(peer_key.to_string(), owner);
             return false;
         }
-        self.outbound_by_runtime.retain(|_, value| value != peer_key);
+        self.outbound_by_runtime
+            .retain(|_, value| value != peer_key);
         let generation = self.generations.get_mut(gen_key).expect("generation");
         generation.outbound_active -= 1;
         self.outbound_tombstones.push(peer_key.to_string());
@@ -183,11 +190,7 @@ impl BrokerRef {
         true
     }
 
-    fn peer_response(
-        &mut self,
-        gen_key: &str,
-        peer_key: &str,
-    ) -> Result<(), (u16, String)> {
+    fn peer_response(&mut self, gen_key: &str, peer_key: &str) -> Result<(), (u16, String)> {
         if self.settle_outbound(gen_key, peer_key) {
             return Ok(());
         }
@@ -195,10 +198,7 @@ impl BrokerRef {
             // Late response isolated by the tombstone fence.
             return Ok(());
         }
-        Err((
-            1002,
-            "unknown JSON-RPC response id".to_string(),
-        ))
+        Err((1002, "unknown JSON-RPC response id".to_string()))
     }
 
     fn deadline(&mut self, gen_key: &str, request_id: &str, source: &RuntimeSource) {
@@ -221,7 +221,11 @@ impl BrokerRef {
         let Some(peer_key) = self.outbound_by_runtime.get(&runtime_key).cloned() else {
             return false;
         };
-        let gen_key = self.outbound_by_peer.get(&peer_key).cloned().expect("owner");
+        let gen_key = self
+            .outbound_by_peer
+            .get(&peer_key)
+            .cloned()
+            .expect("owner");
         self.settle_outbound(&gen_key, &peer_key);
         true
     }
@@ -247,10 +251,7 @@ impl BrokerRef {
         if self.inbound_by_peer.contains_key(peer_id)
             || self.inbound_tombstones.contains(&peer_id.to_string())
         {
-            return Err((
-                1002,
-                "duplicate JSON-RPC request id".to_string(),
-            ));
+            return Err((1002, "duplicate JSON-RPC request id".to_string()));
         }
         let generation = self.generations.get_mut(gen_key).expect("generation");
         if !generation.open || generation.inbound_active >= self.inbound_per_generation {
@@ -259,7 +260,8 @@ impl BrokerRef {
             return Ok(());
         }
         generation.inbound_active += 1;
-        self.inbound_by_peer.insert(peer_id.to_string(), gen_key.to_string());
+        self.inbound_by_peer
+            .insert(peer_id.to_string(), gen_key.to_string());
         Ok(())
     }
 
@@ -379,9 +381,7 @@ fn outbound_roundtrip_settles_exact_runtime_source() {
     assert_eq!(broker.writer(&gen).writes.len(), 1);
     assert!(broker.writer(&gen).writes[0].contains("\"id\":\"g1:0\""));
 
-    assert!(broker
-        .peer_response(&gen, "g1:0")
-        .is_ok());
+    assert!(broker.peer_response(&gen, "g1:0").is_ok());
     assert_eq!(broker.outbound_pending(), 0);
     assert_eq!(broker.outbound_tombstones, vec!["g1:0"]);
 }
@@ -404,7 +404,10 @@ fn out_of_order_responses_and_late_response_isolation() {
     assert_eq!(broker.outbound_pending(), 0);
     // Late response for a settled id is isolated by the tombstone.
     assert!(broker.peer_response(&gen, "g1:1").is_ok());
-    assert!(broker.generations.contains_key(&gen), "generation stays open");
+    assert!(
+        broker.generations.contains_key(&gen),
+        "generation stays open"
+    );
 }
 
 #[test]
@@ -421,7 +424,10 @@ fn deadline_wins_exactly_once() {
     assert_eq!(broker.outbound_tombstones.len(), 1);
     // Late peer response after the deadline is isolated.
     assert!(broker.peer_response(&gen, "g1:0").is_ok());
-    assert!(broker.generations.contains_key(&gen), "deadline does not close the generation");
+    assert!(
+        broker.generations.contains_key(&gen),
+        "deadline does not close the generation"
+    );
 }
 
 #[test]
@@ -575,12 +581,6 @@ fn tombstone_fifo_eviction_permits_reuse_but_keeps_active_fence() {
     assert_eq!(broker.outbound_tombstones.len(), 2);
     // The first tombstone was evicted by FIFO; its late response is no longer
     // isolated and must not reopen state.
-    assert_eq!(
-        broker
-            .peer_response(&gen, "g1:0")
-            .unwrap_err()
-            .0,
-        1002
-    );
+    assert_eq!(broker.peer_response(&gen, "g1:0").unwrap_err().0, 1002);
     assert_eq!(broker.outbound_pending(), 0);
 }

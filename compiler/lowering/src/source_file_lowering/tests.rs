@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     file_ir::{
-        BoxSourceIr, CallIr, CallTargetIr, ExecutableIr, ExprIr, MetadataValue, PackageRefIr,
-        ExprRefIr, StmtIr, TypeRefIr,
+        BoxSourceIr, CallIr, CallTargetIr, ExecutableIr, ExprIr, ExprRefIr, MetadataValue,
+        PackageRefIr, StmtIr, TypeRefIr,
     },
     source_unit_lowering::symbol,
 };
@@ -1556,16 +1556,15 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
     };
     // `after(200ms)` desugars to `Duration.milliseconds(200)`.
     assert!(
-        matches!(
-            timing_call.target,
-            CallTargetIr::Native { .. }
-        ),
+        matches!(timing_call.target, CallTargetIr::Native { .. }),
         "unexpected timing call target {:?}",
         timing_call.target
     );
     assert_eq!(timing_call.args.len(), 1);
     let ExprIr::Literal {
-        value: LiteralIr::Number { value: milliseconds },
+        value: LiteralIr::Number {
+            value: milliseconds,
+        },
     } = &start.body.expressions[timing_call.args[0].expression as usize]
     else {
         panic!("timing literal must lower to a number");
@@ -1595,12 +1594,14 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
     let MetadataValue::Number(expr_index) = at_timing.get("expr").expect("at expr index") else {
         panic!("at timing must carry an expression index");
     };
-    let ExprIr::LoadSlot { slot } =
-        &start.body.expressions[expr_index.as_u64().unwrap() as usize]
+    let ExprIr::LoadSlot { slot } = &start.body.expressions[expr_index.as_u64().unwrap() as usize]
     else {
         panic!("at timing must lower to the instant slot load");
     };
-    assert!(matches!(slot, 1), "instant should occupy slot 1, got {slot}");
+    assert!(
+        matches!(slot, 1),
+        "instant should occupy slot 1, got {slot}"
+    );
 
     let StmtIr::Dispatch { call: call_ref } = &start.body.statements[2] else {
         panic!("statement dispatch must keep StmtIr::Dispatch");

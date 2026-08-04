@@ -8,10 +8,9 @@
 
 use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorActivationSnapshotControl,
-    ActorInvocationDeclarationOwner, ActorInvocationOwnerFile, ActorInvocationOwnerUnit,
-    ActorMethodTaskTargetControl, TaskCallerKind, TaskSubmitControlMessage,
-    TaskSubmitControlRequest, TaskSubmitTimingControl,
+    ActivationIdentityControl, ActorActivationSnapshotControl, ActorInvocationDeclarationOwner,
+    ActorInvocationOwnerFile, ActorInvocationOwnerUnit, ActorMethodTaskTargetControl,
+    TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::{
@@ -59,9 +58,8 @@ fn task_submit_message(
 #[test]
 fn driver_encodes_function_submit_byte_exact_to_frozen_corpus_frame() {
     let message = task_submit_message(TaskCallerKind::Request, "parent-1");
-    let frame =
-        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
-            .expect("canonical task submit must encode");
+    let frame = crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+        .expect("canonical task submit must encode");
     let catalog: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../../../runtime/transport/testdata/task-wire/frames.json"
     ))
@@ -82,9 +80,8 @@ fn driver_encodes_function_submit_byte_exact_to_frozen_corpus_frame() {
 #[test]
 fn driver_encodes_actor_invocation_submit_with_closed_caller_kind() {
     let message = task_submit_message(TaskCallerKind::ActorInvocation, "parent-1");
-    let frame =
-        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
-            .expect("canonical task submit must encode");
+    let frame = crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+        .expect("canonical task submit must encode");
     let (header, payload) =
         decode_task_submit_request_frame(&frame).expect("canonical task submit must decode");
     assert_eq!(header.caller_kind, WireTaskCallerKind::ActorInvocation);
@@ -140,9 +137,8 @@ fn driver_encodes_actor_method_submit_with_frozen_activation_snapshot() {
             }),
         },
     });
-    let frame =
-        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
-            .expect("canonical actor method task submit must encode");
+    let frame = crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+        .expect("canonical actor method task submit must encode");
     let (header, payload) =
         decode_task_submit_request_frame(&frame).expect("canonical task submit must decode");
     assert_eq!(header.target_kind, WireTaskTargetKind::ActorMethod);
@@ -184,9 +180,8 @@ fn driver_rejects_legacy_control_task_submit_with_no_compatible_reader() {
 fn driver_rejects_task_submit_without_caller_request_id() {
     let mut message = task_submit_message(TaskCallerKind::Request, "parent-1");
     message.request.caller_request_id = None;
-    let error =
-        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
-            .expect_err("callerRequestId is required on the canonical wire");
+    let error = crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+        .expect_err("callerRequestId is required on the canonical wire");
     assert!(
         error.to_string().contains("callerRequestId"),
         "rejection must name callerRequestId, got {error}"

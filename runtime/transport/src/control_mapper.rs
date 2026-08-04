@@ -20,14 +20,13 @@ use crate::{
     },
     error::TransportResult,
     protocol::{
-        encode_binary_frame, validate_test_case_authority, ActivationIdentityFrameMetadata,
-        ActorFindRequestFrameHeader, ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata,
-        ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RuntimeDeadlineFrameHeader, TaskActorMethodTargetFrameMetadata,
-        TaskActorActivationSnapshotFrameMetadata, TaskCancelRequestFrameHeader,
-        TaskStatusRequestFrameHeader,
-        TaskSubmitRequestFrameHeader, TaskRef, RUNTIME_FRAME_SCHEMA_VERSION,
-        encode_task_cancel_request_frame, encode_task_status_request_frame,
+        encode_binary_frame, encode_task_cancel_request_frame, encode_task_status_request_frame,
+        validate_test_case_authority, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+        ActorGetOrCreateRequestFrameHeader, ActorKeyFrameMetadata, ActorRemoveRequestFrameHeader,
+        ActorReplaceRequestFrameHeader, ConnectionSendFrameHeader, RequestCancelFrameHeader,
+        RuntimeDeadlineFrameHeader, TaskActorActivationSnapshotFrameMetadata,
+        TaskActorMethodTargetFrameMetadata, TaskCancelRequestFrameHeader, TaskRef,
+        TaskStatusRequestFrameHeader, TaskSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -287,7 +286,7 @@ fn task_submit_request_frame_header(
         actor_method: request
             .actor_method
             .map(actor_method_task_target_frame)
-        .transpose()?,
+            .transpose()?,
     })
 }
 

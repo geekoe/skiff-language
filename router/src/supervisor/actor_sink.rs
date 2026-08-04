@@ -503,9 +503,7 @@ impl ActorFrameSink {
                 .filter(|(_, correlation)| {
                     correlation.task_attempt.is_some() && correlation.owner == *session
                 })
-                .map(|(invocation_id, correlation)| {
-                    (invocation_id.clone(), correlation.clone())
-                })
+                .map(|(invocation_id, correlation)| (invocation_id.clone(), correlation.clone()))
                 .collect::<Vec<_>>();
             for (invocation_id, _correlation) in &uncertain {
                 invocations.remove(invocation_id);

@@ -2515,7 +2515,8 @@ fn dispatch_timing_type_matches(ty: &ResolvedTypeRef, expected: &str) -> bool {
     }
     match &ty.ir {
         TypeRefIr::Builtin { name, args } if args.is_empty() => {
-            matches_name(name) || prelude_registry().known_type_symbol(name).as_deref() == Some(canonical.as_str())
+            matches_name(name)
+                || prelude_registry().known_type_symbol(name).as_deref() == Some(canonical.as_str())
         }
         other => {
             let text = debug_text(other);

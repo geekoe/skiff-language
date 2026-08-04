@@ -82,12 +82,9 @@ fn from_wire_carrier_with_stream_scope(
             {
                 Ok(RuntimeValue::String(value.to_string()).into())
             }
-            Some(_) if stream_scope.allows_internal_task_ref() => {
-                Err(RuntimeError::Decode(
-                    "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)"
-                        .to_string(),
-                ))
-            }
+            Some(_) if stream_scope.allows_internal_task_ref() => Err(RuntimeError::Decode(
+                "expected canonical taskRef string (skiff-task-v1:<owner>.<taskId>)".to_string(),
+            )),
             _ => Err(RuntimeError::Decode(
                 "taskRef is an opaque handle and cannot cross the JSON boundary".to_string(),
             )),

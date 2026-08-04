@@ -1294,10 +1294,7 @@ impl ActorInstanceStore {
     /// incarnation is absent, replaced, upgrading, or not yet admitted —
     /// callers must treat that as a submission-side definite rejection with
     /// no task created.
-    pub(crate) fn handle_for_actor_ref(
-        &self,
-        actor_ref: &ActorRef,
-    ) -> Option<ActorInstanceHandle> {
+    pub(crate) fn handle_for_actor_ref(&self, actor_ref: &ActorRef) -> Option<ActorInstanceHandle> {
         let epoch = actor_ref.epoch()?;
         let incarnation = ActorIncarnationKey {
             logical_key: ActorLogicalKey {

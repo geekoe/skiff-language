@@ -1372,10 +1372,7 @@ mod tests {
                         } if frame_type == "task.submit.response"
                     )
                 });
-        assert!(
-            task_error_observed,
-            "request-parent task must be rejected"
-        );
+        assert!(task_error_observed, "request-parent task must be rejected");
         assert!(
             !task_response_observed,
             "request-parent task must not be accepted without a parent"

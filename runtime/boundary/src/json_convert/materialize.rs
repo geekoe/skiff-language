@@ -5,11 +5,11 @@ use serde_json::{Map, Value};
 use crate::{
     date_value,
     error::{Result, RuntimeError},
+    recoverable::is_canonical_task_ref_string,
     request_heap::RequestHeap,
     runtime_value::{HeapHandle, HeapNode, InterfaceValue, RuntimeMap, RuntimeValue},
     runtime_value_graph::RuntimeValueGraph,
     stream::is_stream_value,
-    recoverable::is_canonical_task_ref_string,
     type_descriptor::{
         unresolved_type_descriptor, RuntimeRecordFieldPlan as RecordField, RuntimeTypeNode,
         RuntimeTypePlan,

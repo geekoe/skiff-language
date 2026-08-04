@@ -395,9 +395,8 @@ where
 }
 
 fn assert_task_submit_wire_omits_test_authority(message: TaskSubmitControlMessage) {
-    let frame =
-        crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
-            .expect("canonical task submit must encode");
+    let frame = crate::host::router_session::task_submit::encode_task_submit_wire_message(message)
+        .expect("canonical task submit must encode");
     let wire = decode_binary_frame(&frame).expect("task submit wire must decode");
     assert_eq!(wire.header["callerKind"], "request");
     assert_eq!(wire.header["callerRequestId"], "request-test");

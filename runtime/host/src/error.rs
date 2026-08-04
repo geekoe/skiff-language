@@ -792,15 +792,15 @@ impl RuntimeError {
                 serde_json::json!({
                     "rejectionCode": code,
                     "message": message,
-                })),
-            ),
+                }),
+            )),
             RuntimeError::TaskControlRejected { code, message } => Some((
                 PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),
                 serde_json::json!({
                     "controlCode": code,
                     "message": message,
-                })),
-            ),
+                }),
+            )),
             RuntimeError::Opaque(error) => error.catch_projection(),
             RuntimeError::ProviderUnavailable { target, reason } => Some((
                 PlatformBuiltinErrorIdentity::ServiceProviderUnavailable.catch_identity(),

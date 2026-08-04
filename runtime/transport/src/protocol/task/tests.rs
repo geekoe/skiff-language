@@ -2,8 +2,8 @@ use serde_json::json;
 
 use super::*;
 use crate::protocol::{
-    decode_task_cancel_error_frame, decode_task_status_error_frame,
-    encode_binary_frame, encode_task_cancel_error_frame, encode_task_status_error_frame,
+    decode_task_cancel_error_frame, decode_task_status_error_frame, encode_binary_frame,
+    encode_task_cancel_error_frame, encode_task_status_error_frame,
     ActorTaskRuntimeErrorFrameHeader, TaskControlRejectionCode, TaskSubmitResponseFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
@@ -122,10 +122,8 @@ fn target_kind_and_actor_method_must_agree() {
         .expect_err("function target must not carry actorMethod");
     assert!(error.to_string().contains("actorMethod"));
 
-    let mut actor_method_without_metadata = canonical_request(
-        TaskCallerKind::ActorInvocation,
-        TaskTargetKind::ActorMethod,
-    );
+    let mut actor_method_without_metadata =
+        canonical_request(TaskCallerKind::ActorInvocation, TaskTargetKind::ActorMethod);
     actor_method_without_metadata.actor_method = None;
     let error = encode_task_submit_request_frame(&actor_method_without_metadata, &[])
         .expect_err("actorMethod target requires actorMethod metadata");
@@ -225,10 +223,8 @@ fn task_frame_direction_table_is_frozen_per_frame() {
 
 #[test]
 fn task_submit_response_projection_round_trips() {
-    let mut header = canonical_request(
-        TaskCallerKind::ActorInvocation,
-        TaskTargetKind::ActorMethod,
-    );
+    let mut header =
+        canonical_request(TaskCallerKind::ActorInvocation, TaskTargetKind::ActorMethod);
     header.actor_method = Some(actor_method_metadata());
     let reconstructed =
         encode_task_submit_request_frame(&header, b"\x01\x02").expect("request must re-encode");
@@ -250,8 +246,8 @@ fn task_submit_response_projection_round_trips() {
     assert_eq!(response.task_id, "task-1");
     assert_eq!(response.request_id, "task-1");
     assert_eq!(response.status, TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED);
-    let response_bytes = encode_task_submit_response_frame(&response)
-        .expect("response projection must encode");
+    let response_bytes =
+        encode_task_submit_response_frame(&response).expect("response projection must encode");
     assert_eq!(
         decode_task_submit_response_frame(&response_bytes).expect("must decode"),
         response
@@ -334,8 +330,7 @@ fn submit_timing_three_kinds_round_trip_and_missing_defaults_to_immediate() {
     let mut header = canonical_request(TaskCallerKind::Request, TaskTargetKind::Function);
     header.timing = Some(after);
     let bytes = encode_task_submit_request_frame(&header, b"\x01\x02").expect("after encode");
-    let (decoded, _) =
-        decode_task_submit_request_frame(&bytes).expect("after request must decode");
+    let (decoded, _) = decode_task_submit_request_frame(&bytes).expect("after request must decode");
     assert_eq!(decoded.timing, Some(after));
 
     let at = TaskSubmitTiming::At {
@@ -440,9 +435,15 @@ fn rejection_code_projection_and_transient_classification() {
         (TaskSubmitRejectionCode::InvalidTiming, "invalidTiming"),
         (TaskSubmitRejectionCode::PayloadInvalid, "payloadInvalid"),
         (TaskSubmitRejectionCode::QuotaExceeded, "quotaExceeded"),
-        (TaskSubmitRejectionCode::StoreUnavailable, "storeUnavailable"),
+        (
+            TaskSubmitRejectionCode::StoreUnavailable,
+            "storeUnavailable",
+        ),
         (TaskSubmitRejectionCode::Rejected, "rejected"),
-        (TaskSubmitRejectionCode::UnsupportedTarget, "unsupportedTarget"),
+        (
+            TaskSubmitRejectionCode::UnsupportedTarget,
+            "unsupportedTarget",
+        ),
     ] {
         assert_eq!(code.as_str(), expected);
         assert_eq!(TaskSubmitRejectionCode::parse(expected), Some(code));
@@ -531,10 +532,17 @@ fn status_and_cancel_frames_round_trip_and_enforce_empty_payload() {
 fn task_control_rejection_codes_match_reference_spelling_and_transient_class() {
     let codes = [
         (TaskControlRejectionCode::NotFound, "notFound"),
-        (TaskControlRejectionCode::StoreUnavailable, "storeUnavailable"),
+        (
+            TaskControlRejectionCode::StoreUnavailable,
+            "storeUnavailable",
+        ),
     ];
     for (code, expected) in codes {
-        assert_eq!(code.as_str(), expected, "task control rejection code spelling");
+        assert_eq!(
+            code.as_str(),
+            expected,
+            "task control rejection code spelling"
+        );
         assert_eq!(TaskControlRejectionCode::parse(expected), Some(code));
         assert_eq!(
             serde_json::to_string(&code).expect("serialize"),

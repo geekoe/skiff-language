@@ -13,9 +13,7 @@ use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::bootstrap::RoutingEpoch;
-use crate::routing::{
-    CandidateQuery, DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery,
-};
+use crate::routing::{CandidateQuery, DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
 use crate::session::identity::RuntimeSessionEpoch;
 
 use super::admission::{Permit, PermitLedger, RuntimeAdmissionPool, SelectedLease};
@@ -78,10 +76,7 @@ impl RuntimeDispatcherOptions {
     /// Installs the task control plane settlement port. Dispatcher-only
     /// tests keep the no-op default; the production composition wires the
     /// real `DurableTaskControl`.
-    pub fn with_task_attempt_terminal(
-        mut self,
-        sink: Arc<dyn TaskAttemptTerminalSink>,
-    ) -> Self {
+    pub fn with_task_attempt_terminal(mut self, sink: Arc<dyn TaskAttemptTerminalSink>) -> Self {
         self.task_attempt_terminal = sink;
         self
     }
@@ -667,10 +662,7 @@ impl RequestDispatcher {
     /// revalidation and deadline machinery. Accepted means the dispatcher
     /// enqueued the frame; the task control plane tracks the pending attempt
     /// and settles through the injected terminal sink.
-    pub fn task_attempt_submit(
-        &self,
-        attempt: TaskAttemptSubmit,
-    ) -> TaskAttemptSubmitResult {
+    pub fn task_attempt_submit(&self, attempt: TaskAttemptSubmit) -> TaskAttemptSubmitResult {
         let request_id = attempt.request_id().to_string();
         let deadline = attempt.deadline();
         let mut inner = self.lock();
@@ -1102,9 +1094,8 @@ fn task_attempt_outcome(
         RequestOutcome::Cancelled => match source {
             TerminalSource::Timeout | TerminalSource::RuntimeRequestCancel => {
                 TaskAttemptTerminalOutcome::Failed {
-                    message: error_message.unwrap_or_else(|| {
-                        format!("request canceled: {}", source.as_str())
-                    }),
+                    message: error_message
+                        .unwrap_or_else(|| format!("request canceled: {}", source.as_str())),
                 }
             }
             TerminalSource::CallerAbort

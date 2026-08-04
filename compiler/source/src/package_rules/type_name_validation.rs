@@ -35,9 +35,7 @@ pub(super) fn collect_package_std_type_root_violations(
         if !allowed_roots.contains(root) {
             // Compiler-owned prelude types such as `std.task.TaskRef` are
             // known without a std package module export.
-            if compiler_builtin_type(_bare).is_none()
-                || registry.known_type_symbol(ty).is_none()
-            {
+            if compiler_builtin_type(_bare).is_none() || registry.known_type_symbol(ty).is_none() {
                 violations.push(format!(
                     "{path}: std.{root} is not permitted as a std type module root"
                 ));

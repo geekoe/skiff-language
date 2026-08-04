@@ -29,6 +29,7 @@ use skiff_router::dispatch::{
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
     RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
@@ -37,7 +38,6 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
     RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
 };
-use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 
 /// One live session fact in the fake directory view.
 #[derive(Debug, Clone)]
@@ -290,11 +290,8 @@ pub fn build_epoch_with_actor_methods(
         .expect("snapshot fixture"),
     );
     let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(
-        ActorRoutingProjection::new(
-            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-            methods,
-        )
-        .expect("empty projection"),
+        ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
+            .expect("empty projection"),
     )));
     Arc::new(
         RoutingEpoch::new(

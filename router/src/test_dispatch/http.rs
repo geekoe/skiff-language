@@ -23,8 +23,8 @@ use serde_json::{json, Value};
 use skiff_artifact_model::{GatewayIngressBinding, IngressProtocol};
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::protocol::{
-    ResponseEndFrameHeader, ResponseEndFrameMetadata, RUNTIME_FRAME_SCHEMA_VERSION,
-    RuntimeHttpResponseFrameHeader,
+    ResponseEndFrameHeader, ResponseEndFrameMetadata, RuntimeHttpResponseFrameHeader,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyHttpRequestFrameHeader,
@@ -38,8 +38,8 @@ use crate::http::dispatch::{
     cancel_channel, DispatchRequest, HttpDispatchError, HttpDispatchPort, TestDispatchOutcome,
 };
 use crate::http::frame::{
-    deadline_parts, encode_request_start_frame, new_request_id, new_test_case_capability,
-    new_span_id, new_trace_id,
+    deadline_parts, encode_request_start_frame, new_request_id, new_span_id,
+    new_test_case_capability, new_trace_id,
 };
 use crate::http::ingress::{http_surface_view_from_epoch, HttpGatewaySurfaceView};
 
@@ -123,7 +123,9 @@ impl TestDispatchHttpHandler {
         let body = match read_body_capped(request.into_body(), TEST_DISPATCH_REQUEST_BODY_CAP).await
         {
             Ok(body) => body,
-            Err(message) => return control_json_error(classify_activation_error(&message), &message),
+            Err(message) => {
+                return control_json_error(classify_activation_error(&message), &message)
+            }
         };
         self.handle_parts(&method, &body).await
     }
@@ -231,7 +233,9 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
     }
     for field in root.keys() {
         if !TEST_DISPATCH_FIELDS.contains(&field.as_str()) {
-            return Err(format!("runtime assembly test dispatch does not support {field}"));
+            return Err(format!(
+                "runtime assembly test dispatch does not support {field}"
+            ));
         }
     }
     if root.get("kind").and_then(Value::as_str) != Some("test") {
@@ -243,19 +247,18 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
     .map_err(|error| {
         format!("runtime assembly test dispatch has invalid canonical fields: {error}")
     })?;
-    let mode = root
-        .get("mode")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            "runtime assembly test dispatch mode must be unary or serverStream".to_string()
-        })?;
+    let mode = root.get("mode").and_then(Value::as_str).ok_or_else(|| {
+        "runtime assembly test dispatch mode must be unary or serverStream".to_string()
+    })?;
     if mode != "unary" && mode != "serverStream" {
         return Err(
             "runtime assembly test dispatch mode must be unary or serverStream".to_string(),
         );
     }
     let http_request = serde_json::from_value::<RuntimeAssemblyHttpRequestFrameHeader>(
-        root.get("httpRequest").expect("field presence checked").clone(),
+        root.get("httpRequest")
+            .expect("field presence checked")
+            .clone(),
     )
     .map_err(|error| {
         format!("runtime assembly test dispatch has invalid canonical fields: {error}")
@@ -268,8 +271,7 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
             "runtime assembly test dispatch payloadBase64 must be a string".to_string()
         })?;
     let payload_bytes = BASE64_STANDARD.decode(encoded).map_err(|_| {
-        "runtime assembly test dispatch payloadBase64 must be canonical standard Base64"
-            .to_string()
+        "runtime assembly test dispatch payloadBase64 must be canonical standard Base64".to_string()
     })?;
     if BASE64_STANDARD.encode(&payload_bytes) != encoded {
         return Err(
@@ -307,11 +309,7 @@ fn validate_http_request_metadata(
                 .to_string(),
         );
     }
-    for pair in metadata
-        .query
-        .iter()
-        .chain(metadata.headers.iter())
-    {
+    for pair in metadata.query.iter().chain(metadata.headers.iter()) {
         if !canonical(&pair.name) {
             return Err(
                 "runtime assembly test dispatch has invalid canonical fields: httpRequest name must be a non-empty canonical token"
@@ -417,10 +415,9 @@ fn build_test_dispatch_header(
         test_case_capability: Some(new_test_case_capability()),
         test_case_parent_request_id: None,
     };
-    let frame = encode_request_start_frame(&header, &decoded.payload_bytes)
-        .map_err(|error| {
-            format!("runtime assembly test dispatch has invalid canonical fields: {error}")
-        })?;
+    let frame = encode_request_start_frame(&header, &decoded.payload_bytes).map_err(|error| {
+        format!("runtime assembly test dispatch has invalid canonical fields: {error}")
+    })?;
     decode_runtime_assembly_request_start_frame(&frame).map_err(|error| {
         format!("runtime assembly test dispatch has invalid canonical fields: {error}")
     })?;
@@ -592,9 +589,7 @@ mod tests {
         GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector,
         RuntimeAssemblyRef, ServiceDeploymentRef,
     };
-    use skiff_deployment::fixtures::{
-        runtime_assembly_fixture, service_deployment_fixture,
-    };
+    use skiff_deployment::fixtures::{runtime_assembly_fixture, service_deployment_fixture};
     use skiff_deployment::projection::actor_routing::{
         ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
     };
@@ -664,9 +659,8 @@ mod tests {
     fn fixture() -> Fixture {
         let root = TestRoot::new();
         fs::create_dir_all(root.path()).expect("create artifact root");
-        let artifact_store =
-            skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
-                .expect("create artifact store");
+        let artifact_store = skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
+            .expect("create artifact store");
         let deployment = service_deployment_fixture().expect("deployment fixture");
         let gateway_entry = deployment
             .gateway_entries
@@ -800,10 +794,16 @@ mod tests {
     async fn method_not_allowed_returns_405_allow_post() {
         let fixture = fixture();
         let handler = handler_with(&fixture, FakeHttpDispatcher::new(Vec::new()));
-        let response = handler.handle_parts(&Method::GET, b"").await.expect("response");
+        let response = handler
+            .handle_parts(&Method::GET, b"")
+            .await
+            .expect("response");
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(
-            response.headers().get("allow").and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("allow")
+                .and_then(|v| v.to_str().ok()),
             Some("POST")
         );
         let body = json(response).await;
@@ -816,11 +816,7 @@ mod tests {
         let fixture = fixture();
         let handler = handler_with(&fixture, FakeHttpDispatcher::new(Vec::new()));
         let cases: Vec<(Vec<u8>, u16, &str)> = vec![
-            (
-                b"not json".to_vec(),
-                400,
-                "AssemblyActivationRejected",
-            ),
+            (b"not json".to_vec(), 400, "AssemblyActivationRejected"),
             (b"[]".to_vec(), 400, "AssemblyActivationRejected"),
             (
                 {
@@ -968,7 +964,10 @@ mod tests {
         let fixture = fixture();
         let dispatcher = FakeHttpDispatcher::new(vec![FakeDispatchPlan::UnaryOk {
             status: 200,
-            headers: vec![("content-type".to_string(), "application/json; charset=utf-8".to_string())],
+            headers: vec![(
+                "content-type".to_string(),
+                "application/json; charset=utf-8".to_string(),
+            )],
             payload: Bytes::from_static(b"null"),
         }]);
         let handler = handler_with(&fixture, dispatcher.clone());
@@ -982,7 +981,10 @@ mod tests {
         assert_eq!(body["header"]["type"], "response.end");
         assert_eq!(body["header"]["payloadPresent"], true);
         assert_eq!(body["header"]["httpResponse"]["status"], 200);
-        assert_eq!(body["header"]["httpResponse"]["headers"][0]["name"], "content-type");
+        assert_eq!(
+            body["header"]["httpResponse"]["headers"][0]["name"],
+            "content-type"
+        );
         assert_eq!(body["payloadBase64"], "bnVsbA==");
 
         let recorded = dispatcher.recorded_requests();
@@ -998,10 +1000,24 @@ mod tests {
         assert!(request.header.test_case_capability.is_some());
         assert_eq!(request.header.test_case_parent_request_id, None);
         assert_eq!(
-            request.header.deadline.as_ref().expect("deadline").timeout_ms,
+            request
+                .header
+                .deadline
+                .as_ref()
+                .expect("deadline")
+                .timeout_ms,
             30_000
         );
-        assert_eq!(request.header.deadline.as_ref().expect("deadline").expires_at.len(), 24);
+        assert_eq!(
+            request
+                .header
+                .deadline
+                .as_ref()
+                .expect("deadline")
+                .expires_at
+                .len(),
+            24
+        );
         assert_eq!(request.payload_bytes, Bytes::from_static(b"null"));
     }
 
@@ -1045,7 +1061,10 @@ mod tests {
         let body = json(response).await;
         assert_eq!(body["header"]["type"], "response.error");
         assert_eq!(body["header"]["errorKind"], "fixedService");
-        assert!(!body["payloadBase64"].as_str().unwrap_or_default().is_empty());
+        assert!(!body["payloadBase64"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1087,7 +1106,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = json(response).await;
         assert_eq!(body["error"]["code"], "AssemblyActivationRejected");
-        assert!(body["error"]["message"].as_str().unwrap_or_default().contains("Runtime did not respond"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Runtime did not respond"));
     }
 
     #[test]
@@ -1097,7 +1119,10 @@ mod tests {
         assert_eq!(classify_activation_error("activation timed out"), 504);
         assert_eq!(classify_activation_error("invalid canonical fields"), 400);
         assert_eq!(classify_activation_error("kind must be test"), 400);
-        assert_eq!(classify_activation_error("request body is not valid JSON"), 400);
+        assert_eq!(
+            classify_activation_error("request body is not valid JSON"),
+            400
+        );
         assert_eq!(classify_activation_error("generation mismatch"), 409);
     }
 

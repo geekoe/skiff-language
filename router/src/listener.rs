@@ -791,10 +791,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             },
             None => Arc::clone(&self.surface),
         };
-        let Some(binding) = surface
-            .resolve(&selector.service_id, &target.path)
-            .cloned()
-        else {
+        let Some(binding) = surface.resolve(&selector.service_id, &target.path).cloned() else {
             return Ok(empty_response(StatusCode::NOT_FOUND));
         };
         if !binding.connect_handler && binding.methods.is_empty() {

@@ -154,8 +154,14 @@ fn validates_dispatch_timing_plan_shapes() {
     metadata.insert(
         "timing".to_string(),
         MetadataValue::Object(BTreeMap::from([
-            ("kind".to_string(), MetadataValue::String("after".to_string())),
-            ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(3u32))),
+            (
+                "kind".to_string(),
+                MetadataValue::String("after".to_string()),
+            ),
+            (
+                "expr".to_string(),
+                MetadataValue::Number(serde_json::Number::from(3u32)),
+            ),
         ])),
     );
     assert!(validate_task_timing_metadata(&metadata).is_ok());
@@ -163,7 +169,10 @@ fn validates_dispatch_timing_plan_shapes() {
         "timing".to_string(),
         MetadataValue::Object(BTreeMap::from([
             ("kind".to_string(), MetadataValue::String("at".to_string())),
-            ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(7u32))),
+            (
+                "expr".to_string(),
+                MetadataValue::Number(serde_json::Number::from(7u32)),
+            ),
         ])),
     );
     assert!(validate_task_timing_metadata(&metadata).is_ok());
@@ -208,12 +217,21 @@ fn function_task_target_projection_accepts_after_timing_plan() {
     call.metadata.insert(
         TASK_SUBMIT_METADATA_KEY.to_string(),
         MetadataValue::Object(BTreeMap::from([
-            ("targetKind".to_string(), MetadataValue::String("function".to_string())),
+            (
+                "targetKind".to_string(),
+                MetadataValue::String("function".to_string()),
+            ),
             (
                 "timing".to_string(),
                 MetadataValue::Object(BTreeMap::from([
-                    ("kind".to_string(), MetadataValue::String("after".to_string())),
-                    ("expr".to_string(), MetadataValue::Number(serde_json::Number::from(0u32))),
+                    (
+                        "kind".to_string(),
+                        MetadataValue::String("after".to_string()),
+                    ),
+                    (
+                        "expr".to_string(),
+                        MetadataValue::Number(serde_json::Number::from(0u32)),
+                    ),
                 ])),
             ),
         ])),

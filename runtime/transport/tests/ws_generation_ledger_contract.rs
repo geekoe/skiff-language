@@ -98,8 +98,7 @@ impl LedgerRef {
     }
 
     fn acquire(&mut self, runtime: &str, request_id: &str, tuple: &PinTuple) -> AcquireResponse {
-        if let Some((cached_connection, cached_tuple, cached_runtime)) =
-            self.cached.get(request_id)
+        if let Some((cached_connection, cached_tuple, cached_runtime)) = self.cached.get(request_id)
         {
             if cached_runtime == runtime
                 && cached_connection == &tuple.connection_id
@@ -114,7 +113,11 @@ impl LedgerRef {
         if matches!(response, AcquireResponse::Ack) {
             self.cached.insert(
                 request_id.to_string(),
-                (tuple.connection_id.clone(), tuple.clone(), runtime.to_string()),
+                (
+                    tuple.connection_id.clone(),
+                    tuple.clone(),
+                    runtime.to_string(),
+                ),
             );
             self.acquired.insert(
                 tuple.connection_id.clone(),
@@ -162,7 +165,8 @@ impl LedgerRef {
             return Some(existing.request_id.clone());
         }
         self.expected.remove(connection_id);
-        self.cached.retain(|_, (connection, _, _)| connection != connection_id);
+        self.cached
+            .retain(|_, (connection, _, _)| connection != connection_id);
         let Some(acquired) = self.acquired.remove(connection_id) else {
             return None;
         };
@@ -186,12 +190,19 @@ impl LedgerRef {
     }
 
     fn release_ack(&mut self, request_id: &str) {
-        let connection = self.pending_by_request.get(request_id).expect("pending release");
+        let connection = self
+            .pending_by_request
+            .get(request_id)
+            .expect("pending release");
         let pending = self
             .pending_by_connection
             .get_mut(connection)
             .expect("pending by connection");
-        assert_eq!(pending.state, ReleaseState::Pending, "ack must target pending release");
+        assert_eq!(
+            pending.state,
+            ReleaseState::Pending,
+            "ack must target pending release"
+        );
         pending.state = ReleaseState::Resolved;
         let runtime = pending.runtime.clone();
         *self.ack_counts.entry(runtime).or_default() += 1;
@@ -205,7 +216,8 @@ impl LedgerRef {
             .get(request_id)
             .expect("pending release")
             .clone();
-        self.failures.push(format!("runtime rejected release: {reason}"));
+        self.failures
+            .push(format!("runtime rejected release: {reason}"));
         self.pending_by_request.remove(request_id);
         let runtime = self
             .pending_by_connection
@@ -224,7 +236,8 @@ impl LedgerRef {
             .get(request_id)
             .expect("pending release")
             .clone();
-        self.failures.push(format!("release timed out for {connection}"));
+        self.failures
+            .push(format!("release timed out for {connection}"));
         self.pending_by_request.remove(request_id);
         let runtime = self
             .pending_by_connection
@@ -279,12 +292,7 @@ impl LedgerRef {
         self.cached
             .retain(|_, (_, _, cached_runtime)| cached_runtime != runtime);
         if let Some(session) = self.session_by_runtime.remove(runtime) {
-            if self
-                .runtime_by_session
-                .get(&session)
-                .map(String::as_str)
-                == Some(runtime)
-            {
+            if self.runtime_by_session.get(&session).map(String::as_str) == Some(runtime) {
                 self.runtime_by_session.remove(&session);
             }
         }
@@ -406,7 +414,9 @@ fn release_pending_dedupe_ack_and_reject_paths() {
     ));
 
     let first = ledger.release("c1", true).expect("pending release created");
-    let second = ledger.release("c1", true).expect("dedupe returns the same pending");
+    let second = ledger
+        .release("c1", true)
+        .expect("dedupe returns the same pending");
     assert_eq!(first, second);
     assert_eq!(ledger.pending_count(), 1);
     ledger.release_ack(&first);
@@ -519,7 +529,11 @@ fn pin_count_covers_acquired_and_pending_release() {
     ));
     assert_eq!(ledger.pin_count("r1"), 1);
     ledger.release("c1", true);
-    assert_eq!(ledger.pin_count("r1"), 1, "pending release still pins the runtime");
+    assert_eq!(
+        ledger.pin_count("r1"),
+        1,
+        "pending release still pins the runtime"
+    );
     let request = ledger
         .pending_by_request
         .keys()
