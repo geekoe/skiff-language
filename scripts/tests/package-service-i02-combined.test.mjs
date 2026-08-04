@@ -149,7 +149,7 @@ connect:
   );
   assert.match(
     source,
-    /function submitSpawnReceipt\(\) -> string \{\s+spawn acceptSubmittedReceipt\("P5-F45E-SPAWN-SUBMIT"\)/,
+    /function submitSpawnReceipt\(\) -> string \{\s+dispatch acceptSubmittedReceipt\("P5-F45E-SPAWN-SUBMIT"\)/,
   );
   assert.match(source, new RegExp(packageServiceI02SpawnSubmitBusinessResult));
   assert.match(

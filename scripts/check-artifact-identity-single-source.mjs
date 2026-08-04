@@ -486,7 +486,7 @@ const canonicalDelegationRequirements = [
     regexp: /\bpub\s+use\s+skiff_canonical_json\s*::/,
   },
   {
-    relPath: 'runtime/linked-type-plan/src/type_plan.rs',
+    relPath: 'runtime/linked-type-plan/src/type_plan/recoverable.rs',
     helper: 'sort-only linked type key helper',
     regexp: /\bfn\s+sort_json_value\s*\(/,
   },

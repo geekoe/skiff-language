@@ -250,7 +250,7 @@ test('production registry names every required subject and owner role exactly on
       ),
       owner(
         'assembly-request-spawn',
-        'spawn_request_on_active_assembly_route',
+        'task_request_on_active_assembly_route',
         'runtime/host/src/host/request_entry/assembly.rs',
       ),
       owner(

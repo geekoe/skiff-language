@@ -232,7 +232,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         requiredFile: 'runtime/host/src/host/request_entry/assembly_wire.rs',
         requiredAnchors: [
           'http_gateway_request_from_wire(',
-          'spawn_request_on_active_assembly_route(',
+          'task_request_on_active_assembly_route(',
         ],
       },
       {
@@ -240,7 +240,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         subjectId: 'required-host-request-entry',
         language: 'rust',
         declarationKind: 'function',
-        symbol: 'spawn_request_on_active_assembly_route',
+        symbol: 'task_request_on_active_assembly_route',
         ownedRoots: ['runtime/host/src/host/request_entry/assembly.rs'],
         requiredFile: 'runtime/host/src/host/request_entry/assembly.rs',
         requiredAnchors: [
