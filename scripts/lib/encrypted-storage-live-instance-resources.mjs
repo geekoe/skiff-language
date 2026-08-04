@@ -34,7 +34,7 @@ export async function createEncryptedStorageLiveInstanceResources({
     join(temporaryDirectory, 'skiff-encrypted-storage-live-'),
   );
   const instanceRoot = join(tempRoot, 'instance');
-  const configPath = join(instanceRoot, 'config.yml');
+  const configPath = join(instanceRoot, 'instance.yml');
   const paths = {
     tempRoot,
     instanceRoot,
@@ -56,7 +56,7 @@ export async function createEncryptedStorageLiveInstanceResources({
   await makeDirectory(instanceRoot, { recursive: true });
   await writeTextFile(
     configPath,
-    encryptedStorageLiveInstanceConfigText({
+    encryptedStorageLiveInstanceYml({
       repoRoot,
       profile,
       ports: portLease.ports,
@@ -66,34 +66,54 @@ export async function createEncryptedStorageLiveInstanceResources({
   return { paths, portLease };
 }
 
-export function encryptedStorageLiveInstanceConfigText({
+export function encryptedStorageLiveInstanceYml({
   repoRoot,
   profile,
   ports,
 }) {
+  const httpPort = ports.base;
+  const controlPort = ports.base + 1;
+  const devHome = join('dev-home');
+  const pidDir = join(devHome, 'pids');
+  const logDir = join(devHome, 'logs');
   return [
+    'schemaVersion: skiff-instance-v1',
     `profile: ${profile}`,
-    'devHome: dev-home',
-    `cargoTargetDir: ${JSON.stringify(join(repoRoot, 'build', 'cargo-target'))}`,
-    'ports:',
-    `  base: ${ports.base}`,
-    `  mongo: ${ports.mongo}`,
-    'http:',
-    '  maxRequestBytes: 67108864',
-    '  maxResponseBytes: 8388608',
-    'router:',
-    '  requestTimeoutMs: 20000',
-    'components:',
-    '  telemetry: disabled',
-    '  mongo: managed',
-    '  watch: disabled',
-    'telemetry:',
-    '  memory: true',
-    'mongo:',
-    '  binary: mongod',
-    '  dbPath: service-db',
-    'watch:',
-    '  config: watch.json',
+    `devHome: ${JSON.stringify(devHome)}`,
+    `artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}`,
+    `pidDir: ${JSON.stringify(pidDir)}`,
+    `logDir: ${JSON.stringify(logDir)}`,
+    `mongoDbPath: ${JSON.stringify(join(devHome, 'mongo-data'))}`,
+    `activationUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__skiff/activate-assembly`)}`,
+    'processes:',
+    '  - name: mongo',
+    '    command: mongod',
+    '    args:',
+    '      - --dbpath',
+    `      - ${JSON.stringify(join(devHome, 'mongo-data'))}`,
+    '      - --port',
+    `      - ${JSON.stringify(String(ports.mongo))}`,
+    '      - --replSet',
+    '      - rs0',
+    '      - --bind_ip',
+    '      - 127.0.0.1',
+    `    cwd: ${JSON.stringify(devHome)}`,
+    `    ports: [${ports.mongo}]`,
+    '    healthUrl: null',
+    '  - name: router',
+    `    command: ${JSON.stringify(join(repoRoot, 'build', 'runtime-stack', 'bin', 'skiff-router'))}`,
+    '    args:',
+    `      - ${JSON.stringify(join(devHome, 'router.yml'))}`,
+    `    cwd: ${JSON.stringify(devHome)}`,
+    `    ports: [${httpPort}, ${controlPort}]`,
+    `    healthUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__router/health`)}`,
+    '  - name: runtime',
+    `    command: ${JSON.stringify(join(repoRoot, 'build', 'runtime-stack', 'bin', 'skiff-runtime'))}`,
+    '    args:',
+    `      - ${JSON.stringify(join(devHome, 'runtime.yml'))}`,
+    `    cwd: ${JSON.stringify(devHome)}`,
+    '    ports: []',
+    '    healthUrl: null',
     '',
   ].join('\n');
 }
@@ -108,26 +128,26 @@ export function createEncryptedStorageLiveOwnedProcessGroupStopper({
   killProcess = process.kill,
   wait = delay,
 } = {}) {
-  const signalProcessGroup = (pgid, signal) => {
+  const signalProcess = (pid, signal) => {
     try {
-      killProcess(-pgid, signal);
+      killProcess(pid, signal);
     } catch (error) {
       if (error.code !== 'ESRCH') {
         throw error;
       }
     }
   };
-  const processGroupAlive = (pgid) => {
+  const processAlive = (pid) => {
     try {
-      killProcess(-pgid, 0);
+      killProcess(pid, 0);
       return true;
     } catch (error) {
       return error.code !== 'ESRCH';
     }
   };
-  const waitForProcessGroups = async (groups, attempts) => {
+  const waitForProcesses = async (pids, attempts) => {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (!groups.some(processGroupAlive)) {
+      if (!pids.some(processAlive)) {
         return;
       }
       await wait(100);
@@ -149,7 +169,7 @@ export function createEncryptedStorageLiveOwnedProcessGroupStopper({
       }
       throw error;
     }
-    const groups = [];
+    const pids = [];
     for (const entry of entries) {
       if (!entry.endsWith('.pid')) {
         continue;
@@ -158,30 +178,25 @@ export function createEncryptedStorageLiveOwnedProcessGroupStopper({
         join(instanceRoot, 'pids', entry),
         'utf8',
       );
-      const metadata = JSON.parse(raw);
-      if (
-        metadata.configPath !== configPath
-        || metadata.instanceRoot !== instanceRoot
-        || !Number.isInteger(metadata.pgid)
-        || metadata.pgid <= 1
-      ) {
-        throw new Error(`refusing to stop unowned process metadata ${entry}`);
+      const pid = Number(raw.trim());
+      if (!Number.isSafeInteger(pid) || pid <= 1) {
+        throw new Error(`refusing to stop invalid process metadata ${entry}`);
       }
-      groups.push(metadata.pgid);
+      pids.push(pid);
     }
-    onValidated(groups);
-    for (const pgid of groups) {
-      signalProcessGroup(pgid, 'SIGTERM');
+    onValidated(pids);
+    for (const pid of pids) {
+      signalProcess(pid, 'SIGTERM');
     }
-    await waitForProcessGroups(groups, 40);
-    for (const pgid of groups.filter(processGroupAlive)) {
-      signalProcessGroup(pgid, 'SIGKILL');
+    await waitForProcesses(pids, 40);
+    for (const pid of pids.filter(processAlive)) {
+      signalProcess(pid, 'SIGKILL');
     }
-    await waitForProcessGroups(groups, 20);
-    const survivors = groups.filter(processGroupAlive);
+    await waitForProcesses(pids, 20);
+    const survivors = pids.filter(processAlive);
     if (survivors.length > 0) {
       throw new Error(
-        `owned process groups did not stop: ${survivors.join(', ')}`,
+        `owned processes did not stop: ${survivors.join(', ')}`,
       );
     }
   };

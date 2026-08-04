@@ -20,7 +20,7 @@ export async function runRouterProcessSmoke({ root, env = process.env }) {
   if (!root) {
     throw new Error('router process smoke requires the repository root');
   }
-  const devHome = join(root, '.skiff-instance', 'dev-home');
+  const devHome = join(root, '.stack', 'dev-home');
   const rustSpec = assertRouterProcessSpec(
     resolveRouterProcessSpec({ devHome, repoRoot: root }),
   );

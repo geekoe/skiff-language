@@ -21,51 +21,44 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 - 文件已经很长或模式重复时，先考虑职责边界和抽象是否需要调整。
 - 新增公共语义时，同时更新对应 `doc/reference/` 或 `doc/architecture/` 文档。
 - 不要提交本地状态、构建产物、secret 配置、package store、runtime home、截图或浏览器 profile。
-- 被忽略的本地覆盖文件包括 `.skiff-instance/`、`.skiff-package-store/`、`skiff.local.yml`、`router/router.yml`、`runtime/runtime.yml`、`target/`、`node_modules/` 和 `build/`。
+- 被忽略的本地覆盖文件包括 `.stack/`、`.skiff-package-store/`、`skiff.local.yml`、`router/router.yml`、`runtime/runtime.yml`、`target/`、`node_modules/` 和 `build/`。
 
 ## 本地语言实例
 
-开发 compiler、runtime、router 或 telemetry 时，可以为当前 worktree 创建独立本地 instance：
+开发 compiler、runtime、router 或 telemetry 时，本地 instance 由 `.stack/` 配置目录
+（configDir）和 runtime-stack 产物目录驱动：
 
 ```bash
-node scripts/skiff.mjs instance init .skiff-instance/config.yml
-node scripts/skiff.mjs instance up .skiff-instance/config.yml
-node scripts/skiff.mjs instance status .skiff-instance/config.yml
+node scripts/skiff.mjs stack build --configDir .stack --profile debug
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
+node scripts/skiff.mjs instance status --runtime build/runtime-stack
+node scripts/skiff.mjs watch --runtime build/runtime-stack --config .stack/watch
 ```
 
-默认生成端口：
+默认端口由 `.stack/router.yml`（4000/4001）与 `.stack/telemetry.yml`（4002）定义：
 
-- `ports.base + 0`（默认 `4100`）：service HTTP。
-- `ports.base + 1`（默认 `4101`）：router control/runtime WebSocket。
-- `ports.base + 2`（默认 `4102`）：telemetry。
+- 4000：service HTTP。
+- 4001：router control/runtime WebSocket。
+- 4002：telemetry。
 
-MongoDB 是本机共享开发基础设施，不随 `ports.base` 偏移；默认仍是
-`ports.mongo: 27017`。其他 worktree instance 保持默认的
-`components.mongo: disabled` 并复用该端点。受管 MongoDB 在
-`exec` 前把 open-file soft limit 提升到 65536。如果要让两个目录 instance
-同时运行，创建第二个 instance 后，在它的配置文件中使用不同起始端口：
-
-```yaml
-ports:
-  base: 4200
-  mongo: 27017
-```
+MongoDB 是本机共享开发基础设施，默认 `27017`；`.stack/build.yml` 的
+`process.mongo` 默认 `disabled`，复用该端点。其他 worktree 复制 `.stack/` 后修改
+三个 YAML 中的端口即可并行运行。
 
 结束后关闭：
 
 ```bash
-node scripts/skiff.mjs instance down .skiff-instance/config.yml
+node scripts/skiff.mjs instance down --runtime build/runtime-stack
 ```
 
-如果改动 runtime、artifact identity、artifact schema、native signature、runtime protocol 或 artifact 加载语义，使用 `instance up` 构建并启动。它会校验受管 runtime binary 的 SHA-256 identity；磁盘 binary 已变化时会自动精确重启该 instance 的 runtime，不需要再人工串联 build 与 restart：
+如果改动 runtime、artifact identity、artifact schema、native signature、runtime protocol 或 artifact 加载语义，先 `stack build --profile debug` 重新生成产物与 instance.yml，再 `instance up` 启动：
 
 ```bash
-node scripts/skiff.mjs instance up .skiff-instance/config.yml
+node scripts/skiff.mjs stack build --configDir .stack --profile debug
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
 ```
 
-只有明确需要纯 build/install 时才使用 `instance build <config>`；它会报告仍在运行旧 binary
-的 PID 和 `instance refresh-binaries <config>` 恢复命令。正常本地开发使用 `instance up <config>`，
-由同一份 instance config 完成构建、安装和运行状态收敛。
+instance 只维护进程，不构建、不生成配置；watch 是独立命令，只做编译/激活/热更。
 
 纯编译和单元验证不需要启动 instance：
 

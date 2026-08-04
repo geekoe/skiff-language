@@ -6,7 +6,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assertPortsClosed } from './local-port-lease.mjs';
 import {
@@ -34,6 +34,10 @@ import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import {
   validatePackageServiceActivationReceipt,
 } from './package-service-ecosystem-smoke-oracle.mjs';
+import {
+  renderRouterConfig,
+  renderRuntimeConfig,
+} from './runtime-stack-config.mjs';
 
 export {
   encryptedStorageBuildArgs,
@@ -119,15 +123,16 @@ export class EncryptedStorageLiveHarness {
   }
 
   async initialize(keyring) {
-    await this.runSkiff(['instance', 'init', this.paths.configPath]);
     this.instanceInitialized = true;
+    await this.writeRunnableConfigs();
     await this.writeKeyring(keyring);
     this.activationState.productionAssembly = await this.buildProductionAssembly();
     try {
       await this.runSkiff([
         'instance',
         'restart',
-        this.paths.configPath,
+        '--runtime',
+        this.paths.instanceRoot,
         'mongo',
       ]);
       await this.initializeReplicaSet();
@@ -142,7 +147,7 @@ export class EncryptedStorageLiveHarness {
         },
         signal: new AbortController().signal,
       });
-      await this.runSkiff(['instance', 'up', this.paths.configPath]);
+      await this.runSkiff(['instance', 'up', '--runtime', this.paths.instanceRoot]);
       await this.assertProductionAssemblyReady();
     } catch (error) {
       const routerLogs = await this.readLogs([this.paths.routerLog, this.paths.routerErrorLog]);
@@ -152,6 +157,34 @@ export class EncryptedStorageLiveHarness {
       );
     }
     await this.assertRuntimeKeyringEvent(keyring);
+  }
+
+  async writeRunnableConfigs() {
+    const devHome = this.paths.devHome;
+    await mkdir(join(devHome, 'artifacts'), { recursive: true });
+    await mkdir(join(devHome, 'runtime-home'), { recursive: true });
+    await mkdir(join(devHome, 'secrets'), { recursive: true, mode: 0o700 });
+    const controlPort = this.ports.base + 1;
+    await writeFile(join(devHome, 'router.yml'), renderRouterConfig({
+      profile: TARGET_PROFILE,
+      host: '127.0.0.1',
+      artifactsPath: join(devHome, 'artifacts'),
+      devReload: false,
+      requestTimeoutMs: 20000,
+      activationPrepareTimeoutMs: 120000,
+      httpPort: this.ports.base,
+      httpMaxRequestBytes: 67108864,
+      httpMaxResponseBytes: 8388608,
+      runtimePort: controlPort,
+      runtimePath: '/runtime',
+      serviceDbMongoUrl: this.mongoUrl,
+      telemetryEndpoint: undefined,
+    }));
+    await writeFile(join(devHome, 'runtime.yml'), renderRuntimeConfig({
+      routerUrl: `ws://127.0.0.1:${controlPort}/runtime`,
+      runtimeHome: join(devHome, 'runtime-home'),
+      serviceDbEncryptionKeyringFile: this.paths.keyring,
+    }));
   }
 
   async buildProductionAssembly() {
@@ -301,7 +334,7 @@ export class EncryptedStorageLiveHarness {
       throw new Error('key removal requires the rotation cohort retirement API');
     }
     await this.writeKeyring(keyring);
-    await this.runSkiff(['instance', 'restart', this.paths.configPath, 'runtime']);
+    await this.runSkiff(['instance', 'restart', '--runtime', this.paths.instanceRoot, 'runtime']);
     await this.assertRuntimeKeyringEvent(keyring);
   }
 
@@ -446,7 +479,7 @@ export class EncryptedStorageLiveHarness {
         if (forceFallbackForTest) {
           throw new Error('simulated instance down failure for cleanup fallback coverage');
         }
-        await this.runSkiff(['instance', 'down', this.paths.configPath]);
+        await this.runSkiff(['instance', 'down', '--runtime', this.paths.instanceRoot]);
       } catch (error) {
         downError = error;
       }
@@ -486,8 +519,7 @@ export class EncryptedStorageLiveHarness {
     const recordsFallbackUsage = cleanupFallbacks.has(this);
     try {
       await stopEncryptedStorageLiveOwnedProcessGroups({
-        instanceRoot: this.paths.instanceRoot,
-        configPath: this.paths.configPath,
+        instanceRoot: this.paths.devHome,
         onValidated: (groups) => {
           if (groups !== undefined) {
             this.cleanupFallbackGroups = [...groups];

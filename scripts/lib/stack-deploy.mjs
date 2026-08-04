@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadStackConfig } from './stack-config.mjs';
+import { loadStackConfig, requireRemoteStackConfig } from './stack-config.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
 const BUILD_MANIFEST_SCHEMA = 'skiff-runtime-stack-build-v1';
@@ -17,6 +17,7 @@ export async function deployStack({
   shell = createStackShell({ skiffRoot }),
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
+  requireRemoteStackConfig(stack, 'stack deploy');
   const manifest = await readBuildManifest(path.join(stack.paths.buildRoot, 'manifest.json'));
   const binaryUnits = BINARY_UNITS.filter((unit) => hasBinaryArtifact(manifest, unit));
   for (const unit of REQUIRED_BINARY_UNITS) {

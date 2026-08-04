@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -13,69 +13,11 @@ import {
 } from '../lib/isolated-test-runtime-workspace.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const instanceCli = join(root, 'scripts', 'skiff-instance-legacy.mjs');
-
-test('instance status treats missing lsof as unavailable and missing ps as process fallback', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'skiff-instance-command-outcome-'));
-  const configPath = join(fixture, 'instance', 'config.yml');
-  const emptyBin = join(fixture, 'empty-bin');
-  const lsofBin = join(fixture, 'lsof-bin');
-  try {
-    await mkdir(emptyBin);
-    await mkdir(lsofBin);
-    const initialized = await runProcess(process.execPath, [instanceCli, 'init', configPath]);
-    assert.equal(initialized.code, 0, initialized.stderr);
-
-    const unavailableResult = await runProcess(process.execPath, [
-      instanceCli,
-      'status',
-      configPath,
-      '--json',
-    ], { env: { ...process.env, PATH: emptyBin } });
-    assert.equal(unavailableResult.code, 0, unavailableResult.stderr);
-    const unavailable = JSON.parse(unavailableResult.stdout);
-    assert.equal(unavailable.listenerDiscovery.available, false);
-    assert.ok(unavailable.listenerDiscovery.errors.every((message) =>
-      message.includes('failed to spawn lsof: ENOENT')));
-    assert.doesNotMatch(unavailableResult.stdout, /spawnargs|cause/);
-
-    const fakePid = process.pid;
-    const lsofPath = join(lsofBin, 'lsof');
-    await writeFile(lsofPath, `#!${process.execPath}\nprocess.stdout.write(process.env.FAKE_LISTENER_PID + '\\n');\n`);
-    await chmod(lsofPath, 0o755);
-    const fallbackResult = await runProcess(process.execPath, [
-      instanceCli,
-      'status',
-      configPath,
-      '--json',
-    ], {
-      env: {
-        ...process.env,
-        PATH: lsofBin,
-        FAKE_LISTENER_PID: String(fakePid),
-      },
-    });
-    assert.equal(fallbackResult.code, 0, fallbackResult.stderr);
-    const fallback = JSON.parse(fallbackResult.stdout);
-    assert.equal(fallback.listenerDiscovery.available, true);
-    const listeners = fallback.processes
-      .flatMap((processStatus) => processStatus.ports)
-      .flatMap((port) => port.listeners)
-      .filter((listener) => listener.pid === fakePid);
-    assert.ok(listeners.length > 0);
-    assert.ok(listeners.every((listener) =>
-      listener.ppid === null && listener.pgid === null && listener.command === ''));
-    assert.doesNotMatch(fallbackResult.stdout, /spawnargs|cause/);
-  } finally {
-    await rm(fixture, { recursive: true, force: true });
-  }
-});
-
 test('isolated status checked adapter rejects nonzero and invalid JSON before cleanup verification', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-isolated-status-command-'));
   const scriptsRoot = join(fixture, 'scripts');
-  const instancePath = join(scriptsRoot, 'skiff-instance-legacy.mjs');
-  const configPath = join(fixture, 'instance', 'config.yml');
+  const instancePath = join(scriptsRoot, 'skiff-instance.mjs');
+  const configPath = join(fixture, 'instance', 'instance.yml');
   const operations = isolatedInstanceOperations({
     skiffRoot: fixture,
     baseEnv: process.env,

@@ -5,7 +5,7 @@ const scriptLibDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptLibDir, '..', '..');
 
 export function defaultDevHome(env = process.env) {
-  return join(skiffRoot, '.skiff-instance', 'dev-home');
+  return join(skiffRoot, '.stack', 'dev-home');
 }
 
 export function resolveDevHome(value, env = process.env) {

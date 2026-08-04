@@ -31,7 +31,7 @@ import { parseServiceManifestIdentity } from './lib/service-manifest-identity.mj
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = dirname(scriptDir);
-const defaultDevHome = resolve(process.env.SKIFF_DEV_HOME ?? join(skiffRoot, '.skiff-instance', 'dev-home'));
+const defaultDevHome = resolve(process.env.SKIFF_DEV_HOME ?? join(skiffRoot, '.stack', 'dev-home'));
 const defaultRegistryPath = join(defaultDevHome, 'watch.json');
 const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);

@@ -97,7 +97,7 @@ help 文本和文档中的对应引用。
 - `mutation` 为 `undefined`：只读或 hermetic task。允许写 OS 临时目录、租约端口、以及
   工具自管理的共享构建目录（`build/`、`target/`、`node_modules` 缓存，cargo/pnpm 自带锁）。
   调度器不做额外约束。当前默认计划中的全部 task 都属于这一类。
-- `mutation.paths` 非空：mutating task，写仓库状态（源码树、`.skiff-instance`、`var/` 等）。
+- `mutation.paths` 非空：mutating task，写仓库状态（源码树、`.stack`、`var/` 等）。
   - 必须同时 `exclusive: true`（integrity 校验强制）；
   - runner 在 `<repo>/var/verify/tasks/<sanitized-task-id>/` 创建私有根；
   - `mutation.redirect` 是 `{ envVar: repoRelativePath }` 映射，路径必须属于 `mutation.paths`；

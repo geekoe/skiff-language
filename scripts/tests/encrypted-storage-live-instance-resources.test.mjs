@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   createEncryptedStorageLiveInstanceResources,
   createEncryptedStorageLiveOwnedProcessGroupStopper,
-  encryptedStorageLiveInstanceConfigText,
+  encryptedStorageLiveInstanceYml,
   isEncryptedStorageLivePortForbidden,
 } from '../lib/encrypted-storage-live-instance-resources.mjs';
 
@@ -47,7 +47,7 @@ test('instance resources reject forbidden ports and write the canonical config',
   assert.deepEqual(resources.paths, {
     tempRoot: '/tmp/tests/run-a',
     instanceRoot: '/tmp/tests/run-a/instance',
-    configPath: '/tmp/tests/run-a/instance/config.yml',
+    configPath: '/tmp/tests/run-a/instance/instance.yml',
     devHome: '/tmp/tests/run-a/instance/dev-home',
     artifactRoot: '/tmp/tests/run-a/instance/dev-home/artifacts',
     keyring:
@@ -65,42 +65,24 @@ test('instance resources reject forbidden ports and write the canonical config',
   ]);
   assert.deepEqual(events[3], [
     'write',
-    '/tmp/tests/run-a/instance/config.yml',
-    encryptedStorageLiveInstanceConfigText({
+    '/tmp/tests/run-a/instance/instance.yml',
+    encryptedStorageLiveInstanceYml({
       repoRoot: '/repo/skiff',
       profile: 'dev',
       ports: { base: 45020, mongo: 45530 },
     }),
     'utf8',
   ]);
-  assert.equal(events[3][2], [
-    'profile: dev',
-    'devHome: dev-home',
-    'cargoTargetDir: "/repo/skiff/build/cargo-target"',
-    'ports:',
-    '  base: 45020',
-    '  mongo: 45530',
-    'http:',
-    '  maxRequestBytes: 67108864',
-    '  maxResponseBytes: 8388608',
-    'components:',
-    '  telemetry: disabled',
-    '  mongo: managed',
-    '  watch: disabled',
-    'telemetry:',
-    '  memory: true',
-    'mongo:',
-    '  binary: mongod',
-    '  dbPath: service-db',
-    'watch:',
-    '  config: watch.json',
-    '',
-  ].join('\n'));
+  assert.match(events[3][2], /^schemaVersion: skiff-instance-v1$/m);
+  assert.match(events[3][2], /^profile: dev$/m);
+  assert.match(events[3][2], /^  - name: mongo$/m);
+  assert.match(events[3][2], /^  - name: router$/m);
+  assert.match(events[3][2], /^  - name: runtime$/m);
   await resources.portLease.release();
   assert.deepEqual(events.at(-1), ['release']);
 });
 
-test('owned process group discovery rejects mismatched metadata before signaling', async () => {
+test('owned process discovery rejects invalid pid metadata before signaling', async () => {
   let readCount = 0;
   let validated = false;
   let signaled = false;
@@ -109,11 +91,7 @@ test('owned process group discovery rejects mismatched metadata before signaling
       readDirectory: async () => ['router.pid'],
       readTextFile: async () => {
         readCount += 1;
-        return JSON.stringify({
-          configPath: '/tmp/other/config.yml',
-          instanceRoot: '/tmp/owned/instance',
-          pgid: 9001,
-        });
+        return 'not-a-pid';
       },
       killProcess: () => {
         signaled = true;
@@ -123,46 +101,40 @@ test('owned process group discovery rejects mismatched metadata before signaling
   await assert.rejects(
     stopOwnedProcessGroups({
       instanceRoot: '/tmp/owned/instance',
-      configPath: '/tmp/owned/instance/config.yml',
       onValidated: () => {
         validated = true;
       },
     }),
-    /refusing to stop unowned process metadata router\.pid/,
+    /refusing to stop invalid process metadata router\.pid/,
   );
   assert.equal(readCount, 1);
   assert.equal(validated, false);
   assert.equal(signaled, false);
 });
 
-test('owned process groups receive TERM, bounded waits, and survivor-only KILL', async () => {
+test('owned processes receive TERM, bounded waits, and survivor-only KILL', async () => {
   const events = [];
   const alive = new Set([101, 202]);
   const stopOwnedProcessGroups =
     createEncryptedStorageLiveOwnedProcessGroupStopper({
       readDirectory: async () => ['router.pid', 'runtime.pid'],
-      readTextFile: async (path) => JSON.stringify({
-        configPath: '/tmp/owned/instance/config.yml',
-        instanceRoot: '/tmp/owned/instance',
-        pgid: path.endsWith('router.pid') ? 101 : 202,
-      }),
+      readTextFile: async (path) => path.endsWith('router.pid') ? '101' : '202',
       killProcess(pid, signal) {
-        const pgid = -pid;
         if (signal === 0) {
-          events.push(['probe', pgid]);
-          if (!alive.has(pgid)) {
+          events.push(['probe', pid]);
+          if (!alive.has(pid)) {
             const error = new Error('not found');
             error.code = 'ESRCH';
             throw error;
           }
           return;
         }
-        events.push(['signal', pgid, signal]);
-        if (signal === 'SIGTERM' && pgid === 101) {
-          alive.delete(pgid);
+        events.push(['signal', pid, signal]);
+        if (signal === 'SIGTERM' && pid === 101) {
+          alive.delete(pid);
         }
         if (signal === 'SIGKILL') {
-          alive.delete(pgid);
+          alive.delete(pid);
         }
       },
       wait: async (milliseconds) => {
@@ -171,9 +143,8 @@ test('owned process groups receive TERM, bounded waits, and survivor-only KILL',
     });
   await stopOwnedProcessGroups({
     instanceRoot: '/tmp/owned/instance',
-    configPath: '/tmp/owned/instance/config.yml',
-    onValidated: (groups) => {
-      events.push(['validated', groups]);
+    onValidated: (pids) => {
+      events.push(['validated', pids]);
     },
   });
 

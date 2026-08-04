@@ -1,4 +1,4 @@
-import { loadStackConfig, parseStackYaml } from './stack-config.mjs';
+import { loadStackConfig, parseStackYaml, requireRemoteStackConfig } from './stack-config.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
 export async function stackStatus({
@@ -7,6 +7,7 @@ export async function stackStatus({
   shell = createStackShell({ skiffRoot }),
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
+  requireRemoteStackConfig(stack, 'stack status');
   const profile = stack.config.profile;
   const { host, remoteSkiff } = stack.config.remote;
   const { controlPort, healthPath } = stack.config.verify;

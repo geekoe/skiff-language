@@ -7,7 +7,7 @@ import {
   runConfigSnapshotAuthoring,
   runStdSeedAuthoring,
 } from './package-service-authoring.mjs';
-import { loadStackConfig, posixShellQuote } from './stack-config.mjs';
+import { loadStackConfig, posixShellQuote, requireRemoteStackConfig } from './stack-config.mjs';
 import { renderEcosystemConfig } from './stack-deploy.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
@@ -27,6 +27,7 @@ export async function initStack({
   },
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
+  requireRemoteStackConfig(stack, 'stack init');
   const profile = stack.config.profile;
   const { host, remoteSkiff, nodeBin } = stack.config.remote;
   const serviceDbMongoUrl = stack.router.serviceDb?.mongoUrl;

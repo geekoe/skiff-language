@@ -5,22 +5,24 @@ These scripts assume the Skiff router and runtime are already running. They do n
 ## Service Dev CLI
 
 The main worktree local service environment is the Skiff worktree's local
-instance. It uses `.skiff-instance/config.yml`, `.skiff-instance/dev-home`, and
+instance. It uses `.stack/` as the configDir, generated artifacts under
+`build/runtime-stack`, and
 ports `4000/4001/4002`. macOS LaunchAgent `run.skiff.instance.stable` should
-run the instance CLI once at login and then exit:
+run the build and instance CLI once at login and then exit:
 
 ```bash
 cd /Users/geek/workspace/skiff &&
-node scripts/skiff.mjs instance up .skiff-instance/config.yml --repair-owned-conflicts
+node scripts/skiff.mjs stack build --configDir .stack --profile debug &&
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
 ```
 
 The LaunchAgent should use `RunAtLoad=true` and `KeepAlive=false`; process
-lifecycle is owned by `skiff instance up/down/restart/status/doctor/repair`.
+lifecycle is owned by `skiff instance up/down/restart/status/repair`.
 Managed MongoDB raises its own open-file soft limit to `65536` before `exec`,
 independently of the LaunchAgent's inherited limit.
 
 ```text
-.skiff-instance/dev-home/
+.stack/dev-home/
   artifacts/
   bin/
   build/
@@ -38,7 +40,7 @@ config files have canonical Package IDs at their root; they are not copied into
 code artifacts or deployment identity. A config-only watch change reuses the
 exact code assembly, publishes a new opaque snapshot, and commits a new
 activation generation carrying both references. For the main worktree instance
-the artifact root is `.skiff-instance/dev-home/artifacts`, and snapshots are
+the artifact root is `.stack/dev-home/artifacts`, and snapshots are
 stored securely below its `runtime-config/` directory. `skiff check <root>` runs
 compile validation without syncing local instance artifacts or activating a
 new assembly. `skiff dev sync` / `skiff dev watch` publish a new active
@@ -49,7 +51,7 @@ service-dev profiles. The retired `/__skiff/reload-artifacts` control
 endpoint is not part of the current contract.
 
 Non-instance service-dev commands default to the main Skiff worktree's
-`.skiff-instance/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and
+`.stack/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and
 instance commands use their selected config directly instead of relying on that
 environment variable. It is a single path, not a list. Dev artifacts, service
 build cache, runtime config, runtime home, and the local runtime binary live
@@ -60,8 +62,8 @@ build-cache override.
 Main worktree instance status:
 
 ```bash
-node scripts/skiff.mjs instance status .skiff-instance/config.yml
-node scripts/skiff.mjs instance doctor .skiff-instance/config.yml
+node scripts/skiff.mjs instance status .stack/config.yml
+node scripts/skiff.mjs instance doctor .stack/config.yml
 launchctl print gui/$(id -u)/run.skiff.instance.stable
 ```
 
@@ -92,7 +94,7 @@ strictly. Rewrite rules run before client-provided `X-Skiff-Service`,
 `X-Skiff-Version`, `X-Skiff-Release`, and `service` / `version` query
 selectors.
 
-Per-service build output (the intermediate `service-assembly.json`, `router-manifest.json`, and generated `artifacts/`) is written under the selected dev home, for example `.skiff-instance/dev-home/build/<storage-projected-service-id>/`, with a sibling `<storage-projected-service-id>.lock` build lock. This keeps the service source tree clean — build output is no longer written into a `build/` directory under the project root. `skiff service dev clean` removes the current service's build dir and lock under the dev home, and also clears any legacy in-tree `build/` and `build.lock/` left by older builds.
+Per-service build output (the intermediate `service-assembly.json`, `router-manifest.json`, and generated `artifacts/`) is written under the selected dev home, for example `.stack/dev-home/build/<storage-projected-service-id>/`, with a sibling `<storage-projected-service-id>.lock` build lock. This keeps the service source tree clean — build output is no longer written into a `build/` directory under the project root. `skiff service dev clean` removes the current service's build dir and lock under the dev home, and also clears any legacy in-tree `build/` and `build.lock/` left by older builds.
 
 Dev sync reads service-root config sources in place and publishes only the merged,
 validated immutable snapshot. It never copies the source YAML into the artifact
@@ -174,23 +176,22 @@ The exact registry, fingerprint, retry, and CAS contract is defined in
 ## Language Instance CLI
 
 When developing the Skiff language repository itself, use an instance selected
-by an explicit config file:
+by the `.stack/` configDir and the generated runtime-stack artifacts:
 
 ```bash
-node scripts/skiff.mjs instance init .skiff-instance/config.yml
-node scripts/skiff.mjs instance up .skiff-instance/config.yml
-node scripts/skiff.mjs instance status .skiff-instance/config.yml
-node scripts/skiff.mjs instance doctor .skiff-instance/config.yml
-node scripts/skiff.mjs instance down .skiff-instance/config.yml
+node scripts/skiff.mjs stack build --configDir .stack --profile debug
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
+node scripts/skiff.mjs instance status --runtime build/runtime-stack
+node scripts/skiff.mjs instance down --runtime build/runtime-stack
 ```
 
-The config path is the instance identity. Relative paths inside that config are
-resolved from the config directory. The generated `.skiff-instance/config.yml`
-is unrelated to project `skiff.yml`, `skiff.local.yml`, or package store
-resolution, and `.skiff-instance/` is ignored local state. The generated
-instance uses ports `4100` for service HTTP, `4101` for router control/runtime,
-and `4102` for telemetry, leaving the main worktree service instance untouched.
-Its generated `router.yml` always contains the required connection-wide request limit:
+The configDir is the source of truth for `router.yml` / `runtime.yml` /
+`telemetry.yml`; the debug build copies them into `build/runtime-stack` and
+generates `instance.yml` there. `.stack/` is ignored local state and unrelated
+to project `skiff.yml` / package store resolution. The default local config
+uses ports `4000` for service HTTP, `4001` for router control/runtime, and
+`4002` for telemetry. `requestTimeoutMs` lives in `.stack/router.yml` and is
+required:
 
 ```yaml
 runtime:
@@ -202,44 +203,32 @@ runtime:
 `128` is the shared config-generator default; the final Router config never
 relies on a Router-side fallback.
 
-Use the instance CLI as the source of truth for instance paths:
+instance.yml is the source of truth for instance processes:
 
 ```bash
-node scripts/skiff.mjs instance paths .skiff-instance/config.yml
-node scripts/skiff.mjs instance paths .skiff-instance/config.yml --json
+cat build/runtime-stack/instance.yml
 ```
 
-`ports.base` controls only the non-database instance ports: service HTTP uses
-`base`, router control/runtime uses `base + 1`, and telemetry uses `base + 2`.
-MongoDB is shared local infrastructure and stays on the independently configured
-`ports.mongo`, defaulting to `27017`. To create another directory instance that
-can run at the same time, initialize that instance and then set a different base
-in its config:
+To create another directory instance that can run at the same time, copy
+`.stack/` and change ports in the three YAML files:
 
 ```bash
-node scripts/skiff.mjs instance init ../skiff-experiment/.skiff-instance/config.yml
-```
-
-```yaml
-ports:
-  base: 4200
-  mongo: 27017
+cp -R .stack ../skiff-experiment/.stack
 ```
 
 To test current repository runtime or identity changes, rebuild the instance
 binaries and run:
 
 ```bash
-node scripts/skiff.mjs instance build .skiff-instance/config.yml
-node scripts/skiff.mjs instance up .skiff-instance/config.yml
+node scripts/skiff.mjs stack build --configDir .stack --profile debug
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
 ```
 
-For service validation against the instance, sync or watch the service through
-the instance helper so artifacts and reloads target the instance dev-home:
+For service validation against the instance, watch the service through the
+watch command so artifacts and reloads target the instance artifact root:
 
 ```bash
-node scripts/skiff.mjs instance sync .skiff-instance/config.yml ../example-service
-node scripts/skiff.mjs instance watch .skiff-instance/config.yml ../example-service
+node scripts/skiff.mjs watch --runtime build/runtime-stack --config .stack/watch
 ```
 
 `skiff instance up` starts detached local processes and records structured pid
