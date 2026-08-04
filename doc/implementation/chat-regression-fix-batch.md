@@ -23,7 +23,7 @@
 
 | 节点 | 职责 | 基线 | 分支 / worktree | commit/tree | 自验收矩阵 | 合并状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| chat_regression_fix | chat 回归修复（交接后补全职责与写集） | main@ee12eb53 | TBD / TBD | TBD | 见交接 + 集成探针 | pending |
+| chat_regression_fix | chat smoke E2a 回归修复：create-less keyed actor 的 `[]` bootstrap 不再被误判为 create input（`actor_activation_snapshot` 判定改为 `create.is_some() && !create_input.is_empty()`；补 keyed-actor 无 create 提交/外部上下文与 `std.actor.get` id-only bootstrap 回归测试） | main@ee12eb53 | chat-regression-fix / skiff-chat-regression-fix | b431f03a（tree 491cf78c） | 见交接 + 集成探针 | merged |
 
 ## 基线 / 集成分支
 
@@ -46,7 +46,7 @@
 
 | 顺序 | 任务 | 分支 | 合并 commit/tree | 集成探针 | 清理 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | chat_regression_fix | TBD | TBD | TBD | TBD | pending |
+| 1 | chat_regression_fix | chat-regression-fix | 0d035abb（tree f710a2a0） | PASS：cargo check runtime-eval/runtime-host/runtime-native；eval task_ops::tests 26/26（actor_submit 9/9 含 2 新回归例、canonical task corpus 17 例）；native prepared::actor 2/2（含新增 id-only bootstrap 例）；零冲突 | 已清理 | merged |
 
 每次合并成功后立即删除已合并的一级 worktree 与临时分支，并向主 Agent 报告新
 commit/tree、合并任务、探针结果与 worktree 审计清单。
