@@ -1067,9 +1067,7 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
         Stmt::Assert { condition, .. } => expr_contains_with(condition, predicate),
         Stmt::Throw { value } => expr_contains_with(value, predicate),
         Stmt::Rethrow { exception } => expr_contains_with(exception, predicate),
-        Stmt::Emit(call) | Stmt::Expr(call) => {
-            expr_contains_with(call, predicate)
-        }
+        Stmt::Emit(call) | Stmt::Expr(call) => expr_contains_with(call, predicate),
         Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|value| expr_contains_with(value, predicate)),

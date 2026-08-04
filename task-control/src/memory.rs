@@ -327,10 +327,8 @@ impl TaskStore for MemoryTaskStore {
                 _ if record.state.is_terminal() => {
                     observation.terminal_count += 1;
                     if let Some(terminal) = &record.terminal {
-                        observation.oldest_terminal_at = Some(older(
-                            observation.oldest_terminal_at,
-                            terminal.settled_at,
-                        ));
+                        observation.oldest_terminal_at =
+                            Some(older(observation.oldest_terminal_at, terminal.settled_at));
                     }
                 }
                 _ => {}

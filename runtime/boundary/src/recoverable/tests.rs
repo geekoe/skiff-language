@@ -576,13 +576,9 @@ fn task_ref_roundtrips_through_recoverable_codec() {
     )
     .expect("canonical taskRef should encode through the recoverable boundary");
     let mut decode_heap = RequestHeap::default();
-    let decoded = RecoverableBoundaryCodec::decode(
-        &bytes,
-        &task_ref_expected,
-        &context,
-        &mut decode_heap,
-    )
-    .expect("canonical taskRef should decode through the recoverable boundary");
+    let decoded =
+        RecoverableBoundaryCodec::decode(&bytes, &task_ref_expected, &context, &mut decode_heap)
+            .expect("canonical taskRef should decode through the recoverable boundary");
     assert_eq!(decoded, RuntimeValue::String(canonical.to_string()));
 }
 
@@ -595,9 +591,10 @@ fn task_status_and_cancel_result_roundtrip_through_recoverable_codec() {
         (std_task_cancel_result_plan(), "canceled"),
         (std_task_cancel_result_plan(), "alreadyTerminal"),
     ] {
-        let expected = RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
-            &plan,
-        );
+        let expected =
+            RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
+                &plan,
+            );
         let mut heap = RequestHeap::default();
         let value = RuntimeValue::Heap(
             heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
@@ -609,8 +606,9 @@ fn task_status_and_cancel_result_roundtrip_through_recoverable_codec() {
         let bytes = RecoverableBoundaryCodec::encode(&value, &expected, &context, &heap)
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         let mut decode_heap = RequestHeap::default();
-        let decoded = RecoverableBoundaryCodec::decode(&bytes, &expected, &context, &mut decode_heap)
-            .unwrap_or_else(|error| panic!("{kind} decode: {error}"));
+        let decoded =
+            RecoverableBoundaryCodec::decode(&bytes, &expected, &context, &mut decode_heap)
+                .unwrap_or_else(|error| panic!("{kind} decode: {error}"));
         let RuntimeValue::Heap(handle) = decoded else {
             panic!("{kind}: decoded task control union must be a heap record");
         };

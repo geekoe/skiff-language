@@ -80,27 +80,39 @@ impl TaskControlCounters {
             backlog_ready: 0,
             backlog_leased: 0,
             oldest_due_at_ms: None,
-            submissions_accepted: self.submissions_accepted.load(std::sync::atomic::Ordering::Relaxed),
-            submissions_rejected: self.submissions_rejected.load(std::sync::atomic::Ordering::Relaxed),
+            submissions_accepted: self
+                .submissions_accepted
+                .load(std::sync::atomic::Ordering::Relaxed),
+            submissions_rejected: self
+                .submissions_rejected
+                .load(std::sync::atomic::Ordering::Relaxed),
             submissions_transient: self
                 .submissions_transient
                 .load(std::sync::atomic::Ordering::Relaxed),
-            status_queries: self.status_queries.load(std::sync::atomic::Ordering::Relaxed),
-            status_expired: self.status_expired.load(std::sync::atomic::Ordering::Relaxed),
+            status_queries: self
+                .status_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            status_expired: self
+                .status_expired
+                .load(std::sync::atomic::Ordering::Relaxed),
             status_not_found: self
                 .status_not_found
                 .load(std::sync::atomic::Ordering::Relaxed),
             status_unavailable: self
                 .status_unavailable
                 .load(std::sync::atomic::Ordering::Relaxed),
-            cancel_canceled: self.cancel_canceled.load(std::sync::atomic::Ordering::Relaxed),
+            cancel_canceled: self
+                .cancel_canceled
+                .load(std::sync::atomic::Ordering::Relaxed),
             cancel_already_started: self
                 .cancel_already_started
                 .load(std::sync::atomic::Ordering::Relaxed),
             cancel_already_terminal: self
                 .cancel_already_terminal
                 .load(std::sync::atomic::Ordering::Relaxed),
-            cancel_expired: self.cancel_expired.load(std::sync::atomic::Ordering::Relaxed),
+            cancel_expired: self
+                .cancel_expired
+                .load(std::sync::atomic::Ordering::Relaxed),
             cancel_not_found: self
                 .cancel_not_found
                 .load(std::sync::atomic::Ordering::Relaxed),

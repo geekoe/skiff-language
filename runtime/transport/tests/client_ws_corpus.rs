@@ -25,8 +25,8 @@ use skiff_runtime_transport::{
     },
     protocol::{RuntimeDeadlineFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION},
     websocket_generation_lifecycle::{
-        decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
         assert_websocket_generation_lifecycle_response_matches,
+        decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
         WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
         WebSocketGenerationLifecycleOperation, WebSocketGenerationLifecycleRejectionCode,
         WebSocketGenerationLifecycleSender, WebSocketGenerationLifecycleTuple,
@@ -88,10 +88,7 @@ fn tuple() -> WebSocketGenerationLifecycleTuple {
             "a".repeat(64)
         )),
         assembly_generation: 7,
-        websocket_entry_id: format!(
-            "skiff-websocket-entry-v1:sha256:{}",
-            "b".repeat(64)
-        ),
+        websocket_entry_id: format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64)),
         connection_id: "connection-1".to_string(),
     }
 }
@@ -190,14 +187,23 @@ fn request_id_for(operation: WebSocketGenerationLifecycleOperation) -> String {
     }
 }
 
-fn sender_for(operation: WebSocketGenerationLifecycleOperation) -> WebSocketGenerationLifecycleSender {
+fn sender_for(
+    operation: WebSocketGenerationLifecycleOperation,
+) -> WebSocketGenerationLifecycleSender {
     match operation {
-        WebSocketGenerationLifecycleOperation::Acquire => WebSocketGenerationLifecycleSender::Router,
-        WebSocketGenerationLifecycleOperation::Release => WebSocketGenerationLifecycleSender::Runtime,
+        WebSocketGenerationLifecycleOperation::Acquire => {
+            WebSocketGenerationLifecycleSender::Router
+        }
+        WebSocketGenerationLifecycleOperation::Release => {
+            WebSocketGenerationLifecycleSender::Runtime
+        }
     }
 }
 
-fn direction_for(action: &str, operation: Option<WebSocketGenerationLifecycleOperation>) -> WebSocketGenerationLifecycleDirection {
+fn direction_for(
+    action: &str,
+    operation: Option<WebSocketGenerationLifecycleOperation>,
+) -> WebSocketGenerationLifecycleDirection {
     match action {
         "acquire" => WebSocketGenerationLifecycleDirection::RuntimeToRouter,
         "release" => WebSocketGenerationLifecycleDirection::RouterToRuntime,
@@ -282,8 +288,8 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
             CatalogFrame::ConnectionRequest
         }
         "ConnectionCancel" => {
-            let header = decode_connection_request_cancel_frame(&bytes)
-                .expect("connection cancel decodes");
+            let header =
+                decode_connection_request_cancel_frame(&bytes).expect("connection cancel decodes");
             let reencoded = encode_connection_request_cancel_frame(&header)
                 .expect("connection cancel re-encodes");
             assert_eq!(reencoded, bytes, "connection cancel must be byte-exact");
@@ -334,7 +340,10 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
                     ("reject", Some(*operation))
                 }
             };
-            CatalogFrame::Lifecycle { action: action.to_string(), operation }
+            CatalogFrame::Lifecycle {
+                action: action.to_string(),
+                operation,
+            }
         }
         other => panic!("unknown decodeAs {other}"),
     }
@@ -391,9 +400,17 @@ fn frame_catalog_is_byte_exact_and_complete() {
 
 #[test]
 fn lifecycle_responses_must_echo_exact_request() {
-    let acquire = lifecycle_control("acquire", WebSocketGenerationLifecycleOperation::Acquire, None);
+    let acquire = lifecycle_control(
+        "acquire",
+        WebSocketGenerationLifecycleOperation::Acquire,
+        None,
+    );
     let ack = lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Acquire, None);
-    let reject = lifecycle_control("reject", WebSocketGenerationLifecycleOperation::Acquire, None);
+    let reject = lifecycle_control(
+        "reject",
+        WebSocketGenerationLifecycleOperation::Acquire,
+        None,
+    );
     assert!(
         assert_websocket_generation_lifecycle_response_matches(&acquire, &ack).is_ok(),
         "acquire ack must echo the exact request"
@@ -403,7 +420,11 @@ fn lifecycle_responses_must_echo_exact_request() {
         "acquire reject must echo the exact request"
     );
 
-    let release = lifecycle_control("release", WebSocketGenerationLifecycleOperation::Release, None);
+    let release = lifecycle_control(
+        "release",
+        WebSocketGenerationLifecycleOperation::Release,
+        None,
+    );
     let ack = lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Release, None);
     assert!(
         assert_websocket_generation_lifecycle_response_matches(&release, &ack).is_ok(),
@@ -665,7 +686,9 @@ fn parse_lex_number(source: &[u8], cursor: &mut usize) -> Option<LexNode> {
         }
     }
     Some(LexNode::Number(
-        std::str::from_utf8(&source[start..*cursor]).ok()?.to_string(),
+        std::str::from_utf8(&source[start..*cursor])
+            .ok()?
+            .to_string(),
     ))
 }
 
@@ -727,10 +750,7 @@ fn classify_lexeme(source: &str) -> LexicalAction {
     }
 }
 
-fn classify_request_or_notification(
-    _source: &str,
-    members: &[(String, LexNode)],
-) -> LexicalAction {
+fn classify_request_or_notification(_source: &str, members: &[(String, LexNode)]) -> LexicalAction {
     let allowed_with_id = ["jsonrpc", "id", "method", "params"];
     let allowed_without_id = ["jsonrpc", "method", "params"];
     let has_id = members.iter().any(|(key, _)| key == "id");
@@ -739,8 +759,15 @@ fn classify_request_or_notification(
     } else {
         &allowed_without_id[..]
     };
-    let member = |key: &str| members.iter().find(|(name, _)| name == key).map(|(_, value)| value);
-    if members.iter().any(|(key, _)| !allowed.contains(&key.as_str()))
+    let member = |key: &str| {
+        members
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+    };
+    if members
+        .iter()
+        .any(|(key, _)| !allowed.contains(&key.as_str()))
         || member("jsonrpc") != Some(&LexNode::String("2.0".to_string()))
     {
         return LexicalAction::PlatformError {
@@ -775,7 +802,12 @@ fn classify_request_or_notification(
 }
 
 fn classify_response(_source: &str, members: &[(String, LexNode)]) -> LexicalAction {
-    let member = |key: &str| members.iter().find(|(name, _)| name == key).map(|(_, value)| value);
+    let member = |key: &str| {
+        members
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+    };
     let has_result = members.iter().any(|(key, _)| key == "result");
     let has_error = members.iter().any(|(key, _)| key == "error");
     if has_result == has_error || member("jsonrpc") != Some(&LexNode::String("2.0".to_string())) {
@@ -805,8 +837,12 @@ fn classify_response(_source: &str, members: &[(String, LexNode)]) -> LexicalAct
     let Some(LexNode::Object(error)) = error else {
         return LexicalAction::Close { code: 1002 };
     };
-    let error_member =
-        |key: &str| error.iter().find(|(name, _)| name == key).map(|(_, value)| value);
+    let error_member = |key: &str| {
+        error
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+    };
     if error
         .iter()
         .any(|(key, _)| !["code", "message", "data"].contains(&key.as_str()))
@@ -952,18 +988,32 @@ fn jsonrpc_numeric_id_lexemes_match_frozen_corpus() {
         let action = classify_lexeme(&case.frame);
         match (case.kind.as_str(), &action) {
             ("request", LexicalAction::Request { id, method }) => {
-                assert!(!method.is_empty(), "{}: method must be non-empty", case.name);
+                assert!(
+                    !method.is_empty(),
+                    "{}: method must be non-empty",
+                    case.name
+                );
                 let (kind, canonical) = match id {
                     PeerId::String(value) => ("string", value.clone()),
                     PeerId::SafeInteger(value) => ("safeInteger", value.to_string()),
                 };
-                assert_eq!(Some(kind.to_string()), case.id_kind, "{}: idKind", case.name);
+                assert_eq!(
+                    Some(kind.to_string()),
+                    case.id_kind,
+                    "{}: idKind",
+                    case.name
+                );
                 assert_eq!(Some(canonical), case.id, "{}: canonical id", case.name);
                 assert_eq!(Some(peer_key(id)), case.peer_key, "{}: peerKey", case.name);
             }
             ("response", LexicalAction::Response { id }) => {
                 assert_eq!(Some(id.clone()), case.id, "{}: response id", case.name);
-                assert_eq!(case.id_kind.as_deref(), Some("string"), "{}: idKind", case.name);
+                assert_eq!(
+                    case.id_kind.as_deref(),
+                    Some("string"),
+                    "{}: idKind",
+                    case.name
+                );
             }
             ("notification", LexicalAction::Notification { method }) => {
                 assert!(!method.is_empty(), "{}: method", case.name);
@@ -979,10 +1029,7 @@ fn jsonrpc_numeric_id_lexemes_match_frozen_corpus() {
             ("close", LexicalAction::Close { code }) => {
                 assert_eq!(Some(*code), case.code, "{}: close code", case.name);
             }
-            (kind, other) => panic!(
-                "{}: expected kind {kind}, got {other:?}",
-                case.name
-            ),
+            (kind, other) => panic!("{}: expected kind {kind}, got {other:?}", case.name),
         }
     }
 }
@@ -1042,7 +1089,10 @@ struct Conn {
 struct LimitsValue {
     #[serde(rename = "connectionLimit", default = "default_connection_limit")]
     connection_limit: usize,
-    #[serde(rename = "slowClientBudgetBytes", default = "default_slow_client_budget")]
+    #[serde(
+        rename = "slowClientBudgetBytes",
+        default = "default_slow_client_budget"
+    )]
     slow_client_budget_bytes: u64,
     #[serde(
         rename = "perGenerationCapacity",
@@ -1366,7 +1416,8 @@ impl Machine {
             broker.inbound_active = 0;
         }
         self.outbound_by_peer.retain(|_, owner| owner != connection);
-        self.outbound_by_request.retain(|_, owner| owner != connection);
+        self.outbound_by_request
+            .retain(|_, owner| owner != connection);
         self.inbound_by_peer.retain(|_, owner| owner != connection);
         self.tombstones.retain(|_, owner| owner != connection);
     }
@@ -1391,7 +1442,11 @@ impl Machine {
     fn acquire_pin(&mut self, connection: &str, runtime: &str) {
         let conn = self.conn_mut(connection);
         assert_eq!(conn.phase, Phase::Attached, "acquire requires attached");
-        assert_eq!(conn.runtime.as_deref(), Some(runtime), "pin runtime must match");
+        assert_eq!(
+            conn.runtime.as_deref(),
+            Some(runtime),
+            "pin runtime must match"
+        );
         if !conn.pin_acquired {
             conn.pin_acquired = true;
             self.pins_acquired += 1;
@@ -1444,7 +1499,9 @@ impl Machine {
         let affected = self
             .connections
             .iter()
-            .filter(|conn| conn.runtime.as_deref() == Some(runtime) && conn.phase == Phase::Attached)
+            .filter(|conn| {
+                conn.runtime.as_deref() == Some(runtime) && conn.phase == Phase::Attached
+            })
             .map(|conn| conn.id.clone())
             .collect::<Vec<_>>();
         for id in &affected {
@@ -1502,7 +1559,11 @@ impl Machine {
 
     fn runtime_request(&mut self, connection: &str, request_id: &str, deadline_ms: Option<u64>) {
         let conn = self.conn(connection);
-        assert_eq!(conn.phase, Phase::Attached, "runtime request requires attached");
+        assert_eq!(
+            conn.phase,
+            Phase::Attached,
+            "runtime request requires attached"
+        );
         let generation = conn.generation.clone().expect("generation");
         let _ = conn;
         let broker = self.broker.get(connection).expect("broker generation");
@@ -1552,7 +1613,8 @@ impl Machine {
             self.finish_connection(connection, Terminal::ProtocolClose);
             return;
         }
-        self.inbound_by_peer.insert(peer_id.to_string(), connection.to_string());
+        self.inbound_by_peer
+            .insert(peer_id.to_string(), connection.to_string());
         self.broker
             .get_mut(connection)
             .expect("broker generation")
@@ -1592,7 +1654,8 @@ impl Machine {
         if self.outbound_by_peer.remove(peer_key).as_deref() != Some(connection) {
             return;
         }
-        self.outbound_by_request.retain(|_, value| value != peer_key);
+        self.outbound_by_request
+            .retain(|_, value| value != peer_key);
         self.broker
             .get_mut(connection)
             .expect("broker generation")
@@ -1621,7 +1684,10 @@ impl Machine {
                 socket_generation,
                 runtime,
             } => self.attach(connection, socket_generation, runtime),
-            EventValue::AcquirePin { connection, runtime } => {
+            EventValue::AcquirePin {
+                connection,
+                runtime,
+            } => {
                 self.acquire_pin(connection, runtime);
             }
             EventValue::ReleasePin { connection, mode } => {
@@ -1647,10 +1713,16 @@ impl Machine {
                 connection,
                 request_id,
             } => self.deadline(connection, request_id),
-            EventValue::PeerResponse { connection, peer_id } => {
+            EventValue::PeerResponse {
+                connection,
+                peer_id,
+            } => {
                 self.peer_response(connection, peer_id);
             }
-            EventValue::PeerRequest { connection, peer_id } => {
+            EventValue::PeerRequest {
+                connection,
+                peer_id,
+            } => {
                 self.peer_request(connection, peer_id);
             }
             EventValue::InboundDispatch {
@@ -1662,7 +1734,10 @@ impl Machine {
                 connection,
                 request_id,
             } => self.runtime_cancel(connection, request_id),
-            EventValue::LateResponse { connection, peer_id } => {
+            EventValue::LateResponse {
+                connection,
+                peer_id,
+            } => {
                 self.late_response(connection, peer_id);
             }
         }
@@ -1840,7 +1915,12 @@ fn client_ws_scenarios_match_frozen_semantics() {
 
 fn generate_frame_catalog_document() -> Value {
     let mut frames = BTreeMap::<String, Value>::new();
-    let mut add = |name: &str, direction: &str, decode_as: &str, frame_type: &str, bytes: Vec<u8>, header: Value| {
+    let mut add = |name: &str,
+                   direction: &str,
+                   decode_as: &str,
+                   frame_type: &str,
+                   bytes: Vec<u8>,
+                   header: Value| {
         frames.insert(
             name.to_string(),
             json!({
@@ -1897,8 +1977,11 @@ fn generate_frame_catalog_document() -> Value {
         "RouterToRuntime",
         "ConnectionResponse",
         "connection.response",
-        encode_connection_response_frame(&response_header(ConnectionResponseOutcome::Success), br#"{"ok":true}"#)
-            .unwrap(),
+        encode_connection_response_frame(
+            &response_header(ConnectionResponseOutcome::Success),
+            br#"{"ok":true}"#,
+        )
+        .unwrap(),
         serde_json::to_value(&response_header(ConnectionResponseOutcome::Success)).unwrap(),
     );
     let mut remote_header = response_header(ConnectionResponseOutcome::Remote);
@@ -1916,11 +1999,26 @@ fn generate_frame_catalog_document() -> Value {
         serde_json::to_value(&remote_header).unwrap(),
     );
     for (name, outcome) in [
-        ("connection.response.deadline-exceeded", ConnectionResponseOutcome::DeadlineExceeded),
-        ("connection.response.connection-unavailable", ConnectionResponseOutcome::ConnectionUnavailable),
-        ("connection.response.transport-unavailable", ConnectionResponseOutcome::TransportUnavailable),
-        ("connection.response.protocol-error", ConnectionResponseOutcome::ProtocolError),
-        ("connection.response.resource-limit", ConnectionResponseOutcome::ResourceLimit),
+        (
+            "connection.response.deadline-exceeded",
+            ConnectionResponseOutcome::DeadlineExceeded,
+        ),
+        (
+            "connection.response.connection-unavailable",
+            ConnectionResponseOutcome::ConnectionUnavailable,
+        ),
+        (
+            "connection.response.transport-unavailable",
+            ConnectionResponseOutcome::TransportUnavailable,
+        ),
+        (
+            "connection.response.protocol-error",
+            ConnectionResponseOutcome::ProtocolError,
+        ),
+        (
+            "connection.response.resource-limit",
+            ConnectionResponseOutcome::ResourceLimit,
+        ),
     ] {
         let header = response_header(outcome);
         add(
@@ -1933,30 +2031,32 @@ fn generate_frame_catalog_document() -> Value {
         );
     }
 
-    let acquire = lifecycle_control("acquire", WebSocketGenerationLifecycleOperation::Acquire, None);
+    let acquire = lifecycle_control(
+        "acquire",
+        WebSocketGenerationLifecycleOperation::Acquire,
+        None,
+    );
     add(
         "lifecycle.acquire",
         "RuntimeToRouter",
         "Lifecycle",
         "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for("acquire", None),
-            &acquire,
-        )
-        .unwrap(),
+        encode_websocket_generation_lifecycle_frame(direction_for("acquire", None), &acquire)
+            .unwrap(),
         serde_json::to_value(&acquire).unwrap(),
     );
-    let release = lifecycle_control("release", WebSocketGenerationLifecycleOperation::Release, None);
+    let release = lifecycle_control(
+        "release",
+        WebSocketGenerationLifecycleOperation::Release,
+        None,
+    );
     add(
         "lifecycle.release",
         "RouterToRuntime",
         "Lifecycle",
         "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for("release", None),
-            &release,
-        )
-        .unwrap(),
+        encode_websocket_generation_lifecycle_frame(direction_for("release", None), &release)
+            .unwrap(),
         serde_json::to_value(&release).unwrap(),
     );
     let ack_acquire =
@@ -1998,7 +2098,10 @@ fn generate_frame_catalog_document() -> Value {
         "Lifecycle",
         "websocket.generation.lifecycle",
         encode_websocket_generation_lifecycle_frame(
-            direction_for("reject", Some(WebSocketGenerationLifecycleOperation::Acquire)),
+            direction_for(
+                "reject",
+                Some(WebSocketGenerationLifecycleOperation::Acquire),
+            ),
             &reject_acquire,
         )
         .unwrap(),
@@ -2015,7 +2118,10 @@ fn generate_frame_catalog_document() -> Value {
         "Lifecycle",
         "websocket.generation.lifecycle",
         encode_websocket_generation_lifecycle_frame(
-            direction_for("reject", Some(WebSocketGenerationLifecycleOperation::Release)),
+            direction_for(
+                "reject",
+                Some(WebSocketGenerationLifecycleOperation::Release),
+            ),
             &reject_release,
         )
         .unwrap(),
@@ -2031,15 +2137,16 @@ fn generate_frame_catalog_document() -> Value {
 
 #[test]
 fn frame_catalog_regenerates_from_canonical_codec() {
-    let loaded: Value =
-        serde_json::from_str(&std::fs::read_to_string(
+    let loaded: Value = serde_json::from_str(
+        &std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("testdata")
                 .join("client-ws")
                 .join("frames.json"),
         )
-        .expect("frames.json must exist"))
-        .expect("frames.json must parse");
+        .expect("frames.json must exist"),
+    )
+    .expect("frames.json must parse");
     assert_eq!(
         generate_frame_catalog_document(),
         loaded,

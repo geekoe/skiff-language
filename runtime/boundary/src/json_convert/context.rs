@@ -68,8 +68,7 @@ impl StreamHandleScope {
         if self.allow_runtime_owned_record_fields
             && is_runtime_owned_stream_handle_field(record_plan, field_name)
         {
-            Self::root()
-                .with_internal_task_ref_if(self.allow_internal_task_ref)
+            Self::root().with_internal_task_ref_if(self.allow_internal_task_ref)
         } else {
             Self::nested().with_internal_task_ref_if(self.allow_internal_task_ref)
         }

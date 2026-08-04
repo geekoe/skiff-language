@@ -453,8 +453,7 @@ mod tests {
             );
         }
         assert_eq!(
-            catalog.frames["task.submit.error.parentNotFound"]
-                .header["error"]["code"],
+            catalog.frames["task.submit.error.parentNotFound"].header["error"]["code"],
             "ParentNotFound"
         );
     }
@@ -570,7 +569,8 @@ mod tests {
     fn expected_direction(name: &str) -> &'static str {
         match name {
             "task.submit.request.function"
-            | "task.submit.request.actorMethod" | "task.submit.request.actorMethod.snapshot"
+            | "task.submit.request.actorMethod"
+            | "task.submit.request.actorMethod.snapshot"
             | "task.submit.request.legacy-no-caller-kind"
             | "task.submit.request.timing.after"
             | "task.submit.request.timing.at"

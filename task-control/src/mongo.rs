@@ -890,11 +890,7 @@ fn document_to_record(document: Document) -> Result<TaskRecord, TaskStoreError> 
         .map(|authority| {
             Ok::<crate::model::TaskTestCaseAuthority, TaskStoreError>(
                 crate::model::TaskTestCaseAuthority {
-                    test_case_capability: get_string(
-                        &task_id,
-                        authority,
-                        "testCaseCapability",
-                    )?,
+                    test_case_capability: get_string(&task_id, authority, "testCaseCapability")?,
                     parent_request_id: get_string(&task_id, authority, "parentRequestId")?,
                     origin_runtime_id: get_string(&task_id, authority, "originRuntimeId")?,
                     origin_connection_generation: get_i64(

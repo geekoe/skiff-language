@@ -1,5 +1,6 @@
 pub mod api_spec;
 pub mod db_projection;
+pub mod dispatch_targets;
 pub mod export_config;
 pub mod id;
 pub mod json_utils;
@@ -10,7 +11,6 @@ pub mod path_safety;
 pub mod prelude_registry;
 pub mod registry_helpers;
 pub mod source_role;
-pub mod dispatch_targets;
 pub mod type_closure;
 pub mod type_graph;
 pub mod type_ref;

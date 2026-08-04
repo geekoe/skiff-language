@@ -73,7 +73,11 @@ pub(super) fn deserialize_service_caller_kind<'de, D>(deserializer: D) -> Result
 where
     D: Deserializer<'de>,
 {
-    deserialize_exact_string(deserializer, "service", "runtimeAssembly dispatch caller.kind")
+    deserialize_exact_string(
+        deserializer,
+        "service",
+        "runtimeAssembly dispatch caller.kind",
+    )
 }
 
 pub(super) fn deserialize_task_invocation_kind<'de, D>(deserializer: D) -> Result<String, D::Error>

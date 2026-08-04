@@ -308,7 +308,6 @@ fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers()
     );
 }
 
-
 #[test]
 fn ordinary_sources_without_concurrent_surface_still_compile() {
     build_ok("function run() -> number {\n  const value = 1\n  return value\n}\n");

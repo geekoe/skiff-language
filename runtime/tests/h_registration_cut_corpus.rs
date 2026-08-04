@@ -20,12 +20,11 @@ use skiff_runtime_transport::assembly_activation::{
     AssemblyActivationFrameDirection,
 };
 use skiff_runtime_transport::protocol::{
-    decode_router_bootstrap_frame, decode_runtime_capabilities_frame,
-    decode_runtime_health_frame, decode_runtime_registered_frame, decode_typed_binary_frame,
-    encode_binary_frame, encode_router_bootstrap_frame, encode_runtime_capabilities_frame,
-    encode_runtime_health_frame, encode_runtime_registered_frame, RuntimeRegisterFrameHeader,
-    ROUTER_BOOTSTRAP_FRAME_TYPE, RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE,
-    RUNTIME_REGISTERED_FRAME_TYPE,
+    decode_router_bootstrap_frame, decode_runtime_capabilities_frame, decode_runtime_health_frame,
+    decode_runtime_registered_frame, decode_typed_binary_frame, encode_binary_frame,
+    encode_router_bootstrap_frame, encode_runtime_capabilities_frame, encode_runtime_health_frame,
+    encode_runtime_registered_frame, RuntimeRegisterFrameHeader, ROUTER_BOOTSTRAP_FRAME_TYPE,
+    RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -270,8 +269,7 @@ mod tests {
                         let frame = frame_name.expect("write frame name");
                         let entry = catalog.frames.get(frame).expect("known frame");
                         assert_eq!(
-                            entry.direction,
-                            "RouterToRuntime",
+                            entry.direction, "RouterToRuntime",
                             "{name}/{frame} must be RouterToRuntime"
                         );
                     }
@@ -281,8 +279,7 @@ mod tests {
                         let frame = frame_name.expect("read frame name");
                         let entry = catalog.frames.get(frame).expect("known frame");
                         assert_eq!(
-                            entry.direction,
-                            "RuntimeToRouter",
+                            entry.direction, "RuntimeToRouter",
                             "{name}/{frame} must be RuntimeToRouter"
                         );
                     }

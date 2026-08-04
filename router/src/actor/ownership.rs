@@ -402,12 +402,15 @@ impl ActorOwnershipRegistry {
     /// Read-only registry entry facts (identity + frozen create input).
     /// `None` when the key is not present (snapshot restoration path).
     pub fn entry(&self, key: &ActorLogicalKey) -> Option<ActorRegistryEntry> {
-        self.lock().entries.get(key).map(|entry| ActorRegistryEntry {
-            actor_abi_identity: entry.actor_abi_identity.clone(),
-            actor_implementation_identity: entry.actor_implementation_identity.clone(),
-            declaration_owner: entry.declaration_owner.clone(),
-            create_input: entry.create_input.clone(),
-        })
+        self.lock()
+            .entries
+            .get(key)
+            .map(|entry| ActorRegistryEntry {
+                actor_abi_identity: entry.actor_abi_identity.clone(),
+                actor_implementation_identity: entry.actor_implementation_identity.clone(),
+                declaration_owner: entry.declaration_owner.clone(),
+                create_input: entry.create_input.clone(),
+            })
     }
 
     /// Marks an owner fence as eviction-requested (scheduler trigger; truth

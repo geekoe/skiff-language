@@ -8,12 +8,13 @@ mod health_common;
 
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use skiff_artifact_model::{
     AssemblyIdentity, PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
     RuntimeConfigSnapshotRef,
 };
-use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::demux::InboundFrameSink;
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
     DurableTaskFrameSink, NoopTaskSubmitParentResolver, RouterTaskSchedulerObservation,
@@ -23,13 +24,14 @@ use skiff_router::telemetry::{
     backlog_metric_event, task_event, RouterTelemetryProducer, TaskTelemetrySink,
 };
 use skiff_runtime_transport::protocol::{
-    encode_task_cancel_request_frame, encode_task_submit_request_frame, ActivationIdentityFrameMetadata,
-    TaskCancelRequestFrameHeader, TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind,
-    TelemetryEvent, TelemetryLevel, TaskRef, RUNTIME_FRAME_SCHEMA_VERSION,
+    encode_task_cancel_request_frame, encode_task_submit_request_frame,
+    ActivationIdentityFrameMetadata, TaskCancelRequestFrameHeader, TaskRef,
+    TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind, TelemetryEvent,
+    TelemetryLevel, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_task_control::model::{
-    DurableUtcTimestamp, LeaseId, RecoverablePayload, ServiceOwner, TaskExecutionImageRef, TaskId,
-    TaskRecord, TaskState, TaskTraceContext, DetachedCallTarget,
+    DetachedCallTarget, DurableUtcTimestamp, LeaseId, RecoverablePayload, ServiceOwner,
+    TaskExecutionImageRef, TaskId, TaskRecord, TaskState, TaskTraceContext,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
@@ -37,7 +39,6 @@ use skiff_task_control::scheduler::{
 };
 use skiff_task_control::store::{BacklogObservation, ClaimRejection, RenewRejection, TaskStore};
 use skiff_task_control::MemoryTaskStore;
-use async_trait::async_trait;
 
 const SERVICE_ID: &str = "example.com/service-1";
 const TASK_ID: &str = "telemetry-task-1";
@@ -126,7 +127,9 @@ impl FakeImageSource {
     }
 
     fn unknown() -> Self {
-        Self { services: Vec::new() }
+        Self {
+            services: Vec::new(),
+        }
     }
 }
 
@@ -198,7 +201,9 @@ fn cancel_request(task_ref: &str) -> TaskCancelRequestFrameHeader {
 }
 
 fn task_ref(task_id: &str) -> String {
-    TaskRef::new(task_id, SERVICE_ID).expect("task ref").into_string()
+    TaskRef::new(task_id, SERVICE_ID)
+        .expect("task ref")
+        .into_string()
 }
 
 fn session() -> RuntimeSessionEpoch {
@@ -267,7 +272,8 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
         store,
         scheduler,
         Arc::new(FakeImageSource::known()),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
@@ -280,7 +286,10 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
     sink.handle(&session(), &bytes).expect("handle submit");
     poll_frames(&writer, 1).await;
     assert!(
-        telemetry.names().iter().any(|name| name == "task.submit.accepted"),
+        telemetry
+            .names()
+            .iter()
+            .any(|name| name == "task.submit.accepted"),
         "accepted event missing: {:?}",
         telemetry.names()
     );
@@ -301,9 +310,9 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
     );
 
     let cancel = cancel_request(&task_ref(TASK_ID));
-    let cancel_bytes =
-        encode_task_cancel_request_frame(&cancel).expect("encode cancel");
-    sink.handle(&session(), &cancel_bytes).expect("handle cancel");
+    let cancel_bytes = encode_task_cancel_request_frame(&cancel).expect("encode cancel");
+    sink.handle(&session(), &cancel_bytes)
+        .expect("handle cancel");
     poll_frames(&writer, 2).await;
     assert!(
         telemetry
@@ -328,7 +337,8 @@ async fn task_sink_emits_submit_accepted_rejected_and_cancel_events() {
         store,
         scheduler,
         Arc::new(FakeImageSource::known()),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         quota_writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
@@ -372,7 +382,8 @@ async fn task_sink_cancel_unknown_owner_emits_not_found() {
         store,
         scheduler,
         Arc::new(FakeImageSource::unknown()),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         writer.clone() as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
@@ -404,7 +415,11 @@ async fn scheduler_observation_emits_task_events() {
     observation.on_claim(&record, now);
     observation.on_claim_duplicate(&record.task_id, &ClaimRejection::AlreadyLeased);
     observation.on_renewed(&record.task_id, &LeaseId::new("lease-1"), now);
-    observation.on_renew_lost(&record.task_id, &LeaseId::new("lease-1"), RenewRejection::StaleLease);
+    observation.on_renew_lost(
+        &record.task_id,
+        &LeaseId::new("lease-1"),
+        RenewRejection::StaleLease,
+    );
     observation.on_recover(&record.task_id, &LeaseId::new("lease-1"));
     observation.on_release(
         &record.task_id,
@@ -422,7 +437,10 @@ async fn scheduler_observation_emits_task_events() {
         "task.recovered",
         "task.lease.released",
     ] {
-        assert!(names.iter().any(|name| name == expected), "missing {expected}: {names:?}");
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}: {names:?}"
+        );
     }
     let claim = telemetry
         .events()

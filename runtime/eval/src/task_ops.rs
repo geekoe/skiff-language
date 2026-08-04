@@ -1,9 +1,9 @@
-use serde_json::{json, Value};
 use base64::Engine as _;
+use serde_json::{json, Value};
 use skiff_artifact_model::MetadataValue;
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_runtime_boundary::recoverable::is_canonical_task_ref_string;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
+use skiff_runtime_boundary::recoverable::is_canonical_task_ref_string;
 use skiff_runtime_boundary::{json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorActivationSnapshotControl, ActorInvocationDeclarationOwner,
@@ -14,8 +14,7 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, LinkedActorCreateMethod,
-    LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedCallTarget,
-    UnitAddr,
+    LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedCallTarget, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
     PlanContext, ProgramTypeView, RuntimeRecoverableExpectedTypePlanLinkedExt, RuntimeTypePlan,
@@ -71,7 +70,8 @@ pub fn resolve_runtime_assembly_task_target(
         .cloned()
         .ok_or_else(|| RuntimeError::Protocol {
             target: target.to_string(),
-            message: "canonical dispatch target is not registered in the active assembly".to_string(),
+            message: "canonical dispatch target is not registered in the active assembly"
+                .to_string(),
         })
 }
 
@@ -190,8 +190,7 @@ pub async fn submit_dispatch_call(
 
     // Step 3: recoverable encode against the exact linked target plan.
     let projection = context.execution_projection().clone();
-    let invocation =
-        encode_task_request_payload(context, call, projection, target, values).await?;
+    let invocation = encode_task_request_payload(context, call, projection, target, values).await?;
 
     // Step 4: generate the TaskId before the first physical write; every retry
     // of this submission reuses it (TaskStore create is TaskId-idempotent).
@@ -204,15 +203,11 @@ pub async fn submit_dispatch_call(
         target_kind: invocation.target_kind,
         service_id: request_context.service_id().to_string(),
         service_version: request_context.service_version().to_string(),
-        service_protocol_identity: request_context
-            .task_service_protocol_identity()
-            .to_string(),
+        service_protocol_identity: request_context.task_service_protocol_identity().to_string(),
         target: invocation.target,
         task_id: Some(task_id),
         build_id: task_submit_build_id(request_context.request_build_id()),
-        activation_identity: current_activation_identity(
-            request_context.activation_identity(),
-        )?,
+        activation_identity: current_activation_identity(request_context.activation_identity())?,
         caller_request_id: Some(request_context.request_id().to_string()),
         timing,
         trace_id: request_context.trace_id().map(str::to_string),
@@ -299,12 +294,7 @@ pub(super) async fn eval_task_control_native_call(
         TaskControlOutcome::Cancel(Ok(response)) => response.kind,
         TaskControlOutcome::Status(Err(error)) | TaskControlOutcome::Cancel(Err(error)) => {
             match error {
-                CapabilityError::TaskControlRejected {
-                    code,
-                    message: _,
-                }
-                    if code == "notFound" =>
-                {
+                CapabilityError::TaskControlRejected { code, message: _ } if code == "notFound" => {
                     // Wire `notFound` (TaskId unresolvable / owner scope
                     // unknown) is the stable `expired` user result
                     // (reference §3).
@@ -334,10 +324,7 @@ pub(super) async fn eval_task_control_native_call(
     runtime_carrier_for_plan(value, &return_plan, target, context.heap.heap_mut()).map(Some)
 }
 
-fn task_control_task_ref_arg(
-    values: &[RuntimeValueCarrier],
-    target: &str,
-) -> Result<String> {
+fn task_control_task_ref_arg(values: &[RuntimeValueCarrier], target: &str) -> Result<String> {
     let value = values
         .first()
         .ok_or_else(|| RuntimeError::Decode(format!("{target} requires a TaskRef argument")))?;
@@ -448,15 +435,12 @@ enum TaskSubmitTimingKind {
 }
 
 fn task_submit_timing_plan(call: &CallIr) -> Result<TaskSubmitTimingPlan> {
-    let metadata = metadata_to_json(
-        call.metadata
-            .get(TASK_SUBMIT_METADATA_KEY)
-            .ok_or_else(|| {
-                RuntimeError::InvalidArtifact(
-                    "dispatch call is missing compiler dispatchSubmit metadata".to_string(),
-                )
-            })?,
-    );
+    let metadata =
+        metadata_to_json(call.metadata.get(TASK_SUBMIT_METADATA_KEY).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "dispatch call is missing compiler dispatchSubmit metadata".to_string(),
+            )
+        })?);
     let object = metadata.as_object().ok_or_else(|| {
         RuntimeError::InvalidArtifact(
             "dispatchSubmit metadata must be an object with targetKind and target fields"
@@ -470,20 +454,25 @@ fn task_submit_timing_plan(call: &CallIr) -> Result<TaskSubmitTimingPlan> {
         });
     };
     let timing = timing.as_object().ok_or_else(|| {
-        RuntimeError::InvalidArtifact("dispatchSubmit metadata timing must be an object".to_string())
+        RuntimeError::InvalidArtifact(
+            "dispatchSubmit metadata timing must be an object".to_string(),
+        )
     })?;
-    let kind = timing
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            RuntimeError::InvalidArtifact(
-                "dispatchSubmit metadata timing kind must be a string".to_string(),
-            )
-        })?;
+    let kind = timing.get("kind").and_then(Value::as_str).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(
+            "dispatchSubmit metadata timing kind must be a string".to_string(),
+        )
+    })?;
     let (kind, expr) = match kind {
         "immediate" => (TaskSubmitTimingKind::Immediate, None),
-        "after" => (TaskSubmitTimingKind::After, Some(task_timing_expr_ref(timing)?)),
-        "at" => (TaskSubmitTimingKind::At, Some(task_timing_expr_ref(timing)?)),
+        "after" => (
+            TaskSubmitTimingKind::After,
+            Some(task_timing_expr_ref(timing)?),
+        ),
+        "at" => (
+            TaskSubmitTimingKind::At,
+            Some(task_timing_expr_ref(timing)?),
+        ),
         other => {
             return Err(RuntimeError::InvalidArtifact(format!(
                 "dispatchSubmit metadata timing kind {other} is unsupported"
@@ -609,9 +598,7 @@ async fn encode_task_request_payload(
     values: Vec<RuntimeValueCarrier>,
 ) -> Result<TaskEncodedCall> {
     match target.kind.as_str() {
-        "function" => {
-            encode_task_function_payload(context, call, projection, target, values).await
-        }
+        "function" => encode_task_function_payload(context, call, projection, target, values).await,
         "actorMethod" => {
             encode_task_actor_method_payload(context, call, projection, target, values).await
         }
@@ -865,11 +852,8 @@ fn actor_activation_snapshot(
             file: plan.declaration_owner.file.clone(),
             executable: 0,
         });
-    let expected_type_plan = create_request_recoverable_expected_plan(
-        projection.type_view(),
-        &create_addr,
-        create,
-    )?;
+    let expected_type_plan =
+        create_request_recoverable_expected_plan(projection.type_view(), &create_addr, create)?;
     if !create_input.is_empty() {
         gate_create_input(
             context,
@@ -1186,7 +1170,8 @@ fn task_submit_target(call: &CallIr) -> Result<TaskSubmitTarget> {
     let metadata = metadata_to_json(metadata);
     let object = metadata.as_object().ok_or_else(|| {
         RuntimeError::InvalidArtifact(
-            "dispatchSubmit metadata must be an object with targetKind and target fields".to_string(),
+            "dispatchSubmit metadata must be an object with targetKind and target fields"
+                .to_string(),
         )
     })?;
     let kind = object

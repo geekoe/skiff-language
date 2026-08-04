@@ -10,18 +10,30 @@ use skiff_runtime_model::{
 pub enum CapabilityError {
     Decode(String),
     Unsupported(String),
-    ProviderUnavailable { target: String, reason: String },
-    Protocol { target: String, message: String },
+    ProviderUnavailable {
+        target: String,
+        reason: String,
+    },
+    Protocol {
+        target: String,
+        message: String,
+    },
     /// A `task.submit.error` rejection projected from the router control
     /// plane. `code` is the canonical `TaskSubmitRejectionCode` string;
     /// `storeUnavailable` is transient, every other code is a definite
     /// rejection that guarantees no task was created.
-    TaskSubmitRejected { code: String, message: String },
+    TaskSubmitRejected {
+        code: String,
+        message: String,
+    },
     /// A `task.status.error` / `task.cancel.error` projection from the router
     /// control plane. `code` is the canonical `TaskControlRejectionCode`
     /// string; `notFound` projects to the stable `expired` user result and
     /// `storeUnavailable` is a transient platform failure.
-    TaskControlRejected { code: String, message: String },
+    TaskControlRejected {
+        code: String,
+        message: String,
+    },
     Opaque(Box<dyn WirePayload>),
 }
 
@@ -180,8 +192,7 @@ impl WirePayload for CapabilityError {
                     "controlCode": code,
                     "message": message,
                 }),
-            ),
-            ),
+            )),
             Self::Opaque(error) => error.catch_projection(),
             Self::Decode(_) | Self::Unsupported(_) => None,
         }

@@ -183,14 +183,12 @@ fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
         "leaseId": "lease-1"
     });
     let frame = encode_binary_frame(&with_attempt, &[0x81]).unwrap();
-    let (header, payload) = decode_runtime_assembly_request_start_frame(&frame)
-        .expect("valid taskAttempt must decode");
+    let (header, payload) =
+        decode_runtime_assembly_request_start_frame(&frame).expect("valid taskAttempt must decode");
     let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
         panic!("task invocation must select the closed task union branch")
     };
-    let attempt = header
-        .task_attempt
-        .expect("taskAttempt must be present");
+    let attempt = header.task_attempt.expect("taskAttempt must be present");
     assert_eq!(attempt.task_id, "task-1");
     assert_eq!(attempt.attempt_id, "attempt-1");
     assert_eq!(attempt.lease_id, "lease-1");

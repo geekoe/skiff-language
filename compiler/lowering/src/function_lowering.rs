@@ -16,8 +16,8 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
-        PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp, DispatchTiming,
+        BinaryOp, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, Literal,
+        ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -691,11 +691,7 @@ impl<'a> FunctionLowerer<'a> {
         Ok(self.push_stmt(lowered))
     }
 
-    fn lower_task_stmt(
-        &mut self,
-        call: &Expr,
-        timing: Option<&DispatchTiming>,
-    ) -> Result<StmtIr> {
+    fn lower_task_stmt(&mut self, call: &Expr, timing: Option<&DispatchTiming>) -> Result<StmtIr> {
         self.consume_expression_key();
         let call_ref = self.lower_task_call(call, timing)?;
         Ok(StmtIr::Dispatch { call: call_ref })
@@ -760,10 +756,7 @@ impl<'a> FunctionLowerer<'a> {
                     Some(DispatchTiming::After(_)) => "after",
                     _ => "at",
                 };
-                timing_metadata.insert(
-                    "kind".to_string(),
-                    MetadataValue::String(kind.to_string()),
-                );
+                timing_metadata.insert("kind".to_string(), MetadataValue::String(kind.to_string()));
                 timing_metadata.insert(
                     "expr".to_string(),
                     MetadataValue::Number(serde_json::Number::from(timing_ref.expression)),
@@ -775,10 +768,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
         }
-        object.insert(
-            "timing".to_string(),
-            MetadataValue::Object(timing_metadata),
-        );
+        object.insert("timing".to_string(), MetadataValue::Object(timing_metadata));
         Ok(())
     }
 
@@ -855,10 +845,7 @@ impl<'a> FunctionLowerer<'a> {
                             .to_string(),
                     ));
                 }
-                (
-                    "function",
-                    format!("{TASK_FUNCTION_TARGET_PREFIX}{symbol}"),
-                )
+                ("function", format!("{TASK_FUNCTION_TARGET_PREFIX}{symbol}"))
             }
             CallTargetIr::PackageCallable {
                 package_ref,

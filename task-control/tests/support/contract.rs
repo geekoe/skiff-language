@@ -916,7 +916,10 @@ async fn backlog_observation(store: &dyn TaskStore, time: &TestTime) {
         .await
         .expect("observe backlog baseline");
     let future = fixtures::record(701, time.now_millis() + FUTURE_MILLIS);
-    store.create(future.clone()).await.expect("create future task");
+    store
+        .create(future.clone())
+        .await
+        .expect("create future task");
     let mut due = fixtures::record(702, time.now_millis() - PAST_MILLIS);
     due.created_at = DurableUtcTimestamp::from_millis(time.now_millis() - 1_000);
     store.create(due.clone()).await.expect("create due task");
@@ -942,7 +945,9 @@ async fn backlog_observation(store: &dyn TaskStore, time: &TestTime) {
         .scan_due(DueScanInput { limit: 100 })
         .await
         .expect("scan due");
-    assert!(due_records.iter().any(|record| record.task_id == due.task_id));
+    assert!(due_records
+        .iter()
+        .any(|record| record.task_id == due.task_id));
     let scanned = store
         .observe_backlog()
         .await

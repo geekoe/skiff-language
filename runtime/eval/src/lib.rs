@@ -48,8 +48,8 @@ pub mod runtime_value_view;
 mod runtime_websocket_connect;
 mod runtime_websocket_jsonrpc;
 pub mod source_context;
-pub mod task_ops;
 pub mod stream_callback;
+pub mod task_ops;
 mod test_effect_registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

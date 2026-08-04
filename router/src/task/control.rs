@@ -16,18 +16,14 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use skiff_runtime_transport::protocol::TelemetryLevel;
+use skiff_task_control::model::{DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal};
 use skiff_task_control::scheduler::AdmissionDecision;
-use skiff_task_control::model::{
-    DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal,
-};
 use skiff_task_control::scheduler::Scheduler;
 use skiff_task_control::store::{ReleaseInput, SettleInput, SettleOutcome, TaskStore};
 
-use crate::dispatch::{
-    RequestDispatcher, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink,
-};
-use crate::ws::Clock;
+use crate::dispatch::{RequestDispatcher, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink};
 use crate::telemetry::{task_event, TaskTelemetrySink};
+use crate::ws::Clock;
 
 use super::actor_attempt::{ActorAttemptTerminal, ActorAttemptTerminalSink};
 use super::health::TaskControlCounters;
@@ -62,9 +58,7 @@ enum ControlEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirstAdmissionOutcome {
     Accepted,
-    PermanentFailure {
-        reason: String,
-    },
+    PermanentFailure { reason: String },
 }
 
 impl FirstAdmissionOutcome {
@@ -111,7 +105,10 @@ impl fmt::Debug for DurableTaskControl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DurableTaskControl")
-            .field("pending", &self.pending.lock().map(|guard| guard.len()).unwrap_or(0))
+            .field(
+                "pending",
+                &self.pending.lock().map(|guard| guard.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -181,12 +178,10 @@ impl DurableTaskControl {
         _lease_id: &LeaseId,
         deadline_ms: u64,
     ) {
-        self.pending.lock().expect("pending lock").insert(
-            request_id.to_string(),
-            PendingAttempt {
-                deadline_ms,
-            },
-        );
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .insert(request_id.to_string(), PendingAttempt { deadline_ms });
     }
 
     /// Number of attempts this replica is currently correlating.
@@ -196,10 +191,7 @@ impl DurableTaskControl {
 
     /// Read-only store backlog (observability; store-authority snapshot).
     pub async fn backlog(&self) -> skiff_task_control::store::BacklogObservation {
-        self.store
-            .observe_backlog()
-            .await
-            .unwrap_or_default()
+        self.store.observe_backlog().await.unwrap_or_default()
     }
 
     /// Counter bank shared with the sink / admission seam.
@@ -211,11 +203,7 @@ impl DurableTaskControl {
     /// admission decisions (`Accepted` / `PermanentFailure`) are observable;
     /// retryable rejections stay unobservable so the submit waiter keeps
     /// waiting for the attempt that can actually join the test case.
-    pub fn report_first_admission(
-        &self,
-        task_id: &TaskId,
-        decision: &AdmissionDecision,
-    ) {
+    pub fn report_first_admission(&self, task_id: &TaskId, decision: &AdmissionDecision) {
         if let Some(outcome) = FirstAdmissionOutcome::from_decision(decision) {
             let _ = self.admission_events.send((task_id.clone(), outcome));
         }
@@ -302,23 +290,29 @@ impl DurableTaskControl {
                 lease_id,
                 outcome,
             } => {
-                let settled_at = self
-                    .store
-                    .now()
-                    .await
-                    .unwrap_or(DurableUtcTimestamp::from_millis(
-                        i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
-                    ));
+                let settled_at =
+                    self.store
+                        .now()
+                        .await
+                        .unwrap_or(DurableUtcTimestamp::from_millis(
+                            i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX),
+                        ));
                 let result = self
                     .store
                     .settle(SettleInput {
                         task_id: task_id.clone(),
                         lease_id: lease_id.clone(),
-                        terminal: TaskTerminal { settled_at, outcome },
+                        terminal: TaskTerminal {
+                            settled_at,
+                            outcome,
+                        },
                     })
                     .await;
                 self.emit_settle_outcome(&request_id, &task_id, &result);
-                self.pending.lock().expect("pending lock").remove(&request_id);
+                self.pending
+                    .lock()
+                    .expect("pending lock")
+                    .remove(&request_id);
             }
             ControlEvent::Release {
                 request_id,
@@ -326,7 +320,10 @@ impl DurableTaskControl {
                 lease_id,
                 retry_after_ms,
             } => {
-                self.pending.lock().expect("pending lock").remove(&request_id);
+                self.pending
+                    .lock()
+                    .expect("pending lock")
+                    .remove(&request_id);
                 let now = self
                     .store
                     .now()
@@ -452,7 +449,10 @@ impl DurableTaskControl {
 
     fn emit_lease_released(&self, task_id: &TaskId, lease_id: &LeaseId, retry_after_ms: u64) {
         let mut attrs = Map::new();
-        attrs.insert("leaseId".to_string(), Value::String(lease_id.as_str().to_string()));
+        attrs.insert(
+            "leaseId".to_string(),
+            Value::String(lease_id.as_str().to_string()),
+        );
         attrs.insert("retryAfterMs".to_string(), json!(retry_after_ms));
         self.telemetry.emit(task_event(
             "task.lease.released",
@@ -469,7 +469,10 @@ impl DurableTaskControl {
         lease_id: &LeaseId,
         outcome: TaskOutcome,
     ) {
-        self.pending.lock().expect("pending lock").remove(request_id);
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .remove(request_id);
         let _ = self.events.try_send(ControlEvent::Settle {
             request_id: request_id.to_string(),
             task_id: task_id.clone(),
@@ -485,7 +488,10 @@ impl DurableTaskControl {
         lease_id: &LeaseId,
         retry_after_ms: u64,
     ) {
-        self.pending.lock().expect("pending lock").remove(request_id);
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .remove(request_id);
         self.emit_lease_released(task_id, lease_id, retry_after_ms);
         if let Some(scheduler) = self
             .scheduler
@@ -504,7 +510,10 @@ impl DurableTaskControl {
     }
 
     fn forget_now(&self, request_id: &str, task_id: &TaskId, lease_id: &LeaseId) {
-        self.pending.lock().expect("pending lock").remove(request_id);
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .remove(request_id);
         self.emit_uncertain_attempt(
             request_id,
             task_id,

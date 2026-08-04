@@ -200,7 +200,7 @@ impl<'a> RuntimeBoundaryCodec<'a> {
             stream_policy,
             self.handle_policy(),
         )
-            .map_err(|error| self.add_context(error))
+        .map_err(|error| self.add_context(error))
     }
 
     pub fn to_wire_json(&self, value: &RuntimeValue, heap: &mut RequestHeap) -> Result<Value> {
@@ -230,7 +230,7 @@ impl<'a> RuntimeBoundaryCodec<'a> {
             stream_policy,
             self.handle_policy(),
         )
-            .map_err(|error| self.add_context(error))
+        .map_err(|error| self.add_context(error))
     }
 
     pub fn coerce_runtime_value(
@@ -244,7 +244,7 @@ impl<'a> RuntimeBoundaryCodec<'a> {
             heap,
             self.handle_policy(),
         )
-            .map_err(|error| self.add_context(error))
+        .map_err(|error| self.add_context(error))
     }
 
     pub fn decode_json_text(&self, input: &str, heap: &mut RequestHeap) -> Result<RuntimeValue> {

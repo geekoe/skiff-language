@@ -68,8 +68,7 @@ pub struct RuntimeTaskExecutionHandles {
 pub trait RuntimeTaskEvalAdapter: Send + Sync {
     fn runtime_factory(&self) -> EvalRuntimeFactory;
 
-    fn begin_test_effect_execution(&self)
-        -> RequestResult<Option<RuntimeTaskTestEffectExecution>>;
+    fn begin_test_effect_execution(&self) -> RequestResult<Option<RuntimeTaskTestEffectExecution>>;
 
     fn execution_context<'a>(
         &'a self,
@@ -134,8 +133,7 @@ pub async fn execute_runtime_task_request(
     execution.check_cancelled().map_err(RequestError::from)?;
     if request.test_effects_enabled != request.test_case_capability.is_some() {
         return Err(RequestError::Unsupported(
-            "task request testEffectsEnabled and testCaseCapability authority disagree"
-                .to_string(),
+            "task request testEffectsEnabled and testCaseCapability authority disagree".to_string(),
         ));
     }
     if request.test_effects_enabled && test_effect_execution.is_none() {

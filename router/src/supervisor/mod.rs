@@ -278,10 +278,10 @@ impl RouterComponents {
             Arc::new(Mutex::new(None));
         let deferred_task_actor_sink: Arc<
             Mutex<Option<Arc<crate::supervisor::actor_sink::ActorFrameSink>>>,
-        > =
-            Arc::new(Mutex::new(None));
+        > = Arc::new(Mutex::new(None));
         let task_counters = Arc::new(TaskControlCounters::default());
-        let task_telemetry: Arc<dyn TaskTelemetrySink> = match RouterTelemetryProducer::new(config) {
+        let task_telemetry: Arc<dyn TaskTelemetrySink> = match RouterTelemetryProducer::new(config)
+        {
             Some(producer) => Arc::new(producer),
             None => Arc::new(NoopTaskTelemetrySink),
         };
@@ -351,8 +351,7 @@ impl RouterComponents {
                 .map_err(SupervisorError::Dispatcher)?
                 .with_task_attempt_terminal(
                     Arc::clone(&task_control) as Arc<dyn crate::dispatch::TaskAttemptTerminalSink>
-                )
-                ,
+                ),
             )
             .map_err(SupervisorError::Dispatcher)?,
         );
@@ -698,13 +697,9 @@ impl RouterSupervisor {
         repository: Arc<dyn ActivationStateRepository>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Self, SupervisorError> {
-        let components = RouterComponents::assemble_with_task_store(
-            config,
-            environment,
-            repository,
-            task_store,
-        )
-        .await?;
+        let components =
+            RouterComponents::assemble_with_task_store(config, environment, repository, task_store)
+                .await?;
         Ok(Self { components })
     }
 
@@ -789,12 +784,12 @@ impl RouterSupervisor {
         ));
         let runtime_control =
             start_runtime_control_listener_with_control_and_health_and_test_dispatch(
-            &components.config,
-            options,
-            Arc::clone(&components.session),
-            Some(activation_http),
-            Some(health),
-            Some(test_dispatch),
+                &components.config,
+                options,
+                Arc::clone(&components.session),
+                Some(activation_http),
+                Some(health),
+                Some(test_dispatch),
             )
             .await?;
         Ok(SupervisorListeners {

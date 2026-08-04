@@ -125,7 +125,9 @@ fn validate_task_timing_metadata(object: &BTreeMap<String, MetadataValue>) -> Re
         return Err(error("dispatchSubmit metadata timing must be an object"));
     };
     let Some(MetadataValue::String(kind)) = timing.get("kind") else {
-        return Err(error("dispatchSubmit metadata timing kind must be a string"));
+        return Err(error(
+            "dispatchSubmit metadata timing kind must be a string",
+        ));
     };
     match kind.as_str() {
         "immediate" => Ok(()),

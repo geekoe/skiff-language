@@ -1,8 +1,8 @@
 use crate::heap_access::HeapAccess;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
     sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex},
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,8 +13,7 @@ use skiff_artifact_model::{
     FileIrUnit, MetadataValue, NativeTarget, PackageArtifact, PackageArtifactRef, PackageBuildId,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexRef, RuntimeAssembly, ServiceContract,
-    ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr, StmtRefIr,
-    TypeRefIr,
+    ServiceContractRef, ServiceDeploymentRef, SlotLayout, StmtIr, StmtRefIr, TypeRefIr,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_activation::{
@@ -80,10 +79,7 @@ impl RecordingActor {
         }
     }
 
-    fn scripted(
-        self,
-        replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>,
-    ) -> Self {
+    fn scripted(self, replies: Vec<Result<TaskSubmitResponseControl, CapabilityError>>) -> Self {
         self.replies
             .lock()
             .expect("task reply script should remain available")
@@ -440,10 +436,7 @@ async fn f445h_i6_actor_scope_task_uses_current_projection_and_exact_target() {
         request.caller_request_id.as_deref(),
         Some("request:canonical-task")
     );
-    assert_eq!(
-        request.service_protocol_identity,
-        "protocol:canonical-task"
-    );
+    assert_eq!(request.service_protocol_identity, "protocol:canonical-task");
     assert_eq!(&payload[..4], b"SKRE");
     drop(submissions);
     let receipts = fixture
@@ -670,8 +663,14 @@ async fn canonical_task_expression_position_returns_task_ref() {
     let [(request, _payload)] = submissions.as_slice() else {
         panic!("canonical dispatch expression should submit exactly once");
     };
-    let task_id = request.task_id.as_deref().expect("TaskId must be generated");
-    assert_eq!(task_ref.as_str(), task_ref_for(&request.service_id, task_id));
+    let task_id = request
+        .task_id
+        .as_deref()
+        .expect("TaskId must be generated");
+    assert_eq!(
+        task_ref.as_str(),
+        task_ref_for(&request.service_id, task_id)
+    );
 }
 
 #[tokio::test]
@@ -898,12 +897,7 @@ async fn std_task_status_maps_wire_kind_to_user_union_value() {
     );
     let mut heap = HeapAccess::private(RequestHeap::default());
     let value = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut heap,
-            &fixture.caller_addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
         .await
         .expect("std.task.status should map to a user union value");
     let RuntimeValue::Heap(handle) = value else {
@@ -946,12 +940,7 @@ async fn std_task_cancel_maps_wire_kind_to_user_union_value() {
     );
     let mut heap = HeapAccess::private(RequestHeap::default());
     let value = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut heap,
-            &fixture.caller_addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
         .await
         .expect("std.task.cancel should map to a user union value");
     let RuntimeValue::Heap(handle) = value else {
@@ -994,12 +983,7 @@ async fn std_task_status_not_found_projects_to_stable_expired() {
     );
     let mut heap = HeapAccess::private(RequestHeap::default());
     let value = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut heap,
-            &fixture.caller_addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
         .await
         .expect("notFound must project to stable expired");
     let RuntimeValue::Heap(handle) = value else {
@@ -1039,12 +1023,7 @@ async fn std_task_cancel_not_found_projects_to_stable_expired() {
     );
     let mut heap = HeapAccess::private(RequestHeap::default());
     let value = interpreter
-        .execute_runtime_assembly_addr(
-            context,
-            &mut heap,
-            &fixture.caller_addr,
-            Vec::new(),
-        )
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
         .await
         .expect("notFound must project to stable expired");
     let RuntimeValue::Heap(handle) = value else {
@@ -1092,7 +1071,9 @@ async fn std_task_status_store_unavailable_surfaces_platform_error() {
         .await
         .expect_err("storeUnavailable must surface as a platform error");
     assert!(
-        error.to_string().contains("task control rejected (storeUnavailable)"),
+        error
+            .to_string()
+            .contains("task control rejected (storeUnavailable)"),
         "unexpected error: {error}"
     );
 }
@@ -1343,7 +1324,10 @@ fn caller_executable_with_timing(
             }
             dispatch.insert("timing".to_string(), MetadataValue::Object(timing_metadata));
         }
-        metadata.insert("dispatchSubmit".to_string(), MetadataValue::Object(dispatch));
+        metadata.insert(
+            "dispatchSubmit".to_string(),
+            MetadataValue::Object(dispatch),
+        );
     }
     let mut expressions = vec![ExprIr::Call {
         call: skiff_artifact_model::CallIr {

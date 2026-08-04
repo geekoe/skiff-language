@@ -55,6 +55,4 @@ pub use health::{
     AdmissionHealth, DispatcherHealthSnapshot, PendingHealth, TaskHealth, TerminalHealth,
     TerminalSource,
 };
-pub use types::{
-    DispatchSubmit, RequestAuthority, RequestDeadline, TaskAttemptSubmit,
-};
+pub use types::{DispatchSubmit, RequestAuthority, RequestDeadline, TaskAttemptSubmit};

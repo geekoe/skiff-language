@@ -157,8 +157,7 @@ fn decode_task_ref_segment(encoded: &str, label: &str) -> Result<String, String>
     let bytes = URL_SAFE_NO_PAD
         .decode(encoded)
         .map_err(|error| format!("taskRef {label} is not canonical base64url: {error}"))?;
-    String::from_utf8(bytes)
-        .map_err(|error| format!("taskRef {label} is not valid UTF-8: {error}"))
+    String::from_utf8(bytes).map_err(|error| format!("taskRef {label} is not valid UTF-8: {error}"))
 }
 
 /// Wire projection of `std.task.status` kinds (`doc/reference/dispatch.md`
@@ -289,7 +288,9 @@ impl TaskSubmitRejectionCode {
     }
 
     pub fn parse(code: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|candidate| candidate.as_str() == code)
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == code)
     }
 
     /// `storeUnavailable` is the transient failure; every other code is a
@@ -602,10 +603,8 @@ pub fn decode_task_submit_request_frame(
     bytes: &[u8],
 ) -> Result<(TaskSubmitRequestFrameHeaderV2, Vec<u8>), BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
-    let header: TaskSubmitRequestFrameHeaderV2 =
-        serde_json::from_value(frame.header).map_err(|error| {
-            TransportError::decode(format!("invalid task.submit.request: {error}"))
-        })?;
+    let header: TaskSubmitRequestFrameHeaderV2 = serde_json::from_value(frame.header)
+        .map_err(|error| TransportError::decode(format!("invalid task.submit.request: {error}")))?;
     validate_task_submit_request(&header).map_err(TransportError::decode)?;
     Ok((header, frame.payload_bytes))
 }
@@ -660,9 +659,8 @@ pub fn decode_task_status_request_frame(
 ) -> Result<TaskStatusRequestFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_STATUS_REQUEST_FRAME_TYPE)?;
-    let header: TaskStatusRequestFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.status.request: {error}")),
-    )?;
+    let header: TaskStatusRequestFrameHeader = serde_json::from_value(frame.header)
+        .map_err(|error| TransportError::decode(format!("invalid task.status.request: {error}")))?;
     validate_status_request(&header)?;
     Ok(header)
 }
@@ -679,9 +677,10 @@ pub fn decode_task_status_response_frame(
 ) -> Result<TaskStatusResponseFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_STATUS_RESPONSE_FRAME_TYPE)?;
-    let header: TaskStatusResponseFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.status.response: {error}")),
-    )?;
+    let header: TaskStatusResponseFrameHeader =
+        serde_json::from_value(frame.header).map_err(|error| {
+            TransportError::decode(format!("invalid task.status.response: {error}"))
+        })?;
     validate_status_response(&header)?;
     Ok(header)
 }
@@ -698,9 +697,8 @@ pub fn decode_task_cancel_request_frame(
 ) -> Result<TaskCancelRequestFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_CANCEL_REQUEST_FRAME_TYPE)?;
-    let header: TaskCancelRequestFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.cancel.request: {error}")),
-    )?;
+    let header: TaskCancelRequestFrameHeader = serde_json::from_value(frame.header)
+        .map_err(|error| TransportError::decode(format!("invalid task.cancel.request: {error}")))?;
     validate_cancel_request(&header)?;
     Ok(header)
 }
@@ -717,9 +715,10 @@ pub fn decode_task_cancel_response_frame(
 ) -> Result<TaskCancelResponseFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_CANCEL_RESPONSE_FRAME_TYPE)?;
-    let header: TaskCancelResponseFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.cancel.response: {error}")),
-    )?;
+    let header: TaskCancelResponseFrameHeader =
+        serde_json::from_value(frame.header).map_err(|error| {
+            TransportError::decode(format!("invalid task.cancel.response: {error}"))
+        })?;
     validate_cancel_response(&header)?;
     Ok(header)
 }
@@ -736,9 +735,8 @@ pub fn decode_task_status_error_frame(
 ) -> Result<ActorTaskRuntimeErrorFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_STATUS_ERROR_FRAME_TYPE)?;
-    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.status.error: {error}")),
-    )?;
+    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header)
+        .map_err(|error| TransportError::decode(format!("invalid task.status.error: {error}")))?;
     validate_error(&header, TASK_STATUS_ERROR_FRAME_TYPE)?;
     Ok(header)
 }
@@ -755,9 +753,8 @@ pub fn decode_task_cancel_error_frame(
 ) -> Result<ActorTaskRuntimeErrorFrameHeader, BinaryFrameError> {
     let frame = decode_binary_frame(bytes)?;
     reject_payload(&frame.payload_bytes, TASK_CANCEL_ERROR_FRAME_TYPE)?;
-    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header).map_err(
-        |error| TransportError::decode(format!("invalid task.cancel.error: {error}")),
-    )?;
+    let header: ActorTaskRuntimeErrorFrameHeader = serde_json::from_value(frame.header)
+        .map_err(|error| TransportError::decode(format!("invalid task.cancel.error: {error}")))?;
     validate_error(&header, TASK_CANCEL_ERROR_FRAME_TYPE)?;
     Ok(header)
 }
@@ -885,9 +882,7 @@ fn validate_activation_snapshot(
         }
     }
     if !snapshot.expected_type_plan.is_object() {
-        return Err(
-            "activation.expectedTypePlan must be a JSON object".to_string(),
-        );
+        return Err("activation.expectedTypePlan must be a JSON object".to_string());
     }
     Ok(())
 }
@@ -922,21 +917,19 @@ fn validate_error(
     .map_err(TransportError::decode)?;
     validate_token(&header.rpc_id, "rpcId").map_err(TransportError::decode)?;
     if header.error.code.trim().is_empty() {
-        return Err(TransportError::decode(
-            format!("{expected_frame_type} code must be non-empty"),
-        ));
+        return Err(TransportError::decode(format!(
+            "{expected_frame_type} code must be non-empty"
+        )));
     }
     if header.error.message.trim().is_empty() || header.error.message.len() > 4096 {
-        return Err(TransportError::decode(
-            format!("{expected_frame_type} message must contain 1..4096 bytes"),
-        ));
+        return Err(TransportError::decode(format!(
+            "{expected_frame_type} message must contain 1..4096 bytes"
+        )));
     }
     Ok(())
 }
 
-fn validate_status_request(
-    header: &TaskStatusRequestFrameHeader,
-) -> Result<(), BinaryFrameError> {
+fn validate_status_request(header: &TaskStatusRequestFrameHeader) -> Result<(), BinaryFrameError> {
     validate_common(
         &header.schema_version,
         &header.envelope_type,
@@ -962,9 +955,7 @@ fn validate_status_response(
     Ok(())
 }
 
-fn validate_cancel_request(
-    header: &TaskCancelRequestFrameHeader,
-) -> Result<(), BinaryFrameError> {
+fn validate_cancel_request(header: &TaskCancelRequestFrameHeader) -> Result<(), BinaryFrameError> {
     validate_common(
         &header.schema_version,
         &header.envelope_type,

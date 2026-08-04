@@ -5,8 +5,8 @@
 
 mod dispatch_harness;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,9 +16,7 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
     PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
 };
-use skiff_router::dispatch::{
-    RequestDispatcher, RuntimeDispatcherOptions,
-};
+use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use skiff_router::session::demux::InboundFrameSink;
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 use skiff_router::supervisor::actor::{assemble_actor_components, ActorComponents};
@@ -41,8 +39,8 @@ use skiff_runtime_transport::protocol::{
     decode_task_status_error_frame, decode_task_status_response_frame,
     decode_task_submit_error_frame, decode_task_submit_response_frame,
     encode_task_cancel_request_frame, encode_task_status_request_frame,
-    encode_task_submit_request_frame, ActivationIdentityFrameMetadata, TaskCallerKind,
-    TaskActorActivationSnapshotFrameMetadata, TaskActorMethodTargetFrameMetadata,
+    encode_task_submit_request_frame, ActivationIdentityFrameMetadata,
+    TaskActorActivationSnapshotFrameMetadata, TaskActorMethodTargetFrameMetadata, TaskCallerKind,
     TaskCancelRequestFrameHeader, TaskCancelResultKindWire, TaskControlRejectionCode,
     TaskStatusKindWire, TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind,
     RUNTIME_FRAME_SCHEMA_VERSION,
@@ -50,14 +48,14 @@ use skiff_runtime_transport::protocol::{
 use skiff_task_control::model::{
     DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
     TaskExecutionImageRef, TaskId, TaskOutcome, TaskRecord, TaskState, TaskStatusKind,
-    TaskTestCaseAuthority, TaskTerminal, TaskTraceContext,
+    TaskTerminal, TaskTestCaseAuthority, TaskTraceContext,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
 };
 use skiff_task_control::store::{ClaimInput, DueScanInput, SettleInput, StatusInput, TaskStore};
-use skiff_task_control::TaskStoreError;
 use skiff_task_control::MemoryTaskStore;
+use skiff_task_control::TaskStoreError;
 use tokio::sync::watch;
 
 const SERVICE_ID: &str = "example.com/service-1";
@@ -140,12 +138,8 @@ fn actor_lane_stub() -> (
     let epoch_store = Arc::new(skiff_router::bootstrap::ActiveRoutingEpochStore::new());
     epoch_store.publish(Arc::clone(&epoch));
     let session = SessionHandle::new();
-    let components = assemble_actor_components(
-        epoch,
-        Arc::clone(&epoch_store),
-        session.clone(),
-    )
-    .expect("actor components");
+    let components = assemble_actor_components(epoch, Arc::clone(&epoch_store), session.clone())
+        .expect("actor components");
     let writer = Arc::new(FakeWriter::default());
     let sink = Arc::new(ActorFrameSink::new(
         Arc::clone(&components),
@@ -288,7 +282,10 @@ impl TaskStore for AmbiguousCreateStore {
         self.inner.create(record).await
     }
 
-    async fn claim(&self, input: ClaimInput) -> Result<skiff_task_control::store::ClaimOutcome, TaskStoreError> {
+    async fn claim(
+        &self,
+        input: ClaimInput,
+    ) -> Result<skiff_task_control::store::ClaimOutcome, TaskStoreError> {
         self.inner.claim(input).await
     }
 
@@ -299,7 +296,10 @@ impl TaskStore for AmbiguousCreateStore {
         self.inner.renew(input).await
     }
 
-    async fn settle(&self, input: SettleInput) -> Result<skiff_task_control::store::SettleOutcome, TaskStoreError> {
+    async fn settle(
+        &self,
+        input: SettleInput,
+    ) -> Result<skiff_task_control::store::SettleOutcome, TaskStoreError> {
         self.inner.settle(input).await
     }
 
@@ -324,10 +324,7 @@ impl TaskStore for AmbiguousCreateStore {
         self.inner.release(input).await
     }
 
-    async fn scan_due(
-        &self,
-        input: DueScanInput,
-    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+    async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError> {
         self.inner.scan_due(input).await
     }
 
@@ -338,7 +335,10 @@ impl TaskStore for AmbiguousCreateStore {
         self.inner.scan_expired_leases(input).await
     }
 
-    async fn status(&self, input: StatusInput) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
+    async fn status(
+        &self,
+        input: StatusInput,
+    ) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
         self.inner.status(input).await
     }
 
@@ -403,7 +403,10 @@ impl TaskStore for ScriptedControlStore {
         self.inner.create(record).await
     }
 
-    async fn claim(&self, input: ClaimInput) -> Result<skiff_task_control::store::ClaimOutcome, TaskStoreError> {
+    async fn claim(
+        &self,
+        input: ClaimInput,
+    ) -> Result<skiff_task_control::store::ClaimOutcome, TaskStoreError> {
         self.inner.claim(input).await
     }
 
@@ -414,7 +417,10 @@ impl TaskStore for ScriptedControlStore {
         self.inner.renew(input).await
     }
 
-    async fn settle(&self, input: SettleInput) -> Result<skiff_task_control::store::SettleOutcome, TaskStoreError> {
+    async fn settle(
+        &self,
+        input: SettleInput,
+    ) -> Result<skiff_task_control::store::SettleOutcome, TaskStoreError> {
         self.inner.settle(input).await
     }
 
@@ -448,10 +454,7 @@ impl TaskStore for ScriptedControlStore {
         self.inner.release(input).await
     }
 
-    async fn scan_due(
-        &self,
-        input: DueScanInput,
-    ) -> Result<Vec<TaskRecord>, TaskStoreError> {
+    async fn scan_due(&self, input: DueScanInput) -> Result<Vec<TaskRecord>, TaskStoreError> {
         self.inner.scan_due(input).await
     }
 
@@ -462,7 +465,10 @@ impl TaskStore for ScriptedControlStore {
         self.inner.scan_expired_leases(input).await
     }
 
-    async fn status(&self, input: StatusInput) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
+    async fn status(
+        &self,
+        input: StatusInput,
+    ) -> Result<skiff_task_control::model::TaskStatus, TaskStoreError> {
         let outcome = *self.status_outcome.lock().expect("status script");
         match outcome {
             ControlQueryOutcome::Passthrough => self.inner.status(input).await,
@@ -618,7 +624,9 @@ fn actor_method_submit_header(task_id: Option<&str>) -> TaskSubmitRequestFrameHe
     header
 }
 
-fn status_request(task_ref: &str) -> skiff_runtime_transport::protocol::TaskStatusRequestFrameHeader {
+fn status_request(
+    task_ref: &str,
+) -> skiff_runtime_transport::protocol::TaskStatusRequestFrameHeader {
     skiff_runtime_transport::protocol::TaskStatusRequestFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "task.status.request".to_string(),
@@ -664,7 +672,8 @@ fn sink_rig() -> (
         store_dyn,
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
@@ -696,7 +705,8 @@ fn scripted_control_rig(
         store,
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
@@ -707,7 +717,10 @@ fn scripted_control_rig(
 }
 
 async fn claim_ready(store: &dyn TaskStore, task_id: &str) -> TaskRecord {
-    let records = store.scan_due(DueScanInput { limit: 100 }).await.expect("scan");
+    let records = store
+        .scan_due(DueScanInput { limit: 100 })
+        .await
+        .expect("scan");
     let record = records
         .into_iter()
         .find(|record| record.task_id.as_str() == task_id)
@@ -942,11 +955,15 @@ async fn submit_same_task_id_is_idempotent() {
     let first = poll_writer(&writer, 1).await;
     let second = poll_writer(&writer, 2).await;
     assert_eq!(
-        decode_task_submit_response_frame(&first).expect("response").task_id,
+        decode_task_submit_response_frame(&first)
+            .expect("response")
+            .task_id,
         TASK_ID
     );
     assert_eq!(
-        decode_task_submit_response_frame(&second).expect("response").task_id,
+        decode_task_submit_response_frame(&second)
+            .expect("response")
+            .task_id,
         TASK_ID
     );
     assert_eq!(store.records().await.len(), 1, "no second task");
@@ -987,7 +1004,8 @@ async fn submit_transient_create_queries_same_task_id() {
             RetryBackoffPolicy::default(),
         )),
         Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         Arc::clone(&ambiguous_writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
@@ -1041,7 +1059,8 @@ async fn immediate_submit_wakes_scheduler_without_waiting_for_scan() {
         Arc::clone(&store),
         Arc::clone(&scheduler),
         Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TaskControlCounters::default()),
@@ -1080,16 +1099,10 @@ struct ControlRig {
 }
 
 fn control_rig() -> ControlRig {
-    control_rig_with_sessions(vec![dispatch_harness::session_state(
-        "s1",
-        "runtime-a",
-        1,
-    )])
+    control_rig_with_sessions(vec![dispatch_harness::session_state("s1", "runtime-a", 1)])
 }
 
-fn control_rig_with_sessions(
-    sessions: Vec<dispatch_harness::SessionState>,
-) -> ControlRig {
+fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> ControlRig {
     let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
     let clock = Arc::new(TestClock::default());
     clock.now_ms.store(1_700_000_000_000, Ordering::SeqCst);
@@ -1139,9 +1152,7 @@ fn control_rig_with_sessions(
         RequestDispatcher::new(
             RuntimeDispatcherOptions::new(
                 8,
-                Arc::new(dispatch_harness::FakeEpochSource {
-                    epoch: Some(epoch),
-                }),
+                Arc::new(dispatch_harness::FakeEpochSource { epoch: Some(epoch) }),
                 Arc::new(candidate),
                 Arc::new(dispatch_harness::FakeLeaseRevalidate::new()),
                 Arc::new(peer.clone()),
@@ -1149,7 +1160,7 @@ fn control_rig_with_sessions(
             )
             .expect("options")
             .with_task_attempt_terminal(
-                Arc::clone(&control) as Arc<dyn skiff_router::dispatch::TaskAttemptTerminalSink>,
+                Arc::clone(&control) as Arc<dyn skiff_router::dispatch::TaskAttemptTerminalSink>
             ),
         )
         .expect("dispatcher"),
@@ -1214,7 +1225,10 @@ async fn test_case_function_attempt_carries_capability_and_prefers_origin_sessio
     assert_eq!(peer.attempts.len(), 1);
     let header = &peer.attempt_headers[0];
     assert!(header.test_effects_enabled);
-    assert_eq!(header.test_case_capability.as_deref(), Some("test-case:cap-1"));
+    assert_eq!(
+        header.test_case_capability.as_deref(),
+        Some("test-case:cap-1")
+    );
     let request_id = &peer.attempts[0];
     let lease = rig
         .dispatcher
@@ -1266,9 +1280,7 @@ async fn test_case_submission_gate_observes_first_admission_outcome() {
     let admit = tokio::spawn({
         let admission = Arc::clone(&rig.admission);
         let record = claimed.clone();
-        async move {
-            admission.admit(&record).await
-        }
+        async move { admission.admit(&record).await }
     });
     let outcome = rig
         .control
@@ -1516,7 +1528,12 @@ async fn scheduler_handles_all_four_admission_decisions_via_store() {
 
     // Accepted -> active lease tracked.
     store
-        .create(record("task-accepted", corpus_image(), now, TaskState::Scheduled))
+        .create(record(
+            "task-accepted",
+            corpus_image(),
+            now,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
     seam.push(AdmissionDecision::Accepted);
@@ -1525,7 +1542,12 @@ async fn scheduler_handles_all_four_admission_decisions_via_store() {
 
     // RejectedProvable -> released back to ready with retry not-before.
     store
-        .create(record("task-rejected", corpus_image(), now, TaskState::Scheduled))
+        .create(record(
+            "task-rejected",
+            corpus_image(),
+            now,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
     seam.push(AdmissionDecision::RejectedProvable {
@@ -1538,7 +1560,12 @@ async fn scheduler_handles_all_four_admission_decisions_via_store() {
 
     // Uncertain -> no settle, no release; lease stays until expiry.
     store
-        .create(record("task-uncertain", corpus_image(), now, TaskState::Scheduled))
+        .create(record(
+            "task-uncertain",
+            corpus_image(),
+            now,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
     seam.push(AdmissionDecision::Uncertain {
@@ -1551,7 +1578,12 @@ async fn scheduler_handles_all_four_admission_decisions_via_store() {
 
     // PermanentFailure -> settled platform-failed.
     store
-        .create(record("task-permanent", corpus_image(), now, TaskState::Scheduled))
+        .create(record(
+            "task-permanent",
+            corpus_image(),
+            now,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
     seam.push(AdmissionDecision::PermanentFailure {
@@ -1629,7 +1661,12 @@ async fn status_and_cancel_project_reference_kinds() {
     store
         .settle(SettleInput {
             task_id: claimed.task_id.clone(),
-            lease_id: claimed.active_lease.as_ref().expect("lease").lease_id.clone(),
+            lease_id: claimed
+                .active_lease
+                .as_ref()
+                .expect("lease")
+                .lease_id
+                .clone(),
             terminal: TaskTerminal {
                 settled_at: now,
                 outcome: TaskOutcome::Succeeded,
@@ -1659,7 +1696,10 @@ async fn status_and_cancel_project_reference_kinds() {
         .create(record(task_id, corpus_image(), now, TaskState::Scheduled))
         .await
         .expect("create");
-    let _ = store.scan_due(DueScanInput { limit: 100 }).await.expect("scan");
+    let _ = store
+        .scan_due(DueScanInput { limit: 100 })
+        .await
+        .expect("scan");
     let request = cancel_request(&task_ref(task_id));
     let bytes = encode_task_cancel_request_frame(&request).expect("encode");
     sink.handle(&session, &bytes).expect("cancel");
@@ -1669,7 +1709,12 @@ async fn status_and_cancel_project_reference_kinds() {
 
     let leased_task = "task-cancel-leased";
     store
-        .create(record(leased_task, corpus_image(), now, TaskState::Scheduled))
+        .create(record(
+            leased_task,
+            corpus_image(),
+            now,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
     let _ = claim_ready(store.as_ref(), leased_task).await;
@@ -1678,14 +1723,20 @@ async fn status_and_cancel_project_reference_kinds() {
     sink.handle(&session, &bytes).expect("cancel");
     let response = poll_writer(&writer, 6).await;
     let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(decoded.result.kind, TaskCancelResultKindWire::AlreadyStarted);
+    assert_eq!(
+        decoded.result.kind,
+        TaskCancelResultKindWire::AlreadyStarted
+    );
 
     let request = cancel_request(&task_ref(task_id));
     let bytes = encode_task_cancel_request_frame(&request).expect("encode");
     sink.handle(&session, &bytes).expect("cancel");
     let response = poll_writer(&writer, 7).await;
     let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(decoded.result.kind, TaskCancelResultKindWire::AlreadyTerminal);
+    assert_eq!(
+        decoded.result.kind,
+        TaskCancelResultKindWire::AlreadyTerminal
+    );
 
     let request = cancel_request(&task_ref("missing-cancel"));
     let bytes = encode_task_cancel_request_frame(&request).expect("encode");
@@ -1699,20 +1750,22 @@ async fn status_and_cancel_project_reference_kinds() {
 async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() {
     let store = Arc::new(ScriptedControlStore::new());
     let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let (scheduler, sink, writer, counters) =
-        scripted_control_rig(store_dyn, Arc::clone(&store));
+    let (scheduler, sink, writer, counters) = scripted_control_rig(store_dyn, Arc::clone(&store));
     let session = RuntimeSessionEpoch {
         replica_id: "runtime-a".to_string(),
         connection_generation: 1,
     };
 
     store.script_status(ControlQueryOutcome::Transient);
-    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("status");
     let error = poll_writer(&writer, 1).await;
     let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::StoreUnavailable.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::StoreUnavailable.as_str()
+    );
     assert_eq!(
         counters.status_unavailable.load(Ordering::Relaxed),
         1,
@@ -1721,12 +1774,15 @@ async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() 
     assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
 
     store.script_cancel(ControlQueryOutcome::Transient);
-    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("cancel");
     let error = poll_writer(&writer, 2).await;
     let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::StoreUnavailable.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::StoreUnavailable.as_str()
+    );
     assert_eq!(
         counters.cancel_unavailable.load(Ordering::Relaxed),
         1,
@@ -1740,30 +1796,35 @@ async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() 
 async fn status_and_cancel_store_not_found_is_not_found_error() {
     let store = Arc::new(ScriptedControlStore::new());
     let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let (scheduler, sink, writer, counters) =
-        scripted_control_rig(store_dyn, Arc::clone(&store));
+    let (scheduler, sink, writer, counters) = scripted_control_rig(store_dyn, Arc::clone(&store));
     let session = RuntimeSessionEpoch {
         replica_id: "runtime-a".to_string(),
         connection_generation: 1,
     };
 
     store.script_status(ControlQueryOutcome::NotFound);
-    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("status");
     let error = poll_writer(&writer, 1).await;
     let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::NotFound.as_str()
+    );
     assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
     assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
 
     store.script_cancel(ControlQueryOutcome::NotFound);
-    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("cancel");
     let error = poll_writer(&writer, 2).await;
     let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::NotFound.as_str()
+    );
     assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
     assert_eq!(counters.cancel_unavailable.load(Ordering::Relaxed), 0);
     drop(scheduler);
@@ -1789,7 +1850,8 @@ async fn status_and_cancel_unknown_owner_is_not_found_error() {
             image: corpus_image(),
             services: Vec::new(),
         }),
-        Arc::new(NoopTaskSubmitParentResolver) as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+        Arc::new(NoopTaskSubmitParentResolver)
+            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
         None,
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::clone(&counters),
@@ -1802,21 +1864,27 @@ async fn status_and_cancel_unknown_owner_is_not_found_error() {
     };
 
     // The taskRef owner is not in the image source's known services.
-    let bytes = encode_task_status_request_frame(&status_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("status");
     let error = poll_writer(&writer, 1).await;
     let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::NotFound.as_str()
+    );
     assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
     assert_eq!(counters.status_expired.load(Ordering::Relaxed), 0);
 
-    let bytes = encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID)))
-        .expect("encode");
+    let bytes =
+        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
     sink.handle(&session, &bytes).expect("cancel");
     let error = poll_writer(&writer, 2).await;
     let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(decoded.error.code, TaskControlRejectionCode::NotFound.as_str());
+    assert_eq!(
+        decoded.error.code,
+        TaskControlRejectionCode::NotFound.as_str()
+    );
     assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
     assert_eq!(counters.cancel_expired.load(Ordering::Relaxed), 0);
     drop(scheduler);
@@ -1833,7 +1901,12 @@ async fn status_retention_expired_stays_stable_expired_response() {
     let retention_ms = 30 * 24 * 60 * 60 * 1000i64;
     let past = DurableUtcTimestamp::from_millis((now.millis() - retention_ms - 1).max(0));
     store
-        .create(record("task-expired", corpus_image(), past, TaskState::Scheduled))
+        .create(record(
+            "task-expired",
+            corpus_image(),
+            past,
+            TaskState::Scheduled,
+        ))
         .await
         .expect("create");
 

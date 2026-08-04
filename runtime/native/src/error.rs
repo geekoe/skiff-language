@@ -808,13 +808,12 @@ fn native_error_from_capability_ref(
                 message: message.clone(),
             }
         }
-        skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected {
-            code,
-            message,
-        } => RuntimeError::DecodeTarget {
-            target: "task.submit".to_string(),
-            message: format!("task.submit rejected ({code}): {message}"),
-        },
+        skiff_runtime_capability_context::CapabilityError::TaskSubmitRejected { code, message } => {
+            RuntimeError::DecodeTarget {
+                target: "task.submit".to_string(),
+                message: format!("task.submit rejected ({code}): {message}"),
+            }
+        }
         skiff_runtime_capability_context::CapabilityError::TaskControlRejected {
             code,
             message,

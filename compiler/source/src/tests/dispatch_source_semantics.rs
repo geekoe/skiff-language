@@ -9,8 +9,8 @@ use skiff_compiler_input::CompilerPlatformSources;
 use crate::{
     build_package_from_parsed_sources, parsed_sources::parse_publication_sources,
     prelude_registry::initialize_prelude_registry, reserved_names::validate_reserved_names,
-    shared::parser::parse_source, source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput,
-    PackageSourceModel,
+    shared::parser::parse_source, source_graph::CompilerSourceFile,
+    CompileParsedPackageSourcesInput, PackageSourceModel,
 };
 
 const PACKAGE_ID: &str = "example.com/dispatch-source-semantics";
@@ -232,11 +232,7 @@ fn dispatch_keyword_is_rejected_for_user_declarations() {
     ] {
         let ast = parse_source(source).expect("declaration should parse syntactically");
         let mut violations = Vec::new();
-        validate_reserved_names(
-            "internal/dispatch_source.skiff",
-            &ast,
-            &mut violations,
-        );
+        validate_reserved_names("internal/dispatch_source.skiff", &ast, &mut violations);
         assert!(
             violations
                 .iter()
@@ -266,15 +262,11 @@ fn dispatch_keyword_is_rejected_for_local_bindings() {
     "#;
     let ast = parse_source(source).expect("binding should parse syntactically");
     let mut violations = Vec::new();
-    validate_reserved_names(
-        "internal/dispatch_source.skiff",
-        &ast,
-        &mut violations,
-    );
+    validate_reserved_names("internal/dispatch_source.skiff", &ast, &mut violations);
     assert!(
-        violations
-            .iter()
-            .any(|violation| violation.contains("local binding dispatch uses reserved prelude name")),
+        violations.iter().any(
+            |violation| violation.contains("local binding dispatch uses reserved prelude name")
+        ),
         "expected local binding violation, got {violations:?}"
     );
 }

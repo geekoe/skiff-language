@@ -502,10 +502,7 @@ impl Parser {
                 self.peek().span.start,
             ));
         }
-        let end = children
-            .last()
-            .map(|child| child.span.end)
-            .unwrap_or(start);
+        let end = children.last().map(|child| child.span.end).unwrap_or(start);
         Ok(ParsedExpr::new(
             Expr::Dispatch {
                 call: Box::new(call.expr),

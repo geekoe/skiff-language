@@ -46,7 +46,9 @@ const SCENARIOS: [(&str, &str); 22] = [
     ),
     (
         "claim-reserve-conflict-while-owner-held",
-        include_str!("../testdata/actor-wire/scenarios/02-claim-reserve-conflict-while-owner-held.json"),
+        include_str!(
+            "../testdata/actor-wire/scenarios/02-claim-reserve-conflict-while-owner-held.json"
+        ),
     ),
     (
         "claim-abort-no-effect",
@@ -66,7 +68,9 @@ const SCENARIOS: [(&str, &str); 22] = [
     ),
     (
         "get-or-create-first-joins-same-outcome",
-        include_str!("../testdata/actor-wire/scenarios/07-get-or-create-first-joins-same-outcome.json"),
+        include_str!(
+            "../testdata/actor-wire/scenarios/07-get-or-create-first-joins-same-outcome.json"
+        ),
     ),
     (
         "get-or-create-lineage-conflict",
@@ -78,7 +82,9 @@ const SCENARIOS: [(&str, &str); 22] = [
     ),
     (
         "get-or-create-ack-timeout-aborts-token",
-        include_str!("../testdata/actor-wire/scenarios/10-get-or-create-ack-timeout-aborts-token.json"),
+        include_str!(
+            "../testdata/actor-wire/scenarios/10-get-or-create-ack-timeout-aborts-token.json"
+        ),
     ),
     (
         "invoke-return-exact-owner",
@@ -98,7 +104,9 @@ const SCENARIOS: [(&str, &str); 22] = [
     ),
     (
         "invoke-owner-disconnect-terminals-pending",
-        include_str!("../testdata/actor-wire/scenarios/15-invoke-owner-disconnect-terminals-pending.json"),
+        include_str!(
+            "../testdata/actor-wire/scenarios/15-invoke-owner-disconnect-terminals-pending.json"
+        ),
     ),
     (
         "control-ack-exact-correlation",
@@ -114,7 +122,9 @@ const SCENARIOS: [(&str, &str); 22] = [
     ),
     (
         "control-ack-wrong-operation-rejected",
-        include_str!("../testdata/actor-wire/scenarios/19-control-ack-wrong-operation-rejected.json"),
+        include_str!(
+            "../testdata/actor-wire/scenarios/19-control-ack-wrong-operation-rejected.json"
+        ),
     ),
     (
         "lease-sweep-expire-and-idle-evict",
@@ -465,8 +475,10 @@ impl ActivationBroker {
         if let Some(claim) = &mut self.claim {
             if claim.lineage != lineage {
                 self.lineage_conflicts += 1;
-                self.outcomes
-                    .insert(rpc_id.to_string(), "failed:ActorCreateLineageConflict".to_string());
+                self.outcomes.insert(
+                    rpc_id.to_string(),
+                    "failed:ActorCreateLineageConflict".to_string(),
+                );
                 return Err("ActorCreateLineageConflict");
             }
             claim.rpc_ids.push(rpc_id.to_string());
@@ -497,18 +509,15 @@ impl ActivationBroker {
             self.registry
                 .commit(&claim.caller, runtime_id, self.default_lease_ttl_ms, now)
                 .expect("activation ACK accepted must commit the claim token");
-            let epoch = self
-                .registry
-                .owner
-                .as_ref()
-                .expect("committed owner")
-                .epoch;
+            let epoch = self.registry.owner.as_ref().expect("committed owner").epoch;
             for rpc_id in &claim.rpc_ids {
                 self.outcomes
                     .insert(rpc_id.clone(), format!("resolved:{epoch}"));
             }
         } else {
-            self.registry.abort(&claim.caller).expect("ack rejected aborts token");
+            self.registry
+                .abort(&claim.caller)
+                .expect("ack rejected aborts token");
             for rpc_id in &claim.rpc_ids {
                 self.outcomes
                     .insert(rpc_id.clone(), "failed:AckRejected".to_string());
@@ -522,7 +531,9 @@ impl ActivationBroker {
             .claim
             .clone()
             .expect("activation timeout without pending claim");
-        self.registry.abort(&claim.caller).expect("timeout aborts token");
+        self.registry
+            .abort(&claim.caller)
+            .expect("timeout aborts token");
         for rpc_id in &claim.rpc_ids {
             self.outcomes
                 .insert(rpc_id.clone(), "failed:ActivationTimeout".to_string());
@@ -621,10 +632,7 @@ fn run_activation(scenario: &Scenario) {
         broker.registry.counters.reservations, expect.reservations,
         "reservations"
     );
-    assert_eq!(
-        broker.registry.counters.commits, expect.commits,
-        "commits"
-    );
+    assert_eq!(broker.registry.counters.commits, expect.commits, "commits");
     assert_eq!(broker.registry.counters.aborts, expect.aborts, "aborts");
     assert_eq!(
         broker.lineage_conflicts, expect.lineage_conflicts,
@@ -877,7 +885,8 @@ impl ControlBroker {
         self.pending.remove(request_id);
         self.settled.insert(request_id.to_string());
         let outcome = if accepted { "accepted" } else { "rejected" };
-        self.outcomes.insert(request_id.to_string(), outcome.to_string());
+        self.outcomes
+            .insert(request_id.to_string(), outcome.to_string());
         if accepted {
             self.accepted += 1;
         } else {
@@ -894,7 +903,6 @@ impl ControlBroker {
             self.timeouts += 1;
         }
     }
-
 }
 
 #[derive(Debug, Deserialize)]
@@ -1095,7 +1103,8 @@ fn run_lease(scenario: &Scenario) {
         .iter()
         .map(|value| serde_json::from_value(value.clone()).expect("lease event"))
         .collect();
-    let expect: LeaseExpect = serde_json::from_value(scenario.expect.clone()).expect("lease expect");
+    let expect: LeaseExpect =
+        serde_json::from_value(scenario.expect.clone()).expect("lease expect");
     let initial = scenario
         .initial_owner
         .clone()
@@ -1133,7 +1142,10 @@ fn run_lease(scenario: &Scenario) {
         scheduler.eviction_requests, expect.eviction_requests,
         "evictionRequests"
     );
-    assert_eq!(scheduler.eviction_acked, expect.eviction_acked, "evictionAcked");
+    assert_eq!(
+        scheduler.eviction_acked, expect.eviction_acked,
+        "evictionAcked"
+    );
     assert_eq!(
         scheduler.eviction_retries, expect.eviction_retries,
         "evictionRetries"

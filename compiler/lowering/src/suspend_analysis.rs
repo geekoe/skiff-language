@@ -776,11 +776,11 @@ impl SuspendContext<'_, '_> {
                 DbBlockMode::Effect => Some("null".to_string()),
                 DbBlockMode::Value => None,
             },
-        Expr::DbLeaseClaim(_) => Some("bool".to_string()),
-        Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_text()),
-        Expr::Dispatch { .. } => Some("std.task.TaskRef".to_string()),
+            Expr::DbLeaseClaim(_) => Some("bool".to_string()),
+            Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_text()),
+            Expr::Dispatch { .. } => Some("std.task.TaskRef".to_string()),
+        }
     }
-}
 
     fn legacy_call_return_type(&self, callee: &Expr, type_args: &[TypeRef]) -> Option<String> {
         let path = expr_path(callee)?;

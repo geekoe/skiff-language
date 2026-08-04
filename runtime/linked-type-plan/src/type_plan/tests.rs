@@ -107,9 +107,8 @@ mod recoverable_expected_plan_tests {
                 name: name.to_string(),
                 args: Vec::new(),
             };
-            let expected =
-                RuntimeRecoverableExpectedTypePlan::from_linked(&ty, &ctx)
-                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let expected = RuntimeRecoverableExpectedTypePlan::from_linked(&ty, &ctx)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
             let RuntimeRecoverableExpectedTypeNode::Union { items } = expected.node else {
                 panic!("{name} must project to a recoverable union");
             };

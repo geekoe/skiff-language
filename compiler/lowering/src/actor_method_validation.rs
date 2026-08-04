@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{AssignTargetIr, CallTargetIr, ExprIr, FileIrUnit, StmtIr};
 use skiff_syntax::{
     ast::{
-        ActorDecl, Block, DbBody, DbChangeOp, DbOperation, DbSelector, DbWhereClause, Expr,
-        SourceFile, Stmt, DispatchTiming,
+        ActorDecl, Block, DbBody, DbChangeOp, DbOperation, DbSelector, DbWhereClause,
+        DispatchTiming, Expr, SourceFile, Stmt,
     },
     error::{CompileError, Result},
 };

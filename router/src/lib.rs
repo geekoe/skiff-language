@@ -64,8 +64,8 @@ pub use http::{
     CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
     HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
     HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
-    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource, HttpStreamSink,
-    TestDispatchOutcome, UnaryHttpResponse,
+    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
+    HttpStreamSink, TestDispatchOutcome, UnaryHttpResponse,
 };
 pub use listener::{
     run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,

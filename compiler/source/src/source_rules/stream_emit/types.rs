@@ -106,8 +106,10 @@ pub(super) fn collect_emit_expression_call_violations(
         }
         Expr::Dispatch { call, timing } => {
             collect_emit_expression_call_violations(path, call, violations);
-            if let Some(crate::shared::ast::DispatchTiming::After(expr)
-            | crate::shared::ast::DispatchTiming::At(expr)) = timing
+            if let Some(
+                crate::shared::ast::DispatchTiming::After(expr)
+                | crate::shared::ast::DispatchTiming::At(expr),
+            ) = timing
             {
                 collect_emit_expression_call_violations(path, expr, violations);
             }

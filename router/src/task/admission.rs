@@ -33,8 +33,8 @@ use skiff_runtime_transport::actor_owner::{
     encode_actor_owner_invoke_frame, ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader,
     ActorOwnerRouteAuthorityFrameHeader,
 };
-use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::protocol::TelemetryLevel;
+use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
     RuntimeAssemblyTaskAttemptFrameHeader, RuntimeAssemblyTaskInvocationFrameHeader,
@@ -54,8 +54,8 @@ use crate::dispatch::{
     TaskAttemptSubmitResult,
 };
 use crate::session::identity::RuntimeSessionEpoch;
-use crate::supervisor::actor_sink::ActorFrameSink;
 use crate::supervisor::actor::ActorComponents;
+use crate::supervisor::actor_sink::ActorFrameSink;
 use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation};
 use crate::telemetry::{task_event, TaskTelemetrySink};
 use crate::ws::Clock;
@@ -138,7 +138,10 @@ impl RouterTaskAttemptAdmission {
         {
             return None;
         }
-        if !epoch.deployment_projection().contains(&record.execution.deployment) {
+        if !epoch
+            .deployment_projection()
+            .contains(&record.execution.deployment)
+        {
             return None;
         }
         Some(RequestAuthority {
@@ -207,9 +210,7 @@ impl RouterTaskAttemptAdmission {
                 sampled: None,
             },
             test_effects_enabled: test_case.is_some(),
-            test_case_capability: test_case.map(|authority| {
-                authority.test_case_capability.clone()
-            }),
+            test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
             task_attempt: Some(RuntimeAssemblyTaskAttemptFrameHeader {
                 task_id: record.task_id.as_str().to_string(),
                 attempt_id: lease.attempt_id.as_str().to_string(),
@@ -233,11 +234,13 @@ impl RouterTaskAttemptAdmission {
         }
         attrs.insert(
             "targetKind".to_string(),
-            Value::String(match record.target {
-                DetachedCallTarget::Function { .. } => "function",
-                DetachedCallTarget::ActorMethod { .. } => "actorMethod",
-            }
-            .to_string()),
+            Value::String(
+                match record.target {
+                    DetachedCallTarget::Function { .. } => "function",
+                    DetachedCallTarget::ActorMethod { .. } => "actorMethod",
+                }
+                .to_string(),
+            ),
         );
         match decision {
             AdmissionDecision::Accepted => {
@@ -375,7 +378,8 @@ impl RouterTaskAttemptAdmission {
                 return AdmissionDecision::PermanentFailure {
                     reason: format!(
                         "test-case actor task target service {} differs from the parent service {}",
-                        key.service_id, record.owner.as_str()
+                        key.service_id,
+                        record.owner.as_str()
                     ),
                 };
             }
@@ -424,13 +428,10 @@ impl RouterTaskAttemptAdmission {
                 replica_id: authority.origin_runtime_id.clone(),
                 connection_generation: authority.origin_connection_generation,
             };
-            match candidates
-                .into_iter()
-                .find(|candidate| {
-                    candidate.replica_id == origin.replica_id
-                        && candidate.connection_generation == origin.connection_generation
-                })
-            {
+            match candidates.into_iter().find(|candidate| {
+                candidate.replica_id == origin.replica_id
+                    && candidate.connection_generation == origin.connection_generation
+            }) {
                 Some(owner) => owner,
                 None => {
                     self.counters
@@ -455,10 +456,7 @@ impl RouterTaskAttemptAdmission {
             };
             owner
         };
-        let owner_connection = format!(
-            "{}#{}",
-            owner.replica_id, owner.connection_generation
-        );
+        let owner_connection = format!("{}#{}", owner.replica_id, owner.connection_generation);
         self.emit_admission_selection(record, None, Some(&owner_connection), Some(method.as_str()));
         let now = self.clock.now_ms();
         let declaration_owner_frame = store_declaration_owner_to_frame(declaration_owner);
@@ -547,14 +545,13 @@ impl RouterTaskAttemptAdmission {
                 expires_at: super::iso_timestamp(deadline_at),
             }),
             test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
-            test_case_parent_request_id: test_case.map(|authority| {
-                authority.parent_request_id.clone()
-            }),
+            test_case_parent_request_id: test_case
+                .map(|authority| authority.parent_request_id.clone()),
             now,
         };
         match self.actor.activation_broker.get_or_create(&request) {
-            GetOrCreateOutcome::Resolved(_) => self
-                .invoke_resolved_actor(
+            GetOrCreateOutcome::Resolved(_) => {
+                self.invoke_resolved_actor(
                     record,
                     lease,
                     &authority,
@@ -564,37 +561,37 @@ impl RouterTaskAttemptAdmission {
                     &owner,
                     &owner_connection,
                 )
-                .await,
-            GetOrCreateOutcome::StartedActivation { .. } | GetOrCreateOutcome::Joined => {
-                match self
-                    .wait_for_activation(&rpc_id, deadline_at.saturating_add(1_000))
+                .await
+            }
+            GetOrCreateOutcome::StartedActivation { .. } | GetOrCreateOutcome::Joined => match self
+                .wait_for_activation(&rpc_id, deadline_at.saturating_add(1_000))
+                .await
+            {
+                Some(ActivationWaiterOutcome::Resolved { .. }) => {
+                    self.invoke_resolved_actor(
+                        record,
+                        lease,
+                        &authority,
+                        &key,
+                        implementation,
+                        &declaration_owner_frame,
+                        &owner,
+                        &owner_connection,
+                    )
                     .await
-                {
-                    Some(ActivationWaiterOutcome::Resolved { .. }) => self
-                        .invoke_resolved_actor(
-                            record,
-                            lease,
-                            &authority,
-                            &key,
-                            implementation,
-                            &declaration_owner_frame,
-                            &owner,
-                            &owner_connection,
-                        )
-                        .await,
-                    Some(ActivationWaiterOutcome::Failed { code }) => {
-                        self.activation_failure_decision(&code)
-                    }
-                    None => {
-                        self.counters
-                            .admissions_rejected
-                            .fetch_add(1, Ordering::Relaxed);
-                        AdmissionDecision::RejectedProvable {
-                            reason: "actor activation deadline elapsed without an ACK".to_string(),
-                        }
+                }
+                Some(ActivationWaiterOutcome::Failed { code }) => {
+                    self.activation_failure_decision(&code)
+                }
+                None => {
+                    self.counters
+                        .admissions_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    AdmissionDecision::RejectedProvable {
+                        reason: "actor activation deadline elapsed without an ACK".to_string(),
                     }
                 }
-            }
+            },
             GetOrCreateOutcome::Saturated => {
                 self.counters
                     .admissions_rejected
@@ -631,8 +628,7 @@ impl RouterTaskAttemptAdmission {
                 .admissions_rejected
                 .fetch_add(1, Ordering::Relaxed);
             return AdmissionDecision::RejectedProvable {
-                reason: "actor activation resolved without a committed owner fence"
-                    .to_string(),
+                reason: "actor activation resolved without a committed owner fence".to_string(),
             };
         };
         if fence.actor_implementation_identity != *implementation {
@@ -734,7 +730,10 @@ impl RouterTaskAttemptAdmission {
         owner_connection: &str,
     ) -> AdmissionDecision {
         let DetachedCallTarget::ActorMethod {
-            actor, implementation, method, ..
+            actor,
+            implementation,
+            method,
+            ..
         } = &record.target
         else {
             self.counters
@@ -781,11 +780,9 @@ impl RouterTaskAttemptAdmission {
             },
             cancellation_correlation: cancellation_correlation.clone(),
             trace_id: Some(record.trace.trace_id.clone()),
-            test_case_capability: test_case
-                .map(|authority| authority.test_case_capability.clone()),
-            test_case_parent_request_id: test_case.map(|authority| {
-                authority.parent_request_id.clone()
-            }),
+            test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
+            test_case_parent_request_id: test_case
+                .map(|authority| authority.parent_request_id.clone()),
         };
         let owner_invoke = ActorOwnerInvokeFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -822,7 +819,9 @@ impl RouterTaskAttemptAdmission {
             assembly_identity: authority.assembly_identity.clone(),
             assembly_generation: authority.assembly_generation,
         };
-        self.actor.lease_scheduler.mark_live(key, now, owner_connection);
+        self.actor
+            .lease_scheduler
+            .mark_live(key, now, owner_connection);
         let input = ActorInvokeInput {
             invocation_id: invocation_id.clone(),
             caller_connection: format!("task-attempt:{request_id}"),
@@ -835,8 +834,7 @@ impl RouterTaskAttemptAdmission {
                 timeout_ms: self.request_timeout_ms,
                 expires_at,
             }),
-            test_case_capability: test_case
-                .map(|authority| authority.test_case_capability.clone()),
+            test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
             now,
         };
         if let Err(error) = self.actor.relay.invoke(&input) {
@@ -872,9 +870,12 @@ impl RouterTaskAttemptAdmission {
             attempt_id: lease.attempt_id.as_str().to_string(),
             lease_id: lease.lease_id.as_str().to_string(),
         };
-        if let Err(error) =
-            actor_sink.register_task_attempt_invocation(&invocation_id, task_attempt, owner.clone(), fence.clone())
-        {
+        if let Err(error) = actor_sink.register_task_attempt_invocation(
+            &invocation_id,
+            task_attempt,
+            owner.clone(),
+            fence.clone(),
+        ) {
             let _ = self.actor.relay.on_owner_settle(
                 &invocation_id,
                 fence,
@@ -888,7 +889,9 @@ impl RouterTaskAttemptAdmission {
                 reason: format!("actor task-attempt correlation failed: {error}"),
             };
         }
-        let Some(owner_session) = self.actor_port.current_session_by_replica(&owner.replica_id)
+        let Some(owner_session) = self
+            .actor_port
+            .current_session_by_replica(&owner.replica_id)
         else {
             actor_sink.unregister_invocation(&invocation_id);
             let _ = self.actor.relay.on_owner_settle(
@@ -901,7 +904,10 @@ impl RouterTaskAttemptAdmission {
                 .admissions_rejected
                 .fetch_add(1, Ordering::Relaxed);
             return AdmissionDecision::RejectedProvable {
-                reason: format!("owner runtime {} has no registered session", owner.replica_id),
+                reason: format!(
+                    "owner runtime {} has no registered session",
+                    owner.replica_id
+                ),
             };
         };
         if let Err(error) = self.actor_port.write(&owner_session, bytes) {
@@ -961,7 +967,8 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
             // F2a test-case submissions gate their response on the first
             // attempt admission; publish the outcome only for those tasks so
             // the production fast path is untouched.
-            self.control.report_first_admission(&record.task_id, &decision);
+            self.control
+                .report_first_admission(&record.task_id, &decision);
         }
         decision
     }
@@ -1018,10 +1025,13 @@ impl RouterTaskAttemptAdmission {
         let lease_id = lease.lease_id.clone();
         let attempt_id = lease.attempt_id.clone();
         let deadline_ms = self.clock.now_ms().saturating_add(self.request_timeout_ms);
-        let prefer_session = record.test_case.as_ref().map(|authority| RuntimeSessionEpoch {
-            replica_id: authority.origin_runtime_id.clone(),
-            connection_generation: authority.origin_connection_generation,
-        });
+        let prefer_session = record
+            .test_case
+            .as_ref()
+            .map(|authority| RuntimeSessionEpoch {
+                replica_id: authority.origin_runtime_id.clone(),
+                connection_generation: authority.origin_connection_generation,
+            });
         let result = dispatcher.task_attempt_submit(TaskAttemptSubmit {
             header,
             payload: record.payload.as_bytes().to_vec(),
@@ -1031,9 +1041,7 @@ impl RouterTaskAttemptAdmission {
             prefer_session,
         });
         match result {
-            TaskAttemptSubmitResult::Accepted {
-                session_epoch, ..
-            } => {
+            TaskAttemptSubmitResult::Accepted { session_epoch, .. } => {
                 self.counters
                     .admissions_accepted
                     .fetch_add(1, Ordering::Relaxed);

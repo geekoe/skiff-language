@@ -60,10 +60,8 @@ impl TaskSubmitParentResolver for RouterTaskSubmitParentResolver {
                 .dispatcher
                 .parent_test_capability(session, caller_request_id),
             TaskCallerKind::ActorInvocation => {
-                let connection = format!(
-                    "{}#{}",
-                    session.replica_id, session.connection_generation
-                );
+                let connection =
+                    format!("{}#{}", session.replica_id, session.connection_generation);
                 self.actor
                     .relay
                     .parent_test_capability(&connection, caller_request_id)

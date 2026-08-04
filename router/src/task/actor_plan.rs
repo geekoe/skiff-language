@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use skiff_artifact_model::{
-    LiteralIr, RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableTypeIdentityRef,
-    TypeRefIr,
+    LiteralIr, RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot,
+    RecoverableTypeIdentityRef, TypeRefIr,
 };
 
 #[allow(dead_code)] // DTO fields are consumed by serde validation / projection.
@@ -40,7 +40,12 @@ struct RuntimeExpectedTypePlanDto {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 enum RuntimeTypeIdentityRefDto {
     RuntimeNamedType(RuntimeNamedTypeDto),
     ServiceSymbol(RuntimeServiceSymbolDto),
@@ -206,7 +211,9 @@ fn project_node(node: &RuntimeExpectedTypeNodeDto) -> Result<TypeRefIr, String> 
                 .collect::<Result<Vec<_>, _>>()?,
         }),
         RuntimeExpectedTypeNodeDto::LiteralString { value } => Ok(TypeRefIr::Literal {
-            value: LiteralIr::String { value: value.clone() },
+            value: LiteralIr::String {
+                value: value.clone(),
+            },
         }),
         RuntimeExpectedTypeNodeDto::Representation { identity, payload } => {
             Ok(TypeRefIr::Builtin {
@@ -240,7 +247,10 @@ fn project_node(node: &RuntimeExpectedTypeNodeDto) -> Result<TypeRefIr, String> 
             let mut projected = BTreeMap::new();
             for field in fields {
                 let name = field.name.clone();
-                if projected.insert(name.clone(), project_node(&field.ty.node)?).is_some() {
+                if projected
+                    .insert(name.clone(), project_node(&field.ty.node)?)
+                    .is_some()
+                {
                     return Err(format!(
                         "actor expected-type plan record has duplicate field {name}"
                     ));
@@ -287,8 +297,8 @@ fn runtime_identity_string(identity: &RuntimeTypeIdentityRefDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::project_runtime_expected_type_plan;
-    use skiff_artifact_model::{LiteralIr, RecoverableExpectedTypeRoot, TypeRefIr};
     use serde_json::json;
+    use skiff_artifact_model::{LiteralIr, RecoverableExpectedTypeRoot, TypeRefIr};
 
     #[test]
     fn projects_create_params_record_with_builtins() {
@@ -322,16 +332,14 @@ mod tests {
             }
         });
         let projected = project_runtime_expected_type_plan(&plan).expect("projection");
-        let RecoverableExpectedTypeRoot::TypeRef { ty: TypeRefIr::Record { fields } } =
-            &projected.root
+        let RecoverableExpectedTypeRoot::TypeRef {
+            ty: TypeRefIr::Record { fields },
+        } = &projected.root
         else {
             panic!("expected record root, got {:?}", projected.root);
         };
         assert_eq!(fields.len(), 3);
-        assert_eq!(
-            fields.get("name"),
-            Some(&TypeRefIr::builtin("string"))
-        );
+        assert_eq!(fields.get("name"), Some(&TypeRefIr::builtin("string")));
         assert_eq!(
             fields.get("tags"),
             Some(&TypeRefIr::Builtin {
@@ -355,13 +363,15 @@ mod tests {
         });
         let projected = project_runtime_expected_type_plan(&plan).expect("projection");
         assert_eq!(
-            projected.root_type_identity_ref.as_ref().map(|id| id.0.as_str()),
+            projected
+                .root_type_identity_ref
+                .as_ref()
+                .map(|id| id.0.as_str()),
             Some("type:DocHub")
         );
         let RecoverableExpectedTypeRoot::TypeRef {
             ty: TypeRefIr::Builtin { name, args },
-        } =
-            &projected.root
+        } = &projected.root
         else {
             panic!("expected builtin root, got {:?}", projected.root);
         };

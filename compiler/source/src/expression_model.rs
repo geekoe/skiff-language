@@ -298,10 +298,7 @@ impl OwnerCollector<'_> {
             Expr::Dispatch { call, timing } => {
                 self.visit_expr(call, next_expr_child(&mut children, "dispatch call")?)?;
                 if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
-                    self.visit_expr(
-                        expr,
-                        next_expr_child(&mut children, "dispatch timing")?,
-                    )?;
+                    self.visit_expr(expr, next_expr_child(&mut children, "dispatch timing")?)?;
                 }
             }
         }

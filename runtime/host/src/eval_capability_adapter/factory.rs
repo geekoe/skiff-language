@@ -202,11 +202,11 @@ impl TestActorCapabilityFactory {
             operation,
             None,
             router_sender,
-        outbound_requests,
-        &self.actor_method_outbound,
-        None,
-        None,
-        TaskCallerKind::Request,
+            outbound_requests,
+            &self.actor_method_outbound,
+            None,
+            None,
+            TaskCallerKind::Request,
             cancellation,
         )
     }

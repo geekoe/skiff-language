@@ -50,7 +50,9 @@ use mongodb::bson::{doc, Document};
 use mongodb::options::ClientOptions;
 use mongodb::{Client, Collection, Database};
 use serde_json::Value;
-use skiff_artifact_model::{AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
+use skiff_artifact_model::{
+    AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
+};
 use skiff_deployment::activation_state::EnvironmentActivationState;
 use skiff_router::activation::{
     ActivationStateRepository, MongoActivationStateRepository,
@@ -68,8 +70,8 @@ use skiff_runtime_transport::protocol::{
     RuntimeRegisteredFrameHeader,
 };
 use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyTaskRequestStartFrameHeader;
-use skiff_task_control::{MongoTaskStore, MongoTaskStoreOptions};
 use skiff_task_control::store::TaskStore;
+use skiff_task_control::{MongoTaskStore, MongoTaskStoreOptions};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
@@ -237,7 +239,13 @@ impl LiveEnvironment {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("run");
-        name.chars().rev().take(6).collect::<String>().chars().rev().collect()
+        name.chars()
+            .rev()
+            .take(6)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
     }
 
     fn task_id(&self, name: &str) -> String {
@@ -651,8 +659,7 @@ async fn wait_for_sequence(
         let frames = records
             .iter()
             .filter(|record| {
-                record.connection == connection
-                    && matches!(record.kind, RecordKind::Frame { .. })
+                record.connection == connection && matches!(record.kind, RecordKind::Frame { .. })
             })
             .collect::<Vec<_>>();
         if frames.len() >= sequence.len() {
@@ -691,13 +698,9 @@ async fn wait_for_pair_closed(state: &Arc<RelayState>, connection: u64) {
     let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
     loop {
         let records = relay_records(state);
-        if records
-            .iter()
-            .any(|record| {
-                record.connection == connection
-                    && matches!(record.kind, RecordKind::PairClosed)
-            })
-        {
+        if records.iter().any(|record| {
+            record.connection == connection && matches!(record.kind, RecordKind::PairClosed)
+        }) {
             return;
         }
         if tokio::time::Instant::now() > deadline {
@@ -754,9 +757,8 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
             }
             "runtime.registered" => {
                 assert_eq!(*direction, Direction::ToRuntime);
-                let (header, _) =
-                    decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
-                        .expect("decode registered ACK");
+                let (header, _) = decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
+                    .expect("decode registered ACK");
                 assert_eq!(header.runtime_id, REPLICA_ID);
             }
             "runtime.health" => {
@@ -771,8 +773,9 @@ fn assert_handshake(live: &LiveEnvironment, records: &[RelayRecord]) {
 }
 
 fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
-    let control = decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
-        .expect("decode register frame");
+    let control =
+        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
+            .expect("decode register frame");
     match control {
         AssemblyActivationControl::Register {
             replica_id,
@@ -785,11 +788,11 @@ fn assert_register_control(live: &LiveEnvironment, bytes: &[u8]) {
             assert_eq!(replica_id, REPLICA_ID);
             assert_eq!(environment, live.environment);
             assert_eq!(generation, live.generation);
+            assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
             assert_eq!(
-                assembly.assembly_identity.as_str(),
-                live.assembly_identity
+                config_snapshot.snapshot_id.to_string(),
+                live.config_snapshot_id
             );
-            assert_eq!(config_snapshot.snapshot_id.to_string(), live.config_snapshot_id);
         }
         other => panic!("unexpected assembly activation control {other:?}"),
     }
@@ -862,12 +865,7 @@ fn contains_sequence(haystack: &[&str], needle: &[&str]) -> bool {
 // Real HTTP client (production listener, raw TCP).
 // ---------------------------------------------------------------------------
 
-async fn raw_http(
-    addr: SocketAddr,
-    method: &str,
-    path: &str,
-    body: &[u8],
-) -> (u16, String) {
+async fn raw_http(addr: SocketAddr, method: &str, path: &str, body: &[u8]) -> (u16, String) {
     let mut stream = tokio::net::TcpStream::connect(addr)
         .await
         .expect("connect http listener");
@@ -928,11 +926,9 @@ async fn raw_http(
         let Some((size_line, remainder)) = rest.split_once("\r\n") else {
             break;
         };
-        let size = usize::from_str_radix(
-            size_line.split(';').next().unwrap_or_default().trim(),
-            16,
-        )
-        .unwrap_or(0);
+        let size =
+            usize::from_str_radix(size_line.split(';').next().unwrap_or_default().trim(), 16)
+                .unwrap_or(0);
         if size == 0 {
             break;
         }
@@ -957,25 +953,14 @@ async fn http_post(live: &LiveEnvironment, entry: &str, body: &Value) -> (u16, V
     let value = if text.trim().is_empty() {
         Value::Null
     } else {
-        serde_json::from_str(&text).unwrap_or_else(|error| {
-            panic!("{entry} returned non-JSON body {text:?}: {error}")
-        })
+        serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{entry} returned non-JSON body {text:?}: {error}"))
     };
     (status, value)
 }
 
-async fn submit_task(
-    live: &LiveEnvironment,
-    entry: &str,
-    id: &str,
-    tag: &str,
-) {
-    let (status, body) = http_post(
-        live,
-        entry,
-        &serde_json::json!({ "id": id, "tag": tag }),
-    )
-    .await;
+async fn submit_task(live: &LiveEnvironment, entry: &str, id: &str, tag: &str) {
+    let (status, body) = http_post(live, entry, &serde_json::json!({ "id": id, "tag": tag })).await;
     assert_eq!(status, 200, "{entry} submit {id} failed: {body}");
     assert_eq!(
         body,
@@ -993,12 +978,7 @@ async fn status_kind(live: &LiveEnvironment, id: &str) -> String {
         .to_string()
 }
 
-async fn wait_status_kind(
-    live: &LiveEnvironment,
-    id: &str,
-    expected: &str,
-    deadline: Duration,
-) {
+async fn wait_status_kind(live: &LiveEnvironment, id: &str, expected: &str, deadline: Duration) {
     let deadline = tokio::time::Instant::now() + deadline;
     loop {
         let kind = status_kind(live, id).await;
@@ -1082,7 +1062,11 @@ async fn drop_probe_databases(live: &LiveEnvironment) {
 async fn assemble_supervisor(
     live: &LiveEnvironment,
     config_path: &Path,
-) -> (Arc<RouterSupervisor>, Arc<dyn TaskStore>, SupervisorListeners) {
+) -> (
+    Arc<RouterSupervisor>,
+    Arc<dyn TaskStore>,
+    SupervisorListeners,
+) {
     let repository = connect_repository(live).await;
     let task_store = connect_task_store(live).await;
     task_store
@@ -1103,7 +1087,11 @@ async fn assemble_supervisor(
     );
     let listeners = supervisor
         .start_listeners(&ListenerStartOptions {
-            public_bind: Some(format!("127.0.0.1:{}", live.http_port).parse().expect("public bind")),
+            public_bind: Some(
+                format!("127.0.0.1:{}", live.http_port)
+                    .parse()
+                    .expect("public bind"),
+            ),
             runtime_control_bind: Some(live.control_addr()),
             drain_deadline: Duration::from_secs(30),
         })
@@ -1112,10 +1100,7 @@ async fn assemble_supervisor(
     (supervisor, task_store, listeners)
 }
 
-async fn shutdown_supervisor(
-    listeners: SupervisorListeners,
-    supervisor: Arc<RouterSupervisor>,
-) {
+async fn shutdown_supervisor(listeners: SupervisorListeners, supervisor: Arc<RouterSupervisor>) {
     listeners.shutdown().await.expect("listeners shutdown");
     supervisor.shutdown().await;
 }
@@ -1163,390 +1148,520 @@ mod tests {
     #[ignore = "driven by scripts/check-durable-task-e2e-live.mjs"]
     async fn durable_task_e2e_live_vertical_chain() {
         let live = LiveEnvironment::from_env();
-    seed_runtime_home(&live.runtime_home);
-    drop_probe_databases(&live).await;
+        seed_runtime_home(&live.runtime_home);
+        drop_probe_databases(&live).await;
 
-    let repository = connect_repository(&live).await;
-    repository.ensure_indexes().await.expect("ensure indexes");
-    seed_committed(&live, &repository).await;
+        let repository = connect_repository(&live).await;
+        repository.ensure_indexes().await.expect("ensure indexes");
+        seed_committed(&live, &repository).await;
 
-    let config_path = write_router_config(&live);
-    let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
+        let config_path = write_router_config(&live);
+        let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
 
-    let state = Arc::new(RelayState::new());
-    let relay_task = tokio::spawn(relay_listen(
-        live.relay_port,
-        live.router_runtime_url(),
-        Arc::clone(&state),
-    ));
+        let state = Arc::new(RelayState::new());
+        let relay_task = tokio::spawn(relay_listen(
+            live.relay_port,
+            live.router_runtime_url(),
+            Arc::clone(&state),
+        ));
 
-    let runtime_config = write_runtime_config(&live);
-    let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-one");
-    let connection = wait_for_replica_handshake(&live, &state, 0).await;
-    let first = wait_for_sequence(&state, connection, &HANDSHAKE_SEQUENCE).await;
-    assert_handshake(&live, &first);
+        let runtime_config = write_runtime_config(&live);
+        let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-one");
+        let connection = wait_for_replica_handshake(&live, &state, 0).await;
+        let first = wait_for_sequence(&state, connection, &HANDSHAKE_SEQUENCE).await;
+        assert_handshake(&live, &first);
 
-    // ---------------------------------------------------------------------
-    // Scenario 1: immediate function task executes and settles succeeded.
-    // ---------------------------------------------------------------------
-    submit_task(&live, "submit-immediate", &live.task_id("task-immediate"), &live.effect_tag("effect-immediate")).await;
-        wait_status_kind(&live, &live.task_id("task-immediate"), "succeeded", CLIENT_TIMEOUT).await;
-    assert_eq!(
-        effect_count(&live, &live.effect_tag("effect-immediate")).await,
-        1,
-        "immediate task effect must execute exactly once"
-    );
-    let (state_kind, generation) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "succeeded", "immediate task record state");
-    assert_eq!(generation, 1, "immediate task must have one attempt");
-    assert!(
-        count_frames(&state, connection, Direction::ToRouter, "task.submit.request") >= 1,
-        "runtime must submit task.submit.request to the router"
-    );
-    assert!(
-        count_frames(&state, connection, Direction::ToRuntime, "request.start") >= 1,
-        "router must admit a task attempt request.start"
-    );
-    assert!(
-        count_frames(&state, connection, Direction::ToRouter, "response.end") >= 1,
-        "runtime must settle the attempt with response.end"
-    );
-    let immediate_attempts = task_attempt_starts(&state, connection);
-    assert_eq!(immediate_attempts.len(), 1, "exactly one attempt for immediate task");
-    let attempts_after_immediate = immediate_attempts.len();
-
-    // ---------------------------------------------------------------------
-    // Scenario 2a: delayed after(3000ms) task is not executed before due and
-    // before-start cancel converges to canceled with no attempt.
-    // ---------------------------------------------------------------------
-    submit_task(&live, "submit-after", &live.task_id("task-cancel"), &live.effect_tag("effect-cancel")).await;
-    let kind_before = status_kind(&live, &live.task_id("task-cancel")).await;
-    assert!(
-        kind_before == "scheduled" || kind_before == "ready",
-        "delayed task must be scheduled/ready before due, got {kind_before}"
-    );
-    assert_eq!(effect_count(&live, &live.effect_tag("effect-cancel")).await, 0);
-    let (status, body) = http_post(
-        &live,
-        "cancel",
-        &serde_json::json!({ "id": &live.task_id("task-cancel") }),
-    )
-    .await;
-    assert_eq!(status, 200, "cancel failed: {body}");
-    assert_eq!(body["kind"], "canceled", "before-start cancel must succeed");
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    assert_eq!(
-        effect_count(&live, &live.effect_tag("effect-cancel")).await,
-        0,
-        "canceled task must never execute"
-    );
-    let (state_kind, _) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "canceled", "canceled task record state");
-    assert_eq!(
-        task_attempt_starts(&state, connection).len(),
-        attempts_after_immediate,
-        "canceled task must have no attempt"
-    );
-
-    // ---------------------------------------------------------------------
-    // Scenario 2b: delayed after(3000ms) task executes after due.
-    // ---------------------------------------------------------------------
-    submit_task(&live, "submit-after", &live.task_id("task-delayed"), &live.effect_tag("effect-delayed")).await;
-    let kind_before = status_kind(&live, &live.task_id("task-delayed")).await;
-    assert!(
-        kind_before == "scheduled" || kind_before == "ready",
-        "delayed task must be scheduled/ready before due, got {kind_before}"
-    );
-    assert_eq!(effect_count(&live, &live.effect_tag("effect-delayed")).await, 0);
-    wait_status_kind(&live, &live.task_id("task-delayed"), "succeeded", Duration::from_secs(30)).await;
-    assert_eq!(effect_count(&live, &live.effect_tag("effect-delayed")).await, 1);
-    let (state_kind, generation) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "succeeded");
-    assert_eq!(generation, 1);
-
-    // ---------------------------------------------------------------------
-    // Scenario 3: cancel/claim race — running task cancel -> alreadyStarted,
-    // state unchanged, task still converges succeeded.
-    // ---------------------------------------------------------------------
-    submit_task(&live, "submit-slow", &live.task_id("task-race"), &live.effect_tag("effect-race")).await;
-    wait_status_kind(&live, &live.task_id("task-race"), "running", CLIENT_TIMEOUT).await;
-    let (status, body) = http_post(
-        &live,
-        "cancel",
-        &serde_json::json!({ "id": &live.task_id("task-race") }),
-    )
-    .await;
-    assert_eq!(status, 200, "running cancel failed: {body}");
-    assert_eq!(
-        body["kind"], "alreadyStarted",
-        "cancel after claim must be alreadyStarted, got {body}"
-    );
-    wait_status_kind(&live, &live.task_id("task-race"), "succeeded", CLIENT_TIMEOUT).await;
-    assert_eq!(effect_count(&live, &live.effect_tag("effect-race")).await, 1);
-    let (state_kind, _) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "succeeded");
-
-    // ---------------------------------------------------------------------
-    // Scenario 4: runtime kill mid-attempt -> lease-expiry recovery -> new
-    // attempt with the same TaskId (at-least-once, repeated effect allowed).
-    // ---------------------------------------------------------------------
-    submit_task(&live, "submit-slow", &live.task_id("task-recovery"), &live.effect_tag("effect-recovery")).await;
-    wait_status_kind(&live, &live.task_id("task-recovery"), "running", CLIENT_TIMEOUT).await;
-    // Wait until the first attempt's effect is durably written (the target
-    // writes the effect before sleeping), then kill the runtime mid-request.
-    let deadline = tokio::time::Instant::now() + CLIENT_TIMEOUT;
-    while effect_count(&live, &live.effect_tag("effect-recovery")).await < 1 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "first recovery attempt effect was never written"
+        // ---------------------------------------------------------------------
+        // Scenario 1: immediate function task executes and settles succeeded.
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-immediate",
+            &live.task_id("task-immediate"),
+            &live.effect_tag("effect-immediate"),
+        )
+        .await;
+        wait_status_kind(
+            &live,
+            &live.task_id("task-immediate"),
+            "succeeded",
+            CLIENT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-immediate")).await,
+            1,
+            "immediate task effect must execute exactly once"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let (pre_kill_state, pre_kill_generation) = read_task_facts(&live).await;
-    assert_eq!(pre_kill_state, "leased", "recovery task must be leased before kill");
-    assert_eq!(pre_kill_generation, 1);
-    kill_process(&mut runtime, "-9", "runtime");
-    wait_for_pair_closed(&state, connection).await;
-    let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
+        let (state_kind, generation) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "succeeded", "immediate task record state");
+        assert_eq!(generation, 1, "immediate task must have one attempt");
+        assert!(
+            count_frames(
+                &state,
+                connection,
+                Direction::ToRouter,
+                "task.submit.request"
+            ) >= 1,
+            "runtime must submit task.submit.request to the router"
+        );
+        assert!(
+            count_frames(&state, connection, Direction::ToRuntime, "request.start") >= 1,
+            "router must admit a task attempt request.start"
+        );
+        assert!(
+            count_frames(&state, connection, Direction::ToRouter, "response.end") >= 1,
+            "runtime must settle the attempt with response.end"
+        );
+        let immediate_attempts = task_attempt_starts(&state, connection);
+        assert_eq!(
+            immediate_attempts.len(),
+            1,
+            "exactly one attempt for immediate task"
+        );
+        let attempts_after_immediate = immediate_attempts.len();
 
-    // Restart the runtime immediately; the scheduler stops renewing the
-    // orphaned lease and lease-expiry recovery claims the same TaskId once
-    // the store-authority lease expires (~60s).
-    let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-two");
-    let recovery_connection = wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
-    let handshake = wait_for_sequence(&state, recovery_connection, &HANDSHAKE_SEQUENCE).await;
-    assert_handshake(&live, &handshake);
-    wait_status_kind(&live, &live.task_id("task-recovery"), "succeeded", Duration::from_secs(150)).await;
-    let (state_kind, generation) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "succeeded");
-    assert!(
-        generation >= 2,
-        "lease-loss recovery must create a new attempt, got generation {generation}"
-    );
-    assert!(
-        effect_count(&live, &live.effect_tag("effect-recovery")).await >= 2,
-        "at-least-once allows a repeated effect"
-    );
-    let recovery_attempts =
-        task_attempt_starts(&state, recovery_connection);
-    assert!(
-        recovery_attempts.len() >= 1,
-        "recovered task must be admitted as a new attempt on the restarted runtime"
-    );
-    let _ = connection;
+        // ---------------------------------------------------------------------
+        // Scenario 2a: delayed after(3000ms) task is not executed before due and
+        // before-start cancel converges to canceled with no attempt.
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-after",
+            &live.task_id("task-cancel"),
+            &live.effect_tag("effect-cancel"),
+        )
+        .await;
+        let kind_before = status_kind(&live, &live.task_id("task-cancel")).await;
+        assert!(
+            kind_before == "scheduled" || kind_before == "ready",
+            "delayed task must be scheduled/ready before due, got {kind_before}"
+        );
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-cancel")).await,
+            0
+        );
+        let (status, body) = http_post(
+            &live,
+            "cancel",
+            &serde_json::json!({ "id": &live.task_id("task-cancel") }),
+        )
+        .await;
+        assert_eq!(status, 200, "cancel failed: {body}");
+        assert_eq!(body["kind"], "canceled", "before-start cancel must succeed");
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-cancel")).await,
+            0,
+            "canceled task must never execute"
+        );
+        let (state_kind, _) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "canceled", "canceled task record state");
+        assert_eq!(
+            task_attempt_starts(&state, connection).len(),
+            attempts_after_immediate,
+            "canceled task must have no attempt"
+        );
 
-    // ---------------------------------------------------------------------
-    // Scenario 5: router restart -> accepted delayed task survives (Mongo
-    // TaskStore persistence) and executes after due.
-    // ---------------------------------------------------------------------
-    submit_task(
-        &live,
-        "submit-after",
-        &live.task_id("task-router-restart"),
-        &live.effect_tag("effect-router-restart"),
-    )
-    .await;
-    let kind = status_kind(&live, &live.task_id("task-router-restart")).await;
-    assert!(
-        kind == "scheduled" || kind == "ready",
-        "restart task must be scheduled/ready, got {kind}"
-    );
-    kill_process(&mut runtime, "-9", "runtime");
-    let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
-    shutdown_supervisor(listeners, Arc::clone(&supervisor)).await;
-    drop(supervisor);
+        // ---------------------------------------------------------------------
+        // Scenario 2b: delayed after(3000ms) task executes after due.
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-after",
+            &live.task_id("task-delayed"),
+            &live.effect_tag("effect-delayed"),
+        )
+        .await;
+        let kind_before = status_kind(&live, &live.task_id("task-delayed")).await;
+        assert!(
+            kind_before == "scheduled" || kind_before == "ready",
+            "delayed task must be scheduled/ready before due, got {kind_before}"
+        );
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-delayed")).await,
+            0
+        );
+        wait_status_kind(
+            &live,
+            &live.task_id("task-delayed"),
+            "succeeded",
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-delayed")).await,
+            1
+        );
+        let (state_kind, generation) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "succeeded");
+        assert_eq!(generation, 1);
 
-    let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
-    let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-three");
-    let restart_connection =
-        wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
-    let handshake = wait_for_sequence(&state, restart_connection, &HANDSHAKE_SEQUENCE).await;
-    assert_handshake(&live, &handshake);
-    wait_status_kind(
-        &live,
-        &live.task_id("task-router-restart"),
-        "succeeded",
-        Duration::from_secs(60),
-    )
-    .await;
-    assert_eq!(effect_count(&live, &live.effect_tag("effect-router-restart")).await, 1);
-    let (state_kind, generation) = read_task_facts(&live).await;
-    assert_eq!(state_kind, "succeeded");
-    assert_eq!(generation, 1, "router restart must not duplicate the accepted task");
+        // ---------------------------------------------------------------------
+        // Scenario 3: cancel/claim race — running task cancel -> alreadyStarted,
+        // state unchanged, task still converges succeeded.
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-slow",
+            &live.task_id("task-race"),
+            &live.effect_tag("effect-race"),
+        )
+        .await;
+        wait_status_kind(&live, &live.task_id("task-race"), "running", CLIENT_TIMEOUT).await;
+        let (status, body) = http_post(
+            &live,
+            "cancel",
+            &serde_json::json!({ "id": &live.task_id("task-race") }),
+        )
+        .await;
+        assert_eq!(status, 200, "running cancel failed: {body}");
+        assert_eq!(
+            body["kind"], "alreadyStarted",
+            "cancel after claim must be alreadyStarted, got {body}"
+        );
+        wait_status_kind(
+            &live,
+            &live.task_id("task-race"),
+            "succeeded",
+            CLIENT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-race")).await,
+            1
+        );
+        let (state_kind, _) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "succeeded");
 
-    // ---------------------------------------------------------------------
-    // Scenario 6: actor-method task, branch 1 (live same implementation).
-    // ---------------------------------------------------------------------
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-live")).await, 0);
-    submit_task(&live, "submit-actor", &live.task_id("task-actor-live"), &live.effect_tag("actor-live")).await;
-    wait_status_kind(&live, &live.task_id("task-actor-live"), "succeeded", CLIENT_TIMEOUT).await;
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-live")).await, 1);
-    assert!(
-        count_frames(&state, restart_connection, Direction::ToRuntime, "actor.owner.invoke")
-            >= 1,
-        "actor task must invoke through the actor owner lane"
-    );
+        // ---------------------------------------------------------------------
+        // Scenario 4: runtime kill mid-attempt -> lease-expiry recovery -> new
+        // attempt with the same TaskId (at-least-once, repeated effect allowed).
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-slow",
+            &live.task_id("task-recovery"),
+            &live.effect_tag("effect-recovery"),
+        )
+        .await;
+        wait_status_kind(
+            &live,
+            &live.task_id("task-recovery"),
+            "running",
+            CLIENT_TIMEOUT,
+        )
+        .await;
+        // Wait until the first attempt's effect is durably written (the target
+        // writes the effect before sleeping), then kill the runtime mid-request.
+        let deadline = tokio::time::Instant::now() + CLIENT_TIMEOUT;
+        while effect_count(&live, &live.effect_tag("effect-recovery")).await < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "first recovery attempt effect was never written"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (pre_kill_state, pre_kill_generation) = read_task_facts(&live).await;
+        assert_eq!(
+            pre_kill_state, "leased",
+            "recovery task must be leased before kill"
+        );
+        assert_eq!(pre_kill_generation, 1);
+        kill_process(&mut runtime, "-9", "runtime");
+        wait_for_pair_closed(&state, connection).await;
+        let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
 
-    // ---------------------------------------------------------------------
-    // Scenario 7: actor-method task, branch 2 (registry entry exists, no live
-    // incarnation -> cold activation from the entry's create input).
-    // ---------------------------------------------------------------------
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-entry")).await, 0);
-    submit_task(&live, "submit-actor-after", &live.task_id("task-actor-entry"), &live.effect_tag("actor-entry")).await;
-    let kind = status_kind(&live, &live.task_id("task-actor-entry")).await;
-    assert!(
-        kind == "scheduled" || kind == "ready",
-        "branch-2 actor task must be scheduled/ready, got {kind}"
-    );
-    kill_process(&mut runtime, "-9", "runtime");
-    let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
-    let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-four");
-    let branch2_connection =
-        wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
-    let handshake = wait_for_sequence(&state, branch2_connection, &HANDSHAKE_SEQUENCE).await;
-    assert_handshake(&live, &handshake);
-    wait_status_kind(
-        &live,
-        &live.task_id("task-actor-entry"),
-        "succeeded",
-        Duration::from_secs(60),
-    )
-    .await;
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-entry")).await, 1);
-    assert!(
-        count_frames(
-            &state,
-            branch2_connection,
-            Direction::ToRuntime,
-            "actor.owner.control",
-        ) >= 1,
-        "branch 2 must cold-activate through actor.owner.control"
-    );
+        // Restart the runtime immediately; the scheduler stops renewing the
+        // orphaned lease and lease-expiry recovery claims the same TaskId once
+        // the store-authority lease expires (~60s).
+        let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-two");
+        let recovery_connection =
+            wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
+        let handshake = wait_for_sequence(&state, recovery_connection, &HANDSHAKE_SEQUENCE).await;
+        assert_handshake(&live, &handshake);
+        wait_status_kind(
+            &live,
+            &live.task_id("task-recovery"),
+            "succeeded",
+            Duration::from_secs(150),
+        )
+        .await;
+        let (state_kind, generation) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "succeeded");
+        assert!(
+            generation >= 2,
+            "lease-loss recovery must create a new attempt, got generation {generation}"
+        );
+        assert!(
+            effect_count(&live, &live.effect_tag("effect-recovery")).await >= 2,
+            "at-least-once allows a repeated effect"
+        );
+        let recovery_attempts = task_attempt_starts(&state, recovery_connection);
+        assert!(
+            recovery_attempts.len() >= 1,
+            "recovered task must be admitted as a new attempt on the restarted runtime"
+        );
+        let _ = connection;
 
-    // ---------------------------------------------------------------------
-    // Scenario 8: actor-method task, branch 3 (registry entry lost after
-    // router restart -> snapshot restore of the minimal entry).
-    // ---------------------------------------------------------------------
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-snapshot")).await, 0);
-    submit_task(&live, "submit-actor-after", &live.task_id("task-actor-snapshot"), &live.effect_tag("actor-snapshot")).await;
-    let kind = status_kind(&live, &live.task_id("task-actor-snapshot")).await;
-    assert!(
-        kind == "scheduled" || kind == "ready",
-        "branch-3 actor task must be scheduled/ready, got {kind}"
-    );
-    kill_process(&mut runtime, "-9", "runtime");
-    let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
-    shutdown_supervisor(listeners, Arc::clone(&supervisor)).await;
-    drop(supervisor);
+        // ---------------------------------------------------------------------
+        // Scenario 5: router restart -> accepted delayed task survives (Mongo
+        // TaskStore persistence) and executes after due.
+        // ---------------------------------------------------------------------
+        submit_task(
+            &live,
+            "submit-after",
+            &live.task_id("task-router-restart"),
+            &live.effect_tag("effect-router-restart"),
+        )
+        .await;
+        let kind = status_kind(&live, &live.task_id("task-router-restart")).await;
+        assert!(
+            kind == "scheduled" || kind == "ready",
+            "restart task must be scheduled/ready, got {kind}"
+        );
+        kill_process(&mut runtime, "-9", "runtime");
+        let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
+        shutdown_supervisor(listeners, Arc::clone(&supervisor)).await;
+        drop(supervisor);
 
-    let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
-    let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-five");
-    let branch3_connection =
-        wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
-    let handshake = wait_for_sequence(&state, branch3_connection, &HANDSHAKE_SEQUENCE).await;
-    assert_handshake(&live, &handshake);
-    wait_status_kind(
-        &live,
-        &live.task_id("task-actor-snapshot"),
-        "succeeded",
-        Duration::from_secs(60),
-    )
-    .await;
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-snapshot")).await, 1);
-    assert!(
-        count_frames(
-            &state,
-            branch3_connection,
-            Direction::ToRuntime,
-            "actor.owner.control",
-        ) >= 1,
-        "branch 3 must restore and activate from the task snapshot"
-    );
+        let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
+        let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-three");
+        let restart_connection =
+            wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
+        let handshake = wait_for_sequence(&state, restart_connection, &HANDSHAKE_SEQUENCE).await;
+        assert_handshake(&live, &handshake);
+        wait_status_kind(
+            &live,
+            &live.task_id("task-router-restart"),
+            "succeeded",
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(
+            effect_count(&live, &live.effect_tag("effect-router-restart")).await,
+            1
+        );
+        let (state_kind, generation) = read_task_facts(&live).await;
+        assert_eq!(state_kind, "succeeded");
+        assert_eq!(
+            generation, 1,
+            "router restart must not duplicate the accepted task"
+        );
 
-    // ---------------------------------------------------------------------
-    // Scenario 9 (F0b): an ordinary HTTP handler submits
-    // `dispatch actor.method(...)` directly (no actor execution frame). The
-    // Runtime freezes the ActorActivationSnapshot from the local live
-    // incarnation resolved through the request context's actor instance
-    // store; the task then executes through the actor owner lane.
-    // ---------------------------------------------------------------------
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-direct")).await, 0);
-    let submits_before = count_frames(
-        &state,
-        branch3_connection,
-        Direction::ToRouter,
-        "task.submit.request",
-    );
-    let invokes_before = count_frames(
-        &state,
-        branch3_connection,
-        Direction::ToRuntime,
-        "actor.owner.invoke",
-    );
-    submit_task(
-        &live,
-        "submit-actor-direct",
-        &live.task_id("task-actor-direct"),
-        &live.effect_tag("actor-direct"),
-    )
-    .await;
-    wait_status_kind(
-        &live,
-        &live.task_id("task-actor-direct"),
-        "succeeded",
-        CLIENT_TIMEOUT,
-    )
-    .await;
-    assert_eq!(actor_count(&live, &live.effect_tag("actor-direct")).await, 1);
-    assert!(
-        count_frames(
+        // ---------------------------------------------------------------------
+        // Scenario 6: actor-method task, branch 1 (live same implementation).
+        // ---------------------------------------------------------------------
+        assert_eq!(actor_count(&live, &live.effect_tag("actor-live")).await, 0);
+        submit_task(
+            &live,
+            "submit-actor",
+            &live.task_id("task-actor-live"),
+            &live.effect_tag("actor-live"),
+        )
+        .await;
+        wait_status_kind(
+            &live,
+            &live.task_id("task-actor-live"),
+            "succeeded",
+            CLIENT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(actor_count(&live, &live.effect_tag("actor-live")).await, 1);
+        assert!(
+            count_frames(
+                &state,
+                restart_connection,
+                Direction::ToRuntime,
+                "actor.owner.invoke"
+            ) >= 1,
+            "actor task must invoke through the actor owner lane"
+        );
+
+        // ---------------------------------------------------------------------
+        // Scenario 7: actor-method task, branch 2 (registry entry exists, no live
+        // incarnation -> cold activation from the entry's create input).
+        // ---------------------------------------------------------------------
+        assert_eq!(actor_count(&live, &live.effect_tag("actor-entry")).await, 0);
+        submit_task(
+            &live,
+            "submit-actor-after",
+            &live.task_id("task-actor-entry"),
+            &live.effect_tag("actor-entry"),
+        )
+        .await;
+        let kind = status_kind(&live, &live.task_id("task-actor-entry")).await;
+        assert!(
+            kind == "scheduled" || kind == "ready",
+            "branch-2 actor task must be scheduled/ready, got {kind}"
+        );
+        kill_process(&mut runtime, "-9", "runtime");
+        let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
+        let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-four");
+        let branch2_connection =
+            wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
+        let handshake = wait_for_sequence(&state, branch2_connection, &HANDSHAKE_SEQUENCE).await;
+        assert_handshake(&live, &handshake);
+        wait_status_kind(
+            &live,
+            &live.task_id("task-actor-entry"),
+            "succeeded",
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(actor_count(&live, &live.effect_tag("actor-entry")).await, 1);
+        assert!(
+            count_frames(
+                &state,
+                branch2_connection,
+                Direction::ToRuntime,
+                "actor.owner.control",
+            ) >= 1,
+            "branch 2 must cold-activate through actor.owner.control"
+        );
+
+        // ---------------------------------------------------------------------
+        // Scenario 8: actor-method task, branch 3 (registry entry lost after
+        // router restart -> snapshot restore of the minimal entry).
+        // ---------------------------------------------------------------------
+        assert_eq!(
+            actor_count(&live, &live.effect_tag("actor-snapshot")).await,
+            0
+        );
+        submit_task(
+            &live,
+            "submit-actor-after",
+            &live.task_id("task-actor-snapshot"),
+            &live.effect_tag("actor-snapshot"),
+        )
+        .await;
+        let kind = status_kind(&live, &live.task_id("task-actor-snapshot")).await;
+        assert!(
+            kind == "scheduled" || kind == "ready",
+            "branch-3 actor task must be scheduled/ready, got {kind}"
+        );
+        kill_process(&mut runtime, "-9", "runtime");
+        let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
+        shutdown_supervisor(listeners, Arc::clone(&supervisor)).await;
+        drop(supervisor);
+
+        let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;
+        let mut runtime = spawn_runtime(&live, &runtime_config, "runtime-five");
+        let branch3_connection =
+            wait_for_replica_handshake(&live, &state, relay_records(&state).len()).await;
+        let handshake = wait_for_sequence(&state, branch3_connection, &HANDSHAKE_SEQUENCE).await;
+        assert_handshake(&live, &handshake);
+        wait_status_kind(
+            &live,
+            &live.task_id("task-actor-snapshot"),
+            "succeeded",
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(
+            actor_count(&live, &live.effect_tag("actor-snapshot")).await,
+            1
+        );
+        assert!(
+            count_frames(
+                &state,
+                branch3_connection,
+                Direction::ToRuntime,
+                "actor.owner.control",
+            ) >= 1,
+            "branch 3 must restore and activate from the task snapshot"
+        );
+
+        // ---------------------------------------------------------------------
+        // Scenario 9 (F0b): an ordinary HTTP handler submits
+        // `dispatch actor.method(...)` directly (no actor execution frame). The
+        // Runtime freezes the ActorActivationSnapshot from the local live
+        // incarnation resolved through the request context's actor instance
+        // store; the task then executes through the actor owner lane.
+        // ---------------------------------------------------------------------
+        assert_eq!(
+            actor_count(&live, &live.effect_tag("actor-direct")).await,
+            0
+        );
+        let submits_before = count_frames(
             &state,
             branch3_connection,
             Direction::ToRouter,
             "task.submit.request",
-        ) > submits_before,
-        "HTTP-context dispatch must emit task.submit.request from the handler"
-    );
-    assert!(
-        count_frames(
+        );
+        let invokes_before = count_frames(
             &state,
             branch3_connection,
             Direction::ToRuntime,
             "actor.owner.invoke",
-        ) > invokes_before,
-        "HTTP-context actor task must execute through the actor owner lane"
-    );
+        );
+        submit_task(
+            &live,
+            "submit-actor-direct",
+            &live.task_id("task-actor-direct"),
+            &live.effect_tag("actor-direct"),
+        )
+        .await;
+        wait_status_kind(
+            &live,
+            &live.task_id("task-actor-direct"),
+            "succeeded",
+            CLIENT_TIMEOUT,
+        )
+        .await;
+        assert_eq!(
+            actor_count(&live, &live.effect_tag("actor-direct")).await,
+            1
+        );
+        assert!(
+            count_frames(
+                &state,
+                branch3_connection,
+                Direction::ToRouter,
+                "task.submit.request",
+            ) > submits_before,
+            "HTTP-context dispatch must emit task.submit.request from the handler"
+        );
+        assert!(
+            count_frames(
+                &state,
+                branch3_connection,
+                Direction::ToRuntime,
+                "actor.owner.invoke",
+            ) > invokes_before,
+            "HTTP-context actor task must execute through the actor owner lane"
+        );
 
-    // ---------------------------------------------------------------------
-    // TaskRef across requests: every status/cancel above recovered the TaskRef
-    // from the DB stored field; the router-restart scenario additionally
-    // proves the TaskRef remains usable after the router came back.
-    // ---------------------------------------------------------------------
-    let (status, body) = http_post(
-        &live,
-        "status",
-        &serde_json::json!({ "id": &live.task_id("task-immediate") }),
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(body["kind"], "succeeded");
-    let (status, body) = http_post(
-        &live,
-        "cancel",
-        &serde_json::json!({ "id": &live.task_id("task-immediate") }),
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(body["kind"], "alreadyTerminal");
+        // ---------------------------------------------------------------------
+        // TaskRef across requests: every status/cancel above recovered the TaskRef
+        // from the DB stored field; the router-restart scenario additionally
+        // proves the TaskRef remains usable after the router came back.
+        // ---------------------------------------------------------------------
+        let (status, body) = http_post(
+            &live,
+            "status",
+            &serde_json::json!({ "id": &live.task_id("task-immediate") }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["kind"], "succeeded");
+        let (status, body) = http_post(
+            &live,
+            "cancel",
+            &serde_json::json!({ "id": &live.task_id("task-immediate") }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["kind"], "alreadyTerminal");
 
-    // ---------------------------------------------------------------------
-    // Cleanup.
-    // ---------------------------------------------------------------------
-    kill_process(&mut runtime, "-9", "runtime");
-    let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
-    shutdown_supervisor(listeners, supervisor).await;
-    relay_task.abort();
-    drop_probe_databases(&live).await;
+        // ---------------------------------------------------------------------
+        // Cleanup.
+        // ---------------------------------------------------------------------
+        kill_process(&mut runtime, "-9", "runtime");
+        let _ = wait_for_exit(&mut runtime, Duration::from_secs(10), "runtime");
+        shutdown_supervisor(listeners, supervisor).await;
+        relay_task.abort();
+        drop_probe_databases(&live).await;
 
         eprintln!("durable-task-e2e-live probe: PASS");
     }

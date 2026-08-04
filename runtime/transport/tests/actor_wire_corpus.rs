@@ -23,10 +23,9 @@ use skiff_runtime_transport::actor_owner::{
 use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, ActorFindRequestFrameHeader, ActorFindResponseFrameHeader,
     ActorGetOrCreateRequestFrameHeader, ActorGetOrCreateResponseFrameHeader,
-    ActorRemoveRequestFrameHeader, ActorRemoveResponseFrameHeader,
-    ActorReplaceRequestFrameHeader, ActorReplaceResponseFrameHeader,
-    ActorTaskRuntimeErrorFrameHeader, FrameDirection, PayloadPresenceRule, RuntimeFrameFamily,
-    RuntimeFrameFamilyRule,
+    ActorRemoveRequestFrameHeader, ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
+    ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader, FrameDirection,
+    PayloadPresenceRule, RuntimeFrameFamily, RuntimeFrameFamilyRule,
 };
 
 const REQUIRED_FRAMES: [&str; 20] = [
@@ -79,10 +78,8 @@ struct Catalog {
 }
 
 fn catalog() -> Catalog {
-    serde_json::from_str(include_str!(
-        "../testdata/actor-wire/frames.json"
-    ))
-    .expect("actor wire corpus must decode")
+    serde_json::from_str(include_str!("../testdata/actor-wire/frames.json"))
+        .expect("actor wire corpus must decode")
 }
 
 fn hex_bytes(hex: &str) -> Vec<u8> {
@@ -126,7 +123,10 @@ mod tests {
 
     #[test]
     fn actor_frame_family_rules_are_frozen() {
-        assert_eq!(RuntimeFrameFamily::Actor.direction(), FrameDirection::Either);
+        assert_eq!(
+            RuntimeFrameFamily::Actor.direction(),
+            FrameDirection::Either
+        );
         assert_eq!(
             RuntimeFrameFamily::Actor.payload_presence(),
             PayloadPresenceRule::Optional
@@ -166,9 +166,16 @@ mod tests {
                 entry.payload_presence
             );
             if entry.payload_presence == "empty" {
-                assert!(payload.is_empty(), "{name}: empty-presence frame has payload");
+                assert!(
+                    payload.is_empty(),
+                    "{name}: empty-presence frame has payload"
+                );
             }
-            assert_eq!(entry.decode_as, expected_decode_as(name), "{name}: decodeAs");
+            assert_eq!(
+                entry.decode_as,
+                expected_decode_as(name),
+                "{name}: decodeAs"
+            );
         }
     }
 
@@ -314,8 +321,7 @@ mod tests {
 
         let entry = &catalog.frames["actor.owner.control.activateInitial"];
         let bytes = hex_bytes(&entry.frame_hex);
-        let header =
-            decode_actor_owner_control_frame(&bytes).expect("owner.control must decode");
+        let header = decode_actor_owner_control_frame(&bytes).expect("owner.control must decode");
         assert_eq!(
             bytes,
             encode_actor_owner_control_frame(&header).expect("owner.control re-encode"),
@@ -324,8 +330,9 @@ mod tests {
 
         let entry = &catalog.frames["actor.owner.control.ack"];
         let bytes = hex_bytes(&entry.frame_hex);
-        let header: ActorOwnerControlAckFrameHeader =
-            decode_typed_binary_frame(&bytes).expect("owner.control.ack must decode").0;
+        let header: ActorOwnerControlAckFrameHeader = decode_typed_binary_frame(&bytes)
+            .expect("owner.control.ack must decode")
+            .0;
         assert_eq!(
             bytes,
             encode_actor_owner_control_ack_frame(&header).expect("owner.control.ack re-encode"),

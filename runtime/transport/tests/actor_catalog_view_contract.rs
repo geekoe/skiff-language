@@ -76,10 +76,7 @@ struct ProjectionMirror {
 impl ProjectionMirror {
     fn validate(&self) -> Result<(), String> {
         if self.schema_version != PROJECTION_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported schemaVersion {}",
-                self.schema_version
-            ));
+            return Err(format!("unsupported schemaVersion {}", self.schema_version));
         }
         for method in &self.methods {
             if method.actor.service_id != method.deployment.service_id {
@@ -224,10 +221,8 @@ struct Corpus {
 }
 
 fn corpus() -> Corpus {
-    serde_json::from_str(include_str!(
-        "../testdata/actor-routing-projection.json"
-    ))
-    .expect("actor routing projection corpus must decode")
+    serde_json::from_str(include_str!("../testdata/actor-routing-projection.json"))
+        .expect("actor routing projection corpus must decode")
 }
 
 #[cfg(test)]
@@ -256,8 +251,7 @@ mod tests {
                 .validate()
                 .unwrap_or_else(|error| panic!("{}: {error}", case.id));
             assert_eq!(
-                projection.schema_version,
-                PROJECTION_SCHEMA_VERSION,
+                projection.schema_version, PROJECTION_SCHEMA_VERSION,
                 "{}",
                 case.id
             );
@@ -318,7 +312,11 @@ mod tests {
                         "{}: projection with {} must be rejected at validate",
                         case.id, case.reason
                     ));
-                    assert!(!error.is_empty(), "{}: validation error must be non-empty", case.id);
+                    assert!(
+                        !error.is_empty(),
+                        "{}: validation error must be non-empty",
+                        case.id
+                    );
                 }
                 other => panic!("{}: unknown rejectAt {other}", case.id),
             }
@@ -347,13 +345,14 @@ mod tests {
         assert_eq!(entry.actor.service_id, method.actor.service_id);
         assert_eq!(entry.deployment.service_id, method.deployment.service_id);
         assert_eq!(entry.package.package_id, method.package.package_id);
-        assert!(view.method_for(&MethodKey {
-            service_id: "example.com/unknown".to_string(),
-            actor_abi_identity: method.actor.actor_abi_identity.clone(),
-            actor_implementation_identity: method.actor_implementation_identity.clone(),
-            method_identity: method.method_identity.clone(),
-        })
-        .is_none());
+        assert!(view
+            .method_for(&MethodKey {
+                service_id: "example.com/unknown".to_string(),
+                actor_abi_identity: method.actor.actor_abi_identity.clone(),
+                actor_implementation_identity: method.actor_implementation_identity.clone(),
+                method_identity: method.method_identity.clone(),
+            })
+            .is_none());
     }
 
     #[test]

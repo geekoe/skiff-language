@@ -61,9 +61,6 @@ mod tests {
         );
         assert_eq!(pick_owner_candidate(&[], &aaa), None);
         let three = [first, second.clone(), session("actor-parity-replica-3")];
-        assert_eq!(
-            pick_owner_candidate(&three, &bbb).expect("owner"),
-            &second
-        );
+        assert_eq!(pick_owner_candidate(&three, &bbb).expect("owner"), &second);
     }
 }

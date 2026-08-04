@@ -564,7 +564,6 @@ impl Harness {
             prefer_session,
         }
     }
-
 }
 
 impl Harness {

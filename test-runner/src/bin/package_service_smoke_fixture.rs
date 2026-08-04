@@ -199,7 +199,9 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
         anyhow::bail!("--work-root and --receipt require --prepare-host-base");
     }
     if seed_committed && (package_root.is_none() || initialize_environment) {
-        anyhow::bail!("--seed-committed requires a package root and rejects --initialize-environment");
+        anyhow::bail!(
+            "--seed-committed requires a package root and rejects --initialize-environment"
+        );
     }
     let platform_source_root =
         platform_source_root.ok_or_else(|| anyhow::anyhow!("missing --platform-source-root"))?;
@@ -373,9 +375,7 @@ fn assemble_fixture_candidate(
             &ingress_url,
             environment,
         )?,
-        None => {
-            assemble_test_service_fixture(&project, &cases, Default::default(), environment)?
-        }
+        None => assemble_test_service_fixture(&project, &cases, Default::default(), environment)?,
     };
     Ok((std, fixture))
 }
@@ -431,10 +431,7 @@ fn write_actor_routing_projection(artifact_root: &Path) -> anyhow::Result<()> {
             .parent()
             .expect("actor routing record path has a parent directory"),
     )?;
-    std::fs::write(
-        &actor_routing_record,
-        EMPTY_ACTOR_ROUTING_PROJECTION_RECORD,
-    )?;
+    std::fs::write(&actor_routing_record, EMPTY_ACTOR_ROUTING_PROJECTION_RECORD)?;
     Ok(())
 }
 

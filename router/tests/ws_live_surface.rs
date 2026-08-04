@@ -408,8 +408,7 @@ mod tests {
             .resolve(SERVICE_ID, WS_PATH)
             .expect("startup binding resolves");
         assert_eq!(
-            stale_binding.deployment.deployment_revision,
-            ref_v1.deployment_revision,
+            stale_binding.deployment.deployment_revision, ref_v1.deployment_revision,
             "startup surface is pinned to the old deployment"
         );
 
@@ -420,8 +419,7 @@ mod tests {
             .resolve(SERVICE_ID, WS_PATH)
             .expect("current binding resolves");
         assert_eq!(
-            current_binding.deployment.deployment_revision,
-            ref_v2.deployment_revision,
+            current_binding.deployment.deployment_revision, ref_v2.deployment_revision,
             "generation switch must not leave the connect binding on a stale deployment revision"
         );
         assert_eq!(current_binding.methods.len(), 1);

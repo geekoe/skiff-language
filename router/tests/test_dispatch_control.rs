@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use skiff_artifact_identity::{assign_runtime_assembly_identity, runtime_assembly_ref};
 use skiff_artifact_model::{
-    GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector,
-    RuntimeAssemblyRef, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+    GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector, RuntimeAssemblyRef,
+    RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
 use skiff_deployment::activation_state::EnvironmentActivationState;
 use skiff_deployment::fixtures::{runtime_assembly_fixture, service_deployment_fixture};
@@ -288,8 +288,7 @@ mod tests {
         let control_addr = listeners.runtime_control.addr();
 
         // Non-POST -> 405 with allow: POST (TS parity).
-        let (status, body) =
-            raw_request(control_addr, "GET", "/__skiff/test-dispatch", b"").await;
+        let (status, body) = raw_request(control_addr, "GET", "/__skiff/test-dispatch", b"").await;
         assert!(status.contains("405"), "expected 405, got {status:?}");
         assert!(
             body.to_ascii_lowercase().contains("allow: post"),

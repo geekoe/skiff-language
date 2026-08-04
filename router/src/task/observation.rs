@@ -32,17 +32,23 @@ impl RouterTaskSchedulerObservation {
 
 fn correlation(record: &TaskRecord) -> (Map<String, Value>, Option<String>) {
     let mut attrs = Map::new();
-    attrs.insert("taskId".to_string(), Value::String(record.task_id.as_str().to_string()));
-    (
-        attrs,
-        Some(record.trace.trace_id.clone()),
-    )
+    attrs.insert(
+        "taskId".to_string(),
+        Value::String(record.task_id.as_str().to_string()),
+    );
+    (attrs, Some(record.trace.trace_id.clone()))
 }
 
 fn lease_attrs(task_id: &TaskId, lease_id: &LeaseId) -> Map<String, Value> {
     let mut attrs = Map::new();
-    attrs.insert("taskId".to_string(), Value::String(task_id.as_str().to_string()));
-    attrs.insert("leaseId".to_string(), Value::String(lease_id.as_str().to_string()));
+    attrs.insert(
+        "taskId".to_string(),
+        Value::String(task_id.as_str().to_string()),
+    );
+    attrs.insert(
+        "leaseId".to_string(),
+        Value::String(lease_id.as_str().to_string()),
+    );
     attrs
 }
 
@@ -68,8 +74,12 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
             "scheduledToReadyMs".to_string(),
             json!((now.millis() - record.due_at.millis()).max(0)),
         );
-        let mut event =
-            task_event("task.ready", TelemetryLevel::Info, Some(record.task_id.as_str()), attrs);
+        let mut event = task_event(
+            "task.ready",
+            TelemetryLevel::Info,
+            Some(record.task_id.as_str()),
+            attrs,
+        );
         event.trace_id = trace_id;
         self.telemetry.emit(event);
     }
@@ -77,8 +87,14 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
     fn on_claim(&self, record: &TaskRecord, now: DurableUtcTimestamp) {
         let (mut attrs, trace_id) = correlation(record);
         if let Some(lease) = record.active_lease.as_ref() {
-            attrs.insert("attemptId".to_string(), Value::String(lease.attempt_id.as_str().to_string()));
-            attrs.insert("leaseId".to_string(), Value::String(lease.lease_id.as_str().to_string()));
+            attrs.insert(
+                "attemptId".to_string(),
+                Value::String(lease.attempt_id.as_str().to_string()),
+            );
+            attrs.insert(
+                "leaseId".to_string(),
+                Value::String(lease.lease_id.as_str().to_string()),
+            );
         }
         attrs.insert("dueAtMs".to_string(), json!(record.due_at.millis()));
         attrs.insert("claimedAtMs".to_string(), json!(now.millis()));
@@ -99,8 +115,12 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
     fn on_claim_duplicate(&self, task_id: &TaskId, reason: &ClaimRejection) {
         let mut attrs = Map::new();
         attrs.insert("reason".to_string(), Value::String(format!("{reason:?}")));
-        self.telemetry
-            .emit(task_event("task.duplicate.absorbed", TelemetryLevel::Debug, Some(task_id.as_str()), attrs));
+        self.telemetry.emit(task_event(
+            "task.duplicate.absorbed",
+            TelemetryLevel::Debug,
+            Some(task_id.as_str()),
+            attrs,
+        ));
     }
 
     fn on_renewed(&self, task_id: &TaskId, lease_id: &LeaseId, new_expiry: DurableUtcTimestamp) {
@@ -116,14 +136,12 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         );
     }
 
-    fn on_renew_lost(
-        &self,
-        task_id: &TaskId,
-        lease_id: &LeaseId,
-        rejection: RenewRejection,
-    ) {
+    fn on_renew_lost(&self, task_id: &TaskId, lease_id: &LeaseId, rejection: RenewRejection) {
         let mut extra = Map::new();
-        extra.insert("reason".to_string(), Value::String(format!("{rejection:?}")));
+        extra.insert(
+            "reason".to_string(),
+            Value::String(format!("{rejection:?}")),
+        );
         emit_lease_event(
             &self.telemetry,
             "task.lease.lost",

@@ -1,5 +1,6 @@
 use std::{future::Future, sync::Arc, time::Instant};
 
+use crate::telemetry::{RequestTelemetryContext, TelemetryEmitter};
 use serde_json::{json, Value};
 use skiff_artifact_model::{
     AssemblyIdentity, DeploymentRevision, InstructionSourceSite, SyntheticInstructionSiteReason,
@@ -11,7 +12,6 @@ use skiff_runtime_capability_context::{
     OutboundResponse, ResponseError, TaskSubmitControlRequest, TaskSubmitTimingControl,
 };
 use skiff_runtime_transport::protocol::TelemetryEvent;
-use crate::telemetry::{RequestTelemetryContext, TelemetryEmitter};
 
 use super::*;
 
@@ -177,7 +177,10 @@ struct RecordingEmitter {
 
 impl TelemetryEmitter for RecordingEmitter {
     fn emit(&self, event: TelemetryEvent) -> bool {
-        self.events.lock().expect("recording emitter lock").push(event);
+        self.events
+            .lock()
+            .expect("recording emitter lock")
+            .push(event);
         true
     }
 }

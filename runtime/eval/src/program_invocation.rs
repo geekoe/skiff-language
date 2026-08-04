@@ -1357,7 +1357,8 @@ fn decode_request_args_payload(
                         .to_string(),
                 )
             })?;
-            let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
+            let boundary =
+                PayloadBoundary::owner_internal(PayloadBoundaryKind::TaskDispatchPayload);
             let expected = executable_request_recoverable_expected_plan(
                 task_decode.program.type_view(),
                 task_decode.addr,

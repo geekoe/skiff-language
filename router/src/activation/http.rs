@@ -138,8 +138,7 @@ impl ActivationHttpHandler {
                         | ActivationPhase::Shutdown
                         | ActivationPhase::Exited
                 ) && (health.phase != initial_phase
-                    || health.activation_id.as_deref()
-                        == Some(activation.activation_id.as_str()))
+                    || health.activation_id.as_deref() == Some(activation.activation_id.as_str()))
             }),
         )
         .await;
@@ -862,8 +861,7 @@ mod tests {
                 let ack_task = tokio::spawn(async move {
                     handle
                         .wait_until_health(|health| {
-                            health.activation_id.as_deref()
-                                == Some(wait_activation_id.as_str())
+                            health.activation_id.as_deref() == Some(wait_activation_id.as_str())
                                 && health.phase == ActivationPhase::Prepared
                         })
                         .await;
