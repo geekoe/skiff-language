@@ -147,7 +147,7 @@ mod tests {
                 "{name}: decodeAs"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v3",
+                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
                 "{name}: header schemaVersion"
             );
             assert_eq!(
@@ -237,7 +237,7 @@ mod tests {
         // Closed enum: any non-request/actorInvocation value must fail even when
         // the field is present.
         let invalid_kind = serde_json::json!({
-            "schemaVersion": "skiff-runtime-frame-v3",
+            "schemaVersion": "skiff-runtime-frame-v4",
             "type": "task.submit.request",
             "rpcId": "rpc:probe-1",
             "runtimeId": "runtime-a",
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn w_model_task_target_kind_and_actor_method_must_agree() {
         let base = serde_json::json!({
-            "schemaVersion": "skiff-runtime-frame-v3",
+            "schemaVersion": "skiff-runtime-frame-v4",
             "type": "task.submit.request",
             "rpcId": "rpc:probe-1",
             "runtimeId": "runtime-a",

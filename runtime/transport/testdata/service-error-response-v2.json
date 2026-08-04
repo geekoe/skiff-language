@@ -4,7 +4,7 @@
     {
       "name": "public-fixed-service-error",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-public-1",
         "errorKind": "fixedService"
@@ -22,7 +22,7 @@
     {
       "name": "internal-fixed-service-error",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-internal-1",
         "errorKind": "fixedService"
@@ -37,7 +37,7 @@
     {
       "name": "platform-fixed-service-error",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-platform-1",
         "errorKind": "fixedService"
@@ -53,7 +53,7 @@
     {
       "name": "generic-control-same-safe-values-as-internal",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-control-1",
         "errorKind": "control",
@@ -91,7 +91,7 @@
     {
       "name": "missing-error-kind",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "error": {
@@ -104,7 +104,7 @@
     {
       "name": "unknown-error-kind",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "service"
@@ -114,7 +114,7 @@
     {
       "name": "wrong-envelope-type",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.end",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -124,7 +124,7 @@
     {
       "name": "fixed-header-extra-field",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService",
@@ -135,7 +135,7 @@
     {
       "name": "fixed-missing-request-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "errorKind": "fixedService"
       },
@@ -144,7 +144,7 @@
     {
       "name": "fixed-empty-request-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "",
         "errorKind": "fixedService"
@@ -154,7 +154,7 @@
     {
       "name": "fixed-carries-generic-error",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService",
@@ -168,7 +168,7 @@
     {
       "name": "fixed-empty-payload",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -178,7 +178,7 @@
     {
       "name": "control-missing-error",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control"
@@ -188,7 +188,7 @@
     {
       "name": "control-nonempty-payload",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control",
@@ -202,7 +202,7 @@
     {
       "name": "control-error-extra-field",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control",
@@ -217,7 +217,7 @@
     {
       "name": "control-empty-code",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control",
@@ -231,7 +231,7 @@
     {
       "name": "control-empty-message",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control",
@@ -245,7 +245,7 @@
     {
       "name": "control-invalid-status-low",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "control",
@@ -260,7 +260,7 @@
     {
       "name": "fixed-malformed-json",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -270,7 +270,7 @@
     {
       "name": "fixed-unknown-envelope-kind",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -280,7 +280,7 @@
     {
       "name": "fixed-envelope-extra-field",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -290,7 +290,7 @@
     {
       "name": "fixed-public-missing-type-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -300,7 +300,7 @@
     {
       "name": "fixed-public-whitespace-package-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -310,7 +310,7 @@
     {
       "name": "fixed-public-whitespace-schema-key",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -320,7 +320,7 @@
     {
       "name": "fixed-public-whitespace-type-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -330,7 +330,7 @@
     {
       "name": "fixed-public-empty-encoded-payload",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -340,7 +340,7 @@
     {
       "name": "fixed-public-non-byte-encoded-payload",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -350,7 +350,7 @@
     {
       "name": "fixed-public-encoded-payload-not-array",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -360,7 +360,7 @@
     {
       "name": "fixed-public-whitespace-trace-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -370,7 +370,7 @@
     {
       "name": "fixed-public-empty-error-id",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -380,7 +380,7 @@
     {
       "name": "fixed-platform-unknown-identity",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -390,7 +390,7 @@
     {
       "name": "fixed-internal-payload-extra-field",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"
@@ -400,7 +400,7 @@
     {
       "name": "fixed-internal-empty-message",
       "header": {
-        "schemaVersion": "skiff-runtime-frame-v3",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "response.error",
         "requestId": "request-invalid",
         "errorKind": "fixedService"

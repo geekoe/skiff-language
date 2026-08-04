@@ -159,7 +159,7 @@ fn request_start_frame_rejects_wrong_schema_version() {
     )
     .expect_err("wrong schema should fail");
 
-    assert!(error.contains("request.start schemaVersion must be skiff-runtime-frame-v3"));
+    assert!(error.contains("request.start schemaVersion must be skiff-runtime-frame-v4"));
 }
 
 #[test]

@@ -3,7 +3,7 @@
   "scenario": "client-abort-cancels",
   "maxConcurrency": 2,
   "epoch": {
-    "environment": "prod",
+    "profile": "prod",
     "generation": 42,
     "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "configSnapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -22,7 +22,7 @@
       "revision": 1,
       "cancelled": false,
       "tuple": {
-        "environment": "prod",
+        "profile": "prod",
         "generation": 42,
         "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

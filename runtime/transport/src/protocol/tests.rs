@@ -75,7 +75,7 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
                 assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");
                 assert!(!header.service_db.mongo_url.is_empty());
                 assert_eq!(header.http.max_response_bytes, 67_108_864);
-                assert_eq!(header.activation.environment, "prod");
+                assert_eq!(header.activation.profile, "prod");
                 assert_eq!(header.activation.generation, 7);
             }
             "reject" => assert!(
@@ -1337,9 +1337,9 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
 
     assert_eq!(
         RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
-        "skiff-runtime-frame-v3"
+        "skiff-runtime-frame-v4"
     );
-    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v3");
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v4");
 }
 
 #[test]
@@ -1352,7 +1352,7 @@ fn router_bootstrap_rejects_previous_runtime_frame_generation() {
             "mongoUrl": "mongodb://127.0.0.1:27017/?replicaSet=rs0"
         },
         "activation": {
-            "environment": "test",
+            "profile": "test",
             "generation": 7,
             "assembly": {
                 "assemblyIdentity": format!(

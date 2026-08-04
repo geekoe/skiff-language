@@ -3,7 +3,7 @@
   "scenario": "ack-loss",
   "mainConnection": "c1",
   "epoch": {
-    "environment": "prod",
+    "profile": "prod",
     "generation": 42,
     "assembly": { "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     "configSnapshot": { "snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
