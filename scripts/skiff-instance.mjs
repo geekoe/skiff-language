@@ -279,6 +279,7 @@ async function startProcess(spec, entry) {
     cwd: entry.cwd ?? spec.runtimeDir,
     env: { ...globalThis.process.env, ...(spec.env ?? {}) },
     stdio: ['ignore', out.fd, err.fd],
+    detached: true,
   });
   child.unref();
   out.close().catch(() => {});
