@@ -117,6 +117,10 @@ struct Pending {
     next_seq: u64,
     deadline: Option<RequestDeadline>,
     task_attempt: Option<TaskAttemptFacts>,
+    /// Opaque test case capability carried by the admitted request (F2a).
+    /// Retained while the pending is active so a `task.submit.request` from
+    /// this request can derive the same capability for its durable child.
+    test_case_capability: Option<String>,
 }
 
 /// Durable task attempt correlation kept by one dispatcher pending so a
@@ -336,6 +340,7 @@ impl RequestDispatcher {
                 next_seq: 0,
                 deadline,
                 task_attempt: None,
+                test_case_capability: request.header.test_case_capability.clone(),
             },
         );
         SubmitResult::Accepted {
@@ -715,7 +720,7 @@ impl RequestDispatcher {
             deployment: attempt.header.routing.deployment.clone(),
         };
         let view = self.options.candidate_view.view();
-        let leases = match RuntimeCandidateQuery.query(&epoch, &view, &query) {
+        let mut leases = match RuntimeCandidateQuery.query(&epoch, &view, &query) {
             Ok(leases) => leases,
             Err(_) => {
                 inner.pool.record_no_candidate();
@@ -731,6 +736,12 @@ impl RequestDispatcher {
             !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
         })
         .collect::<Vec<_>>();
+        // Test-case attempts (F2a) must execute on the exact origin Runtime
+        // connection; any other placement is a fail-closed rejection.
+        let prefer_session = attempt.prefer_session.clone();
+        if let Some(prefer) = &prefer_session {
+            leases.retain(|lease| &lease.session_epoch == prefer);
+        }
         if leases.is_empty() {
             inner.pool.record_no_candidate();
             inner.task_attempt_rejected += 1;
@@ -740,7 +751,7 @@ impl RequestDispatcher {
             };
         }
 
-        let Some(selected) = inner.pool.select(&leases, None) else {
+        let Some(selected) = inner.pool.select(&leases, prefer_session.as_ref()) else {
             inner.pool.record_queue_full();
             inner.task_attempt_rejected += 1;
             return TaskAttemptSubmitResult::Rejected {
@@ -769,6 +780,16 @@ impl RequestDispatcher {
         ) {
             inner.pool.record_revalidate_failure();
             selected.reservation.release();
+            if prefer_session.is_some() {
+                // The exact origin session failed revalidation; reselecting a
+                // different Runtime would violate the test-case connection
+                // constraint.
+                inner.task_attempt_rejected += 1;
+                return TaskAttemptSubmitResult::Rejected {
+                    request_id,
+                    reason: SubmitRejectReason::RevalidateFailClosed,
+                };
+            }
             let Some(reselected) = inner
                 .pool
                 .select_after_revalidate_failure(&leases, &selected.lease.session_epoch)
@@ -836,6 +857,7 @@ impl RequestDispatcher {
                     attempt_id: attempt.attempt_id,
                     lease_id: attempt.lease_id,
                 }),
+                test_case_capability: attempt.header.test_case_capability.clone(),
             },
         );
         inner.task_attempt_accepted += 1;
@@ -957,6 +979,24 @@ impl RequestDispatcher {
             .pending
             .get(request_id)
             .map(|pending| pending.epoch.clone())
+    }
+
+    /// Opaque test case capability retained by one active request pending on
+    /// the exact session (F2a task-submit parent derivation). Returns `None`
+    /// for ordinary requests and for parents that are not active on the
+    /// exact connection; the task control plane treats that as a production
+    /// submission with no test authority.
+    pub fn parent_test_capability(
+        &self,
+        session: &RuntimeSessionEpoch,
+        request_id: &str,
+    ) -> Option<String> {
+        let inner = self.lock();
+        inner.pending.get(request_id).and_then(|pending| {
+            (pending.session_epoch == *session)
+                .then(|| pending.test_case_capability.clone())
+                .flatten()
+        })
     }
 
     /// Registered session lease held by one pending (integration seam).

@@ -74,7 +74,8 @@ use self::ws::{
 
 use crate::task::{
     DurableTaskControl, DurableTaskFrameSink, EpochTaskExecutionImageSource,
-    RouterTaskAttemptAdmission, RouterTaskSchedulerObservation, TaskControlCounters,
+    RouterTaskAttemptAdmission, RouterTaskSchedulerObservation, RouterTaskSubmitParentResolver,
+    TaskControlCounters,
 };
 use crate::telemetry::{
     NoopTaskTelemetrySink, RouterTelemetryExporter, RouterTelemetryExporterHandle,
@@ -501,6 +502,11 @@ impl RouterComponents {
             Arc::clone(&task_store),
             Arc::clone(&scheduler),
             Arc::new(EpochTaskExecutionImageSource::new(Arc::clone(&epoch_store))),
+            Arc::new(RouterTaskSubmitParentResolver::new(
+                Arc::clone(&dispatcher),
+                Arc::clone(&actor),
+            )) as Arc<dyn crate::task::TaskSubmitParentResolver>,
+            Some(Arc::clone(&task_control)),
             Arc::clone(&session_writer),
             Arc::clone(&task_counters),
             Arc::clone(&task_telemetry),

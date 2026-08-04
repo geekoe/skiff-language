@@ -831,6 +831,12 @@ fn record_document(record: &TaskRecord) -> Result<Document, TaskStoreError> {
             .retry_not_before
             .as_ref()
             .map(|timestamp| DateTime::from_millis(timestamp.millis())),
+        "testCase": record.test_case.as_ref().map(|authority| doc! {
+            "testCaseCapability": authority.test_case_capability.clone(),
+            "parentRequestId": authority.parent_request_id.clone(),
+            "originRuntimeId": authority.origin_runtime_id.clone(),
+            "originConnectionGeneration": authority.origin_connection_generation as i64,
+        }),
     })
 }
 
@@ -878,6 +884,28 @@ fn document_to_record(document: Document) -> Result<TaskRecord, TaskStoreError> 
         .get("retryNotBefore")
         .and_then(Bson::as_datetime)
         .map(|timestamp| DurableUtcTimestamp::from_millis(timestamp.timestamp_millis()));
+    let test_case = document
+        .get("testCase")
+        .and_then(Bson::as_document)
+        .map(|authority| {
+            Ok::<crate::model::TaskTestCaseAuthority, TaskStoreError>(
+                crate::model::TaskTestCaseAuthority {
+                    test_case_capability: get_string(
+                        &task_id,
+                        authority,
+                        "testCaseCapability",
+                    )?,
+                    parent_request_id: get_string(&task_id, authority, "parentRequestId")?,
+                    origin_runtime_id: get_string(&task_id, authority, "originRuntimeId")?,
+                    origin_connection_generation: get_i64(
+                        &task_id,
+                        authority,
+                        "originConnectionGeneration",
+                    )? as u64,
+                },
+            )
+        })
+        .transpose()?;
     Ok(TaskRecord {
         task_id,
         owner,
@@ -892,6 +920,7 @@ fn document_to_record(document: Document) -> Result<TaskRecord, TaskStoreError> 
         trace,
         created_at,
         retry_not_before,
+        test_case,
     })
 }
 

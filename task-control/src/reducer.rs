@@ -772,6 +772,7 @@ pub(crate) mod tests {
                 },
                 created_at: DurableUtcTimestamp::from_millis(1),
                 retry_not_before: None,
+                test_case: None,
             }
         }
 

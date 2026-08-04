@@ -176,6 +176,7 @@ impl RouterTaskAttemptAdmission {
             timeout_ms: self.request_timeout_ms,
             expires_at: super::iso_timestamp(now.saturating_add(self.request_timeout_ms)),
         };
+        let test_case = record.test_case.as_ref();
         Some(RuntimeAssemblyTaskRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
@@ -205,8 +206,10 @@ impl RouterTaskAttemptAdmission {
                 parent_span_id: None,
                 sampled: None,
             },
-            test_effects_enabled: false,
-            test_case_capability: None,
+            test_effects_enabled: test_case.is_some(),
+            test_case_capability: test_case.map(|authority| {
+                authority.test_case_capability.clone()
+            }),
             task_attempt: Some(RuntimeAssemblyTaskAttemptFrameHeader {
                 task_id: record.task_id.as_str().to_string(),
                 attempt_id: lease.attempt_id.as_str().to_string(),
@@ -358,6 +361,25 @@ impl RouterTaskAttemptAdmission {
                 };
             }
         };
+        let test_case = record.test_case.as_ref();
+        if test_case.is_some() {
+            // F2a: a test-case actor method must belong to the parent service
+            // (test-runner-runtime isolation: the capability chain never
+            // crosses service). This is checked before the catalog so a
+            // cross-service target cannot even consult another service's
+            // routing surface.
+            if key.service_id != record.owner.as_str() {
+                self.counters
+                    .admissions_permanent_failure
+                    .fetch_add(1, Ordering::Relaxed);
+                return AdmissionDecision::PermanentFailure {
+                    reason: format!(
+                        "test-case actor task target service {} differs from the parent service {}",
+                        key.service_id, record.owner.as_str()
+                    ),
+                };
+            }
+        }
         let Some(epoch) = self.epoch.capture() else {
             self.counters
                 .admissions_rejected
@@ -394,13 +416,44 @@ impl RouterTaskAttemptAdmission {
             };
         }
         let candidates = self.actor_port.candidates(&epoch.registered_tuple());
-        let Some(owner) = pick_owner_candidate(&candidates, &key.actor_id_hash) else {
-            self.counters
-                .admissions_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            return AdmissionDecision::RejectedProvable {
-                reason: "no Runtime is available to own the Actor".to_string(),
+        let owner = if let Some(authority) = test_case {
+            // Execute on the exact origin Runtime connection so the method
+            // shares the case's in-memory effect registry; any other owner is
+            // a permanent fail-closed condition.
+            let origin = RuntimeSessionEpoch {
+                replica_id: authority.origin_runtime_id.clone(),
+                connection_generation: authority.origin_connection_generation,
             };
+            match candidates
+                .into_iter()
+                .find(|candidate| {
+                    candidate.replica_id == origin.replica_id
+                        && candidate.connection_generation == origin.connection_generation
+                })
+            {
+                Some(owner) => owner,
+                None => {
+                    self.counters
+                        .admissions_permanent_failure
+                        .fetch_add(1, Ordering::Relaxed);
+                    return AdmissionDecision::PermanentFailure {
+                        reason: format!(
+                            "test-case actor task origin Runtime {}#{} is not a current owner candidate",
+                            origin.replica_id, origin.connection_generation
+                        ),
+                    };
+                }
+            }
+        } else {
+            let Some(owner) = pick_owner_candidate(&candidates, &key.actor_id_hash).cloned() else {
+                self.counters
+                    .admissions_rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                return AdmissionDecision::RejectedProvable {
+                    reason: "no Runtime is available to own the Actor".to_string(),
+                };
+            };
+            owner
         };
         let owner_connection = format!(
             "{}#{}",
@@ -428,7 +481,7 @@ impl RouterTaskAttemptAdmission {
                     &fence,
                     &key,
                     &declaration_owner_frame,
-                    owner,
+                    &owner,
                     &owner_connection,
                 )
                 .await;
@@ -493,8 +546,10 @@ impl RouterTaskAttemptAdmission {
                 timeout_ms: self.activation_deadline_ms,
                 expires_at: super::iso_timestamp(deadline_at),
             }),
-            test_case_capability: None,
-            test_case_parent_request_id: None,
+            test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
+            test_case_parent_request_id: test_case.map(|authority| {
+                authority.parent_request_id.clone()
+            }),
             now,
         };
         match self.actor.activation_broker.get_or_create(&request) {
@@ -506,7 +561,7 @@ impl RouterTaskAttemptAdmission {
                     &key,
                     implementation,
                     &declaration_owner_frame,
-                    owner,
+                    &owner,
                     &owner_connection,
                 )
                 .await,
@@ -523,7 +578,7 @@ impl RouterTaskAttemptAdmission {
                             &key,
                             implementation,
                             &declaration_owner_frame,
-                            owner,
+                            &owner,
                             &owner_connection,
                         )
                         .await,
@@ -699,6 +754,7 @@ impl RouterTaskAttemptAdmission {
         let invocation_id = format!("{request_id}:invoke");
         let expires_at = super::iso_timestamp(now.saturating_add(self.request_timeout_ms));
         let cancellation_correlation = format!("{invocation_id}:cancel");
+        let test_case = record.test_case.as_ref();
         let invoke = ActorMethodInvokeFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "actor.method.invoke".to_string(),
@@ -725,8 +781,11 @@ impl RouterTaskAttemptAdmission {
             },
             cancellation_correlation: cancellation_correlation.clone(),
             trace_id: Some(record.trace.trace_id.clone()),
-            test_case_capability: None,
-            test_case_parent_request_id: None,
+            test_case_capability: test_case
+                .map(|authority| authority.test_case_capability.clone()),
+            test_case_parent_request_id: test_case.map(|authority| {
+                authority.parent_request_id.clone()
+            }),
         };
         let owner_invoke = ActorOwnerInvokeFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -776,7 +835,8 @@ impl RouterTaskAttemptAdmission {
                 timeout_ms: self.request_timeout_ms,
                 expires_at,
             }),
-            test_case_capability: None,
+            test_case_capability: test_case
+                .map(|authority| authority.test_case_capability.clone()),
             now,
         };
         if let Err(error) = self.actor.relay.invoke(&input) {
@@ -897,6 +957,12 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
             self.admit_function(record).await
         };
         self.emit_admission_decision(record, &decision);
+        if record.test_case.is_some() {
+            // F2a test-case submissions gate their response on the first
+            // attempt admission; publish the outcome only for those tasks so
+            // the production fast path is untouched.
+            self.control.report_first_admission(&record.task_id, &decision);
+        }
         decision
     }
 }
@@ -952,12 +1018,17 @@ impl RouterTaskAttemptAdmission {
         let lease_id = lease.lease_id.clone();
         let attempt_id = lease.attempt_id.clone();
         let deadline_ms = self.clock.now_ms().saturating_add(self.request_timeout_ms);
+        let prefer_session = record.test_case.as_ref().map(|authority| RuntimeSessionEpoch {
+            replica_id: authority.origin_runtime_id.clone(),
+            connection_generation: authority.origin_connection_generation,
+        });
         let result = dispatcher.task_attempt_submit(TaskAttemptSubmit {
             header,
             payload: record.payload.as_bytes().to_vec(),
             task_id: task_id.as_str().to_string(),
             attempt_id: attempt_id.as_str().to_string(),
             lease_id: lease_id.as_str().to_string(),
+            prefer_session,
         });
         match result {
             TaskAttemptSubmitResult::Accepted {
@@ -981,6 +1052,20 @@ impl RouterTaskAttemptAdmission {
                 AdmissionDecision::Accepted
             }
             TaskAttemptSubmitResult::Rejected { reason, .. } => {
+                if record.test_case.is_some()
+                    && reason == crate::dispatch::SubmitRejectReason::NoCandidate
+                {
+                    // The test case's exact origin Runtime connection is not
+                    // a current candidate; any other placement would cross
+                    // the case's connection boundary, so this is permanent.
+                    self.counters
+                        .admissions_permanent_failure
+                        .fetch_add(1, Ordering::Relaxed);
+                    return AdmissionDecision::PermanentFailure {
+                        reason: "test-case task origin Runtime connection is unavailable"
+                            .to_string(),
+                    };
+                }
                 self.counters
                     .admissions_rejected
                     .fetch_add(1, Ordering::Relaxed);

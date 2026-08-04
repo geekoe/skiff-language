@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use skiff_runtime_transport::protocol::TelemetryLevel;
+use skiff_task_control::scheduler::AdmissionDecision;
 use skiff_task_control::model::{
     DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal,
 };
@@ -56,6 +57,30 @@ enum ControlEvent {
     },
 }
 
+/// First-attempt admission outcome observed for one task (F2a test-case
+/// submission gating). Production submissions never wait on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirstAdmissionOutcome {
+    Accepted,
+    PermanentFailure {
+        reason: String,
+    },
+}
+
+impl FirstAdmissionOutcome {
+    fn from_decision(decision: &AdmissionDecision) -> Option<Self> {
+        match decision {
+            AdmissionDecision::Accepted => Some(Self::Accepted),
+            AdmissionDecision::PermanentFailure { reason } => Some(Self::PermanentFailure {
+                reason: reason.clone(),
+            }),
+            AdmissionDecision::RejectedProvable { .. } | AdmissionDecision::Uncertain { .. } => {
+                None
+            }
+        }
+    }
+}
+
 /// Durable task settlement / deadline owner (authoritative design "Runtime
 /// Admission And Settlement").
 pub struct DurableTaskControl {
@@ -75,6 +100,11 @@ pub struct DurableTaskControl {
     events_rx: Mutex<Option<tokio::sync::mpsc::Receiver<ControlEvent>>>,
     sweep_interval: Duration,
     started: AtomicBool,
+    /// Broadcast of first-attempt admission outcomes (F2a): test-case
+    /// submissions subscribe before waking the scheduler so the submit
+    /// response can wait for the attempt to be admitted while the parent
+    /// request is still active.
+    admission_events: tokio::sync::broadcast::Sender<(TaskId, FirstAdmissionOutcome)>,
 }
 
 impl fmt::Debug for DurableTaskControl {
@@ -109,6 +139,7 @@ impl DurableTaskControl {
             events_rx: Mutex::new(Some(events_rx)),
             sweep_interval,
             started: AtomicBool::new(false),
+            admission_events: tokio::sync::broadcast::channel(64).0,
         }
     }
 
@@ -174,6 +205,65 @@ impl DurableTaskControl {
     /// Counter bank shared with the sink / admission seam.
     pub fn counters(&self) -> &TaskControlCounters {
         &self.counters
+    }
+
+    /// Reports one first-attempt admission outcome (F2a). Only terminal
+    /// admission decisions (`Accepted` / `PermanentFailure`) are observable;
+    /// retryable rejections stay unobservable so the submit waiter keeps
+    /// waiting for the attempt that can actually join the test case.
+    pub fn report_first_admission(
+        &self,
+        task_id: &TaskId,
+        decision: &AdmissionDecision,
+    ) {
+        if let Some(outcome) = FirstAdmissionOutcome::from_decision(decision) {
+            let _ = self.admission_events.send((task_id.clone(), outcome));
+        }
+    }
+
+    /// Subscribes to first-attempt admission outcomes before the scheduler
+    /// is woken, so the test-case submit gate cannot miss the admission.
+    pub fn subscribe_first_admission(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<(TaskId, FirstAdmissionOutcome)> {
+        self.admission_events.subscribe()
+    }
+
+    /// Waits until the first attempt of one task reaches an observable
+    /// admission outcome (`Accepted` / `PermanentFailure`) or the caller's
+    /// bounded deadline expires. Used only by test-case submissions so the
+    /// parent request stays active while the attempt is admitted to the same
+    /// Runtime connection; it never waits for terminal execution.
+    pub async fn wait_for_first_admission(
+        &self,
+        task_id: &TaskId,
+        timeout: Duration,
+    ) -> Option<FirstAdmissionOutcome> {
+        let mut events = self.subscribe_first_admission();
+        Self::wait_for_first_admission_rx(&mut events, task_id, timeout).await
+    }
+
+    /// Receiver-based wait used by the submit gate when it must subscribe
+    /// before waking the scheduler (no missed-broadcast race).
+    pub async fn wait_for_first_admission_rx(
+        events: &mut tokio::sync::broadcast::Receiver<(TaskId, FirstAdmissionOutcome)>,
+        task_id: &TaskId,
+        timeout: Duration,
+    ) -> Option<FirstAdmissionOutcome> {
+        let task_id = task_id.clone();
+        tokio::time::timeout(timeout, async move {
+            loop {
+                match events.recv().await {
+                    Ok((id, outcome)) if id == task_id => return Some(outcome),
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn sweep_deadlines(&self) {

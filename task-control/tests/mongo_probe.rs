@@ -140,6 +140,12 @@ mod tests {
                 actor_symbol: "Actor".to_string(),
             },
         };
+        record.test_case = Some(skiff_task_control::model::TaskTestCaseAuthority {
+            test_case_capability: "test-case:mongo-cap".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-a".to_string(),
+            origin_connection_generation: 1,
+        });
         store
             .create(record.clone())
             .await
@@ -161,6 +167,10 @@ mod tests {
             .find(|candidate| candidate.task_id == record.task_id)
             .expect("actor task visible after round trip");
         assert_eq!(round.target, record.target, "actor target round trips");
+        assert_eq!(
+            round.test_case, record.test_case,
+            "test-case authority must survive the Mongo DTO"
+        );
     }
 
     /// Scheduler-owned store extensions driven by the real server clock:
