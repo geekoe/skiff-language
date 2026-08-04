@@ -14,7 +14,7 @@ pub fn record(seed: u64, due_at_millis: i64) -> TaskRecord {
         task_id: TaskId::new(format!("task-{seed}")),
         owner: ServiceOwner::new(format!("svc-{seed}")),
         execution: TaskExecutionImageRef {
-            target_environment: "prod".to_string(),
+            target_profile: "prod".to_string(),
             package_version: "1.0.0".to_string(),
             assembly: RuntimeAssemblyRef {
                 assembly_identity: AssemblyIdentity::new(format!(

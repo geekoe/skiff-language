@@ -273,7 +273,7 @@ mod tests {
                     let loaded = outcome
                         .unwrap_or_else(|error| panic!("{} must read, got {error}", case.id));
                     assert_eq!(loaded.snapshot_ref(), &reference);
-                    assert_eq!(loaded.environment(), "prod");
+                    assert_eq!(loaded.profile(), "prod");
                 }
                 "reject" => {
                     let error = outcome

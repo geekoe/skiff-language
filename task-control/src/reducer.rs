@@ -731,7 +731,7 @@ pub(crate) mod tests {
         pub(crate) fn record(seed: u64, due_at_millis: i64) -> TaskRecord {
             let due_at = DurableUtcTimestamp::from_millis(due_at_millis);
             let execution = TaskExecutionImageRef {
-                target_environment: "prod".to_string(),
+                target_profile: "prod".to_string(),
                 package_version: "1.0.0".to_string(),
                 assembly: RuntimeAssemblyRef {
                     assembly_identity: AssemblyIdentity::new(format!(

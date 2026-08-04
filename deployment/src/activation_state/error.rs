@@ -10,30 +10,24 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ActivationStateError {
-    #[error("activation state CAS mismatch for environment {environment}: {message}")]
-    CasMismatch {
-        environment: String,
-        message: String,
-    },
-    #[error("invalid activation state for environment {environment}: {message}")]
-    InvalidRecord {
-        environment: String,
-        message: String,
-    },
+    #[error("activation state CAS mismatch for profile {profile}: {message}")]
+    CasMismatch { profile: String, message: String },
+    #[error("invalid activation state for profile {profile}: {message}")]
+    InvalidRecord { profile: String, message: String },
 }
 
 pub type ActivationStateResult<T> = Result<T, ActivationStateError>;
 
-pub(crate) fn cas_error(environment: &str, message: impl Into<String>) -> ActivationStateError {
+pub(crate) fn cas_error(profile: &str, message: impl Into<String>) -> ActivationStateError {
     ActivationStateError::CasMismatch {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         message: message.into(),
     }
 }
 
-pub(crate) fn invalid_error(environment: &str, message: impl Into<String>) -> ActivationStateError {
+pub(crate) fn invalid_error(profile: &str, message: impl Into<String>) -> ActivationStateError {
     ActivationStateError::InvalidRecord {
-        environment: environment.to_string(),
+        profile: profile.to_string(),
         message: message.into(),
     }
 }

@@ -47,7 +47,7 @@ pub mod types;
 
 pub use activation_lexical::{
     deserialize_activation_generation, runtime_assembly_identity_hash,
-    validate_activation_environment, validate_activation_generation, validate_activation_token,
+    validate_activation_generation, validate_activation_profile, validate_activation_token,
     validate_expected_activation_generation, validate_runtime_assembly_identity,
     validate_transition_generations, MAX_EXPECTED_ACTIVATION_GENERATION,
     MAX_SAFE_ACTIVATION_GENERATION, RUNTIME_ASSEMBLY_IDENTITY_PREFIX,

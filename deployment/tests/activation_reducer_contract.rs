@@ -24,7 +24,7 @@ mod tests {
     use skiff_deployment::{
         activation_state::{
             abort as reduce_abort, commit as reduce_commit, prepare as reduce_prepare, AbortInput,
-            ActivationStateError, CommitInput, EnvironmentActivationState, PrepareInput,
+            ActivationStateError, CommitInput, PrepareInput, ProfileActivationState,
         },
         fixtures::{empty_runtime_assembly_fixture, runtime_assembly_fixture},
         storage::{ActivationRecoveryAction, CanonicalArtifactStore, EcosystemStorageError},
@@ -172,8 +172,8 @@ mod tests {
         }
     }
 
-    fn initial_state(refs: &Refs, generation: u64) -> EnvironmentActivationState {
-        EnvironmentActivationState::initial(
+    fn initial_state(refs: &Refs, generation: u64) -> ProfileActivationState {
+        ProfileActivationState::initial(
             "test",
             generation,
             refs.committed.clone(),
@@ -182,10 +182,10 @@ mod tests {
     }
 
     fn reducer_result(
-        state: &EnvironmentActivationState,
+        state: &ProfileActivationState,
         refs: &Refs,
         step: &Step,
-    ) -> Result<EnvironmentActivationState, ActivationStateError> {
+    ) -> Result<ProfileActivationState, ActivationStateError> {
         match step {
             Step::Prepare {
                 activation_id,
@@ -198,7 +198,7 @@ mod tests {
             } => reduce_prepare(
                 state,
                 &PrepareInput {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: activation_id.clone(),
                     expected_generation: *expected_generation,
                     candidate_generation: *candidate_generation,
@@ -214,7 +214,7 @@ mod tests {
             } => reduce_abort(
                 state,
                 &AbortInput {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: activation_id.clone(),
                     expected_generation: *expected_generation,
                 },
@@ -229,7 +229,7 @@ mod tests {
             } => reduce_commit(
                 state,
                 &CommitInput {
-                    environment: "test".to_string(),
+                    profile: "test".to_string(),
                     activation_id: activation_id.clone(),
                     expected_generation: *expected_generation,
                     candidate_generation: *candidate_generation,
@@ -364,7 +364,7 @@ mod tests {
     }
 
     fn assert_expected(
-        result: &Result<EnvironmentActivationState, ActivationStateError>,
+        result: &Result<ProfileActivationState, ActivationStateError>,
         expected: &str,
     ) {
         match (expected, result) {
@@ -385,7 +385,7 @@ mod tests {
         let accepted = reduce_prepare(
             &state,
             &PrepareInput {
-                environment: "test".to_string(),
+                profile: "test".to_string(),
                 activation_id: "activation-8".to_string(),
                 expected_generation: 7,
                 candidate_generation: 8,
@@ -402,11 +402,11 @@ mod tests {
 
         let (_temp, store) = file_store_with_assemblies(&refs);
         store
-            .initialize_environment_activation(&state)
+            .initialize_profile_activation(&state)
             .expect("initialize file state");
         assert!(
             store
-                .prepare_environment_activation(
+                .prepare_profile_activation(
                     "test",
                     "activation-8",
                     7,
@@ -426,7 +426,7 @@ mod tests {
         let (_temp, store) = file_store_with_assemblies(&refs);
         let mut file_state = initial_state(&refs, 7);
         store
-            .initialize_environment_activation(&file_state)
+            .initialize_profile_activation(&file_state)
             .expect("initialize file state");
         let mut reducer_state = initial_state(&refs, 7);
 
@@ -491,7 +491,7 @@ mod tests {
             }
         }
         let file_final = store
-            .read_environment_activation("test")
+            .read_profile_activation("test")
             .expect("read final file state");
         assert_eq!(file_final, reducer_state);
         assert_eq!(file_final.committed.generation, 8);
@@ -601,8 +601,8 @@ mod tests {
         fn run_file(
             &self,
             store: &CanonicalArtifactStore,
-            _state: &EnvironmentActivationState,
-        ) -> Result<EnvironmentActivationState, EcosystemStorageError> {
+            _state: &ProfileActivationState,
+        ) -> Result<ProfileActivationState, EcosystemStorageError> {
             let refs = refs();
             match self {
                 Self::Prepare {
@@ -612,7 +612,7 @@ mod tests {
                     participants,
                     expected_outcome,
                 } => {
-                    let result = store.prepare_environment_activation(
+                    let result = store.prepare_profile_activation(
                         "test",
                         activation_id,
                         *expected,
@@ -629,8 +629,7 @@ mod tests {
                     expected,
                     expected_outcome,
                 } => {
-                    let result =
-                        store.abort_environment_activation("test", activation_id, *expected);
+                    let result = store.abort_profile_activation("test", activation_id, *expected);
                     assert_file_outcome(&result, expected_outcome);
                     result
                 }
@@ -642,7 +641,7 @@ mod tests {
                     prepared,
                     expected_outcome,
                 } => {
-                    let result = store.commit_environment_activation(
+                    let result = store.commit_profile_activation(
                         "test",
                         activation_id,
                         *expected,
@@ -660,8 +659,8 @@ mod tests {
 
         fn run_reducer(
             &self,
-            state: &EnvironmentActivationState,
-        ) -> Result<EnvironmentActivationState, ActivationStateError> {
+            state: &ProfileActivationState,
+        ) -> Result<ProfileActivationState, ActivationStateError> {
             let refs = refs();
             match self {
                 Self::Prepare {
@@ -674,7 +673,7 @@ mod tests {
                     let result = reduce_prepare(
                         state,
                         &PrepareInput {
-                            environment: "test".to_string(),
+                            profile: "test".to_string(),
                             activation_id: activation_id.clone(),
                             expected_generation: *expected,
                             candidate_generation: *candidate,
@@ -694,7 +693,7 @@ mod tests {
                     let result = reduce_abort(
                         state,
                         &AbortInput {
-                            environment: "test".to_string(),
+                            profile: "test".to_string(),
                             activation_id: activation_id.clone(),
                             expected_generation: *expected,
                         },
@@ -713,7 +712,7 @@ mod tests {
                     let result = reduce_commit(
                         state,
                         &CommitInput {
-                            environment: "test".to_string(),
+                            profile: "test".to_string(),
                             activation_id: activation_id.clone(),
                             expected_generation: *expected,
                             candidate_generation: *candidate,
@@ -731,7 +730,7 @@ mod tests {
     }
 
     fn assert_file_outcome(
-        result: &Result<EnvironmentActivationState, EcosystemStorageError>,
+        result: &Result<ProfileActivationState, EcosystemStorageError>,
         expected: &str,
     ) {
         match (expected, result) {
@@ -743,7 +742,7 @@ mod tests {
     }
 
     fn assert_reducer_outcome(
-        result: &Result<EnvironmentActivationState, ActivationStateError>,
+        result: &Result<ProfileActivationState, ActivationStateError>,
         expected: &str,
     ) {
         match (expected, result) {
@@ -757,8 +756,8 @@ mod tests {
     #[test]
     fn schema_version_constant_is_shared_with_dto() {
         assert_eq!(
-            skiff_deployment::activation_state::ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION,
-            "skiff-environment-activation-state-v2"
+            skiff_deployment::activation_state::PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
+            "skiff-profile-activation-state-v1"
         );
     }
 }
