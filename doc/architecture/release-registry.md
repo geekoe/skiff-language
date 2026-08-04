@@ -62,7 +62,7 @@ closed。
   dependency；consumer artifact与RuntimeAssembly最终仍固定精确identity。
 - Service deployment pointer：在`serviceId + exact version label + ServiceProtocolIdentity`下选择一个
   admitted ServiceDeployment revision。
-- Environment assembly pointer：为某环境选择active RuntimeAssembly identity与generation。
+- Profile assembly pointer：为某profile选择active RuntimeAssembly identity与generation。
 
 Pointer更新必须CAS generation，并写append-only history。Pointer不能改变target record内容，也不能让
 已经生成的RuntimeAssembly随“latest”漂移：
@@ -97,7 +97,7 @@ exact PackageArtifact
   -> CAS compatible ServiceDeployment pointer
 ```
 
-Environment activation：
+Profile activation：
 
 ```text
 dev watch registry / explicit service roots / platform deployment state
@@ -113,7 +113,7 @@ dev watch registry / explicit service roots / platform deployment state
 binding不完整、artifact写入不完整、runtime admission失败或CAS冲突都不能留下active半状态。
 
 这里的roots是操作面输入，不是源码仓库中的集中式manifest。项目依赖只来自各项目的`package.yml`；
-production平台状态选择environment roots，dev sync/watch从watch registry或显式service roots取得同类输入。
+production平台状态选择profile roots，dev sync/watch从watch registry或显式service roots取得同类输入。
 Registry、Router和Runtime都不得要求developer-authored `assembly.yml`。
 
 ## Dev Sync / Reload
@@ -150,7 +150,7 @@ Rollback只移动typed pointer，不删除历史：
 
 - Package rollback把coordinate pointer CAS回旧PackageArtifact；只有新compile/link/assembly采用该选择。
 - Service rollback选择旧的contract-compatible ServiceDeployment revision。
-- Environment rollback生成或重新选择固定旧deployment closure的RuntimeAssembly，再按正常prepare/commit
+- Profile rollback生成或重新选择固定旧deployment closure的RuntimeAssembly，再按正常prepare/commit
   激活新generation。
 
 Rollback不能在既有RuntimeAssembly内部替换PackageArtifact或ServiceDeployment。In-flight request、

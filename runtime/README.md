@@ -3,7 +3,7 @@
 This crate is the Rust Runtime for the current RuntimeAssembly stack. It connects
 to the Router over one shared Runtime WebSocket transport, accepts the Router's
 bootstrap and assembly control frames, admits the exact deployments assigned to
-its environment, executes linked Skiff code, and returns Runtime transport
+its profile, executes linked Skiff code, and returns Runtime transport
 frames.
 
 The Router bootstrap owns the shared absolute artifact path, database transport
@@ -26,13 +26,12 @@ The checked-in Runtime config has this shape:
 ```yaml
 router: ws://127.0.0.1:4001/runtime
 runtime-home: .runtime-home
-environment: production
 serviceDb:
   encryption:
     keyringFile: /run/secrets/skiff-service-db-keyring.json
 ```
 
-`router`, `runtime-home`, and `environment` are required.
+`router` and `runtime-home` are required.
 `serviceDb.encryption.keyringFile` is Runtime/operator configuration; the
 database URL itself comes only from Router bootstrap. Relative config paths are
 resolved from the Runtime config directory. `runtime-home` stores Runtime

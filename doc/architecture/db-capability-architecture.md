@@ -12,7 +12,7 @@ DB 架构目标：
 - runtime 接收已经规范化的普通 type descriptor，不理解 `ReadRecord`。
 - Mongo 只存在于 service DB adapter 内，不进入 Skiff source、File IR result type 或 service API schema。
 - service DB连接能力由router/platform activation注入；database identity由operator选择的受信Mongo
-  endpoint/storage domain、environment与serviceId共同定界，不引入`platformId`。业务源码和service配置
+  endpoint/storage domain、profile与serviceId共同定界，不引入`platformId`。业务源码和service配置
   不能选择database、namespace或连接串。
 - 一个service只有一个数据库；同一service中的Package共享它，但每个DB target仍保留精确
   PackageArtifact/File IR/type identity。
@@ -199,7 +199,7 @@ Skiff runtime above the store talks in service DB commands and business JSON, no
 Runtime admission从candidate的exact linked DB metadata为每个service建立一份完整`ServiceDbIndexPlan`。
 该plan不是新的artifact，也不从运行中的request或Mongo反向推断。它按以下顺序形成：
 
-1. 对candidate中同一`(storage domain, environment, serviceId)`的全部deployment/version收集DB metadata；
+1. 对candidate中同一`(storage domain, profile, serviceId)`的全部deployment/version收集DB metadata；
 2. 按系统physical collection identity合并collection；
 3. 同一logical index identity且field、顺序、方向、unique和collation完全相同时去重；
 4. 同名index定义不同、collection metadata owner冲突、physical encoding collision或同Package ID不同

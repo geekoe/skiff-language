@@ -13,7 +13,7 @@ Router/Runtime中的含义。
 
 ## 第一版 Assembly 放置
 
-第一版每个environment只有一个active RuntimeAssembly，root set是该环境由操作面选择的全部active
+第一版每个profile只有一个active RuntimeAssembly，root set是该profile由操作面选择的全部active
 services。dev由watch registry或显式service roots选择，production由平台部署状态选择；不存在
 developer-authored repository-level `assembly.yml`。每个runtime replica加载完整相同assembly：
 
@@ -24,7 +24,7 @@ developer-authored repository-level `assembly.yml`。每个runtime replica加载
 - replica内共享的是只读code/type/link image；activation-owned ConfigView、DB handle、callback table与
   mutable runtime state不得因PackageBuildId相同而跨ServiceDeployment共享；
 - replica之间heap、CPU调度、request lifecycle与failure独立；
-- service DB由operator选择的受信Mongo endpoint/storage domain、environment与service identity共同
+- service DB由operator选择的受信Mongo endpoint/storage domain、profile与service identity共同
   定界，并由同一service的replica共享。
 
 该模型可以整体增加CPU、内存和副本可用性，但不能单独隔离或扩缩某个service；一个service的CPU/memory故障
@@ -42,10 +42,10 @@ runtimeConfigSnapshotRef
 
 二者互不引用。Runtime在prepare时必须同时解析精确assembly和snapshot，snapshot内部按
 `ServiceDeploymentRef`隔离同一Package build跨service配置；snapshot顶层必须携带producer从受信operator
-输入写入的`targetEnvironment`。Runtime在物化任何`ConfigView`前严格比较
-`snapshot.targetEnvironment == activation.environment`；任一ref缺失、tampered、environment不匹配或
+输入写入的`profile`。Runtime在物化任何`ConfigView`前严格比较
+`snapshot.profile == activation.profile`；任一ref缺失、tampered、profile不匹配或
 闭包不完整都拒绝prepare。配置变化通过新snapshot和新generation生效，不重建assembly。冷恢复重读同一
-generation的两个ref并执行相同的environment比较，不能读取最新配置文件或ambient environment。
+generation的两个ref并执行相同的profile比较，不能读取最新配置文件或ambient environment。
 
 Canonical runtime connection上的actor、dispatch及其它跨request control frame必须显式携带当前
 ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
@@ -67,7 +67,7 @@ Router先把frame绑定到发送者的exact assembly registration，再按active
 - actor/dispatch response按同一request与sender correlation返回，Router不恢复service/build inference。
 
 Candidate prepare与cold recovery还必须在每个service的activation context publish、prepared ACK或恢复成功
-之前，完成exact service DB index plan协调。Runtime先把candidate中同一storage domain/environment/service
+之前，完成exact service DB index plan协调。Runtime先把candidate中同一storage domain/profile/service
 identity下的全部version合成一份plan；同logical index不同定义在任何DB mutation前失败。每个replica可并发
 幂等创建missing index，但必须复读并确认canonical keys、direction、unique与simple/binary collation精确
 一致。已有受管index发生change或从完整plan中removed时fail closed；非受管index与Mongo `_id_`保留并忽略。
@@ -82,7 +82,7 @@ Runtime必须同时保留当前active generation和仍被request、stream、WebS
 generation。它们组成exact `ActiveAssemblyContextSet`，逻辑key至少包含：
 
 ```text
-environment
+profile
 runtimeAssemblyRef
 runtimeConfigSnapshotRef
 generation
@@ -126,7 +126,7 @@ call、actor恢复、dispatched request start和native helper只能恢复或创�
 
 durable task dispatch 的已接受 task 是其 frozen execution image 的 retention root（权威契约：
 [`durable-task-dispatch.md`](durable-task-dispatch.md) "Execution Image And Target Pinning"）。
-task 提交时冻结完整 `TaskExecutionImageRef`（target environment、exact PackageVersion label、
+task 提交时冻结完整 `TaskExecutionImageRef`（target profile、exact PackageVersion label、
 `RuntimeAssemblyRef`、`RuntimeConfigSnapshotRef`、`ServiceDeploymentRef`），并把该 image 登记为
 artifact / config retention；到期 attempt 由 task control plane 针对 frozen image 冷激活，或选择
 已经 admission 同一 image 的 Runtime。这个 cold activation lane 与 active / draining generation
@@ -172,7 +172,7 @@ ServiceDeployment或RuntimeAssembly identity。Runtime不为二者另设文件�
 
 Runtime持有bootstrap DB transport binding不表示所有activation获得DB。只有exact Package闭包含DB
 metadata的service才按需得到`std.db` capability；数据库identity由operator选择的受信Mongo
-endpoint/storage domain、environment与serviceId共同定界，不引入`platformId`。service代码看不到
+endpoint/storage domain、profile与serviceId共同定界，不引入`platformId`。service代码看不到
 provider URL或database name。
 
 ## Activation Prepare Budget
@@ -205,7 +205,7 @@ binding直接删除，不兼容读取。
 
 Router外部的ingress可以按HTTP Host、域名或其它平台规则选择service坐标，并注入
 `x-skiff-service`与`x-skiff-version`。该映射不属于RuntimeAssembly，也不在Skiff Router内重复实现；
-原始HTTP Host只作为request业务metadata继续传递。Host mapping也不选择environment root set，不能成为
+原始HTTP Host只作为request业务metadata继续传递。Host mapping也不选择profile root set，不能成为
 assembly authoring的一部分。
 
 Router收到HTTP request或WebSocket upgrade后必须：
@@ -226,7 +226,7 @@ deployment与generation；后续JSON-RPC method也只在该pin内解析。
 跨deployment frame substitution全部fail closed。
 
 这次路由模型变化使用ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、
-RuntimeAssembly v3和runtime frame v3硬切。GatewayEntryIdentity v2、ServiceProtocol、Package identities
+RuntimeAssembly v3和runtime frame v4硬切。GatewayEntryIdentity v2、ServiceProtocol、Package identities
 与WebSocketEntryId不因路由scope变化而升级；旧Host-bearing route、裸全局ingress和旧frame不兼容读取。
 
 ## Router HTTP 实例限制

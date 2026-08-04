@@ -38,7 +38,6 @@ The target configuration shape is:
 
 ```yaml
 profile: dev
-environment: dev
 host: 127.0.0.1 # listener bind address; not the request Host route selector
 artifactsPath: ../var/skiff-artifacts
 serviceDb:
@@ -73,7 +72,7 @@ the request port ignored; there is no wildcard, artifact scan, or latest
 version lookup. Unknown Hosts return `421`, and
 `GET /__local_ingress/health` is handled by the ingress itself.
 
-`environment`, `artifactsPath`, and `serviceDb.mongoUrl` are required for
+`profile`, `artifactsPath`, and `serviceDb.mongoUrl` are required for
 RuntimeAssembly routing. The Router reads immutable records below
 `artifactsPath`, while activation state and audit are stored transactionally in
 MongoDB. Public ingress is keyed by `(ServiceDeploymentRef, IngressSelector)`;
@@ -222,7 +221,7 @@ The service-scoped ingress cutover requires these generations:
 - ServiceDeployment v4: `skiff-service-deployment-v4`
 - DeploymentArtifact v4: `skiff-deployment-artifact-v4`
 - RuntimeAssembly v3: `skiff-runtime-assembly-v3`
-- Runtime frame v2: `skiff-runtime-frame-v2`
+- Runtime frame v4: `skiff-runtime-frame-v4`
 
 Runtime registration and request dispatch bind exact current identities. The
 Router fails closed when the active assembly, ingress binding, deployment,
