@@ -9,7 +9,7 @@ import {
   validSmokeFixtureReceipt,
 } from './helpers/package-service-ecosystem-smoke-fixtures.mjs';
 
-const ENVIRONMENT = 'p5-f387-http-fixture';
+const PROFILE = 'p5-f387-http-fixture';
 
 test('router compiler fixture uses split HTTP authoring without an empty business config profile', async () => {
   const root = join('compiler', 'tests', 'fixtures', 'router-websocket-fixture');
@@ -134,10 +134,10 @@ connect:
 });
 
 test('v4 receipt accepts exactly the test-service and probe HTTP gateways', () => {
-  const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
+  const receipt = validSmokeFixtureReceipt(PROFILE);
   const decoded = readPackageServiceFixtureReceipt(
     JSON.stringify(receipt),
-    ENVIRONMENT,
+    PROFILE,
   );
 
   assert.equal(decoded.schemaVersion, 'skiff-package-service-smoke-fixture-v4');
@@ -173,18 +173,18 @@ test('v4 receipt accepts exactly the test-service and probe HTTP gateways', () =
 
 test('retired receipt schemas and entrypoint fields fail closed without dual-read', () => {
   const cases = [];
-  const v1 = validSmokeFixtureReceipt(ENVIRONMENT);
+  const v1 = validSmokeFixtureReceipt(PROFILE);
   v1.schemaVersion = 'skiff-package-service-smoke-fixture-v1';
   cases.push(['v1 schema', v1]);
-  const v2 = validSmokeFixtureReceipt(ENVIRONMENT);
+  const v2 = validSmokeFixtureReceipt(PROFILE);
   v2.schemaVersion = 'skiff-package-service-smoke-fixture-v2';
   cases.push(['v2 schema', v2]);
-  const v3 = validSmokeFixtureReceipt(ENVIRONMENT);
+  const v3 = validSmokeFixtureReceipt(PROFILE);
   v3.schemaVersion = 'skiff-package-service-smoke-fixture-v3';
   delete v3.candidate.configSnapshot;
   cases.push(['v3 schema', v3]);
 
-  const contract = validSmokeFixtureReceipt(ENVIRONMENT);
+  const contract = validSmokeFixtureReceipt(PROFILE);
   contract.candidate.entrypoints[0].contract = {
     serviceId: 'retired',
     contractVersion: '1.0.0',
@@ -193,14 +193,14 @@ test('retired receipt schemas and entrypoint fields fail closed without dual-rea
   };
   cases.push(['contract field', contract]);
 
-  const operation = validSmokeFixtureReceipt(ENVIRONMENT);
+  const operation = validSmokeFixtureReceipt(PROFILE);
   operation.candidate.entrypoints[1].operation =
     `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
   cases.push(['operation field', operation]);
 
   for (const [name, receipt] of cases) {
     assert.throws(
-      () => readPackageServiceFixtureReceipt(JSON.stringify(receipt), ENVIRONMENT),
+      () => readPackageServiceFixtureReceipt(JSON.stringify(receipt), PROFILE),
       undefined,
       `${name} was accepted`,
     );
@@ -208,7 +208,7 @@ test('retired receipt schemas and entrypoint fields fail closed without dual-rea
 });
 
 test('a third WebSocket candidate is not an HTTP fixture entrypoint', () => {
-  const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
+  const receipt = validSmokeFixtureReceipt(PROFILE);
   receipt.candidate.entrypoints.push({
     deployment: receipt.candidate.entrypoints[1].deployment,
     gatewayEntryKey: 'websocket',
@@ -223,7 +223,7 @@ test('a third WebSocket candidate is not an HTTP fixture entrypoint', () => {
   });
 
   assert.throws(() =>
-    readPackageServiceFixtureReceipt(JSON.stringify(receipt), ENVIRONMENT));
+    readPackageServiceFixtureReceipt(JSON.stringify(receipt), PROFILE));
 });
 
 test('gateway identities, keys, modes and selectors are exact', () => {
@@ -248,10 +248,10 @@ test('gateway identities, keys, modes and selectors are exact', () => {
   ];
 
   for (const [name, mutate] of mutations) {
-    const receipt = validSmokeFixtureReceipt(ENVIRONMENT);
+    const receipt = validSmokeFixtureReceipt(PROFILE);
     mutate(receipt);
     assert.throws(
-      () => readPackageServiceFixtureReceipt(JSON.stringify(receipt), ENVIRONMENT),
+      () => readPackageServiceFixtureReceipt(JSON.stringify(receipt), PROFILE),
       undefined,
       `${name} was accepted`,
     );

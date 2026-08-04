@@ -175,9 +175,9 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     runCommand: async (command, args, options) => {
       commands.push({ command, args, options });
     },
-    readHostReceipt: async (path, expectedEnvironment) => {
+    readHostReceipt: async (path, expectedProfile) => {
       assert.equal(path, '/tmp/isolated/package-service-host-receipt.json');
-      assert.equal(expectedEnvironment, 'skiff-test');
+      assert.equal(expectedProfile, 'skiff-test');
       return hostFixtureReceipt();
     },
     readActiveGeneration: async (options) => {
@@ -207,7 +207,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     args: skiffSourceArtifactBootstrapCargoArgs({
       skiffRoot: '/checkout/skiff',
       artifactRoot: '/tmp/isolated/source-artifacts',
-      environment: 'skiff-test',
+      profile: 'skiff-test',
     }),
     options: {
       cwd: '/checkout/skiff',
@@ -251,7 +251,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       artifactRoot: '/tmp/isolated/source-artifacts',
       workRoot: '/tmp/isolated/package-service-host-work',
       receipt: '/tmp/isolated/package-service-host-receipt.json',
-      environment: 'skiff-test',
+      profile: 'skiff-test',
     }),
   );
   assert.equal(commands[4].args.includes('--base-assembly'), true);
@@ -262,14 +262,14 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   });
   assert.equal(healthReads.length, 3);
   assert.deepEqual(
-    healthReads.map(({ activationUrl, environment: target, signal: childSignal }) => ({
+    healthReads.map(({ activationUrl, profile: target, signal: childSignal }) => ({
       activationUrl,
-      environment: target,
+      profile: target,
       signal: childSignal,
     })),
     Array.from({ length: 3 }, () => ({
       activationUrl: environment.SKIFF_TEST_ACTIVATION_URL,
-      environment: 'skiff-test',
+      profile: 'skiff-test',
       signal,
     })),
   );
@@ -408,12 +408,12 @@ test('non-advancing health generation stops before the next source-test child', 
   ]);
 });
 
-test('active generation reader requires settled exact health for the target environment', async () => {
+test('active generation reader requires settled exact health for the target profile', async () => {
   const signal = new AbortController().signal;
   const requests = [];
   const generation = await readSkiffSourceActiveGeneration({
     activationUrl: 'http://127.0.0.1:46101/__skiff/activate-assembly',
-    environment: 'skiff-test',
+    profile: 'skiff-test',
     signal,
     fetchImpl: async (url, options) => {
       requests.push({ url, options });
@@ -421,7 +421,7 @@ test('active generation reader requires settled exact health for the target envi
         ok: true,
         pendingActivation: null,
         activeAssembly: {
-          environment: 'skiff-test',
+          profile: 'skiff-test',
           generation: 23,
         },
       });
@@ -439,15 +439,15 @@ test('active generation reader requires settled exact health for the target envi
   }]);
 
   for (const health of [
-    { ok: true, pendingActivation: {}, activeAssembly: { environment: 'skiff-test', generation: 24 } },
-    { ok: true, pendingActivation: null, activeAssembly: { environment: 'other', generation: 24 } },
-    { ok: true, pendingActivation: null, activeAssembly: { environment: 'skiff-test', generation: -1 } },
-    { ok: true, pendingActivation: null, activeAssembly: { environment: 'skiff-test', generation: 1.5 } },
+    { ok: true, pendingActivation: {}, activeAssembly: { profile: 'skiff-test', generation: 24 } },
+    { ok: true, pendingActivation: null, activeAssembly: { profile: 'other', generation: 24 } },
+    { ok: true, pendingActivation: null, activeAssembly: { profile: 'skiff-test', generation: -1 } },
+    { ok: true, pendingActivation: null, activeAssembly: { profile: 'skiff-test', generation: 1.5 } },
   ]) {
     await assert.rejects(
       readSkiffSourceActiveGeneration({
         activationUrl: 'http://127.0.0.1:46101/__skiff/activate-assembly',
-        environment: 'skiff-test',
+        profile: 'skiff-test',
         signal,
         fetchImpl: async () => response(health),
       }),
@@ -538,7 +538,7 @@ test('package-service host receipt has one strict schema and canonical assembly 
     for (const [mutate, expected] of [
       [(value) => { value.legacy = true; }, /must contain exactly/],
       [(value) => { value.schemaVersion = 'legacy'; }, /schemaVersion/],
-      [(value) => { value.environment = 'other'; }, /environment/],
+      [(value) => { value.profile = 'other'; }, /profile/],
       [(value) => { value.baseAssembly.assemblyIdentity = 'not-canonical'; }, /must be canonical/],
       [(value) => { value.baseConfigSnapshot.snapshotId = 'not-canonical'; }, /must be canonical/],
       [
@@ -580,7 +580,7 @@ test('package-service host receipt has one strict schema and canonical assembly 
 function hostFixtureReceipt() {
   return {
     schemaVersion: 'skiff-package-service-host-fixture-v2',
-    environment: 'skiff-test',
+    profile: 'skiff-test',
     contracts: {
       payments: contractRef('payments'),
       consumer: contractRef('consumer'),

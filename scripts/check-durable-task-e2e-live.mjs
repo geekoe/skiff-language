@@ -33,7 +33,7 @@ import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import {
   DURABLE_TASK_LIVE_DATABASE,
-  DURABLE_TASK_LIVE_ENVIRONMENT,
+  DURABLE_TASK_LIVE_PROFILE,
   DURABLE_TASK_LIVE_SERVICE_ID,
   DURABLE_TASK_LIVE_VERSION,
   authorDurableTaskArtifact,
@@ -79,7 +79,7 @@ try {
     skiffRoot: repoRoot,
     sourceRoot,
     artifactRoot,
-    environment: DURABLE_TASK_LIVE_ENVIRONMENT,
+    profile: DURABLE_TASK_LIVE_PROFILE,
   });
   const deploymentRecord = await loadDurableTaskDeploymentRecord(artifactRoot);
   if (deploymentRecord.deployment.serviceId !== DURABLE_TASK_LIVE_SERVICE_ID) {
@@ -170,7 +170,7 @@ try {
         SKIFF_DURABLE_TASK_E2E_DB: probeDatabase,
         SKIFF_DURABLE_TASK_E2E_SERVICE_DATABASE: serviceDatabase,
         SKIFF_DURABLE_TASK_E2E_ARTIFACT_ROOT: artifactRoot,
-        SKIFF_DURABLE_TASK_E2E_ENVIRONMENT: DURABLE_TASK_LIVE_ENVIRONMENT,
+        SKIFF_DURABLE_TASK_E2E_ENVIRONMENT: DURABLE_TASK_LIVE_PROFILE,
         SKIFF_DURABLE_TASK_E2E_ASSEMBLY_IDENTITY: authored.assemblyIdentity,
         SKIFF_DURABLE_TASK_E2E_CONFIG_SNAPSHOT_ID: authored.configSnapshotId,
         SKIFF_DURABLE_TASK_E2E_GENERATION: String(GENERATION),

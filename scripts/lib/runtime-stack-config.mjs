@@ -5,7 +5,6 @@ export const DEFAULT_GENERATED_ROUTER_RUNTIME_MAX_CONCURRENCY = 128;
 export function renderRouterConfig({
   profile,
   host,
-  environment,
   artifactsPath,
   devReload,
   releaseMode,
@@ -25,15 +24,15 @@ export function renderRouterConfig({
   if (ecosystemStoreCliPath !== undefined) {
     throw new Error('router config ecosystemStoreCliPath is not supported');
   }
-  if (typeof environment !== 'string' || environment.length === 0) {
-    throw new Error('router environment is required');
+  if (typeof profile !== 'string' || profile.length === 0) {
+    throw new Error('router profile is required');
   }
   if (
-    !/^[A-Za-z0-9._-]{1,200}$/.test(environment)
-    || environment === '.'
-    || environment === '..'
+    !/^[A-Za-z0-9._-]{1,200}$/.test(profile)
+    || profile === '.'
+    || profile === '..'
   ) {
-    throw new Error('router environment must be a canonical ASCII token');
+    throw new Error('router profile must be a canonical ASCII token');
   }
   if (
     typeof artifactsPath !== 'string'
@@ -44,9 +43,6 @@ export function renderRouterConfig({
   }
   if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
     throw new Error('router serviceDb.mongoUrl is required');
-  }
-  if (typeof profile !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile)) {
-    throw new Error('router profile must match [A-Za-z_][A-Za-z0-9_]*');
   }
   if (typeof host !== 'string' || host.trim().length === 0) {
     throw new Error('router host must be a non-empty string');
@@ -86,7 +82,6 @@ export function renderRouterConfig({
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
-    `environment: ${quoteYamlString(environment)}`,
     `artifactsPath: ${quoteYamlString(artifactsPath)}`,
   ];
   if (releaseMode !== undefined) {
@@ -137,16 +132,11 @@ export function renderRouterConfig({
 export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
-  environment,
   serviceDbEncryptionKeyringFile,
 }) {
-  if (typeof environment !== 'string' || environment.trim().length === 0) {
-    throw new Error('runtime environment is required');
-  }
   const lines = [
     `router: ${quoteYamlString(routerUrl)}`,
     `runtime-home: ${quoteYamlString(runtimeHome)}`,
-    `environment: ${quoteYamlString(environment)}`,
   ];
   if (serviceDbEncryptionKeyringFile !== undefined) {
     lines.push(

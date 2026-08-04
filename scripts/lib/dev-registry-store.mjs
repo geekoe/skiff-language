@@ -13,7 +13,7 @@ export const devRegistrySchemaVersion = 'skiff-package-service-dev-registry-v2';
 export function emptyDevRegistry() {
   return {
     schemaVersion: devRegistrySchemaVersion,
-    environment: 'dev',
+    profile: 'dev',
     roots: [],
   };
 }
@@ -67,11 +67,11 @@ export function normalizeStoredDevRegistry(value, label = 'dev registry') {
   if (!isPlainObject(value)) {
     throw new Error(`${label} must contain a JSON object`);
   }
-  exactFields(value, ['environment', 'roots', 'schemaVersion'], label);
+  exactFields(value, ['profile', 'roots', 'schemaVersion'], label);
   if (value.schemaVersion !== devRegistrySchemaVersion) {
     throw new Error(`${label} schemaVersion must be ${devRegistrySchemaVersion}`);
   }
-  assertEnvironment(value.environment);
+  assertProfile(value.profile);
   if (!Array.isArray(value.roots)) {
     throw new Error(`${label} roots must be an array`);
   }
@@ -89,14 +89,14 @@ export function normalizeStoredDevRegistry(value, label = 'dev registry') {
   );
   return {
     schemaVersion: devRegistrySchemaVersion,
-    environment: value.environment,
+    profile: value.profile,
     roots,
   };
 }
 
-export function assertEnvironment(value) {
+export function assertProfile(value) {
   if (typeof value !== 'string' || !/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/.test(value)) {
-    throw new Error('environment must use only letters, digits, dot, dash, or underscore');
+    throw new Error('profile must use only letters, digits, dot, dash, or underscore');
   }
 }
 

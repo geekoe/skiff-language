@@ -22,12 +22,12 @@ import {
 
 const usage =
   'usage: node scripts/check-db-encrypted-storage-live.mjs [--help]';
-const STORAGE_ENVIRONMENT = 'dev';
+const STORAGE_PROFILE = 'dev';
 const DEFAULT_SERVICE = 'example.com/encrypted-live-default';
 const MAPPED_SERVICE = 'example.com/encrypted-live-mapped';
 const MAPPED_PACKAGE = 'example.com/encrypted-live-store';
-const DEFAULT_DATABASE = storageDatabaseName(STORAGE_ENVIRONMENT, DEFAULT_SERVICE);
-const MAPPED_DATABASE = storageDatabaseName(STORAGE_ENVIRONMENT, MAPPED_SERVICE);
+const DEFAULT_DATABASE = storageDatabaseName(STORAGE_PROFILE, DEFAULT_SERVICE);
+const MAPPED_DATABASE = storageDatabaseName(STORAGE_PROFILE, MAPPED_SERVICE);
 const DEFAULT_COLLECTION = storageCollectionName(DEFAULT_SERVICE, 'Credential');
 const ARCHIVE_COLLECTION = storageCollectionName(DEFAULT_SERVICE, 'CredentialArchive');
 const MAPPED_COLLECTION = storageCollectionName(MAPPED_PACKAGE, 'package_secret');
@@ -662,10 +662,10 @@ function assertKeyringUnchanged(before, after) {
   );
 }
 
-function storageDatabaseName(environment, serviceId) {
+function storageDatabaseName(profile, serviceId) {
   return `skiff_${storageIdentityDigest(
     'skiff-service-db-storage-identity-v1',
-    environment,
+    profile,
     serviceId,
   )}`;
 }

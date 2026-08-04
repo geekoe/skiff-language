@@ -12,11 +12,11 @@ const FIXTURE_ROOT = join('test-runner', 'fixtures', 'actor-full-chain-acceptanc
 
 export async function runActorFullChainAcceptance({
   checkout,
-  environment = 'actor-full-chain',
+  profile = 'actor-full-chain',
 }) {
   return runInIsolatedTestRuntime({
     skiffRoot: checkout,
-    environment,
+    profile,
     runtimeReplicas: 2,
     runTest: async (isolatedEnv, signal, stack) => {
       const outcome = await captureCheckedCommand(
@@ -25,7 +25,7 @@ export async function runActorFullChainAcceptance({
           checkout,
           fixtureRoot: join(checkout, FIXTURE_ROOT),
           artifactRoot: stack.artifactRoot,
-          environment,
+          profile,
         }),
         { cwd: checkout, env: isolatedEnv, signal },
       );
@@ -39,7 +39,7 @@ export async function runActorFullChainAcceptance({
       const activation = await requestAssemblyActivation({
         activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
         expectedGeneration: 0,
-        environment,
+        profile,
         assembly: receipt.candidate.assembly,
         configSnapshot: receipt.candidate.configSnapshot,
         signal,
@@ -48,7 +48,7 @@ export async function runActorFullChainAcceptance({
       const generation = activation.response.activeAssembly.generation;
       await waitForTwoActiveReplicas({
         controlUrl: stack.controlUrl,
-        environment,
+        profile,
         generation,
         assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
         signal,
@@ -117,7 +117,7 @@ export async function runActorFullChainAcceptance({
       );
 
       // Concurrent gets for one fresh id dedup onto a single activation and
-      // both wait for the same create. The isolated acceptance environment
+      // both wait for the same create. The isolated acceptance profile
       // starts with an empty router registry, so the fixed id is a new entry.
       const dedupStarted = Date.now();
       const [dedupLeft, dedupRight] = await Promise.all([
@@ -333,7 +333,7 @@ async function invokeUnaryRaw(routerHttpUrl, entrypoint, signal, bodyValue = nul
 
 async function waitForTwoActiveReplicas({
   controlUrl,
-  environment,
+  profile,
   generation,
   assemblyIdentity,
   signal,
@@ -346,7 +346,7 @@ async function waitForTwoActiveReplicas({
       (replica) =>
         replica.connected === true
         && replica.state === 'healthy'
-        && replica.environment === environment
+        && replica.profile === profile
         && replica.generation === generation
         && replica.assemblyIdentity === assemblyIdentity,
     );

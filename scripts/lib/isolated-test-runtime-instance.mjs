@@ -18,7 +18,7 @@ export function isolatedTestInstanceConfigText({
   cargoTarget,
   basePort,
   mongoPort,
-  environment = 'skiff-test',
+  profile = 'skiff-test',
 }) {
   if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
     throw new Error('isolated test instance mongoPort must be a positive integer');
@@ -26,7 +26,7 @@ export function isolatedTestInstanceConfigText({
   return [
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
-    `environment: ${JSON.stringify(environment)}`,
+    `profile: ${JSON.stringify(profile)}`,
     'packageDirs:',
     'ports:',
     `  base: ${basePort}`,
@@ -56,7 +56,7 @@ export function isolatedTestRunnerEnvironment({
   devHome,
   controlPort,
   routerHttpPort,
-  environment = 'skiff-test',
+  profile = 'skiff-test',
 }) {
   const cleanBaseEnv = { ...baseEnv };
   delete cleanBaseEnv.SKIFF_DEV_RELOAD_URL;
@@ -68,7 +68,7 @@ export function isolatedTestRunnerEnvironment({
     SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
     SKIFF_TEST_ACTIVATION_URL: `http://127.0.0.1:${controlPort}/__skiff/activate-assembly`,
     SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
-    SKIFF_TEST_ENVIRONMENT: environment,
+    SKIFF_TEST_ENVIRONMENT: profile,
     SKIFF_TEST_EXPECTED_GENERATION: '0',
     SKIFF_TEST_PLATFORM_SOURCE_ROOT: skiffRoot,
   };
@@ -77,7 +77,7 @@ export function isolatedTestRunnerEnvironment({
 export function bootstrapCanonicalArgs({
   skiffRoot,
   artifactRoot,
-  environment = 'skiff-test',
+  profile = 'skiff-test',
 }) {
   return [
     'run',
@@ -99,29 +99,29 @@ export function bootstrapCanonicalArgs({
     artifactRoot,
     '--platform-source-root',
     resolve(skiffRoot),
-    '--environment',
-    environment,
+    '--profile',
+    profile,
   ];
 }
 
 export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
   const bootstrap = bootstrapReceipt?.bootstrap;
-  const environment = bootstrapReceipt?.environment;
+  const profile = bootstrapReceipt?.profile;
   const generation = bootstrap?.generation;
   const assemblyIdentity = bootstrap?.assembly?.assemblyIdentity;
   const configSnapshotId = bootstrap?.configSnapshot?.snapshotId;
   const active = health?.activeAssembly;
   if (
     bootstrap === undefined
-    || typeof environment !== 'string'
-    || environment.length === 0
+    || typeof profile !== 'string'
+    || profile.length === 0
     || !Number.isSafeInteger(generation)
     || generation < 0
     || typeof assemblyIdentity !== 'string'
     || assemblyIdentity.length === 0
     || typeof configSnapshotId !== 'string'
     || configSnapshotId.length === 0
-    || active?.environment !== environment
+    || active?.profile !== profile
     || active?.generation !== generation
     || active?.assemblyIdentity !== assemblyIdentity
     || active?.configSnapshotId !== configSnapshotId
@@ -137,7 +137,7 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
       && replica.replicaId.length > 0
       && replica.connected === true
       && replica?.state === 'healthy'
-      && replica?.environment === environment
+      && replica?.profile === profile
       && replica?.generation === generation
       && replica?.assemblyIdentity === assemblyIdentity
       && replica?.configSnapshotId === configSnapshotId
@@ -160,10 +160,10 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         mode: 0o600,
       });
     },
-    seedBootstrap: async ({ artifactRoot, environment, env, signal }) => {
+    seedBootstrap: async ({ artifactRoot, profile, env, signal }) => {
       const result = await captureCheckedCommand(
         'cargo',
-        bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment }),
+        bootstrapCanonicalArgs({ skiffRoot, artifactRoot, profile }),
         { cwd: skiffRoot, env, signal },
       );
       return JSON.parse(result.stdout);
@@ -276,17 +276,17 @@ async function waitForIsolatedRuntime({
 async function initializeRouterActivationState({
   mongoPort,
   artifactRoot,
-  environment,
+  profile,
   bootstrap,
   signal,
 }) {
   const state = await buildIsolatedActivationState({
     artifactRoot,
-    environment,
+    profile,
     bootstrap,
   });
   const document = {
-    _id: state.environment,
+    _id: state.profile,
     revision: 0,
     state,
   };

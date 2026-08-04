@@ -23,7 +23,7 @@ export const ACTIVATION_LIVE_SERVICE_ID = 'test.skiff/router-rust-activation-liv
 export const ACTIVATION_LIVE_VERSION = '0.1.0';
 export const ACTIVATION_LIVE_CANDIDATE_VERSION = '0.1.1';
 export const ACTIVATION_LIVE_THIRD_VERSION = '0.1.2';
-export const ACTIVATION_LIVE_ENVIRONMENT = 'activation-live';
+export const ACTIVATION_LIVE_PROFILE = 'activation-live';
 export const ACTIVATION_LIVE_GENERATION = 1;
 export const ACTIVATION_LIVE_REPLICA_ID = 'skiff-runtime-activation-live-replica';
 
@@ -149,7 +149,7 @@ const ACTIVATION_LIVE_VARIANTS = {
   },
 };
 
-async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment, variant }) {
+async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, profile, variant }) {
   await writeActivationLiveServiceSource(sourceRoot, variant);
   const version = ACTIVATION_LIVE_VARIANTS[variant].version;
   const packageReceipt = await runCompilerAuthoring({
@@ -158,7 +158,7 @@ async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment,
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment,
+    profile,
   });
   const deploymentRef = packageReceipt?.serviceDeploymentReceipt?.deployment;
   if (
@@ -173,7 +173,7 @@ async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment,
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment,
+    profile,
     rootDeployments: [deploymentRef],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -184,8 +184,7 @@ async function authorVersion({ skiffRoot, sourceRoot, artifactRoot, environment,
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    environment,
-    profile: 'dev',
+    profile,
     assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });
@@ -206,7 +205,7 @@ export async function authorActivationLiveArtifact({
   skiffRoot,
   sourceRoot,
   artifactRoot,
-  environment = ACTIVATION_LIVE_ENVIRONMENT,
+  profile = ACTIVATION_LIVE_PROFILE,
 }) {
   await mkdir(artifactRoot, { recursive: true });
   // HTTP services import the canonical skiff.run/std package; seed the
@@ -226,8 +225,8 @@ export async function authorActivationLiveArtifact({
       '--bootstrap-only',
       '--artifact-root',
       artifactRoot,
-      '--environment',
-      environment,
+      '--profile',
+      profile,
       '--platform-source-root',
       skiffRoot,
     ],
@@ -237,21 +236,21 @@ export async function authorActivationLiveArtifact({
     skiffRoot,
     sourceRoot,
     artifactRoot,
-    environment,
+    profile,
     variant: 'committed',
   });
   const candidate = await authorVersion({
     skiffRoot,
     sourceRoot,
     artifactRoot,
-    environment,
+    profile,
     variant: 'candidate',
   });
   const third = await authorVersion({
     skiffRoot,
     sourceRoot,
     artifactRoot,
-    environment,
+    profile,
     variant: 'third',
   });
   await mkdir(join(artifactRoot, 'records/actor-routing'), { recursive: true });

@@ -270,7 +270,7 @@ async function createOwnershipLifecycleDouble({
       state.receipt = await captureIsolatedTestConfig(receipt, configPath);
       return state.receipt;
     },
-    seedBootstrap: async () => ({ environment: 'skiff-test', bootstrap: {} }),
+    seedBootstrap: async () => ({ profile: 'skiff-test', bootstrap: {} }),
     spawnSupervisor: () => ({ pid: 4242 }),
     waitMongoStarted: async () => {},
     waitMongoPrimary: async () => {},

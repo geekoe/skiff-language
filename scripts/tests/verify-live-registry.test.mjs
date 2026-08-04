@@ -72,7 +72,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'runtimeActivationUrl',
     'runtimeIngressUrl',
     'runtimeArtifactRoot',
-    'runtimeEnvironment',
+    'runtimeProfile',
     'runtimeExpectedGeneration',
   ]);
   assert.deepEqual(runtime.value.requiredExecutables, ['cargo', 'node']);
@@ -555,9 +555,9 @@ test('runtime structural and provided-input errors are never hidden by missing i
       },
       {
         input: {
-          runtimeLiveEnvironment: 'not canonical/environment',
+          runtimeLiveProfile: 'not canonical/profile',
         },
-        expected: /environment must be a canonical ASCII token/,
+        expected: /profile must be a canonical ASCII token/,
       },
       {
         input: {
@@ -702,7 +702,7 @@ test('actual canonical runtime discovery composes with the managed live task', a
         'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
-      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveProfile: 'runtime-live',
       runtimeLiveExpectedGeneration: '0',
       env: { PATH: bin },
     };
@@ -993,7 +993,7 @@ async function runtimeFixture(prefix) {
         'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
-      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveProfile: 'runtime-live',
       runtimeLiveExpectedGeneration: '0',
     },
   };

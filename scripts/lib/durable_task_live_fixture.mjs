@@ -21,7 +21,7 @@ import {
 
 export const DURABLE_TASK_LIVE_SERVICE_ID = 'test.skiff/durable-task-e2e-live';
 export const DURABLE_TASK_LIVE_VERSION = '1.0.0';
-export const DURABLE_TASK_LIVE_ENVIRONMENT = 'durable-task-e2e-live';
+export const DURABLE_TASK_LIVE_PROFILE = 'durable-task-e2e-live';
 export const DURABLE_TASK_LIVE_DATABASE = 'skiff_e2e_task_live';
 
 export const DURABLE_TASK_LIVE_ENTRYPOINTS = Object.freeze({
@@ -67,7 +67,7 @@ export async function authorDurableTaskArtifact({
   skiffRoot,
   sourceRoot,
   artifactRoot,
-  environment = DURABLE_TASK_LIVE_ENVIRONMENT,
+  profile = DURABLE_TASK_LIVE_PROFILE,
 }) {
   await mkdir(artifactRoot, { recursive: true });
   await captureCheckedCommand(
@@ -84,8 +84,8 @@ export async function authorDurableTaskArtifact({
       '--bootstrap-only',
       '--artifact-root',
       artifactRoot,
-      '--environment',
-      environment,
+      '--profile',
+      profile,
       '--platform-source-root',
       skiffRoot,
     ],
@@ -97,7 +97,7 @@ export async function authorDurableTaskArtifact({
     action: 'build',
     root: sourceRoot,
     artifactRoot,
-    environment,
+    profile,
   });
   const deploymentRef = packageReceipt?.serviceDeploymentReceipt?.deployment;
   if (
@@ -115,7 +115,7 @@ export async function authorDurableTaskArtifact({
     kind: 'assembly',
     action: 'build',
     artifactRoot,
-    environment,
+    profile,
     rootDeployments: [deploymentRef],
   });
   const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
@@ -131,8 +131,7 @@ export async function authorDurableTaskArtifact({
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    environment,
-    profile: 'dev',
+    profile,
     assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });

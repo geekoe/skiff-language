@@ -31,9 +31,9 @@ test('command-double runs only one copied-consumer negative Host probe', async (
       graceWindowMs: 25,
       wait: async () => {},
       runtimeOwner: commandDoubleRuntimeOwner,
-      readHostReceipt: async (path, environment) => {
+      readHostReceipt: async (path, profile) => {
         assert.match(path, /package-service-host-receipt\.json$/);
-        assert.equal(environment, 'skiff-test');
+        assert.equal(profile, 'skiff-test');
         return {
           baseAssembly: { assemblyIdentity },
           baseConfigSnapshot: { snapshotId: configSnapshotId },

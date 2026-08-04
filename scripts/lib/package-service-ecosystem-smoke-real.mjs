@@ -4,7 +4,7 @@ export function packageServiceEcosystemSmokeFixtureCargoArgs({
   checkout,
   fixtureRoot,
   artifactRoot,
-  environment,
+  profile,
 }) {
   return [
     'run',
@@ -20,7 +20,7 @@ export function packageServiceEcosystemSmokeFixtureCargoArgs({
     artifactRoot,
     '--platform-source-root',
     checkout,
-    '--environment',
-    environment,
+    '--profile',
+    profile,
   ];
 }

@@ -45,7 +45,7 @@ new assembly. `skiff dev sync` / `skiff dev watch` publish a new active
 assembly through the canonical control endpoint
 `http://127.0.0.1:4001/__skiff/activate-assembly`; override with
 `--artifact-root` and `--activation-url` only for explicit non-standard
-service-dev environments. The retired `/__skiff/reload-artifacts` control
+service-dev profiles. The retired `/__skiff/reload-artifacts` control
 endpoint is not part of the current contract.
 
 Non-instance service-dev commands default to the main Skiff worktree's
@@ -139,7 +139,7 @@ skiff service dev registry remove <root-or-service-id>
 ```
 
 The registry is a live watch input, not startup-only configuration. A running
-managed watch reloads it on every poll, so add, remove, and environment changes
+managed watch reloads it on every poll, so add, remove, and profile changes
 do not require restarting the watch process. Registry entries persist their
 root role and service ID; removing a root still works after its directory has
 already been deleted. A malformed or temporarily missing registry keeps the
@@ -157,7 +157,7 @@ resolution inputs, not additional watch roots. `registry list` prints the
 complete watched set so omissions can be checked before development.
 
 Before its first activation, managed watch reads the Router's exact committed
-environment/generation from `/__router/health`; it never assumes generation
+profile/generation from `/__router/health`; it never assumes generation
 zero. Activation remains a CAS. On a conflict the watch rereads health, treats
 an already-committed exact target pair as success, and otherwise retries only
 from an observed newer generation. Build, snapshot publication, and activation
@@ -344,7 +344,7 @@ unknown fields, malformed targets, duplicate IDs/PIDs/paths, relative log paths,
 missing prerequisites, and a missing config before any workload. Execution preflight re-reads the
 config and aggregates disappearing logs or dead PIDs before launching a command. Generated tasks
 receive only the absolute `--config` path; canonical stress cannot accept target overrides,
-fine-grained environment defaults, or `--skip-*`, and health, CPU, and log gates must all report
+fine-grained profile defaults, or `--skip-*`, and health, CPU, and log gates must all report
 `checked: true`.
 
 ```bash
@@ -379,7 +379,7 @@ node scripts/package-live-test.mjs
 
 An explicitly selected Skiff stack must already be running with a connected runtime. The command
 must name that stack's canonical activation endpoint, ingress origin, existing artifact root,
-environment, and expected generation. The runner never defaults to the stable instance; non-live
+profile, and expected generation. The runner never defaults to the stable instance; non-live
 execution never writes its external input artifact root. The selected `.test.skiff` file must belong
 to a canonical package root containing `package.yml`. Tests that require existing services must
 select that exact runtime assembly with `--base-assembly`; its business config is selected
@@ -396,7 +396,7 @@ node scripts/skiff.mjs test \
   --base-config-snapshot '<config-snapshot-identity>' \
   --activation-url 'http://127.0.0.1:<control-port>/__skiff/activate-assembly' \
   --ingress-url 'http://127.0.0.1:<ingress-port>' \
-  --environment '<environment>' \
+  --profile '<profile>' \
   --expected-generation '<generation>' \
   --deny-skips \
   --require-tests

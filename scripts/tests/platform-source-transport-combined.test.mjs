@@ -66,7 +66,7 @@ test('package and test transports share the platform root while assembly stays f
         kind: 'assembly',
         action: 'build',
         artifactRoot,
-        environment: 'combined-transport',
+        profile: 'combined-transport',
         rootDeployments: [rootDeployment],
       });
       const skiffResult = await runProcess(process.execPath, [
@@ -77,7 +77,7 @@ test('package and test transports share the platform root while assembly stays f
         '--live',
         '--activation-url', 'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url', 'http://router.test:4100',
-        '--environment', 'combined-transport',
+        '--profile', 'combined-transport',
         '--expected-generation', '0',
       ], {
         cwd: tempRoot,
@@ -132,7 +132,7 @@ test('package and test transports share the platform root while assembly stays f
           artifactRoot,
           workRoot: join(tempRoot, 'host-work'),
           receipt: join(tempRoot, 'host-receipt.json'),
-          environment: 'combined-transport',
+          profile: 'combined-transport',
         }),
       },
       {
@@ -140,7 +140,7 @@ test('package and test transports share the platform root while assembly stays f
         args: bootstrapCanonicalArgs({
           skiffRoot,
           artifactRoot,
-          environment: 'combined-transport',
+          profile: 'combined-transport',
         }),
       },
       {
@@ -159,7 +159,7 @@ test('package and test transports share the platform root while assembly stays f
           activationUrl:
             'http://router.test:4101/__skiff/activate-assembly',
           ingressUrl: 'http://router.test:4100',
-          environment: 'dev',
+          profile: 'dev',
           expectedGeneration: 0,
         }),
       },
@@ -194,7 +194,7 @@ test('package and test transports share the platform root while assembly stays f
       '--',
       '--bootstrap-only',
       '--artifact-root', artifactRoot,
-      '--environment', 'combined-transport',
+      '--profile', 'combined-transport',
     ], { cwd: tempRoot, env: process.env });
     assert.notEqual(omitted.code, 0);
     assert.match(omitted.stderr, /missing --platform-source-root/);
