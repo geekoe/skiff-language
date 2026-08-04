@@ -96,10 +96,12 @@ export function parseStackConfigDirArg(rawArgs, { options = [] } = {}) {
     } else {
       throw new Error(`unknown stack option ${argument}`);
     }
-    if (configDir !== undefined) {
-      throw new Error('--configDir was provided more than once');
+    if (argument === '--configDir' || argument.startsWith('--configDir=')) {
+      if (configDir !== undefined) {
+        throw new Error('--configDir was provided more than once');
+      }
+      configDir = value;
     }
-    configDir = value;
   }
   if (configDir === undefined) {
     throw new Error('stack command requires --configDir <dir>');
