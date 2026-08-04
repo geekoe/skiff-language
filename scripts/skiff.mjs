@@ -330,14 +330,43 @@ async function test(rawArgs) {
     await run('cargo', testArgs, skiffRoot);
     return;
   }
+  const isolatedProfile = args.options.baseConfigSnapshot === undefined
+    ? undefined
+    : await baseConfigSnapshotProfile(explicitArtifactRoot, args.options.baseConfigSnapshot);
   await runInIsolatedTestRuntime({
     skiffRoot,
+    profile: isolatedProfile,
     runTest: (isolatedEnv, signal) => runOwnedCommand('cargo', testArgs, {
       cwd: skiffRoot,
       env: isolatedEnv,
       signal,
     }),
   });
+}
+
+async function baseConfigSnapshotProfile(artifactRoot, snapshotId) {
+  const marker = 'skiff-runtime-config-snapshot-v1:';
+  if (typeof snapshotId !== 'string' || !snapshotId.startsWith(marker)) {
+    throw new Error(`--base-config-snapshot must be a ${marker} identity`);
+  }
+  const suffix = snapshotId.slice(marker.length);
+  if (!/^[0-9a-f]{32}$/.test(suffix)) {
+    throw new Error('--base-config-snapshot identity suffix must be 32 hex chars');
+  }
+  const path = join(artifactRoot, 'runtime-config', 'snapshots', `${suffix}.json`);
+  let document;
+  try {
+    document = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `cannot read base config snapshot ${snapshotId} at ${path}: ${error.code || error.message}`,
+    );
+  }
+  const profile = document?.profile;
+  if (typeof profile !== 'string' || profile.length === 0) {
+    throw new Error(`base config snapshot ${snapshotId} has no profile`);
+  }
+  return profile;
 }
 
 function validateCanonicalTestUrl(value, expectedPath, option) {
