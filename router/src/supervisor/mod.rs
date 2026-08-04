@@ -732,9 +732,8 @@ impl RouterSupervisor {
             &components.config.artifacts_path,
         )
         .map_err(|error| ListenerError::Http(error.to_string()))?;
-        let resolver = Arc::new(EpochHttpIngressResolver::new_with_epoch_store(
+        let resolver = Arc::new(EpochHttpIngressResolver::new_with_live_artifact_store(
             Arc::clone(&components.surface_view),
-            Arc::clone(&components.epoch_store),
             artifact_store.clone(),
         ));
         let public_http = start_http_gateway_with_epoch_store(

@@ -19,7 +19,7 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
+use crate::bootstrap::RoutingEpoch;
 
 use super::error::HttpError;
 use super::selector::ServiceDeploymentSelector;
@@ -156,14 +156,13 @@ pub trait HttpIngressResolver: Send + Sync {
 #[derive(Clone)]
 pub struct EpochHttpIngressResolver {
     surfaces: Arc<HttpGatewaySurfaceView>,
-    /// E-activation §8: when present, every resolve rebuilds the HTTP
-    /// surface from the live active epoch (activation swap visibility);
-    /// absent keeps the static captured surface.
+    /// E-activation §8 live source: the HTTP server captures the current
+    /// epoch once per request and passes it to `resolve`, so this source only
+    /// needs the artifact store to materialize the surface after an
+    /// activation swap. The view is cached by the request epoch's generation
+    /// and rebuilt only when that generation changes.
     live: Option<LiveHttpSurfaceSource>,
-    /// Cache of the live surface view, keyed by the active epoch generation.
-    /// The view is rebuilt only when an activation swap changes the
-    /// generation, instead of re-reading and canonical-validating every
-    /// deployment record from disk on each request.
+    /// Cache of the live surface view, keyed by the request epoch generation.
     cached_live: Arc<Mutex<Option<CachedLiveSurface>>>,
 }
 
@@ -184,7 +183,6 @@ impl fmt::Debug for EpochHttpIngressResolver {
 
 #[derive(Clone)]
 struct LiveHttpSurfaceSource {
-    epoch_store: Arc<ActiveRoutingEpochStore>,
     artifact_store: CanonicalArtifactStore,
 }
 
@@ -197,17 +195,13 @@ impl EpochHttpIngressResolver {
         }
     }
 
-    pub fn new_with_epoch_store(
+    pub fn new_with_live_artifact_store(
         surfaces: Arc<HttpGatewaySurfaceView>,
-        epoch_store: Arc<ActiveRoutingEpochStore>,
         artifact_store: CanonicalArtifactStore,
     ) -> Self {
         Self {
             surfaces,
-            live: Some(LiveHttpSurfaceSource {
-                epoch_store,
-                artifact_store,
-            }),
+            live: Some(LiveHttpSurfaceSource { artifact_store }),
             cached_live: Arc::new(Mutex::new(None)),
         }
     }
@@ -216,14 +210,11 @@ impl EpochHttpIngressResolver {
         &self.surfaces
     }
 
-    fn current_surfaces(&self) -> Result<Arc<HttpGatewaySurfaceView>, HttpError> {
+    fn current_surfaces(&self, epoch: &RoutingEpoch) -> Result<Arc<HttpGatewaySurfaceView>, HttpError> {
         let Some(live) = &self.live else {
             return Ok(Arc::clone(&self.surfaces));
         };
-        let Some(current) = live.epoch_store.capture() else {
-            return Ok(Arc::clone(&self.surfaces));
-        };
-        let generation = current.assembly_generation();
+        let generation = epoch.assembly_generation();
         let mut cached = self
             .cached_live
             .lock()
@@ -234,7 +225,7 @@ impl EpochHttpIngressResolver {
             }
         }
         let view = Arc::new(
-            http_surface_view_from_epoch(&live.artifact_store, &current)
+            http_surface_view_from_epoch(&live.artifact_store, epoch)
                 .map_err(HttpError::internal)?,
         );
         *cached = Some(CachedLiveSurface {
@@ -284,7 +275,7 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
                 "RuntimeAssembly ingress references a deployment absent from the epoch projection",
             ));
         }
-        let surfaces = self.current_surfaces()?;
+        let surfaces = self.current_surfaces(epoch)?;
         let surface = surfaces
             .get(&binding.deployment, &binding.gateway_entry_key)
             .ok_or_else(|| {
