@@ -1,0 +1,7 @@
+id: test.skiff/spread-db-attach-tests
+version: 1.0.0
+packages:
+  - id: test.skiff/spread-db-attach
+    version: 1.0.0
+    alias: subject
+    topLevelAlias: subjectImpl

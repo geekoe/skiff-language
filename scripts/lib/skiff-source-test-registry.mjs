@@ -19,6 +19,11 @@ export const canonicalSkiffSourceTestRegistry = Object.freeze([
     id: 'actor-test-effect-capability',
     root: 'test-runner/fixtures/actor-full-chain-acceptance',
   }),
+  Object.freeze({
+    id: 'spread-db-attach',
+    root: 'test-runner/fixtures/spread-db-attach-tests',
+    subjectRoot: 'test-runner/fixtures/spread-db-attach',
+  }),
 ]);
 
 export function createCanonicalSkiffSourceTestPlan({

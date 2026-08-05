@@ -1,0 +1,147 @@
+import std
+import subjectImpl
+
+test "spread copied field is usable as primary key" {
+  const userId = "user-".concat(std.crypto.uuidSimple())
+  const inserted = db insert subjectImpl/model.UserProfile {
+    userId = userId
+    email = "alice@example.test"
+    displayName = "Alice"
+    role = "admin"
+  }
+  assert inserted.userId == userId
+  assert inserted.role == "admin"
+  const row = db require subjectImpl/model.UserProfile(userId)
+  assert row.userId == userId
+  assert row.email == "alice@example.test"
+  assert row.displayName == "Alice"
+  assert row.role == "admin"
+}
+
+test "read projection over spread copied fields auto includes primary key" {
+  const userId = "proj-".concat(std.crypto.uuidSimple())
+  db insert subjectImpl/model.UserProfile {
+    userId = userId
+    email = "proj@example.test"
+    displayName = "Projected"
+    role = "reader"
+  }
+  const row = db require subjectImpl/model.UserProfile(userId) { fields { email, role } }
+  assert row.userId == userId
+  assert row.email == "proj@example.test"
+  assert row.role == "reader"
+}
+
+test "update modifies spread copied fields and explicit fields" {
+  const userId = "upd-".concat(std.crypto.uuidSimple())
+  db insert subjectImpl/model.UserProfile {
+    userId = userId
+    email = "upd@example.test"
+    displayName = "Before"
+    role = "member"
+  }
+  const updated = db update subjectImpl/model.UserProfile(userId) {
+    displayName = "After"
+    role = "moderator"
+  }
+  assert updated.displayName == "After"
+  assert updated.role == "moderator"
+  const row = db require subjectImpl/model.UserProfile(userId)
+  assert row.displayName == "After"
+  assert row.email == "upd@example.test"
+}
+
+test "query read orders by index declared on spread copied fields" {
+  const tenant = "tenant-".concat(std.crypto.uuidSimple())
+  db insert subjectImpl/model.SessionRecord {
+    sessionToken = std.crypto.uuidSimple()
+    tenantId = tenant
+    sequence = 2
+    ownerId = "owner-a"
+  }
+  db insert subjectImpl/model.SessionRecord {
+    sessionToken = std.crypto.uuidSimple()
+    tenantId = tenant
+    sequence = 1
+    ownerId = "owner-b"
+  }
+  const rows = db find many subjectImpl/model.SessionRecord {
+    where tenantId == tenant
+    order sequence asc
+  }
+  assert rows.length() == 2
+  let first = ""
+  let second = ""
+  for row in rows {
+    if row.sequence == 1 {
+      first = row.ownerId
+    }
+    if row.sequence == 2 {
+      second = row.ownerId
+    }
+  }
+  assert first == "owner-b"
+  assert second == "owner-a"
+}
+
+test "unique index declared on spread copied field rejects duplicate" {
+  const tenant = "unique-".concat(std.crypto.uuidSimple())
+  db insert subjectImpl/model.SessionRecord {
+    sessionToken = std.crypto.uuidSimple()
+    tenantId = tenant
+    sequence = 1
+    ownerId = "owner-a"
+  }
+  const rejected = catch<std.db.ConstraintError>(db insert subjectImpl/model.SessionRecord {
+    sessionToken = std.crypto.uuidSimple()
+    tenantId = tenant
+    sequence = 2
+    ownerId = "owner-b"
+  })
+  assert rejected.tag == "err"
+  assert rejected.value.kind == "unique"
+}
+
+test "storage mapping on spread copied and explicit fields round trips" {
+  const credentialId = "cred-".concat(std.crypto.uuidSimple())
+  const inserted = db insert subjectImpl/model.CredentialRecord {
+    credentialId = credentialId
+    secretKey = "secret-value"
+    nonce = "nonce-value"
+    label = "primary-label"
+  }
+  assert inserted.secretKey == "secret-value"
+  const row = db require subjectImpl/model.CredentialRecord(credentialId)
+  assert row.secretKey == "secret-value"
+  assert row.nonce == "nonce-value"
+  assert row.label == "primary-label"
+  const projected = db require subjectImpl/model.CredentialRecord(credentialId) { fields { secretKey } }
+  assert projected.secretKey == "secret-value"
+  const updated = db update subjectImpl/model.CredentialRecord(credentialId) { label = "secondary-label" }
+  assert updated.label == "secondary-label"
+}
+
+test "multiple spreads compose copied fields for attachment" {
+  const userId = "multi-".concat(std.crypto.uuidSimple())
+  db insert subjectImpl/model.ContactRecord {
+    userId = userId
+    email = "multi@example.test"
+    displayName = "Multi"
+    phone = "+1-555-0100"
+    region = "us-east"
+  }
+  const row = db require subjectImpl/model.ContactRecord(userId)
+  assert row.userId == userId
+  assert row.email == "multi@example.test"
+  assert row.displayName == "Multi"
+  assert row.phone == "+1-555-0100"
+  assert row.region == "us-east"
+  const rows = db find many subjectImpl/model.ContactRecord {
+    where phone == "+1-555-0100"
+    order userId asc
+  }
+  assert rows.length() == 1
+  for row in rows {
+    assert row.userId == userId
+  }
+}
