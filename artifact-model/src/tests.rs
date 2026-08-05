@@ -521,6 +521,7 @@ fn file_ir_db_indexes_require_unique_names_fields_and_ordered_specs() {
             type_ref: TypeRefIr::builtin("Thread"),
             type_name: "Thread".to_string(),
             collection_name: Some("thread".to_string()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

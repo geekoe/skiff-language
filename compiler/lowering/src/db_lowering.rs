@@ -10,7 +10,7 @@ use crate::file_ir::{
     InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
     SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
+use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef};
 use skiff_compiler_core::db_projection::project_db_read_type;
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 use skiff_compiler_source::{
@@ -19,7 +19,7 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDeclKind, DbIndexDirection,
+        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind, DbIndexDirection,
         DbLeaseClaim, DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock,
         DbRetentionUnit, DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef,
         UnaryOp,
@@ -332,17 +332,69 @@ pub(super) fn lower_db_declarations(
             )?,
         };
         let mut type_fields = BTreeMap::new();
+        let mut identity_fields = BTreeMap::new();
         let mut field_type_texts = BTreeMap::new();
         debug_assert!(attachment
             .field_map()
             .contains_key(attachment.key.name.as_str()));
         type_fields.insert(key.name.clone(), key.ty.clone());
+        identity_fields.insert(
+            key.name.clone(),
+            lower_type_ref(
+                &key_field.ty,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                TypeLoweringContext::value(),
+            )?,
+        );
         field_type_texts.insert(key_field.name.clone(), key_field.ty.name.clone());
         for field in attachment.fields() {
             field_type_texts.insert(field.name.clone(), field.ty.name.clone());
-            let field_ty = db_storage_type_ref(
-                lower_type_ref(
-                    &field.ty,
+            let lowered = lower_type_ref(
+                &field.ty,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                TypeLoweringContext::value(),
+            )?;
+            identity_fields.insert(field.name.clone(), lowered.clone());
+            let field_ty = db_storage_type_ref(lowered, unit)?;
+            type_fields.insert(field.name.clone(), field_ty);
+        }
+        let field_types = type_fields.clone();
+        let kind = match db.kind {
+            DbDeclKind::Object => DbObjectKindIr::Object,
+            DbDeclKind::Contract => DbObjectKindIr::Contract,
+        };
+        let implements = match (&db.implements, db.kind) {
+            (Some(implements), DbDeclKind::Object) => {
+                let contract = resolve_implements_contract(
+                    implements,
+                    package_aliases,
+                    publication_db_metadata,
+                )?;
+                if contract.kind != DbObjectKindIr::Contract {
+                    return Err(CompileError::Semantic(format!(
+                        "db object {} implements target `{}` which resolves to db object {}, not a db contract; the implementing declaration must reference a `db contract` attached type",
+                        db.name, implements.name, contract.canonical_type_name
+                    )));
+                }
+                if contract.canonical_type_ref.is_none() {
+                    return Err(CompileError::Semantic(format!(
+                        "db object {} implements target `{}` is not a cross-package contract reference; contracts are declared in dependency packages",
+                        db.name, implements.name
+                    )));
+                }
+                validate_implements_coverage(db, contract, &identity_fields, attachment.storage_map())?;
+                Some(lower_type_ref(
+                    implements,
                     type_indices,
                     local_db_objects,
                     publication_db_metadata,
@@ -350,15 +402,9 @@ pub(super) fn lower_db_declarations(
                     external_type_symbols,
                     source_alias_targets,
                     TypeLoweringContext::value(),
-                )?,
-                unit,
-            )?;
-            type_fields.insert(field.name.clone(), field_ty);
-        }
-        let field_types = type_fields.clone();
-        let kind = match db.kind {
-            DbDeclKind::Object => DbObjectKindIr::Object,
-            DbDeclKind::Contract => DbObjectKindIr::Contract,
+                )?)
+            }
+            _ => None,
         };
         let collection_name = if db.kind == DbDeclKind::Object {
             let collection_name = db_collection_name(db);
@@ -480,6 +526,12 @@ pub(super) fn lower_db_declarations(
                 type_ref: type_ref.clone(),
                 type_name: db.name.clone(),
                 collection_name: collection_name.clone(),
+                implements: implements.clone(),
+                identity_fields: if db.kind == DbDeclKind::Contract {
+                    identity_fields.clone()
+                } else {
+                    BTreeMap::new()
+                },
                 kind,
                 key: key.clone(),
                 fields,
@@ -499,6 +551,207 @@ pub(super) fn lower_db_declarations(
         );
     }
     Ok(metadata)
+}
+
+/// Resolves a `db object ... implements <contract-ref>` target to the contract
+/// declaration facts of a direct dependency package. Contract references are
+/// cross-package type references (Phase 0 dual spelling): the alias decides the
+/// dependency view, and the remainder is the package symbol path. Same-package
+/// references are rejected because the identity comparison below cannot be
+/// sound without the contract package's own lowered File IR.
+fn resolve_implements_contract<'a>(
+    implements: &TypeRef,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
+) -> Result<&'a PublicationDbMetadata> {
+    let name = implements
+        .name
+        .trim()
+        .strip_prefix("root.")
+        .unwrap_or_else(|| implements.name.trim());
+    let mut lookup_name = String::new();
+    let target = if name.contains('/') {
+        name
+    } else if let Some((alias, rest)) = name.split_once('.') {
+        if !package_aliases.contains_key(alias) {
+            return Err(CompileError::Semantic(format!(
+                "db object implements target `{}` must be a cross-package contract reference (for example `engine.package.Type` or `engine/package.Type`)",
+                implements.name
+            )));
+        }
+        lookup_name = format!("{alias}/{rest}");
+        lookup_name.as_str()
+    } else {
+        return Err(CompileError::Semantic(format!(
+            "db object implements target `{}` must be a cross-package contract reference (for example `engine.package.Type` or `engine/package.Type`)",
+            implements.name
+        )));
+    };
+    publication_db_metadata
+        .resolve_qualified(target)
+        .ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "db object implements target `{target}` does not resolve to a db contract declaration in a dependency package"
+            ))
+        })
+}
+
+/// Compile-time contract coverage: the implementing db object must declare
+/// every contract field with the same schema identity and the same storage
+/// mapping, and the same primary key field and type.
+fn validate_implements_coverage(
+    db: &DbDecl,
+    contract: &PublicationDbMetadata,
+    type_fields: &BTreeMap<String, TypeRefIr>,
+    storage_map: &BTreeMap<String, DbStorageCodec>,
+) -> Result<()> {
+    let missing = contract
+        .fields
+        .iter()
+        .filter(|field| !type_fields.contains_key(*field))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(CompileError::Semantic(format!(
+            "db object {} implements contract {} but its type is missing contract fields: {}",
+            db.name,
+            contract.canonical_type_name,
+            missing.join(", ")
+        )));
+    }
+    for field in &contract.fields {
+        let contract_ty = if *field == contract.key.name {
+            contract.canonical_key_type.as_ref()
+        } else {
+            contract.canonical_field_types.get(field)
+        }
+        .ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "db object {} implements contract {} but contract field {} has no canonical type fact",
+                db.name, contract.canonical_type_name, field
+            ))
+        })?;
+        let host_ty = type_fields
+            .get(field)
+            .expect("covered contract field has a host type");
+        if !db_field_type_identity_matches(host_ty, contract_ty) {
+            return Err(CompileError::Semantic(format!(
+                "db object {} implements contract {} but field {} has a different schema identity: host `{}` vs contract `{}`",
+                db.name,
+                contract.canonical_type_name,
+                field,
+                type_ref_ir_type_text(host_ty),
+                type_ref_ir_type_text(contract_ty)
+            )));
+        }
+        if contract.field_storage.get(field) != storage_map.get(field) {
+            return Err(CompileError::Semantic(format!(
+                "db object {} implements contract {} but field {} has a different storage mapping than the contract",
+                db.name, contract.canonical_type_name, field
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Schema identity equality for one stored field, decided by normalized
+/// nominal identity. The contract facts carry the contract's own symbol
+/// references resolved into the host's dependency view (same dependency alias
+/// + symbol path as the host's cross-package references), so a host reference
+/// to a contract-package symbol matches the contract's own symbol while host
+/// local nominals (LocalType / PublicationType on either side) never match a
+/// contract symbol. Forms without nominal identity (builtin, anonymous record
+/// / union / literal, applied nominals whose base resolves nominally) compare
+/// structurally; everything else is false.
+fn db_field_type_identity_matches(host: &TypeRefIr, contract: &TypeRefIr) -> bool {
+    match (host, contract) {
+        (
+            TypeRefIr::PackageSymbol { symbol: host_symbol },
+            TypeRefIr::PackageSymbol {
+                symbol: contract_symbol,
+            },
+        ) => package_symbol_identity_matches(host_symbol, contract_symbol),
+        (TypeRefIr::Builtin { name, args }, TypeRefIr::Builtin { name: other, args: other_args }) => {
+            name == other
+                && args.len() == other_args.len()
+                && args
+                    .iter()
+                    .zip(other_args)
+                    .all(|(arg, other)| db_field_type_identity_matches(arg, other))
+        }
+        (TypeRefIr::Record { fields }, TypeRefIr::Record { fields: other }) => {
+            fields.len() == other.len()
+                && fields.iter().all(|(name, ty)| {
+                    other
+                        .get(name)
+                        .is_some_and(|other_ty| db_field_type_identity_matches(ty, other_ty))
+                })
+        }
+        (TypeRefIr::Union { items }, TypeRefIr::Union { items: other }) => {
+            items.len() == other.len()
+                && items
+                    .iter()
+                    .zip(other)
+                    .all(|(item, other)| db_field_type_identity_matches(item, other))
+        }
+        (
+            TypeRefIr::Nullable { inner },
+            TypeRefIr::Nullable { inner: other },
+        ) => db_field_type_identity_matches(inner, other),
+        (TypeRefIr::Literal { value }, TypeRefIr::Literal { value: other }) => value == other,
+        (
+            TypeRefIr::AppliedNominal { base, arguments },
+            TypeRefIr::AppliedNominal {
+                base: other_base,
+                arguments: other_arguments,
+            },
+        ) => {
+            nominal_base_identity_matches(base, other_base)
+                && arguments.len() == other_arguments.len()
+                && arguments
+                    .iter()
+                    .zip(other_arguments)
+                    .all(|(argument, other)| db_field_type_identity_matches(argument, other))
+        }
+        _ => false,
+    }
+}
+
+fn nominal_base_identity_matches(
+    host: &NominalTypeRefBaseIr,
+    contract: &NominalTypeRefBaseIr,
+) -> bool {
+    match (host, contract) {
+        (
+            NominalTypeRefBaseIr::PackageSymbol {
+                symbol: host_symbol,
+            },
+            NominalTypeRefBaseIr::PackageSymbol {
+                symbol: contract_symbol,
+            },
+        ) => package_symbol_identity_matches(host_symbol, contract_symbol),
+        _ => false,
+    }
+}
+
+/// Cross-package nominal identity: the same dependency view (dependency alias,
+/// the link-time ABI expectation is a linker refinement and not part of the
+/// identity) and the same public symbol path.
+fn package_symbol_identity_matches(
+    host: &PackageSymbolRef,
+    contract: &PackageSymbolRef,
+) -> bool {
+    matches!(
+        (&host.package, &contract.package),
+        (
+            PackageRefIr::Dependency {
+                dependency_ref: host_dependency
+            },
+            PackageRefIr::Dependency {
+                dependency_ref: contract_dependency
+            }
+        ) if host_dependency == contract_dependency
+    ) && host.symbol_path == contract.symbol_path
 }
 
 fn lower_db_storage_codec(codec: DbStorageCodec) -> DbFieldStorageIr {

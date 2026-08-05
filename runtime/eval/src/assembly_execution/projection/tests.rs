@@ -535,6 +535,7 @@ fn projection_image_with_db_shape(
             type_ref: db_type_ref,
             type_name: "ProjectionType".to_string(),
             collection_name: Some("projection_type".to_string()),
+            implements: None,
             kind: ArtifactDbObjectKindIr::Object,
             key: ArtifactDbObjectKeyIr {
                 name: "id".to_string(),

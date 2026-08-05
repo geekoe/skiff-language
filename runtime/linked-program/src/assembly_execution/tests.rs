@@ -426,6 +426,7 @@ fn artifact_file() -> artifact::FileIrUnit {
             type_ref: artifact::TypeRefIr::LocalType { type_index: 0 },
             type_name: "model.Record".to_string(),
             collection_name: Some("record".to_string()),
+            implements: None,
             kind: artifact::DbObjectKindIr::Object,
             key: artifact::DbObjectKeyIr {
                 name: "id".to_string(),
@@ -471,6 +472,7 @@ fn linked_file() -> LinkedFileUnit {
             },
             type_name: "model.Record".to_string(),
             collection_name: Some("record".to_string()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

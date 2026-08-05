@@ -36,6 +36,17 @@ impl Parser {
             ));
         };
         let name = self.expect_ident("expected db object name")?;
+        let implements = if self.match_ident("implements") {
+            if kind == DbDeclKind::Contract {
+                return Err(CompileError::syntax(
+                    "db contract declarations cannot implement another contract; the implementing db object declares `implements`",
+                    self.previous().span.start,
+                ));
+            }
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         self.expect_symbol("{")?;
         let mut collection_name = None;
         let mut key = None;
@@ -144,6 +155,7 @@ impl Parser {
         Ok(DbDecl {
             name,
             kind,
+            implements,
             collection_name,
             key,
             retention,
