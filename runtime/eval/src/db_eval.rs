@@ -847,7 +847,7 @@ pub(super) fn db_capability_target(
             DbCapabilityTargetId {
                 package_artifact_ref: binding.implementer.package_artifact_ref.clone(),
                 file_ir_ref: binding.implementer.file_ir_ref.clone(),
-                type_index: binding.implementer.type_index as usize,
+                type_index: binding.implementer.type_index,
             },
             binding.contract_view,
         ),
@@ -855,7 +855,7 @@ pub(super) fn db_capability_target(
             DbCapabilityTargetId {
                 package_artifact_ref: target.target_id.package_artifact_ref.clone(),
                 file_ir_ref: target.target_id.file_ir_ref.clone(),
-                type_index: target.target_id.type_index as usize,
+                type_index: target.target_id.type_index,
             },
             false,
         ),

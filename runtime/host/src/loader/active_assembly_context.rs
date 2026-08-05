@@ -1143,12 +1143,12 @@ fn validate_db_contract_implementations(
             contract: skiff_runtime_linked_program::DbObjectTargetId {
                 package_artifact_ref: contract.artifact_ref.clone(),
                 file_ir_ref: contract.file_ir_ref.clone(),
-                type_index: contract.type_index,
+                type_index: contract.type_index as usize,
             },
             implementer: skiff_runtime_linked_program::DbObjectTargetId {
                 package_artifact_ref: implementation.artifact_ref.clone(),
                 file_ir_ref: implementation.file_ir_ref.clone(),
-                type_index: implementation.type_index,
+                type_index: implementation.type_index as usize,
             },
         });
         let contract_key = CandidateContractKey {
