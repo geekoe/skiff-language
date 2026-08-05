@@ -46,6 +46,7 @@ pub(crate) struct ActiveAssemblyContextSet {
     config_views: BTreeMap<ServiceDeploymentRef, Arc<ActivationConfigViews>>,
     db_sources: BTreeMap<ActivationId, DbCapabilitySource>,
     websocket_entries: BTreeMap<ServiceDeploymentRef, AdmittedWebSocketEntry>,
+    db_contract_bindings: Vec<Arc<skiff_runtime_eval::DbContractBinding>>,
 }
 
 impl ActiveAssemblyContextSet {
@@ -76,7 +77,15 @@ impl ActiveAssemblyContextSet {
         .map(|(deployment, views)| (deployment, Arc::new(views)))
         .collect();
         let runtime_program_db_by_deployment = candidate_db_metadata(candidate)?;
-        validate_db_contract_implementations(candidate)?;
+        let db_contract_bindings = validate_db_contract_implementations(candidate)?
+            .into_iter()
+            .map(|binding| {
+                Arc::new(skiff_runtime_eval::DbContractBinding::new(
+                    binding.contract,
+                    binding.implementer,
+                ))
+            })
+            .collect::<Vec<_>>();
         let db_inputs = candidate_db_provider_inputs(
             candidate,
             &runtime_program_db_by_deployment,
@@ -258,6 +267,7 @@ impl ActiveAssemblyContextSet {
             config_views,
             db_sources,
             websocket_entries,
+            db_contract_bindings,
         })
     }
 
@@ -908,6 +918,7 @@ fn activation_db_metadata(
 struct CandidateDbContractFacts {
     build_id: PackageBuildId,
     package_id: String,
+    artifact_ref: skiff_artifact_model::PackageArtifactRef,
     file_ir_ref: skiff_artifact_model::FileIrRef,
     type_index: u32,
     symbol: String,
@@ -915,15 +926,25 @@ struct CandidateDbContractFacts {
 }
 
 /// One `db object ... implements` declaration fact for whole-assembly coverage
-/// validation.
+/// validation and binding construction.
 #[derive(Debug, Clone)]
 struct CandidateDbImplementationFacts {
     build_id: PackageBuildId,
     package_id: String,
+    artifact_ref: skiff_artifact_model::PackageArtifactRef,
+    file_ir_ref: skiff_artifact_model::FileIrRef,
+    type_index: u32,
     symbol: String,
     collection_name: String,
     implements: skiff_artifact_model::TypeRefIr,
     indexes: Vec<skiff_artifact_model::DbIndexIr>,
+}
+
+/// One contract-to-implementer exact target pair for the runtime binding table.
+#[derive(Debug, Clone)]
+struct CandidateDbBinding {
+    contract: skiff_runtime_linked_program::DbObjectTargetId,
+    implementer: skiff_runtime_linked_program::DbObjectTargetId,
 }
 
 /// Activation-time contract coverage: every `db contract` declaration in the
@@ -931,7 +952,14 @@ struct CandidateDbImplementationFacts {
 /// declaration, and every required contract index must be covered by the
 /// implementing collection's canonical managed index spec. All failures bail
 /// through the existing admission fail-closed chain before DB provisioning.
-fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()> {
+///
+/// Returns the contract-to-implementer target bindings for the runtime binding
+/// table; the binding resolution reuses the exact same `implements` ref ->
+/// package link -> contract facts path, so any package/artifact inconsistency
+/// fails closed here before any binding is published.
+fn validate_db_contract_implementations(
+    candidate: &AssemblyLinkedCandidate,
+) -> anyhow::Result<Vec<CandidateDbBinding>> {
     let image = candidate.execution_image().shared_packages();
     let mut contracts: Vec<CandidateDbContractFacts> = Vec::new();
     let mut implementations: Vec<CandidateDbImplementationFacts> = Vec::new();
@@ -975,6 +1003,7 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
                         contracts.push(CandidateDbContractFacts {
                             build_id: build_id.clone(),
                             package_id: code.artifact().package_id.clone(),
+                            artifact_ref: code.artifact_ref().clone(),
                             file_ir_ref: file_ir_ref.clone(),
                             type_index,
                             symbol: symbol.clone(),
@@ -994,6 +1023,9 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
                         implementations.push(CandidateDbImplementationFacts {
                             build_id: build_id.clone(),
                             package_id: code.artifact().package_id.clone(),
+                            artifact_ref: code.artifact_ref().clone(),
+                            file_ir_ref: file_ir_ref.clone(),
+                            type_index,
                             symbol: symbol.clone(),
                             collection_name: collection_name.to_string(),
                             implements: implements.clone(),
@@ -1019,6 +1051,7 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
     }
     let mut owners_by_contract: BTreeMap<CandidateContractKey, BTreeMap<String, Vec<usize>>> =
         BTreeMap::new();
+    let mut bindings = Vec::new();
     for (index, implementation) in implementations.iter().enumerate() {
         let (dependency_ref, symbol_path) = match &implementation.implements {
             skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
@@ -1106,6 +1139,18 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
                     implementation.package_id
                 )
             })?;
+        bindings.push(CandidateDbBinding {
+            contract: skiff_runtime_linked_program::DbObjectTargetId {
+                package_artifact_ref: contract.artifact_ref.clone(),
+                file_ir_ref: contract.file_ir_ref.clone(),
+                type_index: contract.type_index,
+            },
+            implementer: skiff_runtime_linked_program::DbObjectTargetId {
+                package_artifact_ref: implementation.artifact_ref.clone(),
+                file_ir_ref: implementation.file_ir_ref.clone(),
+                type_index: implementation.type_index,
+            },
+        });
         let contract_key = CandidateContractKey {
             build_id: contract.build_id.clone(),
             file_ir_identity: contract.file_ir_ref.file_ir_identity.clone(),
@@ -1119,8 +1164,7 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
         for owner in owners {
             by_owner.entry(owner).or_default().push(index);
         }
-    }
-    for contract in &contracts {
+    }    for contract in &contracts {
         let contract_key = CandidateContractKey {
             build_id: contract.build_id.clone(),
             file_ir_identity: contract.file_ir_ref.file_ir_identity.clone(),
@@ -1192,7 +1236,7 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
             }
         }
     }
-    Ok(())
+    Ok(bindings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1307,6 +1351,16 @@ impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {
     ) -> Option<OperationTargetRef> {
         self.operation_targets
             .get(&(activation_id.clone(), operation.clone()))
+            .cloned()
+    }
+
+    fn db_contract_binding(
+        &self,
+        contract_target: &skiff_runtime_linked_program::DbObjectTargetId,
+    ) -> Option<Arc<skiff_runtime_eval::DbContractBinding>> {
+        self.db_contract_bindings
+            .iter()
+            .find(|binding| binding.contract == *contract_target)
             .cloned()
     }
 }

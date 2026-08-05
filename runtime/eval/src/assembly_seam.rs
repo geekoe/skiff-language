@@ -8,8 +8,8 @@ use skiff_runtime_activation::{
     ActivationContext, ActivationContextError, ActivationId, RequestActivationContext,
 };
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, AssemblyExecutionImage, ConstAddr, ExecutableAddr,
-    LinkedPackageCallableTarget, LinkedPackageDirectCall,
+    ActivationRelativeServiceCall, AssemblyExecutionImage, ConstAddr, DbObjectTargetId,
+    ExecutableAddr, LinkedPackageCallableTarget, LinkedPackageDirectCall,
 };
 use skiff_runtime_linked_type_plan::{
     RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget,
@@ -23,6 +23,28 @@ use crate::assembly_execution::RuntimeAssemblyExecutionProjection;
 /// receive an artifact resolver or reconstruct admission facts.
 pub type AdmittedPackageSchemaRecords =
     Arc<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>>;
+
+/// One activation-time `db contract` to host `db object` binding.
+///
+/// Built by host admission, shared immutably with eval. `implementer` names the host collection
+/// target every contract db target resolves to; `contract_view` marks the engine side of the
+/// shared collection so the runtime can reject whole-document writes.
+#[derive(Debug, Clone)]
+pub struct DbContractBinding {
+    pub contract: DbObjectTargetId,
+    pub implementer: DbObjectTargetId,
+    pub contract_view: bool,
+}
+
+impl DbContractBinding {
+    pub fn new(contract: DbObjectTargetId, implementer: DbObjectTargetId) -> Self {
+        Self {
+            contract,
+            implementer,
+            contract_view: true,
+        }
+    }
+}
 
 /// Host-owned lookup surface needed after an activation-relative service instruction is decoded.
 ///
@@ -47,6 +69,14 @@ pub trait RuntimeAssemblyEvalResolver: Send + Sync {
         activation_id: &ActivationId,
         operation: &ContractOperationId,
     ) -> Option<OperationTargetRef>;
+
+    /// Resolves the host implementation binding for one `db contract` target. Returns `None`
+    /// for plain `db object` targets. Legacy eval resolvers (no assembly contracts) keep the
+    /// default `None`.
+    fn db_contract_binding(&self, contract_target: &DbObjectTargetId) -> Option<Arc<DbContractBinding>> {
+        let _ = contract_target;
+        None
+    }
 }
 
 /// Runtime-ready eval input pinned to one immutable execution image and one request generation.
@@ -85,8 +115,10 @@ impl RuntimeAssemblyEvalTarget {
         resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
     ) -> Result<Self, RuntimeAssemblyEvalSeamError> {
         Self::validate_request_activation(&execution_image, &request_activation, &resolver)?;
-        let execution_projection =
-            RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&execution_image));
+        let execution_projection = RuntimeAssemblyExecutionProjection::from_image(
+            Arc::clone(&execution_image),
+        )
+        .with_db_contract_binding_source(Arc::clone(&resolver));
         Ok(Self {
             execution_image,
             execution_projection,

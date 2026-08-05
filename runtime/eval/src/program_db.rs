@@ -428,9 +428,14 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap.heap_mut())?);
         let claim_store = store.clone();
-        let type_name = super::db_eval::db_capability_target(&claim.target)
-            .lookup_key()
-            .to_string();
+        let claim_projection =
+            RuntimeExecutionProjection::for_context(self, &program_context)?;
+        let type_name = super::db_eval::db_capability_target(
+            &claim.target,
+            claim_projection.db_contract_binding(&claim.target.target_id),
+        )
+        .lookup_key()
+        .to_string();
         let slot = claim.slot.clone();
         let Some(handle) = wait::await_operation(&program_context, heap, async move {
             claim_store.claim_lease(&type_name, key, &slot).await
@@ -536,9 +541,13 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
         let read_store = store.clone();
-        let type_name = super::db_eval::db_capability_target(&read.target)
-            .lookup_key()
-            .to_string();
+        let read_projection = RuntimeExecutionProjection::for_context(self, &program_context)?;
+        let type_name = super::db_eval::db_capability_target(
+            &read.target,
+            read_projection.db_contract_binding(&read.target.target_id),
+        )
+        .lookup_key()
+        .to_string();
         let slot = read.slot.clone();
         match wait::await_operation(&program_context, heap, async move {
             read_store.read_lease(&type_name, key, &slot).await

@@ -10,8 +10,8 @@ use skiff_runtime_linked_program::{
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 
 use crate::{
-    error::RuntimeError, invocation::EvalProgramProjection,
-    program_execution::ProgramExecutionContext, Interpreter,
+    assembly_seam::RuntimeAssemblyEvalResolver, error::RuntimeError, invocation::EvalProgramProjection,
+    program_execution::ProgramExecutionContext, DbContractBinding, Interpreter,
 };
 
 /// Borrowed execution view over the canonical assembly image.
@@ -22,6 +22,7 @@ use crate::{
 pub(crate) struct RuntimeAssemblyExecutionProjection {
     image: Arc<AssemblyExecutionImage>,
     storage: Arc<AssemblyProjectionStorage>,
+    db_contract_binding_source: Option<Arc<dyn RuntimeAssemblyEvalResolver>>,
 }
 
 impl RuntimeAssemblyExecutionProjection {
@@ -36,7 +37,29 @@ impl RuntimeAssemblyExecutionProjection {
                 service_resources: PublicationResourceTable::default(),
                 link_overlay,
             }),
+            db_contract_binding_source: None,
         }
+    }
+
+    /// Attaches the host assembly resolver as the source of activation-time
+    /// `db contract` bindings. Production eval targets always carry one; test
+    /// projections built from bare images keep `None` and fail closed when a
+    /// contract target is resolved without a binding.
+    pub(crate) fn with_db_contract_binding_source(
+        mut self,
+        resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
+    ) -> Self {
+        self.db_contract_binding_source = Some(resolver);
+        self
+    }
+
+    pub(crate) fn db_contract_binding(
+        &self,
+        contract_target: &DbObjectTargetId,
+    ) -> Option<Arc<DbContractBinding>> {
+        self.db_contract_binding_source
+            .as_ref()?
+            .db_contract_binding(contract_target)
     }
 
     pub(crate) fn image(&self) -> &AssemblyExecutionImage {
@@ -86,6 +109,11 @@ impl RuntimeAssemblyExecutionProjection {
         &self,
         target: &DbObjectTargetId,
     ) -> Result<ResolvedRuntimeDbTarget<'_>, RuntimeError> {
+        let target = match self.db_contract_binding(target) {
+            Some(binding) => std::borrow::Cow::Owned(binding.implementer.clone()),
+            None => std::borrow::Cow::Borrowed(target),
+        };
+        let target = target.as_ref();
         let shared = self
             .image
             .shared_packages()
@@ -148,7 +176,15 @@ impl RuntimeAssemblyExecutionProjection {
                 "DB target File IR identity was substituted".to_string(),
             ));
         }
-        resolve_db_declaration(file, addr, target.type_index)
+        let resolved = resolve_db_declaration(file, addr, target.type_index)?;
+        if resolved.declaration.kind
+            == skiff_runtime_linked_program::linked::DbObjectKindIr::Contract
+        {
+            return Err(RuntimeError::InvalidArtifact(
+                "db contract target has no host implementation binding".to_string(),
+            ));
+        }
+        Ok(resolved)
     }
 
     pub(crate) fn resolve_file(
@@ -313,6 +349,16 @@ impl<'a> RuntimeExecutionProjection<'a> {
         match self {
             Self::Legacy(_) => None,
             Self::Assembly(projection) => Some(projection),
+        }
+    }
+
+    pub(crate) fn db_contract_binding(
+        &self,
+        target: &DbObjectTargetId,
+    ) -> Option<Arc<DbContractBinding>> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Assembly(projection) => projection.db_contract_binding(target),
         }
     }
 
