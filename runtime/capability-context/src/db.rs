@@ -367,7 +367,10 @@ impl DbCapabilityTarget {
     /// Marks a capability target as the engine side (contract view) of a host-owned
     /// shared collection. The lookup key is computed over the already-remapped host
     /// target id, so the store resolves it to the same key as the host declaration.
-    pub fn contract_view(target_id: DbCapabilityTargetId, type_name: impl Into<String>) -> Self {
+    pub fn with_contract_view(
+        target_id: DbCapabilityTargetId,
+        type_name: impl Into<String>,
+    ) -> Self {
         let mut target = Self::new(target_id, type_name);
         target.contract_view = true;
         target

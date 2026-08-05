@@ -21,6 +21,7 @@ pub(super) struct StreamHandleScope {
     allow_current_node: bool,
     allow_runtime_owned_record_fields: bool,
     allow_internal_task_ref: bool,
+    ignore_extra_record_fields: bool,
 }
 
 impl StreamHandleScope {
@@ -29,6 +30,7 @@ impl StreamHandleScope {
             allow_current_node: true,
             allow_runtime_owned_record_fields: false,
             allow_internal_task_ref: false,
+            ignore_extra_record_fields: false,
         }
     }
 
@@ -37,6 +39,7 @@ impl StreamHandleScope {
             allow_current_node: true,
             allow_runtime_owned_record_fields: true,
             allow_internal_task_ref: false,
+            ignore_extra_record_fields: false,
         }
     }
 
@@ -45,7 +48,20 @@ impl StreamHandleScope {
             allow_current_node: false,
             allow_runtime_owned_record_fields: false,
             allow_internal_task_ref: false,
+            ignore_extra_record_fields: false,
         }
+    }
+
+    /// Marks this traversal as a DB contract view decode: record fields the
+    /// engine view does not declare are ignored instead of rejected, because
+    /// the host writes the full document shape into the shared collection.
+    pub(super) fn with_ignore_extra_record_fields(mut self) -> Self {
+        self.ignore_extra_record_fields = true;
+        self
+    }
+
+    pub(super) fn ignores_extra_record_fields(self) -> bool {
+        self.ignore_extra_record_fields
     }
 
     /// Marks this traversal as the owner-internal DB lane, where opaque
@@ -72,6 +88,7 @@ impl StreamHandleScope {
         } else {
             Self::nested().with_internal_task_ref_if(self.allow_internal_task_ref)
         }
+        .with_ignore_extra_fields_if(self.ignore_extra_record_fields)
     }
 }
 
@@ -79,6 +96,14 @@ impl StreamHandleScope {
     fn with_internal_task_ref_if(self, enabled: bool) -> Self {
         if enabled {
             self.with_internal_task_ref()
+        } else {
+            self
+        }
+    }
+
+    pub(super) fn with_ignore_extra_fields_if(self, enabled: bool) -> Self {
+        if enabled {
+            self.with_ignore_extra_record_fields()
         } else {
             self
         }

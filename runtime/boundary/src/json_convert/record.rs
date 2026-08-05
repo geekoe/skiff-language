@@ -13,6 +13,7 @@ use super::keys::runtime_field_name_from_map_key;
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RecordProjectionSource {
     Wire,
+    WireIgnoreExtra,
     Runtime,
 }
 
@@ -20,12 +21,12 @@ impl RecordProjectionSource {
     fn should_reject_extra_key(self, key: &str) -> bool {
         let _ = self;
         let _ = key;
-        true
+        !matches!(self, Self::WireIgnoreExtra)
     }
 
     fn missing_required_error(self, field_name: &str) -> RuntimeError {
         let prefix = match self {
-            Self::Wire => "record field",
+            Self::Wire | Self::WireIgnoreExtra => "record field",
             Self::Runtime => "runtime record field",
         };
         RuntimeError::Decode(format!("{prefix} {field_name} is required"))
@@ -52,12 +53,14 @@ impl<'a> RuntimeRecordShape<'a> {
     pub(super) fn project_json_object<'source>(
         &self,
         object: &'source Map<String, Value>,
+        ignore_extra_fields: bool,
     ) -> Result<RecordProjection<'a, 'source, Value>> {
-        self.project(
-            object.keys(),
-            |field_name| object.get(field_name),
-            RecordProjectionSource::Wire,
-        )
+        let source = if ignore_extra_fields {
+            RecordProjectionSource::WireIgnoreExtra
+        } else {
+            RecordProjectionSource::Wire
+        };
+        self.project(object.keys(), |field_name| object.get(field_name), source)
     }
 
     pub(super) fn project_runtime_fields<'source>(

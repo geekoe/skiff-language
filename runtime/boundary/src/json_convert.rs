@@ -9,10 +9,10 @@ mod wire_decode;
 
 use serde_json::Value;
 
+use crate::plan::BoundaryUse;
 #[cfg(any(test, feature = "test-support"))]
 use crate::type_descriptor::RuntimeTypePlanDescriptorExt;
-#[cfg(any(test, feature = "test-support"))]
-use crate::{contract::RuntimeBoundaryContract, json::RuntimeBoundaryCodec, plan::BoundaryUse};
+use crate::{contract::RuntimeBoundaryContract, json::RuntimeBoundaryCodec};
 use crate::{
     error::{Result, RuntimeError},
     request_heap::RequestHeap,
@@ -73,6 +73,7 @@ pub fn decode_wire_plan_impl(
         heap,
         stream_policy,
         InternalHandlePolicy::Refuse,
+        BoundaryUse::TypedJson,
     )
 }
 
@@ -82,11 +83,13 @@ pub fn decode_wire_plan_impl_with_handles(
     heap: &mut RequestHeap,
     stream_policy: BoundaryStreamHandlePolicy,
     handle_policy: InternalHandlePolicy,
+    use_case: BoundaryUse,
 ) -> Result<RuntimeValue> {
     let scope = match handle_policy {
         InternalHandlePolicy::Refuse => stream_policy.scope(),
         InternalHandlePolicy::AllowTaskRef => stream_policy.scope().with_internal_task_ref(),
-    };
+    }
+    .with_ignore_extra_fields_if(use_case == BoundaryUse::DbContractViewDecode);
     wire_decode::from_wire_inner_with_stream_scope(json, plan, heap, scope)
 }
 
@@ -295,7 +298,14 @@ pub fn decode_json_text_runtime_value_plan_impl_with_handles(
             format!("std.json.decode decode failed: {error}"),
         )
     })?;
-    decode_wire_plan_impl_with_handles(&json, expected_type, heap, stream_policy, handle_policy)
+    decode_wire_plan_impl_with_handles(
+        &json,
+        expected_type,
+        heap,
+        stream_policy,
+        handle_policy,
+        BoundaryUse::TypedJson,
+    )
 }
 
 fn is_direct_json_runtime_plan(plan: &RuntimeTypePlan) -> bool {

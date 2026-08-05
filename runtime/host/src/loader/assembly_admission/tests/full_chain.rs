@@ -2241,7 +2241,7 @@ fn build_contract_implementation_fixture(
             })
             .chain(std::iter::once((
                 provider_package_ref.clone(),
-                provider_file_ref,
+                provider_file_ref.clone(),
                 Arc::new(provider_file),
             )))
             .collect(),
@@ -2252,7 +2252,10 @@ fn build_contract_implementation_fixture(
         resolver,
         consumer_deployment_refs,
         consumer_package_refs,
-        consumer_file_refs,
+        consumer_file_refs: consumer_files
+            .iter()
+            .map(|(_, file_ref, _)| file_ref.clone())
+            .collect(),
         provider_package_ref,
         provider_file_ref,
     }
@@ -2361,13 +2364,11 @@ async fn db_contract_binding_table_maps_contract_target_to_host_implementation()
             db_contract_declaration(0, "AgentThread", Vec::new()),
         )],
     );
-    let (_, active) = admit_contract_implementation_fixture(
-        &fixture,
-        "runtime-contract-binding-table",
-    )
-    .await
-    .expect("covered contract implementation must admit");
-    let contexts = active.context_set();
+    let (_, active) =
+        admit_contract_implementation_fixture(&fixture, "runtime-contract-binding-table")
+            .await
+            .expect("covered contract implementation must admit");
+    let contexts = active.contexts();
     let contract_target = DbObjectTargetId {
         package_artifact_ref: fixture.provider_package_ref.clone(),
         file_ir_ref: fixture.provider_file_ref.clone(),

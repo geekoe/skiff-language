@@ -861,7 +861,7 @@ pub(super) fn db_capability_target(
         ),
     };
     if contract_view {
-        DbCapabilityTarget::contract_view(target_id, target.type_name.clone())
+        DbCapabilityTarget::with_contract_view(target_id, target.type_name.clone())
     } else {
         DbCapabilityTarget::new(target_id, target.type_name.clone())
     }

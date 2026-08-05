@@ -238,7 +238,8 @@ fn from_record_wire(
         .ok_or_else(|| RuntimeError::Decode("expected record object".to_string()))?;
     reject_reserved_legacy_json_object_keys(object)?;
     let shape = RuntimeRecordShape::for_plan(fields, expected_type.boundary_record_kind());
-    let projection = shape.project_json_object(object)?;
+    let projection =
+        shape.project_json_object(object, stream_scope.ignores_extra_record_fields())?;
     let mut runtime_fields = BTreeMap::new();
     for projected in projection.into_fields() {
         let value = match projected.value {

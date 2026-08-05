@@ -8,9 +8,8 @@ use std::{
 use skiff_artifact_model::{
     BlockIr, DbDeclarationIr as ArtifactDbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr,
     DbObjectKeyIr as ArtifactDbObjectKeyIr, DbObjectKindIr as ArtifactDbObjectKindIr,
-    ExecutableBody, ExecutableIr, ExecutableKind, ExprRefIr, ExprIr, LiteralIr, SlotLayout,
-    StmtIr, StmtRefIr, TypeDeclIr, TypeDeclarationIr as ArtifactTypeDeclarationIr,
-    TypeDescriptorIr, TypeRefIr,
+    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, LiteralIr, SlotLayout, StmtIr, StmtRefIr,
+    TypeDeclIr, TypeDeclarationIr as ArtifactTypeDeclarationIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityContextApi, DbCapabilityFuture, DbCapabilityLeaseHandle,
@@ -22,7 +21,7 @@ use skiff_runtime_capability_context::{
 };
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, DbBodyIr, DbChangeIr, DbChangeOpIr, DbObjectTargetId, DbOpKindIr,
-    DbOperationIr, DbSelectorIr, DbTargetIr, ExecutableAddr, FieldPathIr, FileAddr,
+    DbOperationIr, DbSelectorIr, DbTargetIr, ExecutableAddr, ExprRefIr, FieldPathIr, FileAddr,
     LinkedExecutable, LinkedFileUnit, LinkedTypeRef, TypeAddr, UnitAddr,
 };
 use skiff_runtime_model::{
@@ -105,7 +104,7 @@ fn engine_file() -> FileIrUnit {
                 statements: vec![StmtRefIr { statement: 0 }],
             }],
             statements: vec![StmtIr::Return {
-                value: Some(ExprRefIr { expression: 1 }),
+                value: Some(skiff_artifact_model::ExprRefIr { expression: 1 }),
             }],
             expressions: vec![
                 ExprIr::Literal {
@@ -215,20 +214,16 @@ impl ContractViewFixture {
     }
 
     fn into_eval_target(self, binding: Option<Arc<DbContractBinding>>) -> ContractViewExecution {
-        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(
-            TestContractBindingResolver {
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> =
+            Arc::new(TestContractBindingResolver {
                 activation: Arc::clone(&self.activation),
                 binding,
-            },
-        );
+            });
         let request = RequestActivationContext::begin(Arc::clone(&self.activation))
             .expect("contract view request generation should begin");
-        let eval_target = RuntimeAssemblyEvalTarget::new(
-            Arc::clone(&self.image),
-            request,
-            resolver,
-        )
-        .expect("contract view image and activation should form an eval target");
+        let eval_target =
+            RuntimeAssemblyEvalTarget::new(Arc::clone(&self.image), request, resolver)
+                .expect("contract view image and activation should form an eval target");
         contract_view_execution(self, eval_target)
     }
 }
@@ -291,15 +286,15 @@ fn build_contract_view_fixture() -> ContractViewFixture {
     };
     let activation = activation_context(
         assembly.assembly_identity,
-        engine_package_ref.package_build_id,
+        engine_package_ref.package_build_id.clone(),
     );
     ContractViewFixture {
         image,
         activation,
         caller_addr,
         contract_target: DbObjectTargetId {
-            package_artifact_ref: engine_package_ref,
-            file_ir_ref: engine_file_ref,
+            package_artifact_ref: engine_package_ref.clone(),
+            file_ir_ref: engine_file_ref.clone(),
             type_index: 0,
         },
         host_target: DbObjectTargetId {
@@ -378,12 +373,12 @@ impl ContractViewDbStore {
 impl DbCapabilityStoreApi for ContractViewDbStore {
     fn begin_transaction(&self) -> DbCapabilityFuture<'_, ()> {
         self.state.lock().unwrap().transaction_events.push("begin");
-        Box::pin(async {})
+        Box::pin(async { Ok(()) })
     }
 
     fn commit_transaction(&self) -> DbCapabilityFuture<'_, ()> {
         self.state.lock().unwrap().transaction_events.push("commit");
-        Box::pin(async {})
+        Box::pin(async { Ok(()) })
     }
 
     fn abort_transaction(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
@@ -416,7 +411,11 @@ impl DbCapabilityStoreApi for ContractViewDbStore {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
             let mut state = state.lock().unwrap();
-            if let Some(key) = value.as_value().get("id").and_then(serde_json::Value::as_str) {
+            if let Some(key) = value
+                .as_value()
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+            {
                 state.rows.insert(key.to_string(), value.clone());
             }
             Ok(value)
@@ -434,12 +433,7 @@ impl DbCapabilityStoreApi for ContractViewDbStore {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
             let state = state.lock().unwrap();
-            Ok(state
-                .rows
-                .values()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| DbDocument::new(serde_json::json!({}))))
+            Ok(state.rows.values().next().cloned())
         })
     }
 
@@ -625,10 +619,7 @@ impl DbCapabilityStoreApi for ContractViewDbStore {
         self.unexpected("renew_lease")
     }
 
-    fn release_lease<'a>(
-        &'a self,
-        _hold: &'a DbCapabilityLeaseHold,
-    ) -> DbCapabilityFuture<'a, ()> {
+    fn release_lease<'a>(&'a self, _hold: &'a DbCapabilityLeaseHold) -> DbCapabilityFuture<'a, ()> {
         self.unexpected("release_lease")
     }
 
@@ -703,11 +694,13 @@ fn contract_view_execution(
         .resolve_file(&UnitAddr::Package(0), &FileAddr::LoadedFileIndex(0))
         .expect("engine file should resolve")
         .clone();
-    let executable = projection
-        .resolve_executable(&addr)
-        .expect("engine executable should resolve")
-        .executable
-        .clone();
+    let executable = Arc::new(
+        projection
+            .resolve_executable(&addr)
+            .expect("engine executable should resolve")
+            .executable
+            .clone(),
+    );
     let store = DbCapabilityStore::new(ContractViewDbStore {
         state: Arc::clone(&fixture.store_state),
     });
@@ -844,12 +837,8 @@ async fn contract_view_reads_resolve_to_host_collection_and_ignore_undeclared_fi
             "hostOnly": "host-wrote-this",
         })),
     );
-    let operation = contract_target_operation(
-        &execution.contract_target,
-        DbOpKindIr::Optional,
-        None,
-        true,
-    );
+    let operation =
+        contract_target_operation(&execution.contract_target, DbOpKindIr::Optional, None, true);
     let (value, heap) = eval_operation(&mut execution, &operation)
         .await
         .expect("contract view find must resolve to the host collection");
@@ -907,7 +896,7 @@ async fn contract_view_field_scoped_update_only_touches_declared_engine_fields()
     );
     assert_eq!(state.changes.len(), 1);
     assert_eq!(
-        state.changes[0].ops[0].field(),
+        state.changes[0].ops()[0].field(),
         "status",
         "the engine change must only name contract-declared fields"
     );
@@ -935,12 +924,8 @@ async fn contract_view_engine_initialization_runs_inside_host_transaction_scope(
         )
         .await
         .expect("host insert must succeed");
-    let operation = contract_target_operation(
-        &execution.contract_target,
-        DbOpKindIr::Optional,
-        None,
-        true,
-    );
+    let operation =
+        contract_target_operation(&execution.contract_target, DbOpKindIr::Optional, None, true);
     eval_operation(&mut execution, &operation)
         .await
         .expect("engine initialization must run inside the host transaction");
@@ -988,12 +973,8 @@ async fn contract_view_insert_replace_and_upsert_fail_closed() {
 #[tokio::test]
 async fn unbound_contract_target_fails_closed_at_resolution() {
     let mut execution = unbound_execution();
-    let operation = contract_target_operation(
-        &execution.contract_target,
-        DbOpKindIr::Optional,
-        None,
-        true,
-    );
+    let operation =
+        contract_target_operation(&execution.contract_target, DbOpKindIr::Optional, None, true);
     let error = eval_operation(&mut execution, &operation)
         .await
         .expect_err("a contract target without a host binding must fail closed");

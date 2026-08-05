@@ -12,6 +12,9 @@ pub enum BoundaryUse {
     #[allow(dead_code)]
     ConfigValue,
     DbResultDecode,
+    /// Engine-side decode of a host-written shared collection document: the
+    /// engine view ignores fields it does not declare (see db.md §1.3).
+    DbContractViewDecode,
     #[allow(dead_code)]
     DbWriteProjection,
 }

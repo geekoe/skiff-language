@@ -84,6 +84,7 @@ impl BoundaryUse {
             | Self::NativeArg
             | Self::ConfigValue
             | Self::DbResultDecode
+            | Self::DbContractViewDecode
             | Self::DbWriteProjection => BoundaryPolicy {
                 stream_handles: BoundaryStreamHandlePolicy::ExternalBoundary,
                 runtime_owned_handle_fields: false,
@@ -181,6 +182,7 @@ impl<'a> RuntimeBoundaryCodec<'a> {
             heap,
             self.policy().external_stream_policy(),
             self.handle_policy(),
+            self.use_case,
         )
         .map_err(|error| self.add_context(error))
     }
@@ -199,6 +201,7 @@ impl<'a> RuntimeBoundaryCodec<'a> {
             heap,
             stream_policy,
             self.handle_policy(),
+            self.use_case,
         )
         .map_err(|error| self.add_context(error))
     }
@@ -314,9 +317,9 @@ impl<'a> RuntimeBoundaryCodec<'a> {
     /// other JSON boundary refuses them.
     fn handle_policy(&self) -> json_convert::InternalHandlePolicy {
         match self.use_case {
-            BoundaryUse::DbResultDecode | BoundaryUse::DbWriteProjection => {
-                json_convert::InternalHandlePolicy::AllowTaskRef
-            }
+            BoundaryUse::DbResultDecode
+            | BoundaryUse::DbContractViewDecode
+            | BoundaryUse::DbWriteProjection => json_convert::InternalHandlePolicy::AllowTaskRef,
             _ => json_convert::InternalHandlePolicy::Refuse,
         }
     }
