@@ -186,6 +186,8 @@ pub struct TypeDecl {
     pub alias: Option<TypeRef>,
     pub implements: Vec<TypeRef>,
     pub fields: Vec<FieldDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spreads: Vec<TypeRef>,
     pub span: SourceSpan,
 }
 
