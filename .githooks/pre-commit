@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# pre-commit hook: run clippy on Rust crates touched by staged changes.
+#
+# 只阻塞 deny 级 lint（workspace.lints.clippy 中的 disallowed_methods、
+# too_many_lines、tests_outside_test_module 等）；advisory warnings 不阻塞
+# 提交（与仓库 clippy 约定一致：其他 warning 仍为 advisory）。
+#
+# 启用方式（仓库级，每份 checkout 各执行一次）：
+#   git config core.hooksPath .githooks
+set -u
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+
+changed_rs="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')"
+changed_meta="$(git diff --cached --name-only --diff-filter=ACM -- 'Cargo.toml' '*/Cargo.toml' '.clippy.toml')"
+
+if [ -z "$changed_rs" ] && [ -z "$changed_meta" ]; then
+  exit 0
+fi
+
+# 从文件路径向上找最近的 Cargo.toml，输出 package name（workspace 根无 name）。
+package_for() {
+  local dir
+  dir="$(dirname "$1")"
+  while [ "$dir" != "/" ]; do
+    if [ -f "$dir/Cargo.toml" ]; then
+      grep -m1 '^name[[:space:]]*=' "$dir/Cargo.toml" | sed -E 's/^name[[:space:]]*=[[:space:]]*"([^"]*)"/\1/'
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+needs_workspace=0
+if [ -n "$changed_meta" ]; then
+  needs_workspace=1
+fi
+
+packages=""
+while IFS= read -r file; do
+  pkg="$(package_for "$file")"
+  if [ -n "$pkg" ]; then
+    packages="$packages
+$pkg"
+  fi
+done <<< "$changed_rs"
+packages="$(printf '%s\n' "$packages" | sed '/^$/d' | sort -u)"
+
+if [ "$needs_workspace" = "1" ]; then
+  echo "[pre-commit] Cargo.toml/.clippy.toml changed; running: cargo clippy --workspace"
+  cargo clippy --workspace
+  status=$?
+elif [ -n "$packages" ]; then
+  args=()
+  while IFS= read -r pkg; do
+    args+=("-p" "$pkg")
+  done <<< "$packages"
+  echo "[pre-commit] clippy ${args[*]}"
+  cargo clippy "${args[@]}"
+  status=$?
+else
+  exit 0
+fi
+
+if [ "$status" -ne 0 ]; then
+  echo "[pre-commit] clippy failed (deny-level lint); fix before committing"
+  exit 1
+fi
+exit 0

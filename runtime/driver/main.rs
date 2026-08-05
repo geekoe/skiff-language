@@ -33,6 +33,8 @@ fn main() -> anyhow::Result<()> {
     // far more than the OS default main-thread stack before the program-call depth guard is
     // reached (debug evaluator frames are ~1 MiB per layer), so the driver must run on a
     // thread with the same stack budget as tokio workers instead of the process main thread.
+    // `block_on` here is the process entry point on a dedicated driver thread; it must never
+    // be used again inside `run` (nested block_on panics).
     let driver = std::thread::Builder::new()
         .name("skiff-runtime-driver".to_string())
         .stack_size(RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES)

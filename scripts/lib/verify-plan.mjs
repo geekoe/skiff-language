@@ -276,6 +276,15 @@ function taskBuilders({
         '--',
         '--check',
       ]),
+      // 嵌套阻塞防护门禁：workspace lints 的 deny 级 lint（disallowed_methods
+      // 禁 async 上下文 Handle::block_on、too_many_lines、tests_outside_test_module）
+      // 在任意 clippy 运行中都失败；advisory warnings 保持不阻塞。只检查
+      // lib+bin（--all-targets 会引入存量测试代码的 tests_outside_test_module
+      // 债务，作为后续清理项，不阻塞门禁）。
+      task(root, 'rust-quality:clippy', 'rust-quality', 'cargo', [
+        'clippy',
+        '--workspace',
+      ]),
       ...await checkerTasks(root, 'rust-quality'),
     ],
     'router-rust-process-smoke': async () => [

@@ -45,3 +45,8 @@ members = [
 [workspace.lints.clippy]
 tests_outside_test_module = "deny"
 too_many_lines = "deny"
+# 嵌套阻塞防护：tokio 拒绝在 runtime 线程上再次 block_on（"Cannot block the
+# current thread from within a runtime" panic）。只禁 Handle::block_on（async
+# 上下文内嵌套阻塞的典型写法）；Runtime::block_on 保留给进程入口与
+# #[tokio::test] 宏展开。禁止路径清单在 .clippy.toml 的 disallowed-methods。
+disallowed_methods = "deny"

@@ -1,0 +1,14 @@
+# 嵌套阻塞防护路径清单（与根 Cargo.toml workspace.lints 的
+# disallowed_methods = "deny" 配套）。
+#
+# 只禁 Handle::block_on：tokio 拒绝在 runtime 线程上再次 block_on
+# （"Cannot block the current thread from within a runtime" panic，
+# 2026-08 runtime driver panic 根因）。Handle::block_on 是 async 上下文内
+# 嵌套阻塞的典型写法；Runtime::block_on 保留给进程入口（driver main、
+# migration CLI）与 #[tokio::test] 宏展开使用，不在此禁止。
+disallowed-methods = [
+  "tokio::runtime::handle::Handle::block_on",
+]
+
+# 与 AGENTS.md 记录的 workspace 约定一致（阈值 534，deny）。
+too-many-lines-threshold = 534
