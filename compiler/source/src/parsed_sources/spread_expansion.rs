@@ -38,7 +38,6 @@ use crate::{
         type_expr::TypeExpr,
         type_syntax::{generic_parts, split_top_level},
     },
-    source_graph::CompilerSourceFile,
 };
 
 /// Expands every record `spread` entry in the parsed source set.
@@ -47,10 +46,10 @@ use crate::{
 /// when provided (test harnesses) or through dependency package artifacts
 /// (driver pipeline). Sources without spreads are returned untouched so the
 /// AST identity (Arc sharing with the caller's sources) is preserved.
-pub fn expand_record_spreads<'a, 'facts>(
+pub fn expand_record_spreads<'a>(
     parsed_sources: Vec<ParsedCompilerSource>,
     package_dependencies: &'a [PackageDependency],
-    package_facts: Option<&'facts [SourceCompilePackageFacts<'a>]>,
+    package_facts: Option<&[SourceCompilePackageFacts<'a>]>,
     package_artifacts: Option<&'a [PackageArtifact]>,
 ) -> Result<Vec<ParsedCompilerSource>, PublicationError> {
     if !parsed_sources
@@ -112,7 +111,6 @@ struct SourceSetIndex<'a> {
 }
 
 struct ModuleIndex<'a> {
-    source: &'a CompilerSourceFile,
     /// All type-namespace declarations of the module (types, aliases,
     /// actors, interfaces), mirroring `local_type_names` used by the
     /// resolution model for field text qualification.
@@ -154,7 +152,6 @@ impl<'a> SourceSetIndex<'a> {
             modules.insert(
                 source.module_path.clone(),
                 ModuleIndex {
-                    source,
                     local_type_names,
                     types,
                     aliases,
@@ -316,7 +313,7 @@ impl<'a, 'facts> ExpansionContext<'a, 'facts> {
                     ))
                 })?;
                 match shape {
-                    LocalShape::Record(_) => SpreadSource::Local { module, name },
+                    LocalShape::Record => SpreadSource::Local { module, name },
                     LocalShape::Alias(alias) => {
                         seen.push(text.to_string());
                         let (source, args) =
@@ -419,7 +416,7 @@ impl<'a, 'facts> ExpansionContext<'a, 'facts> {
         let module = self.index.module(module_path)?;
         if let Some(ty) = module.types.get(name) {
             if ty.alias.is_none() {
-                return Some(LocalShape::Record(ty));
+                return Some(LocalShape::Record);
             }
             return Some(LocalShape::NonRecord);
         }
@@ -664,7 +661,6 @@ impl<'a, 'facts> ExpansionContext<'a, 'facts> {
                 .to_string();
             let info = ArtifactTypeInfo {
                 module_path: export.file.module_path.clone(),
-                type_index: export.type_index,
                 symbol_name: symbol_name.clone(),
                 descriptor: descriptor.clone(),
                 is_alias: *is_alias,
@@ -1014,14 +1010,14 @@ impl<'a, 'facts> ExpansionContext<'a, 'facts> {
                 }
             }
             TypeRefIr::DbObjectSymbol { .. } => {
-                return Err(self.failure(format!(
-                    "spread source field type references a db object symbol, which cannot be copied into a record field"
-                )));
+                return Err(self.failure(
+                    "spread source field type references a db object symbol, which cannot be copied into a record field",
+                ));
             }
             TypeRefIr::PackageSchema { .. } => {
-                return Err(self.failure(format!(
-                    "spread source field type references a package schema type, which cannot be copied into a record field"
-                )));
+                return Err(self.failure(
+                    "spread source field type references a package schema type, which cannot be copied into a record field",
+                ));
             }
             TypeRefIr::Function {
                 params,
@@ -1094,9 +1090,9 @@ impl<'a, 'facts> ExpansionContext<'a, 'facts> {
                 .artifact_type_text(alias, source_module, index, &TypeRefIr::PackageSymbol {
                     symbol: symbol.clone(),
                 }, type_params),
-            NominalTypeRefBaseIr::PackageSchema { .. } => Err(self.failure(format!(
-                "spread source field base references a package schema type, which cannot be copied into a record field"
-            ))),
+            NominalTypeRefBaseIr::PackageSchema { .. } => Err(self.failure(
+                "spread source field base references a package schema type, which cannot be copied into a record field",
+            )),
         }
     }
 
@@ -1351,7 +1347,7 @@ fn substitute_type_params_in_type_expr(
 }
 
 enum LocalShape<'index> {
-    Record(&'index TypeDecl),
+    Record,
     Alias(&'index AliasDecl),
     NonRecord,
 }
@@ -1376,7 +1372,6 @@ struct ArtifactTypeIndex {
 #[derive(Debug, Clone)]
 struct ArtifactTypeInfo {
     module_path: String,
-    type_index: u32,
     symbol_name: String,
     descriptor: TypeDescriptorIr,
     is_alias: bool,
