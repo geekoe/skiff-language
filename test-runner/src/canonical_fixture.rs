@@ -84,3 +84,10 @@ pub enum CanonicalFixtureError {
     #[error("invalid canonical fixture: {0}")]
     InvalidInput(String),
 }
+
+/// Shared guidance appended to user-facing `InvalidInput` diagnostics when a service test
+/// was invoked directly without the canonical service-test fixture.
+pub(crate) const SERVICE_TEST_FIXTURE_GUIDANCE: &str =
+    "service tests must run through the canonical service-test fixture \
+     (<internals>/scripts/run-service-tests-sharded.mjs --service <service-id> --file <path>), \
+     which publishes the service package and supplies exact dependency baselines";

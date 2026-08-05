@@ -32,7 +32,7 @@ use skiff_deployment::{
 use skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref;
 
 use crate::{
-    canonical_fixture::CanonicalFixtureError,
+    canonical_fixture::{CanonicalFixtureError, SERVICE_TEST_FIXTURE_GUIDANCE},
     canonical_package::CanonicalPackageProject,
     canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
     canonical_test_gateway::canonical_typed_null_gateway,
@@ -158,9 +158,10 @@ pub(crate) fn load_test_service_run_config(
         .as_ref()
         .map(|profile| profile.profile_name.as_str())
         .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "config snapshot projection requires service.yml kind: test".to_string(),
-            )
+            CanonicalFixtureError::InvalidInput(format!(
+                "config snapshot projection requires service.yml kind: test: {}",
+                SERVICE_TEST_FIXTURE_GUIDANCE
+            ))
         })?;
     let mut layers = load_service_config(&project.source_root, profile)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
@@ -667,8 +668,11 @@ fn test_service_selectors(
                 .collect::<Vec<_>>();
             let [contract] = matches.as_slice() else {
                 return Err(CanonicalFixtureError::InvalidInput(format!(
-                    "runtime service requirement {}@{} needs exactly one --base-assembly contract; found {}",
-                    expected.service_id, expected.contract_version, matches.len()
+                    "runtime service requirement {}@{} needs exactly one --base-assembly contract; found {}: \
+                     supply exact baseline identities as a pair \
+                     (--base-assembly <identity> --base-config-snapshot <identity>); {}",
+                    expected.service_id, expected.contract_version, matches.len(),
+                    SERVICE_TEST_FIXTURE_GUIDANCE
                 )));
             };
             Ok(ServiceSelectorBinding {

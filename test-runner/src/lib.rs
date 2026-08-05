@@ -169,10 +169,12 @@ pub fn run_skiff_tests_with_options(
         artifact_root,
     )?;
     if project.test_service_profile.is_none() {
-        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
-            "test execution requires service.yml kind: test; package test overlays are unsupported"
-                .to_string(),
-        )
+        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(format!(
+            "test execution requires service.yml kind: test; package test overlays are unsupported: \
+             a package overlay cannot execute as a service test because only the canonical fixture \
+             publishes the service package with its service.yml test profile; {}",
+            canonical_fixture::SERVICE_TEST_FIXTURE_GUIDANCE
+        ))
         .into());
     }
     let mut cases = Vec::new();
