@@ -718,7 +718,14 @@ async fn execute_db_command(
                 None => Ok(RuntimeValue::Null),
             }
         }
-        DbCommand::InsertOne(command) => match command.value {
+        DbCommand::InsertOne(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db insert on contract target `{}` is not allowed: the host owns the shared collection",
+                    command.target.type_name
+                )));
+            }
+            match command.value {
             DbCommandValue::Wire(value) => {
                 let wait_store = store.clone();
                 let type_name = command.target.lookup_key().to_string();
@@ -751,6 +758,12 @@ async fn execute_db_command(
             }
         },
         DbCommand::InsertMany(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db insert many on contract target `{}` is not allowed: the host owns the shared collection",
+                    command.target.type_name
+                )));
+            }
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
@@ -824,6 +837,12 @@ async fn execute_db_command(
             )
         }
         DbCommand::UpsertKey(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db upsert on contract target `{}` is not allowed: the engine contract view cannot replace the whole shared document",
+                    command.target.type_name
+                )));
+            }
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
@@ -839,7 +858,14 @@ async fn execute_db_command(
                 heap.heap_mut(),
             )
         }
-        DbCommand::ReplaceOne(command) => match command.value {
+        DbCommand::ReplaceOne(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db replace on contract target `{}` is not allowed: the engine contract view cannot replace the whole shared document",
+                    command.target.type_name
+                )));
+            }
+            match command.value {
             DbCommandValue::Wire(value) => {
                 let wait_store = store.clone();
                 let type_name = command.target.lookup_key().to_string();

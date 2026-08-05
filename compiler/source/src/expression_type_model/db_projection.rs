@@ -46,7 +46,7 @@ impl<'a> DbProjectionTypeResolver<'a> {
         )
     }
 
-    fn resolve_metadata(
+    pub(super) fn resolve_metadata(
         &self,
         target_name: &str,
     ) -> Result<Option<&PublicationDbMetadata>, String> {
@@ -61,7 +61,6 @@ impl<'a> DbProjectionTypeResolver<'a> {
             .resolve_bare(target_name)
             .map_err(|error| error.to_string())
     }
-
     fn projection_field_types(
         &self,
         metadata: &PublicationDbMetadata,

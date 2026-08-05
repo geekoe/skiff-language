@@ -1419,6 +1419,18 @@ impl<'a> FunctionLowerer<'a> {
         operation: &DbOperation,
         db: &DbMetadataIr,
     ) -> Result<()> {
+        if db.kind == skiff_artifact_model::DbObjectKindIr::Contract
+            && matches!(
+                operation.op,
+                DbOperationKind::Insert | DbOperationKind::Replace | DbOperationKind::Upsert
+            )
+        {
+            return Err(CompileError::Semantic(format!(
+                "db {} on contract target `{}` is not allowed: the engine contract view cannot insert or replace the whole shared document; the host owns the collection",
+                db_operation_kind_text(operation.op),
+                operation.target.name
+            )));
+        }
         match operation.op {
             DbOperationKind::Insert if !operation.many => {
                 let Some(body) = &operation.body else {
@@ -2296,6 +2308,15 @@ fn lower_db_op(op: DbOperationKind) -> DbOpKindIr {
         DbOperationKind::Delete => DbOpKindIr::Delete,
         DbOperationKind::Count => DbOpKindIr::Count,
         DbOperationKind::Exists => DbOpKindIr::Exists,
+    }
+}
+
+fn db_operation_kind_text(op: DbOperationKind) -> &'static str {
+    match op {
+        DbOperationKind::Insert => "insert",
+        DbOperationKind::Replace => "replace",
+        DbOperationKind::Upsert => "upsert",
+        _ => "operation",
     }
 }
 
