@@ -10,6 +10,8 @@ use skiff_artifact_model::*;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly, projection::project_service_deployment,
 };
+use skiff_runtime_eval::RuntimeAssemblyEvalResolver;
+use skiff_runtime_linked_program::DbObjectTargetId;
 
 use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for_assembly;
 
@@ -1807,7 +1809,9 @@ struct ContractImplementationFixture {
     resolver: CountingResolver,
     consumer_deployment_refs: Vec<ServiceDeploymentRef>,
     consumer_package_refs: Vec<PackageArtifactRef>,
+    consumer_file_refs: Vec<FileIrRef>,
     provider_package_ref: PackageArtifactRef,
+    provider_file_ref: FileIrRef,
 }
 
 fn db_index(name: &str, unique: bool, fields: &[(&str, i32)]) -> DbIndexIr {
@@ -2248,14 +2252,16 @@ fn build_contract_implementation_fixture(
         resolver,
         consumer_deployment_refs,
         consumer_package_refs,
+        consumer_file_refs,
         provider_package_ref,
+        provider_file_ref,
     }
 }
 
 async fn admit_contract_implementation_fixture(
     fixture: &ContractImplementationFixture,
     runtime_id: &str,
-) -> anyhow::Result<Arc<CapturingDbProvider>> {
+) -> anyhow::Result<(Arc<CapturingDbProvider>, Arc<ActiveAssembly>)> {
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
@@ -2264,7 +2270,7 @@ async fn admit_contract_implementation_fixture(
         runtime_id,
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
-    controller
+    let active = controller
         .recover_committed(
             "fixture",
             9,
@@ -2275,7 +2281,7 @@ async fn admit_contract_implementation_fixture(
             Some(&mapping_service_db()),
         )
         .await?;
-    Ok(Arc::new(provider))
+    Ok((Arc::new(provider), active))
 }
 
 async fn contract_implementation_admission_error(
@@ -2318,7 +2324,7 @@ async fn db_object_implements_contract_admits_with_required_index_coverage() {
         admit_contract_implementation_fixture(&fixture, "runtime-contract-implementation")
             .await
             .expect("covered contract implementation must admit");
-    let inputs = provider.inputs.lock().unwrap();
+    let inputs = provider.0.inputs.lock().unwrap();
     assert_eq!(inputs.len(), 1);
     let collections = inputs[0]
         .runtime_program_db
@@ -2334,6 +2340,63 @@ async fn db_object_implements_contract_admits_with_required_index_coverage() {
         collections,
         vec![("Thread".to_string(), Some("threads".to_string()),)],
         "db contract declarations must not become provider collections"
+    );
+}
+
+#[tokio::test]
+async fn db_contract_binding_table_maps_contract_target_to_host_implementation() {
+    let fixture = build_contract_implementation_fixture(
+        vec![vec![(
+            "Thread".to_string(),
+            db_object_declaration(
+                0,
+                "Thread",
+                "threads",
+                Some(contract_implements_ref("model.AgentThread")),
+                Vec::new(),
+            ),
+        )]],
+        vec![(
+            "AgentThread".to_string(),
+            db_contract_declaration(0, "AgentThread", Vec::new()),
+        )],
+    );
+    let (_, active) = admit_contract_implementation_fixture(
+        &fixture,
+        "runtime-contract-binding-table",
+    )
+    .await
+    .expect("covered contract implementation must admit");
+    let contexts = active.context_set();
+    let contract_target = DbObjectTargetId {
+        package_artifact_ref: fixture.provider_package_ref.clone(),
+        file_ir_ref: fixture.provider_file_ref.clone(),
+        type_index: 0,
+    };
+    let binding = contexts
+        .db_contract_binding(&contract_target)
+        .expect("the admitted contract must have exactly one host binding");
+    assert!(
+        binding.contract_view,
+        "the binding must mark the contract view for write restriction"
+    );
+    assert_eq!(
+        binding.implementer,
+        DbObjectTargetId {
+            package_artifact_ref: fixture.consumer_package_refs[0].clone(),
+            file_ir_ref: fixture.consumer_file_refs[0].clone(),
+            type_index: 0,
+        },
+        "the binding must resolve to the host implementation declaration"
+    );
+    let unbound = DbObjectTargetId {
+        package_artifact_ref: fixture.provider_package_ref.clone(),
+        file_ir_ref: fixture.provider_file_ref.clone(),
+        type_index: 99,
+    };
+    assert!(
+        contexts.db_contract_binding(&unbound).is_none(),
+        "an unknown contract target must have no binding"
     );
 }
 

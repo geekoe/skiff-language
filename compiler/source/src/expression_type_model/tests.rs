@@ -1930,3 +1930,74 @@ fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
     )
     .expect("null branch must join to a nullable result");
 }
+
+#[test]
+fn db_write_operations_on_contract_target_are_rejected_by_expression_typing() {
+    for (body, kind) in [
+        (
+            "const value = db insert AgentThread { id = \"a\" status = \"open\" }\n              return value",
+            "insert",
+        ),
+        (
+            "const value = db replace AgentThread(\"a\") { id = \"a\" status = \"open\" }\n              return value",
+            "replace",
+        ),
+        (
+            "const value = db upsert AgentThread(\"a\") { id = \"a\" status = \"open\" } { status = \"open\" }\n              return value",
+            "upsert",
+        ),
+    ] {
+        let error = expression_type_result(&format!(
+            r#"
+              type AgentThread {{
+                id: string,
+                status: string,
+              }}
+
+              db contract AgentThread {{
+                primary key(id)
+              }}
+
+              function engineWrite() -> AgentThread {{
+                {body}
+              }}
+            "#
+        ))
+        .expect_err("contract target whole-document writes must be rejected");
+        assert!(
+            error.message().contains("contract target"),
+            "{kind}: {}",
+            error.message()
+        );
+        assert!(
+            error.message().contains(kind),
+            "{kind}: {}",
+            error.message()
+        );
+    }
+}
+
+#[test]
+fn db_find_and_field_scoped_update_on_contract_target_are_typed() {
+    expression_type_result(
+        r#"
+              type AgentThread {
+                id: string,
+                status: string,
+              }
+
+              db contract AgentThread {
+                primary key(id)
+              }
+
+              function engineRead() -> AgentThread? {
+                return db optional AgentThread("a")
+              }
+
+              function engineUpdate(status: string) -> AgentThread? {
+                return db update AgentThread("a") { status = status }
+              }
+            "#,
+    )
+    .expect("contract target reads and field-scoped updates must type-check");
+}

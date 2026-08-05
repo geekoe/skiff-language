@@ -200,7 +200,9 @@ commit `a32b5e59`。改动：
     `resolve_db_declaration` L636-674）——契约 db target 经绑定表解析到宿主集合；
   - capability store：`exact_db_target_lookup_key`（`runtime/capability-context/src/db.rs:332`，
     key scheme 前缀 `skiff-db-object-target-v1`）——契约 target 必须解析到同一宿主 key，否则
-    store 查找错位；评估 lookup key scheme 是否需要新版本。
+    store 查找错位。**结论：key scheme 无需新版本**——契约→宿主 remap 发生在 key 计算之前
+    （`db_eval.rs` 的 `db_capability_target` 在构造 `DbCapabilityTarget`（key 在此计算）之前完成
+    remap），store 里只存在宿主 target 的 key，契约 target 永不直接入 key。
 - `db_eval.rs:326` 的 recoverable plans 路径同样走 `resolve_db_target`，自动继承绑定。
 
 ### 7.2 解码

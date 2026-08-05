@@ -1419,18 +1419,7 @@ impl<'a> FunctionLowerer<'a> {
         operation: &DbOperation,
         db: &DbMetadataIr,
     ) -> Result<()> {
-        if db.kind == skiff_artifact_model::DbObjectKindIr::Contract
-            && matches!(
-                operation.op,
-                DbOperationKind::Insert | DbOperationKind::Replace | DbOperationKind::Upsert
-            )
-        {
-            return Err(CompileError::Semantic(format!(
-                "db {} on contract target `{}` is not allowed: the engine contract view cannot insert or replace the whole shared document; the host owns the collection",
-                db_operation_kind_text(operation.op),
-                operation.target.name
-            )));
-        }
+        validate_contract_write_restriction(operation, db)?;
         match operation.op {
             DbOperationKind::Insert if !operation.many => {
                 let Some(body) = &operation.body else {
@@ -2320,6 +2309,24 @@ fn db_operation_kind_text(op: DbOperationKind) -> &'static str {
     }
 }
 
+/// Lowering backstop for the shared-collection write restriction: whole-document
+/// insert/replace/upsert on a `db contract` target must never reach the artifact.
+fn validate_contract_write_restriction(operation: &DbOperation, db: &DbMetadataIr) -> Result<()> {
+    if db.kind == skiff_artifact_model::DbObjectKindIr::Contract
+        && matches!(
+            operation.op,
+            DbOperationKind::Insert | DbOperationKind::Replace | DbOperationKind::Upsert
+        )
+    {
+        return Err(CompileError::Semantic(format!(
+            "db {} on contract target `{}` is not allowed: the engine contract view cannot insert or replace the whole shared document; the host owns the collection",
+            db_operation_kind_text(operation.op),
+            operation.target.name
+        )));
+    }
+    Ok(())
+}
+
 fn validate_db_lease_slot(db: &DbMetadataIr, slot: &str) -> Result<()> {
     if db.leases.contains_key(slot) {
         return Ok(());
@@ -2376,4 +2383,77 @@ fn db_metadata_lookup_key(type_text: &str) -> String {
     generic_parts(ty)
         .map(|parts| parts.root.trim().to_string())
         .unwrap_or_else(|| ty.to_string())
+}
+
+#[cfg(test)]
+mod contract_write_restriction_tests {
+    use super::*;
+
+    fn contract_metadata() -> DbMetadataIr {
+        DbMetadataIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "AgentThread".to_string(),
+            canonical_type_name: "internal.any_lowering.AgentThread".to_string(),
+            kind: skiff_artifact_model::DbObjectKindIr::Contract,
+            collection_name: None,
+            retention: None,
+            leases: BTreeMap::new(),
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: BTreeSet::from(["id".to_string(), "status".to_string()]),
+            field_types: BTreeMap::new(),
+            field_type_texts: BTreeMap::new(),
+            field_storage: BTreeMap::new(),
+        }
+    }
+
+    fn operation(op: DbOperationKind) -> DbOperation {
+        DbOperation {
+            op,
+            many: false,
+            target: TypeRef {
+                name: "AgentThread".to_string(),
+            },
+            selector: None,
+            query: None,
+            projection: None,
+            body: None,
+            insert_body: None,
+            change: None,
+        }
+    }
+
+    #[test]
+    fn whole_document_writes_on_contract_target_are_rejected_at_lowering() {
+        for op in [
+            DbOperationKind::Insert,
+            DbOperationKind::Replace,
+            DbOperationKind::Upsert,
+        ] {
+            let error = validate_contract_write_restriction(&operation(op), &contract_metadata())
+                .expect_err("contract target whole-document writes must fail lowering");
+            assert!(
+                error.to_string().contains("contract target"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_and_field_scoped_updates_on_contract_target_pass_lowering() {
+        for op in [
+            DbOperationKind::Find,
+            DbOperationKind::Optional,
+            DbOperationKind::Require,
+            DbOperationKind::Update,
+            DbOperationKind::Delete,
+            DbOperationKind::Count,
+            DbOperationKind::Exists,
+        ] {
+            validate_contract_write_restriction(&operation(op), &contract_metadata())
+                .expect("contract target reads and field-scoped writes must lower");
+        }
+    }
 }
