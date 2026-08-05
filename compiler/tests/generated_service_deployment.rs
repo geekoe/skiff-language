@@ -296,7 +296,7 @@ db object PackageSecret {
                 .file_ir_units
                 .iter()
                 .flat_map(|file| file.unit.declarations.db.values())
-                .any(|declaration| declaration.collection_name == "package_secret"));
+                .any(|declaration| declaration.collection_name.as_deref() == Some("package_secret")));
         }
 
         let service = ServiceManifestAuthoring {
