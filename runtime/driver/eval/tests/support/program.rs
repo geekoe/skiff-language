@@ -874,6 +874,7 @@ pub(crate) fn program_with_thread_db_target(executable: LinkedExecutable) -> Run
             type_name: "Thread".to_string(),
             collection_name: Some("Thread".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
