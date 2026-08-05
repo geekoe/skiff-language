@@ -1,7 +1,7 @@
 # Record Spread 与 Contract Storage 实现文档
 
 日期：2026-08-05
-状态：plan（Phase 0 已完成）
+状态：implemented（Phase 0-5 已实现并合入；Phase 6 agine 场景回填与端到端验证进行中）
 
 ## 引用链
 
