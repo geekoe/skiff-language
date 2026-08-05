@@ -73,8 +73,10 @@ pub trait RuntimeAssemblyEvalResolver: Send + Sync {
     /// Resolves the host implementation binding for one `db contract` target. Returns `None`
     /// for plain `db object` targets. Legacy eval resolvers (no assembly contracts) keep the
     /// default `None`.
-    fn db_contract_binding(&self, contract_target: &DbObjectTargetId) -> Option<Arc<DbContractBinding>> {
-        let _ = contract_target;
+    fn db_contract_binding(
+        &self,
+        _contract_target: &DbObjectTargetId,
+    ) -> Option<Arc<DbContractBinding>> {
         None
     }
 }
