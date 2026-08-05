@@ -1,9 +1,16 @@
+use std::path::PathBuf;
+
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
     PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
+use crate::input::{
+    ManifestOwner, ManifestProvenance, PackageSourceInput, PublicationManifest, SourceTree,
+};
+use skiff_compiler_input::CompilerPlatformSources;
+use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
 
 use super::*;
 
@@ -133,6 +140,148 @@ fn dependency_signature_identity_binding_preserves_ordered_callable_type_paramet
     assert_eq!(bound.type_params, ["T", "Id"]);
     assert_eq!(bound.parameters, signature.parameters);
     assert_eq!(bound.return_type, signature.return_type);
+}
+
+#[test]
+fn implements_referenced_dependency_aliases_scan_production_sources() {
+    let platform_sources = CompilerPlatformSources::new(&repository_root()).unwrap();
+    let production = CompilerSourceFile::parse(
+        PathBuf::from("main.skiff"),
+        "main".to_string(),
+        false,
+        false,
+        r#"
+            type Thread { id: string }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+            }
+            type Note { id: string }
+            db object Note implements engine.package.Reader {
+              primary key(id)
+            }
+            type Local { id: string }
+            db object Local implements LocalContract {
+              primary key(id)
+            }
+        "#
+        .to_string(),
+        "main.skiff",
+    )
+    .unwrap();
+    let test_file = CompilerSourceFile::parse(
+        PathBuf::from("main_test.skiff"),
+        "main".to_string(),
+        false,
+        true,
+        r#"
+            type TestThing { id: string }
+            db object TestThing implements unused/model.TestThing {
+              primary key(id)
+            }
+        "#
+        .to_string(),
+        "main_test.skiff",
+    )
+    .unwrap();
+    let contract_declaration = skiff_syntax::ast::DbDecl {
+        name: "C".to_string(),
+        kind: skiff_syntax::ast::DbDeclKind::Contract,
+        implements: Some(skiff_syntax::ast::TypeRef {
+            name: "provider/model.C".to_string(),
+        }),
+        collection_name: None,
+        key: None,
+        retention: None,
+        leases: Vec::new(),
+        storage: Vec::new(),
+        indexes: Vec::new(),
+        span: skiff_syntax::error::SourceSpan::synthetic(),
+    };
+    let contract_reference = CompilerSourceFile::from_parsed_ast(
+        PathBuf::from("contract.skiff"),
+        "contract".to_string(),
+        false,
+        false,
+        String::new(),
+        skiff_syntax::ast::SourceFile {
+            provider_capability: None,
+            functions: Vec::new(),
+            function_signatures: Vec::new(),
+            imports: Vec::new(),
+            types: Vec::new(),
+            actors: Vec::new(),
+            aliases: Vec::new(),
+            interfaces: Vec::new(),
+            impls: Vec::new(),
+            dbs: vec![contract_declaration],
+            consts: Vec::new(),
+            tests: Vec::new(),
+            test_default_run: None,
+            test_default_run_span: None,
+            source_spans: skiff_syntax::ast::SourceSpanTable::default(),
+        },
+    );
+
+    let graph = PublicationSourceGraph::from_compiler_sources(vec![
+        production,
+        test_file,
+        contract_reference,
+    ]);
+    let dependencies = vec![
+        PackageDependency {
+            id: "example.com/provider".to_string(),
+            version: "1.0.0".to_string(),
+            alias: Some("provider".to_string()),
+            top_level_alias: None,
+        },
+        PackageDependency {
+            id: "example.com/engine".to_string(),
+            version: "1.0.0".to_string(),
+            alias: Some("engine".to_string()),
+            top_level_alias: None,
+        },
+    ];
+    let package = PackageSourceInput::new(
+        PublicationManifest::new(
+            skiff_compiler_core::id::PublicationId::parse("example.consumer").unwrap(),
+            "1.0.0".to_string(),
+            skiff_compiler_core::api_spec::PublicationApiSpec::default(),
+            dependencies,
+            ManifestProvenance {
+                owner: ManifestOwner::UserOrBuiltinPackage,
+                path: PathBuf::new(),
+                synthetic: true,
+            },
+        ),
+        SourceTree {
+            root: PathBuf::new(),
+            sources: Vec::new(),
+        },
+        graph,
+        Vec::new(),
+    );
+    let package_aliases = BTreeMap::from([
+        (
+            "provider".to_string(),
+            vec!["example.com/provider".to_string()],
+        ),
+        ("engine".to_string(), vec!["example.com/engine".to_string()]),
+    ]);
+    let input =
+        PackageCompileInput::new(&platform_sources, &package, &package_aliases, "example.consumer");
+
+    assert_eq!(
+        implements_referenced_dependency_aliases(&input),
+        BTreeSet::from(["provider".to_string(), "engine".to_string()])
+    );
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
 }
 
 fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {

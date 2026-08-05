@@ -1539,6 +1539,7 @@ fn add_db_declaration(file: &mut FileIrUnit, symbol: &str) {
             type_ref: TypeRefIr::LocalType { type_index },
             type_name: symbol.to_string(),
             collection_name: Some(symbol.to_ascii_lowercase()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -1584,6 +1585,7 @@ fn add_compiler_shaped_db_declaration(file: &mut FileIrUnit, symbol: &str) {
             },
             type_name: symbol.to_string(),
             collection_name: Some(symbol.to_ascii_lowercase()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

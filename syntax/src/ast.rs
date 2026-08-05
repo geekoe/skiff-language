@@ -229,6 +229,8 @@ pub struct DbDecl {
     #[serde(default, skip_serializing_if = "DbDeclKind::is_object")]
     pub kind: DbDeclKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<TypeRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<DbObjectKey>,

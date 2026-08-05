@@ -209,6 +209,7 @@ fn model_file_with_db_field(
             type_ref: db_object_type("model", db_symbol),
             type_name: format!("model.{db_symbol}"),
             collection_name: Some(db_symbol.to_string()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

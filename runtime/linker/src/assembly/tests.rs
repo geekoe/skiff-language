@@ -804,6 +804,7 @@ fn attach_local_db_target(file: &mut FileIrUnit, include_attachment: bool) {
                 type_ref: skiff_artifact_model::TypeRefIr::LocalType { type_index: 0 },
                 type_name: "LocalRecord".to_string(),
                 collection_name: Some("local_record".to_string()),
+                implements: None,
                 kind: skiff_artifact_model::DbObjectKindIr::Object,
                 key: skiff_artifact_model::DbObjectKeyIr {
                     name: "id".to_string(),
@@ -870,6 +871,7 @@ fn attach_second_local_db_object(file: &mut FileIrUnit) {
             type_ref: skiff_artifact_model::TypeRefIr::LocalType { type_index },
             type_name: "SecondRecord".to_string(),
             collection_name: Some("second_record".to_string()),
+            implements: None,
             kind: skiff_artifact_model::DbObjectKindIr::Object,
             key: skiff_artifact_model::DbObjectKeyIr {
                 name: "id".to_string(),

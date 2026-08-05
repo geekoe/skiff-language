@@ -330,6 +330,7 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
             type_ref: TypeRefIr::builtin("Credential"),
             type_name: "Credential".to_string(),
             collection_name: Some("credential".to_string()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -368,6 +369,7 @@ fn file_ir_identity_rejects_noncanonical_duplicate_index_specs() {
             type_ref: TypeRefIr::builtin("Thread"),
             type_name: "Thread".to_string(),
             collection_name: Some("thread".to_string()),
+            implements: None,
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

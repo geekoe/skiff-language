@@ -487,6 +487,62 @@ fn parses_db_contract_with_shared_key_and_index_syntax() {
 }
 
 #[test]
+fn parses_db_object_implements_contract_ref_with_dual_spelling() {
+    for contract_ref in ["agent/model.AgentThread", "agent.model.AgentThread"] {
+        let source = format!(
+            r#"
+            type Thread {{
+              id: string,
+              status: string
+            }}
+
+            db object Thread implements {contract_ref} {{
+              primary key(id)
+              index byStatus(status)
+            }}
+        "#
+        );
+
+        let ast = parse_source(&source).unwrap();
+        assert_eq!(ast.dbs.len(), 1);
+        let db = &ast.dbs[0];
+        assert_eq!(db.kind, DbDeclKind::Object);
+        assert_eq!(db.name, "Thread");
+        let implements = db
+            .implements
+            .as_ref()
+            .expect("db object implements contract ref should parse");
+        assert_eq!(implements.name, contract_ref);
+        let key = db
+            .key
+            .as_ref()
+            .expect("db object implements primary key should parse");
+        assert_eq!(key.name, "id");
+        assert_eq!(db.indexes.len(), 1);
+        assert_eq!(db.indexes[0].name, "byStatus");
+    }
+}
+
+#[test]
+fn rejects_db_contract_implementing_another_contract() {
+    let error = parse_source(
+        r#"
+            type ContractA { id: string }
+            type ContractB { id: string }
+            db contract ContractA { primary key(id) }
+            db contract ContractB implements ContractA { primary key(id) }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("db contract declarations cannot implement another contract"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn parses_db_object_with_contract_keyword_in_bodies() {
     let ast = parse_source(
         r#"

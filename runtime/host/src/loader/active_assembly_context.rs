@@ -76,6 +76,7 @@ impl ActiveAssemblyContextSet {
         .map(|(deployment, views)| (deployment, Arc::new(views)))
         .collect();
         let runtime_program_db_by_deployment = candidate_db_metadata(candidate)?;
+        validate_db_contract_implementations(candidate)?;
         let db_inputs = candidate_db_provider_inputs(
             candidate,
             &runtime_program_db_by_deployment,
@@ -900,6 +901,380 @@ fn activation_db_metadata(
             ))
     });
     Ok(metadata)
+}
+
+/// One `db contract` declaration fact for whole-assembly coverage validation.
+#[derive(Debug, Clone)]
+struct CandidateDbContractFacts {
+    build_id: PackageBuildId,
+    package_id: String,
+    file_ir_ref: skiff_artifact_model::FileIrRef,
+    type_index: u32,
+    symbol: String,
+    indexes: Vec<skiff_artifact_model::DbIndexIr>,
+}
+
+/// One `db object ... implements` declaration fact for whole-assembly coverage
+/// validation.
+#[derive(Debug, Clone)]
+struct CandidateDbImplementationFacts {
+    build_id: PackageBuildId,
+    package_id: String,
+    symbol: String,
+    collection_name: String,
+    implements: skiff_artifact_model::TypeRefIr,
+    indexes: Vec<skiff_artifact_model::DbIndexIr>,
+}
+
+/// Activation-time contract coverage: every `db contract` declaration in the
+/// whole candidate must be implemented by exactly one `db object ... implements`
+/// declaration, and every required contract index must be covered by the
+/// implementing collection's canonical managed index spec. All failures bail
+/// through the existing admission fail-closed chain before DB provisioning.
+fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()> {
+    let image = candidate.execution_image().shared_packages();
+    let mut contracts: Vec<CandidateDbContractFacts> = Vec::new();
+    let mut implementations: Vec<CandidateDbImplementationFacts> = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut pending = candidate
+        .activations()
+        .map(|(_, linked)| linked.implementation_package_build_id().clone())
+        .collect::<Vec<_>>();
+    while let Some(build_id) = pending.pop() {
+        if !visited.insert(build_id.clone()) {
+            continue;
+        }
+        let code = image.code_by_build(&build_id).ok_or_else(|| {
+            anyhow::anyhow!("contract implementation validation package {build_id} is not loaded")
+        })?;
+        for file in code.files() {
+            let mut file_refs = code.artifact().files.iter().filter(|reference| {
+                reference.file_ir_identity == file.file_ir_identity
+                    && reference.module_path == file.module_path
+                    && reference
+                        .source_ast_hash
+                        .as_deref()
+                        .is_none_or(|hash| hash == file.source_ast_hash)
+            });
+            let file_ir_ref = file_refs.next().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "contract implementation validation package {build_id} file {} has no exact artifact File IR reference",
+                    file.file_ir_identity
+                )
+            })?;
+            if file_refs.next().is_some() {
+                anyhow::bail!(
+                    "contract implementation validation package {build_id} file {} has multiple exact artifact File IR references",
+                    file.file_ir_identity
+                );
+            }
+            for (symbol, declaration) in &file.declarations.db {
+                let type_index = contract_declaration_type_index(file, symbol, declaration)?;
+                match declaration.kind {
+                    skiff_artifact_model::DbObjectKindIr::Contract => {
+                        contracts.push(CandidateDbContractFacts {
+                            build_id: build_id.clone(),
+                            package_id: code.artifact().package_id.clone(),
+                            file_ir_ref: file_ir_ref.clone(),
+                            type_index,
+                            symbol: symbol.clone(),
+                            indexes: declaration.indexes.clone(),
+                        });
+                    }
+                    skiff_artifact_model::DbObjectKindIr::Object => {
+                        let Some(implements) = &declaration.implements else {
+                            continue;
+                        };
+                        let collection_name = declaration.collection_name.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "contract implementation validation package {build_id} file {} declaration {symbol} implements a contract without a physical collection",
+                                file.file_ir_identity
+                            )
+                        })?;
+                        implementations.push(CandidateDbImplementationFacts {
+                            build_id: build_id.clone(),
+                            package_id: code.artifact().package_id.clone(),
+                            symbol: symbol.clone(),
+                            collection_name: collection_name.to_string(),
+                            implements: implements.clone(),
+                            indexes: declaration.indexes.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        for link in &candidate.assembly().package_link_plan.package_links {
+            if link.key.caller_package_build_id == build_id {
+                pending.push(link.package.package_build_id.clone());
+            }
+        }
+    }
+
+    let mut build_owners: BTreeMap<PackageBuildId, BTreeSet<String>> = BTreeMap::new();
+    for (deployment, linked) in candidate.activations() {
+        build_owners
+            .entry(linked.implementation_package_build_id().clone())
+            .or_default()
+            .insert(deployment.service_id.clone());
+    }
+    let mut owners_by_contract: BTreeMap<CandidateContractKey, BTreeMap<String, Vec<usize>>> =
+        BTreeMap::new();
+    for (index, implementation) in implementations.iter().enumerate() {
+        let (dependency_ref, symbol_path) = match &implementation.implements {
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => {
+                match &symbol.package {
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                        (dependency_ref.as_str(), symbol.symbol_path.as_str())
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "db object {} in package {} implements {:?} which is not a dependency package contract reference",
+                            implementation.symbol,
+                            implementation.package_id,
+                            implementation.implements
+                        );
+                    }
+                }
+            }
+            _ => {
+                anyhow::bail!(
+                    "db object {} in package {} implements {:?} which is not a dependency package contract reference",
+                    implementation.symbol,
+                    implementation.package_id,
+                    implementation.implements
+                );
+            }
+        };
+        let mut binding_matches = image.package_link_plan().package_links.iter().filter(
+            |binding| {
+                binding.key.caller_package_build_id == implementation.build_id
+                    && binding.key.package_requirement_alias == dependency_ref
+            },
+        );
+        let binding = binding_matches.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "db object {} in package {} implements contract target {dependency_ref} which is not a linked dependency",
+                implementation.symbol, implementation.package_id
+            )
+        })?;
+        if binding_matches.next().is_some() {
+            anyhow::bail!(
+                "db object {} in package {} implements ambiguous dependency {dependency_ref}",
+                implementation.symbol,
+                implementation.package_id
+            );
+        }
+        let target_build = &binding.package.package_build_id;
+        let target_code = image.code_by_build(target_build).ok_or_else(|| {
+            anyhow::anyhow!(
+                "db object {} in package {} implements {dependency_ref}/{symbol_path} which is not loaded",
+                implementation.symbol,
+                implementation.package_id
+            )
+        })?;
+        let export = target_code
+            .artifact()
+            .implementation_links
+            .types
+            .get(symbol_path)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "db object {} in package {} implements {dependency_ref}/{symbol_path} which is not a db contract declaration",
+                    implementation.symbol,
+                    implementation.package_id
+                )
+            })?;
+        if export.is_interface {
+            anyhow::bail!(
+                "db object {} in package {} implements {dependency_ref}/{symbol_path} which is an interface, not a db contract declaration",
+                implementation.symbol,
+                implementation.package_id
+            );
+        }
+        let contract = contracts
+            .iter()
+            .find(|contract| {
+                contract.build_id == *target_build
+                    && contract.file_ir_ref.file_ir_identity == export.file.file_ir_identity
+                    && contract.type_index == export.type_index
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "db object {} in package {} implements {dependency_ref}/{symbol_path} which is not a db contract declaration in the assembly",
+                    implementation.symbol,
+                    implementation.package_id
+                )
+            })?;
+        let contract_key = CandidateContractKey {
+            build_id: contract.build_id.clone(),
+            file_ir_identity: contract.file_ir_ref.file_ir_identity.clone(),
+            type_index: contract.type_index,
+        };
+        let owners = build_owners
+            .get(&implementation.build_id)
+            .cloned()
+            .unwrap_or_else(|| BTreeSet::from([format!("build:{}", implementation.build_id)]));
+        let by_owner = owners_by_contract.entry(contract_key).or_default();
+        for owner in owners {
+            by_owner.entry(owner).or_default().push(index);
+        }
+    }
+    for contract in &contracts {
+        let contract_key = CandidateContractKey {
+            build_id: contract.build_id.clone(),
+            file_ir_identity: contract.file_ir_ref.file_ir_identity.clone(),
+            type_index: contract.type_index,
+        };
+        let by_owner = owners_by_contract.get(&contract_key);
+        let Some(implementers) = by_owner.and_then(|by_owner| by_owner.iter().next().map(|(_, v)| v)) else {
+            anyhow::bail!(
+                "db contract {}/{} has no implementing db object declaration in the assembly",
+                contract.package_id,
+                contract.symbol
+            );
+        };
+        if by_owner.is_some_and(|by_owner| by_owner.len() > 1) {
+            anyhow::bail!(
+                "db contract {}/{} is implemented by multiple services: {}",
+                contract.package_id,
+                contract.symbol,
+                by_owner
+                    .map(|by_owner| by_owner.keys().cloned().collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            );
+        }
+        let mut implementers_by_build: BTreeMap<&PackageBuildId, usize> = BTreeMap::new();
+        for index in implementers {
+            *implementers_by_build
+                .entry(&implementations[*index].build_id)
+                .or_default() += 1;
+        }
+        if let Some((build_id, count)) = implementers_by_build.iter().find(|(_, count)| **count > 1) {
+            anyhow::bail!(
+                "db contract {}/{} is implemented more than once inside package build {build_id}",
+                contract.package_id,
+                contract.symbol
+            );
+        }
+        let implementation_specs = implementers
+            .iter()
+            .flat_map(|index| {
+                let implementation = &implementations[*index];
+                implementation
+                    .indexes
+                    .iter()
+                    .map(|index| {
+                        managed_index_spec(
+                            &implementation.package_id,
+                            &implementation.collection_name,
+                            index,
+                        )
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .collect::<anyhow::Result<BTreeSet<_>>>()?;
+        for index in &contract.indexes {
+            let required = managed_index_spec(
+                &implementations[implementers[0]].package_id,
+                &implementations[implementers[0]].collection_name,
+                index,
+            )?;
+            if !implementation_specs.contains(&required) {
+                anyhow::bail!(
+                    "db contract {}/{} requires managed index {} which no implementing db object of service {} declares",
+                    contract.package_id,
+                    contract.symbol,
+                    index.name,
+                    by_owner
+                        .and_then(|by_owner| by_owner.keys().next().cloned())
+                        .unwrap_or_default()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CandidateContractKey {
+    build_id: PackageBuildId,
+    file_ir_identity: String,
+    type_index: u32,
+}
+
+fn contract_declaration_type_index(
+    file: &skiff_artifact_model::FileIrUnit,
+    symbol: &str,
+    declaration: &skiff_artifact_model::DbDeclarationIr,
+) -> anyhow::Result<u32> {
+    let type_index = match &declaration.type_ref {
+        skiff_artifact_model::TypeRefIr::LocalType { type_index } => Some(*type_index),
+        skiff_artifact_model::TypeRefIr::DbObjectSymbol { symbol: db_symbol }
+            if db_symbol.module_path == file.module_path && db_symbol.symbol == symbol =>
+        {
+            None
+        }
+        _ => {
+            anyhow::bail!(
+                "activation DB declaration {symbol} in {} does not name its exact local DB type",
+                file.file_ir_identity
+            );
+        }
+    };
+    let Some(type_declaration) = file.declarations.types.get(symbol) else {
+        anyhow::bail!(
+            "activation DB declaration {symbol} in {} has no exact local type declaration",
+            file.file_ir_identity
+        );
+    };
+    let declared_index = type_index.unwrap_or(type_declaration.type_index);
+    if declared_index != type_declaration.type_index {
+        anyhow::bail!(
+            "activation DB declaration {symbol} in {} has an inconsistent type index",
+            file.file_ir_identity
+        );
+    }
+    Ok(declared_index)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CanonicalManagedIndex {
+    name: String,
+    keys: Vec<(String, i32)>,
+    unique: bool,
+}
+
+fn managed_index_spec(
+    package_id: &str,
+    collection_name: &str,
+    index: &skiff_artifact_model::DbIndexIr,
+) -> anyhow::Result<CanonicalManagedIndex> {
+    let keys = index
+        .fields
+        .iter()
+        .map(|field| {
+            let direction = match field.direction {
+                skiff_artifact_model::DbIndexDirectionIr::Asc => 1,
+                skiff_artifact_model::DbIndexDirectionIr::Desc => -1,
+            };
+            Ok((field.field.text.clone(), direction))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if keys.is_empty() {
+        anyhow::bail!(
+            "managed index {} must declare at least one physical key",
+            index.name
+        );
+    }
+    Ok(CanonicalManagedIndex {
+        name: skiff_runtime_service_db::managed_index_name(
+            package_id,
+            collection_name,
+            &index.name,
+        ),
+        keys,
+        unique: index.unique,
+    })
 }
 
 impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {

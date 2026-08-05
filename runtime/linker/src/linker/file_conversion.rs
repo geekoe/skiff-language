@@ -496,6 +496,12 @@ fn linked_db_declaration(declaration: &artifact::DbDeclarationIr) -> DbDeclarati
         type_ref: linked_type_ref(&declaration.type_ref),
         type_name: declaration.type_name.clone(),
         collection_name: declaration.collection_name.clone(),
+        implements: declaration.implements.as_ref().map(linked_type_ref),
+        identity_fields: declaration
+            .identity_fields
+            .iter()
+            .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
+            .collect(),
         kind: match declaration.kind {
             artifact::DbObjectKindIr::Object => DbObjectKindIr::Object,
             artifact::DbObjectKindIr::Contract => DbObjectKindIr::Contract,

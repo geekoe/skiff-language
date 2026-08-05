@@ -192,8 +192,14 @@ db object Thread implements agent/model.AgentThread {
   `catch`。
 - 覆盖校验（fail closed）：
   - 实现类型字段集覆盖契约类型字段集；重叠字段的 schema identity 逐字段一致（identity 按
-    `static-semantics.md §16/§17` 的 schema / wire identity 规则判定；spread 复制的字段在源声明
-    上下文解析，identity 天然一致，宿主手写"结构相同"的本地名义类型不构成一致）；
+    `static-semantics.md §16/§17` 的 schema / wire identity 规则判定）。**identity 一致 = 归一化
+    名义一致**：契约声明在 artifact 中持久化"符号保持"的字段类型（identity facts，存储展开前
+    的解析符号），宿主编译期比较自己字段的解析后 identity 与契约 facts——跨包名义引用按
+    dependency + symbol path 一致判定（契约包自身的符号按其依赖视图归一化，与宿主引用同一符号
+    即一致；忽略链接期才补充的 ABI expectation）；宿主本地名义类型与契约字段类型不构成一致
+    （spread 复制的字段保持源声明上下文的名义引用，identity 天然一致；宿主手写"结构相同"的本地
+    名义类型不构成一致）；builtin 与匿名结构形按结构一致判定；union 等 wire 携带 nominal branch
+    identity 的字段必须引用与契约同一的命名 union；
   - **契约 primary key 必须与实现 primary key 同字段、同类型**（引擎的 key 读与按 key 更新依赖
     key 到宿主 `_id` 的映射）；
   - 契约必需索引 ⊆ 实现索引；
