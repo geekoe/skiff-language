@@ -58,7 +58,12 @@ node scripts/skiff.mjs stack build --configDir .stack --profile debug
 node scripts/skiff.mjs instance up --runtime build/runtime-stack
 ```
 
-instance 只维护进程，不构建、不生成配置；watch 是独立命令，只做编译/激活/热更。
+instance 只维护进程，不构建、不生成配置；watch 只做编译/激活/热更。
+`build.yml` 的 `process.watch: managed` 会让 instance spec 把 `skiff watch` 作为受监管
+进程写入 `instance.yml`（与 `process.mongo`/`process.telemetry` 同模式）：`instance
+supervise`（例如由 LaunchAgent 拉起）会启动它并在退出时自动重启，日志落在 dev-home
+`logs/watch.out.log`/`watch.err.log`。默认 `disabled`，需要独立拉起时仍可手动执行
+`skiff watch --runtime build/runtime-stack --config .stack/watch`。
 
 纯编译和单元验证不需要启动 instance：
 

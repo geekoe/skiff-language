@@ -192,6 +192,7 @@ function normalizeBuildProcess(value, label) {
     return {
       mongo: 'disabled',
       telemetry: 'managed',
+      watch: 'disabled',
       mongoBinary: 'mongod',
       mongoDbPath: undefined,
       devHome: undefined,
@@ -206,6 +207,9 @@ function normalizeBuildProcess(value, label) {
   const telemetry = value.telemetry === undefined
     ? 'managed'
     : readOptionalManagedFlag(value.telemetry, `${label} process.telemetry`);
+  const watch = value.watch === undefined
+    ? 'disabled'
+    : readOptionalManagedFlag(value.watch, `${label} process.watch`);
   const mongoBinary = value.mongoBinary === undefined
     ? 'mongod'
     : readRequiredString(value, 'mongoBinary', `${label} process`);
@@ -215,7 +219,7 @@ function normalizeBuildProcess(value, label) {
   const devHome = value.devHome === undefined
     ? undefined
     : readRequiredString(value, 'devHome', `${label} process`);
-  return { mongo, telemetry, mongoBinary, mongoDbPath, devHome };
+  return { mongo, telemetry, watch, mongoBinary, mongoDbPath, devHome };
 }
 
 function readOptionalManagedFlag(value, label) {

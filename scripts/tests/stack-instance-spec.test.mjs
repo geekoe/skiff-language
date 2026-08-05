@@ -44,6 +44,37 @@ test('local instance spec derives processes, ports, and shared facts from config
   assert.equal(router.healthUrl, 'http://127.0.0.1:4101/__router/health');
 });
 
+test('local instance spec supervises watch when process.watch is managed', async (t) => {
+  const fixture = await buildFixture(t, { watch: true });
+  const stack = await loadStackConfig(fixture.configDir, {
+    skiffRoot,
+    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml', 'telemetry.yml'],
+  });
+  const manifest = {
+    profile: 'debug',
+    units: {
+      router: { artifacts: [{ kind: 'binary', path: 'build/runtime-stack/bin/skiff-router' }] },
+      runtime: { artifacts: [{ kind: 'binary', path: 'build/runtime-stack/bin/skiff-runtime' }] },
+      compiler: { artifacts: [{ kind: 'binary', path: 'build/runtime-stack/bin/skiff-compiler' }] },
+    },
+  };
+  const spec = localInstanceSpecFrom({ stack, skiffRoot, manifest });
+
+  const watch = spec.processes.find((process) => process.name === 'watch');
+  assert.ok(watch, 'watch process is present');
+  assert.equal(watch.command, 'node');
+  assert.ok(
+    watch.args.some((arg) => arg.endsWith('skiff-watch.mjs')),
+    'watch args reference skiff-watch.mjs',
+  );
+  assert.ok(
+    watch.args.includes('--config') && watch.args.includes(join(stack.configDir, 'watch')),
+    'watch args point at the configDir watch directory',
+  );
+  assert.deepEqual(watch.ports, []);
+  assert.equal(watch.healthUrl, null);
+});
+
 test('generateLocalInstanceSpec writes instance.yml and devHome directories', async (t) => {
   const fixture = await buildFixture(t);
   const stack = await loadStackConfig(fixture.configDir, {
@@ -70,22 +101,23 @@ test('generateLocalInstanceSpec writes instance.yml and devHome directories', as
   }
 });
 
-async function buildFixture(t) {
+async function buildFixture(t, { watch = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'skiff-instance-spec-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const configDir = join(root, 'configDir');
-  const buildRoot = join(skiffRoot, 'build', 'runtime-stack');
+  const buildRoot = join(root, 'build', 'runtime-stack');
   await mkdir(configDir, { recursive: true });
   await mkdir(join(buildRoot, 'bin'), { recursive: true });
   await writeFile(join(configDir, 'build.yml'), [
     'target: aarch64-apple-darwin',
     'zigDir: /cache/zig',
-    'buildRoot: build/runtime-stack',
+    `buildRoot: ${buildRoot}`,
     'cargoTargetDir: build/cargo-target',
     'profile: debug',
     'process:',
     '  mongo: managed',
     '  telemetry: managed',
+    `  watch: ${watch ? 'managed' : 'disabled'}`,
     '',
   ].join('\n'));
   await writeFile(join(configDir, 'config.yml'), [

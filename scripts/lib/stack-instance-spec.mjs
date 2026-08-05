@@ -83,6 +83,20 @@ export function localInstanceSpecFrom({ stack, skiffRoot, manifest }) {
       healthUrl: null,
     });
   }
+  if (process.watch === 'managed') {
+    processes.push({
+      name: 'watch',
+      command: 'node',
+      args: [
+        join(skiffRoot, 'scripts', 'skiff-watch.mjs'),
+        '--runtime', buildRoot,
+        '--config', join(stack.configDir, 'watch'),
+      ],
+      cwd: skiffRoot,
+      ports: [],
+      healthUrl: null,
+    });
+  }
   processes.push({
     name: 'router',
     command: binary('router', 'skiff-router'),
