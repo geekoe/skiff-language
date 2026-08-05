@@ -681,9 +681,16 @@ fn public_and_top_level_views_are_isolated_and_emit_one_canonical_dependency_ref
     let public = model
         .resolve_type_text("provider.Bindings", &context())
         .expect("primary alias should resolve public symbols");
+    let public_slash = model
+        .resolve_type_text("provider/Bindings", &context())
+        .expect("slash namespace spelling of the primary alias should resolve public symbols");
     let top_level = model
         .resolve_type_text("providerImpl/Bindings", &context())
         .expect("top-level alias should resolve implementation symbols");
+    assert_eq!(
+        public_slash.ir, public.ir,
+        "slash and dotted spellings of the public alias must resolve to the same public symbol"
+    );
     assert_ne!(
         public.ir, top_level.ir,
         "source typing must retain which permission view produced the value"

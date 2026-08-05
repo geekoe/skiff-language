@@ -215,7 +215,13 @@ Production build 的当前 source set 只包含 production source files。`*.tes
 唯一例外是`kind: test` service中dependency entry声明的`topLevelAlias`。普通`alias`始终按该dependency
 的`api.yml` public path解析；`topLevelAlias`则按
 `<top-level-alias>/<source-module-path>.<top-level-name>`解析同一直接dependency的精确implementation
-symbol。两者没有fallback或precedence。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
+symbol。两者没有fallback或precedence。
+
+普通 alias 的类型引用支持两种拼写：点形式 `alias.<public-path>` 与斜杠形式
+`alias/<module>.<name>`。斜杠是命名空间分隔符（不是字段访问），在解析期归一化为 dependency alias +
+public path，两种拼写解析到同一 public symbol。视图由 alias 名决定：primary alias 只解析 public path，
+topLevelAlias 只解析 implementation symbol；斜杠本身不改变视图归属，因此两种拼写不会与 topLevelAlias
+的斜杠标记冲突。该模式覆盖同一文件顶层type及附着到它的`db object`，因此
 `db require subjectImpl/model.User(id)`中的target与`subjectImpl/model.User`类型引用选择同一个精确
 provider type。
 

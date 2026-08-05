@@ -1204,7 +1204,12 @@ impl TypeResolutionModel {
             .copied()
             .unwrap_or(PackageDependencyView::Public);
         let syntax_matches = match view {
-            PackageDependencyView::Public => !path.contains('/'),
+            // Public view accepts both `alias.<public-path>` and
+            // `alias/<module>.<name>` spellings: the slash is a namespace
+            // separator normalized by PackageExportResolver, not a topLevel
+            // marker. The view itself is decided by the alias name, so the
+            // spellings never collide with the TopLevel view.
+            PackageDependencyView::Public => true,
             PackageDependencyView::TopLevel => path.contains('/'),
         };
         if !syntax_matches {
@@ -2434,7 +2439,7 @@ impl TypeResolutionModel {
         {
             return Err(match view {
                 PackageDependencyView::Public => format!(
-                    "package dependency `{dependency_ref}` uses public type syntax `{dependency_ref}.<public-path>`; source-path slash syntax is unavailable"
+                    "package dependency `{dependency_ref}` resolves public type paths as `{dependency_ref}.<public-path>` or `{dependency_ref}/<module>.<name>`; path `{name}` did not resolve to a public type"
                 ),
                 PackageDependencyView::TopLevel => format!(
                     "package dependency `{dependency_ref}` uses top-level type syntax `{dependency_ref}/<source-module>.<name>`; dotted public syntax is unavailable"
