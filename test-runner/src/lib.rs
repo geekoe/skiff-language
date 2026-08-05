@@ -168,6 +168,13 @@ pub fn run_skiff_tests_with_options(
         &package_root,
         artifact_root,
     )?;
+    if project.test_service_profile.is_none() {
+        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
+            "test execution requires service.yml kind: test; package test overlays are unsupported"
+                .to_string(),
+        )
+        .into());
+    }
     let mut cases = Vec::new();
     for input in inputs {
         let metadata = fs::metadata(input).map_err(|source| SkiffTestError::Metadata {
@@ -198,13 +205,6 @@ pub fn run_skiff_tests_with_options(
             failed: 0,
             results: Vec::new(),
         });
-    }
-    if project.test_service_profile.is_none() {
-        return Err(canonical_fixture::CanonicalFixtureError::InvalidInput(
-            "test execution requires service.yml kind: test; package test overlays are unsupported"
-                .to_string(),
-        )
-        .into());
     }
 
     // Execution is deliberately all-or-nothing: a source compile is not reported as a passed

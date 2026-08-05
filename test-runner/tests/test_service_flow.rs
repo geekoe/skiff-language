@@ -12,7 +12,8 @@ use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
     canonical_package::compile_package_project_for_test, canonical_std_seed::seed_canonical_std,
-    test_service_fixture::assemble_test_service_fixture,
+    run_skiff_tests_with_options, test_service_fixture::assemble_test_service_fixture,
+    SkiffTestOptions,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -283,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn source_tests_without_kind_test_service_are_not_an_execution_surface() {
+    fn source_tests_without_kind_test_service_fail_fast() {
         let root = TestRoot::new("no-overlay-fallback");
         let artifacts = root.path().join("artifacts");
         seed_canonical_std(&platform_sources(), &artifacts).expect("seed std");
@@ -309,12 +310,24 @@ mod tests {
         let project = compile_package_project_for_test(&platform_sources(), &package, &artifacts)
             .expect("ordinary package production compile");
         assert!(project.test_service_profile.is_none());
-        let cases =
-            discover_test_service_cases(&package, &package, false).expect("discover legacy source");
-        let error =
-            assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
-                .expect_err("runner must not recreate a package overlay")
-                .to_string();
+
+        let error = run_skiff_tests_with_options(
+            &[package],
+            &SkiffTestOptions {
+                live: false,
+                artifact_root: Some(artifacts),
+                platform_sources: platform_sources(),
+                runtime_artifact_root: None,
+                base_assembly: None,
+                base_config_snapshot: None,
+                activation_url: None,
+                ingress_url: None,
+                target_profile: "skiff-test".to_string(),
+                expected_generation: 0,
+            },
+        )
+        .expect_err("runner must reject a source root without a kind:test service")
+        .to_string();
         assert!(error.contains("service.yml kind: test"));
     }
 }
