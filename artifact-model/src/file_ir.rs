@@ -217,7 +217,8 @@ pub struct ConstIr {
 pub struct DbDeclarationIr {
     pub type_ref: TypeRefIr,
     pub type_name: String,
-    pub collection_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_name: Option<String>,
     pub kind: DbObjectKindIr,
     pub key: DbObjectKeyIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -237,6 +238,7 @@ pub struct DbDeclarationIr {
 pub enum DbObjectKindIr {
     #[default]
     Object,
+    Contract,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -451,7 +451,7 @@ fn linked_file_conversion_preserves_encrypted_db_field_storage() {
         artifact::DbDeclarationIr {
             type_ref: artifact::TypeRefIr::builtin("Credential"),
             type_name: "Credential".to_string(),
-            collection_name: "credential".to_string(),
+            collection_name: Some("credential".to_string()),
             kind: artifact::DbObjectKindIr::Object,
             key: artifact::DbObjectKeyIr {
                 name: "id".to_string(),

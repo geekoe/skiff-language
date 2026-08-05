@@ -218,6 +218,7 @@ pub fn foreign_package_db_metadata_index(
                     type_name: type_name.to_string(),
                     canonical_type_name: format!("{}/{}", dependency.primary_alias, symbol_path),
                     canonical_type_ref: Some(canonical_target),
+                    kind: db.kind,
                     collection_name: db.collection_name.clone(),
                     retention: db
                         .retention

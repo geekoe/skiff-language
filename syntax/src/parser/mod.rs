@@ -3,7 +3,7 @@ pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use crate::{
     ast::{
         ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage,
-        ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection,
+        ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind, DbIndexDirection,
         DbIndexEntry, DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl,
         DbLeaseRead, DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry,
         DbProjection, DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector,

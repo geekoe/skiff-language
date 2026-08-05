@@ -180,7 +180,10 @@ fn assembly_db_target_accepts_compiler_qualified_declaration_symbol() {
         .expect("qualified declaration symbol must resolve through its local map key");
 
     assert_eq!(resolved.declaration.type_name, "ProjectionType");
-    assert_eq!(resolved.declaration.collection_name, "projection_type");
+    assert_eq!(
+        resolved.declaration.collection_name.as_deref(),
+        Some("projection_type")
+    );
 }
 
 #[test]
@@ -531,7 +534,7 @@ fn projection_image_with_db_shape(
         ArtifactDbDeclarationIr {
             type_ref: db_type_ref,
             type_name: "ProjectionType".to_string(),
-            collection_name: "projection_type".to_string(),
+            collection_name: Some("projection_type".to_string()),
             kind: ArtifactDbObjectKindIr::Object,
             key: ArtifactDbObjectKeyIr {
                 name: "id".to_string(),

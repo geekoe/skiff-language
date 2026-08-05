@@ -872,7 +872,7 @@ pub(crate) fn program_with_thread_db_target(executable: LinkedExecutable) -> Run
         DbDeclarationIr {
             type_ref: thread_type,
             type_name: "Thread".to_string(),
-            collection_name: "Thread".to_string(),
+            collection_name: Some("Thread".to_string()),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

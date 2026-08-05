@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{PackageRefIr, ServiceSymbolRef, TypeRefIr};
+use skiff_artifact_model::{DbObjectKindIr, PackageRefIr, ServiceSymbolRef, TypeRefIr};
 
 use crate::{
     semantic::DbAttachmentIndex,
     shared::{
-        ast::{DbRetentionUnit, SourceFile, TypeRef},
+        ast::{DbDeclKind, DbRetentionUnit, SourceFile, TypeRef},
         ast_utils::db_collection_name,
         error::{CompileError, Result},
     },
@@ -192,7 +192,8 @@ pub struct PublicationDbMetadata {
     /// a direct package dependency. Local source DB objects leave this empty
     /// and continue to derive their service-owned identity during lowering.
     pub canonical_type_ref: Option<TypeRefIr>,
-    pub collection_name: String,
+    pub kind: DbObjectKindIr,
+    pub collection_name: Option<String>,
     pub retention: Option<PublicationDbRetention>,
     pub leases: BTreeMap<String, PublicationDbLease>,
     pub key: PublicationDbObjectKey,
@@ -285,8 +286,13 @@ fn publication_db_metadata(
         field_types.insert(field.name.clone(), field.ty.clone());
         field_type_texts.insert(field.name.clone(), field.ty.name.clone());
     }
-    let collection_name = db_collection_name(db);
-    validate_db_collection_name(&collection_name, &db.name)?;
+    let collection_name = if db.kind == DbDeclKind::Object {
+        let collection_name = db_collection_name(db);
+        validate_db_collection_name(&collection_name, &db.name)?;
+        Some(collection_name)
+    } else {
+        None
+    };
     let retention = db
         .retention
         .as_ref()
@@ -320,6 +326,10 @@ fn publication_db_metadata(
         type_name: db.name.clone(),
         canonical_type_name: canonical_db_type_name(module_path, &db.name),
         canonical_type_ref: None,
+        kind: match db.kind {
+            DbDeclKind::Object => DbObjectKindIr::Object,
+            DbDeclKind::Contract => DbObjectKindIr::Contract,
+        },
         collection_name,
         retention,
         leases,

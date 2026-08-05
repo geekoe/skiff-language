@@ -702,8 +702,59 @@ fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name:
         DbDeclarationIr {
             type_ref: TypeRefIr::LocalType { type_index },
             type_name: type_name.to_string(),
-            collection_name: collection_name.to_string(),
+            collection_name: Some(collection_name.to_string()),
             kind: DbObjectKindIr::Object,
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: fields
+                .into_iter()
+                .map(|(name, ty)| DbObjectFieldIr {
+                    name,
+                    ty,
+                    storage: DbFieldStorageIr::Identity,
+                })
+                .collect(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
+}
+
+fn insert_db_contract(file: &mut FileIrUnit, type_name: &str) {
+    let fields = BTreeMap::from([
+        ("id".to_string(), TypeRefIr::builtin("string")),
+        ("status".to_string(), TypeRefIr::builtin("string")),
+    ]);
+    let type_index = file.type_table.len() as u32;
+    file.type_table.push(TypeDeclIr {
+        name: type_name.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: fields.clone(),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        type_name.to_string(),
+        TypeDeclarationIr {
+            type_index,
+            symbol: format!("{}.{}", file.module_path, type_name),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        type_name.to_string(),
+        DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index },
+            type_name: type_name.to_string(),
+            collection_name: None,
+            kind: DbObjectKindIr::Contract,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
                 ty: TypeRefIr::builtin("string"),
@@ -1340,13 +1391,223 @@ async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_re
                 metadata.target.target_id.package_artifact_ref.package_id,
                 "example.mapping-store"
             );
-            metadata.metadata.collection_name.clone()
+            metadata
+                .metadata
+                .collection_name
+                .clone()
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>();
     collections.sort();
     assert_eq!(
         collections,
         vec!["package_audit".to_string(), "package_secret".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn db_contract_declarations_do_not_become_provider_collections() {
+    let base = FullChainFixture::with_consumer_collection(Some("service_secret"));
+    let mut consumer_package = base
+        .resolver
+        .packages
+        .iter()
+        .find(|(reference, _)| reference.package_id == "example.phase-three-consumer")
+        .map(|(_, package)| package.as_ref().clone())
+        .expect("consumer package");
+    let mut consumer_file = base
+        .resolver
+        .files
+        .iter()
+        .find(|(reference, _, _)| reference.package_id == "example.phase-three-consumer")
+        .map(|(_, _, file)| file.as_ref().clone())
+        .expect("consumer file");
+    insert_db_contract(&mut consumer_file, "AgentThread");
+    skiff_artifact_identity::assign_file_ir_identity(&mut consumer_file).unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package).unwrap();
+    let consumer_package_ref = package_ref(&consumer_package);
+    let consumer_file_ref = file_ref(&consumer_file);
+
+    let mut consumer_deployment = base
+        .resolver
+        .deployments
+        .iter()
+        .find(|(reference, _)| reference == &base.consumer_deployment_ref)
+        .map(|(_, deployment)| deployment.as_ref().clone())
+        .expect("consumer deployment");
+    consumer_deployment.implementation = consumer_package_ref.clone();
+    for selector in &mut consumer_deployment.service_selectors {
+        selector.key.caller_package_build_id = consumer_package_ref.package_build_id.clone();
+    }
+    consumer_deployment.package_bindings = vec![PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: consumer_package_ref.package_build_id.clone(),
+            package_requirement_alias: "provider".to_string(),
+        },
+        package: base.provider_package_ref.clone(),
+    }];
+    skiff_artifact_identity::assign_service_deployment_identity(&mut consumer_deployment).unwrap();
+    let consumer_deployment_ref =
+        skiff_artifact_identity::service_deployment_ref(&consumer_deployment);
+
+    let provider_deployment = base
+        .resolver
+        .deployments
+        .iter()
+        .find(|(reference, _)| reference == &base.provider_deployment_ref)
+        .map(|(_, deployment)| deployment.as_ref().clone())
+        .expect("provider deployment");
+    let provider_contract = base
+        .resolver
+        .contracts
+        .iter()
+        .find(|(reference, _)| reference == &base.provider_contract_ref)
+        .map(|(_, contract)| contract.as_ref().clone())
+        .expect("provider contract");
+    let consumer_contract = base
+        .resolver
+        .contracts
+        .iter()
+        .find(|(_, contract)| contract.service_id == "example.phase-three.consumer")
+        .map(|(_, contract)| contract.as_ref().clone())
+        .expect("consumer contract");
+    let provider_deployment_ref =
+        skiff_artifact_identity::service_deployment_ref(&provider_deployment);
+
+    let mut packages = base
+        .resolver
+        .packages
+        .iter()
+        .map(|(_, package)| package.as_ref().clone())
+        .collect::<Vec<_>>();
+    packages.retain(|package| package.package_id != "example.phase-three-consumer");
+    packages.push(consumer_package.clone());
+    let mut files = base
+        .resolver
+        .files
+        .iter()
+        .map(|(_, _, file)| file.as_ref().clone())
+        .collect::<Vec<_>>();
+    files.retain(|file| file.module_path != consumer_file.module_path);
+    files.push(consumer_file.clone());
+    let assembly = resolve_runtime_assembly(
+        std::slice::from_ref(&consumer_deployment_ref),
+        &[consumer_deployment.clone(), provider_deployment.clone()],
+        &[consumer_contract.clone(), provider_contract.clone()],
+        &packages,
+    )
+    .unwrap();
+    let resolver = CountingResolver {
+        assembly: Arc::new(assembly.clone()),
+        deployments: vec![
+            (consumer_deployment_ref, Arc::new(consumer_deployment)),
+            (provider_deployment_ref, Arc::new(provider_deployment)),
+        ],
+        contracts: vec![
+            (
+                skiff_artifact_identity::service_contract_ref(&consumer_contract).unwrap(),
+                Arc::new(consumer_contract),
+            ),
+            (
+                skiff_artifact_identity::service_contract_ref(&provider_contract).unwrap(),
+                Arc::new(provider_contract),
+            ),
+        ],
+        packages: vec![
+            (consumer_package_ref, Arc::new(consumer_package)),
+            (
+                base.provider_package_ref.clone(),
+                base.resolver
+                    .packages
+                    .iter()
+                    .find(|(reference, _)| reference.package_id == "example.phase-three-provider")
+                    .map(|(_, package)| Arc::clone(package))
+                    .expect("provider package"),
+            ),
+        ],
+        files: vec![
+            (
+                consumer_file_ref,
+                file_ref(&consumer_file),
+                Arc::new(consumer_file),
+            ),
+            (
+                base.provider_package_ref,
+                base.resolver
+                    .files
+                    .iter()
+                    .find(|(reference, _, _)| {
+                        reference.package_id == "example.phase-three-provider"
+                    })
+                    .map(|(_, file_ref, _)| file_ref.clone())
+                    .expect("provider file ref"),
+                base.resolver
+                    .files
+                    .iter()
+                    .find(|(reference, _, _)| {
+                        reference.package_id == "example.phase-three-provider"
+                    })
+                    .map(|(_, _, file)| Arc::clone(file))
+                    .expect("provider file"),
+            ),
+        ],
+        reads: AtomicUsize::new(0),
+    };
+
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
+    let (config_snapshot, config_resolver) =
+        config_snapshot_for_assembly("fixture", &assembly, &resolver);
+    let provider = CapturingDbProvider::default();
+    let controller = AssemblyAdmissionController::new(
+        "runtime-contract-exclusion",
+        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
+    );
+    controller
+        .recover_committed(
+            "fixture",
+            7,
+            &reference,
+            &config_snapshot,
+            &resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect("assembly with a db contract declaration must admit");
+
+    let inputs = provider.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 1);
+    let mut collections = inputs[0]
+        .runtime_program_db
+        .iter()
+        .map(|metadata| {
+            (
+                metadata.metadata.type_name.clone(),
+                metadata
+                    .metadata
+                    .collection_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_string(),
+                metadata.metadata.kind,
+            )
+        })
+        .collect::<Vec<_>>();
+    collections.sort();
+    assert_eq!(
+        collections,
+        vec![(
+            "ServiceSecret".to_string(),
+            "service_secret".to_string(),
+            DbObjectKindIr::Object
+        )]
+    );
+    assert!(
+        inputs[0]
+            .runtime_program_db
+            .iter()
+            .all(|entry| entry.metadata.kind != DbObjectKindIr::Contract),
+        "db contract declarations must not reach the DB provider"
     );
 }
 
@@ -1424,7 +1685,7 @@ async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
             .filter(|metadata| {
                 metadata.metadata.package_id.as_deref() == Some("example.mapping-store")
             })
-            .map(|metadata| metadata.metadata.collection_name.as_str())
+            .map(|metadata| metadata.metadata.collection_name.as_deref().unwrap_or(""))
             .collect::<Vec<_>>();
         collections.sort_unstable();
         assert_eq!(collections, vec!["package_audit", "package_secret"]);
@@ -1460,7 +1721,7 @@ async fn equal_bare_collection_names_from_service_and_package_remain_distinct_ta
     let same_bare_name = inputs[0]
         .runtime_program_db
         .iter()
-        .filter(|entry| entry.metadata.collection_name == "package_secret")
+        .filter(|entry| entry.metadata.collection_name.as_deref() == Some("package_secret"))
         .map(|entry| {
             entry
                 .target

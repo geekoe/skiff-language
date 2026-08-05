@@ -160,7 +160,7 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
                 },
             },
             type_name: "model.Session".to_string(),
-            collection_name: "sessions".to_string(),
+            collection_name: Some("sessions".to_string()),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

@@ -40,7 +40,8 @@ pub struct DbMetadataIr {
     #[serde(rename = "type")]
     pub ty: TypeRefIr,
     pub type_name: String,
-    pub collection_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_name: Option<String>,
     pub key: Option<DbObjectKeyIr>,
     pub fields: Vec<DbObjectFieldIr>,
     pub retention: Option<DbRetentionIr>,
