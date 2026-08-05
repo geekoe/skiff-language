@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import { access, chmod, lstat, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
+import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { runAuthoringObjectCommand } from './lib/package-service-authoring.mjs';
 import { runDevRegistryCommand } from './lib/package-service-dev-registry.mjs';
@@ -14,6 +14,18 @@ import {
 } from './lib/isolated-test-runtime.mjs';
 import { renderIsolatedRuntimeLogEvidence } from './lib/isolated-test-runtime-log-evidence.mjs';
 import { runOwnedCommand } from './lib/owned-command.mjs';
+import {
+  countTestCases,
+  deriveBaseServices,
+  discoverTestFiles,
+  partitionTestFiles,
+  planSourcePublish,
+  publishSources,
+  readSourceManifest,
+  renderPlan,
+  resolveBasePair,
+  runShardedTests,
+} from './lib/test-orchestration.mjs';
 import {
   defaultProjectPackageDir,
   readProjectPackageDirs,
@@ -34,7 +46,7 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
@@ -243,8 +255,11 @@ async function test(rawArgs) {
       '--ingress-url',
       '--profile',
       '--expected-generation',
+      '--sources',
+      '--shards',
+      '--max-cases',
     ]),
-    flags: new Set(['--live', '--deny-skips', '--require-tests']),
+    flags: new Set(['--live', '--deny-skips', '--require-tests', '--fresh', '--plan']),
   });
   const live = args.flags.has('--live');
   const liveTargetKeys = [
@@ -266,8 +281,31 @@ async function test(rawArgs) {
       '--base-assembly and --base-config-snapshot must be provided together',
     );
   }
+  const orchestrated = args.options.sources !== undefined || args.options.shards !== undefined;
+  const planOnly = args.flags.has('--plan');
+  const fresh = args.flags.has('--fresh');
+  const sharded = args.options.shards !== undefined;
+  if (fresh && args.options.sources === undefined) {
+    throw new Error('--fresh requires --sources');
+  }
+  if (planOnly && args.options.sources === undefined) {
+    throw new Error('--plan requires --sources');
+  }
+  if (live && orchestrated) {
+    throw new Error('--sources, --fresh, --plan, and --shards cannot be combined with --live');
+  }
+  if (args.options.shards !== undefined && !/^[1-9][0-9]*$/.test(args.options.shards)) {
+    throw new Error('--shards must be a positive integer');
+  }
+  if (args.options.maxCases !== undefined && !/^[1-9][0-9]*$/.test(args.options.maxCases)) {
+    throw new Error('--max-cases must be a positive integer');
+  }
   const explicitArtifactRoot = resolve(args.options.artifactRoot);
-  await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
+  if (orchestrated && !planOnly) {
+    await mkdir(explicitArtifactRoot, { recursive: true });
+  } else if (!orchestrated) {
+    await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
+  }
   if (live) {
     for (const key of liveTargetKeys) {
       if (args.options[key] === undefined) {
@@ -287,13 +325,106 @@ async function test(rawArgs) {
       throw new Error('--profile must be a canonical ASCII token');
     }
   }
-  const kinds = await Promise.all(args.roots.map(detectRootKind));
-  if (args.roots.length > 1 && kinds.some((kind) => kind.kind !== 'file')) {
-    throw new Error('multiple skiff test roots must be explicit test files');
+  if (!sharded) {
+    const kinds = await Promise.all(args.roots.map(detectRootKind));
+    if (args.roots.length > 1 && kinds.some((kind) => kind.kind !== 'file')) {
+      throw new Error('multiple skiff test roots must be explicit test files');
+    }
+    const kind = kinds[0];
+    if (kind.kind !== 'package' && kind.kind !== 'file') {
+      throw new Error(kind.message);
+    }
   }
-  const kind = kinds[0];
-  if (kind.kind !== 'package' && kind.kind !== 'file') {
-    throw new Error(kind.message);
+
+  let manifest;
+  if (args.options.sources !== undefined) {
+    manifest = await readSourceManifest(resolve(args.options.sources));
+  }
+
+  let shards;
+  let testLabel;
+  if (sharded) {
+    const files = await discoverTestFiles(args.roots);
+    if (files.length === 0) {
+      throw new Error('no *.test.skiff test files found under the given roots');
+    }
+    const counts = await countTestCases(files);
+    const totalCases = counts.reduce((total, count) => total + count, 0);
+    shards = partitionTestFiles(files, counts, Number(args.options.shards));
+    testLabel = `${args.roots.join('、')}：${files.length} 个测试文件 / ${totalCases} 个 case / ${shards.length} 个 shard`;
+  } else {
+    testLabel = `${args.roots.join('、')}：直接运行`;
+  }
+
+  let baseLabel;
+  if (args.options.baseAssembly !== undefined) {
+    baseLabel = `explicit：${args.options.baseAssembly} / ${args.options.baseConfigSnapshot}`;
+  } else if (args.options.sources !== undefined) {
+    const derived = deriveBaseServices(manifest, args.roots);
+    baseLabel = `resolve from store：${derived.baseServices.map((entry) => entry.coordinate).join('、')}`;
+  } else {
+    baseLabel = 'none';
+  }
+
+  if (orchestrated) {
+    const plan = await planSourcePublish({
+      manifest,
+      store: explicitArtifactRoot,
+      fresh,
+    });
+    console.log(renderPlan({
+      mode: plan.mode,
+      store: explicitArtifactRoot,
+      sourceEntries: plan.entries,
+      testLabel,
+      baseLabel,
+    }));
+    if (planOnly) {
+      return;
+    }
+    if (args.options.sources !== undefined) {
+      await publishSources({
+        skiffRoot,
+        store: explicitArtifactRoot,
+        manifest,
+        entries: plan.entries,
+        env: cargoBuildEnv(skiffRoot),
+        log: console.log,
+      });
+    }
+  }
+
+  let baseAssembly = args.options.baseAssembly;
+  let baseConfigSnapshot = args.options.baseConfigSnapshot;
+  if (baseAssembly === undefined && args.options.sources !== undefined) {
+    const resolved = await resolveBasePair({
+      skiffRoot,
+      manifest,
+      store: explicitArtifactRoot,
+      testRoots: args.roots,
+      env: cargoBuildEnv(skiffRoot),
+    });
+    baseAssembly = resolved.baseAssembly;
+    baseConfigSnapshot = resolved.baseConfigSnapshot;
+  }
+
+  if (sharded) {
+    const passed = await runShardedTests({
+      skiffRoot,
+      shards,
+      store: explicitArtifactRoot,
+      baseAssembly,
+      baseConfigSnapshot,
+      maxCases: args.options.maxCases === undefined
+        ? undefined
+        : Number(args.options.maxCases),
+      env: cargoBuildEnv(skiffRoot),
+      cwd: skiffRoot,
+    });
+    if (!passed) {
+      throw new Error('sharded tests failed');
+    }
+    return;
   }
 
   const testArgs = [
@@ -312,9 +443,9 @@ async function test(rawArgs) {
   }
   testArgs.push('--artifact-root', explicitArtifactRoot);
   testArgs.push('--platform-source-root', skiffRoot);
-  if (args.options.baseAssembly !== undefined) {
-    testArgs.push('--base-assembly', args.options.baseAssembly);
-    testArgs.push('--base-config-snapshot', args.options.baseConfigSnapshot);
+  if (baseAssembly !== undefined) {
+    testArgs.push('--base-assembly', baseAssembly);
+    testArgs.push('--base-config-snapshot', baseConfigSnapshot);
   }
   if (live) {
     testArgs.push(
@@ -334,9 +465,9 @@ async function test(rawArgs) {
     await run('cargo', testArgs, skiffRoot);
     return;
   }
-  const isolatedProfile = args.options.baseConfigSnapshot === undefined
+  const isolatedProfile = baseConfigSnapshot === undefined
     ? undefined
-    : await baseConfigSnapshotProfile(explicitArtifactRoot, args.options.baseConfigSnapshot);
+    : await baseConfigSnapshotProfile(explicitArtifactRoot, baseConfigSnapshot);
   await runInIsolatedTestRuntime({
     skiffRoot,
     profile: isolatedProfile,
