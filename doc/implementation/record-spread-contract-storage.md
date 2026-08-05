@@ -153,6 +153,12 @@ commit `a32b5e59`。改动：
 
 **宿主编译期（driver / linker，契约类型 facts 在宿主 package artifact 解析中可用）：**
 
+> driver 收敛：生产服务编译时，`canonical_dependencies::foreign_db_metadata` 只对 `db object
+> ... implements` 子句实际引用的依赖包加载 canonical File IR（别名白名单来自宿主源码 AST，
+> 拼写规则与 lowering 的 `resolve_implements_contract` 一致；契约 facts 面只含 `db contract`
+> 声明）。未被引用的依赖包不加载；test service 的 topLevelAlias 视图保持不变。参考文件：
+> `compiler/driver/source_compile/canonical_dependencies.rs`。
+
 1. **字段覆盖**：实现类型字段集 ⊇ 契约类型字段集；重叠字段 schema identity 逐字段一致
    （按 `static-semantics.md §16/§17`；spread 复制的字段 identity 天然一致，宿主手写同形本地
    名义类型不构成一致）。
