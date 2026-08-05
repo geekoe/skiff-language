@@ -73,6 +73,119 @@ fn rejects_tuple_like_for_binding_syntax() {
 }
 
 #[test]
+fn parses_record_spread_entries() {
+    let ast = parse_source(
+        r#"
+        type Base {
+          id: string,
+        }
+
+        type Thread {
+          spread Base,
+          spread agent/model.AgentThread,
+          spread root.model.Base<int>,
+          ownerUserId: string,
+        }
+        "#,
+    )
+    .expect("record spread entries should parse");
+    let base = &ast.types[0];
+    assert!(base.spreads.is_empty(), "source record has no spreads");
+    let thread = &ast.types[1];
+    assert_eq!(thread.fields.len(), 1);
+    assert_eq!(thread.fields[0].name, "ownerUserId");
+    assert_eq!(
+        thread
+            .spreads
+            .iter()
+            .map(|spread| spread.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Base", "agent/model.AgentThread", "root.model.Base<int>"]
+    );
+}
+
+#[test]
+fn parses_spread_entries_interspersed_with_fields() {
+    let ast = parse_source(
+        r#"
+        type Thread {
+          ownerUserId: string,
+          spread Base,
+          pinnedAt: string?,
+        }
+        "#,
+    )
+    .expect("spread entries may appear at any position");
+    let thread = &ast.types[0];
+    assert_eq!(
+        thread
+            .spreads
+            .iter()
+            .map(|spread| spread.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Base"]
+    );
+    assert_eq!(thread.fields.len(), 2);
+}
+
+#[test]
+fn parses_spread_colon_as_regular_field_name() {
+    let ast = parse_source(
+        r#"
+        type Event {
+          spread: string,
+          kind: string,
+        }
+        "#,
+    )
+    .expect("spread followed by colon is a regular field");
+    let event = &ast.types[0];
+    assert!(event.spreads.is_empty());
+    assert_eq!(
+        event
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.ty.name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("spread", "string"), ("kind", "string")]
+    );
+}
+
+#[test]
+fn parses_multiple_spread_entries() {
+    let ast = parse_source(
+        r#"
+        type Combined {
+          spread First,
+          spread Second,
+          spread third.Module.Third,
+        }
+        "#,
+    )
+    .expect("multiple spread entries should parse");
+    let combined = &ast.types[0];
+    assert_eq!(combined.spreads.len(), 3);
+    assert!(combined.fields.is_empty());
+}
+
+#[test]
+fn rejects_spread_outside_record_field_list() {
+    let error = parse_source(
+        r#"
+        interface NotRecord {
+          spread Base
+        }
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("interface body only supports function requirements"),
+        "unexpected parse error: {error}"
+    );
+}
+
+#[test]
 fn parses_while_loop_with_condition_and_block() {
     let ast = parse_source(
         r#"

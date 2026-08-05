@@ -54,6 +54,7 @@ impl Parser {
         let mut alias = None;
         let mut implements = Vec::new();
         let mut fields = Vec::new();
+        let mut spreads = Vec::new();
 
         if discriminator.is_some() && !self.check_symbol("=") {
             return Err(CompileError::syntax(
@@ -93,7 +94,7 @@ impl Parser {
                 }
             }
             if self.check_symbol("{") {
-                fields = self.parse_field_block()?;
+                (fields, spreads) = self.parse_field_block()?;
             } else if implements.is_empty() {
                 return Err(CompileError::syntax(
                     "expected =, implements, or record body in type declaration",
@@ -111,6 +112,7 @@ impl Parser {
             alias,
             implements,
             fields,
+            spreads,
             span: SourceSpan { start, end },
         })
     }
@@ -466,15 +468,27 @@ impl Parser {
         }
     }
 
-    pub(super) fn parse_field_block(&mut self) -> Result<Vec<FieldDecl>> {
+    pub(super) fn parse_field_block(&mut self) -> Result<(Vec<FieldDecl>, Vec<TypeRef>)> {
         self.expect_symbol("{")?;
         let mut fields = Vec::new();
+        let mut spreads = Vec::new();
         if !self.check_symbol("}") {
             loop {
-                let name = self.expect_ident("expected field name")?;
-                self.expect_symbol(":")?;
-                let ty = self.parse_type()?;
-                fields.push(FieldDecl { name, ty });
+                let spread_entry = self.check_ident("spread")
+                    && !matches!(
+                        self.tokens.get(self.current + 1).map(|token| &token.kind),
+                        Some(TokenKind::Symbol(symbol)) if symbol == ":"
+                    );
+                if spread_entry {
+                    self.advance();
+                    let source = self.parse_type()?;
+                    spreads.push(source);
+                } else {
+                    let name = self.expect_ident("expected field name")?;
+                    self.expect_symbol(":")?;
+                    let ty = self.parse_type()?;
+                    fields.push(FieldDecl { name, ty });
+                }
                 if !self.match_symbol(",") {
                     break;
                 }
@@ -484,7 +498,7 @@ impl Parser {
             }
         }
         self.expect_symbol("}")?;
-        Ok(fields)
+        Ok((fields, spreads))
     }
 
     pub(super) fn parse_params(&mut self) -> Result<Vec<Param>> {

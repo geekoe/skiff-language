@@ -159,7 +159,12 @@ fn build_from_linked(
         &linked.production_sources,
         root_ref_policy,
     )?;
-    let parsed_sources = linked.parsed_sources;
+    let parsed_sources = parsed_sources::expand_record_spreads(
+        linked.parsed_sources,
+        linked.package_dependencies,
+        linked.package_facts,
+        linked.package_artifacts,
+    )?;
     package_db_schema::validate_package_db_schema(&parsed_sources)?;
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
     let mut package_db_metadata_index =
