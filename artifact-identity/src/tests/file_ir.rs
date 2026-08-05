@@ -331,6 +331,7 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
             type_name: "Credential".to_string(),
             collection_name: Some("credential".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -370,6 +371,7 @@ fn file_ir_identity_rejects_noncanonical_duplicate_index_specs() {
             type_name: "Thread".to_string(),
             collection_name: Some("thread".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -458,11 +460,9 @@ fn actor_declaration_abi_participates_in_file_ir_identity() {
 fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() {
     let base = service_call_file_ir_fixture();
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
-    // TODO(L1): golden File IR identity hash must be recomputed after the
-    // skiff-file-ir-v11 -> v12 schema bump (hash input includes schema_version).
     assert_eq!(
         baseline,
-        "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>"
+        "skiff-file-ir-v12:sha256:f2ef68ed36f6ff037ebf29dfba2a19beb75b027bbb09b4a7c2d7f17ef28c6545"
     );
 
     let mut changed_ref = base.clone();

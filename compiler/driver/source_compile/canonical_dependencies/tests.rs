@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
+use crate::input::{
+    ManifestOwner, ManifestProvenance, PackageSourceInput, PublicationManifest, SourceTree,
+};
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
     PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-};
-use crate::input::{
-    ManifestOwner, ManifestProvenance, PackageSourceInput, PublicationManifest, SourceTree,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
@@ -19,24 +19,24 @@ fn compiler_owned_std_selection_is_exact_and_fail_closed() {
     let std = canonical_artifact(SKIFF_STD_PUBLICATION_ID);
     let other = canonical_artifact("example.other");
     let available = [other.clone(), std.clone()];
-    let selected = compiler_owned_std_artifact("example.consumer", &available)
+    let selected = compiler_owned_std_artifact("example.com/consumer", &available)
         .unwrap()
         .expect("one exact std artifact should be selected");
     assert_eq!(selected.package_build_id, std.package_build_id);
     assert!(
-        compiler_owned_std_artifact("example.consumer", std::slice::from_ref(&other))
+        compiler_owned_std_artifact("example.com/consumer", std::slice::from_ref(&other))
             .unwrap()
             .is_none(),
         "an undeclared non-std available artifact must not become source-visible"
     );
     assert!(
-        compiler_owned_std_artifact("example.consumer", &[])
+        compiler_owned_std_artifact("example.com/consumer", &[])
             .unwrap()
             .is_none(),
         "absence must not fabricate a std owner"
     );
 
-    let error = compiler_owned_std_artifact("example.consumer", &[std.clone(), std.clone()])
+    let error = compiler_owned_std_artifact("example.com/consumer", &[std.clone(), std.clone()])
         .unwrap_err()
         .to_string();
     assert!(
@@ -46,10 +46,12 @@ fn compiler_owned_std_selection_is_exact_and_fail_closed() {
 
     let mut wrong_identity = std;
     wrong_identity.package_build_id = PackageBuildId::new("forged");
-    let error =
-        compiler_owned_std_artifact("example.consumer", std::slice::from_ref(&wrong_identity))
-            .unwrap_err()
-            .to_string();
+    let error = compiler_owned_std_artifact(
+        "example.com/consumer",
+        std::slice::from_ref(&wrong_identity),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("identity validation failed"), "{error}");
 }
 
@@ -243,7 +245,7 @@ fn implements_referenced_dependency_aliases_scan_production_sources() {
     ];
     let package = PackageSourceInput::new(
         PublicationManifest::new(
-            skiff_compiler_core::id::PublicationId::parse("example.consumer").unwrap(),
+            skiff_compiler_core::id::PublicationId::parse("example.com/consumer").unwrap(),
             "1.0.0".to_string(),
             skiff_compiler_core::api_spec::PublicationApiSpec::default(),
             dependencies,
@@ -267,8 +269,12 @@ fn implements_referenced_dependency_aliases_scan_production_sources() {
         ),
         ("engine".to_string(), vec!["example.com/engine".to_string()]),
     ]);
-    let input =
-        PackageCompileInput::new(&platform_sources, &package, &package_aliases, "example.consumer");
+    let input = PackageCompileInput::new(
+        &platform_sources,
+        &package,
+        &package_aliases,
+        "example.com/consumer",
+    );
 
     assert_eq!(
         implements_referenced_dependency_aliases(&input),

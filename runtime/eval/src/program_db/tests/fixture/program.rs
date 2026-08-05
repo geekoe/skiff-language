@@ -427,6 +427,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
             type_name: "Thread".to_string(),
             collection_name: Some("Thread".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -454,6 +455,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
             type_name: "RawThread".to_string(),
             collection_name: Some("RawThread".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

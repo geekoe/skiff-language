@@ -19,8 +19,7 @@ use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_syntax::ast::DbDeclKind;
 
 use crate::{
-    input::compile_input::PackageCompileInput,
-    input::PackageDependency,
+    input::compile_input::PackageCompileInput, input::PackageDependency,
     shared::package_compile_error::PackageCompileError,
 };
 
@@ -64,22 +63,18 @@ fn foreign_db_metadata(
         return Ok(PublicationDbMetadataIndex::default());
     };
     let test_service = input.is_test_service();
-    let implements_aliases = (!test_service)
-        .then(|| implements_referenced_dependency_aliases(input));
+    let implements_aliases =
+        (!test_service).then(|| implements_referenced_dependency_aliases(input));
     let mut index = PublicationDbMetadataIndex::default();
-    for dependency in input
-        .package_dependencies
-        .iter()
-        .filter(|dependency| {
-            if test_service {
-                dependency.top_level_alias.is_some()
-            } else {
-                implements_aliases
-                    .as_ref()
-                    .is_some_and(|aliases| aliases.contains(dependency.effective_alias()))
-            }
-        })
-    {
+    for dependency in input.package_dependencies.iter().filter(|dependency| {
+        if test_service {
+            dependency.top_level_alias.is_some()
+        } else {
+            implements_aliases
+                .as_ref()
+                .is_some_and(|aliases| aliases.contains(dependency.effective_alias()))
+        }
+    }) {
         let metadata = foreign_dependency_db_metadata(input, dependency, store)?;
         index.extend(metadata);
     }
@@ -92,9 +87,7 @@ fn foreign_db_metadata(
 /// services keep their whole topLevelAlias view unchanged. The spelling rules
 /// mirror the lowering `resolve_implements_contract` lookup so the whitelist
 /// selects exactly the dependencies that can resolve.
-fn implements_referenced_dependency_aliases(
-    input: &PackageCompileInput<'_>,
-) -> BTreeSet<String> {
+fn implements_referenced_dependency_aliases(input: &PackageCompileInput<'_>) -> BTreeSet<String> {
     let mut aliases = BTreeSet::new();
     for source in input.package.source_graph.production() {
         for db in &source.ast.dbs {
@@ -130,8 +123,7 @@ fn foreign_dependency_db_metadata(
         .dependency_packages
         .iter()
         .filter(|artifact| {
-            artifact.package_id == dependency.id
-                && artifact.package_version == dependency.version
+            artifact.package_id == dependency.id && artifact.package_version == dependency.version
         })
         .collect::<Vec<_>>();
     let [artifact] = matches.as_slice() else {

@@ -1021,21 +1021,19 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
         BTreeMap::new();
     for (index, implementation) in implementations.iter().enumerate() {
         let (dependency_ref, symbol_path) = match &implementation.implements {
-            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => {
-                match &symbol.package {
-                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
-                        (dependency_ref.as_str(), symbol.symbol_path.as_str())
-                    }
-                    _ => {
-                        anyhow::bail!(
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                    (dependency_ref.as_str(), symbol.symbol_path.as_str())
+                }
+                _ => {
+                    anyhow::bail!(
                             "db object {} in package {} implements {:?} which is not a dependency package contract reference",
                             implementation.symbol,
                             implementation.package_id,
                             implementation.implements
                         );
-                    }
                 }
-            }
+            },
             _ => {
                 anyhow::bail!(
                     "db object {} in package {} implements {:?} which is not a dependency package contract reference",
@@ -1045,12 +1043,15 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
                 );
             }
         };
-        let mut binding_matches = image.package_link_plan().package_links.iter().filter(
-            |binding| {
-                binding.key.caller_package_build_id == implementation.build_id
-                    && binding.key.package_requirement_alias == dependency_ref
-            },
-        );
+        let mut binding_matches =
+            image
+                .package_link_plan()
+                .package_links
+                .iter()
+                .filter(|binding| {
+                    binding.key.caller_package_build_id == implementation.build_id
+                        && binding.key.package_requirement_alias == dependency_ref
+                });
         let binding = binding_matches.next().ok_or_else(|| {
             anyhow::anyhow!(
                 "db object {} in package {} implements contract target {dependency_ref} which is not a linked dependency",
@@ -1126,7 +1127,9 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
             type_index: contract.type_index,
         };
         let by_owner = owners_by_contract.get(&contract_key);
-        let Some(implementers) = by_owner.and_then(|by_owner| by_owner.iter().next().map(|(_, v)| v)) else {
+        let Some(implementers) =
+            by_owner.and_then(|by_owner| by_owner.iter().next().map(|(_, v)| v))
+        else {
             anyhow::bail!(
                 "db contract {}/{} has no implementing db object declaration in the assembly",
                 contract.package_id,
@@ -1149,7 +1152,8 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
                 .entry(&implementations[*index].build_id)
                 .or_default() += 1;
         }
-        if let Some((build_id, count)) = implementers_by_build.iter().find(|(_, count)| **count > 1) {
+        if let Some((build_id, count)) = implementers_by_build.iter().find(|(_, count)| **count > 1)
+        {
             anyhow::bail!(
                 "db contract {}/{} is implemented more than once inside package build {build_id}",
                 contract.package_id,
@@ -1160,17 +1164,13 @@ fn validate_db_contract_implementations(candidate: &AssemblyLinkedCandidate) -> 
             .iter()
             .flat_map(|index| {
                 let implementation = &implementations[*index];
-                implementation
-                    .indexes
-                    .iter()
-                    .map(|index| {
-                        managed_index_spec(
-                            &implementation.package_id,
-                            &implementation.collection_name,
-                            index,
-                        )
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()
+                implementation.indexes.iter().map(|index| {
+                    managed_index_spec(
+                        &implementation.package_id,
+                        &implementation.collection_name,
+                        index,
+                    )
+                })
             })
             .collect::<anyhow::Result<BTreeSet<_>>>()?;
         for index in &contract.indexes {

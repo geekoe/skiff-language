@@ -10,7 +10,9 @@ use crate::file_ir::{
     InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
     SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef};
+use skiff_artifact_model::{
+    NamedUnionBranchIr, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef,
+};
 use skiff_compiler_core::db_projection::project_db_read_type;
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 use skiff_compiler_source::{
@@ -392,7 +394,12 @@ pub(super) fn lower_db_declarations(
                         db.name, implements.name
                     )));
                 }
-                validate_implements_coverage(db, contract, &identity_fields, attachment.storage_map())?;
+                validate_implements_coverage(
+                    db,
+                    contract,
+                    &identity_fields,
+                    attachment.storage_map(),
+                )?;
                 Some(lower_type_ref(
                     implements,
                     type_indices,
@@ -666,12 +673,20 @@ fn validate_implements_coverage(
 fn db_field_type_identity_matches(host: &TypeRefIr, contract: &TypeRefIr) -> bool {
     match (host, contract) {
         (
-            TypeRefIr::PackageSymbol { symbol: host_symbol },
+            TypeRefIr::PackageSymbol {
+                symbol: host_symbol,
+            },
             TypeRefIr::PackageSymbol {
                 symbol: contract_symbol,
             },
         ) => package_symbol_identity_matches(host_symbol, contract_symbol),
-        (TypeRefIr::Builtin { name, args }, TypeRefIr::Builtin { name: other, args: other_args }) => {
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Builtin {
+                name: other,
+                args: other_args,
+            },
+        ) => {
             name == other
                 && args.len() == other_args.len()
                 && args
@@ -694,10 +709,9 @@ fn db_field_type_identity_matches(host: &TypeRefIr, contract: &TypeRefIr) -> boo
                     .zip(other)
                     .all(|(item, other)| db_field_type_identity_matches(item, other))
         }
-        (
-            TypeRefIr::Nullable { inner },
-            TypeRefIr::Nullable { inner: other },
-        ) => db_field_type_identity_matches(inner, other),
+        (TypeRefIr::Nullable { inner }, TypeRefIr::Nullable { inner: other }) => {
+            db_field_type_identity_matches(inner, other)
+        }
         (TypeRefIr::Literal { value }, TypeRefIr::Literal { value: other }) => value == other,
         (
             TypeRefIr::AppliedNominal { base, arguments },
@@ -737,10 +751,7 @@ fn nominal_base_identity_matches(
 /// Cross-package nominal identity: the same dependency view (dependency alias,
 /// the link-time ABI expectation is a linker refinement and not part of the
 /// identity) and the same public symbol path.
-fn package_symbol_identity_matches(
-    host: &PackageSymbolRef,
-    contract: &PackageSymbolRef,
-) -> bool {
+fn package_symbol_identity_matches(host: &PackageSymbolRef, contract: &PackageSymbolRef) -> bool {
     matches!(
         (&host.package, &contract.package),
         (

@@ -210,6 +210,7 @@ fn model_file_with_db_field(
             type_name: format!("model.{db_symbol}"),
             collection_name: Some(db_symbol.to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

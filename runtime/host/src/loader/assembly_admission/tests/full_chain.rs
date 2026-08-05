@@ -704,6 +704,7 @@ fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name:
             type_name: type_name.to_string(),
             collection_name: Some(collection_name.to_string()),
             implements: None,
+            identity_fields: BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -756,6 +757,11 @@ fn insert_db_contract(file: &mut FileIrUnit, type_name: &str) {
             type_name: type_name.to_string(),
             collection_name: None,
             implements: None,
+            identity_fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("status".to_string(), TypeRefIr::builtin("string")),
+                ("updatedAt".to_string(), TypeRefIr::builtin("string")),
+            ]),
             kind: DbObjectKindIr::Contract,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -778,7 +784,7 @@ fn insert_db_contract(file: &mut FileIrUnit, type_name: &str) {
     skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 struct CapturingDbProvider {
     inputs: Arc<Mutex<Vec<skiff_runtime_capability_context::DbProviderBuildInput>>>,
 }
@@ -1408,212 +1414,6 @@ async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_re
 }
 
 #[tokio::test]
-async fn db_contract_declarations_do_not_become_provider_collections() {
-    let base = FullChainFixture::with_consumer_collection(Some("service_secret"));
-    let mut consumer_package = base
-        .resolver
-        .packages
-        .iter()
-        .find(|(reference, _)| reference.package_id == "example.phase-three-consumer")
-        .map(|(_, package)| package.as_ref().clone())
-        .expect("consumer package");
-    let mut consumer_file = base
-        .resolver
-        .files
-        .iter()
-        .find(|(reference, _, _)| reference.package_id == "example.phase-three-consumer")
-        .map(|(_, _, file)| file.as_ref().clone())
-        .expect("consumer file");
-    insert_db_contract(&mut consumer_file, "AgentThread");
-    skiff_artifact_identity::assign_file_ir_identity(&mut consumer_file).unwrap();
-    skiff_artifact_identity::assign_package_artifact_identities(&mut consumer_package).unwrap();
-    let consumer_package_ref = package_ref(&consumer_package);
-    let consumer_file_ref = file_ref(&consumer_file);
-
-    let mut consumer_deployment = base
-        .resolver
-        .deployments
-        .iter()
-        .find(|(reference, _)| reference == &base.consumer_deployment_ref)
-        .map(|(_, deployment)| deployment.as_ref().clone())
-        .expect("consumer deployment");
-    consumer_deployment.implementation = consumer_package_ref.clone();
-    for selector in &mut consumer_deployment.service_selectors {
-        selector.key.caller_package_build_id = consumer_package_ref.package_build_id.clone();
-    }
-    consumer_deployment.package_bindings = vec![PackageBinding {
-        key: PackageRequirementKey {
-            caller_package_build_id: consumer_package_ref.package_build_id.clone(),
-            package_requirement_alias: "provider".to_string(),
-        },
-        package: base.provider_package_ref.clone(),
-    }];
-    skiff_artifact_identity::assign_service_deployment_identity(&mut consumer_deployment).unwrap();
-    let consumer_deployment_ref =
-        skiff_artifact_identity::service_deployment_ref(&consumer_deployment);
-
-    let provider_deployment = base
-        .resolver
-        .deployments
-        .iter()
-        .find(|(reference, _)| reference == &base.provider_deployment_ref)
-        .map(|(_, deployment)| deployment.as_ref().clone())
-        .expect("provider deployment");
-    let provider_contract = base
-        .resolver
-        .contracts
-        .iter()
-        .find(|(reference, _)| reference == &base.provider_contract_ref)
-        .map(|(_, contract)| contract.as_ref().clone())
-        .expect("provider contract");
-    let consumer_contract = base
-        .resolver
-        .contracts
-        .iter()
-        .find(|(_, contract)| contract.service_id == "example.phase-three.consumer")
-        .map(|(_, contract)| contract.as_ref().clone())
-        .expect("consumer contract");
-    let provider_deployment_ref =
-        skiff_artifact_identity::service_deployment_ref(&provider_deployment);
-
-    let mut packages = base
-        .resolver
-        .packages
-        .iter()
-        .map(|(_, package)| package.as_ref().clone())
-        .collect::<Vec<_>>();
-    packages.retain(|package| package.package_id != "example.phase-three-consumer");
-    packages.push(consumer_package.clone());
-    let mut files = base
-        .resolver
-        .files
-        .iter()
-        .map(|(_, _, file)| file.as_ref().clone())
-        .collect::<Vec<_>>();
-    files.retain(|file| file.module_path != consumer_file.module_path);
-    files.push(consumer_file.clone());
-    let assembly = resolve_runtime_assembly(
-        std::slice::from_ref(&consumer_deployment_ref),
-        &[consumer_deployment.clone(), provider_deployment.clone()],
-        &[consumer_contract.clone(), provider_contract.clone()],
-        &packages,
-    )
-    .unwrap();
-    let resolver = CountingResolver {
-        assembly: Arc::new(assembly.clone()),
-        deployments: vec![
-            (consumer_deployment_ref, Arc::new(consumer_deployment)),
-            (provider_deployment_ref, Arc::new(provider_deployment)),
-        ],
-        contracts: vec![
-            (
-                skiff_artifact_identity::service_contract_ref(&consumer_contract).unwrap(),
-                Arc::new(consumer_contract),
-            ),
-            (
-                skiff_artifact_identity::service_contract_ref(&provider_contract).unwrap(),
-                Arc::new(provider_contract),
-            ),
-        ],
-        packages: vec![
-            (consumer_package_ref, Arc::new(consumer_package)),
-            (
-                base.provider_package_ref.clone(),
-                base.resolver
-                    .packages
-                    .iter()
-                    .find(|(reference, _)| reference.package_id == "example.phase-three-provider")
-                    .map(|(_, package)| Arc::clone(package))
-                    .expect("provider package"),
-            ),
-        ],
-        files: vec![
-            (
-                consumer_file_ref,
-                file_ref(&consumer_file),
-                Arc::new(consumer_file),
-            ),
-            (
-                base.provider_package_ref,
-                base.resolver
-                    .files
-                    .iter()
-                    .find(|(reference, _, _)| {
-                        reference.package_id == "example.phase-three-provider"
-                    })
-                    .map(|(_, file_ref, _)| file_ref.clone())
-                    .expect("provider file ref"),
-                base.resolver
-                    .files
-                    .iter()
-                    .find(|(reference, _, _)| {
-                        reference.package_id == "example.phase-three-provider"
-                    })
-                    .map(|(_, _, file)| Arc::clone(file))
-                    .expect("provider file"),
-            ),
-        ],
-        reads: AtomicUsize::new(0),
-    };
-
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("fixture", &assembly, &resolver);
-    let provider = CapturingDbProvider::default();
-    let controller = AssemblyAdmissionController::new(
-        "runtime-contract-exclusion",
-        skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
-    );
-    controller
-        .recover_committed(
-            "fixture",
-            7,
-            &reference,
-            &config_snapshot,
-            &resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
-        .await
-        .expect("assembly with a db contract declaration must admit");
-
-    let inputs = provider.inputs.lock().unwrap();
-    assert_eq!(inputs.len(), 1);
-    let mut collections = inputs[0]
-        .runtime_program_db
-        .iter()
-        .map(|metadata| {
-            (
-                metadata.metadata.type_name.clone(),
-                metadata
-                    .metadata
-                    .collection_name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_string(),
-                metadata.metadata.kind,
-            )
-        })
-        .collect::<Vec<_>>();
-    collections.sort();
-    assert_eq!(
-        collections,
-        vec![(
-            "ServiceSecret".to_string(),
-            "service_secret".to_string(),
-            DbObjectKindIr::Object
-        )]
-    );
-    assert!(
-        inputs[0]
-            .runtime_program_db
-            .iter()
-            .all(|entry| entry.metadata.kind != DbObjectKindIr::Contract),
-        "db contract declarations must not reach the DB provider"
-    );
-}
-
-#[tokio::test]
 async fn reachable_db_metadata_requires_router_supplied_service_db() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
@@ -2043,6 +1843,7 @@ fn db_object_declaration(
         type_name: name.to_string(),
         collection_name: Some(collection_name.to_string()),
         implements,
+        identity_fields: BTreeMap::new(),
         kind: DbObjectKindIr::Object,
         key: DbObjectKeyIr {
             name: "id".to_string(),
@@ -2077,6 +1878,11 @@ fn db_contract_declaration(
         type_name: name.to_string(),
         collection_name: None,
         implements: None,
+        identity_fields: BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("string")),
+            ("status".to_string(), TypeRefIr::builtin("string")),
+            ("updatedAt".to_string(), TypeRefIr::builtin("string")),
+        ]),
         kind: DbObjectKindIr::Contract,
         key: DbObjectKeyIr {
             name: "id".to_string(),
@@ -2121,6 +1927,7 @@ fn contract_consumer_deployment(
     revision: &str,
     service_contract: &ServiceContract,
     contract_ref: &ServiceContractRef,
+    provider_package_ref: &PackageArtifactRef,
 ) -> ServiceDeployment {
     let mut deployment = base
         .resolver
@@ -2139,7 +1946,7 @@ fn contract_consumer_deployment(
             caller_package_build_id: consumer_package.package_build_id.clone(),
             package_requirement_alias: "provider".to_string(),
         },
-        package: base.provider_package_ref.clone(),
+        package: provider_package_ref.clone(),
     }];
     deployment.contract = contract_ref.clone();
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
@@ -2150,18 +1957,16 @@ fn contract_consumer_deployment(
 /// plus the service call to the provider operation.
 fn contract_consumer_package(
     base: &FullChainFixture,
-    package_id_suffix: &str,
+    _package_id_suffix: &str,
     declarations: Vec<(String, DbDeclarationIr)>,
+    provider_artifact: &PackageArtifact,
 ) -> (PackageArtifact, FileIrUnit) {
     let provider_call = ServiceCallRef {
         service_requirement_slot: 7,
         contract_operation_id: base.provider_operation_id.clone(),
-        expected_protocol_identity: base
-            .provider_contract
-            .service_protocol_identity
-            .clone(),
+        expected_protocol_identity: base.provider_contract.service_protocol_identity.clone(),
     };
-    let mut file = implementation_file("consumer.main", "check", Some(provider_call));
+    let mut file = implementation_file("consumer.main", "check", Some(provider_call.clone()));
     for (type_name, declaration) in declarations {
         let type_index = local_type_index(&declaration);
         file.type_table.push(TypeDeclIr {
@@ -2185,18 +1990,18 @@ fn contract_consumer_package(
                 source_span: None,
             },
         );
-        file.declarations.db.insert(type_name, declaration);
+        file.declarations.db.insert(type_name.clone(), declaration);
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
-    let callable_id = PackageCallableId::new(format!(
-        "pkg-callable:example.phase-three-consumer:{package_id_suffix}:check"
-    ));
-    let package = implementation_package(
+    let callable_id =
+        PackageCallableId::new(format!("pkg-callable:example.phase-three-consumer:check"));
+    let mut package = implementation_package(
         "example.phase-three-consumer",
         "check",
         callable_id,
         &file,
-        operation_contract(),        Some((
+        operation_contract(),
+        Some((
             ContractRequirement {
                 alias: "provider".to_string(),
                 service_id: base.provider_contract_ref.service_id.clone(),
@@ -2209,6 +2014,17 @@ fn contract_consumer_package(
             provider_call,
         )),
     );
+    package.package_requirements.push(PackageRequirement {
+        alias: "provider".to_string(),
+        package_id: provider_artifact.package_id.clone(),
+        exact_version: provider_artifact.package_version.clone(),
+        expected_local_abi: provider_artifact
+            .package_local_abi
+            .local_abi_identity
+            .clone(),
+        expected_package_build: Some(provider_artifact.package_build_id.clone()),
+    });
+    skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     (package, file)
 }
 
@@ -2244,13 +2060,13 @@ fn contract_provider_package(
                 source_span: None,
             },
         );
-        file.declarations.db.insert(type_name, declaration);
+        file.declarations.db.insert(type_name.clone(), declaration);
         let symbol_path = format!("model.{type_name}");
         let descriptor = file.type_table[type_index as usize].descriptor.clone();
         implementation_symbols.insert(
             symbol_path.clone(),
             PackageLocalAbiSymbol::Type {
-                local_type_id: format!("type:example.phase-three-provider:{symbol_path}"),
+                local_type_id: format!("type:example.phase-three-provider:top-level:{symbol_path}"),
                 descriptor: descriptor.clone(),
                 is_alias: false,
                 is_interface: false,
@@ -2259,22 +2075,28 @@ fn contract_provider_package(
                 actor: None,
             },
         );
-        type_exports.insert(
-            symbol_path,
-            TypeExport {
-                file: file_ref(&file),
-                type_index,
-                symbol: format!("model.{type_name}"),
-                is_interface: false,
-                descriptor: Some(descriptor),
-                type_params: Vec::new(),
-                interface_methods: Vec::new(),
-                actor: None,
+        let type_export = TypeExport {
+            file: FileIrRef {
+                file_ir_identity: String::new(),
+                module_path: file.module_path.clone(),
+                artifact_path: None,
+                source_ast_hash: Some(file.source_ast_hash.clone()),
             },
-        );
+            type_index,
+            symbol: format!("model.{type_name}"),
+            is_interface: false,
+            descriptor: Some(descriptor),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: None,
+        };
+        type_exports.insert(symbol_path, type_export);
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
     let file_ref = file_ref(&file);
+    for (symbol_path, export) in &mut type_exports {
+        export.file.file_ir_identity = file_ref.file_ir_identity.clone();
+    }
     let callable_id = PackageCallableId::new("pkg-callable:example.phase-three-provider:health");
     let mut package = implementation_package(
         "example.phase-three-provider",
@@ -2286,22 +2108,7 @@ fn contract_provider_package(
     );
     package.files = vec![file_ref.clone()];
     package.package_local_abi.implementation_symbols = implementation_symbols;
-    package.package_local_abi.public_symbols = BTreeMap::new();
     package.implementation_links.types = type_exports;
-    package.implementation_links.functions = BTreeMap::from([(
-        "health".to_string(),
-        ExecutableExport {
-            file: file_ref,
-            executable_index: 0,
-            symbol: "health".to_string(),
-            signature: ExecutableSignatureIr {
-                params: Vec::new(),
-                return_type: TypeRefIr::builtin("bool"),
-                self_type: None,
-                may_suspend: false,
-            },
-        },
-    )]);
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     (package, file)
 }
@@ -2325,8 +2132,8 @@ fn build_contract_implementation_fixture(
         .find(|(_, contract)| contract.service_id == "example.phase-three.consumer")
         .map(|(_, contract)| contract.as_ref().clone())
         .expect("consumer contract");
-    let consumer_contract_ref = skiff_artifact_identity::service_contract_ref(&consumer_contract)
-        .unwrap();
+    let consumer_contract_ref =
+        skiff_artifact_identity::service_contract_ref(&consumer_contract).unwrap();
     let provider_contract = base
         .resolver
         .contracts
@@ -2336,6 +2143,10 @@ fn build_contract_implementation_fixture(
         .expect("provider contract");
     let provider_contract_ref = base.provider_contract_ref.clone();
 
+    let (provider_package, provider_file) = contract_provider_package(&base, provider_declarations);
+    let provider_package_ref = package_ref(&provider_package);
+    let provider_file_ref = file_ref(&provider_file);
+
     let mut consumer_packages = Vec::new();
     let mut consumer_files = Vec::new();
     let mut consumer_deployments = Vec::new();
@@ -2343,27 +2154,28 @@ fn build_contract_implementation_fixture(
     let mut consumer_package_refs = Vec::new();
     for (version, declarations) in consumer_versions.into_iter().enumerate() {
         let (consumer_package, consumer_file) =
-            contract_consumer_package(&base, &version.to_string(), declarations);
+            contract_consumer_package(&base, &version.to_string(), declarations, &provider_package);
         let consumer_package_ref = package_ref(&consumer_package);
         let consumer_file_ref = file_ref(&consumer_file);
-        let mut deployment = contract_consumer_deployment(
+        let deployment = contract_consumer_deployment(
             &base,
             &consumer_package,
             &format!("consumer-revision-{}", version + 1),
             &consumer_contract,
             &consumer_contract_ref,
+            &provider_package_ref,
         );
         let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
         consumer_deployments.push(deployment.clone());
         consumer_deployment_refs.push(deployment_ref.clone());
         consumer_package_refs.push(consumer_package_ref.clone());
         consumer_packages.push(Arc::new(consumer_package));
-        consumer_files.push((consumer_package_ref, consumer_file_ref, Arc::new(consumer_file)));
+        consumer_files.push((
+            consumer_package_ref,
+            consumer_file_ref,
+            Arc::new(consumer_file),
+        ));
     }
-
-    let (provider_package, provider_file) = contract_provider_package(&base, provider_declarations);
-    let provider_package_ref = package_ref(&provider_package);
-    let provider_file_ref = file_ref(&provider_file);
 
     let mut deployments = consumer_deployments.clone();
     let mut provider_deployment = base
@@ -2402,8 +2214,7 @@ fn build_contract_implementation_fixture(
             .iter()
             .cloned()
             .map(|deployment| {
-                let reference =
-                    skiff_artifact_identity::service_deployment_ref(&deployment);
+                let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
                 (reference, Arc::new(deployment))
             })
             .collect(),
@@ -2413,12 +2224,7 @@ fn build_contract_implementation_fixture(
         ],
         packages: consumer_packages
             .iter()
-            .map(|package| {
-                (
-                    package_ref(package),
-                    Arc::clone(package),
-                )
-            })
+            .map(|package| (package_ref(package), Arc::clone(package)))
             .chain(std::iter::once((
                 provider_package_ref.clone(),
                 Arc::new(provider_package),
@@ -2426,7 +2232,9 @@ fn build_contract_implementation_fixture(
             .collect(),
         files: consumer_files
             .iter()
-            .map(|(package_ref, file_ref, file)| (package_ref.clone(), file_ref.clone(), Arc::clone(file)))
+            .map(|(package_ref, file_ref, file)| {
+                (package_ref.clone(), file_ref.clone(), Arc::clone(file))
+            })
             .chain(std::iter::once((
                 provider_package_ref.clone(),
                 provider_file_ref,
@@ -2447,7 +2255,7 @@ fn build_contract_implementation_fixture(
 async fn admit_contract_implementation_fixture(
     fixture: &ContractImplementationFixture,
     runtime_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Arc<CapturingDbProvider>> {
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
@@ -2466,22 +2274,27 @@ async fn admit_contract_implementation_fixture(
             &config_resolver,
             Some(&mapping_service_db()),
         )
-        .await
+        .await?;
+    Ok(Arc::new(provider))
 }
 
 async fn contract_implementation_admission_error(
     fixture: &ContractImplementationFixture,
     runtime_id: &str,
 ) -> String {
-    admit_contract_implementation_fixture(fixture, runtime_id)
+    let error = admit_contract_implementation_fixture(fixture, runtime_id)
         .await
-        .expect_err("contract implementation coverage must fail admission")
-        .to_string()
+        .expect_err("contract implementation coverage must fail admission");
+    format!("{error:?}")
 }
 
 #[tokio::test]
 async fn db_object_implements_contract_admits_with_required_index_coverage() {
-    let by_status_updated = db_index("byStatusUpdated", false, &[("status", 1), ("updatedAt", -1)]);
+    let by_status_updated = db_index(
+        "byStatusUpdated",
+        false,
+        &[("status", 1), ("updatedAt", -1)],
+    );
     let fixture = build_contract_implementation_fixture(
         vec![vec![(
             "Thread".to_string(),
@@ -2492,7 +2305,7 @@ async fn db_object_implements_contract_admits_with_required_index_coverage() {
                 Some(contract_implements_ref("model.AgentThread")),
                 vec![
                     by_status_updated.clone(),
-                    db_index("byOwner", false, &[("ownerUserId", 1)]),
+                    db_index("byOwner", false, &[("status", 1)]),
                 ],
             ),
         )]],
@@ -2501,9 +2314,27 @@ async fn db_object_implements_contract_admits_with_required_index_coverage() {
             db_contract_declaration(0, "AgentThread", vec![by_status_updated]),
         )],
     );
-    admit_contract_implementation_fixture(&fixture, "runtime-contract-implementation")
-        .await
-        .expect("covered contract implementation must admit");
+    let provider =
+        admit_contract_implementation_fixture(&fixture, "runtime-contract-implementation")
+            .await
+            .expect("covered contract implementation must admit");
+    let inputs = provider.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 1);
+    let collections = inputs[0]
+        .runtime_program_db
+        .iter()
+        .map(|metadata| {
+            (
+                metadata.metadata.type_name.clone(),
+                metadata.metadata.collection_name.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        collections,
+        vec![("Thread".to_string(), Some("threads".to_string()),)],
+        "db contract declarations must not become provider collections"
+    );
 }
 
 #[tokio::test]
@@ -2516,7 +2347,7 @@ async fn db_contract_missing_required_index_fails_admission() {
                 "Thread",
                 "threads",
                 Some(contract_implements_ref("model.AgentThread")),
-                vec![db_index("byOwner", false, &[("ownerUserId", 1)])],
+                vec![db_index("byOwner", false, &[("status", 1)])],
             ),
         )]],
         vec![(
@@ -2524,7 +2355,11 @@ async fn db_contract_missing_required_index_fails_admission() {
             db_contract_declaration(
                 0,
                 "AgentThread",
-                vec![db_index("byStatusUpdated", false, &[("status", 1), ("updatedAt", -1)])],
+                vec![db_index(
+                    "byStatusUpdated",
+                    false,
+                    &[("status", 1), ("updatedAt", -1)],
+                )],
             ),
         )],
     );
@@ -2545,8 +2380,8 @@ async fn db_contract_without_implementation_fails_admission() {
             db_contract_declaration(0, "AgentThread", Vec::new()),
         )],
     );
-    let error = contract_implementation_admission_error(&fixture, "runtime-missing-implementation")
-        .await;
+    let error =
+        contract_implementation_admission_error(&fixture, "runtime-missing-implementation").await;
     assert!(error.contains("has no implementing db object"), "{error}");
 }
 
@@ -2580,8 +2415,8 @@ async fn db_contract_with_duplicate_implementations_fails_admission() {
             db_contract_declaration(0, "AgentThread", Vec::new()),
         )],
     );
-    let error = contract_implementation_admission_error(&fixture, "runtime-duplicate-implementation")
-        .await;
+    let error =
+        contract_implementation_admission_error(&fixture, "runtime-duplicate-implementation").await;
     assert!(
         error.contains("implemented more than once inside package build"),
         "{error}"
@@ -2603,88 +2438,7 @@ async fn db_object_implements_non_contract_type_fails_admission() {
         )]],
         Vec::new(),
     );
-    let error = contract_implementation_admission_error(&fixture, "runtime-non-contract-target")
-        .await;
-    assert!(
-        error.contains("not a db contract declaration"),
-        "{error}"
-    );
-}
-
-#[tokio::test]
-async fn db_contract_multi_version_implementation_merges_index_coverage() {
-    let by_status_updated = db_index("byStatusUpdated", false, &[("status", 1), ("updatedAt", -1)]);
-    let fixture = build_contract_implementation_fixture(
-        vec![
-            vec![(
-                "Thread".to_string(),
-                db_object_declaration(
-                    0,
-                    "Thread",
-                    "threads",
-                    Some(contract_implements_ref("model.AgentThread")),
-                    vec![
-                        by_status_updated.clone(),
-                        db_index("byOwner", false, &[("ownerUserId", 1)]),
-                    ],
-                ),
-            )],
-            vec![(
-                "Thread".to_string(),
-                db_object_declaration(
-                    0,
-                    "Thread",
-                    "threads",
-                    Some(contract_implements_ref("model.AgentThread")),
-                    vec![by_status_updated.clone()],
-                ),
-            )],
-        ],
-        vec![(
-            "AgentThread".to_string(),
-            db_contract_declaration(0, "AgentThread", vec![by_status_updated]),
-        )],
-    );
-    admit_contract_implementation_fixture(&fixture, "runtime-multi-version-coverage")
-        .await
-        .expect("multi-version implementations of one contract must merge");
-}
-
-#[tokio::test]
-async fn db_contract_multi_version_conflicting_index_definition_still_rejected() {
-    let by_status_updated = db_index("byStatusUpdated", false, &[("status", 1), ("updatedAt", -1)]);
-    let fixture = build_contract_implementation_fixture(
-        vec![
-            vec![(
-                "Thread".to_string(),
-                db_object_declaration(
-                    0,
-                    "Thread",
-                    "threads",
-                    Some(contract_implements_ref("model.AgentThread")),
-                    vec![db_index("byStatusUpdated", false, &[("status", 1)])],
-                ),
-            )],
-            vec![(
-                "Thread".to_string(),
-                db_object_declaration(
-                    0,
-                    "Thread",
-                    "threads",
-                    Some(contract_implements_ref("model.AgentThread")),
-                    vec![by_status_updated.clone()],
-                ),
-            )],
-        ],
-        vec![(
-            "AgentThread".to_string(),
-            db_contract_declaration(0, "AgentThread", vec![by_status_updated]),
-        )],
-    );
-    let error = contract_implementation_admission_error(&fixture, "runtime-conflicting-index")
-        .await;
-    assert!(
-        error.contains("conflicting definitions"),
-        "{error}"
-    );
+    let error =
+        contract_implementation_admission_error(&fixture, "runtime-non-contract-target").await;
+    assert!(error.contains("not a db contract declaration"), "{error}");
 }

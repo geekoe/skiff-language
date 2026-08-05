@@ -536,7 +536,7 @@ fn rejects_db_contract_implementing_another_contract() {
     .unwrap_err();
     assert!(
         error
-            .message
+            .to_string()
             .contains("db contract declarations cannot implement another contract"),
         "unexpected error: {error}"
     );

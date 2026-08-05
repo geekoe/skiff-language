@@ -68,7 +68,7 @@ fn foreign_db_selection_fails_closed_for_missing_file_link_or_db_attachment() {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
         contracts_only: false,
-            artifact: &artifact,
+        artifact: &artifact,
         files: &[],
     }])
     .unwrap_err();
@@ -98,7 +98,7 @@ fn foreign_db_selection_fails_closed_for_missing_file_link_or_db_attachment() {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
         contracts_only: false,
-            artifact: &non_db_artifact,
+        artifact: &non_db_artifact,
         files: std::slice::from_ref(&non_db_file),
     }])
     .expect("a non-DB type does not fabricate metadata");
@@ -115,7 +115,7 @@ fn foreign_db_selection_rejects_stale_package_identity_and_same_named_file_subst
         primary_alias: "provider",
         top_level_alias: "providerImpl",
         contracts_only: false,
-            artifact: &stale_artifact,
+        artifact: &stale_artifact,
         files: std::slice::from_ref(&file),
     }])
     .unwrap_err();
@@ -127,7 +127,7 @@ fn foreign_db_selection_rejects_stale_package_identity_and_same_named_file_subst
         primary_alias: "provider",
         top_level_alias: "providerImpl",
         contracts_only: false,
-            artifact: &artifact,
+        artifact: &artifact,
         files: std::slice::from_ref(&replacement),
     }])
     .unwrap_err();
@@ -167,6 +167,8 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
             },
             type_name: "model.Session".to_string(),
             collection_name: Some("sessions".to_string()),
+            implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

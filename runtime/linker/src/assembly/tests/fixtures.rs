@@ -129,6 +129,8 @@ impl CycleFixture {
                 type_ref: TypeRefIr::LocalType { type_index: 0 },
                 type_name: "LocalRecord".to_string(),
                 collection_name: Some("helper_local_record".to_string()),
+                implements: None,
+                identity_fields: std::collections::BTreeMap::new(),
                 kind: skiff_artifact_model::DbObjectKindIr::Object,
                 key: skiff_artifact_model::DbObjectKeyIr {
                     name: "id".to_string(),
@@ -1413,6 +1415,7 @@ fn attach_local_db_declaration(file: &mut FileIrUnit, include_target: bool) {
             type_name: "LocalRecord".to_string(),
             collection_name: Some("ambiguous_local_record".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: skiff_artifact_model::DbObjectKindIr::Object,
             key: skiff_artifact_model::DbObjectKeyIr {
                 name: "id".to_string(),

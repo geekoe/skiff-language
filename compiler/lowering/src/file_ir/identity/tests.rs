@@ -58,10 +58,8 @@ fn nontrivial_file_ir_identity_matches_canonical_owner_and_golden() {
         skiff_artifact_identity::file_ir_identity(&unit).expect("canonical File IR identity");
 
     assert_eq!(adapter_identity, canonical_identity);
-    // TODO(L1): golden File IR identity hash must be recomputed after the
-    // skiff-file-ir-v11 -> v12 schema bump (hash input includes schema_version).
     assert_eq!(
         adapter_identity,
-        "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>"
+        "skiff-file-ir-v12:sha256:55602ca057c3dae15208704b9883b82d264f56482462c48ea2508d1a889b1cc3"
     );
 }

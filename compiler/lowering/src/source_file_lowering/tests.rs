@@ -14,11 +14,12 @@ use skiff_artifact_model::{
     validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
     InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageCallableId,
     PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
-    SyntheticInstructionSiteReason, TypeDescriptorIr,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     api::PublicTypeKind, build_package_from_parsed_sources,
+    build_package_from_parsed_sources_with_dependency_analysis,
     parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
     PackageDependency, PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
@@ -3143,7 +3144,10 @@ fn record_pattern_nested_field_patterns_lower_recursively() {
 mod interface_execution;
 mod object_materialization;
 
-fn provider_contract_artifact() -> (skiff_artifact_model::PackageArtifact, skiff_artifact_model::FileIrUnit) {
+fn provider_contract_artifact() -> (
+    skiff_artifact_model::PackageArtifact,
+    skiff_artifact_model::FileIrUnit,
+) {
     let package_id = "example.com/engine";
     let mut file = skiff_artifact_model::FileIrUnit::empty("model", format!("{package_id}:source"));
     file.type_table.push(TypeDeclIr {
@@ -3153,15 +3157,6 @@ fn provider_contract_artifact() -> (skiff_artifact_model::PackageArtifact, skiff
                 ("id".to_string(), TypeRefIr::builtin("string")),
                 ("status".to_string(), TypeRefIr::builtin("string")),
                 ("updatedAt".to_string(), TypeRefIr::builtin("string")),
-                (
-                    "owner".to_string(),
-                    TypeRefIr::Record {
-                        fields: BTreeMap::from([(
-                            "name".to_string(),
-                            TypeRefIr::builtin("string"),
-                        )]),
-                    },
-                ),
             ]),
         },
         type_params: Vec::new(),
@@ -3183,6 +3178,11 @@ fn provider_contract_artifact() -> (skiff_artifact_model::PackageArtifact, skiff
             type_name: "model.AgentThread".to_string(),
             collection_name: None,
             implements: None,
+            identity_fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("status".to_string(), TypeRefIr::builtin("string")),
+                ("updatedAt".to_string(), TypeRefIr::builtin("string")),
+            ]),
             kind: skiff_artifact_model::DbObjectKindIr::Contract,
             key: skiff_artifact_model::DbObjectKeyIr {
                 name: "id".to_string(),
@@ -3197,16 +3197,6 @@ fn provider_contract_artifact() -> (skiff_artifact_model::PackageArtifact, skiff
                 skiff_artifact_model::DbObjectFieldIr {
                     name: "updatedAt".to_string(),
                     ty: TypeRefIr::builtin("string"),
-                    storage: skiff_artifact_model::DbFieldStorageIr::Identity,
-                },
-                skiff_artifact_model::DbObjectFieldIr {
-                    name: "owner".to_string(),
-                    ty: TypeRefIr::Record {
-                        fields: BTreeMap::from([(
-                            "name".to_string(),
-                            TypeRefIr::builtin("string"),
-                        )]),
-                    },
                     storage: skiff_artifact_model::DbFieldStorageIr::Identity,
                 },
             ],
@@ -3302,7 +3292,10 @@ fn provider_contract_artifact() -> (skiff_artifact_model::PackageArtifact, skiff
     (artifact, file)
 }
 
-fn provider_object_artifact() -> (skiff_artifact_model::PackageArtifact, skiff_artifact_model::FileIrUnit) {
+fn provider_object_artifact() -> (
+    skiff_artifact_model::PackageArtifact,
+    skiff_artifact_model::FileIrUnit,
+) {
     let package_id = "example.com/provider";
     let mut file = skiff_artifact_model::FileIrUnit::empty("model", format!("{package_id}:source"));
     file.type_table.push(TypeDeclIr {
@@ -3332,6 +3325,7 @@ fn provider_object_artifact() -> (skiff_artifact_model::PackageArtifact, skiff_a
             type_name: "model.Session".to_string(),
             collection_name: Some("sessions".to_string()),
             implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: skiff_artifact_model::DbObjectKindIr::Object,
             key: skiff_artifact_model::DbObjectKeyIr {
                 name: "id".to_string(),
@@ -3442,8 +3436,8 @@ fn lowered_units_with_provider_contract(
         "main.skiff",
     )
     .map_err(|error| error.to_string())?;
-    let parsed_sources = parse_publication_sources(&root, &[source])
-        .map_err(|error| error.to_string())?;
+    let parsed_sources =
+        parse_publication_sources(&root, &[source]).map_err(|error| error.to_string())?;
     let package_aliases = BTreeMap::from([("provider".to_string(), vec![String::new()])]);
     let mut dependency = PackageDependency::id("example.com/engine");
     dependency.alias = Some("provider".to_string());
@@ -3486,8 +3480,8 @@ fn db_object_implements_cross_package_contract_lowers_with_coverage() {
     let units = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: string
+              id: string,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider/model.AgentThread {
@@ -3539,8 +3533,8 @@ fn db_object_implements_accepts_dot_spelled_contract_ref() {
     let units = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: string
+              id: string,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider.model.AgentThread {
@@ -3579,7 +3573,7 @@ fn db_object_implements_missing_contract_field_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
+              id: string,
               status: string
             }
             db object Thread implements provider/model.AgentThread {
@@ -3605,8 +3599,8 @@ fn db_object_implements_field_type_mismatch_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: number
+              id: string,
+              status: number,
               updatedAt: string
             }
             db object Thread implements provider/model.AgentThread {
@@ -3632,8 +3626,8 @@ fn db_object_implements_key_mismatch_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: number
-              status: string
+              id: number,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider/model.AgentThread {
@@ -3659,8 +3653,8 @@ fn db_object_implements_storage_mapping_mismatch_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: string
+              id: string,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider/model.AgentThread {
@@ -3687,7 +3681,7 @@ fn db_object_implements_non_contract_db_object_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Session {
-              id: string
+              id: string,
               value: string
             }
             db object Session implements providerImpl/model.Session {
@@ -3712,8 +3706,8 @@ fn db_object_implements_plain_type_or_interface_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: string
+              id: string,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider/model.Reader {
@@ -3738,14 +3732,14 @@ fn db_object_implements_local_contract_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type AgentThread {
-              id: string
+              id: string,
               status: string
             }
             db contract AgentThread {
               primary key(id)
             }
             type Thread {
-              id: string
+              id: string,
               status: string
             }
             db object Thread implements AgentThread {
@@ -3770,8 +3764,8 @@ fn db_object_implements_unknown_contract_target_fails_closed() {
     let error = lowered_units_with_provider_contract(
         r#"
             type Thread {
-              id: string
-              status: string
+              id: string,
+              status: string,
               updatedAt: string
             }
             db object Thread implements provider/model.MissingThread {

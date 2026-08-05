@@ -241,7 +241,7 @@ pub struct DbDeclarationIr {
     pub source_span: Option<SourceSpanRef>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum DbObjectKindIr {
     #[default]
