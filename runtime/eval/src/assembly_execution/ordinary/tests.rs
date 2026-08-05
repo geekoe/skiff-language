@@ -1,5 +1,6 @@
 use crate::heap_access::HeapAccess;
 
+mod db_contract_view;
 mod representation_combined_probe;
 pub(crate) mod service_error_consumer;
 mod source_generic_json_encode_red;

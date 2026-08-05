@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{type_ref_abi_key, validate_package_artifact_identities};
 use skiff_artifact_model::{
-    DbFieldStorageIr, DbRetentionUnitIr, FileIrUnit, FunctionTypeParamIr,
-    InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact, PackageRefIr,
-    PackageSymbolRef, TypeRefIr,
+    DbDeclarationIr, DbFieldStorageIr, DbObjectKindIr, DbRetentionUnitIr, FileIrUnit,
+    FunctionTypeParamIr, InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact,
+    PackageRefIr, PackageSymbolRef, TypeRefIr,
 };
 use skiff_compiler_core::package_interface_methods::{
     normalize_package_interface_type_ref, PackageTypeSymbolIndex,
@@ -19,9 +19,13 @@ use crate::{
 /// One exact direct dependency whose source top-level view is visible to a
 /// test service. The driver loads `files` from the canonical artifact store;
 /// this source boundary validates every symbolic hop before exposing DB facts.
+/// `contracts_only` restricts the index to `db contract` declarations (the
+/// production-service host view for `db object ... implements`); test services
+/// index every foreign attachment through their topLevelAlias view.
 pub struct ForeignPackageDbDependency<'a> {
     pub primary_alias: &'a str,
     pub top_level_alias: &'a str,
+    pub contracts_only: bool,
     pub artifact: &'a PackageArtifact,
     pub files: &'a [FileIrUnit],
 }
@@ -114,6 +118,9 @@ pub fn foreign_package_db_metadata_index(
             let Some(db) = file.declarations.db.get(declaration_name) else {
                 continue;
             };
+            if dependency.contracts_only && db.kind != DbObjectKindIr::Contract {
+                continue;
+            }
             let exact_db_attachment = match &db.type_ref {
                 TypeRefIr::LocalType { type_index } => *type_index == export.type_index,
                 TypeRefIr::DbObjectSymbol { symbol } => {
@@ -155,29 +162,65 @@ pub fn foreign_package_db_metadata_index(
                     ),
                 },
             };
-            let canonical_key_type = canonical_foreign_type(
-                dependency,
-                &type_symbols,
-                file,
-                &db.key.ty,
-                &format!("{symbol_path}.{}", db.key.name),
-            )?;
-            let canonical_field_types = db
-                .fields
-                .iter()
-                .map(|field| {
-                    Ok((
-                        field.name.clone(),
-                        canonical_foreign_type(
-                            dependency,
-                            &type_symbols,
-                            file,
-                            &field.ty,
-                            &format!("{symbol_path}.{}", field.name),
-                        )?,
-                    ))
-                })
-                .collect::<Result<BTreeMap<_, _>, String>>()?;
+            let canonical_key_type;
+            let canonical_field_types;
+            if db.kind == DbObjectKindIr::Contract {
+                if db.identity_fields.is_empty() {
+                    return Err(format!(
+                        "foreign DB dependency {} contract {} carries no identity facts; the provider artifact must be rebuilt",
+                        dependency.primary_alias, symbol_path
+                    ));
+                }
+                canonical_key_type = contract_identity_type(
+                    dependency,
+                    &type_symbols,
+                    file,
+                    db,
+                    &db.key.name,
+                    &format!("{symbol_path}.{}", db.key.name),
+                )?;
+                canonical_field_types = db
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        Ok((
+                            field.name.clone(),
+                            contract_identity_type(
+                                dependency,
+                                &type_symbols,
+                                file,
+                                db,
+                                &field.name,
+                                &format!("{symbol_path}.{}", field.name),
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, String>>()?;
+            } else {
+                canonical_key_type = canonical_foreign_type(
+                    dependency,
+                    &type_symbols,
+                    file,
+                    &db.key.ty,
+                    &format!("{symbol_path}.{}", db.key.name),
+                )?;
+                canonical_field_types = db
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        Ok((
+                            field.name.clone(),
+                            canonical_foreign_type(
+                                dependency,
+                                &type_symbols,
+                                file,
+                                &field.ty,
+                                &format!("{symbol_path}.{}", field.name),
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, String>>()?;
+            }
             let mut fields = BTreeSet::from([db.key.name.clone()]);
             fields.extend(db.fields.iter().map(|field| field.name.clone()));
             let mut field_types = BTreeMap::from([(
@@ -218,6 +261,7 @@ pub fn foreign_package_db_metadata_index(
                     type_name: type_name.to_string(),
                     canonical_type_name: format!("{}/{}", dependency.primary_alias, symbol_path),
                     canonical_type_ref: Some(canonical_target),
+                    kind: db.kind,
                     collection_name: db.collection_name.clone(),
                     retention: db
                         .retention
@@ -389,6 +433,30 @@ fn canonical_foreign_type(
             .local_abi_identity
             .as_str(),
     ))
+}
+
+/// Contract field type facts are the symbol-preserving identity types the
+/// contract declaration persisted before storage expansion. Local type
+/// indices resolve through the contract package's own exported symbol table
+/// into the host's dependency view, so the host compares them in the same
+/// identity space as its cross-package references. A contract declaration
+/// whose fact is missing fails closed: the host cannot soundly validate
+/// coverage without the contract's nominal identity.
+fn contract_identity_type(
+    dependency: &ForeignPackageDbDependency<'_>,
+    type_symbols: &PackageTypeSymbolIndex,
+    file: &FileIrUnit,
+    db: &DbDeclarationIr,
+    field: &str,
+    context: &str,
+) -> Result<TypeRefIr, String> {
+    let ty = db.identity_fields.get(field).ok_or_else(|| {
+        format!(
+            "foreign DB dependency {} contract {} field {} has no identity fact; the provider artifact must be rebuilt",
+            dependency.primary_alias, db.type_name, field
+        )
+    })?;
+    canonical_foreign_type(dependency, type_symbols, file, ty, context)
 }
 
 fn bind_direct_package_identity(

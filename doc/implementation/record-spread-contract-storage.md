@@ -1,7 +1,7 @@
 # Record Spread 与 Contract Storage 实现文档
 
 日期：2026-08-05
-状态：plan（Phase 0 已完成）
+状态：implemented（Phase 0-5 已实现并合入；Phase 6 agine 场景回填与端到端验证进行中）
 
 ## 引用链
 
@@ -153,6 +153,12 @@ commit `a32b5e59`。改动：
 
 **宿主编译期（driver / linker，契约类型 facts 在宿主 package artifact 解析中可用）：**
 
+> driver 收敛：生产服务编译时，`canonical_dependencies::foreign_db_metadata` 只对 `db object
+> ... implements` 子句实际引用的依赖包加载 canonical File IR（别名白名单来自宿主源码 AST，
+> 拼写规则与 lowering 的 `resolve_implements_contract` 一致；契约 facts 面只含 `db contract`
+> 声明）。未被引用的依赖包不加载；test service 的 topLevelAlias 视图保持不变。参考文件：
+> `compiler/driver/source_compile/canonical_dependencies.rs`。
+
 1. **字段覆盖**：实现类型字段集 ⊇ 契约类型字段集；重叠字段 schema identity 逐字段一致
    （按 `static-semantics.md §16/§17`；spread 复制的字段 identity 天然一致，宿主手写同形本地
    名义类型不构成一致）。
@@ -194,7 +200,9 @@ commit `a32b5e59`。改动：
     `resolve_db_declaration` L636-674）——契约 db target 经绑定表解析到宿主集合；
   - capability store：`exact_db_target_lookup_key`（`runtime/capability-context/src/db.rs:332`，
     key scheme 前缀 `skiff-db-object-target-v1`）——契约 target 必须解析到同一宿主 key，否则
-    store 查找错位；评估 lookup key scheme 是否需要新版本。
+    store 查找错位。**结论：key scheme 无需新版本**——契约→宿主 remap 发生在 key 计算之前
+    （`db_eval.rs` 的 `db_capability_target` 在构造 `DbCapabilityTarget`（key 在此计算）之前完成
+    remap），store 里只存在宿主 target 的 key，契约 target 永不直接入 key。
 - `db_eval.rs:326` 的 recoverable plans 路径同样走 `resolve_db_target`，自动继承绑定。
 
 ### 7.2 解码

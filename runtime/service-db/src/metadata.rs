@@ -232,14 +232,14 @@ impl DbCollectionMetadata {
             &ir.type_name,
             format!("runtime program db[{index}].typeName"),
         )?;
-        let logical_collection_name = required_typed_string(
-            &ir.collection_name,
-            format!("runtime program db[{index}].collectionName"),
-        )?;
-        let collection_name =
-            service_storage_collection_name(package_id, &logical_collection_name)?;
+        let logical_collection_name = ir.collection_name.as_deref().ok_or_else(|| {
+            ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}].collectionName is required for a physical db object"
+            ))
+        })?;
+        let collection_name = service_storage_collection_name(package_id, logical_collection_name)?;
         let constraint_target =
-            DbConstraintTarget::new(package_id.to_string(), logical_collection_name.clone())?;
+            DbConstraintTarget::new(package_id.to_string(), logical_collection_name.to_string())?;
         let key = parse_object_key(ir.key.as_ref(), index)?;
         let fields = parse_fields(&ir.fields, index)?;
         let leases = parse_leases(&ir.leases, index)?;
@@ -252,7 +252,7 @@ impl DbCollectionMetadata {
                 .unwrap_or_else(|| type_name.clone()),
             type_name,
             package_id: package_id.to_string(),
-            logical_collection_name,
+            logical_collection_name: logical_collection_name.to_string(),
             collection_name,
             constraint_target,
             key_field: key.name,

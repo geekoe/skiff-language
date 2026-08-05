@@ -14,11 +14,12 @@ use skiff_artifact_model::{
     validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
     InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageCallableId,
     PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
-    SyntheticInstructionSiteReason, TypeDescriptorIr,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     api::PublicTypeKind, build_package_from_parsed_sources,
+    build_package_from_parsed_sources_with_dependency_analysis,
     parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
     PackageDependency, PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
@@ -320,7 +321,7 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
             "#,
     );
-    assert_eq!(unit.schema_version, "skiff-file-ir-v11");
+    assert_eq!(unit.schema_version, "skiff-file-ir-v12");
     assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
     assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
@@ -892,6 +893,114 @@ fn validated_package_db_schema_lowers_to_typed_file_ir() {
     assert_eq!(
         db.indexes[0].fields[0].direction,
         skiff_artifact_model::DbIndexDirectionIr::Desc
+    );
+}
+
+#[test]
+fn db_contract_lowers_without_physical_collection_and_keeps_key_index_identity() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string, updatedAt: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatusUpdated(status, updatedAt desc)
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+    assert_eq!(declaration.retention, None);
+    assert!(declaration.leases.is_empty());
+    assert_eq!(declaration.key.name, "id");
+    assert_eq!(
+        declaration.key.ty,
+        skiff_artifact_model::TypeRefIr::builtin("string")
+    );
+    assert!(declaration
+        .fields
+        .iter()
+        .any(|field| field.name == "status"));
+    assert_eq!(declaration.indexes.len(), 1);
+    assert_eq!(declaration.indexes[0].name, "byStatusUpdated");
+    assert_eq!(
+        declaration.indexes[0].fields[1].direction,
+        skiff_artifact_model::DbIndexDirectionIr::Desc
+    );
+}
+
+#[test]
+fn db_contract_declaration_is_not_a_physical_collection_owner() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatus(status)
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+}
+
+#[test]
+fn db_operation_on_contract_type_compiles_and_targets_contract_identity() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatus(status)
+                }
+
+                function readStatus(status: string) -> Array<AgentThread> {
+                  return db find many AgentThread { where status == status }
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+
+    let executable = executable(&unit, "readStatus");
+    let expression = executable
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| match expression {
+            skiff_artifact_model::ExprIr::DbOperation { operation } => Some(operation),
+            _ => None,
+        })
+        .expect("contract target db find must lower to a db operation");
+    assert_eq!(
+        expression.target.type_name,
+        "internal.any_lowering.AgentThread"
     );
 }
 
@@ -2811,7 +2920,7 @@ fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() 
     assert!(!wire.contains("operationAbiId"));
     assert!(unit
         .file_ir_identity
-        .starts_with("skiff-file-ir-v11:sha256:"));
+        .starts_with("skiff-file-ir-v12:sha256:"));
 }
 
 #[test]
@@ -3034,3 +3143,643 @@ fn record_pattern_nested_field_patterns_lower_recursively() {
 
 mod interface_execution;
 mod object_materialization;
+
+fn provider_contract_artifact() -> (
+    skiff_artifact_model::PackageArtifact,
+    skiff_artifact_model::FileIrUnit,
+) {
+    let package_id = "example.com/engine";
+    let mut file = skiff_artifact_model::FileIrUnit::empty("model", format!("{package_id}:source"));
+    file.type_table.push(TypeDeclIr {
+        name: "AgentThread".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("status".to_string(), TypeRefIr::builtin("string")),
+                ("updatedAt".to_string(), TypeRefIr::builtin("string")),
+            ]),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        "AgentThread".to_string(),
+        skiff_artifact_model::TypeDeclarationIr {
+            type_index: 0,
+            symbol: "model.AgentThread".to_string(),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        "AgentThread".to_string(),
+        skiff_artifact_model::DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "model.AgentThread".to_string(),
+            collection_name: None,
+            implements: None,
+            identity_fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("status".to_string(), TypeRefIr::builtin("string")),
+                ("updatedAt".to_string(), TypeRefIr::builtin("string")),
+            ]),
+            kind: skiff_artifact_model::DbObjectKindIr::Contract,
+            key: skiff_artifact_model::DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: vec![
+                skiff_artifact_model::DbObjectFieldIr {
+                    name: "status".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    storage: skiff_artifact_model::DbFieldStorageIr::Identity,
+                },
+                skiff_artifact_model::DbObjectFieldIr {
+                    name: "updatedAt".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    storage: skiff_artifact_model::DbFieldStorageIr::Identity,
+                },
+            ],
+            retention: None,
+            leases: Vec::new(),
+            indexes: vec![skiff_artifact_model::DbIndexIr {
+                name: "byStatusUpdated".to_string(),
+                unique: false,
+                fields: vec![
+                    skiff_artifact_model::DbIndexFieldIr {
+                        field: skiff_artifact_model::FieldPathIr {
+                            text: "status".to_string(),
+                            segments: vec!["status".to_string()],
+                        },
+                        direction: skiff_artifact_model::DbIndexDirectionIr::Asc,
+                    },
+                    skiff_artifact_model::DbIndexFieldIr {
+                        field: skiff_artifact_model::FieldPathIr {
+                            text: "updatedAt".to_string(),
+                            segments: vec!["updatedAt".to_string()],
+                        },
+                        direction: skiff_artifact_model::DbIndexDirectionIr::Desc,
+                    },
+                ],
+            }],
+            source_span: None,
+        },
+    );
+    skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
+    let file_ref = provider_file_ref(&file);
+    let descriptor = file.type_table[0].descriptor.clone();
+    let mut artifact = skiff_artifact_model::PackageArtifact {
+        schema_version: skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: package_id.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
+        files: vec![file_ref.clone()],
+        static_resources: Vec::new(),
+        package_local_abi: skiff_artifact_model::PackageLocalAbi {
+            local_abi_identity: skiff_artifact_model::PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::from([(
+                "model.AgentThread".to_string(),
+                skiff_artifact_model::PackageLocalAbiSymbol::Type {
+                    local_type_id: format!("type:{package_id}:top-level:model.AgentThread"),
+                    descriptor: descriptor.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: None,
+                },
+            )]),
+        },
+        package_schema_index: skiff_artifact_model::PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_model::PackageSchemaIndexIdentity::new(
+                "unassigned",
+            ),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: skiff_artifact_model::PackageImplementationLinks {
+            types: BTreeMap::from([(
+                "model.AgentThread".to_string(),
+                skiff_artifact_model::TypeExport {
+                    file: file_ref,
+                    type_index: 0,
+                    symbol: "model.AgentThread".to_string(),
+                    is_interface: false,
+                    descriptor: Some(descriptor),
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: None,
+                },
+            )]),
+            ..skiff_artifact_model::PackageImplementationLinks::default()
+        },
+        callable_links: BTreeMap::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: skiff_artifact_model::PackageRuntimeRequirements {
+            config: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    };
+    artifact.package_schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
+            .unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    (artifact, file)
+}
+
+fn provider_object_artifact() -> (
+    skiff_artifact_model::PackageArtifact,
+    skiff_artifact_model::FileIrUnit,
+) {
+    let package_id = "example.com/provider";
+    let mut file = skiff_artifact_model::FileIrUnit::empty("model", format!("{package_id}:source"));
+    file.type_table.push(TypeDeclIr {
+        name: "Session".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("value".to_string(), TypeRefIr::builtin("string")),
+            ]),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.declarations.types.insert(
+        "Session".to_string(),
+        skiff_artifact_model::TypeDeclarationIr {
+            type_index: 0,
+            symbol: "model.Session".to_string(),
+            source_span: None,
+        },
+    );
+    file.declarations.db.insert(
+        "Session".to_string(),
+        skiff_artifact_model::DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "model.Session".to_string(),
+            collection_name: Some("sessions".to_string()),
+            implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
+            kind: skiff_artifact_model::DbObjectKindIr::Object,
+            key: skiff_artifact_model::DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: vec![skiff_artifact_model::DbObjectFieldIr {
+                name: "value".to_string(),
+                ty: TypeRefIr::builtin("string"),
+                storage: skiff_artifact_model::DbFieldStorageIr::Identity,
+            }],
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
+    let file_ref = provider_file_ref(&file);
+    let descriptor = file.type_table[0].descriptor.clone();
+    let mut artifact = skiff_artifact_model::PackageArtifact {
+        schema_version: skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: package_id.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
+        files: vec![file_ref.clone()],
+        static_resources: Vec::new(),
+        package_local_abi: skiff_artifact_model::PackageLocalAbi {
+            local_abi_identity: skiff_artifact_model::PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::from([(
+                "model.Session".to_string(),
+                skiff_artifact_model::PackageLocalAbiSymbol::Type {
+                    local_type_id: format!("type:{package_id}:top-level:model.Session"),
+                    descriptor: descriptor.clone(),
+                    is_alias: false,
+                    is_interface: false,
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: None,
+                },
+            )]),
+        },
+        package_schema_index: skiff_artifact_model::PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_model::PackageSchemaIndexIdentity::new(
+                "unassigned",
+            ),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: skiff_artifact_model::PackageImplementationLinks {
+            types: BTreeMap::from([(
+                "model.Session".to_string(),
+                skiff_artifact_model::TypeExport {
+                    file: file_ref,
+                    type_index: 0,
+                    symbol: "model.Session".to_string(),
+                    is_interface: false,
+                    descriptor: Some(descriptor),
+                    type_params: Vec::new(),
+                    interface_methods: Vec::new(),
+                    actor: None,
+                },
+            )]),
+            ..skiff_artifact_model::PackageImplementationLinks::default()
+        },
+        callable_links: BTreeMap::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: skiff_artifact_model::PackageRuntimeRequirements {
+            config: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    };
+    artifact.package_schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
+            .unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    (artifact, file)
+}
+
+fn provider_file_ref(file: &skiff_artifact_model::FileIrUnit) -> skiff_artifact_model::FileIrRef {
+    skiff_artifact_model::FileIrRef {
+        file_ir_identity: file.file_ir_identity.clone(),
+        module_path: file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(file.source_ast_hash.clone()),
+    }
+}
+
+fn lowered_units_with_provider_contract(
+    source_text: &str,
+    provider: &skiff_artifact_model::PackageArtifact,
+    provider_file: &skiff_artifact_model::FileIrUnit,
+    contracts_only: bool,
+    top_level_alias: &str,
+) -> std::result::Result<Vec<FileIrUnit>, String> {
+    initialize_test_prelude();
+    let root = PathBuf::from("/test");
+    let source = CompilerSourceFile::parse(
+        PathBuf::from("main.skiff"),
+        "main".to_string(),
+        false,
+        false,
+        source_text.to_string(),
+        "main.skiff",
+    )
+    .map_err(|error| error.to_string())?;
+    let parsed_sources =
+        parse_publication_sources(&root, &[source]).map_err(|error| error.to_string())?;
+    let package_aliases = BTreeMap::from([("provider".to_string(), vec![String::new()])]);
+    let mut dependency = PackageDependency::id("example.com/engine");
+    dependency.alias = Some("provider".to_string());
+    let package_dependencies = vec![dependency];
+    let foreign = skiff_compiler_source::foreign_package_db_metadata_index(&[
+        skiff_compiler_source::ForeignPackageDbDependency {
+            primary_alias: "provider",
+            top_level_alias,
+            contracts_only,
+            artifact: provider,
+            files: std::slice::from_ref(provider_file),
+        },
+    ])
+    .map_err(|error| error.to_string())?;
+    let dependency_analysis = skiff_compiler_source::SourceDependencyAnalysisInput::default()
+        .with_foreign_db_metadata(foreign);
+    let model = build_package_from_parsed_sources_with_dependency_analysis(
+        CompileParsedPackageSourcesInput {
+            parsed_sources,
+            production_sources: Vec::new(),
+            diagnostic_root: &root,
+            publication_api: None,
+            package_aliases: &package_aliases,
+            package_dependencies: &package_dependencies,
+            package_facts: None,
+            package_artifacts: Some(std::slice::from_ref(provider)),
+            policy: PackageCompilePolicy::new("example.com/host"),
+        },
+        &dependency_analysis,
+    )
+    .map_err(|error| error.to_string())?;
+    crate::lower(&model)
+        .map_err(|error| error.to_string())
+        .map(|lowered| lowered.file_ir_units().to_vec())
+}
+
+#[test]
+fn db_object_implements_cross_package_contract_lowers_with_coverage() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let units = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+              index byStatusUpdated(status, updatedAt desc)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect("covered db object implements contract should lower");
+
+    let declaration = units[0]
+        .declarations
+        .db
+        .get("Thread")
+        .expect("validated db object should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Object
+    );
+    assert_eq!(declaration.collection_name.as_deref(), Some("Thread"));
+    assert_eq!(
+        declaration.implements,
+        Some(TypeRefIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "provider".to_string(),
+                },
+                symbol_path: "model.AgentThread".to_string(),
+                abi_expectation: None,
+            },
+        })
+    );
+    assert_eq!(declaration.key.name, "id");
+    assert!(declaration
+        .fields
+        .iter()
+        .any(|field| field.name == "updatedAt"));
+    assert_eq!(declaration.indexes.len(), 1);
+    assert_eq!(declaration.indexes[0].name, "byStatusUpdated");
+}
+
+#[test]
+fn db_object_implements_accepts_dot_spelled_contract_ref() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let units = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider.model.AgentThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect("dot spelled contract ref should resolve the same contract");
+
+    let declaration = units[0]
+        .declarations
+        .db
+        .get("Thread")
+        .expect("validated db object should lower");
+    assert_eq!(
+        declaration.implements,
+        Some(TypeRefIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "provider".to_string(),
+                },
+                symbol_path: "model.AgentThread".to_string(),
+                abi_expectation: None,
+            },
+        })
+    );
+}
+
+#[test]
+fn db_object_implements_missing_contract_field_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string
+            }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("missing contract field must fail closed");
+    assert!(
+        error.contains("missing contract fields"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("updatedAt"), "unexpected error: {error}");
+}
+
+#[test]
+fn db_object_implements_field_type_mismatch_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: number,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("contract field type mismatch must fail closed");
+    assert!(
+        error.contains("different schema identity"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("status"), "unexpected error: {error}");
+}
+
+#[test]
+fn db_object_implements_key_mismatch_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: number,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("contract key mismatch must fail closed");
+    assert!(
+        error.contains("different schema identity"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("id"), "unexpected error: {error}");
+}
+
+#[test]
+fn db_object_implements_storage_mapping_mismatch_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.AgentThread {
+              primary key(id)
+              storage status using encrypted
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("contract storage mismatch must fail closed");
+    assert!(
+        error.contains("different storage mapping"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("status"), "unexpected error: {error}");
+}
+
+#[test]
+fn db_object_implements_non_contract_db_object_fails_closed() {
+    let (provider, provider_file) = provider_object_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Session {
+              id: string,
+              value: string
+            }
+            db object Session implements providerImpl/model.Session {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        false,
+        "providerImpl",
+    )
+    .expect_err("implements target that is a plain db object must fail closed");
+    assert!(
+        error.contains("not a db contract"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn db_object_implements_plain_type_or_interface_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.Reader {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("implements target without a db contract attachment must fail closed");
+    assert!(
+        error.contains("does not resolve to a db contract declaration"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn db_object_implements_local_contract_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type AgentThread {
+              id: string,
+              status: string
+            }
+            db contract AgentThread {
+              primary key(id)
+            }
+            type Thread {
+              id: string,
+              status: string
+            }
+            db object Thread implements AgentThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("same-package contract reference must fail closed");
+    assert!(
+        error.contains("must be a cross-package contract reference"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn db_object_implements_unknown_contract_target_fails_closed() {
+    let (provider, provider_file) = provider_contract_artifact();
+    let error = lowered_units_with_provider_contract(
+        r#"
+            type Thread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+            db object Thread implements provider/model.MissingThread {
+              primary key(id)
+            }
+        "#,
+        &provider,
+        &provider_file,
+        true,
+        "provider",
+    )
+    .expect_err("unknown contract target must fail closed");
+    assert!(
+        error.contains("does not resolve to a db contract declaration"),
+        "unexpected error: {error}"
+    );
+}

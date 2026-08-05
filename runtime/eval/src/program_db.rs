@@ -428,9 +428,13 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap.heap_mut())?);
         let claim_store = store.clone();
-        let type_name = super::db_eval::db_capability_target(&claim.target)
-            .lookup_key()
-            .to_string();
+        let claim_projection = RuntimeExecutionProjection::for_context(self, &program_context)?;
+        let type_name = super::db_eval::db_capability_target(
+            &claim.target,
+            claim_projection.db_contract_binding(&claim.target.target_id),
+        )
+        .lookup_key()
+        .to_string();
         let slot = claim.slot.clone();
         let Some(handle) = wait::await_operation(&program_context, heap, async move {
             claim_store.claim_lease(&type_name, key, &slot).await
@@ -536,9 +540,13 @@ impl Interpreter {
             .await?;
         let key = DbKey::new(runtime_to_wire(&key, heap)?);
         let read_store = store.clone();
-        let type_name = super::db_eval::db_capability_target(&read.target)
-            .lookup_key()
-            .to_string();
+        let read_projection = RuntimeExecutionProjection::for_context(self, &program_context)?;
+        let type_name = super::db_eval::db_capability_target(
+            &read.target,
+            read_projection.db_contract_binding(&read.target.target_id),
+        )
+        .lookup_key()
+        .to_string();
         let slot = read.slot.clone();
         match wait::await_operation(&program_context, heap, async move {
             read_store.read_lease(&type_name, key, &slot).await
@@ -626,6 +634,19 @@ async fn execute_db_command(
                     .await
             })
             .await??;
+            if command.target.contract_view() {
+                return decode_contract_view_db_result(
+                    &serde_json::Value::Array(
+                        page.values
+                            .into_iter()
+                            .map(|value| value.into_value())
+                            .collect(),
+                    ),
+                    &command.result_plan,
+                    "db find many result",
+                    heap.heap_mut(),
+                );
+            }
             decode_db_result(
                 &serde_json::Value::Array(
                     page.values
@@ -697,6 +718,12 @@ async fn execute_db_command(
                 }
             };
             match found {
+                Some(value) if command.target.contract_view() => decode_contract_view_db_result(
+                    value.as_value(),
+                    &command.result_plan,
+                    "db find one result",
+                    heap.heap_mut(),
+                ),
                 Some(value) => decode_db_result(
                     value.as_value(),
                     &command.result_plan,
@@ -709,39 +736,57 @@ async fn execute_db_command(
                 None => Ok(RuntimeValue::Null),
             }
         }
-        DbCommand::InsertOne(command) => match command.value {
-            DbCommandValue::Wire(value) => {
-                let wait_store = store.clone();
-                let type_name = command.target.lookup_key().to_string();
-                let result = wait::await_operation(program_context, heap, async move {
-                    wait_store.create(&type_name, value).await
-                })
-                .await??;
-                decode_db_result(
-                    result.as_value(),
-                    &command.result_plan,
-                    "db insert one result",
-                    heap.heap_mut(),
-                )
+        DbCommand::InsertOne(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db insert on contract target `{}` is not allowed: the host owns the shared collection",
+                    command.target.type_name
+                )));
             }
-            DbCommandValue::Runtime {
-                value,
-                recoverable_runtime,
-            } => {
-                let context =
-                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
-                let operation = store.prepare_create_runtime(
-                    command.target.lookup_key(),
-                    &value,
-                    heap.heap_mut(),
-                    context,
-                )?;
-                let finalizer =
-                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                Ok(finalizer.finalize(heap.heap_mut())?)
+            match command.value {
+                DbCommandValue::Wire(value) => {
+                    let wait_store = store.clone();
+                    let type_name = command.target.lookup_key().to_string();
+                    let result = wait::await_operation(program_context, heap, async move {
+                        wait_store.create(&type_name, value).await
+                    })
+                    .await??;
+                    decode_db_result(
+                        result.as_value(),
+                        &command.result_plan,
+                        "db insert one result",
+                        heap.heap_mut(),
+                    )
+                }
+                DbCommandValue::Runtime {
+                    value,
+                    recoverable_runtime,
+                } => {
+                    let context = db_recoverable_runtime_context(
+                        &program,
+                        program_context,
+                        recoverable_runtime,
+                    )?;
+                    let operation = store.prepare_create_runtime(
+                        command.target.lookup_key(),
+                        &value,
+                        heap.heap_mut(),
+                        context,
+                    )?;
+                    let finalizer =
+                        wait::await_operation(program_context, heap, operation.into_wait())
+                            .await??;
+                    Ok(finalizer.finalize(heap.heap_mut())?)
+                }
             }
-        },
+        }
         DbCommand::InsertMany(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db insert many on contract target `{}` is not allowed: the host owns the shared collection",
+                    command.target.type_name
+                )));
+            }
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
@@ -768,12 +813,21 @@ async fn execute_db_command(
                 .await??;
                 result
                     .map(|value| {
-                        decode_db_result(
-                            value.as_value(),
-                            &command.result_plan,
-                            "db update one result",
-                            heap.heap_mut(),
-                        )
+                        if command.target.contract_view() {
+                            decode_contract_view_db_result(
+                                value.as_value(),
+                                &command.result_plan,
+                                "db update one result",
+                                heap.heap_mut(),
+                            )
+                        } else {
+                            decode_db_result(
+                                value.as_value(),
+                                &command.result_plan,
+                                "db update one result",
+                                heap.heap_mut(),
+                            )
+                        }
                     })
                     .transpose()
                     .map(|value| value.unwrap_or(RuntimeValue::Null))
@@ -807,6 +861,14 @@ async fn execute_db_command(
                     .await
             })
             .await??;
+            if command.target.contract_view() {
+                return decode_contract_view_db_result(
+                    result.as_value(),
+                    &command.result_plan,
+                    "db update many result",
+                    heap.heap_mut(),
+                );
+            }
             decode_db_result(
                 result.as_value(),
                 &command.result_plan,
@@ -815,6 +877,12 @@ async fn execute_db_command(
             )
         }
         DbCommand::UpsertKey(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db upsert on contract target `{}` is not allowed: the engine contract view cannot replace the whole shared document",
+                    command.target.type_name
+                )));
+            }
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
             let result = wait::await_operation(program_context, heap, async move {
@@ -830,47 +898,59 @@ async fn execute_db_command(
                 heap.heap_mut(),
             )
         }
-        DbCommand::ReplaceOne(command) => match command.value {
-            DbCommandValue::Wire(value) => {
-                let wait_store = store.clone();
-                let type_name = command.target.lookup_key().to_string();
-                let selector = service_db_selector(command.selector);
-                let result = wait::await_operation(program_context, heap, async move {
-                    wait_store.replace_one(&type_name, selector, value).await
-                })
-                .await??;
-                result
-                    .map(|value| {
-                        decode_db_result(
-                            value.as_value(),
-                            &command.result_plan,
-                            "db replace one result",
-                            heap.heap_mut(),
-                        )
+        DbCommand::ReplaceOne(command) => {
+            if command.target.contract_view() {
+                return Err(RuntimeError::Decode(format!(
+                    "db replace on contract target `{}` is not allowed: the engine contract view cannot replace the whole shared document",
+                    command.target.type_name
+                )));
+            }
+            match command.value {
+                DbCommandValue::Wire(value) => {
+                    let wait_store = store.clone();
+                    let type_name = command.target.lookup_key().to_string();
+                    let selector = service_db_selector(command.selector);
+                    let result = wait::await_operation(program_context, heap, async move {
+                        wait_store.replace_one(&type_name, selector, value).await
                     })
-                    .transpose()
-                    .map(|value| value.unwrap_or(RuntimeValue::Null))
+                    .await??;
+                    result
+                        .map(|value| {
+                            decode_db_result(
+                                value.as_value(),
+                                &command.result_plan,
+                                "db replace one result",
+                                heap.heap_mut(),
+                            )
+                        })
+                        .transpose()
+                        .map(|value| value.unwrap_or(RuntimeValue::Null))
+                }
+                DbCommandValue::Runtime {
+                    value,
+                    recoverable_runtime,
+                } => {
+                    let context = db_recoverable_runtime_context(
+                        &program,
+                        program_context,
+                        recoverable_runtime,
+                    )?;
+                    let operation = store.prepare_replace_one_runtime(
+                        command.target.lookup_key(),
+                        service_db_selector(command.selector),
+                        &value,
+                        heap.heap_mut(),
+                        context,
+                    )?;
+                    let finalizer =
+                        wait::await_operation(program_context, heap, operation.into_wait())
+                            .await??;
+                    Ok(finalizer
+                        .finalize(heap.heap_mut())?
+                        .unwrap_or(RuntimeValue::Null))
+                }
             }
-            DbCommandValue::Runtime {
-                value,
-                recoverable_runtime,
-            } => {
-                let context =
-                    db_recoverable_runtime_context(&program, program_context, recoverable_runtime)?;
-                let operation = store.prepare_replace_one_runtime(
-                    command.target.lookup_key(),
-                    service_db_selector(command.selector),
-                    &value,
-                    heap.heap_mut(),
-                    context,
-                )?;
-                let finalizer =
-                    wait::await_operation(program_context, heap, operation.into_wait()).await??;
-                Ok(finalizer
-                    .finalize(heap.heap_mut())?
-                    .unwrap_or(RuntimeValue::Null))
-            }
-        },
+        }
         DbCommand::DeleteOne(command) => {
             let wait_store = store.clone();
             let type_name = command.target.lookup_key().to_string();
@@ -935,6 +1015,23 @@ fn decode_db_result(
         Some(plan),
         boundary,
         BoundaryUse::DbResultDecode,
+        heap,
+    )
+}
+
+/// Engine-side decode of a host-written shared collection document: the
+/// contract view ignores record fields it does not declare (db.md §1.3).
+fn decode_contract_view_db_result(
+    value: &serde_json::Value,
+    plan: &RuntimeTypePlan,
+    boundary: &str,
+    heap: &mut RequestHeap,
+) -> Result<RuntimeValue> {
+    runtime_from_wire_required_plan_with_use(
+        value,
+        Some(plan),
+        boundary,
+        BoundaryUse::DbContractViewDecode,
         heap,
     )
 }

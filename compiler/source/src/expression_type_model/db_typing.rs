@@ -292,6 +292,21 @@ impl<'a> OwnerChecker<'a> {
             ));
             return None;
         }
+        if matches!(
+            operation.op,
+            crate::shared::ast::DbOperationKind::Insert
+                | crate::shared::ast::DbOperationKind::Replace
+                | crate::shared::ast::DbOperationKind::Upsert
+        ) && self.db_operation_target_is_contract(&operation.target.name)
+        {
+            self.outputs.diagnostics.push(format!(
+                "{}: db {} on contract target `{}` is not allowed: the engine contract view cannot insert or replace the whole shared document; the host owns the collection",
+                self.module_path,
+                db_operation_kind_text(operation.op),
+                operation.target.name
+            ));
+            return None;
+        }
         let read = self.db_read_type(operation, &target)?;
         match operation.op {
             crate::shared::ast::DbOperationKind::Find if operation.many => Some(array_type(read)),
@@ -360,6 +375,30 @@ impl<'a> OwnerChecker<'a> {
             .resolve_type_ref(target, &self.type_context)
             .ok()?;
         Some(projection_record_type("DbQuery", &target))
+    }
+
+    fn db_operation_target_is_contract(&self, target_name: &str) -> bool {
+        match DbProjectionTypeResolver::new(
+            self.module_path,
+            self.type_resolution,
+            self.publication_db_metadata,
+        )
+        .resolve_metadata(target_name)
+        {
+            Ok(Some(metadata)) => {
+                metadata.kind == skiff_artifact_model::DbObjectKindIr::Contract
+            }
+            _ => false,
+        }
+    }
+}
+
+fn db_operation_kind_text(operation: crate::shared::ast::DbOperationKind) -> &'static str {
+    match operation {
+        crate::shared::ast::DbOperationKind::Insert => "insert",
+        crate::shared::ast::DbOperationKind::Replace => "replace",
+        crate::shared::ast::DbOperationKind::Upsert => "upsert",
+        _ => "operation",
     }
 }
 

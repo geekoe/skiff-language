@@ -10,7 +10,9 @@ use crate::file_ir::{
     InstructionSourceSite, LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr,
     SyntheticInstructionSiteReason, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
+use skiff_artifact_model::{
+    NamedUnionBranchIr, NominalTypeRefBaseIr, PackageRefIr, PackageSymbolRef,
+};
 use skiff_compiler_core::db_projection::project_db_read_type;
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 use skiff_compiler_source::{
@@ -19,9 +21,10 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbIndexDirection, DbLeaseClaim,
-        DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock, DbRetentionUnit,
-        DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef, UnaryOp,
+        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind, DbIndexDirection,
+        DbLeaseClaim, DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock,
+        DbRetentionUnit, DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef,
+        UnaryOp,
     },
     ast_utils::db_collection_name,
     error::{CompileError, Result},
@@ -42,7 +45,8 @@ pub(super) struct DbMetadataIr {
     pub(super) type_ref: TypeRefIr,
     pub(super) type_name: String,
     pub(super) canonical_type_name: String,
-    pub(super) collection_name: String,
+    pub(super) kind: DbObjectKindIr,
+    pub(super) collection_name: Option<String>,
     pub(super) retention: Option<DbRetentionIr>,
     pub(super) leases: BTreeMap<String, DbLeaseIr>,
     pub(super) key: DbObjectKeyIr,
@@ -273,6 +277,7 @@ fn lower_publication_db_metadata(
         type_ref,
         type_name: metadata.type_name.clone(),
         canonical_type_name: metadata.canonical_type_name.clone(),
+        kind: metadata.kind,
         collection_name: metadata.collection_name.clone(),
         retention,
         leases,
@@ -329,17 +334,74 @@ pub(super) fn lower_db_declarations(
             )?,
         };
         let mut type_fields = BTreeMap::new();
+        let mut identity_fields = BTreeMap::new();
         let mut field_type_texts = BTreeMap::new();
         debug_assert!(attachment
             .field_map()
             .contains_key(attachment.key.name.as_str()));
         type_fields.insert(key.name.clone(), key.ty.clone());
+        identity_fields.insert(
+            key.name.clone(),
+            lower_type_ref(
+                &key_field.ty,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                TypeLoweringContext::value(),
+            )?,
+        );
         field_type_texts.insert(key_field.name.clone(), key_field.ty.name.clone());
         for field in attachment.fields() {
             field_type_texts.insert(field.name.clone(), field.ty.name.clone());
-            let field_ty = db_storage_type_ref(
-                lower_type_ref(
-                    &field.ty,
+            let lowered = lower_type_ref(
+                &field.ty,
+                type_indices,
+                local_db_objects,
+                publication_db_metadata,
+                package_aliases,
+                external_type_symbols,
+                source_alias_targets,
+                TypeLoweringContext::value(),
+            )?;
+            identity_fields.insert(field.name.clone(), lowered.clone());
+            let field_ty = db_storage_type_ref(lowered, unit)?;
+            type_fields.insert(field.name.clone(), field_ty);
+        }
+        let field_types = type_fields.clone();
+        let kind = match db.kind {
+            DbDeclKind::Object => DbObjectKindIr::Object,
+            DbDeclKind::Contract => DbObjectKindIr::Contract,
+        };
+        let implements = match (&db.implements, db.kind) {
+            (Some(implements), DbDeclKind::Object) => {
+                let contract = resolve_implements_contract(
+                    implements,
+                    package_aliases,
+                    publication_db_metadata,
+                )?;
+                if contract.kind != DbObjectKindIr::Contract {
+                    return Err(CompileError::Semantic(format!(
+                        "db object {} implements target `{}` which resolves to db object {}, not a db contract; the implementing declaration must reference a `db contract` attached type",
+                        db.name, implements.name, contract.canonical_type_name
+                    )));
+                }
+                if contract.canonical_type_ref.is_none() {
+                    return Err(CompileError::Semantic(format!(
+                        "db object {} implements target `{}` is not a cross-package contract reference; contracts are declared in dependency packages",
+                        db.name, implements.name
+                    )));
+                }
+                validate_implements_coverage(
+                    db,
+                    contract,
+                    &identity_fields,
+                    attachment.storage_map(),
+                )?;
+                Some(lower_type_ref(
+                    implements,
                     type_indices,
                     local_db_objects,
                     publication_db_metadata,
@@ -347,14 +409,17 @@ pub(super) fn lower_db_declarations(
                     external_type_symbols,
                     source_alias_targets,
                     TypeLoweringContext::value(),
-                )?,
-                unit,
-            )?;
-            type_fields.insert(field.name.clone(), field_ty);
-        }
-        let field_types = type_fields.clone();
-        let collection_name = db_collection_name(db);
-        validate_db_collection_name(&collection_name, &db.name)?;
+                )?)
+            }
+            _ => None,
+        };
+        let collection_name = if db.kind == DbDeclKind::Object {
+            let collection_name = db_collection_name(db);
+            validate_db_collection_name(&collection_name, &db.name)?;
+            Some(collection_name)
+        } else {
+            None
+        };
         let retention = db.retention.as_ref().map(|retention| DbRetentionIr {
             amount: retention.amount,
             unit: match retention.unit {
@@ -420,6 +485,7 @@ pub(super) fn lower_db_declarations(
             type_ref: type_ref.clone(),
             type_name: db.name.clone(),
             canonical_type_name: canonical_db_type_name(attachment.module_path, &db.name),
+            kind,
             collection_name: collection_name.clone(),
             retention: retention.clone(),
             leases: lease_map,
@@ -467,7 +533,13 @@ pub(super) fn lower_db_declarations(
                 type_ref: type_ref.clone(),
                 type_name: db.name.clone(),
                 collection_name: collection_name.clone(),
-                kind: DbObjectKindIr::Object,
+                implements: implements.clone(),
+                identity_fields: if db.kind == DbDeclKind::Contract {
+                    identity_fields.clone()
+                } else {
+                    BTreeMap::new()
+                },
+                kind,
                 key: key.clone(),
                 fields,
                 retention: retention.clone(),
@@ -486,6 +558,211 @@ pub(super) fn lower_db_declarations(
         );
     }
     Ok(metadata)
+}
+
+/// Resolves a `db object ... implements <contract-ref>` target to the contract
+/// declaration facts of a direct dependency package. Contract references are
+/// cross-package type references (Phase 0 dual spelling): the alias decides the
+/// dependency view, and the remainder is the package symbol path. Same-package
+/// references are rejected because the identity comparison below cannot be
+/// sound without the contract package's own lowered File IR.
+fn resolve_implements_contract<'a>(
+    implements: &TypeRef,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
+) -> Result<&'a PublicationDbMetadata> {
+    let name = implements
+        .name
+        .trim()
+        .strip_prefix("root.")
+        .unwrap_or_else(|| implements.name.trim());
+    let mut lookup_name = String::new();
+    let target = if name.contains('/') {
+        name
+    } else if let Some((alias, rest)) = name.split_once('.') {
+        if !package_aliases.contains_key(alias) {
+            return Err(CompileError::Semantic(format!(
+                "db object implements target `{}` must be a cross-package contract reference (for example `engine.package.Type` or `engine/package.Type`)",
+                implements.name
+            )));
+        }
+        lookup_name = format!("{alias}/{rest}");
+        lookup_name.as_str()
+    } else {
+        return Err(CompileError::Semantic(format!(
+            "db object implements target `{}` must be a cross-package contract reference (for example `engine.package.Type` or `engine/package.Type`)",
+            implements.name
+        )));
+    };
+    publication_db_metadata
+        .resolve_qualified(target)
+        .ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "db object implements target `{target}` does not resolve to a db contract declaration in a dependency package"
+            ))
+        })
+}
+
+/// Compile-time contract coverage: the implementing db object must declare
+/// every contract field with the same schema identity and the same storage
+/// mapping, and the same primary key field and type.
+fn validate_implements_coverage(
+    db: &DbDecl,
+    contract: &PublicationDbMetadata,
+    type_fields: &BTreeMap<String, TypeRefIr>,
+    storage_map: &BTreeMap<String, DbStorageCodec>,
+) -> Result<()> {
+    let missing = contract
+        .fields
+        .iter()
+        .filter(|field| !type_fields.contains_key(*field))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(CompileError::Semantic(format!(
+            "db object {} implements contract {} but its type is missing contract fields: {}",
+            db.name,
+            contract.canonical_type_name,
+            missing.join(", ")
+        )));
+    }
+    for field in &contract.fields {
+        let contract_ty = if *field == contract.key.name {
+            contract.canonical_key_type.as_ref()
+        } else {
+            contract.canonical_field_types.get(field)
+        }
+        .ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "db object {} implements contract {} but contract field {} has no canonical type fact",
+                db.name, contract.canonical_type_name, field
+            ))
+        })?;
+        let host_ty = type_fields
+            .get(field)
+            .expect("covered contract field has a host type");
+        if !db_field_type_identity_matches(host_ty, contract_ty) {
+            return Err(CompileError::Semantic(format!(
+                "db object {} implements contract {} but field {} has a different schema identity: host `{}` vs contract `{}`",
+                db.name,
+                contract.canonical_type_name,
+                field,
+                type_ref_ir_type_text(host_ty),
+                type_ref_ir_type_text(contract_ty)
+            )));
+        }
+        if contract.field_storage.get(field) != storage_map.get(field) {
+            return Err(CompileError::Semantic(format!(
+                "db object {} implements contract {} but field {} has a different storage mapping than the contract",
+                db.name, contract.canonical_type_name, field
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Schema identity equality for one stored field, decided by normalized
+/// nominal identity. The contract facts carry the contract's own symbol
+/// references resolved into the host's dependency view (same dependency alias
+/// + symbol path as the host's cross-package references), so a host reference
+/// to a contract-package symbol matches the contract's own symbol while host
+/// local nominals (LocalType / PublicationType on either side) never match a
+/// contract symbol. Forms without nominal identity (builtin, anonymous record
+/// / union / literal, applied nominals whose base resolves nominally) compare
+/// structurally; everything else is false.
+fn db_field_type_identity_matches(host: &TypeRefIr, contract: &TypeRefIr) -> bool {
+    match (host, contract) {
+        (
+            TypeRefIr::PackageSymbol {
+                symbol: host_symbol,
+            },
+            TypeRefIr::PackageSymbol {
+                symbol: contract_symbol,
+            },
+        ) => package_symbol_identity_matches(host_symbol, contract_symbol),
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Builtin {
+                name: other,
+                args: other_args,
+            },
+        ) => {
+            name == other
+                && args.len() == other_args.len()
+                && args
+                    .iter()
+                    .zip(other_args)
+                    .all(|(arg, other)| db_field_type_identity_matches(arg, other))
+        }
+        (TypeRefIr::Record { fields }, TypeRefIr::Record { fields: other }) => {
+            fields.len() == other.len()
+                && fields.iter().all(|(name, ty)| {
+                    other
+                        .get(name)
+                        .is_some_and(|other_ty| db_field_type_identity_matches(ty, other_ty))
+                })
+        }
+        (TypeRefIr::Union { items }, TypeRefIr::Union { items: other }) => {
+            items.len() == other.len()
+                && items
+                    .iter()
+                    .zip(other)
+                    .all(|(item, other)| db_field_type_identity_matches(item, other))
+        }
+        (TypeRefIr::Nullable { inner }, TypeRefIr::Nullable { inner: other }) => {
+            db_field_type_identity_matches(inner, other)
+        }
+        (TypeRefIr::Literal { value }, TypeRefIr::Literal { value: other }) => value == other,
+        (
+            TypeRefIr::AppliedNominal { base, arguments },
+            TypeRefIr::AppliedNominal {
+                base: other_base,
+                arguments: other_arguments,
+            },
+        ) => {
+            nominal_base_identity_matches(base, other_base)
+                && arguments.len() == other_arguments.len()
+                && arguments
+                    .iter()
+                    .zip(other_arguments)
+                    .all(|(argument, other)| db_field_type_identity_matches(argument, other))
+        }
+        _ => false,
+    }
+}
+
+fn nominal_base_identity_matches(
+    host: &NominalTypeRefBaseIr,
+    contract: &NominalTypeRefBaseIr,
+) -> bool {
+    match (host, contract) {
+        (
+            NominalTypeRefBaseIr::PackageSymbol {
+                symbol: host_symbol,
+            },
+            NominalTypeRefBaseIr::PackageSymbol {
+                symbol: contract_symbol,
+            },
+        ) => package_symbol_identity_matches(host_symbol, contract_symbol),
+        _ => false,
+    }
+}
+
+/// Cross-package nominal identity: the same dependency view (dependency alias,
+/// the link-time ABI expectation is a linker refinement and not part of the
+/// identity) and the same public symbol path.
+fn package_symbol_identity_matches(host: &PackageSymbolRef, contract: &PackageSymbolRef) -> bool {
+    matches!(
+        (&host.package, &contract.package),
+        (
+            PackageRefIr::Dependency {
+                dependency_ref: host_dependency
+            },
+            PackageRefIr::Dependency {
+                dependency_ref: contract_dependency
+            }
+        ) if host_dependency == contract_dependency
+    ) && host.symbol_path == contract.symbol_path
 }
 
 fn lower_db_storage_codec(codec: DbStorageCodec) -> DbFieldStorageIr {
@@ -1142,6 +1419,7 @@ impl<'a> FunctionLowerer<'a> {
         operation: &DbOperation,
         db: &DbMetadataIr,
     ) -> Result<()> {
+        validate_contract_write_restriction(operation, db)?;
         match operation.op {
             DbOperationKind::Insert if !operation.many => {
                 let Some(body) = &operation.body else {
@@ -1775,13 +2053,21 @@ impl<'a> FunctionLowerer<'a> {
                 "declaredType".to_string(),
                 MetadataValue::from_serializable(&db.type_ref),
             );
-            metadata.insert(
-                "collectionName".to_string(),
-                MetadataValue::String(db.collection_name.clone()),
-            );
+            if let Some(collection_name) = &db.collection_name {
+                metadata.insert(
+                    "collectionName".to_string(),
+                    MetadataValue::String(collection_name.clone()),
+                );
+            }
             metadata.insert(
                 "kind".to_string(),
-                MetadataValue::String("object".to_string()),
+                MetadataValue::String(
+                    match db.kind {
+                        DbObjectKindIr::Object => "object",
+                        DbObjectKindIr::Contract => "contract",
+                    }
+                    .to_string(),
+                ),
             );
             if let Some(retention) = &db.retention {
                 metadata.insert(
@@ -2014,6 +2300,33 @@ fn lower_db_op(op: DbOperationKind) -> DbOpKindIr {
     }
 }
 
+fn db_operation_kind_text(op: DbOperationKind) -> &'static str {
+    match op {
+        DbOperationKind::Insert => "insert",
+        DbOperationKind::Replace => "replace",
+        DbOperationKind::Upsert => "upsert",
+        _ => "operation",
+    }
+}
+
+/// Lowering backstop for the shared-collection write restriction: whole-document
+/// insert/replace/upsert on a `db contract` target must never reach the artifact.
+fn validate_contract_write_restriction(operation: &DbOperation, db: &DbMetadataIr) -> Result<()> {
+    if db.kind == skiff_artifact_model::DbObjectKindIr::Contract
+        && matches!(
+            operation.op,
+            DbOperationKind::Insert | DbOperationKind::Replace | DbOperationKind::Upsert
+        )
+    {
+        return Err(CompileError::Semantic(format!(
+            "db {} on contract target `{}` is not allowed: the engine contract view cannot insert or replace the whole shared document; the host owns the collection",
+            db_operation_kind_text(operation.op),
+            operation.target.name
+        )));
+    }
+    Ok(())
+}
+
 fn validate_db_lease_slot(db: &DbMetadataIr, slot: &str) -> Result<()> {
     if db.leases.contains_key(slot) {
         return Ok(());
@@ -2070,4 +2383,77 @@ fn db_metadata_lookup_key(type_text: &str) -> String {
     generic_parts(ty)
         .map(|parts| parts.root.trim().to_string())
         .unwrap_or_else(|| ty.to_string())
+}
+
+#[cfg(test)]
+mod contract_write_restriction_tests {
+    use super::*;
+
+    fn contract_metadata() -> DbMetadataIr {
+        DbMetadataIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "AgentThread".to_string(),
+            canonical_type_name: "internal.any_lowering.AgentThread".to_string(),
+            kind: skiff_artifact_model::DbObjectKindIr::Contract,
+            collection_name: None,
+            retention: None,
+            leases: BTreeMap::new(),
+            key: DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: BTreeSet::from(["id".to_string(), "status".to_string()]),
+            field_types: BTreeMap::new(),
+            field_type_texts: BTreeMap::new(),
+            field_storage: BTreeMap::new(),
+        }
+    }
+
+    fn operation(op: DbOperationKind) -> DbOperation {
+        DbOperation {
+            op,
+            many: false,
+            target: TypeRef {
+                name: "AgentThread".to_string(),
+            },
+            selector: None,
+            query: None,
+            projection: None,
+            body: None,
+            insert_body: None,
+            change: None,
+        }
+    }
+
+    #[test]
+    fn whole_document_writes_on_contract_target_are_rejected_at_lowering() {
+        for op in [
+            DbOperationKind::Insert,
+            DbOperationKind::Replace,
+            DbOperationKind::Upsert,
+        ] {
+            let error = validate_contract_write_restriction(&operation(op), &contract_metadata())
+                .expect_err("contract target whole-document writes must fail lowering");
+            assert!(
+                error.to_string().contains("contract target"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_and_field_scoped_updates_on_contract_target_pass_lowering() {
+        for op in [
+            DbOperationKind::Find,
+            DbOperationKind::Optional,
+            DbOperationKind::Require,
+            DbOperationKind::Update,
+            DbOperationKind::Delete,
+            DbOperationKind::Count,
+            DbOperationKind::Exists,
+        ] {
+            validate_contract_write_restriction(&operation(op), &contract_metadata())
+                .expect("contract target reads and field-scoped writes must lower");
+        }
+    }
 }

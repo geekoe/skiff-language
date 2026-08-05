@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_recursion::async_recursion;
 use serde_json::{json, Value};
 use skiff_runtime_capability_context::{
@@ -28,6 +30,7 @@ use crate::{
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
     heap_access::HeapAccess,
+    DbContractBinding,
 };
 use skiff_runtime_linked_program::{
     DbBodyIr, DbChangeIr, DbChangeOpIr, DbIndexDirectionIr, DbOpKindIr, DbOperationIr, DbOrderIr,
@@ -68,7 +71,12 @@ impl<'a> DbIrEvaluator<'a> {
 
     #[async_recursion]
     pub async fn eval_operation(&mut self, operation: &DbOperationIr) -> Result<DbCommand> {
-        let target = db_capability_target(&operation.target);
+        let execution_projection =
+            RuntimeExecutionProjection::for_context(self.interpreter, &self.program_context)?;
+        let target = db_capability_target(
+            &operation.target,
+            execution_projection.db_contract_binding(&operation.target.target_id),
+        );
         let type_name = operation.target.type_name.clone();
         let result_plan = self.result_plan(&operation.result_type)?;
         let recoverable_plans = self.recoverable_expected_plans(&operation.target)?;
@@ -830,15 +838,33 @@ fn db_compare_operator(op: DbPredicateCompareOpIr) -> &'static str {
     }
 }
 
-pub(super) fn db_capability_target(target: &DbTargetIr) -> DbCapabilityTarget {
-    DbCapabilityTarget::new(
-        DbCapabilityTargetId {
-            package_artifact_ref: target.target_id.package_artifact_ref.clone(),
-            file_ir_ref: target.target_id.file_ir_ref.clone(),
-            type_index: target.target_id.type_index,
-        },
-        target.type_name.clone(),
-    )
+pub(super) fn db_capability_target(
+    target: &DbTargetIr,
+    binding: Option<Arc<DbContractBinding>>,
+) -> DbCapabilityTarget {
+    let (target_id, contract_view) = match binding {
+        Some(binding) => (
+            DbCapabilityTargetId {
+                package_artifact_ref: binding.implementer.package_artifact_ref.clone(),
+                file_ir_ref: binding.implementer.file_ir_ref.clone(),
+                type_index: binding.implementer.type_index,
+            },
+            binding.contract_view,
+        ),
+        None => (
+            DbCapabilityTargetId {
+                package_artifact_ref: target.target_id.package_artifact_ref.clone(),
+                file_ir_ref: target.target_id.file_ir_ref.clone(),
+                type_index: target.target_id.type_index,
+            },
+            false,
+        ),
+    };
+    if contract_view {
+        DbCapabilityTarget::with_contract_view(target_id, target.type_name.clone())
+    } else {
+        DbCapabilityTarget::new(target_id, target.type_name.clone())
+    }
 }
 
 fn recoverable_expected_plans_from_record_node(

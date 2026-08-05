@@ -409,7 +409,7 @@ fn has_noncanonical_managed_options(options: Option<&IndexOptions>) -> bool {
         || options.clustered().unwrap_or(false)
 }
 
-pub(crate) fn managed_index_name(
+pub fn managed_index_name(
     package_id: &str,
     logical_collection: &str,
     logical_index: &str,

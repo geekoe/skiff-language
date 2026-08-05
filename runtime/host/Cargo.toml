@@ -44,6 +44,7 @@ skiff-runtime-native = { path = "../native" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 skiff-runtime-package-test = { path = "../package-test" }
 skiff-runtime-request = { path = "../request" }
+skiff-runtime-service-db = { path = "../service-db" }
 skiff-runtime-transport = { path = "../transport" }
 thiserror = "2.0"
 time = { version = "0.3.47", features = ["formatting", "parsing"] }
@@ -61,5 +62,4 @@ skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-capability-context = { path = "../capability-context", features = ["test-support"] }
 skiff-runtime-eval = { path = "../eval", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
-skiff-runtime-service-db = { path = "../service-db" }
 skiff-test-runner = { path = "../../test-runner" }

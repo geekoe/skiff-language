@@ -19,12 +19,14 @@ fn same_source_db_path_in_two_dependencies_keeps_exact_primary_identities() {
         ForeignPackageDbDependency {
             primary_alias: "first",
             top_level_alias: "firstImpl",
+            contracts_only: false,
             artifact: &first_artifact,
             files: std::slice::from_ref(&first_file),
         },
         ForeignPackageDbDependency {
             primary_alias: "second",
             top_level_alias: "secondImpl",
+            contracts_only: false,
             artifact: &second_artifact,
             files: std::slice::from_ref(&second_file),
         },
@@ -65,6 +67,7 @@ fn foreign_db_selection_fails_closed_for_missing_file_link_or_db_attachment() {
     let error = foreign_package_db_metadata_index(&[ForeignPackageDbDependency {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
+        contracts_only: false,
         artifact: &artifact,
         files: &[],
     }])
@@ -94,6 +97,7 @@ fn foreign_db_selection_fails_closed_for_missing_file_link_or_db_attachment() {
     let index = foreign_package_db_metadata_index(&[ForeignPackageDbDependency {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
+        contracts_only: false,
         artifact: &non_db_artifact,
         files: std::slice::from_ref(&non_db_file),
     }])
@@ -110,6 +114,7 @@ fn foreign_db_selection_rejects_stale_package_identity_and_same_named_file_subst
     let error = foreign_package_db_metadata_index(&[ForeignPackageDbDependency {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
+        contracts_only: false,
         artifact: &stale_artifact,
         files: std::slice::from_ref(&file),
     }])
@@ -121,6 +126,7 @@ fn foreign_db_selection_rejects_stale_package_identity_and_same_named_file_subst
     let error = foreign_package_db_metadata_index(&[ForeignPackageDbDependency {
         primary_alias: "provider",
         top_level_alias: "providerImpl",
+        contracts_only: false,
         artifact: &artifact,
         files: std::slice::from_ref(&replacement),
     }])
@@ -160,7 +166,9 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
                 },
             },
             type_name: "model.Session".to_string(),
-            collection_name: "sessions".to_string(),
+            collection_name: Some("sessions".to_string()),
+            implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

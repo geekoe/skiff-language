@@ -34,6 +34,9 @@ mod cascade;
 mod encryption;
 mod error;
 mod index;
+
+/// Canonical managed index name shared with host admission contract coverage.
+pub use index::managed_index_name;
 mod lease;
 mod mapping;
 mod metadata;

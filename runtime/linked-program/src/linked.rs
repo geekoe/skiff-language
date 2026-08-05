@@ -209,7 +209,15 @@ pub struct ConstDeclarationIr {
 pub struct DbDeclarationIr {
     pub type_ref: LinkedTypeRef,
     pub type_name: String,
-    pub collection_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<LinkedTypeRef>,
+    /// Mirror of the artifact `DbDeclarationIr.identity_fields`: contract
+    /// declarations only; host compile-time coverage validation reads the
+    /// artifact form, the linked mirror keeps the File IR shape faithful.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub identity_fields: BTreeMap<String, LinkedTypeRef>,
     pub kind: DbObjectKindIr,
     pub key: DbObjectKeyIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -226,6 +234,7 @@ pub struct DbDeclarationIr {
 #[serde(rename_all = "camelCase")]
 pub enum DbObjectKindIr {
     Object,
+    Contract,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

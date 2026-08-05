@@ -186,6 +186,8 @@ pub struct TypeDecl {
     pub alias: Option<TypeRef>,
     pub implements: Vec<TypeRef>,
     pub fields: Vec<FieldDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spreads: Vec<TypeRef>,
     pub span: SourceSpan,
 }
 
@@ -224,6 +226,10 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DbDecl {
     pub name: String,
+    #[serde(default, skip_serializing_if = "DbDeclKind::is_object")]
+    pub kind: DbDeclKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<TypeRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +242,20 @@ pub struct DbDecl {
     pub storage: Vec<DbStorageDecl>,
     pub indexes: Vec<DbIndexEntry>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DbDeclKind {
+    #[default]
+    Object,
+    Contract,
+}
+
+impl DbDeclKind {
+    pub fn is_object(&self) -> bool {
+        *self == Self::Object
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

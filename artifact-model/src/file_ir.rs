@@ -217,7 +217,16 @@ pub struct ConstIr {
 pub struct DbDeclarationIr {
     pub type_ref: TypeRefIr,
     pub type_name: String,
-    pub collection_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<TypeRefIr>,
+    /// Symbol-preserving field types as declared before storage expansion.
+    /// `db contract` declarations persist these as the identity facts the
+    /// host compares against when validating `db object ... implements`;
+    /// `db object` declarations never carry them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub identity_fields: BTreeMap<String, TypeRefIr>,
     pub kind: DbObjectKindIr,
     pub key: DbObjectKeyIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -232,11 +241,12 @@ pub struct DbDeclarationIr {
     pub source_span: Option<SourceSpanRef>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum DbObjectKindIr {
     #[default]
     Object,
+    Contract,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

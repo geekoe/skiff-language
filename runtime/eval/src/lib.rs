@@ -72,8 +72,8 @@ pub fn provider_stream_tasks_active_for_test() -> usize {
     assembly_execution::provider_stream_tasks_active_for_test()
 }
 pub use assembly_seam::{
-    AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError,
-    RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
+    AdmittedPackageSchemaRecords, DbContractBinding, RuntimeAssemblyEvalResolver,
+    RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
 };
 pub use entrypoint::{
     EvalRequestEffectDouble, EvalRequestExecutionInput, EvalRequestExecutor,

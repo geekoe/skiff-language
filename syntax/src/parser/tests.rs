@@ -1,6 +1,6 @@
 use crate::ast::{
-    DbIndexDirection, DbRetentionUnit, DbStorageCodec, DurationUnit, Expr, ForBinding, Stmt,
-    TestEffectOutcome, TestEffectStepOutcome,
+    DbDeclKind, DbIndexDirection, DbRetentionUnit, DbStorageCodec, DurationUnit, Expr, ForBinding,
+    Stmt, TestEffectOutcome, TestEffectStepOutcome,
 };
 use crate::lexer::{lex, TokenKind};
 
@@ -68,6 +68,119 @@ fn rejects_tuple_like_for_binding_syntax() {
 
     assert!(
         error.contains("expected loop item name"),
+        "unexpected parse error: {error}"
+    );
+}
+
+#[test]
+fn parses_record_spread_entries() {
+    let ast = parse_source(
+        r#"
+        type Base {
+          id: string,
+        }
+
+        type Thread {
+          spread Base,
+          spread agent/model.AgentThread,
+          spread root.model.Base<int>,
+          ownerUserId: string,
+        }
+        "#,
+    )
+    .expect("record spread entries should parse");
+    let base = &ast.types[0];
+    assert!(base.spreads.is_empty(), "source record has no spreads");
+    let thread = &ast.types[1];
+    assert_eq!(thread.fields.len(), 1);
+    assert_eq!(thread.fields[0].name, "ownerUserId");
+    assert_eq!(
+        thread
+            .spreads
+            .iter()
+            .map(|spread| spread.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Base", "agent/model.AgentThread", "root.model.Base<int>"]
+    );
+}
+
+#[test]
+fn parses_spread_entries_interspersed_with_fields() {
+    let ast = parse_source(
+        r#"
+        type Thread {
+          ownerUserId: string,
+          spread Base,
+          pinnedAt: string?,
+        }
+        "#,
+    )
+    .expect("spread entries may appear at any position");
+    let thread = &ast.types[0];
+    assert_eq!(
+        thread
+            .spreads
+            .iter()
+            .map(|spread| spread.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Base"]
+    );
+    assert_eq!(thread.fields.len(), 2);
+}
+
+#[test]
+fn parses_spread_colon_as_regular_field_name() {
+    let ast = parse_source(
+        r#"
+        type Event {
+          spread: string,
+          kind: string,
+        }
+        "#,
+    )
+    .expect("spread followed by colon is a regular field");
+    let event = &ast.types[0];
+    assert!(event.spreads.is_empty());
+    assert_eq!(
+        event
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.ty.name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("spread", "string"), ("kind", "string")]
+    );
+}
+
+#[test]
+fn parses_multiple_spread_entries() {
+    let ast = parse_source(
+        r#"
+        type Combined {
+          spread First,
+          spread Second,
+          spread third.Module.Third,
+        }
+        "#,
+    )
+    .expect("multiple spread entries should parse");
+    let combined = &ast.types[0];
+    assert_eq!(combined.spreads.len(), 3);
+    assert!(combined.fields.is_empty());
+}
+
+#[test]
+fn rejects_spread_outside_record_field_list() {
+    let error = parse_source(
+        r#"
+        interface NotRecord {
+          spread Base
+        }
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("interface body only supports function requirements"),
         "unexpected parse error: {error}"
     );
 }
@@ -324,6 +437,174 @@ fn parses_db_declaration_with_key_indexes_and_contextual_keywords() {
     assert_eq!(db.indexes[1].name, "byExternalId");
     assert!(db.indexes[1].unique);
     assert!(db.indexes[1].where_expr.is_some());
+}
+
+#[test]
+fn parses_db_contract_with_shared_key_and_index_syntax() {
+    let source = r#"
+            type AgentThread {
+              id: string,
+              status: string,
+              updatedAt: string
+            }
+
+            db contract AgentThread {
+              primary key(id)
+              index byStatusUpdated(status, updatedAt desc)
+              unique index byStatus(status)
+            }
+        "#;
+
+    let ast = parse_source(source).unwrap();
+
+    assert_eq!(ast.dbs.len(), 1);
+    let db = &ast.dbs[0];
+    assert_eq!(db.kind, DbDeclKind::Contract);
+    assert_eq!(db.name, "AgentThread");
+    assert_eq!(db.collection_name, None);
+    assert_eq!(db.retention, None);
+    assert!(db.leases.is_empty());
+    assert!(db.storage.is_empty());
+    let key = db
+        .key
+        .as_ref()
+        .expect("db contract primary key should parse");
+    assert_eq!(key.name, "id");
+    assert_eq!(db.indexes.len(), 2);
+    assert_eq!(db.indexes[0].name, "byStatusUpdated");
+    assert!(!db.indexes[0].unique);
+    assert_eq!(
+        db.indexes[0].fields[0].field_path,
+        vec!["status".to_string()]
+    );
+    assert_eq!(
+        db.indexes[0].fields[1].field_path,
+        vec!["updatedAt".to_string()]
+    );
+    assert_eq!(db.indexes[0].fields[1].direction, DbIndexDirection::Desc);
+    assert_eq!(db.indexes[1].name, "byStatus");
+    assert!(db.indexes[1].unique);
+}
+
+#[test]
+fn parses_db_object_implements_contract_ref_with_dual_spelling() {
+    for contract_ref in ["agent/model.AgentThread", "agent.model.AgentThread"] {
+        let source = format!(
+            r#"
+            type Thread {{
+              id: string,
+              status: string
+            }}
+
+            db object Thread implements {contract_ref} {{
+              primary key(id)
+              index byStatus(status)
+            }}
+        "#
+        );
+
+        let ast = parse_source(&source).unwrap();
+        assert_eq!(ast.dbs.len(), 1);
+        let db = &ast.dbs[0];
+        assert_eq!(db.kind, DbDeclKind::Object);
+        assert_eq!(db.name, "Thread");
+        let implements = db
+            .implements
+            .as_ref()
+            .expect("db object implements contract ref should parse");
+        assert_eq!(implements.name, contract_ref);
+        let key = db
+            .key
+            .as_ref()
+            .expect("db object implements primary key should parse");
+        assert_eq!(key.name, "id");
+        assert_eq!(db.indexes.len(), 1);
+        assert_eq!(db.indexes[0].name, "byStatus");
+    }
+}
+
+#[test]
+fn rejects_db_contract_implementing_another_contract() {
+    let error = parse_source(
+        r#"
+            type ContractA { id: string }
+            type ContractB { id: string }
+            db contract ContractA { primary key(id) }
+            db contract ContractB implements ContractA { primary key(id) }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("db contract declarations cannot implement another contract"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn parses_db_object_with_contract_keyword_in_bodies() {
+    let ast = parse_source(
+        r#"
+            type Record { id: string, contract: string }
+            db object Record {
+              primary key(id)
+            }
+
+            function useContractName() -> string {
+              const contract = "ok"
+              contract
+            }
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(ast.dbs.len(), 1);
+    assert_eq!(ast.dbs[0].kind, DbDeclKind::Object);
+    assert_eq!(ast.dbs[0].name, "Record");
+}
+
+#[test]
+fn rejects_db_contract_physical_storage_entries() {
+    for (entry, message) in [
+        ("name \"thread\"", "do not declare a collection name"),
+        ("retention 30 days", "do not declare retention"),
+        ("lease lock 1 min", "do not declare leases"),
+        (
+            "storage apiKey using encrypted",
+            "do not declare storage mappings",
+        ),
+    ] {
+        let source = format!(
+            "type AgentThread {{ id: string }}\n\
+             db contract AgentThread {{\n  primary key(id)\n  {entry}\n}}\n"
+        );
+        let error = parse_source(&source)
+            .expect_err(&format!("db contract must reject `{entry}` during parsing"));
+        assert!(
+            error.to_string().contains(message),
+            "unexpected error for `{entry}`: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_db_contract_stored_field_entries() {
+    let error = parse_source(
+        r#"
+            type AgentThread { id: string }
+            db contract AgentThread {
+              id: string
+            }
+        "#,
+    )
+    .expect_err("db block stored fields must fail during parsing");
+    assert!(
+        error
+            .to_string()
+            .contains("db object stored fields must be declared on the attached type"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

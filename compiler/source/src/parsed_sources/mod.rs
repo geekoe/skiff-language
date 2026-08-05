@@ -3,19 +3,26 @@ use std::{
     path::Path,
 };
 
+pub use crate::root_refs::is_official_std_private_module_path;
 use crate::{
     root_refs::{validate_source_root_refs, RootRefValidationPolicy},
     semantic::{SemanticPublication, SemanticSource},
     shared::publication_error::PublicationError,
     shared::{ast::SourceFile, source_role::PublicationSourceRole},
-    source_graph::CompilerSourceFile,
+    source_graph::{CompilerSourceFile, ParsedSourceFile},
 };
-
-pub use crate::root_refs::is_official_std_private_module_path;
 
 #[cfg(test)]
 #[path = "tests/alias_resolution.rs"]
 mod alias_resolution_tests;
+
+#[cfg(test)]
+#[path = "tests/spread_expansion.rs"]
+mod spread_expansion_tests;
+
+mod spread_expansion;
+
+pub use spread_expansion::expand_record_spreads;
 
 #[derive(Clone, Debug)]
 pub struct ParsedCompilerSource {
@@ -57,6 +64,23 @@ impl ParsedCompilerSource {
 
     pub fn alias_targets(&self) -> &BTreeMap<String, String> {
         &self.alias_targets
+    }
+
+    pub(crate) fn with_expanded_ast(&self, ast: SourceFile) -> Self {
+        let source = CompilerSourceFile::from_parsed_file(
+            ParsedSourceFile {
+                relative_path: self.source.relative_path.clone(),
+                module_path: self.source.module_path.clone(),
+                is_test_file: self.source.is_test_file,
+                text: self.source.text.clone(),
+                ast,
+            },
+            self.source.role(),
+        );
+        Self {
+            source,
+            alias_targets: self.alias_targets.clone(),
+        }
     }
 }
 

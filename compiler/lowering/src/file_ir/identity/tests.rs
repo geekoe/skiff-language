@@ -60,6 +60,6 @@ fn nontrivial_file_ir_identity_matches_canonical_owner_and_golden() {
     assert_eq!(adapter_identity, canonical_identity);
     assert_eq!(
         adapter_identity,
-        "skiff-file-ir-v11:sha256:0db7b477a193cecb0767884a90c2ccdec7a6ee22a0a838f8d4a4b2d2d4bf6a82"
+        "skiff-file-ir-v12:sha256:55602ca057c3dae15208704b9883b82d264f56482462c48ea2508d1a889b1cc3"
     );
 }

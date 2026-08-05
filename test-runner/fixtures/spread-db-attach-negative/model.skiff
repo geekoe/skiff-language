@@ -1,0 +1,21 @@
+type EngineIdentity {
+  id: string,
+}
+
+type EngineAudit {
+  id: string,
+}
+
+type Combined {
+  spread EngineIdentity,
+  spread EngineAudit,
+}
+
+type EngineBase {
+  label: string,
+}
+
+type ExplicitConflict {
+  spread EngineBase,
+  label: string,
+}

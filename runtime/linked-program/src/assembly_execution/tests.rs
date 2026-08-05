@@ -21,7 +21,7 @@ const FORGED_PACKAGE_BUILD: &str =
 const PACKAGE_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FILE_ID: &str =
-    "skiff-file-ir-v11:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    "skiff-file-ir-v12:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[test]
@@ -425,7 +425,9 @@ fn artifact_file() -> artifact::FileIrUnit {
         artifact::DbDeclarationIr {
             type_ref: artifact::TypeRefIr::LocalType { type_index: 0 },
             type_name: "model.Record".to_string(),
-            collection_name: "record".to_string(),
+            collection_name: Some("record".to_string()),
+            implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: artifact::DbObjectKindIr::Object,
             key: artifact::DbObjectKeyIr {
                 name: "id".to_string(),
@@ -470,7 +472,9 @@ fn linked_file() -> LinkedFileUnit {
                 },
             },
             type_name: "model.Record".to_string(),
-            collection_name: "record".to_string(),
+            collection_name: Some("record".to_string()),
+            implements: None,
+            identity_fields: std::collections::BTreeMap::new(),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

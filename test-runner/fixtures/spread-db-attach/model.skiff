@@ -1,0 +1,64 @@
+type EngineUser {
+  userId: string,
+  email: string,
+  displayName: string,
+}
+
+type UserProfile {
+  spread EngineUser,
+  role: string,
+}
+
+db object UserProfile {
+  primary key(userId)
+}
+
+type EngineSession {
+  sessionToken: string,
+  tenantId: string,
+  sequence: number,
+}
+
+type SessionRecord {
+  spread EngineSession,
+  ownerId: string,
+}
+
+db object SessionRecord {
+  primary key(sessionToken)
+  index bySequence(sequence asc)
+  unique index byTenant(tenantId asc)
+}
+
+type EngineCredential {
+  credentialId: string,
+  secretKey: string,
+  nonce: string,
+}
+
+type CredentialRecord {
+  spread EngineCredential,
+  label: string,
+}
+
+db object CredentialRecord {
+  primary key(credentialId)
+  storage secretKey using encrypted
+  storage label using encrypted
+}
+
+type EngineContact {
+  phone: string,
+}
+
+type ContactRecord {
+  spread EngineUser,
+  spread EngineContact,
+  region: string,
+}
+
+db object ContactRecord {
+  primary key(userId)
+  index byPhone(phone asc)
+  storage email using encrypted
+}
