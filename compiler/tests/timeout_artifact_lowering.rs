@@ -81,7 +81,7 @@ function sequentialValue() -> string {
         // skiff-file-ir-v11 -> v12 schema bump (hash input includes schema_version).
         assert_eq!(
             file.file_ir_identity,
-            "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>"
+            "skiff-file-ir-v12:sha256:ca9867e7990ac3a381e1cd2ec39c2d47f66e20329d67c2b730a784b8ae0f0ba6"
         );
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),

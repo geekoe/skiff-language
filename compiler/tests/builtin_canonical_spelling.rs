@@ -20,8 +20,8 @@ use common::{
 // TODO(L1): std File IR and package build golden identities must be recomputed
 // after the skiff-file-ir-v11 -> v12 schema bump (build identity includes each
 // unit's fileIrIdentity, whose hash input includes schema_version).
-const CURRENT_DB_FILE_IR: &str = "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>";
-const CURRENT_STD_BUILD: &str = "skiff-package-build-v10:sha256:<recompute-after-schema-bump>";
+const CURRENT_DB_FILE_IR: &str = "skiff-file-ir-v12:sha256:81c6cbbc912dbb0d5bb842a874f5cdb0f069754c50e5637a965d2237e8c9fdd7";
+const CURRENT_STD_BUILD: &str = "skiff-package-build-v10:sha256:a1192904aee9b97b7a557b71642274638ca03e7832f78225130657cd3e86c2bc";
 const CURRENT_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:a5fc494093c3fe766717d6e2de0822288beba2aa691a09d1f447c97a9540df62";
 const CURRENT_STD_SCHEMA_INDEX: &str =
