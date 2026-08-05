@@ -209,7 +209,8 @@ pub struct ConstDeclarationIr {
 pub struct DbDeclarationIr {
     pub type_ref: LinkedTypeRef,
     pub type_name: String,
-    pub collection_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_name: Option<String>,
     pub kind: DbObjectKindIr,
     pub key: DbObjectKeyIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -226,6 +227,7 @@ pub struct DbDeclarationIr {
 #[serde(rename_all = "camelCase")]
 pub enum DbObjectKindIr {
     Object,
+    Contract,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

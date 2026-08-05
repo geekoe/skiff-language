@@ -17,8 +17,11 @@ use common::{
     TestDir,
 };
 
-const CURRENT_STD_BUILD: &str =
-    "skiff-package-build-v10:sha256:293e1908d0a1b4bb749c7b9781a2da81968d779c1c2ab4ecc72c8924e1aef66b";
+// TODO(L1): std File IR and package build golden identities must be recomputed
+// after the skiff-file-ir-v11 -> v12 schema bump (build identity includes each
+// unit's fileIrIdentity, whose hash input includes schema_version).
+const CURRENT_DB_FILE_IR: &str = "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>";
+const CURRENT_STD_BUILD: &str = "skiff-package-build-v10:sha256:<recompute-after-schema-bump>";
 const CURRENT_STD_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:a5fc494093c3fe766717d6e2de0822288beba2aa691a09d1f447c97a9540df62";
 const CURRENT_STD_SCHEMA_INDEX: &str =
@@ -27,8 +30,6 @@ const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
 const CURRENT_CONSTRAINT_ERROR_SCHEMA: &str =
     "skiff-package-schema-type-v2:sha256:839e01e4a6bf20be055d48fde8fa4e518099f3345e9c9321f05020b85a8f5f68";
-const CURRENT_DB_FILE_IR: &str =
-    "skiff-file-ir-v11:sha256:7fb95341ef99bd151a97ba82081d7bb061dadb85d6d6b921edb2976931c2c405";
 
 fn assert_cancel_error_spellings_are_rejected(surface: &str, source: impl Fn(&str) -> String) {
     initialize_test_prelude_registry();

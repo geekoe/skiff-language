@@ -779,6 +779,15 @@ fn activation_db_metadata(
                 );
             }
             for (symbol, declaration) in &file.declarations.db {
+                if declaration.kind == skiff_artifact_model::DbObjectKindIr::Contract {
+                    continue;
+                }
+                let collection_name = declaration.collection_name.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "activation DB metadata package {build_id} file {} declaration {symbol} is a db object without a physical collection",
+                        file.file_ir_identity
+                    )
+                })?;
                 let declaration_symbol = match &declaration.type_ref {
                     skiff_artifact_model::TypeRefIr::LocalType { .. } => symbol.as_str(),
                     skiff_artifact_model::TypeRefIr::DbObjectSymbol { symbol: db_symbol }
@@ -838,7 +847,7 @@ fn activation_db_metadata(
                         kind: declaration.kind,
                         ty: declaration.type_ref.clone(),
                         type_name: declaration.type_name.clone(),
-                        collection_name: declaration.collection_name.clone(),
+                        collection_name: Some(collection_name.to_string()),
                         key: Some(declaration.key.clone()),
                         fields: declaration.fields.clone(),
                         retention: declaration.retention.clone(),

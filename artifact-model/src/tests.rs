@@ -520,7 +520,7 @@ fn file_ir_db_indexes_require_unique_names_fields_and_ordered_specs() {
         DbDeclarationIr {
             type_ref: TypeRefIr::builtin("Thread"),
             type_name: "Thread".to_string(),
-            collection_name: "thread".to_string(),
+            collection_name: Some("thread".to_string()),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -722,7 +722,7 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v11");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v12");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);

@@ -74,7 +74,7 @@ impl DbProviderFactory for ExactDbProvider {
                 (
                     entry.target.lookup_key().to_string(),
                     (
-                        entry.metadata.collection_name.clone(),
+                        entry.metadata.collection_name.clone().unwrap_or_default(),
                         entry.metadata.type_name.clone(),
                     ),
                 )
@@ -565,7 +565,7 @@ async fn shared_test_assembly_isolation() {
         assert_eq!(
             foreign
                 .iter()
-                .map(|entry| entry.metadata.collection_name.as_str())
+                .map(|entry| entry.metadata.collection_name.as_deref().unwrap_or(""))
                 .collect::<Vec<_>>(),
             ["sessions", "sessions"]
         );

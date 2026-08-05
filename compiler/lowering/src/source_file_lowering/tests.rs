@@ -320,7 +320,7 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
             "#,
     );
-    assert_eq!(unit.schema_version, "skiff-file-ir-v11");
+    assert_eq!(unit.schema_version, "skiff-file-ir-v12");
     assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
     assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
@@ -892,6 +892,114 @@ fn validated_package_db_schema_lowers_to_typed_file_ir() {
     assert_eq!(
         db.indexes[0].fields[0].direction,
         skiff_artifact_model::DbIndexDirectionIr::Desc
+    );
+}
+
+#[test]
+fn db_contract_lowers_without_physical_collection_and_keeps_key_index_identity() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string, updatedAt: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatusUpdated(status, updatedAt desc)
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+    assert_eq!(declaration.retention, None);
+    assert!(declaration.leases.is_empty());
+    assert_eq!(declaration.key.name, "id");
+    assert_eq!(
+        declaration.key.ty,
+        skiff_artifact_model::TypeRefIr::builtin("string")
+    );
+    assert!(declaration
+        .fields
+        .iter()
+        .any(|field| field.name == "status"));
+    assert_eq!(declaration.indexes.len(), 1);
+    assert_eq!(declaration.indexes[0].name, "byStatusUpdated");
+    assert_eq!(
+        declaration.indexes[0].fields[1].direction,
+        skiff_artifact_model::DbIndexDirectionIr::Desc
+    );
+}
+
+#[test]
+fn db_contract_declaration_is_not_a_physical_collection_owner() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatus(status)
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+}
+
+#[test]
+fn db_operation_on_contract_type_compiles_and_targets_contract_identity() {
+    let unit = lowered_unit(
+        r#"
+                type AgentThread { id: string, status: string }
+                db contract AgentThread {
+                  primary key(id)
+                  index byStatus(status)
+                }
+
+                function readStatus(status: string) -> Array<AgentThread> {
+                  return db find many AgentThread { where status == status }
+                }
+            "#,
+    );
+
+    let declaration = unit
+        .declarations
+        .db
+        .get("AgentThread")
+        .expect("validated db contract should lower");
+    assert_eq!(
+        declaration.kind,
+        skiff_artifact_model::DbObjectKindIr::Contract
+    );
+    assert_eq!(declaration.collection_name, None);
+
+    let executable = executable(&unit, "readStatus");
+    let expression = executable
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| match expression {
+            skiff_artifact_model::ExprIr::DbOperation { operation } => Some(operation),
+            _ => None,
+        })
+        .expect("contract target db find must lower to a db operation");
+    assert_eq!(
+        expression.target.type_name,
+        "internal.any_lowering.AgentThread"
     );
 }
 
@@ -2811,7 +2919,7 @@ fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() 
     assert!(!wire.contains("operationAbiId"));
     assert!(unit
         .file_ir_identity
-        .starts_with("skiff-file-ir-v11:sha256:"));
+        .starts_with("skiff-file-ir-v12:sha256:"));
 }
 
 #[test]

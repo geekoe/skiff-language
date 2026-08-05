@@ -425,7 +425,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
         DbDeclarationIr {
             type_ref: thread_type(),
             type_name: "Thread".to_string(),
-            collection_name: "Thread".to_string(),
+            collection_name: Some("Thread".to_string()),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),
@@ -451,7 +451,7 @@ fn linked_file(ir: &FixtureIr) -> Arc<LinkedFileUnit> {
         DbDeclarationIr {
             type_ref: raw_thread_type(),
             type_name: "RawThread".to_string(),
-            collection_name: "RawThread".to_string(),
+            collection_name: Some("RawThread".to_string()),
             kind: DbObjectKindIr::Object,
             key: DbObjectKeyIr {
                 name: "id".to_string(),

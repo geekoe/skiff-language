@@ -19,9 +19,10 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbIndexDirection, DbLeaseClaim,
-        DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock, DbRetentionUnit,
-        DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef, UnaryOp,
+        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDeclKind, DbIndexDirection,
+        DbLeaseClaim, DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock,
+        DbRetentionUnit, DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef,
+        UnaryOp,
     },
     ast_utils::db_collection_name,
     error::{CompileError, Result},
@@ -42,7 +43,8 @@ pub(super) struct DbMetadataIr {
     pub(super) type_ref: TypeRefIr,
     pub(super) type_name: String,
     pub(super) canonical_type_name: String,
-    pub(super) collection_name: String,
+    pub(super) kind: DbObjectKindIr,
+    pub(super) collection_name: Option<String>,
     pub(super) retention: Option<DbRetentionIr>,
     pub(super) leases: BTreeMap<String, DbLeaseIr>,
     pub(super) key: DbObjectKeyIr,
@@ -273,6 +275,7 @@ fn lower_publication_db_metadata(
         type_ref,
         type_name: metadata.type_name.clone(),
         canonical_type_name: metadata.canonical_type_name.clone(),
+        kind: metadata.kind,
         collection_name: metadata.collection_name.clone(),
         retention,
         leases,
@@ -353,8 +356,17 @@ pub(super) fn lower_db_declarations(
             type_fields.insert(field.name.clone(), field_ty);
         }
         let field_types = type_fields.clone();
-        let collection_name = db_collection_name(db);
-        validate_db_collection_name(&collection_name, &db.name)?;
+        let kind = match db.kind {
+            DbDeclKind::Object => DbObjectKindIr::Object,
+            DbDeclKind::Contract => DbObjectKindIr::Contract,
+        };
+        let collection_name = if db.kind == DbDeclKind::Object {
+            let collection_name = db_collection_name(db);
+            validate_db_collection_name(&collection_name, &db.name)?;
+            Some(collection_name)
+        } else {
+            None
+        };
         let retention = db.retention.as_ref().map(|retention| DbRetentionIr {
             amount: retention.amount,
             unit: match retention.unit {
@@ -420,6 +432,7 @@ pub(super) fn lower_db_declarations(
             type_ref: type_ref.clone(),
             type_name: db.name.clone(),
             canonical_type_name: canonical_db_type_name(attachment.module_path, &db.name),
+            kind,
             collection_name: collection_name.clone(),
             retention: retention.clone(),
             leases: lease_map,
@@ -467,7 +480,7 @@ pub(super) fn lower_db_declarations(
                 type_ref: type_ref.clone(),
                 type_name: db.name.clone(),
                 collection_name: collection_name.clone(),
-                kind: DbObjectKindIr::Object,
+                kind,
                 key: key.clone(),
                 fields,
                 retention: retention.clone(),
@@ -1775,13 +1788,21 @@ impl<'a> FunctionLowerer<'a> {
                 "declaredType".to_string(),
                 MetadataValue::from_serializable(&db.type_ref),
             );
-            metadata.insert(
-                "collectionName".to_string(),
-                MetadataValue::String(db.collection_name.clone()),
-            );
+            if let Some(collection_name) = &db.collection_name {
+                metadata.insert(
+                    "collectionName".to_string(),
+                    MetadataValue::String(collection_name.clone()),
+                );
+            }
             metadata.insert(
                 "kind".to_string(),
-                MetadataValue::String("object".to_string()),
+                MetadataValue::String(
+                    match db.kind {
+                        DbObjectKindIr::Object => "object",
+                        DbObjectKindIr::Contract => "contract",
+                    }
+                    .to_string(),
+                ),
             );
             if let Some(retention) = &db.retention {
                 metadata.insert(

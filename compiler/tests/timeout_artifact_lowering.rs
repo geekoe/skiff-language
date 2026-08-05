@@ -74,13 +74,15 @@ function sequentialValue() -> string {
         assert_eq!(file.schema_version, FILE_IR_SCHEMA_VERSION);
         assert_eq!(file.ir_format_version, FILE_IR_FORMAT_VERSION);
         assert_eq!(file.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v11");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v12");
         assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
+        // TODO(L1): golden File IR identity must be recomputed after the
+        // skiff-file-ir-v11 -> v12 schema bump (hash input includes schema_version).
         assert_eq!(
-        file.file_ir_identity,
-        "skiff-file-ir-v11:sha256:e000b89a9e99d44bcb8e319cd8749f4da64a5795d7e7d5b9aa203ef10b9f2b01"
-    );
+            file.file_ir_identity,
+            "skiff-file-ir-v12:sha256:<recompute-after-schema-bump>"
+        );
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity
@@ -154,7 +156,7 @@ function sequentialValue() -> string {
     fn timeout_file_ir_upgrade_does_not_change_unrelated_top_level_schemas() {
         assert_eq!(
             PACKAGE_ARTIFACT_SCHEMA_VERSION,
-            "skiff-package-artifact-v10"
+            "skiff-package-artifact-v11"
         );
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v5");
         assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");

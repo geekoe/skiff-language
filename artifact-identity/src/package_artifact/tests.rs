@@ -1350,7 +1350,7 @@ fn fixture() -> PackageArtifact {
 fn actor_fixture() -> PackageArtifact {
     let mut artifact = fixture();
     let file = FileIrRef::new(
-        "skiff-file-ir-v11:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "skiff-file-ir-v12:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "thread_actor",
     );
     artifact.files.push(file.clone());

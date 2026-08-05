@@ -2,12 +2,12 @@ use super::*;
 
 #[test]
 fn suspension_schema_generations_are_atomic_and_unrelated_domains_remain_stable() {
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v11");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v12");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(
         PACKAGE_ARTIFACT_SCHEMA_VERSION,
-        "skiff-package-artifact-v10"
+        "skiff-package-artifact-v11"
     );
     assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v5");
     assert_eq!(
@@ -25,6 +25,8 @@ fn suspension_schema_generations_are_atomic_and_unrelated_domains_remain_stable(
     assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
 
     for legacy in [
+        "skiff-file-ir-v11",
+        "skiff-file-ir-v10",
         "skiff-file-ir-v9",
         "skiff-file-ir-v8",
         "skiff-file-ir-format-v6",
@@ -34,6 +36,7 @@ fn suspension_schema_generations_are_atomic_and_unrelated_domains_remain_stable(
         "skiff-file-ir-v6",
         "skiff-file-ir-format-v4",
         "skiff-package-unit-v1",
+        "skiff-package-artifact-v10",
         "skiff-package-artifact-v9",
         "skiff-package-artifact-v8",
         "skiff-package-artifact-v7",

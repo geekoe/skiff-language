@@ -25,7 +25,16 @@ fn is_old_db_dotted_operation(operation: &str) -> bool {
 impl Parser {
     pub(super) fn parse_db_decl(&mut self) -> Result<DbDecl> {
         let start = self.expect_ident_value("db")?.span.start;
-        self.expect_ident_value("object")?;
+        let kind = if self.match_ident("object") {
+            DbDeclKind::Object
+        } else if self.match_ident("contract") {
+            DbDeclKind::Contract
+        } else {
+            return Err(CompileError::syntax(
+                "expected `db object` or `db contract` declaration",
+                self.peek().span.start,
+            ));
+        };
         let name = self.expect_ident("expected db object name")?;
         self.expect_symbol("{")?;
         let mut collection_name = None;
@@ -44,12 +53,36 @@ impl Parser {
                     self.peek().span.start,
                 ));
             } else if self.match_ident("name") {
+                if kind == DbDeclKind::Contract {
+                    return Err(CompileError::syntax(
+                        "db contract declarations do not declare a collection name; physical storage belongs to the implementing db object",
+                        self.previous().span.start,
+                    ));
+                }
                 collection_name = Some(self.expect_string("expected db collection name string")?);
             } else if self.match_ident("retention") {
+                if kind == DbDeclKind::Contract {
+                    return Err(CompileError::syntax(
+                        "db contract declarations do not declare retention; physical storage belongs to the implementing db object",
+                        self.previous().span.start,
+                    ));
+                }
                 retention = Some(self.parse_db_retention()?);
             } else if self.match_ident("lease") {
+                if kind == DbDeclKind::Contract {
+                    return Err(CompileError::syntax(
+                        "db contract declarations do not declare leases; physical storage belongs to the implementing db object",
+                        self.previous().span.start,
+                    ));
+                }
                 leases.push(self.parse_db_lease_decl()?);
             } else if self.match_ident("storage") {
+                if kind == DbDeclKind::Contract {
+                    return Err(CompileError::syntax(
+                        "db contract declarations do not declare storage mappings; physical storage belongs to the implementing db object",
+                        self.previous().span.start,
+                    ));
+                }
                 let field = self.expect_ident("expected db storage field name")?;
                 if self.check_symbol(".") {
                     return Err(CompileError::syntax(
@@ -110,6 +143,7 @@ impl Parser {
         let end = self.previous().span.end;
         Ok(DbDecl {
             name,
+            kind,
             collection_name,
             key,
             retention,

@@ -498,6 +498,7 @@ fn linked_db_declaration(declaration: &artifact::DbDeclarationIr) -> DbDeclarati
         collection_name: declaration.collection_name.clone(),
         kind: match declaration.kind {
             artifact::DbObjectKindIr::Object => DbObjectKindIr::Object,
+            artifact::DbObjectKindIr::Contract => DbObjectKindIr::Contract,
         },
         key: DbObjectKeyIr {
             name: declaration.key.name.clone(),

@@ -578,7 +578,7 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         actor: None,
     };
     PackageArtifact {
-        schema_version: "skiff-package-artifact-v10".to_string(),
+        schema_version: "skiff-package-artifact-v11".to_string(),
         package_id: "example.com/provider".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("provider-build"),
@@ -2343,7 +2343,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         )]),
     };
     let artifact = PackageArtifact {
-        schema_version: "skiff-package-artifact-v10".to_string(),
+        schema_version: "skiff-package-artifact-v11".to_string(),
         package_id: "llm-api".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
