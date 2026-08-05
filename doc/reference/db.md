@@ -114,6 +114,101 @@ collection/index name、冲突key或业务值。若Runtime为已有
 数据创建唯一索引时发现重复值，candidate prepare同样以脱敏、不可重试的constraint分类失败；由于service
 request尚未开始，该失败不进入业务`catch`。
 
+### 1.3 Contract Storage And Host Implementation
+
+> 状态：语言设计输入（未实现）。日期：2026-08-05。
+> 本节定义的 `db contract`、`db object ... implements` 尚未在 compiler / runtime 实现；本节描述目标语义，
+> 与 §1.1 / §1.2 / §10 / §11 的已交付规则并存时，以本节为准仅限本节范围内。
+
+引擎 package 与宿主 service 共享同一物理集合（如线程行）时，可以由引擎声明**存储契约**、由宿主声明**实现**。
+引擎代码以本包类型照常执行 db 操作；物理集合、完整字段集与索引由宿主一处声明。双方看到的是同一物理
+集合，但各自使用自己的类型视图，不存在共享的可变字段镜像。产品侧类型复用引擎字段可用 record spread
+（`record-spread.md`）。
+
+#### 1.3.1 契约声明（引擎侧）
+
+```skiff
+type AgentThread {
+  id: string
+  status: string
+  configRevision: number
+  updatedAt: string
+}
+
+db contract AgentThread {
+  primary key(id)
+  index byStatusUpdated(status, updatedAt desc)
+}
+```
+
+规则：
+
+- `db contract Name` 必须附着到同模块同名 `type`，附着类型当前必须是非泛型 concrete record（与 `db object` 相同）。
+- 契约声明 primary key 与**必需索引**；不产生物理 collection 身份，不参与
+  `(packageId, declared logical collection identity)` 编码。
+- 契约是引擎代码中该类型 db 操作可编译的前提；契约内的 db target 在宿主 assembly 中解析（见 §1.3.3）。
+- 引擎其它自有 `db object` 不受本机制影响。
+- 契约的 db 操作不能引用不在契约字段集中的字段（field path 校验以契约类型为准）。
+
+#### 1.3.2 实现声明（宿主侧）
+
+```skiff
+type Thread {
+  id: string
+  status: string
+  configRevision: number
+  updatedAt: string
+  ownerUserId: string
+  pinnedAt: string?
+}
+
+db object Thread implements agent/model.AgentThread {
+  primary key(id)
+  index byStatusUpdated(status, updatedAt desc)
+  index byOwnerPinned(ownerUserId, pinnedAt desc, id asc)
+}
+```
+
+规则：
+
+- `db object Name implements <contract-ref>`：`Name` 是宿主本模块 record 类型；`<contract-ref>` 是
+  可见的契约类型引用（跨包使用 import alias，如 `agent.model.AgentThread`，或斜杠命名空间形式
+  `agent/model.AgentThread`）。
+- `<contract-ref>` 必须解析到一个 `db contract` 附着类型；指向普通 `db object` 类型或 interface 时
+  fail closed。
+- 实现声明拥有完整存储语义：物理集合身份按宿主 package 编码，字段来自宿主类型，索引与
+  `storage ... using encrypted` 等 mapping 在此一处声明。
+- 契约必需索引必须被实现声明覆盖（同一 logical index identity，定义一致）。
+- 一个契约在同一 service assembly 内必须恰好被一个实现声明覆盖；缺失、重复或契约与实现的
+  package/artifact 解析不一致都 fail closed。该约束按 assembly 无条件生效，不因契约 target 是否被
+  实际使用而豁免。
+- `kind: test` service 经 topLevelAlias 引用契约类型的场景不在本节定义：契约 target 不产生物理集合，
+  宿主实现是 production service 场景，test 不承担宿主角色。
+
+#### 1.3.3 绑定与覆盖校验
+
+- 绑定发生在链接/激活期：契约的 db target 解析到实现声明的物理集合；引擎读行按自己的字段子集
+  plan 解码，宿主读行按完整字段集解码。绑定或覆盖校验失败在编译/激活阶段 fail closed，不进入业务
+  `catch`。
+- 覆盖校验（fail closed）：
+  - 实现类型字段集覆盖契约类型字段集；重叠字段的 schema identity 逐字段一致（identity 按
+    `static-semantics.md §16/§17` 的 schema / wire identity 规则判定；spread 复制的字段在源声明
+    上下文解析，identity 天然一致，宿主手写"结构相同"的本地名义类型不构成一致）；
+  - **契约 primary key 必须与实现 primary key 同字段、同类型**（引擎的 key 读与按 key 更新依赖
+    key 到宿主 `_id` 的映射）；
+  - 契约必需索引 ⊆ 实现索引；
+  - 重叠字段的 storage mapping 与 recoverable 语义一致（引擎的解码行为依赖声明的字段元数据）。
+- 解码：按各视图字段集解码，视图未声明的文档字段被忽略，不进入运行时对象。
+
+#### 1.3.4 写入语义
+
+- 契约/实现共享集合上的写入只允许 field-scoped `insert` / `update` / `delete`；
+  **禁止全文档 `replace` / `upsert`**——任一视图的全文档替换都会丢掉另一方声明的字段。
+- **契约集合的 `insert` 由宿主执行**：宿主持有完整字段集，创建的初始行必须满足宿主类型声明
+  （含非空字段）；引擎对契约集合只做读与 field-scoped update，不做 insert。创建路径由宿主在
+  同一 `db transaction` 内插入初始行并调用引擎初始化操作，一次原子提交。
+- 引擎按自己的字段子集做 field-scoped update，宿主字段不被触及；反之亦然。
+
 ## 2. Field Paths And Contextual Keywords
 
 DB block 内的 `fields`、`where`、`order`、`limit`、`offset`、`unset`、`add`、`remove` 等只作为上下文关键字。它们不是全局保留字段名。
