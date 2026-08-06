@@ -483,6 +483,24 @@ impl AssemblyAdmissionController {
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
     {
+        self.admit_with_profile(assembly, resolver, None, None).await
+    }
+
+    /// Test-only direct admission with an explicit Router-supplied serviceDb
+    /// and activation profile, mirroring the production lazy-load path. The
+    /// DB metadata branch of activation construction requires both when the
+    /// candidate declares collections.
+    #[cfg(test)]
+    pub(crate) async fn admit_with_profile<R>(
+        &self,
+        assembly: impl Into<Arc<RuntimeAssembly>>,
+        resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
+        profile: Option<&str>,
+    ) -> anyhow::Result<Arc<ActiveAssembly>>
+    where
+        R: RuntimeAssemblyContentResolver + Sync + ?Sized,
+    {
         let assembly = assembly.into();
         let identity = assembly.assembly_identity.clone();
         let _reload = self.reload.lock().await;
@@ -494,7 +512,7 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(generation, &identity, assembly, resolver, None, None)
+            .build_started_candidate(generation, &identity, assembly, resolver, service_db, profile)
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -638,6 +656,13 @@ impl AssemblyAdmissionController {
     /// Whether one exact buildId is already in the loaded registry.
     pub(crate) fn is_loaded(&self, build_id: &str) -> bool {
         self.loaded.lookup(build_id).is_some()
+    }
+
+    /// Exact loaded image for one buildId, without entering any critical
+    /// section. This is the fallback routing source for Actor route authority
+    /// resolution before live work pins a route hold.
+    pub(crate) fn loaded_image(&self, build_id: &str) -> Option<Arc<ActiveAssembly>> {
+        self.loaded.lookup(build_id)
     }
 
     /// Gateway surfaces of every loaded deployment (dispatch-mode capability).
@@ -947,11 +972,22 @@ impl RuntimeHost {
         authority: &ActorOwnerRouteAuthorityFrameHeader,
         service_id: &str,
     ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
-        let Some(active) = self.actor_route_holds.find(&authority.build_id) else {
-            anyhow::bail!(
-                "Actor route authority buildId {} is not retained",
-                authority.build_id
-            );
+        // Live Actor work keeps its exact image pinned in the route holds.
+        // An initial activation has no live work yet, so its buildId must
+        // resolve from the loaded registry (the M4 routing authority) before
+        // the first hold is acquired; a buildId that was never loaded fails
+        // closed exactly like the request path.
+        let active = match self.actor_route_holds.find(&authority.build_id) {
+            Some(active) => active,
+            None => self
+                .assembly_admission
+                .loaded_image(&authority.build_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Actor route authority buildId {} is not retained",
+                        authority.build_id
+                    )
+                })?,
         };
         actor_route_from_active(active, service_id)
     }

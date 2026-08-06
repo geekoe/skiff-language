@@ -762,6 +762,12 @@ struct CapturingDbProvider {
     inputs: Arc<Mutex<Vec<skiff_runtime_capability_context::DbProviderBuildInput>>>,
 }
 
+fn mapping_service_db() -> AssemblyActivationServiceDb {
+    AssemblyActivationServiceDb {
+        mongo_url: "mongodb://fixture.invalid".to_string(),
+    }
+}
+
 impl skiff_runtime_capability_context::DbProviderFactory for CapturingDbProvider {
     fn build(
         &self,
@@ -894,13 +900,24 @@ async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_re
         "runtime-mapping",
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
+    let service_db = mapping_service_db();
 
     controller
-        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+        .admit_with_profile(
+            Arc::new(fixture.assembly.clone()),
+            &fixture.resolver,
+            Some(&service_db),
+            Some("fixture"),
+        )
         .await
         .expect("Package-owned collection fixture must admit");
     controller
-        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+        .admit_with_profile(
+            Arc::new(fixture.assembly.clone()),
+            &fixture.resolver,
+            Some(&service_db),
+            Some("fixture"),
+        )
         .await
         .expect("reload must rebuild the exact Package-owned metadata");
 
@@ -945,7 +962,12 @@ async fn reachable_db_metadata_requires_router_supplied_service_db() {
     );
 
     let error = controller
-        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+        .admit_with_profile(
+            Arc::new(fixture.assembly.clone()),
+            &fixture.resolver,
+            None,
+            Some("fixture"),
+        )
         .await
         .expect_err("DB metadata without Router serviceDb must fail closed");
 
@@ -972,9 +994,15 @@ async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
             format!("runtime-diamond-{reverse_links}"),
             skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
         );
+        let service_db = mapping_service_db();
 
         controller
-            .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+            .admit_with_profile(
+                Arc::new(fixture.assembly.clone()),
+                &fixture.resolver,
+                Some(&service_db),
+                Some("fixture"),
+            )
             .await
             .expect("identical stateful diamond must admit");
 
@@ -1003,9 +1031,15 @@ async fn equal_bare_collection_names_from_service_and_package_remain_distinct_ta
         "runtime-service-collision",
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
+    let service_db = mapping_service_db();
 
     controller
-        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+        .admit_with_profile(
+            Arc::new(fixture.assembly.clone()),
+            &fixture.resolver,
+            Some(&service_db),
+            Some("fixture"),
+        )
         .await
         .expect("Package identity, not the bare name, owns physical collection storage");
 
@@ -1766,8 +1800,14 @@ async fn admit_contract_implementation_fixture(
         runtime_id,
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
+    let service_db = mapping_service_db();
     let active = controller
-        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
+        .admit_with_profile(
+            Arc::new(fixture.assembly.clone()),
+            &fixture.resolver,
+            Some(&service_db),
+            Some("fixture"),
+        )
         .await?;
     Ok((Arc::new(provider), active))
 }

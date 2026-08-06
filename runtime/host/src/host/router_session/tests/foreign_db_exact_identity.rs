@@ -513,7 +513,11 @@ async fn shared_test_assembly_isolation() {
         })
         .collect::<Vec<_>>();
     assert_eq!(routes.len(), 2);
-    assert_eq!(routes[0].assembly_identity(), routes[1].assembly_identity());
+    // M4 lazy load composes one exact dependency-closure assembly per case
+    // entrypoint: each case route carries its own closure image (distinct
+    // roots), even though both entrypoints are published inside the same
+    // shared test assembly.
+    assert_ne!(routes[0].assembly_identity(), routes[1].assembly_identity());
     assert_eq!(routes[0].generation(), routes[1].generation());
     assert_ne!(routes[0].deployment(), routes[1].deployment());
 
