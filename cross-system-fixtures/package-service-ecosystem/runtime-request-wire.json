@@ -10,8 +10,6 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:247fc2b3714bf715dc7918a10618be49493645efbbc0f293fc7b3d2e4d32b50f",
-        "assemblyGeneration": 7,
         "deployment": {
           "serviceId": "example.com/service-1",
           "contractVersion": "1.0.0",
@@ -77,8 +75,6 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "assemblyGeneration": 0,
         "deployment": {
           "serviceId": "example.com/service-2",
           "contractVersion": "1.0.0",
@@ -114,8 +110,6 @@
       },
       "routing": {
         "kind": "runtimeAssembly",
-        "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "assemblyGeneration": 9007199254740991,
         "deployment": {
           "serviceId": "example.com/service-3",
           "contractVersion": "1.0.0",

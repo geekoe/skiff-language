@@ -13,8 +13,6 @@
         },
         "routing": {
           "kind": "runtimeAssembly",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "assemblyGeneration": 0,
           "deployment": {
             "serviceId": "example.com/service-1",
             "contractVersion": "1.0.0",
@@ -42,7 +40,7 @@
         "testEffectsEnabled": false
       },
       "payloadHex": "",
-      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-http-minimal-defaults\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"assemblyGeneration\":0,\"deployment\":{\"serviceId\":\"example.com/service-1\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-1\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"ingress\":{\"protocol\":\"http\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace-minimal\",\"spanId\":\"span-minimal\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]},\"testEffectsEnabled\":false}"
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-http-minimal-defaults\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"deployment\":{\"serviceId\":\"example.com/service-1\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-1\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"ingress\":{\"protocol\":\"http\",\"method\":\"GET\",\"path\":\"/\"}},\"trace\":{\"traceId\":\"trace-minimal\",\"spanId\":\"span-minimal\"},\"httpRequest\":{\"method\":\"GET\",\"url\":\"https://example.com/\",\"path\":\"/\",\"query\":[],\"headers\":[]},\"testEffectsEnabled\":false}"
     },
     {
       "name": "websocketConnect full metadata",
@@ -57,8 +55,6 @@
         },
         "routing": {
           "kind": "runtimeAssembly",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "assemblyGeneration": 11,
           "deployment": {
             "serviceId": "example.com/service-2",
             "contractVersion": "1.0.0",
@@ -121,7 +117,7 @@
         "testEffectsEnabled": true
       },
       "payloadHex": "",
-      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-full\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"assemblyGeneration\":11,\"deployment\":{\"serviceId\":\"example.com/service-2\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-2\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/chat\"}},\"clientSession\":{\"id\":\"client-websocket\"},\"deadline\":{\"timeoutMs\":3000,\"expiresAt\":\"2030-01-01T00:00:03Z\"},\"trace\":{\"traceId\":\"trace-websocket\",\"spanId\":\"span-websocket\",\"parentSpanId\":\"parent-websocket\",\"sampled\":true},\"websocketConnect\":{\"connectionId\":\"connection-1\",\"url\":\"wss://socket.example.com/chat?room=one&room=two\",\"query\":[{\"name\":\"room\",\"value\":\"one\"},{\"name\":\"room\",\"value\":\"two\"}],\"headers\":[{\"name\":\"x-repeat\",\"value\":\"a\"},{\"name\":\"x-repeat\",\"value\":\"b\"}],\"cookies\":[{\"name\":\"session\",\"value\":\"opaque\"}],\"version\":\"1.2.3\",\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\"},\"testEffectsEnabled\":true}"
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-full\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"deployment\":{\"serviceId\":\"example.com/service-2\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-2\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/chat\"}},\"clientSession\":{\"id\":\"client-websocket\"},\"deadline\":{\"timeoutMs\":3000,\"expiresAt\":\"2030-01-01T00:00:03Z\"},\"trace\":{\"traceId\":\"trace-websocket\",\"spanId\":\"span-websocket\",\"parentSpanId\":\"parent-websocket\",\"sampled\":true},\"websocketConnect\":{\"connectionId\":\"connection-1\",\"url\":\"wss://socket.example.com/chat?room=one&room=two\",\"query\":[{\"name\":\"room\",\"value\":\"one\"},{\"name\":\"room\",\"value\":\"two\"}],\"headers\":[{\"name\":\"x-repeat\",\"value\":\"a\"},{\"name\":\"x-repeat\",\"value\":\"b\"}],\"cookies\":[{\"name\":\"session\",\"value\":\"opaque\"}],\"version\":\"1.2.3\",\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:3a0f9b39b684e0c324ff3f729395273987f86ed648e6c0ddd0cb35b67b1aa616\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:d32884370c32e2a3923cbc7245d30c5a56c68b272825cde3645a1a48b49a5936\"},\"testEffectsEnabled\":true}"
     },
     {
       "name": "websocketConnect optional metadata absent",
@@ -136,8 +132,6 @@
         },
         "routing": {
           "kind": "runtimeAssembly",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-          "assemblyGeneration": 0,
           "deployment": {
             "serviceId": "example.com/service-3",
             "contractVersion": "1.0.0",
@@ -167,7 +161,7 @@
         "testEffectsEnabled": false
       },
       "payloadHex": "",
-      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-minimal\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"assemblyIdentity\":\"skiff-runtime-assembly-v3:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"assemblyGeneration\":0,\"deployment\":{\"serviceId\":\"example.com/service-3\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-3\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/ws\"}},\"trace\":{\"traceId\":\"trace-websocket-minimal\",\"spanId\":\"span-websocket-minimal\"},\"websocketConnect\":{\"connectionId\":\"connection-minimal\",\"url\":\"ws://example.test/ws\",\"query\":[],\"headers\":[],\"cookies\":[],\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"testEffectsEnabled\":false}"
+      "canonicalJson": "{\"schemaVersion\":\"skiff-runtime-frame-v4\",\"type\":\"request.start\",\"requestId\":\"request-websocket-connect-minimal\",\"mode\":\"unary\",\"caller\":{\"kind\":\"gateway\"},\"routing\":{\"kind\":\"runtimeAssembly\",\"deployment\":{\"serviceId\":\"example.com/service-3\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"deployment-3\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"ingress\":{\"protocol\":\"webSocket\",\"method\":null,\"path\":\"/ws\"}},\"trace\":{\"traceId\":\"trace-websocket-minimal\",\"spanId\":\"span-websocket-minimal\"},\"websocketConnect\":{\"connectionId\":\"connection-minimal\",\"url\":\"ws://example.test/ws\",\"query\":[],\"headers\":[],\"cookies\":[],\"websocketEntryId\":\"skiff-websocket-entry-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"gatewayEntryIdentity\":\"skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"testEffectsEnabled\":false}"
     }
   ],
   "requestMutations": [
