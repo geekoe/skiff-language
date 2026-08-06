@@ -1,5 +1,11 @@
 # P5-I02F：Skiff Consumer Combined Final Result
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../../../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 结论：PASS。冻结docs HEAD `a4f8e7098e258982e3933287e1439a6e2daba4da`、production commit
 `ee21b85ddd70c63585af6961ce4ea1ef8d4ec37e`、tree
 `e67a9f23f43b23a26b1915230fa592935f55b7d2`、Cargo.lock

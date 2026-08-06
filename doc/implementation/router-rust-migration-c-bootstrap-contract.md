@@ -3,6 +3,12 @@
 日期：2026-08-02
 状态：frozen（contract pack；供 W-bootstrap 直接消费，不写 production）
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 ## 引用链
 
 - 权威设计：`doc/implementation/router-rust-migration-plan.md` §3.3（`ActiveRoutingEpochStore`

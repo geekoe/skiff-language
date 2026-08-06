@@ -7,7 +7,17 @@
 **M4 已落地（2026-08-06）**：本契约的 §1–§5 全部实现并验证（整仓编译 0 error；
 router 74 target / runtime-host 417 / transport 254 / runtime 主 crate / deployment /
 test-runner / telemetry 全绿；scripts 6 个失败为既有基线缺陷）。工作树已合入
-`integration/runtime-lazy-deploy`。
+`integration/runtime-lazy-deploy`，并已合入 `main`（`a4ecd17b`，2026-08-06）。
+
+M4 落地后的补充事实（2026-08-07，M5 文档收敛核对）：
+
+- `AssemblyActivationServiceDb`（serviceDb DTO）已从退役的 activation wire model 迁至
+  `artifact-model/src/service_db.rs`，**名字保留**（`2d7ad199`）；bootstrap 帧的
+  `service_db` 子头继续携带 `mongoUrl` 传给 runtime。
+- bootstrap 帧 activation 子头最终形状 `{ profile }`（§1 表格），与实现一致
+  （`RouterBootstrapActivationFrameHeader`，transport）。
+- health `activeAssembly` 最终形状 `{ profile, releaseCount, buildIds }`（§2 表格），
+  与实现一致（`router/src/health/wire.rs`）。
 
 已拍板决策（2026-08-06，总监确认）：
 

@@ -2,6 +2,12 @@
 
 状态：Ready。只改 encrypted-storage harness，不运行live workload。
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../../../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 ## 直接父节点
 
 - `P5-F441J-live-harness-execution-preflight-result.md`

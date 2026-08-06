@@ -1,6 +1,12 @@
 # Router Rust Migration C0-control Leaf Task
 
 日期：2026-08-02
+
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
 节点：C0-control（一次性有界会话）
 基线：`main@9e492fa77bb5129a5d872f964959449e929c2051`
 分支 / worktree：`feat/router-rust-c0-control` / `/Users/geek/workspace/wt-c0-control`

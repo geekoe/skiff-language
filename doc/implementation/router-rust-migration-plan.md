@@ -4,6 +4,12 @@
 
 状态：complete（实施完成，长期架构见 `doc/architecture/router-rust.md`）
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 本文是迁移实施计划，不是长期架构规范。实施已完成，长期架构见
 `doc/architecture/router-rust.md`；本文不充当第二份架构规范。原目标是把
 `skiff/router` 从 TypeScript 迁移为独立 Rust binary，让 Router 与 Runtime

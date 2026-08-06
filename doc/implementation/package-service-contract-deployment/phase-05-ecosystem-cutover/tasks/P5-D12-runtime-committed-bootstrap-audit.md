@@ -1,5 +1,11 @@
 # P5-D12：Runtime Committed Bootstrap Audit
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../../../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 ## 角色与结论
 
 R10 PASS后恢复F04A真实Host probe，health已出现capability connection与Router exact committed generation-0

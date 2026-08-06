@@ -2,6 +2,12 @@
 
 状态：`PASS / READ_ONLY_EXECUTION_OWNERS_PROVEN`。
 
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../../../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
+
 本节点只读检查 F441I 之后的 current test-runner、encrypted-storage harness 和 runtime-live
 plan，冻结后继实现所需的 base assembly、generation 与参数 owner。没有修改 production、scripts、
 fixture 或 live 状态，没有启动 instance、Mongo、Router、Runtime、stable 或任何网络 workload。

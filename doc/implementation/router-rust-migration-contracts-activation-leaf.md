@@ -1,6 +1,12 @@
 # Router Rust Migration Contracts-activation Leaf Task
 
 日期：2026-08-02
+
+> 已由 M4 取代（2026-08-06，runtime-lazy-deploy）：本文所述 activation 协调层 / epoch 部署机制
+> （`assembly.activation` 帧族、`/__skiff/activate-assembly`、activation 状态仓库与配置项、
+> committed/expected generation 术语等）已在 M4 全部下线，部署语义以
+> [`doc/architecture/runtime-lazy-load-deployment.md`](../../architecture/runtime-lazy-load-deployment.md)
+> 为准。本文保留为历史执行记录。
 节点：contracts-activation（activation 链 contract pack，一次性有界会话）
 Agent：`/root/dev_contracts_activation`
 集成目标：`/root/router_rust_integration_b3`

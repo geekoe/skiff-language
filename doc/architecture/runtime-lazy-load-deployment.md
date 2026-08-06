@@ -2,9 +2,10 @@
 
 ## 本文负责 / 不负责
 
-本文定义部署与版本解析的长期目标模型：**不可变产物 + 小指针表 + 注册目录 + runtime 懒加载**。
-它取代当前 activation 协调层（Mongo `activation_state` 仓库、coordinator 的 prepare/commit CAS、
-epoch store、generation lease、durable pending 与 reconcile）作为部署语义的权威。
+本文定义部署与版本解析的长期模型：**不可变产物 + 小指针表 + 注册目录 + runtime 懒加载**。
+它已取代 activation 协调层（Mongo `activation_state` 仓库、coordinator 的 prepare/commit CAS、
+epoch store、generation lease、durable pending 与 reconcile）成为部署语义的权威
+（M1–M4 落地，2026-08-06 合入 main；M5 收尾中）。
 
 本文不定义语言语法、YAML 字段、artifact DTO 细节或 CLI 拼写。Package / ServiceContract /
 ServiceDeployment / RuntimeAssembly 的对象语义仍以
@@ -13,7 +14,8 @@ registry 生命周期与 typed pointer 的机械细节以
 [`release-registry.md`](release-registry.md) 为权威。本文只负责"版本如何解析到 buildId、
 runtime 如何获得可执行内容、部署切换为什么不需要协调"。
 
-当前实现仍运行 activation 协调层；本文是迁移目标，迁移步骤见"与既有文档的关系"与"迁移路径"。
+迁移过程见 [`doc/implementation/runtime-lazy-deploy/`](../implementation/runtime-lazy-deploy/)；
+本文只保留长期契约，不记录临时执行细节。
 
 ## 四条不变式
 
@@ -104,7 +106,7 @@ runtime 的注册与能力通告：
 
 ## 流水线接口
 
-与部署流水线（publish / activate / verify / rollback）对齐：
+与部署流水线（publish / deploy / verify / rollback）对齐：
 
 - **publish**：产出 buildId + deployment 记录（+ assembly 快照 bundle），写入不可变 store；
   幂等（同内容同 identity）。
@@ -124,19 +126,27 @@ watch 只是 deploy 的自动触发器，不拥有流程。
 - [`release-registry.md`](release-registry.md) 的 release lifecycle 保持；本文把
   "dev lifecycle 的原子切换"具体化为指针更新。
 
-## 迁移路径
+## 迁移路径（已完成）
 
-1. 指针表落地：在 typed pointer store 中新增 release 指针键 `(profile, serviceId, version)`，
-   由 publish 写入（与 deployment 记录同事务）。
-2. runtime 懒加载：按 buildId 构建 image 的路径复用现有 loader；注册从"一个 active assembly"
-   扩展为"已加载 buildId 集合 + 能力通告"。
-3. router 派发切换：候选集并入"能力者"；保留 fail-closed。
-4. 移除 activation 协调层：activation_state 仓库、coordinator、epoch、lease、snapshot 提交
-   逐个下线；watch 改走指针 + deploy。
-5. 存量：旧 committed 世代可视为"全部版本键的当前值"一次性迁移进指针表。
+M1–M4 已按本路径全部落地（2026-08-06 合入 main），部署链路已从 activation 协调层切换到本文模型：
+
+1. **M1 — 指针表落地** ✅：typed pointer store 新增 release 指针键 `(profile, serviceId, version)`，
+   由 publish 写入（与 deployment 记录同事务）；CLI `skiff release set/unset/get`。
+2. **M2 — runtime 懒加载** ✅：按 buildId 构建 image 的路径复用现有 loader；注册为
+   "已加载 buildId 集合 + 能力通告"（capabilities-only，无 Register 帧）。
+3. **M3 — router 派发切换** ✅：请求解析走 release 指针；候选集并入"能力者"；fail-closed 保留。
+4. **M4 — 移除 activation 协调层** ✅：activation_state 仓库、coordinator、epoch、lease、
+   config snapshot 独立提交全部下线；`assembly.activation` 帧族、`/__skiff/activate-assembly`、
+   `assembly activate` / `assembly sync-state` 退役；watch 改走"指针 + 幂等 deploy"；
+   router bootstrap 不再连 Mongo，health `activeAssembly` 为指针表投影。
+5. **存量迁移** ✅：无线上数据，未做世代迁移（M4 总监决策）。
+
+剩余为 M5 收尾（进行中）：`skiff deploy` / verify / rollback CLI 与 agine 侧验证。
 
 ## 开放问题
 
 - 懒加载 image 的内存上限与逐出策略（本地策略，先不做）。
 - 同版本覆盖的窗口期是否需要在线上默认开启预载提示。
-- release 指针与 package/service pointer 的复用与命名冲突。
+- ~~release 指针与 package/service pointer 的复用与命名冲突~~：已解决（M1）——release
+  指针走独立的 `(profile, serviceId, version)` 键与独立 path 命名空间，与 package/
+  service pointer 键不冲突。
