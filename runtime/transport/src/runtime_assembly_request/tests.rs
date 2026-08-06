@@ -310,6 +310,57 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
 }
 
 #[test]
+fn runtime_assembly_routing_build_id_round_trips_and_defaults_to_absent() {
+    // Legacy frame without buildId decodes and re-encodes byte-identically.
+    let legacy = corpus().request_start_headers[0].clone();
+    let frame = encode_binary_frame(&legacy, &[]).unwrap();
+    let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
+    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+        panic!("Router HTTP request must decode through the HTTP wire branch")
+    };
+    assert!(decoded.routing.build_id.is_none());
+    // Re-encoding must not introduce a buildId field (wire compatibility with
+    // legacy routers; byte-exactness is covered by the request-wire corpus).
+    let reencoded = serde_json::to_value(&decoded).unwrap();
+    assert!(reencoded["routing"].get("buildId").is_none());
+
+    // New router frame carrying the exact deployment buildId.
+    let build_id = "skiff-deployment-artifact-v4:sha256:abc";
+    let mut with_build = legacy.clone();
+    with_build["routing"]["buildId"] = json!(build_id);
+    let frame = encode_binary_frame(&with_build, &[]).unwrap();
+    let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
+    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+        panic!("Router HTTP request must decode through the HTTP wire branch")
+    };
+    assert_eq!(decoded.routing.build_id.as_deref(), Some(build_id));
+    let serialized = serde_json::to_value(decoded).unwrap();
+    assert_eq!(serialized["routing"]["buildId"], json!(build_id));
+
+    // Empty buildId is rejected.
+    let mut empty = with_build;
+    empty["routing"]["buildId"] = json!("");
+    let frame = encode_binary_frame(&empty, &[]).unwrap();
+    let error = decode_runtime_assembly_request_start_frame(&frame).unwrap_err();
+    assert!(error.to_string().contains("buildId"), "{error}");
+}
+
+#[test]
+fn runtime_assembly_task_routing_build_id_round_trips() {
+    let mut value = canonical_task_header(false);
+    assert!(value.get("routing").and_then(|r| r.get("buildId")).is_none());
+    let build_id = "skiff-deployment-artifact-v4:sha256:task";
+    value["routing"]["buildId"] = json!(build_id);
+    let frame = encode_binary_frame(&value, br#"{"args":[]}"#).unwrap();
+    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
+    let RuntimeAssemblyRequestStartFrameWireHeader::Task(decoded) = decoded else {
+        panic!("task request must decode through the task wire branch")
+    };
+    assert_eq!(decoded.routing.build_id.as_deref(), Some(build_id));
+    assert_eq!(payload, br#"{"args":[]}"#);
+}
+
+#[test]
 fn runtime_assembly_http_request_round_trips_router_test_parent_authority() {
     let mut value = corpus().request_start_headers[0].clone();
     value["testEffectsEnabled"] = json!(true);

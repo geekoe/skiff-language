@@ -7,6 +7,9 @@ use tokio::sync::OnceCell;
 
 use super::ActiveAssembly;
 
+/// One per-buildId critical-section cell shared by all waiters.
+type LoadedDeploymentCell = OnceCell<Arc<ActiveAssembly>>;
+
 /// Append-only registry of deployments this runtime has loaded, keyed by the
 /// deployment artifact identity (`buildId`).
 ///
@@ -19,7 +22,7 @@ use super::ActiveAssembly;
 ///   so the next request re-enters the critical section and retries.
 #[derive(Debug, Default)]
 pub(crate) struct LoadedDeploymentRegistry {
-    cells: OnceLock<Mutex<HashMap<String, Weak<OnceCell<Arc<ActiveAssembly>>>>>>,
+    cells: OnceLock<Mutex<HashMap<String, Weak<LoadedDeploymentCell>>>>,
     loaded: RwLock<BTreeMap<String, Arc<ActiveAssembly>>>,
 }
 
@@ -76,7 +79,7 @@ impl LoadedDeploymentRegistry {
     fn cell_for(
         &self,
         build_id: &str,
-    ) -> Arc<OnceCell<Arc<ActiveAssembly>>> {
+    ) -> Arc<LoadedDeploymentCell> {
         let cells = self.cells.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cells = cells.lock().expect("loaded deployment cells poisoned");
         if let Some(handle) = cells.get(build_id).and_then(Weak::upgrade) {

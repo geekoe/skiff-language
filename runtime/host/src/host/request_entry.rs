@@ -1,12 +1,14 @@
+#[cfg(test)]
 use skiff_artifact_model::ServiceIngressKey;
 use skiff_runtime_request::{BoundaryResponse, RequestCancel, RequestError, RouterWriterMessage};
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::{response_mapper, TransportError};
 use tracing::info;
 
+#[cfg(test)]
+use crate::loader::assembly_admission::ActiveAssemblyRoute;
 use crate::{
     error::{Result, RuntimeError},
-    loader::assembly_admission::ActiveAssemblyRoute,
 };
 
 use super::RuntimeHost;

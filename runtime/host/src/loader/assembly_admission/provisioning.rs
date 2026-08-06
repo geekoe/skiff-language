@@ -258,8 +258,7 @@ impl AssemblyTransition {
             && self.config_snapshot == other.config_snapshot
     }
 
-    fn prepared_control(&self, replica_id: String) -> AssemblyActivationControl {
-        AssemblyActivationControl::Prepared {
+    fn prepared_control(&self, replica_id: String) -> AssemblyActivationControl {        AssemblyActivationControl::Prepared {
             profile: self.profile.clone(),
             activation_id: self.activation_id.clone(),
             expected_generation: self.expected_generation,
@@ -267,23 +266,6 @@ impl AssemblyTransition {
             assembly: self.assembly.clone(),
             config_snapshot: self.config_snapshot.clone(),
             replica_id,
-        }
-    }
-
-    fn reject_control(
-        &self,
-        replica_id: String,
-        reason: AssemblyActivationRejectReason,
-    ) -> AssemblyActivationControl {
-        AssemblyActivationControl::Reject {
-            profile: self.profile.clone(),
-            activation_id: self.activation_id.clone(),
-            expected_generation: self.expected_generation,
-            candidate_generation: self.candidate_generation,
-            assembly: self.assembly.clone(),
-            config_snapshot: self.config_snapshot.clone(),
-            replica_id,
-            reason,
         }
     }
 

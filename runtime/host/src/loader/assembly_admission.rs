@@ -43,7 +43,6 @@ use loaded_deployments::LoadedDeploymentRegistry;
 #[derive(Debug)]
 pub(crate) struct ActiveAssembly {
     generation: u64,
-    config_snapshot: RuntimeConfigSnapshotRef,
     admitted_at: OffsetDateTime,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
@@ -70,7 +69,6 @@ struct AssemblyTransition {
 #[derive(Debug)]
 struct StagedAssembly {
     transition: AssemblyTransition,
-    prepared: PreparedAssembly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,10 +368,6 @@ impl ActiveAssembly {
         self.generation
     }
 
-    pub(crate) fn config_snapshot(&self) -> &RuntimeConfigSnapshotRef {
-        &self.config_snapshot
-    }
-
     pub(crate) fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
         &self.candidate
     }
@@ -651,6 +645,7 @@ impl AssemblyAdmissionController {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn route(
         &self,
         key: &ServiceIngressKey,
@@ -823,7 +818,6 @@ impl AssemblyAdmissionController {
         })?;
         let active = Arc::new(ActiveAssembly {
             generation: 0,
-            config_snapshot: config_snapshot_ref,
             admitted_at: OffsetDateTime::now_utc(),
             candidate,
             contexts: Arc::new(contexts),
@@ -1014,7 +1008,6 @@ impl AssemblyAdmissionController {
         let admitted_at = OffsetDateTime::now_utc();
         let active = Arc::new(ActiveAssembly {
             generation,
-            config_snapshot: prepared.config_snapshot,
             admitted_at,
             candidate: prepared.candidate,
             contexts: prepared.contexts,
@@ -1146,13 +1139,14 @@ impl RuntimeHost {
         self.assembly_admission.active()
     }
 
-    #[allow(dead_code)] // Control-plane health consumes this without owning admission state.
+    #[cfg(test)]
     pub(crate) fn runtime_assembly_admission_health(
         &self,
     ) -> anyhow::Result<AssemblyAdmissionHealth> {
         self.assembly_admission.health()
     }
 
+    #[cfg(test)]
     pub(crate) fn active_runtime_assembly_route(
         &self,
         key: &ServiceIngressKey,
@@ -1262,7 +1256,6 @@ fn publish_committed_locked(
     }
     let active = Arc::new(ActiveAssembly {
         generation: prepared.generation,
-        config_snapshot: prepared.config_snapshot,
         admitted_at,
         candidate: prepared.candidate,
         contexts: prepared.contexts,

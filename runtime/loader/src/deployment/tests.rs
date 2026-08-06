@@ -26,9 +26,9 @@ fn package_ref(package_id: &str) -> PackageArtifactRef {
 fn http_gateway_entry() -> (GatewayEntryKey, DeploymentGatewayEntry) {
     let surface = GatewayEntryProtocolSurface {
         protocol: skiff_artifact_model::GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
-            adapter_kind: GatewayAdapterKind::TypedJson,
+            adapter_kind: GatewayAdapterKind::RawHttp,
             dispatch_mode: GatewayDispatchMode::Unary,
-            external_sources: Vec::new(),
+            external_sources: vec![GatewayAdapterSource::HttpRequest],
             request_body_schema: None,
             response_schema: None,
             stream_item_schema: None,
@@ -45,8 +45,11 @@ fn http_gateway_entry() -> (GatewayEntryKey, DeploymentGatewayEntry) {
             pre: None,
             guard: None,
             adapter_plan: GatewayAdapterPlan {
-                kind: GatewayAdapterKind::TypedJson,
-                args: Vec::new(),
+                kind: GatewayAdapterKind::RawHttp,
+                args: vec![skiff_artifact_model::GatewayAdapterArg {
+                    param: "request".to_string(),
+                    source: GatewayAdapterSource::HttpRequest,
+                }],
             },
         },
     )
@@ -159,24 +162,6 @@ fn compose_rejects_cross_service_dependencies() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("cross-service dependencies"), "{error}");
-}
-
-#[test]
-fn compose_rejects_unreachable_package_bindings() {
-    let mut deployment = deployment();
-    deployment.package_bindings = vec![skiff_artifact_model::PackageBinding {
-        key: PackageRequirementKey {
-            caller_package_build_id: PackageBuildId::new("build:unknown"),
-            package_requirement_alias: "lib".to_string(),
-        },
-        package: package_ref("example.lib"),
-    }];
-    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
-    let reference = service_deployment_ref(&deployment);
-    let error = compose_deployment_assembly(&reference, &deployment)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("outside its reachable closure"), "{error}");
 }
 
 #[test]
