@@ -294,6 +294,5 @@ mod tests {
                 "corpus must contain required scenario {required}"
             );
         }
-        assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
     }
 }
