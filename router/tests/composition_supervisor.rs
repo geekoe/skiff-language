@@ -139,7 +139,7 @@ async fn raw_get(addr: std::net::SocketAddr, path: &str) -> (String, String) {
         .await
         .expect("connect to public http");
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Skiff-Service: example.com/docs\r\nX-Skiff-Version: example.com/docs@1\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Skiff-Service: example.com/docs\r\nX-Skiff-Version: 1.0.0\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -252,9 +252,9 @@ mod tests {
         let (status, body) = raw_get(http_addr, "/docs").await;
         assert!(
             status.contains("404"),
-            "expected platform 404 for missing assembly ingress, got {status:?}"
+            "expected platform 404 for missing release ingress, got {status:?}"
         );
-        assert!(body.contains("AssemblyIngressNotFound"));
+        assert!(body.contains("ReleaseNotFound"));
 
         listeners
             .shutdown()

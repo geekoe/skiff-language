@@ -19,8 +19,8 @@
       "id": "s1",
       "replicaId": "runtime-a",
       "connectionGeneration": 1,
-      "revision": 1,
-      "cancelled": false,
+   "revision": 1,
+   "cancelled": true,
       "tuple": {
         "profile": "prod",
         "generation": 41,

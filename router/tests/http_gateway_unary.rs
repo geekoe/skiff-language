@@ -15,7 +15,7 @@ mod tests {
     use crate::http_common;
     use crate::http_common::{
         fixture_deployment_identity, fixture_epoch, fixture_resolver, send_request,
-        service_headers, CONTRACT_VERSION, DEPLOYMENT_REVISION, GATEWAY_ITEMS_IDENTITY, SERVICE_ID,
+        service_headers, CONTRACT_VERSION, DEPLOYMENT_REVISION, SERVICE_ID,
     };
 
     async fn start_server(
@@ -96,7 +96,7 @@ mod tests {
         );
         assert_eq!(
             header.routing.gateway_entry_identity.as_str(),
-            GATEWAY_ITEMS_IDENTITY
+            http_common::fixture_entry_identity("items").as_str()
         );
         assert!(matches!(
         header.routing.ingress.protocol,

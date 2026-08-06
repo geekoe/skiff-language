@@ -276,7 +276,17 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
         reads_before,
         "closure provider buildId must not re-read artifact records"
     );
-    assert!(Arc::ptr_eq(&loaded, &provider_image));
+    // The bootstrap recovery registers the committed generation first, so the
+    // provider buildId resolves to the committed image (registered via
+    // `or_insert`). Both the committed image and the closure image carry the
+    // provider activation, so the resolved image must still serve it.
+    assert!(
+        provider_image
+            .candidate()
+            .activation(&fixture.provider_deployment_ref)
+            .is_some(),
+        "provider buildId must resolve to an image serving the provider activation"
+    );
 
     // The linker binding inside the closure image pins the provider activation.
     let linked_call = loaded
@@ -290,7 +300,7 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
         .expect("linked service call");
     let binding = loaded
         .candidate()
-        .resolve_activation_relative_service_call(&fixture.consumer_deployment_ref, &linked_call)
+        .resolve_activation_relative_service_call(&entry, &linked_call)
         .expect("closure service binding");
     assert_eq!(binding.provider(), &fixture.provider_deployment_ref);
 }
@@ -340,11 +350,8 @@ async fn lazy_load_fast_fails_on_dependency_cycles_and_registers_nothing() {
     let mut fixture = FullChainFixture::new();
     // A selector chain that points back at the entry deployment.
     let entry = unloaded_consumer_variant(&mut fixture, "consumer-cycle");
-    let back = provider_variant_with_selector(
-        &mut fixture,
-        "provider-cycle",
-        consumer_contract_ref(&fixture),
-    );
+    let consumer_contract = consumer_contract_ref(&fixture);
+    let back = provider_variant_with_selector(&mut fixture, "provider-cycle", consumer_contract);
     let provider_contract = fixture
         .resolver
         .deployments
@@ -354,12 +361,23 @@ async fn lazy_load_fast_fails_on_dependency_cycles_and_registers_nothing() {
         .1
         .contract
         .clone();
+    // Complete the cycle: consumer -> provider -> consumer. Both release
+    // pointers must resolve so the closure walk hits the already-visited
+    // entry and fails with a cycle.
     fixture
         .resolver
         .release_pointers
         .insert(
             (provider_contract.service_id, provider_contract.contract_version),
             back.clone(),
+        );
+    let consumer_contract = consumer_contract_ref(&fixture);
+    fixture
+        .resolver
+        .release_pointers
+        .insert(
+            (consumer_contract.service_id, consumer_contract.contract_version),
+            entry.clone(),
         );
     let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
 

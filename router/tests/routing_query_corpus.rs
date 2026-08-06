@@ -13,7 +13,6 @@ use routing_query_support::*;
 fn assert_lease_matches_fixture(
     fixture: &ScenarioFixture,
     lease: &RegisteredSessionLease,
-    expected_tuple: &skiff_router::session::identity::RegisteredAssemblyTuple,
 ) {
     let session = fixture
         .sessions
@@ -26,8 +25,13 @@ fn assert_lease_matches_fixture(
         .expect("lease session must come from the fixture");
     assert_eq!(lease.registration_revision, session.revision, "revision");
     assert_eq!(
-        lease.exact_registered_tuple, *expected_tuple,
-        "exact tuple must equal the captured epoch tuple"
+        lease.exact_registered_tuple,
+        session
+            .tuple
+            .as_ref()
+            .map(tuple_from_fixture)
+            .expect("fixture session must carry a tuple"),
+        "lease must carry the exact session tuple"
     );
     assert!(
         !lease.cancellation.cancelled,
@@ -97,9 +101,8 @@ mod tests {
                 fixture.expect.candidates,
                 "{name} candidates"
             );
-            let expected_tuple = epoch.registered_tuple();
             for lease in &leases {
-                assert_lease_matches_fixture(&fixture, lease, &expected_tuple);
+                assert_lease_matches_fixture(&fixture, lease);
             }
 
             let mut expected = expected_counters(&fixture);

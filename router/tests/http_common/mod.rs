@@ -38,14 +38,8 @@ pub const ASSEMBLY_IDENTITY: &str =
     "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 pub const CONFIG_SNAPSHOT_ID: &str =
     "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-pub const GATEWAY_ITEMS_IDENTITY: &str =
-    "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-pub const GATEWAY_EVENTS_IDENTITY: &str =
-    "skiff-gateway-entry-v2:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-pub const GATEWAY_ITEMS_OPTIONS_IDENTITY: &str =
-    "skiff-gateway-entry-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
-/// The canonical fixture deployment record (content-addressed identity).
+/// Canonical fixture deployment record (content-addressed identity).
 fn fixture_service_deployment() -> ServiceDeployment {
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
@@ -71,7 +65,6 @@ fn fixture_service_deployment() -> ServiceDeployment {
                 surface_entry(
                     GatewayDispatchMode::Unary,
                     GatewayAdapterKind::TypedJson,
-                    GATEWAY_ITEMS_IDENTITY,
                 ),
             ),
             (
@@ -79,7 +72,6 @@ fn fixture_service_deployment() -> ServiceDeployment {
                 surface_entry(
                     GatewayDispatchMode::ServerStream,
                     GatewayAdapterKind::RawHttp,
-                    GATEWAY_EVENTS_IDENTITY,
                 ),
             ),
             (
@@ -87,7 +79,6 @@ fn fixture_service_deployment() -> ServiceDeployment {
                 surface_entry(
                     GatewayDispatchMode::Unary,
                     GatewayAdapterKind::TypedJson,
-                    GATEWAY_ITEMS_OPTIONS_IDENTITY,
                 ),
             ),
         ]),
@@ -135,6 +126,16 @@ pub fn fixture_deployment_identity() -> String {
         .deployment_artifact_identity
         .as_str()
         .to_string()
+}
+
+/// Gateway entry identity of the canonical fixture deployment (content hash).
+pub fn fixture_entry_identity(key: &str) -> GatewayEntryIdentity {
+    fixture_service_deployment()
+        .gateway_entries
+        .get(&GatewayEntryKey::parse(key).expect("fixture entry key"))
+        .expect("fixture entry")
+        .gateway_entry_identity
+        .clone()
 }
 
 /// Process-wide canonical store holding the fixture deployment record and
@@ -188,8 +189,12 @@ pub fn fixture_epoch() -> Arc<RoutingEpoch> {
                 },
                 deployment: deployment.clone(),
                 gateway_entry_key: GatewayEntryKey::parse("items").expect("key"),
-                gateway_entry_identity: GatewayEntryIdentity::parse(GATEWAY_ITEMS_IDENTITY)
-                    .expect("identity"),
+                gateway_entry_identity: fixture_service_deployment()
+                    .gateway_entries
+                    .get(&GatewayEntryKey::parse("items").expect("key"))
+                    .expect("items entry")
+                    .gateway_entry_identity
+                    .clone(),
             },
             GatewayIngressBinding {
                 selector: IngressSelector {
@@ -199,8 +204,12 @@ pub fn fixture_epoch() -> Arc<RoutingEpoch> {
                 },
                 deployment: deployment.clone(),
                 gateway_entry_key: GatewayEntryKey::parse("events").expect("key"),
-                gateway_entry_identity: GatewayEntryIdentity::parse(GATEWAY_EVENTS_IDENTITY)
-                    .expect("identity"),
+                gateway_entry_identity: fixture_service_deployment()
+                    .gateway_entries
+                    .get(&GatewayEntryKey::parse("events").expect("key"))
+                    .expect("events entry")
+                    .gateway_entry_identity
+                    .clone(),
             },
             GatewayIngressBinding {
                 selector: IngressSelector {
@@ -210,8 +219,12 @@ pub fn fixture_epoch() -> Arc<RoutingEpoch> {
                 },
                 deployment: deployment.clone(),
                 gateway_entry_key: GatewayEntryKey::parse("items-options").expect("key"),
-                gateway_entry_identity: GatewayEntryIdentity::parse(GATEWAY_ITEMS_OPTIONS_IDENTITY)
-                    .expect("identity"),
+                gateway_entry_identity: fixture_service_deployment()
+                    .gateway_entries
+                    .get(&GatewayEntryKey::parse("items-options").expect("key"))
+                    .expect("items-options entry")
+                    .gateway_entry_identity
+                    .clone(),
             },
         ],
     };
@@ -238,37 +251,63 @@ pub fn fixture_epoch() -> Arc<RoutingEpoch> {
 fn surface_entry(
     mode: GatewayDispatchMode,
     adapter_kind: GatewayAdapterKind,
-    identity: &str,
 ) -> DeploymentGatewayEntry {
     let external_sources = if adapter_kind == GatewayAdapterKind::RawHttp {
         vec![GatewayAdapterSource::HttpRequest]
     } else {
-        Vec::new()
+        vec![GatewayAdapterSource::HttpBody]
+    };
+    let request_body_schema = if adapter_kind == GatewayAdapterKind::TypedJson {
+        Some(GatewayExternalSchema::String)
+    } else {
+        None
+    };
+    let response_schema = if adapter_kind == GatewayAdapterKind::TypedJson
+        && mode == GatewayDispatchMode::Unary
+    {
+        Some(GatewayExternalSchema::String)
+    } else {
+        None
     };
     let stream_item_schema = if mode == GatewayDispatchMode::ServerStream {
         Some(GatewayExternalSchema::String)
     } else {
         None
     };
+    let adapter_args = external_sources
+        .iter()
+        .map(|source| skiff_artifact_model::GatewayAdapterArg {
+            param: "request".to_string(),
+            source: *source,
+        })
+        .collect::<Vec<_>>();
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind,
+            dispatch_mode: mode,
+            external_sources,
+            request_body_schema,
+            response_schema,
+            stream_item_schema,
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
     DeploymentGatewayEntry {
-        gateway_entry_identity: GatewayEntryIdentity::parse(identity).expect("identity"),
-        protocol_surface: GatewayEntryProtocolSurface {
-            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
-                adapter_kind,
-                dispatch_mode: mode,
-                external_sources,
-                request_body_schema: None,
-                response_schema: None,
-                stream_item_schema,
-            }),
-            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
-        },
-        handler: None,
+        gateway_entry_identity: GatewayEntryIdentity::parse(
+            skiff_artifact_identity::gateway_entry_identity(&protocol_surface)
+                .expect("entry identity")
+                .as_str(),
+        )
+        .expect("identity"),
+        protocol_surface,
+        handler: Some(skiff_artifact_model::PackageCallableId::new(format!(
+            "pkg-callable:{SERVICE_ID}:entry"
+        ))),
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {
             kind: adapter_kind,
-            args: Vec::new(),
+            args: adapter_args,
         },
     }
 }
@@ -284,7 +323,6 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             surface_entry(
                 GatewayDispatchMode::Unary,
                 GatewayAdapterKind::TypedJson,
-                GATEWAY_ITEMS_IDENTITY,
             ),
         ),
         (
@@ -295,7 +333,6 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             surface_entry(
                 GatewayDispatchMode::ServerStream,
                 GatewayAdapterKind::RawHttp,
-                GATEWAY_EVENTS_IDENTITY,
             ),
         ),
         (
@@ -306,7 +343,6 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             surface_entry(
                 GatewayDispatchMode::Unary,
                 GatewayAdapterKind::TypedJson,
-                GATEWAY_ITEMS_OPTIONS_IDENTITY,
             ),
         ),
     ]);

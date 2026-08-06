@@ -683,6 +683,11 @@ impl CollectionIdentityFixture {
             resolver_packages.push((reference.clone(), Arc::new(package)));
             resolver_files.push((reference, file_ref(&file), Arc::new(file)));
         }
+        let provider_pointer_key = (
+            provider_contract_ref.service_id.clone(),
+            provider_contract_ref.contract_version.clone(),
+        );
+        let provider_pointer_target = provider_deployment_ref.clone();
         let resolver = CountingResolver {
             assembly: Arc::new(assembly.clone()),
             deployments: vec![
@@ -695,13 +700,7 @@ impl CollectionIdentityFixture {
             ],
             packages: resolver_packages,
             files: resolver_files,
-            release_pointers: BTreeMap::from([(
-                (
-                    provider_contract_ref.service_id.clone(),
-                    provider_contract_ref.contract_version.clone(),
-                ),
-                provider_deployment_ref.clone(),
-            )]),
+            release_pointers: BTreeMap::from([(provider_pointer_key, provider_pointer_target)]),
             reads: AtomicUsize::new(0),
         };
         Self { assembly, resolver }
@@ -2249,6 +2248,13 @@ fn build_contract_implementation_fixture(
             .collect::<Vec<_>>(),
     )
     .expect("contract implementation assembly should resolve");
+    let provider_pointer_key = (
+        provider_contract_ref.service_id.clone(),
+        provider_contract_ref.contract_version.clone(),
+    );
+    let provider_pointer_target = skiff_artifact_identity::service_deployment_ref(
+        deployments.last().expect("provider deployment"),
+    );
     let resolver = CountingResolver {
         assembly: Arc::new(assembly.clone()),
         deployments: deployments
@@ -2263,6 +2269,7 @@ fn build_contract_implementation_fixture(
             (consumer_contract_ref, Arc::new(consumer_contract)),
             (provider_contract_ref, Arc::new(provider_contract)),
         ],
+        release_pointers: BTreeMap::from([(provider_pointer_key, provider_pointer_target)]),
         packages: consumer_packages
             .iter()
             .map(|package| (package_ref(package), Arc::clone(package)))

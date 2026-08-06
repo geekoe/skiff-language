@@ -10,16 +10,19 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-const REQUIRED_SCENARIOS: [&str; 9] = [
+const REQUIRED_SCENARIOS: [&str; 12] = [
     "exact-single-candidate",
     "multiple-replicas-exact",
     "cancelled-excluded",
     "stale-revision-excluded",
-    "tuple-assembly-mismatch-excluded",
-    "tuple-config-snapshot-mismatch-excluded",
+    "build-id-not-loaded-excluded",
+    "build-id-registered-wins-over-root-mismatch",
     "capability-server-stream-missing-excluded",
     "heartbeat-freshness-ignored",
     "epoch-capture-is-whole-lease",
+    "lazy-load-exact-root-candidate",
+    "lazy-load-root-mismatch-excluded",
+    "build-id-loaded-with-missing-capability-excluded",
 ];
 
 fn scenario_files() -> Vec<(&'static str, &'static str)> {
@@ -43,13 +46,13 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
             include_str!("../testdata/routing-query/scenarios/04-stale-revision-excluded.json"),
         ),
         (
-            "tuple-assembly-mismatch-excluded",
+            "build-id-not-loaded-excluded",
             include_str!(
                 "../testdata/routing-query/scenarios/05-tuple-assembly-mismatch-excluded.json"
             ),
         ),
         (
-            "tuple-config-snapshot-mismatch-excluded",
+            "build-id-registered-wins-over-root-mismatch",
             include_str!(
                 "../testdata/routing-query/scenarios/06-tuple-config-snapshot-mismatch-excluded.json"
             ),
@@ -70,6 +73,24 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
             "epoch-capture-is-whole-lease",
             include_str!(
                 "../testdata/routing-query/scenarios/09-epoch-capture-is-whole-lease.json"
+            ),
+        ),
+        (
+            "lazy-load-exact-root-candidate",
+            include_str!(
+                "../testdata/routing-query/scenarios/10-lazy-load-exact-root-candidate.json"
+            ),
+        ),
+        (
+            "lazy-load-root-mismatch-excluded",
+            include_str!(
+                "../testdata/routing-query/scenarios/11-lazy-load-root-mismatch-excluded.json"
+            ),
+        ),
+        (
+            "build-id-loaded-with-missing-capability-excluded",
+            include_str!(
+                "../testdata/routing-query/scenarios/12-build-id-loaded-with-missing-capability-excluded.json"
             ),
         ),
     ]
@@ -104,6 +125,8 @@ struct Deployment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Query {
     mode: String,
+    #[serde(rename = "buildId")]
+    build_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -129,6 +152,12 @@ struct Session {
     capabilities: Vec<String>,
     #[serde(rename = "heartbeatFresh", default = "default_true")]
     heartbeat_fresh: bool,
+    #[serde(rename = "loadedBuildIds", default)]
+    loaded_build_ids: Vec<String>,
+    #[serde(rename = "lazyLoad", default)]
+    lazy_load: bool,
+    #[serde(rename = "artifactRoot", default)]
+    artifact_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -156,6 +185,9 @@ struct Scenario {
     #[serde(default)]
     #[serde(rename = "directoryCurrentEpochGeneration")]
     directory_current_epoch_generation: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "routerArtifactRoot")]
+    router_artifact_root: Option<String>,
     epoch: Epoch,
     query: Query,
     sessions: Vec<Session>,
@@ -183,26 +215,33 @@ fn epoch_tuple(epoch: &Epoch) -> Tuple {
     }
 }
 
-/// Frozen projection (C-routing-query §3): whole captured epoch, exact tuple,
-/// one complete revision, cancelled exclusion, capability match, heartbeat
+/// Frozen projection (integration-contract-v2 §1): registered → one complete
+/// revision → cancelled exclusion → build id (registered in the set OR
+/// lazy-loadable from the shared artifact root) → capability match; heartbeat
 /// freshness ignored.
 fn candidate_query(
-    epoch: &Epoch,
     query: &Query,
+    router_artifact_root: &Option<String>,
     directory_revision: u64,
     sessions: &[Session],
 ) -> Vec<String> {
-    let expected_tuple = epoch_tuple(epoch);
     let mut candidates = Vec::new();
     for session in sessions {
         if !session.registered
             || session.cancelled
             || session.revision != directory_revision
-            || session.tuple.as_ref() != Some(&expected_tuple)
-            || !session
-                .capabilities
-                .iter()
-                .any(|capability| capability == &query.mode)
+        {
+            continue;
+        }
+        let build_id_eligible = session.loaded_build_ids.iter().any(|id| id == &query.build_id)
+            || (session.lazy_load && session.artifact_root == *router_artifact_root);
+        if !build_id_eligible {
+            continue;
+        }
+        if !session
+            .capabilities
+            .iter()
+            .any(|capability| capability == &query.mode)
         {
             continue;
         }
@@ -255,8 +294,8 @@ fn routing_query_scenarios_match_frozen_projection() {
         }
 
         let candidates = candidate_query(
-            &scenario.epoch,
             &scenario.query,
+            &scenario.router_artifact_root,
             scenario.directory_revision,
             &scenario.sessions,
         );
@@ -291,8 +330,8 @@ fn heartbeat_freshness_never_enters_candidate_projection() {
         "fixture session must be heartbeat-stale"
     );
     let candidates = candidate_query(
-        &scenario.epoch,
         &scenario.query,
+        &scenario.router_artifact_root,
         scenario.directory_revision,
         &scenario.sessions,
     );

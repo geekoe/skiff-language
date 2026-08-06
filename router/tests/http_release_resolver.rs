@@ -16,7 +16,8 @@ mod tests {
         DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
         DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind, GatewayAdapterPlan,
         GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-        GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
+        GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
+        GatewayHttpProtocolSurface,
         GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef,
         PackageBuildId, PackageLocalAbiIdentity, ServiceContractRef, ServiceDeployment,
         ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
@@ -34,8 +35,6 @@ mod tests {
     const SERVICE_ID: &str = "example.com/release-resolver";
     const CONTRACT_VERSION: &str = "2.0.0";
     const PROFILE: &str = "prod";
-    const GREETING_IDENTITY: &str =
-        "skiff-gateway-entry-v2:sha256:7777777777777777777777777777777777777777777777777777777777777777";
 
     struct Guard(PathBuf);
 
@@ -46,33 +45,40 @@ mod tests {
     }
 
     fn temp_root() -> (PathBuf, Guard) {
+        static TEMP_ROOT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skiff-http-release-resolver-{}-{}",
+            "skiff-http-release-resolver-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
-                .as_nanos()
+                .as_nanos(),
+            TEMP_ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         let guard = Guard(path.clone());
         (path, guard)
     }
 
     fn entry() -> DeploymentGatewayEntry {
+        let protocol_surface = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+                adapter_kind: GatewayAdapterKind::TypedJson,
+                dispatch_mode: GatewayDispatchMode::Unary,
+                external_sources: vec![GatewayAdapterSource::HttpBody],
+                request_body_schema: Some(GatewayExternalSchema::String),
+                response_schema: Some(GatewayExternalSchema::String),
+                stream_item_schema: None,
+            }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
         DeploymentGatewayEntry {
-            gateway_entry_identity: GatewayEntryIdentity::parse(GREETING_IDENTITY)
-                .expect("identity"),
-            protocol_surface: GatewayEntryProtocolSurface {
-                protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
-                    adapter_kind: GatewayAdapterKind::TypedJson,
-                    dispatch_mode: GatewayDispatchMode::Unary,
-                    external_sources: vec![GatewayAdapterSource::HttpBody],
-                    request_body_schema: None,
-                    response_schema: None,
-                    stream_item_schema: None,
-                }),
-                external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
-            },
+            gateway_entry_identity: GatewayEntryIdentity::parse(
+                skiff_artifact_identity::gateway_entry_identity(&protocol_surface)
+                    .expect("entry identity")
+                    .as_str(),
+            )
+            .expect("identity"),
+            protocol_surface,
             handler: Some(skiff_artifact_model::PackageCallableId::new(format!(
                 "pkg-callable:{SERVICE_ID}:greet"
             ))),
@@ -182,7 +188,10 @@ mod tests {
             deployment.deployment_artifact_identity.as_str()
         );
         assert_eq!(binding.gateway_entry_key.as_str(), "greet");
-        assert_eq!(binding.gateway_entry_identity.as_str(), GREETING_IDENTITY);
+        assert_eq!(
+            binding.gateway_entry_identity.as_str(),
+            entry().gateway_entry_identity.as_str()
+        );
         assert_eq!(binding.selector.method.as_deref(), Some("POST"));
         assert_eq!(binding.selector.path, "/greet");
         assert_eq!(

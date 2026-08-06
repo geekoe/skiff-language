@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(recorded[0].header.routing.ingress.method, "OPTIONS");
         assert_eq!(
             recorded[0].header.routing.gateway_entry_identity.as_str(),
-            http_common::GATEWAY_ITEMS_OPTIONS_IDENTITY
+            http_common::fixture_entry_identity("items-options").as_str()
         );
     }
 

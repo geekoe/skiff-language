@@ -135,8 +135,7 @@ mod tests {
         let epoch = epoch(vec![deployment("example.com/service-1")]);
         let view = view(Some(1), vec![exact_session("runtime-a")]);
         let mut query = query();
-        query.build_id = deployment("example.com/other-service")
-            .deployment_artifact_identity
+        query.build_id = "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             .to_string();
 
         let leases = RuntimeCandidateQuery.query(&view, &query);
