@@ -13,8 +13,8 @@ use skiff_artifact_model::{
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
-    HydratedRuntimeAssembly, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader,
-    RuntimeAssemblyRecordResolver,
+    DeploymentReleasePointerResolver, HydratedRuntimeAssembly, RuntimeAssemblyContentResolver,
+    RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
 };
 
 pub(crate) fn trusted_test_source() -> bool {
@@ -163,5 +163,19 @@ impl RuntimeAssemblyRecordResolver for FilesystemRuntimeAssemblyContentResolver 
         reference: &RuntimeAssemblyRef,
     ) -> anyhow::Result<Arc<skiff_artifact_model::RuntimeAssembly>> {
         Ok(self.store.read_runtime_assembly(reference)?)
+    }
+}
+
+impl DeploymentReleasePointerResolver for FilesystemRuntimeAssemblyContentResolver {
+    fn resolve_release_pointer(
+        &self,
+        profile: &str,
+        service_id: &str,
+        version: &str,
+    ) -> anyhow::Result<Option<ServiceDeploymentRef>> {
+        Ok(self
+            .store
+            .read_release_pointer(profile, service_id, version)?
+            .map(|pointer| pointer.deployment))
     }
 }

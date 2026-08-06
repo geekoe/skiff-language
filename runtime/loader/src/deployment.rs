@@ -8,10 +8,26 @@ use skiff_artifact_identity::assign_runtime_assembly_identity;
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GatewayIngressBinding,
     PackageArtifactRef, PackageBuildId, PackageCodeSlot, RuntimeAssembly, ServiceBindingTemplate,
-    ServiceDeployment, ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
+use skiff_deployment::assembly::resolve_runtime_assembly;
 
 use crate::{HydratedRuntimeAssembly, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
+
+/// Release-pointer lookup boundary for dependency closure resolution.
+///
+/// The human coordinate `(profile, service_id, version)` resolves to the exact
+/// provider deployment currently published by the release pointer table
+/// (`CanonicalArtifactStore::read_release_pointer`). `None` means the pointer
+/// is not set; dependency resolution must fail closed.
+pub trait DeploymentReleasePointerResolver {
+    fn resolve_release_pointer(
+        &self,
+        profile: &str,
+        service_id: &str,
+        version: &str,
+    ) -> anyhow::Result<Option<ServiceDeploymentRef>>;
+}
 
 /// Exact reachable package closure of one deployment (implementation + bindings).
 fn deployment_package_closure(
@@ -56,13 +72,13 @@ fn deployment_package_closure(
     Ok(closure)
 }
 
-/// Composes the minimal canonical RuntimeAssembly that exactly represents one
-/// deployment record, reusing the whole-assembly load + link chain.
+/// Composes the canonical RuntimeAssembly that exactly represents one
+/// self-contained deployment record (no cross-service dependencies), reusing
+/// the whole-assembly load + link chain.
 ///
-/// A deployment is only independently lazy-loadable when it has no
-/// cross-service dependencies: `service_selectors` must be empty and the
-/// reachable package closure must not declare service requirements (those
-/// would require profile-level provider deployment resolution).
+/// A deployment with cross-service dependencies is not independently
+/// lazy-loadable: use [`compose_dependency_closure_assembly`] so its provider
+/// deployments share the same assembly and the linker binding holds.
 pub fn compose_deployment_assembly(
     reference: &ServiceDeploymentRef,
     deployment: &ServiceDeployment,
@@ -70,12 +86,6 @@ pub fn compose_deployment_assembly(
     skiff_artifact_identity::validate_service_deployment_ref(reference, deployment)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("deployment content mismatches ref {reference:?}"))?;
-    if !deployment.service_selectors.is_empty() {
-        anyhow::bail!(
-            "deployment {reference:?} has cross-service dependencies and cannot be lazily linked; \
-             lazy-load deployments require an empty service selector set"
-        );
-    }
     let closure = deployment_package_closure(reference, deployment)?;
     let mut code_slots = closure
         .values()
@@ -144,6 +154,178 @@ pub fn compose_deployment_assembly(
     Ok(assembly)
 }
 
+/// Exact dependency closure of one deployment entry: the entry plus every
+/// provider deployment reachable through `service_selectors` and package-level
+/// `service_requirements`, resolved through the release pointer table.
+#[derive(Debug, Default)]
+struct DeploymentClosure {
+    deployments: BTreeMap<ServiceDeploymentRef, Arc<ServiceDeployment>>,
+    contracts: BTreeSet<ServiceContractRef>,
+    packages: BTreeSet<PackageArtifactRef>,
+}
+
+/// Composes the canonical assembly for the whole dependency closure of one
+/// deployment entry under one profile. Every closure deployment shares one
+/// assembly, so the linker's same-assembly provider binding holds without any
+/// cross-assembly activation_id match.
+///
+/// Recursion is bounded by the content-addressed deployment reference set:
+/// already resolved providers are skipped and a cycle fails closed.
+pub fn compose_dependency_closure_assembly<R>(
+    entry: &ServiceDeploymentRef,
+    resolver: &R,
+    profile: &str,
+) -> anyhow::Result<RuntimeAssembly>
+where
+    R: RuntimeAssemblyContentResolver + DeploymentReleasePointerResolver + ?Sized,
+{
+    let closure = resolve_dependency_closure(entry, resolver, profile)?;
+    let mut roots = closure.deployments.keys().cloned().collect::<Vec<_>>();
+    roots.sort();
+    let deployments = closure.deployments.values().cloned().collect::<Vec<_>>();
+    let contracts = closure
+        .contracts
+        .iter()
+        .map(|reference| resolver.resolve_contract(reference))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let packages = closure
+        .packages
+        .iter()
+        .map(|reference| resolver.resolve_package(reference))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let deployment_values = deployments
+        .iter()
+        .map(|d| d.as_ref().clone())
+        .collect::<Vec<_>>();
+    let contract_values = contracts
+        .iter()
+        .map(|c| c.as_ref().clone())
+        .collect::<Vec<_>>();
+    let package_values = packages
+        .iter()
+        .map(|p| p.as_ref().clone())
+        .collect::<Vec<_>>();
+    resolve_runtime_assembly(
+        &roots,
+        &deployment_values,
+        &contract_values,
+        &package_values,
+    )
+    .map_err(anyhow::Error::from)
+    .with_context(|| {
+        format!(
+            "failed to compose dependency closure assembly for entry {entry:?} under profile {profile:?}"
+        )
+    })
+}
+
+/// DFS over the deployment dependency graph. The content-addressed reference
+/// set terminates recursion; a reference that is still on the current DFS path
+/// is a cycle and fails closed.
+fn resolve_dependency_closure<R>(
+    entry: &ServiceDeploymentRef,
+    resolver: &R,
+    profile: &str,
+) -> anyhow::Result<DeploymentClosure>
+where
+    R: RuntimeAssemblyContentResolver + DeploymentReleasePointerResolver + ?Sized,
+{
+    enum Frame {
+        Enter(ServiceDeploymentRef),
+        Leave(ServiceDeploymentRef),
+    }
+    let mut closure = DeploymentClosure::default();
+    let mut resolved = BTreeSet::new();
+    let mut visiting = BTreeSet::new();
+    let mut stack = vec![Frame::Enter(entry.clone())];
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Leave(reference) => {
+                visiting.remove(&reference);
+                resolved.insert(reference);
+            }
+            Frame::Enter(reference) => {
+                if resolved.contains(&reference) {
+                    continue;
+                }
+                if !visiting.insert(reference.clone()) {
+                    anyhow::bail!(
+                        "dependency cycle detected while composing the lazy-load closure of {reference:?}"
+                    );
+                }
+                let deployment = resolver
+                    .resolve_deployment(&reference)
+                    .with_context(|| format!("failed to resolve deployment {reference:?}"))?;
+                skiff_artifact_identity::validate_service_deployment_ref(&reference, &deployment)
+                    .map_err(anyhow::Error::from)
+                    .with_context(|| format!("deployment content mismatches ref {reference:?}"))?;
+                stack.push(Frame::Leave(reference.clone()));
+                closure.contracts.insert(deployment.contract.clone());
+                for selector in &deployment.service_selectors {
+                    let provider = release_provider(resolver, profile, &selector.contract)?;
+                    stack.push(Frame::Enter(provider));
+                }
+                for package_reference in
+                    deployment_package_closure(&reference, &deployment)?.values()
+                {
+                    let package = resolver
+                        .resolve_package(package_reference)
+                        .with_context(|| {
+                            format!("failed to resolve package {package_reference:?}")
+                        })?;
+                    closure.packages.insert(package_reference.clone());
+                    for requirement in &package.service_requirements {
+                        let contract = ServiceContractRef {
+                            service_id: requirement
+                                .contract_requirement
+                                .service_id
+                                .clone(),
+                            contract_version: requirement
+                                .contract_requirement
+                                .contract_version
+                                .clone(),
+                            service_protocol_identity: requirement
+                                .contract_requirement
+                                .expected_protocol_identity
+                                .clone(),
+                        };
+                        let provider = release_provider(resolver, profile, &contract)?;
+                        stack.push(Frame::Enter(provider));
+                    }
+                }
+                closure.deployments.insert(reference.clone(), deployment);
+            }
+        }
+    }
+    Ok(closure)
+}
+
+fn release_provider<R>(
+    resolver: &R,
+    profile: &str,
+    contract: &ServiceContractRef,
+) -> anyhow::Result<ServiceDeploymentRef>
+where
+    R: RuntimeAssemblyContentResolver + DeploymentReleasePointerResolver + ?Sized,
+{
+    resolver
+        .resolve_release_pointer(profile, &contract.service_id, &contract.contract_version)
+        .with_context(|| {
+            format!(
+                "failed to resolve the release pointer of provider {} {} under profile {profile:?}",
+                contract.service_id, contract.contract_version
+            )
+        })?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no release pointer is set for provider {} {} under profile {profile:?}; \
+                 the lazy-load dependency closure cannot be resolved",
+                contract.service_id,
+                contract.contract_version
+            )
+        })
+}
+
 /// Loads and hydrates one exact deployment record through the canonical
 /// whole-assembly loader by composing the minimal deployment assembly.
 pub struct DeploymentAssemblyLoader<'a, R: ?Sized> {
@@ -172,6 +354,25 @@ where
         RuntimeAssemblyLoader::new(self.resolver)
             .load(Arc::new(assembly))
             .with_context(|| format!("failed to load deployment assembly {reference:?}"))
+    }
+
+    /// Resolve + compose + hydrate the whole dependency closure of one entry
+    /// deployment under one profile. The closure (entry plus recursively
+    /// resolved providers) is synthesized into one image before the canonical
+    /// whole-assembly load + link chain runs.
+    pub fn load_closure(
+        &self,
+        entry: &ServiceDeploymentRef,
+        profile: &str,
+    ) -> anyhow::Result<HydratedRuntimeAssembly>
+    where
+        R: DeploymentReleasePointerResolver,
+    {
+        let assembly = compose_dependency_closure_assembly(entry, self.resolver, profile)
+            .with_context(|| format!("failed to compose dependency closure assembly {entry:?}"))?;
+        RuntimeAssemblyLoader::new(self.resolver)
+            .load(Arc::new(assembly))
+            .with_context(|| format!("failed to load dependency closure assembly {entry:?}"))
     }
 }
 

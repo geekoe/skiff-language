@@ -12,6 +12,7 @@ use skiff_deployment::{
 };
 use skiff_runtime_eval::RuntimeAssemblyEvalResolver;
 use skiff_runtime_linked_program::DbObjectTargetId;
+use skiff_runtime_loader::DeploymentReleasePointerResolver;
 
 use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for_assembly;
 
@@ -26,6 +27,7 @@ struct CountingResolver {
     contracts: Vec<(ServiceContractRef, Arc<ServiceContract>)>,
     packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
     files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
+    release_pointers: BTreeMap<(String, String), ServiceDeploymentRef>,
     reads: AtomicUsize,
 }
 
@@ -132,6 +134,21 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
     ) -> anyhow::Result<Arc<[u8]>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         anyhow::bail!("fixture has no static resources")
+    }
+}
+
+impl DeploymentReleasePointerResolver for CountingResolver {
+    fn resolve_release_pointer(
+        &self,
+        _profile: &str,
+        service_id: &str,
+        version: &str,
+    ) -> anyhow::Result<Option<ServiceDeploymentRef>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self
+            .release_pointers
+            .get(&(service_id.to_string(), version.to_string()))
+            .cloned())
     }
 }
 
@@ -357,6 +374,13 @@ impl FullChainFixture {
                     Arc::new(provider_file),
                 ),
             ],
+            release_pointers: BTreeMap::from([(
+                (
+                    provider_contract_ref.service_id.clone(),
+                    provider_contract_ref.contract_version.clone(),
+                ),
+                provider_deployment_ref.clone(),
+            )]),
             reads: AtomicUsize::new(0),
         };
         Self {
@@ -671,6 +695,13 @@ impl CollectionIdentityFixture {
             ],
             packages: resolver_packages,
             files: resolver_files,
+            release_pointers: BTreeMap::from([(
+                (
+                    provider_contract_ref.service_id.clone(),
+                    provider_contract_ref.contract_version.clone(),
+                ),
+                provider_deployment_ref.clone(),
+            )]),
             reads: AtomicUsize::new(0),
         };
         Self { assembly, resolver }

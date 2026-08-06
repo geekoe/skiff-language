@@ -15,8 +15,8 @@ use skiff_runtime_linker::{
     link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
 };
 use skiff_runtime_loader::{
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
-    ServiceContractStore,
+    DeploymentReleasePointerResolver, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader,
+    RuntimeAssemblyRecordResolver, ServiceContractStore,
 };
 use skiff_runtime_request::{
     cancellation::CancellationToken, RuntimeAssemblyHttpGatewayTarget,
@@ -689,8 +689,9 @@ impl AssemblyAdmissionController {
     /// Resolves a route from the loaded registry, lazy-loading the deployment
     /// under its per-buildId critical section when it is not loaded yet.
     ///
-    /// Load failures (missing record, unreachable directory, invalid content)
-    /// fast-fail every waiting request; nothing is registered on failure.
+    /// Load failures (missing record, missing release pointer, unreachable
+    /// directory, invalid content) fast-fail every waiting request; nothing is
+    /// registered on failure.
     pub(crate) async fn route_or_lazy_load<R, C>(
         &self,
         key: &ServiceIngressKey,
@@ -700,7 +701,7 @@ impl AssemblyAdmissionController {
         profile: &str,
     ) -> anyhow::Result<ActiveAssemblyRoute>
     where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let active = self
@@ -731,7 +732,7 @@ impl AssemblyAdmissionController {
         profile: &str,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let build_id = deployment.deployment_artifact_identity.as_str();
@@ -757,7 +758,7 @@ impl AssemblyAdmissionController {
         profile: &str,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
         C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let reference = deployment;
@@ -766,8 +767,9 @@ impl AssemblyAdmissionController {
             build_id = %reference.deployment_artifact_identity,
             deployment = %format_args!("{reference:?}")
         );
-        let hydrated =
-            skiff_runtime_loader::DeploymentAssemblyLoader::new(resolver).load_ref(reference)?;
+        let hydrated = skiff_runtime_loader::DeploymentAssemblyLoader::new(resolver)
+            .load_closure(reference, profile)?;
+        let closure_deployments = hydrated.assembly().resolved_deployments.clone();
         let candidate = link_runtime_assembly(hydrated)
             .map_err(|error| error.context("lazy-load deployment link failed"))?;
         validate_candidate(&candidate)?;
@@ -822,6 +824,7 @@ impl AssemblyAdmissionController {
             candidate,
             contexts: Arc::new(contexts),
         });
+        self.loaded.register_closure(closure_deployments, Arc::clone(&active));
         info!(
             event = "runtime.deployment_lazy_loaded",
             build_id = %reference.deployment_artifact_identity,
