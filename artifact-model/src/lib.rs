@@ -13,7 +13,6 @@ pub use actor_declaration::{
     ActorMethodIdentity, ActorPublicMethodIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 mod activation_lexical;
-pub mod assembly_activation_control;
 pub mod boundary;
 pub mod builtin_receiver_ops;
 pub mod compile_identity;
@@ -51,11 +50,6 @@ pub use activation_lexical::{
     validate_expected_activation_generation, validate_runtime_assembly_identity,
     validate_transition_generations, MAX_EXPECTED_ACTIVATION_GENERATION,
     MAX_SAFE_ACTIVATION_GENERATION, RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
-};
-pub use assembly_activation_control::{
-    validate_runtime_assembly_ref, AssemblyActivationControl, AssemblyActivationRejectReason,
-    AssemblyActivationRequest, AssemblyActivationServiceDb,
-    ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
 pub use boundary::{
     validate_boundary_operation_contract, validate_package_boundary_projections,
