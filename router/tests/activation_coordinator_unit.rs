@@ -45,8 +45,9 @@ use skiff_router::routing::{
     SessionCancellation,
 };
 use skiff_router::session::consumer::ConsumerManifest;
-use skiff_router::session::directory::RuntimeRegistrationDirectory;
+use skiff_router::session::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::layer::SessionRegistrationFacts;
 use skiff_router::session::{ConsumerKind, SessionConsumer};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 
@@ -184,7 +185,7 @@ fn request(
 #[derive(Debug)]
 struct DirectoryViewSource {
     directory: Arc<StdMutex<RuntimeRegistrationDirectory>>,
-    capabilities: HashMap<RuntimeSessionEpoch, DispatchCapabilities>,
+    capabilities: HashMap<RuntimeSessionEpoch, SessionRegistrationFacts>,
 }
 
 impl CandidateViewSource for DirectoryViewSource {
@@ -192,6 +193,7 @@ impl CandidateViewSource for DirectoryViewSource {
         RuntimeCandidateQuery::snapshot_directory_view(
             &self.directory.lock().expect("directory lock"),
             &self.capabilities,
+            None,
         )
     }
 }
@@ -232,16 +234,34 @@ mod tests {
         let mut capabilities = HashMap::new();
         capabilities.insert(
             session("runtime-a", 1),
-            DispatchCapabilities {
-                unary: true,
-                server_stream: false,
+            SessionRegistrationFacts {
+                dispatch: DispatchCapabilities {
+                    unary: true,
+                    server_stream: false,
+                },
+                registration: RegistrationFacts {
+                    registered_build_ids: vec![deployment()
+                        .deployment_artifact_identity
+                        .to_string()],
+                    lazy_load: false,
+                    artifact_root: None,
+                },
             },
         );
         capabilities.insert(
             session("runtime-b", 2),
-            DispatchCapabilities {
-                unary: false,
-                server_stream: true,
+            SessionRegistrationFacts {
+                dispatch: DispatchCapabilities {
+                    unary: false,
+                    server_stream: true,
+                },
+                registration: RegistrationFacts {
+                    registered_build_ids: vec![deployment()
+                        .deployment_artifact_identity
+                        .to_string()],
+                    lazy_load: false,
+                    artifact_root: None,
+                },
             },
         );
         {
@@ -316,7 +336,10 @@ mod tests {
             // An empty bootstrap epoch has no dispatch surfaces, so the
             // runtime's capability binding is empty; the empty-epoch
             // projection must still treat the exact session as a participant.
-            DispatchCapabilities::default(),
+            SessionRegistrationFacts {
+                dispatch: DispatchCapabilities::default(),
+                registration: RegistrationFacts::default(),
+            },
         );
         {
             let mut directory = directory.lock().expect("directory lock");
@@ -560,6 +583,9 @@ mod tests {
                     exact_registered_tuple: tuple.clone(),
                     cancellation: SessionCancellation { cancelled: false },
                     capabilities: full_capabilities(),
+                    registered_build_ids: Vec::new(),
+                    lazy_load: false,
+                    artifact_root: None,
                 })
                 .collect()
         }

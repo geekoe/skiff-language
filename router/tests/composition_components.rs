@@ -33,9 +33,9 @@ use skiff_router::routing::{
 };
 use skiff_router::session::consumer::{ConsumerKind, ConsumerManifest};
 use skiff_router::session::demux::InboundFrameSink;
-use skiff_router::session::directory::RuntimeRegistrationDirectory;
+use skiff_router::session::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
-use skiff_router::session::layer::{SessionLayer, SessionLayerOptions};
+use skiff_router::session::layer::{SessionLayer, SessionLayerOptions, SessionRegistrationFacts};
 use skiff_router::supervisor::http::{
     dispatch_submit_from_request, DispatcherHttpPort, PendingHttpRouter, RequestFrameSink,
 };
@@ -175,12 +175,19 @@ impl CandidateViewSource for DirectoryViewSource {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 1,
             },
-            DispatchCapabilities {
-                unary: true,
-                server_stream: true,
+            SessionRegistrationFacts {
+                dispatch: DispatchCapabilities {
+                    unary: true,
+                    server_stream: true,
+                },
+                registration: RegistrationFacts {
+                    registered_build_ids: Vec::new(),
+                    lazy_load: true,
+                    artifact_root: Some("shared-artifact-root".to_string()),
+                },
             },
         )]);
-        RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities)
+        RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities, Some("shared-artifact-root".to_string()))
     }
 }
 

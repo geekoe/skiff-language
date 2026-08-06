@@ -21,8 +21,9 @@ use skiff_router::routing::{
     RuntimeCandidateQuery,
 };
 use skiff_router::session::consumer::ConsumerManifest;
-use skiff_router::session::directory::RuntimeRegistrationDirectory;
+use skiff_router::session::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::layer::SessionRegistrationFacts;
 use skiff_router::session::ConsumerKind;
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 
@@ -117,6 +118,21 @@ fn full_capabilities() -> DispatchCapabilities {
     }
 }
 
+fn full_facts() -> SessionRegistrationFacts {
+    SessionRegistrationFacts {
+        dispatch: full_capabilities(),
+        registration: RegistrationFacts {
+            registered_build_ids: vec![query_build_id()],
+            lazy_load: false,
+            artifact_root: None,
+        },
+    }
+}
+
+fn query_build_id() -> String {
+    deployment().deployment_artifact_identity.to_string()
+}
+
 fn register_and_ack(
     directory: &mut RuntimeRegistrationDirectory,
     session: &RuntimeSessionEpoch,
@@ -134,23 +150,20 @@ fn register_and_ack(
 fn query() -> CandidateQuery {
     CandidateQuery {
         mode: DispatchMode::Unary,
-        deployment: deployment(),
+        build_id: query_build_id(),
     }
 }
 
 fn project(
     directory: &RuntimeRegistrationDirectory,
-    epoch: &Arc<RoutingEpoch>,
-    capabilities: &HashMap<RuntimeSessionEpoch, DispatchCapabilities>,
+    facts: &HashMap<RuntimeSessionEpoch, SessionRegistrationFacts>,
 ) -> Vec<RegisteredSessionLease> {
-    let view = RuntimeCandidateQuery::snapshot_directory_view(directory, capabilities);
+    let view = RuntimeCandidateQuery::snapshot_directory_view(directory, facts, None);
     assert_eq!(
         view.revision, None,
         "production snapshot uses per-session revision semantics"
     );
-    RuntimeCandidateQuery
-        .query(epoch, &view, &query())
-        .expect("directory query must project")
+    RuntimeCandidateQuery.query(&view, &query())
 }
 
 #[cfg(test)]
@@ -168,11 +181,10 @@ mod tests {
         register_and_ack(&mut directory, &b, &tuple_42);
 
         let capabilities = HashMap::from([
-            (a.clone(), full_capabilities()),
-            (b.clone(), full_capabilities()),
+            (a.clone(), full_facts()),
+            (b.clone(), full_facts()),
         ]);
-        let epoch = epoch(42);
-        let leases = project(&directory, &epoch, &capabilities);
+        let leases = project(&directory, &capabilities);
 
         assert_eq!(
             leases
@@ -219,11 +231,11 @@ mod tests {
             .expect("pending registration");
 
         let capabilities = HashMap::from([
-            (a.clone(), full_capabilities()),
-            (b.clone(), full_capabilities()),
-            (pending.clone(), full_capabilities()),
+            (a.clone(), full_facts()),
+            (b.clone(), full_facts()),
+            (pending.clone(), full_facts()),
         ]);
-        let leases = project(&directory, &epoch(42), &capabilities);
+        let leases = project(&directory, &capabilities);
         assert_eq!(
             leases
                 .iter()
@@ -253,16 +265,13 @@ mod tests {
         assert_eq!(record.registered_tuple, Some(tuple_43.clone()));
         assert_eq!(record.registration_revision, 2);
 
-        let capabilities = HashMap::from([(a.clone(), full_capabilities())]);
-        let old_epoch_leases = project(&directory, &epoch(42), &capabilities);
-        assert!(
-            old_epoch_leases.is_empty(),
-            "old captured epoch must no longer match the transitioned session"
-        );
-        let new_epoch_leases = project(&directory, &epoch(43), &capabilities);
-        assert_eq!(new_epoch_leases.len(), 1);
-        assert_eq!(new_epoch_leases[0].registration_revision, 2);
-        assert_eq!(new_epoch_leases[0].exact_registered_tuple, tuple_43);
+        // The candidate projection is build-id based (contract v2 §1): the
+        // transitioned session stays eligible with its updated revision.
+        let capabilities = HashMap::from([(a.clone(), full_facts())]);
+        let leases = project(&directory, &capabilities);
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].registration_revision, 2);
+        assert_eq!(leases[0].exact_registered_tuple, tuple_43);
     }
 
     #[test]
@@ -284,10 +293,10 @@ mod tests {
         );
 
         let capabilities = HashMap::from([
-            (old.clone(), full_capabilities()),
-            (new.clone(), full_capabilities()),
+            (old.clone(), full_facts()),
+            (new.clone(), full_facts()),
         ]);
-        let leases = project(&directory, &epoch(42), &capabilities);
+        let leases = project(&directory, &capabilities);
         assert_eq!(
             leases
                 .iter()
@@ -311,21 +320,19 @@ mod tests {
             register_and_ack(&mut directory, s, &tuple_42);
         }
 
+        let mut unary_only_facts = full_facts();
+        unary_only_facts.dispatch = DispatchCapabilities {
+            unary: true,
+            server_stream: false,
+        };
         let capabilities = HashMap::from([
-            (
-                unary_only.clone(),
-                DispatchCapabilities {
-                    unary: true,
-                    server_stream: false,
-                },
-            ),
-            (both.clone(), full_capabilities()),
+            (unary_only.clone(), unary_only_facts),
+            (both.clone(), full_facts()),
             // `unbound` is deliberately missing: fail closed with empty
             // capabilities (the W-session directory does not retain them).
         ]);
-        let epoch = epoch(42);
 
-        let unary_leases = project(&directory, &epoch, &capabilities);
+        let unary_leases = project(&directory, &capabilities);
         assert_eq!(
             unary_leases
                 .iter()
@@ -336,10 +343,8 @@ mod tests {
 
         let mut stream_query = query();
         stream_query.mode = DispatchMode::ServerStream;
-        let view = RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities);
-        let stream_leases = RuntimeCandidateQuery
-            .query(&view, &stream_query)
-            .expect("serverStream query");
+        let view = RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities, None);
+        let stream_leases = RuntimeCandidateQuery.query(&view, &stream_query);
         assert_eq!(
             stream_leases
                 .iter()

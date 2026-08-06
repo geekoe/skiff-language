@@ -475,6 +475,9 @@ impl RuntimeCandidateQueryPort for FakeCandidatePort {
                     unary: true,
                     server_stream: true,
                 },
+                registered_build_ids: Vec::new(),
+                lazy_load: false,
+                artifact_root: None,
             })
             .collect())
     }

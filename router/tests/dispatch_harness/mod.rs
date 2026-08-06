@@ -50,6 +50,9 @@ pub struct SessionState {
     pub capabilities: Vec<String>,
 }
 
+/// Shared artifact root for the harness lazy-load advertisement.
+pub const SHARED_ARTIFACT_ROOT: &str = "shared-artifact-root";
+
 /// Fixed captured epoch (C-routing-query whole-epoch lease seam).
 #[derive(Debug)]
 pub struct FakeEpochSource {
@@ -105,10 +108,18 @@ impl CandidateViewSource for FakeCandidateViewSource {
                 registration_revision: session.revision,
                 cancelled: session.cancelled,
                 capabilities: capabilities_from_wire_names(&session.capabilities),
+                // Admission-corpus scenarios exercise dispatch admission, not
+                // the build-id rule (contract v2 §1 covers that separately):
+                // every harness session is lazy-load eligible against the
+                // shared artifact root.
+                registered_build_ids: Vec::new(),
+                lazy_load: true,
+                artifact_root: Some(SHARED_ARTIFACT_ROOT.to_string()),
             })
             .collect::<Vec<_>>();
         CandidateDirectoryView {
             revision: Some(1),
+            router_artifact_root: Some(SHARED_ARTIFACT_ROOT.to_string()),
             sessions,
         }
     }

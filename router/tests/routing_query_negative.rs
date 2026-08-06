@@ -16,7 +16,7 @@ use skiff_deployment::projection::actor_routing::{
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::routing::{
-    CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
+    CandidateDirectoryView, CandidateQuery, CandidateSession,
     DispatchCapabilities, DispatchMode, RuntimeCandidateQuery,
 };
 use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
@@ -101,17 +101,28 @@ fn exact_session(replica: &str) -> CandidateSession {
             unary: true,
             server_stream: true,
         },
+        registered_build_ids: vec![deployment("example.com/service-1")
+            .deployment_artifact_identity
+            .to_string()],
+        lazy_load: false,
+        artifact_root: None,
     }
 }
 
 fn view(revision: Option<u64>, sessions: Vec<CandidateSession>) -> CandidateDirectoryView {
-    CandidateDirectoryView { revision, sessions }
+    CandidateDirectoryView {
+        revision,
+        router_artifact_root: None,
+        sessions,
+    }
 }
 
 fn query() -> CandidateQuery {
     CandidateQuery {
         mode: DispatchMode::Unary,
-        deployment: deployment("example.com/service-1"),
+        build_id: deployment("example.com/service-1")
+            .deployment_artifact_identity
+            .to_string(),
     }
 }
 
@@ -120,17 +131,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routing_query_deployment_outside_captured_epoch_fails_closed() {
+    fn routing_query_unknown_build_id_has_no_candidate() {
         let epoch = epoch(vec![deployment("example.com/service-1")]);
         let view = view(Some(1), vec![exact_session("runtime-a")]);
         let mut query = query();
-        query.deployment = deployment("example.com/other-service");
+        query.build_id = deployment("example.com/other-service")
+            .deployment_artifact_identity
+            .to_string();
 
-        let result = RuntimeCandidateQuery.query(&view, &query);
-        assert_eq!(result, Err(CandidateQueryError::DeploymentNotInEpoch));
+        let leases = RuntimeCandidateQuery.query(&view, &query);
         assert!(
-            result.is_err(),
-            "no partial projection is returned on fail-closed errors"
+            leases.is_empty(),
+            "an unknown build id yields no candidate (fail closed)"
         );
     }
 
@@ -141,9 +153,7 @@ mod tests {
         session.cancelled = true;
         let view = view(Some(1), vec![session]);
 
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("excluded sessions return empty, not an error");
+        let (leases, counters) = RuntimeCandidateQuery.query_with_counters(&view, &query());
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_cancelled, 1);
         assert_eq!(counters.candidates_returned, 0);
@@ -156,16 +166,14 @@ mod tests {
         session.registered = false;
         let view = view(Some(1), vec![session]);
 
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("unregistered session returns empty");
+        let (leases, counters) = RuntimeCandidateQuery.query_with_counters(&view, &query());
         assert!(leases.is_empty());
         // §5.6 has no unregistered counter; exclusion is silent by design.
         assert_eq!(counters.queries, 1);
         assert_eq!(counters.candidates_returned, 0);
-        assert_eq!(counters.excluded_tuple_mismatch, 0);
         assert_eq!(counters.excluded_stale_revision, 0);
         assert_eq!(counters.excluded_cancelled, 0);
+        assert_eq!(counters.excluded_build_id, 0);
         assert_eq!(counters.excluded_capability, 0);
     }
 
@@ -178,9 +186,7 @@ mod tests {
         current.registration_revision = 2;
         let view = view(Some(2), vec![stale, current]);
 
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("torn view is not an error; stale session is excluded");
+        let (leases, counters) = RuntimeCandidateQuery.query_with_counters(&view, &query());
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].session_epoch.replica_id, "runtime-b");
         assert_eq!(counters.excluded_stale_revision, 1);
@@ -197,45 +203,8 @@ mod tests {
         // replica), so duplicates are a caller bug handled defensively.
         let view = view(Some(1), vec![first, duplicate]);
 
-        let leases = RuntimeCandidateQuery
-            .query(&view, &query())
-            .expect("duplicate view entries still project");
+        let leases = RuntimeCandidateQuery.query(&view, &query());
         assert_eq!(leases.len(), 1);
-    }
-
-    #[test]
-    fn routing_query_every_tuple_field_is_matched_exactly() {
-        let epoch = epoch(vec![deployment("example.com/service-1")]);
-        let mut profile = exact_session("runtime-a");
-        profile.registered_tuple = Some(tuple(42, ASSEMBLY, SNAPSHOT));
-        profile.registered_tuple.as_mut().expect("tuple").profile = "stage".to_string();
-
-        let mut generation = exact_session("runtime-b");
-        generation.registered_tuple = Some(tuple(43, ASSEMBLY, SNAPSHOT));
-
-        let mut assembly = exact_session("runtime-c");
-        assembly.registered_tuple = Some(tuple(
-        42,
-        "skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        SNAPSHOT,
-    ));
-
-        let mut config_snapshot = exact_session("runtime-d");
-        config_snapshot.registered_tuple = Some(tuple(
-            42,
-            ASSEMBLY,
-            "skiff-runtime-config-snapshot-v1:cccccccccccccccccccccccccccccccc",
-        ));
-
-        let view = view(
-            Some(1),
-            vec![profile, generation, assembly, config_snapshot],
-        );
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("mismatched tuples return empty");
-        assert!(leases.is_empty());
-        assert_eq!(counters.excluded_tuple_mismatch, 4);
     }
 
     #[test]
@@ -243,16 +212,13 @@ mod tests {
         let epoch = epoch(vec![deployment("example.com/service-1")]);
         let mut session = exact_session("runtime-a");
         session.cancelled = true;
-        session.registered_tuple = Some(tuple(43, ASSEMBLY, SNAPSHOT));
         session.capabilities = DispatchCapabilities::default();
         let view = view(Some(1), vec![session]);
 
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("multi-rule failure returns empty");
+        let (leases, counters) = RuntimeCandidateQuery.query_with_counters(&view, &query());
         assert!(leases.is_empty());
-        assert_eq!(counters.excluded_tuple_mismatch, 1);
-        assert_eq!(counters.excluded_cancelled, 0);
+        assert_eq!(counters.excluded_cancelled, 1);
+        assert_eq!(counters.excluded_build_id, 0);
         assert_eq!(counters.excluded_capability, 0);
     }
 
@@ -263,17 +229,13 @@ mod tests {
         session.capabilities = DispatchCapabilities::default();
         let view = view(Some(1), vec![session]);
 
-        let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&view, &query())
-            .expect("unknown capabilities fail closed");
+        let (leases, counters) = RuntimeCandidateQuery.query_with_counters(&view, &query());
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_capability, 1);
 
         let mut stream_query = query();
         stream_query.mode = DispatchMode::ServerStream;
-        let (stream_leases, _) = RuntimeCandidateQuery
-            .query_with_counters(&view, &stream_query)
-            .expect("serverStream query");
+        let (stream_leases, _) = RuntimeCandidateQuery.query_with_counters(&view, &stream_query);
         assert!(stream_leases.is_empty());
     }
 }

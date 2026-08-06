@@ -252,6 +252,8 @@ mod tests {
             assembly_identity: tuple().assembly_identity().to_string(),
             config_snapshot_id: tuple().snapshot_id().to_string(),
             ingress_count: 0,
+            loaded_build_ids: Vec::new(),
+            router_artifact_root: None,
         };
         let value = render_base(true, Some(&active), None, &[], &[], &zero_health_counters());
         let object = value.as_object().expect("health must be an object");

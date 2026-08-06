@@ -19,6 +19,8 @@ use skiff_artifact_model::{
     ServiceDeploymentRef, ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
+use skiff_artifact_model::GatewayAdapterSource;
+use skiff_artifact_model::GatewayExternalSchema;
 use skiff_artifact_identity::assign_service_deployment_identity;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -238,16 +240,26 @@ fn surface_entry(
     adapter_kind: GatewayAdapterKind,
     identity: &str,
 ) -> DeploymentGatewayEntry {
+    let external_sources = if adapter_kind == GatewayAdapterKind::RawHttp {
+        vec![GatewayAdapterSource::HttpRequest]
+    } else {
+        Vec::new()
+    };
+    let stream_item_schema = if mode == GatewayDispatchMode::ServerStream {
+        Some(GatewayExternalSchema::String)
+    } else {
+        None
+    };
     DeploymentGatewayEntry {
         gateway_entry_identity: GatewayEntryIdentity::parse(identity).expect("identity"),
         protocol_surface: GatewayEntryProtocolSurface {
             protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
                 adapter_kind,
                 dispatch_mode: mode,
-                external_sources: Vec::new(),
+                external_sources,
                 request_body_schema: None,
                 response_schema: None,
-                stream_item_schema: None,
+                stream_item_schema,
             }),
             external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
         },
