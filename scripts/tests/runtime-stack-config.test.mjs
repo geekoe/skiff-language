@@ -21,7 +21,6 @@ const routerConfig = {
   artifactsPath: '/tmp/skiff/artifacts',
   devReload: true,
   releaseMode: false,
-  activationPrepareTimeoutMs: 120000,
   httpPort: 4100,
   httpMaxRequestBytes: 67108864,
   httpMaxResponseBytes: 8388608,
@@ -46,7 +45,7 @@ test('router config renders an explicit profile and no environment', () => {
   assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
   assert.match(rendered, /^  maxRequestBytes: 67108864$/m);
   assert.match(rendered, /^  maxResponseBytes: 8388608$/m);
-  assert.match(rendered, /^activation:\n  prepareTimeoutMs: 120000$/m);
+  assert.doesNotMatch(rendered, /^activation:/m);
   assert.match(rendered, /^runtime:\n  port: 4101\n  path: \/runtime\n  maxConcurrency: 17$/m);
   assert.doesNotMatch(rendered, /idleTimeoutMs/);
   assert.doesNotMatch(rendered, /bodyLimitBytes/);
@@ -69,20 +68,6 @@ test('router config rejects invalid explicit runtime concurrency', () => {
     assert.throws(
       () => renderRouterConfig({ ...routerConfig, runtimeMaxConcurrency: value }),
       /router runtime\.maxConcurrency must be a positive safe integer/,
-    );
-  }
-});
-
-test('router config requires an explicit positive activation prepare budget', () => {
-  const { activationPrepareTimeoutMs: _value, ...missing } = routerConfig;
-  assert.throws(
-    () => renderRouterConfig(missing),
-    /router activation\.prepareTimeoutMs must be a positive safe integer/,
-  );
-  for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '120000']) {
-    assert.throws(
-      () => renderRouterConfig({ ...routerConfig, activationPrepareTimeoutMs: value }),
-      /router activation\.prepareTimeoutMs must be a positive safe integer/,
     );
   }
 });
@@ -203,7 +188,6 @@ test('router config renderer emits only the frozen schema keys', async () => {
   assert.deepEqual(
     Object.keys(value).sort(),
     [
-      'activation',
       'artifactsPath',
       'devReload',
       'host',
@@ -223,7 +207,6 @@ test('router config renderer emits only the frozen schema keys', async () => {
     Object.keys(value.runtime).sort(),
     ['maxConcurrency', 'path', 'port'],
   );
-  assert.deepEqual(Object.keys(value.activation), ['prepareTimeoutMs']);
   assert.deepEqual(Object.keys(value.serviceDb), ['mongoUrl']);
   assert.equal(Object.hasOwn(value, 'ecosystemStoreCliPath'), false);
 });
@@ -275,8 +258,6 @@ test('local dev config writes bootstrap ownership only to router', async () => {
       '67108864',
       '--http-max-response-bytes',
       '8388608',
-      '--activation-prepare-timeout-ms',
-      '130000',
       '--no-bin',
     ]);
     const rendered = await readFile(join(devHome, 'runtime.yml'), 'utf8');
@@ -292,7 +273,7 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
     assert.match(router, /^  maxRequestBytes: 67108864$/m);
     assert.match(router, /^  maxResponseBytes: 8388608$/m);
-    assert.match(router, /^activation:\n  prepareTimeoutMs: 130000$/m);
+    assert.doesNotMatch(router, /^activation:/m);
     assert.match(router, /^runtime:\n  port: 4001\n  path: \/runtime\n  maxConcurrency: 128$/m);
     assert.doesNotMatch(router, /idleTimeoutMs/);
     assert.doesNotMatch(router, /bodyLimitBytes/);

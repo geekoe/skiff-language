@@ -7,7 +7,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
-import { buildIsolatedActivationState } from './isolated-test-activation-seed.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 import { renderRouterConfig, renderRuntimeConfig } from './runtime-stack-config.mjs';
 import { ensureLocalServiceDbKeyring } from './service-db-keyring.mjs';
@@ -39,7 +38,6 @@ export function isolatedTestInstanceYml({
     `pidDir: ${JSON.stringify(pidDir)}`,
     `logDir: ${JSON.stringify(logDir)}`,
     `mongoDbPath: ${JSON.stringify(join(devHome, 'mongo-data'))}`,
-    `activationUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__skiff/activate-assembly`)}`,
     'processes:',
     '  - name: mongo',
     `    command: ${JSON.stringify(mongoBinary)}`,
@@ -90,10 +88,8 @@ export function isolatedTestRunnerEnvironment({
     CARGO_TARGET_DIR: cargoTarget,
     SKIFF_DEV_HOME: devHome,
     SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
-    SKIFF_TEST_ACTIVATION_URL: `http://127.0.0.1:${controlPort}/__skiff/activate-assembly`,
     SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
     SKIFF_TEST_ENVIRONMENT: profile,
-    SKIFF_TEST_EXPECTED_GENERATION: '0',
     SKIFF_TEST_PLATFORM_SOURCE_ROOT: skiffRoot,
   };
 }
@@ -130,7 +126,6 @@ export function isolatedTestInstanceRuntimeFiles({
       artifactsPath: join(devHome, 'artifacts'),
       devReload: true,
       requestTimeoutMs: 20000,
-      activationPrepareTimeoutMs: 120000,
       httpPort: basePort,
       httpMaxRequestBytes: 67108864,
       httpMaxResponseBytes: 8388608,
@@ -161,11 +156,10 @@ export function bootstrapCanonicalArgs({
     '--bin',
     'skiff-package-service-smoke-fixture',
     '--',
-    // The W-activation coordinator freezes exact runtime candidates against
-    // the committed epoch's deployment projection and fails closed when it is
-    // empty, so an isolated instance cannot activate from an empty bootstrap.
-    // Seed the committed generation-0 epoch with the dedicated bootstrap
-    // fixture's real service deployment instead.
+    // The isolated instance boots from an empty pointer table; the dedicated
+    // bootstrap fixture seeds the canonical generation-0 records (std + the
+    // bootstrap service deployment and its release pointer) into the store
+    // before the Router starts.
     '--seed-committed',
     join(skiffRoot, 'test-runner', 'fixtures', 'isolated-test-bootstrap'),
     '--artifact-root',
@@ -180,24 +174,12 @@ export function bootstrapCanonicalArgs({
 export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
   const bootstrap = bootstrapReceipt?.bootstrap;
   const profile = bootstrapReceipt?.profile;
-  const generation = bootstrap?.generation;
-  const assemblyIdentity = bootstrap?.assembly?.assemblyIdentity;
-  const configSnapshotId = bootstrap?.configSnapshot?.snapshotId;
   const active = health?.activeAssembly;
   if (
     bootstrap === undefined
     || typeof profile !== 'string'
     || profile.length === 0
-    || !Number.isSafeInteger(generation)
-    || generation < 0
-    || typeof assemblyIdentity !== 'string'
-    || assemblyIdentity.length === 0
-    || typeof configSnapshotId !== 'string'
-    || configSnapshotId.length === 0
     || active?.profile !== profile
-    || active?.generation !== generation
-    || active?.assemblyIdentity !== assemblyIdentity
-    || active?.configSnapshotId !== configSnapshotId
   ) {
     return false;
   }
@@ -211,9 +193,6 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
       && replica.connected === true
       && replica?.state === 'healthy'
       && replica?.profile === profile
-      && replica?.generation === generation
-      && replica?.assemblyIdentity === assemblyIdentity
-      && replica?.configSnapshotId === configSnapshotId
       && capabilityConnections.some((connection) => (
         connection?.connected === true
         && connection?.runtimeId === replica.replicaId
@@ -290,10 +269,9 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
     },
     waitMongoStarted,
     waitMongoPrimary: initializeSingleNodeReplicaSet,
-    seedActivationState: initializeRouterActivationState,
     releaseStartupGate: async (startupGate, ownershipReceipt) => {
       await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
-      await writeFile(startupGate, 'activation-seeded\n', {
+      await writeFile(startupGate, 'bootstrap-seeded\n', {
         encoding: 'utf8',
         flag: 'wx',
         mode: 0o600,
@@ -375,40 +353,6 @@ async function waitForIsolatedRuntime({
   const component = routerReady ? 'Runtime' : 'Router';
   throw new Error(
     `isolated ${component} startup failed at ${controlUrl} within ${START_TIMEOUT_MS}ms${lastError ? `: ${errorMessage(lastError)}` : ''}`,
-  );
-}
-
-async function initializeRouterActivationState({
-  mongoPort,
-  artifactRoot,
-  profile,
-  bootstrap,
-  signal,
-}) {
-  const state = await buildIsolatedActivationState({
-    artifactRoot,
-    profile,
-    bootstrap,
-  });
-  const document = {
-    _id: state.profile,
-    revision: 0,
-    state,
-  };
-  const script = [
-    'db.getSiblingDB("skiff-router").getCollection("activation_state").insertOne(',
-    JSON.stringify(document),
-    ');',
-  ].join('');
-  await captureCheckedCommand(
-    'mongosh',
-    [
-      `mongodb://127.0.0.1:${mongoPort}/test?directConnection=true&replicaSet=rs0`,
-      '--quiet',
-      '--eval',
-      script,
-    ],
-    { signal },
   );
 }
 

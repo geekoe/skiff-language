@@ -12,8 +12,8 @@
 //     service deployment artifact and package artifact identity);
 //   - starts an isolated temporary Mongo replica set, builds the explicit
 //     `skiff-router` Rust binary and the explicit `runtime` Rust binary,
-//     seeds the committed activation state, spawns both real processes and
-//     loads the pinned manifest artifacts (release mode);
+//     spawns both real processes and loads the pinned manifest artifacts
+//     (release mode; publish already wrote the release pointer table);
 //   - starts a local ingress mapping 127.0.0.1 -> agine.ai/api 0.1.0, waits
 //     for a real `/session` roundtrip through the Router/Runtime, then runs
 //     `npm run e2e:chat-smoke` in internals/agine pointed at that ingress
@@ -23,7 +23,7 @@
 //
 // The harness never touches the stable instance, stable Mongo, PM2, or the
 // fixed 4004-4007 ports. Router/ingress ports are leased in 45000-45999 and
-// the temporary mongod uses the repository's activation-state convention.
+// the temporary mongod uses the repository's live-harness convention.
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -43,7 +43,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import {
   captureCheckedCommand,
@@ -68,9 +68,6 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultInternalsRoot = resolve(repoRoot, '..', 'internals');
 const defaultSkiffPackagesRoot = resolve(repoRoot, '..', 'skiff-packages');
 const PROFILE = 'router-live-chat';
-const GENERATION = 1;
-const ACTIVATION_DATABASE = 'skiff-router';
-const ACTIVATION_COLLECTION = 'activation_state';
 const REPLICA_ID = 'skiff-runtime-live-chat-replica';
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
 const ACTOR_ROUTING_PROJECTION_CONTENT =
@@ -198,7 +195,7 @@ try {
   }
 
   console.log('router-live:chat: starting isolated Mongo replica set');
-  harness = await ActivationStateMongoHarness.create({ repoRoot });
+  harness = await MongodLiveHarness.create({ repoRoot });
   await harness.start();
 
   const targetDir = cargoTargetDir(repoRoot);
@@ -240,16 +237,7 @@ try {
     keyringPath,
   }));
 
-  console.log('router-live:chat: seeding committed activation state');
-  await seedCommittedActivationState({
-    mongoPort: harness.port,
-    profile: PROFILE,
-    generation: GENERATION,
-    assemblyIdentity,
-    configSnapshotId,
-  });
-
-  console.log(`router-live:chat: spawning real Rust Router (http=${httpPort}, runtime=${runtimePort})`);
+  console.log('router-live:chat: spawning real Rust Router (http=${httpPort}, runtime=${runtimePort})');
   const router = await spawnManaged(
     'router',
     routerBin,
@@ -291,7 +279,10 @@ try {
       skiffPackages: { repository: 'skiff-packages', commit: skiffPackagesSha },
     },
     profile: PROFILE,
-    generation: GENERATION,
+    // The manifest schema is pinned with the internals CI workflow and still
+    // records the legacy generation evidence value; the runtime no longer
+    // coordinates generations.
+    generation: 1,
     assembly: { assemblyIdentity },
     configSnapshot: { snapshotId: configSnapshotId },
     services: deployments.map((deployment) => {
@@ -570,37 +561,6 @@ function renderRuntimeConfig({
     `    keyringFile: ${yamlQuote(keyringPath)}`,
     '',
   ].join('\n');
-}
-
-async function seedCommittedActivationState({
-  mongoPort,
-  profile,
-  generation,
-  assemblyIdentity,
-  configSnapshotId,
-}) {
-  const state = {
-    schemaVersion: 'skiff-profile-activation-state-v1',
-    profile,
-    committed: {
-      generation,
-      assembly: { assemblyIdentity },
-      configSnapshot: { snapshotId: configSnapshotId },
-    },
-    pending: null,
-  };
-  const document = { _id: profile, state };
-  const url =
-    `mongodb://127.0.0.1:${mongoPort}/${ACTIVATION_DATABASE}?directConnection=true&replicaSet=rs0`;
-  const script = [
-    `db.${ACTIVATION_COLLECTION}.deleteMany({ _id: ${JSON.stringify(profile)} });`,
-    `db.${ACTIVATION_COLLECTION}.insertOne(${JSON.stringify(document)});`,
-  ].join('');
-  await captureCheckedCommand(
-    'mongosh',
-    [url, '--quiet', '--eval', script],
-    { cwd: repoRoot },
-  );
 }
 
 async function assertAihubDeepseekKeyConfigured(aihubServiceRoot) {

@@ -36,11 +36,9 @@ const SELECTOR_EXPANSIONS = VERIFY_SELECTOR_GRAPH.expansions;
 export async function buildVerifyPlan({
   root,
   selectors = ['verify'],
-  runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
   runtimeLiveProfile,
-  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env = process.env,
   catalogRoot = root,
@@ -54,11 +52,9 @@ export async function buildVerifyPlan({
   const leaves = expandSelectors(selectors);
   const builders = taskBuilders({
     root,
-    runtimeLiveActivationUrl,
     runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
     runtimeLiveProfile,
-    runtimeLiveExpectedGeneration,
     loopRiskConfig,
     env,
     liveRegistry,
@@ -242,22 +238,18 @@ function expandSelector(selector, leaves, seenLeaves, active) {
 
 function taskBuilders({
   root,
-  runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
   runtimeLiveProfile,
-  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env,
   liveRegistry,
   liveSelectors,
 }) {
   const registryOptions = {
-    runtimeLiveActivationUrl,
     runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
     runtimeLiveProfile,
-    runtimeLiveExpectedGeneration,
     loopRiskConfig,
     env,
     registry: liveRegistry,

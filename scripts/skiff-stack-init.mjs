@@ -3,8 +3,8 @@
 //
 // Authors an empty RuntimeAssembly + profile RuntimeConfigSnapshot + canonical
 // std records + actor routing projection through the compiler/config-snapshot
-// authoring libraries, materializes them to the remote artifact root, seeds
-// Mongo `skiff-router.activation_state` (generation 0), and starts the router.
+// authoring libraries, materializes them to the remote artifact root (the
+// release pointer table baseline stays empty), and starts the router.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

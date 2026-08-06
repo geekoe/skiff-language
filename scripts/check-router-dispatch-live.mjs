@@ -9,7 +9,7 @@
 // Rust `runtime` binary, then drives the ignored `dispatch_live_probe` test
 // which:
 //   - assembles the production Router composition in-process with the real
-//     Mongo repository and committed activation state;
+//     Mongo repository and the release pointer table;
 //   - starts the production HTTP/control listeners on leased ports;
 //   - spawns real `runtime` processes through a test-only WS relay;
 //   - drives the production `HttpDispatchPort` adapter directly (fake
@@ -21,14 +21,14 @@
 //
 // The harness never touches the stable instance, stable Mongo, PM2, or the
 // fixed 4004-4007 ports. All ports are leased in 45000-45999 and the
-// temporary mongod uses the repository's activation-state convention.
+// temporary mongod uses the repository's live-harness convention.
 
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
@@ -200,7 +200,7 @@ try {
   }
 
   console.log('router-live:dispatch: starting isolated Mongo replica set');
-  harness = await ActivationStateMongoHarness.create({ repoRoot });
+  harness = await MongodLiveHarness.create({ repoRoot });
   await harness.start();
 
   console.log('router-live:dispatch: building explicit Rust runtime binary');

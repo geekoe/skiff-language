@@ -44,28 +44,17 @@ test('CLI defaults to verify and accepts a package-manager argument separator', 
 test('verify CLI rejects repeated runtime-live singleton inputs across split and inline forms', () => {
   const parsed = parseVerifyArgs([
     '--only=runtime-live',
-    '--runtime-live-activation-url=http://router.test:4101/__skiff/activate-assembly',
     '--runtime-live-ingress-url',
     'http://router.test:4100',
     '--runtime-live-artifact-root=artifacts',
     '--runtime-live-profile=runtime-live',
-    '--runtime-live-expected-generation',
-    '7',
   ]);
-  assert.equal(
-    parsed.runtimeLiveActivationUrl,
-    'http://router.test:4101/__skiff/activate-assembly',
-  );
   assert.equal(parsed.runtimeLiveIngressUrl, 'http://router.test:4100');
   assert.equal(parsed.runtimeLiveArtifactRoot, 'artifacts');
   assert.equal(parsed.runtimeLiveProfile, 'runtime-live');
-  assert.equal(parsed.runtimeLiveExpectedGeneration, '7');
+  assert.equal(parsed.runtimeLiveActivationUrl, undefined);
+  assert.equal(parsed.runtimeLiveExpectedGeneration, undefined);
   for (const args of [
-    [
-      '--runtime-live-activation-url',
-      'http://one.test/__skiff/activate-assembly',
-      '--runtime-live-activation-url=http://two.test/__skiff/activate-assembly',
-    ],
     [
       '--runtime-live-ingress-url=http://router.test:4100',
       '--runtime-live-ingress-url',
@@ -73,14 +62,15 @@ test('verify CLI rejects repeated runtime-live singleton inputs across split and
     ],
     ['--runtime-live-artifact-root', 'one', '--runtime-live-artifact-root=two'],
     ['--runtime-live-profile', 'one', '--runtime-live-profile=two'],
-    [
-      '--runtime-live-expected-generation=1',
-      '--runtime-live-expected-generation',
-      '2',
-    ],
     ['--list', '--dry-run'],
   ]) {
     assert.throws(() => parseVerifyArgs(args), /may be specified only once/);
+  }
+  for (const args of [
+    ['--runtime-live-activation-url', 'http://one.test/__skiff/activate-assembly'],
+    ['--runtime-live-expected-generation', '1'],
+  ]) {
+    assert.throws(() => parseVerifyArgs(args), /unknown argument/);
   }
 });
 
@@ -314,14 +304,13 @@ test('canonical runtime-live plan aggregates every missing explicit input', asyn
     assert.equal(task.id, 'live:runtime:inputs');
     assert.match(task.preconditionError, /runtime-live is missing required explicit input/);
     for (const name of [
-      'SKIFF_RUNTIME_LIVE_ACTIVATION_URL',
       'SKIFF_RUNTIME_LIVE_INGRESS_URL',
       'SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT',
       'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
-      'SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION',
     ]) {
       assert.match(task.preconditionError, new RegExp(name));
     }
+    assert.doesNotMatch(task.preconditionError, /ACTIVATION_URL|EXPECTED_GENERATION/);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -352,12 +341,9 @@ test('runtime-live blocks for every nonempty subset of missing required inputs',
       'runtime/live-tests/example.live.test.skiff',
     );
     const values = {
-      runtimeLiveActivationUrl:
-        'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
       runtimeLiveProfile: 'runtime-live',
-      runtimeLiveExpectedGeneration: '0',
     };
     const keys = Object.keys(values);
     for (let mask = 1; mask < (1 << keys.length); mask += 1) {
@@ -531,14 +517,10 @@ test('runtime-live builds executable Cargo tasks when config and fixtures exist'
           '--live',
           '--artifact-root', artifactRoot,
           '--platform-source-root', fixture,
-          '--activation-url',
-          'http://router.test:4101/__skiff/activate-assembly',
           '--ingress-url',
           'http://router.test:4100',
           '--profile',
           'runtime-live',
-          '--expected-generation',
-          '0',
           '--deny-skips',
           '--require-tests',
         ],
@@ -697,13 +679,13 @@ test('runtime-live rejects unsafe canonical URLs and wrong artifact-root types b
         catalogRoot: root,
         selectors: ['runtime-live'],
         ...runtimeLiveInputs(fixture),
-        runtimeLiveActivationUrl:
-          `http://router.test:4101/__skiff/activate-assembly?token=${sentinel}`,
+        runtimeLiveIngressUrl:
+          `http://router.test:4100/private?token=${sentinel}`,
       });
     } catch (caught) {
       error = caught;
     }
-    assert.match(error?.message ?? '', /must point exactly to \/__skiff\/activate-assembly/);
+    assert.match(error?.message ?? '', /must point exactly to \//);
     assert.doesNotMatch(error?.message ?? '', new RegExp(sentinel));
 
     await assert.rejects(
@@ -712,9 +694,9 @@ test('runtime-live rejects unsafe canonical URLs and wrong artifact-root types b
         catalogRoot: root,
         selectors: ['runtime-live'],
         ...runtimeLiveInputs(fixture),
-        runtimeLiveIngressUrl: 'http://router.test:4100/private',
+        runtimeLiveProfile: 'not canonical/profile',
       }),
-      /runtime-live URL must point exactly to \//,
+      /profile must be a canonical ASCII token/,
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -739,9 +721,9 @@ test('generic development target profile cannot unlock runtime-live', async () =
       },
     });
     assert.equal(plan.tasks.length, 1);
-    assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_ACTIVATION_URL/);
     assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_INGRESS_URL/);
     assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
+    assert.match(plan.tasks[0].preconditionError, /SKIFF_RUNTIME_LIVE_ENVIRONMENT/);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -766,14 +748,8 @@ test('real canonical runtime-live root renders exactly four ordered tasks', asyn
         'live:runtime:runtime/live-tests/internal/operation.live.test.skiff',
       ],
     );
-    assert.deepEqual(
-      plan.tasks.map((task) => {
-        const index = task.args.indexOf('--expected-generation');
-        return task.args[index + 1];
-      }),
-      ['0', '1', '2', '3'],
-    );
     assert.ok(plan.tasks.every((task) => !task.args.includes('--base-assembly')));
+    assert.ok(plan.tasks.every((task) => !task.args.includes('--expected-generation')));
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -788,16 +764,12 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
       verifyPath,
       '--only',
       'runtime-live',
-      '--runtime-live-activation-url',
-      'http://router.test:4101/__skiff/activate-assembly',
       '--runtime-live-ingress-url',
       'http://router.test:4100',
       '--runtime-live-artifact-root',
       artifactRoot,
       '--runtime-live-profile',
       'runtime-live',
-      '--runtime-live-expected-generation',
-      '0',
       '--list',
     ], { cwd: root });
     assert.equal(listed.code, 0, listed.stderr);
@@ -809,7 +781,7 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
     ]) {
       assert.match(listed.stdout, new RegExp(fixtureName.replaceAll('.', '\\.')));
     }
-    assert.equal((listed.stdout.match(/--expected-generation/g) ?? []).length, 4);
+    assert.equal((listed.stdout.match(/--expected-generation/g) ?? []).length, 0);
     assert.doesNotMatch(listed.stdout, /--base-assembly/);
 
     const sentinel = 'verify-runtime-url-sentinel';
@@ -817,20 +789,16 @@ test('runtime-live CLI lists the canonical fixtures and hides invalid URL sentin
       verifyPath,
       '--only',
       'runtime-live',
-      '--runtime-live-activation-url',
-      `http://router.test:4101/__skiff/activate-assembly?token=${sentinel}`,
       '--runtime-live-ingress-url',
-      'http://router.test:4100',
+      `http://router.test:4100/private?token=${sentinel}`,
       '--runtime-live-artifact-root',
       artifactRoot,
       '--runtime-live-profile',
       'runtime-live',
-      '--runtime-live-expected-generation',
-      '0',
       '--list',
     ], { cwd: root });
     assert.notEqual(rejected.code, 0);
-    assert.match(rejected.stderr, /must point exactly to \/__skiff\/activate-assembly/);
+    assert.match(rejected.stderr, /must point exactly to \//);
     assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, new RegExp(sentinel));
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -1315,22 +1283,17 @@ function runProcess(command, args, { cwd, env = process.env }) {
 
 function runtimeLiveInputs(artifactRoot) {
   return {
-    runtimeLiveActivationUrl:
-      'http://router.test:4101/__skiff/activate-assembly',
     runtimeLiveIngressUrl: 'http://router.test:4100',
     runtimeLiveArtifactRoot: artifactRoot,
     runtimeLiveProfile: 'runtime-live',
-    runtimeLiveExpectedGeneration: '0',
   };
 }
 
 function withoutRuntimeLiveTarget() {
   const env = { ...process.env };
-  delete env.SKIFF_RUNTIME_LIVE_ACTIVATION_URL;
   delete env.SKIFF_RUNTIME_LIVE_INGRESS_URL;
   delete env.SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT;
   delete env.SKIFF_RUNTIME_LIVE_ENVIRONMENT;
-  delete env.SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION;
   delete env.SKIFF_DEV_ACTIVATION_URL;
   delete env.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT;
   return env;

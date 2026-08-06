@@ -7,15 +7,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
-  defaultAssemblyActivationUrl,
   runConfigSnapshotAuthoring,
   runCompilerAuthoring,
 } from './lib/package-service-authoring.mjs';
-import { activateDevAssembly } from './lib/dev-assembly-activation.mjs';
-export {
-  activateDevAssembly,
-  readRouterActivationState,
-} from './lib/dev-assembly-activation.mjs';
 import {
   assertProfile,
   devRegistrySchemaVersion,
@@ -37,7 +31,7 @@ const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
 const devBuildStates = new WeakMap();
 
-const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--activation-url <url>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--profile <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
@@ -63,14 +57,10 @@ export async function main(rawArgs, dependencies = {}) {
     roots: [...registry.roots, ...options.roots],
     profile: options.profile ?? registry.profile,
     artifactRoot: options.artifactRoot,
-    activationUrl: options.activationUrl,
-    activationId: options.activationId,
     buildOnly: options.buildOnly,
     skiffRoot: dependencies.skiffRoot ?? skiffRoot,
-    fetchImpl: dependencies.fetchImpl ?? fetch,
     compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
     configSnapshotRunner: dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
-    activationWait: dependencies.activationWait ?? delay,
   });
   printResult(result, options.json);
   return result;
@@ -196,15 +186,11 @@ export async function runDevWatch(options, dependencies = {}) {
         roots: pending.roots,
         profile: pending.profile,
         artifactRoot: options.artifactRoot,
-        activationUrl: options.activationUrl,
-        activationId: options.activationId,
         buildOnly: options.buildOnly,
         skiffRoot: dependencies.skiffRoot ?? skiffRoot,
-        fetchImpl: dependencies.fetchImpl ?? fetch,
         compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
         configSnapshotRunner:
           dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
-        activationWait: dependencies.activationWait ?? delay,
         buildState: reuseBuildState
           ? (successful?.buildState ?? lastBuild?.state)
           : undefined,
@@ -281,14 +267,10 @@ export async function runDevSyncOnce({
   roots,
   profile,
   artifactRoot,
-  activationUrl = defaultAssemblyActivationUrl,
-  activationId,
   buildOnly = false,
   skiffRoot: compilerRoot = skiffRoot,
-  fetchImpl = fetch,
   compilerRunner = runCompilerAuthoring,
   configSnapshotRunner = runConfigSnapshotAuthoring,
-  activationWait = delay,
   buildState,
 }) {
   assertProfile(profile);
@@ -302,65 +284,48 @@ export async function runDevSyncOnce({
     compilerRunner,
   });
   validateReusableBuildState(build, { profile, artifactRoot });
-  const {
-    serviceContractReceipts,
-    packageArtifactReceipts,
-    serviceDeploymentReceipts,
-    serviceConfigSources,
-    assemblyReceipt,
-  } = build;
-  if (!isPlainObject(assemblyReceipt?.assembly)) {
-    throw new Error('assembly build did not return an exact RuntimeAssembly reference');
-  }
-  if (typeof assemblyReceipt.recordPath !== 'string' || assemblyReceipt.recordPath.length === 0) {
-    throw new Error('assembly build did not return a RuntimeAssembly record path');
-  }
-  const snapshotResult = await configSnapshotRunner({
-    skiffRoot: compilerRoot,
-    artifactRoot,
-    profile,
-    assemblyRecord: assemblyReceipt.recordPath,
-    sources: serviceConfigSources,
-  });
-  const configSnapshotReceipt = snapshotResult?.runtimeConfigSnapshotReceipt;
-  if (!isPlainObject(configSnapshotReceipt?.snapshot)) {
-    throw new Error('config snapshot production did not return an exact snapshot reference');
-  }
-
-  const result = {
-    serviceContractReceipts,
-    packageArtifactReceipts,
-    serviceDeploymentReceipts,
-    runtimeAssemblyReceipt: assemblyReceipt,
-    runtimeConfigSnapshotReceipt: configSnapshotReceipt,
-  };
-  devBuildStates.set(result, build);
-  if (buildOnly) {
-    return result;
-  }
-  let activation;
+  let result;
   try {
-    activation = await activateDevAssembly({
-      fetchImpl,
-      activationUrl,
-      activationId,
+    const {
+      serviceContractReceipts,
+      packageArtifactReceipts,
+      serviceDeploymentReceipts,
+      assemblyReceipt,
+    } = build;
+    if (!isPlainObject(assemblyReceipt?.assembly)) {
+      throw new Error('assembly build did not return an exact RuntimeAssembly reference');
+    }
+    if (typeof assemblyReceipt.recordPath !== 'string' || assemblyReceipt.recordPath.length === 0) {
+      throw new Error('assembly build did not return a RuntimeAssembly record path');
+    }
+    const snapshotResult = await configSnapshotRunner({
+      skiffRoot: compilerRoot,
+      artifactRoot,
       profile,
-      assembly: assemblyReceipt.assembly,
-      configSnapshot: configSnapshotReceipt.snapshot,
-      wait: activationWait,
+      assemblyRecord: assemblyReceipt.recordPath,
+      sources: build.serviceConfigSources,
     });
+    const configSnapshotReceipt = snapshotResult?.runtimeConfigSnapshotReceipt;
+    if (!isPlainObject(configSnapshotReceipt?.snapshot)) {
+      throw new Error('config snapshot production did not return an exact snapshot reference');
+    }
+
+    result = {
+      serviceContractReceipts,
+      packageArtifactReceipts,
+      serviceDeploymentReceipts,
+      runtimeAssemblyReceipt: assemblyReceipt,
+      runtimeConfigSnapshotReceipt: configSnapshotReceipt,
+    };
   } catch (error) {
-    // Retain the complete build so watch retries can reuse it when only the
-    // activation failed and the source tree is unchanged, instead of
-    // republishing every root on each retry.
+    // Publish is effective immediately (the authoring transaction already
+    // wrote the release pointer), so any failure after the build phase is
+    // retried against the retained build state: republishing is idempotent
+    // and the source tree is unchanged.
     throw attachReusableBuildState(error, build);
   }
-  const activated = {
-    ...result,
-    assemblyActivationReceipt: activation,
-  };
-  devBuildStates.set(activated, build);
-  return activated;
+  devBuildStates.set(result, build);
+  return result;
 }
 
 function attachReusableBuildState(error, build) {
@@ -585,8 +550,6 @@ export function parseDevSyncArgs(rawArgs) {
     roots: [],
     config: defaultRegistryPath,
     artifactRoot: defaultArtifactRoot,
-    activationUrl: defaultAssemblyActivationUrl,
-    activationId: undefined,
     profile: undefined,
     pollIntervalMs: 500,
     watch: false,
@@ -602,8 +565,6 @@ export function parseDevSyncArgs(rawArgs) {
     ['--root', 'roots'],
     ['--config', 'config'],
     ['--artifact-root', 'artifactRoot'],
-    ['--activation-url', 'activationUrl'],
-    ['--activation-id', 'activationId'],
     ['--profile', 'profile'],
     ['--poll-interval-ms', 'pollIntervalMs'],
   ]);

@@ -24,14 +24,14 @@
 //
 // The harness never touches the stable instance, stable Mongo, PM2 or the
 // fixed 4004-4007 ports. Router/relay ports are leased in 45000-45999 and
-// the temporary mongod uses the repository's activation-state convention.
+// the temporary mongod uses the repository's live-harness convention.
 
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import {
   ACTOR_LIVE_ENTRYPOINTS,
   authorActorLiveArtifact,
@@ -109,7 +109,7 @@ try {
   });
 
   console.log('router-live:actor: starting isolated Mongo replica set');
-  harness = await ActivationStateMongoHarness.create({ repoRoot });
+  harness = await MongodLiveHarness.create({ repoRoot });
   await harness.start();
 
   const targetDir = cargoTargetDir(repoRoot);

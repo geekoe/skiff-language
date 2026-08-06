@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { runAuthoringObjectCommand } from './lib/package-service-authoring.mjs';
-import { runAssemblyStateSyncCommand } from './lib/assembly-state-sync.mjs';
 import { runDevRegistryCommand } from './lib/package-service-dev-registry.mjs';
 import { runReleaseCommand } from './lib/release-command.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
@@ -33,7 +32,6 @@ import {
   readProjectPackageDirs,
 } from './lib/project-config.mjs';
 import { renderRouterConfig, renderRuntimeConfig, renderTelemetryConfig } from './lib/runtime-stack-config.mjs';
-import { DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS } from './lib/activation-timeout.mjs';
 import { buildStack } from './lib/stack-build.mjs';
 import { parseStackConfigDirArg } from './lib/stack-config.mjs';
 
@@ -48,10 +46,10 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
-  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--activation-prepare-timeout-ms <ms>] [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
+  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
   skiff service dev registry list [--config <path>]
@@ -62,8 +60,6 @@ const usage = `usage:
   skiff package build <root> --artifact-root <dir> [--profile <name>] [--json]
   skiff package publish <root> --artifact-root <dir> [--profile <name>] [--json]
   skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
-  skiff assembly activate --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
-  skiff assembly sync-state --artifact-root <dir> --profile <name> --activation-url <url> --mongo-url <url> [--json]
   skiff release set --artifact-root <dir> --profile <name> --service <id> --version <v> --build-id <id> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release unset --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release get --artifact-root <dir> --profile <name> --service <id> --version <v> [--json]
@@ -114,10 +110,6 @@ async function main(args) {
       await packageCommand(args);
       return;
     case 'assembly':
-      if (args[0] === 'sync-state') {
-        await runAssemblyStateSyncCommand(args.slice(1), { skiffRoot });
-        return;
-      }
       await runAuthoringObjectCommand(command, args, { skiffRoot });
       return;
     case 'release':
@@ -264,10 +256,8 @@ async function test(rawArgs) {
       '--artifact-root',
       '--base-assembly',
       '--base-config-snapshot',
-      '--activation-url',
       '--ingress-url',
       '--profile',
-      '--expected-generation',
       '--sources',
       '--shards',
       '--max-cases',
@@ -275,12 +265,10 @@ async function test(rawArgs) {
     flags: new Set(['--live', '--deny-skips', '--require-tests', '--fresh', '--plan']),
   });
   const live = args.flags.has('--live');
-  const liveTargetKeys = [
-    'activationUrl', 'ingressUrl', 'profile', 'expectedGeneration',
-  ];
+  const liveTargetKeys = ['ingressUrl', 'profile'];
   if (!live && liveTargetKeys.some((key) => args.options[key] !== undefined)) {
     throw new Error(
-      'non-live skiff test owns activation, ingress, profile, and generation targets',
+      'non-live skiff test owns ingress and profile targets',
     );
   }
   if (args.options.artifactRoot === undefined) {
@@ -325,14 +313,6 @@ async function test(rawArgs) {
         throw new Error(`live skiff test requires --${key.replace(/[A-Z]/g, (value) => `-${value.toLowerCase()}`)}`);
       }
     }
-    if (!/^(?:0|[1-9][0-9]*)$/.test(args.options.expectedGeneration)) {
-      throw new Error('--expected-generation must be a non-negative integer');
-    }
-    validateCanonicalTestUrl(
-      args.options.activationUrl,
-      '/__skiff/activate-assembly',
-      '--activation-url',
-    );
     validateCanonicalTestUrl(args.options.ingressUrl, '/', '--ingress-url');
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(args.options.profile)) {
       throw new Error('--profile must be a canonical ASCII token');
@@ -462,10 +442,8 @@ async function test(rawArgs) {
   }
   if (live) {
     testArgs.push(
-      '--activation-url', args.options.activationUrl,
       '--ingress-url', args.options.ingressUrl,
       '--profile', args.options.profile,
-      '--expected-generation', args.options.expectedGeneration,
     );
   }
   if (args.flags.has('--deny-skips')) {
@@ -566,10 +544,6 @@ async function devInit(rawArgs) {
     args.options.httpMaxResponseBytes,
     '--http-max-response-bytes',
   );
-  const activationPrepareTimeoutMs = readOptionalPositiveSafeInteger(
-    args.options.activationPrepareTimeoutMs,
-    '--activation-prepare-timeout-ms',
-  ) ?? DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS;
 
   await mkdir(artifactRoot, { recursive: true });
   await mkdir(runtimeHome, { recursive: true });
@@ -581,7 +555,6 @@ async function devInit(rawArgs) {
     serviceDbMongoUrl,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
-    activationPrepareTimeoutMs,
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'runtime.yml'), runtimeDevConfig({
     runtimeHome,
@@ -804,7 +777,6 @@ function parseDevInitArgs(rawArgs) {
     flags: new Set(['--force', '--no-bin']),
     optionsWithValues: new Set([
       '--bin-dir',
-      '--activation-prepare-timeout-ms',
       '--dev-home',
       '--http-max-request-bytes',
       '--http-max-response-bytes',
@@ -941,7 +913,6 @@ function routerDevConfig(options) {
     artifactsPath: options.artifactRoot,
     devReload: true,
     requestTimeoutMs: 20000,
-    activationPrepareTimeoutMs: options.activationPrepareTimeoutMs,
     httpPort: 4000,
     httpMaxRequestBytes: options.httpMaxRequestBytes,
     httpMaxResponseBytes: options.httpMaxResponseBytes,
@@ -958,13 +929,6 @@ function readRequiredPositiveSafeInteger(value, option) {
     throw new Error(`${option} must be a positive safe integer`);
   }
   return integer;
-}
-
-function readOptionalPositiveSafeInteger(value, option) {
-  if (value === undefined) {
-    return undefined;
-  }
-  return readRequiredPositiveSafeInteger(value, option);
 }
 
 function runtimeDevConfig(options) {

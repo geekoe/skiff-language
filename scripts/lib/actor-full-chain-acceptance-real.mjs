@@ -5,8 +5,8 @@ import { join } from 'node:path';
 
 import { captureCheckedCommand } from './command-execution.mjs';
 import { runInIsolatedTestRuntime } from './isolated-test-runtime.mjs';
-import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import { packageServiceEcosystemSmokeFixtureCargoArgs } from './package-service-ecosystem-smoke-real.mjs';
+import { writeReleasePointerSeed } from './release-pointer-seed.mjs';
 
 const FIXTURE_ROOT = join('test-runner', 'fixtures', 'actor-full-chain-acceptance');
 
@@ -36,21 +36,16 @@ export async function runActorFullChainAcceptance({
         (entrypoint) => entrypoint.gatewayEntryKey === 'probe',
       );
       assert.ok(unary, 'Actor fixture must publish its real unary marker');
-      const activation = await requestAssemblyActivation({
-        activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
-        expectedGeneration: 0,
+      const deployment = receipt.candidate.deployments[0];
+      await writeReleasePointerSeed({
+        artifactRoot: stack.artifactRoot,
         profile,
-        assembly: receipt.candidate.assembly,
-        configSnapshot: receipt.candidate.configSnapshot,
-        signal,
+        deployment,
+        recordPath: actorDeploymentRecordPath(deployment),
       });
-      assert.equal(activation.response.ok, true);
-      const generation = activation.response.activeAssembly.generation;
       await waitForTwoActiveReplicas({
         controlUrl: stack.controlUrl,
         profile,
-        generation,
-        assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
         signal,
       });
 
@@ -284,14 +279,13 @@ export async function runActorFullChainAcceptance({
         (replica) =>
           replica.connected === true
           && replica.state === 'healthy'
-          && replica.generation === generation,
+          && replica.profile === profile,
       );
       assert.equal(new Set(replicas.map((replica) => replica.replicaId)).size, 2);
       return {
         status: 'PASS',
         fixture: FIXTURE_ROOT,
         assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
-        generation,
         replicas: replicas.map((replica) => replica.replicaId).sort(),
         results: [first, second],
       };
@@ -334,8 +328,6 @@ async function invokeUnaryRaw(routerHttpUrl, entrypoint, signal, bodyValue = nul
 async function waitForTwoActiveReplicas({
   controlUrl,
   profile,
-  generation,
-  assemblyIdentity,
   signal,
 }) {
   const started = Date.now();
@@ -346,14 +338,26 @@ async function waitForTwoActiveReplicas({
       (replica) =>
         replica.connected === true
         && replica.state === 'healthy'
-        && replica.profile === profile
-        && replica.generation === generation
-        && replica.assemblyIdentity === assemblyIdentity,
+        && replica.profile === profile,
     );
     if (new Set(replicas.map((replica) => replica.replicaId)).size === 2) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
-  throw new Error('Actor acceptance assembly did not activate on two Runtime replicas');
+  throw new Error('Actor acceptance deployment did not reach two healthy Runtime replicas');
+}
+
+function actorDeploymentRecordPath(deployment) {
+  const hex = deployment.deploymentArtifactIdentity.slice(
+    deployment.deploymentArtifactIdentity.lastIndexOf(':') + 1,
+  );
+  return [
+    'records',
+    'service-deployments',
+    deployment.serviceId.replaceAll('.', '~d').replaceAll('/', '~s'),
+    deployment.contractVersion,
+    deployment.deploymentRevision,
+    `${hex}.json`,
+  ].join('/');
 }
 
 async function waitForActorValue({

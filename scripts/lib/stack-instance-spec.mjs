@@ -126,7 +126,6 @@ export function localInstanceSpecFrom({ stack, skiffRoot, manifest }) {
     pidDir: join(devHome, 'pids'),
     logDir: join(devHome, 'logs'),
     mongoDbPath,
-    activationUrl: `http://127.0.0.1:${routerPorts.control}/__skiff/activate-assembly`,
     compilerBinary: binary('compiler', 'skiff-compiler'),
     keyringFile,
     env: { RUST_LOG: 'info' },

@@ -10,7 +10,7 @@ import {
 
 const root = resolve(import.meta.dirname, '..', '..');
 
-test('non-live runner receives canonical activation and Host-ingress targets', () => {
+test('non-live runner receives canonical artifact and Host-ingress targets', () => {
   const environment = isolatedTestRunnerEnvironment({
     baseEnv: {
       PATH: '/bin',
@@ -30,13 +30,10 @@ test('non-live runner receives canonical activation and Host-ingress targets', (
     environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT,
     '/tmp/skiff-owned/dev-home/artifacts',
   );
-  assert.equal(
-    environment.SKIFF_TEST_ACTIVATION_URL,
-    'http://127.0.0.1:46101/__skiff/activate-assembly',
-  );
   assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46100');
   assert.equal(environment.SKIFF_TEST_ENVIRONMENT, 'test-environment');
-  assert.equal(environment.SKIFF_TEST_EXPECTED_GENERATION, '0');
+  assert.equal(environment.SKIFF_TEST_ACTIVATION_URL, undefined);
+  assert.equal(environment.SKIFF_TEST_EXPECTED_GENERATION, undefined);
   assert.equal(environment.CARGO_TARGET_DIR, '/checkout/cargo-target');
   assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout/skiff');
   assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);

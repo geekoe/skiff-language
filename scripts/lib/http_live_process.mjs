@@ -2,9 +2,9 @@
 //
 // Post-cutover the Router is always the Rust binary: the harness starts the
 // explicit `skiff-router` binary with the canonical
-// `RouterProcessSpec`/`devHome/router.yml` and the same committed activation
-// tuple. The real Runtime process is started per phase; a test-only WS relay
-// records every frame so the harness can assert the handshake tuple, request
+// `RouterProcessSpec`/`devHome/router.yml` and the same release pointer table.
+// The real Runtime process is started per phase; a test-only WS relay
+// records every frame so the harness can assert the handshake, request
 // frames and cancel frames without production seams.
 
 import { spawn } from 'node:child_process';
@@ -35,7 +35,6 @@ const STOP_TIMEOUT_MS = 20_000;
 const HANDSHAKE_SEQUENCE = [
   'router.bootstrap',
   'runtime.capabilities',
-  'assembly.activation',
   'runtime.registered',
   'runtime.health',
 ];
@@ -69,7 +68,6 @@ export function renderHttpLiveRouterConfig({
     releaseMode: true,
     devReload: false,
     requestTimeoutMs,
-    activationPrepareTimeoutMs: 120_000,
     httpPort,
     httpMaxRequestBytes,
     httpMaxResponseBytes,
@@ -195,12 +193,8 @@ export function latestBootstrapTupleAfter(records, fromIndex) {
     if (record?.type !== 'router.bootstrap') {
       continue;
     }
-    const activation = record?.header?.activation;
     return {
-      profile: activation?.profile ?? null,
-      generation: activation?.generation ?? null,
-      assemblyIdentity: activation?.assembly?.assemblyIdentity ?? null,
-      configSnapshotId: activation?.configSnapshot?.snapshotId ?? null,
+      profile: record?.header?.profile ?? null,
     };
   }
   return null;

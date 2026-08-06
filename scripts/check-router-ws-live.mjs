@@ -8,7 +8,7 @@
 // an isolated temporary Mongo replica set (never the stable 27017), builds the
 // explicit `skiff-router` Rust binary and the explicit `runtime` Rust binary,
 // then drives the ignored `ws_live_probe` test which:
-//   - seeds the committed activation state and spawns the real Router;
+//   - seeds the release pointer table and spawns the real Router;
 //   - spawns the real Runtime process (direct runtime WS, no test relay);
 //   - connects a real client WS to the public Router HTTP port and drives the
 //     full business chain: generation acquire/release, JSON-RPC roundtrips
@@ -19,14 +19,14 @@
 //
 // The harness never touches the stable instance, stable Mongo, PM2, or the
 // fixed 4004-4007 ports. Router ports are leased in 45000-45999 and the
-// temporary mongod uses the repository's activation-state convention.
+// temporary mongod uses the repository's live-harness convention.
 
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
@@ -253,7 +253,7 @@ try {
   }
 
   console.log('router-live:ws: starting isolated Mongo replica set');
-  harness = await ActivationStateMongoHarness.create({ repoRoot });
+  harness = await MongodLiveHarness.create({ repoRoot });
   await harness.start();
 
   const targetDir = cargoTargetDir(repoRoot);

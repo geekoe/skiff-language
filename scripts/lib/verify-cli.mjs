@@ -2,11 +2,9 @@ import { PUBLIC_SELECTORS } from './verify-plan.mjs';
 import { renderLiveSelectorHelp } from './verify-live-registry.mjs';
 
 const runtimeLiveValueOptions = new Map([
-  ['--runtime-live-activation-url', 'runtimeLiveActivationUrl'],
   ['--runtime-live-ingress-url', 'runtimeLiveIngressUrl'],
   ['--runtime-live-artifact-root', 'runtimeLiveArtifactRoot'],
   ['--runtime-live-profile', 'runtimeLiveProfile'],
-  ['--runtime-live-expected-generation', 'runtimeLiveExpectedGeneration'],
 ]);
 
 export function parseVerifyArgs(argv) {
@@ -15,11 +13,9 @@ export function parseVerifyArgs(argv) {
     list: false,
     jobs: undefined,
     selectors: [],
-    runtimeLiveActivationUrl: undefined,
     runtimeLiveIngressUrl: undefined,
     runtimeLiveArtifactRoot: undefined,
     runtimeLiveProfile: undefined,
-    runtimeLiveExpectedGeneration: undefined,
     loopRiskConfig: undefined,
   };
 
@@ -139,16 +135,12 @@ options:
   --only <a,b>                 select one or more groups; may be specified once
   --jobs <n>                   concurrent slot budget; default 1, minimum 1
   --list, --dry-run            print the expanded plan without executing it
-  --runtime-live-activation-url <url>
-                                explicit canonical assembly activation target
   --runtime-live-ingress-url <url>
                                 explicit runtime ingress origin
   --runtime-live-artifact-root <dir>
                                 explicit existing runtime artifact directory
   --runtime-live-profile <id>
-                                explicit activation profile
-  --runtime-live-expected-generation <n>
-                                explicit non-negative expected generation
+                                explicit profile
   --loop-risk-config <path>     canonical loop-risk target/runtime config
   -h, --help                   show this help
 

@@ -37,7 +37,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import {
@@ -48,13 +48,12 @@ import {
 } from './lib/clean-host-bundle.mjs';
 import {
   HTTP_LIVE_PROFILE,
-  HTTP_LIVE_GENERATION,
   HTTP_LIVE_REPLICA_ID,
   HTTP_LIVE_SERVICE_ID,
   HTTP_LIVE_VERSION,
   authorHttpLiveArtifact,
   httpLiveMongoUrl,
-  seedHttpLiveCommittedState,
+  seedHttpLiveReleasePointers,
   writeHttpLiveServiceSource,
 } from './lib/http_live_fixture.mjs';
 import {
@@ -87,7 +86,7 @@ const PREFLIGHT_FILES = [
   'scripts/lib/rollback-clean-host-suite.mjs',
   'scripts/lib/http_live_fixture.mjs',
   'scripts/lib/http_live_process.mjs',
-  'scripts/lib/activation-state-live-harness.mjs',
+  'scripts/lib/mongod-live-harness.mjs',
 ];
 
 let mongoHarness;
@@ -151,19 +150,17 @@ try {
   console.log(
     'check-router-clean-host-live: starting isolated Mongo replica set',
   );
-  mongoHarness = await ActivationStateMongoHarness.create({ repoRoot });
+  mongoHarness = await MongodLiveHarness.create({ repoRoot });
   await mongoHarness.start();
   const mongoUrl = httpLiveMongoUrl(mongoHarness.port);
 
   console.log(
-    'check-router-clean-host-live: seeding committed activation state',
+    'check-router-clean-host-live: seeding the release pointer table',
   );
-  await seedHttpLiveCommittedState({
-    mongoUrl,
+  await seedHttpLiveReleasePointers({
+    artifactRoot,
     profile: HTTP_LIVE_PROFILE,
-    generation: HTTP_LIVE_GENERATION,
-    assemblyIdentity: identities.assemblyIdentity,
-    configSnapshotId: identities.configSnapshotId,
+    deployment: identities.deploymentRef,
   });
 
   const targetDir = cargoTargetDir(repoRoot);

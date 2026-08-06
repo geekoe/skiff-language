@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { initStack, assertLocalRouterStopped } from '../lib/stack-init.mjs';
+import { initStack } from '../lib/stack-init.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
 
-test('init authors empty assembly + profile snapshot + std records and seeds Mongo generation 0', async (t) => {
+test('init authors empty assembly + profile snapshot + std records and keeps an empty pointer table baseline', async (t) => {
   const { configDir, shell, calls, authoring, authoringState } = await initFixture(t);
   const result = await initStack({ configDir, skiffRoot, shell, authoring });
 
@@ -26,19 +26,11 @@ test('init authors empty assembly + profile snapshot + std records and seeds Mon
   assert.ok(artifactsRsync, 'artifacts must be materialized to the remote artifact root');
   assert.deepEqual(artifactsRsync.extra, ['--delete']);
 
-  const mongo = calls.find((call) => call.op === 'ssh' && call.command.includes('mongosh'));
-  assert.ok(mongo, 'Mongo state must be seeded over ssh');
-  assert.match(mongo.command, /getSiblingDB\("skiff-router"\)/);
-  assert.match(mongo.command, /getCollection\("activation_state"\)/);
-  assert.match(mongo.command, /insertOne/);
-  assert.match(mongo.command, /"_id":"prod"/);
-  assert.match(mongo.command, /"generation":0/);
-  assert.match(mongo.command, /"schemaVersion":"skiff-profile-activation-state-v1"/);
-  assert.match(
-    mongo.command,
-    new RegExp(`"assemblyIdentity":"skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}"`),
+  assert.equal(
+    calls.some((call) => call.op === 'ssh' && call.command.includes('mongosh')),
+    false,
+    'stack init must not seed Mongo state',
   );
-  assert.match(mongo.command, /"snapshotId":"skiff-runtime-config-snapshot-v1:snapshot-1"/);
 
   const pm2Calls = calls.filter((call) => call.op === 'ssh' && call.command.includes('pm2'));
   assert.equal(pm2Calls.length, 3);
@@ -47,7 +39,6 @@ test('init authors empty assembly + profile snapshot + std records and seeds Mon
   assert.match(pm2Calls[2].command, /pm2 save/);
 
   assert.equal(result.profile, 'prod');
-  assert.equal(result.generation, 0);
   assert.equal(result.configSnapshotId, 'skiff-runtime-config-snapshot-v1:snapshot-1');
 });
 
@@ -71,48 +62,6 @@ test('init fails closed when the actor routing projection record is missing', as
     /records\/actor-routing\/current\.json/,
   );
   assert.equal(calls.filter((call) => call.op === 'ssh').length, 0);
-});
-
-test('init refuses local mode before authoring while the router is still running', async (t) => {
-  const { configDir, authoring, authoringState } = await initFixture(t, {
-    mode: 'local',
-  });
-  const fetchImpl = async () => ({ ok: true, status: 200 });
-  await assert.rejects(
-    initStack({ configDir, skiffRoot, authoring, fetchImpl }),
-    (error) => (
-      /router is still running/.test(error.message)
-      && /skiff instance down --runtime/.test(error.message)
-    ),
-  );
-  assert.equal(authoringState.assemblyCall, undefined);
-});
-
-test('router-stopped probe derives the health URL and tolerates a refused connection', async () => {
-  const probed = [];
-  const fetchImpl = async (url, options) => {
-    probed.push({ url, options });
-    throw new Error('connect ECONNREFUSED 127.0.0.1:4101');
-  };
-  await assertLocalRouterStopped({
-    fetchImpl,
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    runtime: 'build/runtime-stack',
-  });
-  assert.equal(probed.length, 1);
-  assert.equal(probed[0].url, 'http://router.test:4101/__router/health');
-  assert.ok(probed[0].options.signal instanceof AbortSignal);
-});
-
-test('router-stopped probe fails closed when the router answers with an HTTP error status', async () => {
-  await assert.rejects(
-    assertLocalRouterStopped({
-      fetchImpl: async () => ({ ok: false, status: 500 }),
-      activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-      runtime: 'build/runtime-stack',
-    }),
-    /router is still running/,
-  );
 });
 
 async function initFixture(t, {
@@ -168,7 +117,6 @@ async function initFixture(t, {
       'schemaVersion: skiff-instance-v1',
       'profile: prod',
       `artifactRoot: ${JSON.stringify(join(root, 'artifacts'))}`,
-      'activationUrl: http://router.test:4101/__skiff/activate-assembly',
       '',
     ].join('\n'));
   }

@@ -25,18 +25,15 @@ import {
   assertOwnershipTier,
   liveInvocationRecords,
 } from './verify-live-registry.mjs';
-import { maxExpectedAssemblyGeneration } from './package-service-authoring.mjs';
 
 const DISCOVERY_HANDLERS = Object.freeze({
   [LIVE_DISCOVERIES.RUNTIME_LIVE_TESTS]: discoverRuntimeLiveTests,
 });
 
 export async function liveSelectorTasks(root, selector, {
-  runtimeLiveActivationUrl,
   runtimeLiveIngressUrl,
   runtimeLiveArtifactRoot,
   runtimeLiveProfile,
-  runtimeLiveExpectedGeneration,
   loopRiskConfig,
   env = process.env,
   registry = LIVE_REGISTRY,
@@ -53,11 +50,9 @@ export async function liveSelectorTasks(root, selector, {
   assertSelectedSourceExists(root, entry);
 
   const inputState = resolveRequiredInputs(invocation, {
-    runtimeLiveActivationUrl,
     runtimeLiveIngressUrl,
     runtimeLiveArtifactRoot,
     runtimeLiveProfile,
-    runtimeLiveExpectedGeneration,
     loopRiskConfig,
   }, env);
   const loopRiskState = invocation.configProfile !== undefined
@@ -180,17 +175,6 @@ async function inspectRuntimeFixtureState(root, entry, values) {
     }
   }
 
-  let activationUrl;
-  if (values.runtimeActivationUrl !== undefined) {
-    try {
-      activationUrl = canonicalRuntimeUrl(
-        values.runtimeActivationUrl,
-        '/__skiff/activate-assembly',
-      );
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : String(error));
-    }
-  }
   let ingressUrl;
   if (values.runtimeIngressUrl !== undefined) {
     try {
@@ -202,27 +186,14 @@ async function inspectRuntimeFixtureState(root, entry, values) {
   if (values.runtimeProfile !== undefined && !/^[A-Za-z0-9._-]{1,200}$/.test(values.runtimeProfile)) {
     failures.push('runtime-live profile must be a canonical ASCII token');
   }
-  let expectedGenerations;
-  if (values.runtimeExpectedGeneration !== undefined) {
-    try {
-      expectedGenerations = runtimeExpectedGenerations(
-        values.runtimeExpectedGeneration,
-        fixtures.length,
-      );
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : String(error));
-    }
-  }
 
   if (failures.length > 0) {
     throw new Error(failures.join('; '));
   }
   return {
     artifactRoot,
-    activationUrl,
     ingressUrl,
     profile: values.runtimeProfile,
-    expectedGenerations,
     fixtures,
     sourceRoot,
   };
@@ -231,10 +202,8 @@ async function inspectRuntimeFixtureState(root, entry, values) {
 function runtimeFixtureTasks(root, invocation, runtimeState, env) {
   const {
     artifactRoot,
-    activationUrl,
     ingressUrl,
     profile,
-    expectedGenerations,
     fixtures,
     sourceRoot,
   } = runtimeState;
@@ -259,7 +228,6 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
       );
     }
     try {
-      canonicalRuntimeUrl(activationUrl, '/__skiff/activate-assembly');
       canonicalRuntimeUrl(ingressUrl, '/');
     } catch (error) {
       failures.push(
@@ -272,7 +240,7 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
     return failures.length === 0 ? undefined : failures;
   };
 
-  return fixtures.map(({ file }, index) => {
+  return fixtures.map(({ file }) => {
     const args = [
       'run',
       '--manifest-path',
@@ -283,14 +251,10 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
       '--artifact-root',
       artifactRoot,
       ...runtimeLivePlatformSourceArgs(root),
-      '--activation-url',
-      activationUrl,
       '--ingress-url',
       ingressUrl,
       '--profile',
       profile,
-      '--expected-generation',
-      expectedGenerations[index],
       ...(invocation.canonicalPolicy.forbidSkips ? ['--deny-skips'] : []),
       ...(invocation.canonicalPolicy.forbidUnchecked ? ['--require-tests'] : []),
     ];
@@ -301,24 +265,6 @@ function runtimeFixtureTasks(root, invocation, runtimeState, env) {
       executionPreflight,
     });
   });
-}
-
-function runtimeExpectedGenerations(initialValue, fixtureCount) {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(initialValue)) {
-    throw new Error('runtime-live expected generation must be a non-negative integer');
-  }
-  const initial = BigInt(initialValue);
-  const maximum = BigInt(maxExpectedAssemblyGeneration);
-  const last = initial + BigInt(Math.max(0, fixtureCount - 1));
-  if (initial > maximum || last > maximum) {
-    throw new Error(
-      `runtime-live expected generation sequence ending at ${last} must not exceed ${maximum}`,
-    );
-  }
-  return Array.from(
-    { length: fixtureCount },
-    (_, index) => (initial + BigInt(index)).toString(),
-  );
 }
 
 export function runtimeLivePlatformSourceArgs(skiffRoot) {

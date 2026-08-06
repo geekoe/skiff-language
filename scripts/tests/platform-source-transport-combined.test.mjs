@@ -75,10 +75,8 @@ test('package and test transports share the platform root while assembly stays f
         join(skiffRoot, 'runtime', 'live-tests', 'internal', 'operation.live.test.skiff'),
         '--artifact-root', artifactRoot,
         '--live',
-        '--activation-url', 'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url', 'http://router.test:4100',
         '--profile', 'combined-transport',
-        '--expected-generation', '0',
       ], {
         cwd: tempRoot,
         env: process.env,
@@ -156,11 +154,8 @@ test('package and test transports share the platform root while assembly stays f
             `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
           baseConfigSnapshot:
             `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`,
-          activationUrl:
-            'http://router.test:4101/__skiff/activate-assembly',
           ingressUrl: 'http://router.test:4100',
           profile: 'dev',
-          expectedGeneration: 0,
         }),
       },
     ];
@@ -182,6 +177,11 @@ test('package and test transports share the platform root while assembly stays f
       {
         id: 'actor-test-effect-capability',
         root: 'test-runner/fixtures/actor-full-chain-acceptance',
+      },
+      {
+        id: 'spread-db-attach',
+        root: 'test-runner/fixtures/spread-db-attach-tests',
+        subjectRoot: 'test-runner/fixtures/spread-db-attach',
       },
     ]);
 

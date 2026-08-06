@@ -3,8 +3,8 @@
 // Rust-only).
 //
 // Real HTTP → Router → Runtime unary + stream through the Rust `skiff-router`
-// binary phases: the same devHome/router.yml and the same committed activation
-// tuple, a test-only WS relay that records every frame, and the full E-http
+// binary phases: the same devHome/router.yml and the same release pointer
+// table, a test-only WS relay that records every frame, and the full E-http
 // surface: trusted selectors, service-scoped ingress, typed/raw opaque
 // payloads, unary/stream mapping and sequencing, cumulative response ceiling,
 // backpressure, disconnect/cancel/deadline, CORS preflight/service-managed
@@ -22,19 +22,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
 import {
   HTTP_LIVE_PROFILE,
-  HTTP_LIVE_GENERATION,
   HTTP_LIVE_REPLICA_ID,
   HTTP_LIVE_SERVICE_ID,
   HTTP_LIVE_VERSION,
   authorHttpLiveArtifact,
   httpLiveMongoUrl,
-  seedHttpLiveCommittedState,
+  seedHttpLiveReleasePointers,
   writeHttpLiveServiceSource,
 } from './lib/http_live_fixture.mjs';
 import {
@@ -113,17 +112,15 @@ try {
   }
 
   console.log('router-live:http: starting isolated Mongo replica set');
-  mongoHarness = await ActivationStateMongoHarness.create({ repoRoot });
+  mongoHarness = await MongodLiveHarness.create({ repoRoot });
   await mongoHarness.start();
 
   const mongoUrl = httpLiveMongoUrl(mongoHarness.port);
-  console.log('router-live:http: seeding committed activation state (Rust namespace)');
-  const committed = await seedHttpLiveCommittedState({
-    mongoUrl,
+  console.log('router-live:http: seeding the release pointer table');
+  await seedHttpLiveReleasePointers({
+    artifactRoot,
     profile: HTTP_LIVE_PROFILE,
-    generation: HTTP_LIVE_GENERATION,
-    assemblyIdentity: identities.assemblyIdentity,
-    configSnapshotId: identities.configSnapshotId,
+    deployment: identities.deploymentRef,
   });
 
   const targetDir = cargoTargetDir(repoRoot);
@@ -175,8 +172,8 @@ try {
   // Router exits, the relay's downstream socket would otherwise stay open
   // forever (the relay only detaches, it does not close the peer), so the
   // Runtime is stopped inside the phase before the relay closes. The Runtime
-  // reuses the same runtime-home/replica id and re-seeds the exact committed
-  // tuple on every phase.
+  // reuses the same runtime-home/replica id and the same release pointer
+  // table on every phase.
   await installHttpLiveRustBinary({ sourceBinary: routerSourceBinary, devHome });
   await runRouterPhase({
     phase: 'rust',
@@ -193,7 +190,7 @@ try {
   // Backpressure is untriggerable under the strict 4096-byte response
   // ceiling used by the ceiling cases (the Runtime rejects the burst before
   // the HTTP writer can stall), so it runs in its own Rust-only phase with a
-  // 16 MiB ceiling over the same artifact and committed tuple.
+  // 16 MiB ceiling over the same artifact and release pointer table.
   const backpressureConfigPath = join(devHome, 'router-backpressure.yml');
   await writeHttpLiveRouterConfig(
     backpressureConfigPath,

@@ -19,11 +19,6 @@ export const LIVE_DISCOVERIES = Object.freeze({
 });
 
 export const LIVE_INPUTS = deepFreeze({
-  runtimeActivationUrl: {
-    option: 'runtimeLiveActivationUrl',
-    environment: 'SKIFF_RUNTIME_LIVE_ACTIVATION_URL',
-    description: 'assembly activation URL (SKIFF_RUNTIME_LIVE_ACTIVATION_URL or --runtime-live-activation-url <url>)',
-  },
   runtimeIngressUrl: {
     option: 'runtimeLiveIngressUrl',
     environment: 'SKIFF_RUNTIME_LIVE_INGRESS_URL',
@@ -38,12 +33,7 @@ export const LIVE_INPUTS = deepFreeze({
   runtimeProfile: {
     option: 'runtimeLiveProfile',
     environment: 'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
-    description: 'activation profile (SKIFF_RUNTIME_LIVE_ENVIRONMENT or --runtime-live-profile <id>)',
-  },
-  runtimeExpectedGeneration: {
-    option: 'runtimeLiveExpectedGeneration',
-    environment: 'SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION',
-    description: 'expected generation (SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION or --runtime-live-expected-generation <n>)',
+    description: 'profile (SKIFF_RUNTIME_LIVE_ENVIRONMENT or --runtime-live-profile <id>)',
   },
   loopRiskConfig: {
     option: 'loopRiskConfig',
@@ -64,17 +54,15 @@ export const LIVE_REGISTRY = deepFreeze([
       {
         selector: 'runtime-live',
         description:
-          'explicit live fixtures; requires canonical activation, ingress, artifact, profile, and generation targets',
+          'explicit live fixtures; requires canonical ingress, artifact, and profile targets',
         plan: LIVE_PLAN_TYPES.RUNTIME_FIXTURES,
         idPrefix: 'live:runtime:',
         ownership: LIVE_OWNERSHIP.EXTERNAL,
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [
-          'runtimeActivationUrl',
           'runtimeIngressUrl',
           'runtimeArtifactRoot',
           'runtimeProfile',
-          'runtimeExpectedGeneration',
         ],
         requiredExecutables: ['cargo', 'node'],
         requiredModules: [],
@@ -175,32 +163,6 @@ export const LIVE_REGISTRY = deepFreeze([
           'real production Router composition + real Rust Runtime process: fake ingress through the production HttpDispatchPort -> epoch capture -> exact candidate -> permit -> revalidate -> enqueue -> terminal; missing/invalid selector, wrong deployment/entry, duplicate id, timeout, disconnect and selection/replacement races fail closed with exact pending/permit zeroing (managed CI, isolated instance + explicit Rust process)',
         plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
         id: 'live:router-rust-dispatch',
-        args: [],
-        ownership: LIVE_OWNERSHIP.MANAGED,
-        tier: LIVE_TIERS.LIVE_MANUAL,
-        requiredInputs: [],
-        requiredExecutables: ['node', 'cargo', 'mongod', 'mongosh'],
-        requiredModules: [],
-        canonicalPolicy: {
-          forbidSkips: false,
-          forbidUnchecked: true,
-        },
-      },
-    ],
-  },
-  {
-    key: 'router-rust-activation-full-chain-live',
-    source: {
-      type: 'script',
-      path: 'scripts/check-router-activation-live.mjs',
-    },
-    invocations: [
-      {
-        selector: 'router-live:activation-full-chain',
-        description:
-          'real Router + temporary Mongo replica set + real compiler artifact + real Runtime: activate HTTP -> durable prepare -> real Runtime prepared -> durable commit -> epoch swap -> Runtime commit -> same-session re-register -> new-generation HTTP request; old captured-epoch request under its original lease; pre-decision disconnect abort / post-decision durable reconcile; cold recovery committed-first + rebind + candidate-load failure durable abort; audit/CAS/retry non-duplication (managed CI, isolated instance + explicit Rust processes)',
-        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
-        id: 'live:router-rust-activation-full-chain',
         args: [],
         ownership: LIVE_OWNERSHIP.MANAGED,
         tier: LIVE_TIERS.LIVE_MANUAL,

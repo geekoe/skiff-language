@@ -84,7 +84,6 @@ export function encryptedStorageLiveInstanceYml({
     `pidDir: ${JSON.stringify(pidDir)}`,
     `logDir: ${JSON.stringify(logDir)}`,
     `mongoDbPath: ${JSON.stringify(join(devHome, 'mongo-data'))}`,
-    `activationUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__skiff/activate-assembly`)}`,
     'processes:',
     '  - name: mongo',
     '    command: mongod',

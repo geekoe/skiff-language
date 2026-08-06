@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // `skiff watch` — local-only dev watch.
 //
-// Reads the generated instance.yml (profile, artifactRoot, activationUrl,
-// compilerBinary) plus its own watch directory (watch.yml + watch.json roots).
+// Reads the generated instance.yml (profile, artifactRoot, compilerBinary)
+// plus its own watch directory (watch.yml + watch.json roots).
 // `--once` performs a single sync; the default mode watches the roots and
 // re-syncs on changes. It replaces the old `skiff dev sync` / `skiff dev watch`.
 
@@ -48,7 +48,6 @@ async function main(rawArgs) {
       roots,
       profile: runtimeSpec.profile,
       artifactRoot: runtimeSpec.artifactRoot,
-      activationUrl: runtimeSpec.activationUrl,
       buildOnly: watchConfig.buildOnly,
       skiffRoot,
       compilerRunner,
@@ -61,8 +60,6 @@ async function main(rawArgs) {
     roots: [],
     profile: runtimeSpec.profile,
     artifactRoot: runtimeSpec.artifactRoot,
-    activationUrl: runtimeSpec.activationUrl,
-    activationId: undefined,
     buildOnly: watchConfig.buildOnly,
     pollIntervalMs: watchConfig.pollIntervalMs,
     json: args.json,
@@ -125,10 +122,9 @@ async function loadRuntimeSpec(runtimeDir) {
     spec.schemaVersion !== 'skiff-instance-v1'
     || typeof spec.profile !== 'string'
     || typeof spec.artifactRoot !== 'string'
-    || typeof spec.activationUrl !== 'string'
     || typeof spec.compilerBinary !== 'string'
   ) {
-    throw new Error('instance.yml must declare schemaVersion, profile, artifactRoot, activationUrl, and compilerBinary');
+    throw new Error('instance.yml must declare schemaVersion, profile, artifactRoot, and compilerBinary');
   }
   return spec;
 }

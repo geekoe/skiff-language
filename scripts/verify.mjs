@@ -28,11 +28,9 @@ try {
     const plan = await buildVerifyPlan({
       root,
       selectors: options.selectors,
-      runtimeLiveActivationUrl: options.runtimeLiveActivationUrl,
       runtimeLiveIngressUrl: options.runtimeLiveIngressUrl,
       runtimeLiveArtifactRoot: options.runtimeLiveArtifactRoot,
       runtimeLiveProfile: options.runtimeLiveProfile,
-      runtimeLiveExpectedGeneration: options.runtimeLiveExpectedGeneration,
       loopRiskConfig: options.loopRiskConfig,
     });
     if (options.list) {

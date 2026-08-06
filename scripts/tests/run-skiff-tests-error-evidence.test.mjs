@@ -33,7 +33,7 @@ test('plain entry Error preserves the original one-line diagnostic and exits 1',
 test('entry appends valid isolated evidence immediately after the Error message', async () => {
   await withEntryHarness(async (runEntry) => {
     const result = runEntry({
-      message: 'candidate activation failed',
+      message: 'source-test child failed',
       evidence: {
         schemaVersion: ISOLATED_RUNTIME_LOG_EVIDENCE_SCHEMA_VERSION,
         logs: [
@@ -53,7 +53,7 @@ test('entry appends valid isolated evidence immediately after the Error message'
     assert.equal(
       result.stderr,
       [
-        'error: candidate activation failed',
+        'error: source-test child failed',
         '[isolated runtime stderr]',
         'whole-assembly candidate link failed: exact cause',
         '',

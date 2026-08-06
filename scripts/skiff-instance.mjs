@@ -18,8 +18,8 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
 const DEFAULT_RUNTIME_DIR = join(skiffRoot, 'build', 'runtime-stack');
 // Startup gates and router readiness can legitimately take as long as the
-// isolated harness's 120s bootstrap budget (Mongo primary election, activation
-// seed, assembly prepare). A fixed 30s gate made isolated `skiff test` time
+// isolated harness's 120s bootstrap budget (Mongo primary election, bootstrap
+// seed, runtime lazy load). A fixed 30s gate made isolated `skiff test` time
 // out while the harness was still waiting on a healthy instance.
 const STARTUP_TIMEOUT_MS = 120_000;
 

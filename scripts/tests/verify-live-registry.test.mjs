@@ -46,7 +46,6 @@ test('live registry is the single declaration for current selectors, policies, a
     'router-live:bootstrap',
     'router-live:session',
     'router-live:dispatch',
-    'router-live:activation-full-chain',
     'router-live:ws',
     'router-live:actor',
     'durable-task-e2e-live',
@@ -69,11 +68,9 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.equal(runtime.value.ownership, LIVE_OWNERSHIP.EXTERNAL);
   assert.equal(runtime.value.tier, LIVE_TIERS.LIVE_MANUAL);
   assert.deepEqual(runtime.value.requiredInputs, [
-    'runtimeActivationUrl',
     'runtimeIngressUrl',
     'runtimeArtifactRoot',
     'runtimeProfile',
-    'runtimeExpectedGeneration',
   ]);
   assert.deepEqual(runtime.value.requiredExecutables, ['cargo', 'node']);
   assert.deepEqual(runtime.value.canonicalPolicy, {
@@ -549,21 +546,15 @@ test('runtime structural and provided-input errors are never hidden by missing i
       },
       {
         input: {
-          runtimeLiveActivationUrl: 'https://router.test:4101/secret?token=hidden',
+          runtimeLiveIngressUrl: 'https://router.test:4100/private',
         },
-        expected: /must point exactly to \/__skiff\/activate-assembly/,
+        expected: /must point exactly to \//,
       },
       {
         input: {
           runtimeLiveProfile: 'not canonical/profile',
         },
         expected: /profile must be a canonical ASCII token/,
-      },
-      {
-        input: {
-          runtimeLiveExpectedGeneration: '-1',
-        },
-        expected: /expected generation must be a non-negative integer/,
       },
     ];
     for (const { input, expected } of cases) {
@@ -698,20 +689,17 @@ test('actual canonical runtime discovery composes with the managed live task', a
     const options = {
       root,
       selectors: ['runtime-live', 'db-encrypted-storage-live'],
-      runtimeLiveActivationUrl:
-        'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
       runtimeLiveProfile: 'runtime-live',
-      runtimeLiveExpectedGeneration: '0',
       env: { PATH: bin },
     };
     const plan = await buildVerifyPlan(options);
     assert.equal(plan.tasks.length, 5);
     assert.deepEqual(
       plan.tasks.filter((task) => task.id.startsWith('live:runtime:'))
-        .map((task) => task.args[task.args.indexOf('--expected-generation') + 1]),
-      ['0', '1', '2', '3'],
+        .map((task) => task.args.includes('--expected-generation')),
+      [false, false, false, false],
     );
     assert.equal(
       plan.tasks.filter((task) => task.id === 'live:db-encrypted-storage').length,
@@ -989,12 +977,9 @@ async function runtimeFixture(prefix) {
   return {
     root: fixtureRoot,
     inputs: {
-      runtimeLiveActivationUrl:
-        'http://router.test:4101/__skiff/activate-assembly',
       runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
       runtimeLiveProfile: 'runtime-live',
-      runtimeLiveExpectedGeneration: '0',
     },
   };
 }

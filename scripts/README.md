@@ -38,17 +38,16 @@ and independently publish a RuntimeConfigSnapshot from `config.yml`,
 `config.<profile>.yml`, and ignored `config.<profile>.secret.yml`. The three
 config files have canonical Package IDs at their root; they are not copied into
 code artifacts or deployment identity. A config-only watch change reuses the
-exact code assembly, publishes a new opaque snapshot, and commits a new
-activation generation carrying both references. For the main worktree instance
-the artifact root is `.stack/dev-home/artifacts`, and snapshots are
-stored securely below its `runtime-config/` directory. `skiff check <root>` runs
-compile validation without syncing local instance artifacts or activating a
-new assembly. `skiff dev sync` / `skiff dev watch` publish a new active
-assembly through the canonical control endpoint
-`http://127.0.0.1:4001/__skiff/activate-assembly`; override with
-`--artifact-root` and `--activation-url` only for explicit non-standard
-service-dev profiles. The retired `/__skiff/reload-artifacts` control
-endpoint is not part of the current contract.
+exact code assembly and publishes a fresh opaque snapshot. For the main
+worktree instance the artifact root is `.stack/dev-home/artifacts`, and
+snapshots are stored securely below its `runtime-config/` directory.
+`skiff check <root>` runs compile validation without syncing local instance
+artifacts. `skiff dev sync` / `skiff dev watch` publish packages, contracts and
+deployments through the compiler; publish already writes the release pointer
+table in the same transaction, so a successful sync is immediately effective
+and needs no separate activation step. `--artifact-root` is the only explicit
+non-standard service-dev override. The retired `/__skiff/reload-artifacts`
+control endpoint is not part of the current contract.
 
 Non-instance service-dev commands default to the main Skiff worktree's
 `.stack/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and
@@ -70,7 +69,7 @@ launchctl print gui/$(id -u)/run.skiff.instance.stable
 Local dev service DB and telemetry storage default to `mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false`.
 Port `27017` is the shared local MongoDB replica set for Skiff dev; other
 worktree instances leave MongoDB disabled and reuse that endpoint.
-`router.yml` forwards that URL to service activations as `serviceDb.mongoUrl`;
+`router.yml` forwards that URL to the Runtime as `serviceDb.mongoUrl`;
 `telemetry.yml` uses the same MongoDB endpoint with database `skiff`.
 
 The default local router config includes same-port rewrite rules on
@@ -145,9 +144,9 @@ managed watch reloads it on every poll, so add, remove, and profile changes
 do not require restarting the watch process. Registry entries persist their
 root role and service ID; removing a root still works after its directory has
 already been deleted. A malformed or temporarily missing registry keeps the
-last-known-good activation and retries—it is never interpreted as an empty
-registry. Explicitly removing the final valid service instead commits a
-canonical empty assembly/config-snapshot pair and withdraws the previous dev
+last-known-good sync result and retries—it is never interpreted as an empty
+registry. Explicitly removing the final valid service instead converges watch
+to one exact empty assembly/config-snapshot pair and withdraws the previous dev
 services.
 
 The registry is also the exact source-watch boundary. Register every service
@@ -158,12 +157,13 @@ service manifest. `packageDirs` and package-store contents are dependency
 resolution inputs, not additional watch roots. `registry list` prints the
 complete watched set so omissions can be checked before development.
 
-Before its first activation, managed watch reads the Router's exact committed
-profile/generation from `/__router/health`; it never assumes generation
-zero. Activation remains a CAS. On a conflict the watch rereads health, treats
-an already-committed exact target pair as success, and otherwise retries only
-from an observed newer generation. Build, snapshot publication, and activation
-must all succeed before the input fingerprint is marked successful. Transient
+Publish is effective immediately: the authoring transaction writes the release
+pointer table `(profile, serviceId, version) -> buildId` together with the
+deployment record, so a successful sync needs no separate activation step and
+idempotent republish is the retry strategy. A sync failure after the publish
+phase retains the build state so watch retries reuse it instead of republishing
+every root. Build, snapshot publication, and pointer write must all succeed
+before the input fingerprint is marked successful. Transient
 failures retry after 1, 2, 4, 8, 16, and at most 30 seconds; a new input
 fingerprint replaces the pending retry immediately.
 
@@ -367,13 +367,12 @@ node scripts/package-live-test.mjs
 ## Canonical Package Live Tests
 
 An explicitly selected Skiff stack must already be running with a connected runtime. The command
-must name that stack's canonical activation endpoint, ingress origin, existing artifact root,
-profile, and expected generation. The runner never defaults to the stable instance; non-live
-execution never writes its external input artifact root. The selected `.test.skiff` file must belong
-to a canonical package root containing `package.yml`. Tests that require existing services must
-select that exact runtime assembly with `--base-assembly`; its business config is selected
-independently with the matching `--base-config-snapshot`. Canonical/manual gating should pass
-`--deny-skips` and `--require-tests`.
+must name that stack's ingress origin, existing artifact root, and profile. The runner never
+defaults to the stable instance; non-live execution never writes its external input artifact root.
+The selected `.test.skiff` file must belong to a canonical package root containing `package.yml`.
+Tests that require existing services must select that exact runtime assembly with
+`--base-assembly`; its business config is selected independently with the matching
+`--base-config-snapshot`. Canonical/manual gating should pass `--deny-skips` and `--require-tests`.
 
 ```bash
 cd skiff-language
@@ -383,10 +382,8 @@ node scripts/skiff.mjs test \
   --artifact-root /path/to/that-instance/artifacts \
   --base-assembly '<assembly-identity>' \
   --base-config-snapshot '<config-snapshot-identity>' \
-  --activation-url 'http://127.0.0.1:<control-port>/__skiff/activate-assembly' \
   --ingress-url 'http://127.0.0.1:<ingress-port>' \
   --profile '<profile>' \
-  --expected-generation '<generation>' \
   --deny-skips \
   --require-tests
 ```
@@ -406,7 +403,7 @@ node scripts/skiff.mjs test ../service-tests \
 reused incrementally via its sidecar digest; a missing or empty store triggers
 a hermetic full rebuild), `--fresh` forces a full rebuild, `--plan` prints the
 plan without publishing, compiling, or running, and `--max-cases <n>` caps
-cases per activation, passed to each shard process as
+cases per shard, passed to each shard process as
 `SKIFF_TEST_MAX_CASES_PER_ACTIVATION`.
 
 ## WebSocket Fixture Browser/WebSocket Smoke

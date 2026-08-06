@@ -19,7 +19,6 @@ import {
   objectUsage,
   parseObjectArgs,
   renderAuthoringResult,
-  requestAssemblyActivation,
   runConfigSnapshotAuthoring,
   runCompilerAuthoring,
 } from '../lib/package-service-authoring.mjs';
@@ -215,53 +214,6 @@ test('assembly authoring accepts empty roots and rejects duplicate, malformed, a
     rootDeployments: [],
   });
   assert.equal(emptyInvocation.args.includes('--root-deployment'), false);
-});
-
-test('assembly activation requires and parses an exact config snapshot reference', () => {
-  const snapshot = {
-    snapshotId: `skiff-runtime-config-snapshot-v1:${'7'.repeat(32)}`,
-  };
-  const parsed = parseObjectArgs('assembly', 'activate', [
-    '--artifact-root',
-    '/tmp/artifacts',
-    '--profile',
-    'dev',
-    '--root-deployment',
-    JSON.stringify(rootDeployment),
-    '--config-snapshot',
-    JSON.stringify(snapshot),
-    '--expected-generation',
-    '4',
-  ]);
-  assert.deepEqual(parsed.configSnapshot, snapshot);
-  assert.throws(
-    () => parseObjectArgs('assembly', 'activate', [
-      '--artifact-root',
-      '/tmp/artifacts',
-      '--profile',
-      'dev',
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-      '--expected-generation',
-      '4',
-    ]),
-    /requires --config-snapshot/,
-  );
-  assert.throws(
-    () => parseObjectArgs('assembly', 'activate', [
-      '--artifact-root',
-      '/tmp/artifacts',
-      '--profile',
-      'dev',
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-      '--config-snapshot',
-      JSON.stringify({ snapshotId: 'content-hash-is-not-opaque' }),
-      '--expected-generation',
-      '4',
-    ]),
-    /exact RuntimeConfigSnapshotRef/,
-  );
 });
 
 test('config snapshot production requires an explicit canonical profile', async () => {
@@ -521,75 +473,26 @@ test('duplicate dependency aliases and retired options are rejected without comp
     () => parseObjectArgs('package', 'build', [packageRoot, '--artifact-root', join(temp, 'artifacts'), '--service-artifact-root', temp]),
     /unknown option --service-artifact-root/,
   );
-});
-
-test('activation request construction rejects values outside the frozen T01 wire boundary', async () => {
-  const base = {
-    activationId: 'activation-1',
-    expectedGeneration: 0,
-    profile: 'dev',
-    assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
-    },
-    configSnapshot: {
-      snapshotId: `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`,
-    },
-  };
-  let requests = 0;
-  const fetchImpl = async () => {
-    requests += 1;
-    return new Response('{}');
-  };
-  for (const override of [
-    { expectedGeneration: -0 },
-    { expectedGeneration: Number.MAX_SAFE_INTEGER },
-    { activationId: 'not visible ascii space' },
-    { profile: 'x'.repeat(201) },
-    { assembly: { ...base.assembly, buildId: 'legacy' } },
-    { configSnapshot: { ...base.configSnapshot, latest: true } },
-    {
-      assembly: {
-        assemblyIdentity:
-          `skiff-runtime-assembly-v2:sha256:${'1'.repeat(64)}`,
-      },
-    },
-  ]) {
-    await assert.rejects(
-      requestAssemblyActivation({ ...base, ...override, fetchImpl }),
-      /activation|RuntimeAssembly/,
-    );
-  }
-  assert.equal(requests, 0);
-});
-
-test('activation request transports its AbortSignal and preserves the abort reason', async () => {
-  const controller = new AbortController();
-  const primaryError = new Error('isolated smoke lifecycle expired');
-  let observedSignal;
-  const activation = requestAssemblyActivation({
-    activationId: 'activation-signal',
-    expectedGeneration: 0,
-    profile: 'dev',
-    assembly: {
-      assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`,
-    },
-    configSnapshot: {
-      snapshotId: `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`,
-    },
-    signal: controller.signal,
-    fetchImpl: async (_url, options) => {
-      observedSignal = options.signal;
-      return new Promise((_resolve, reject) => {
-        options.signal.addEventListener(
-          'abort',
-          () => reject(options.signal.reason),
-          { once: true },
-        );
-      });
-    },
-  });
-  controller.abort(primaryError);
-
-  await assert.rejects(activation, (error) => error === primaryError);
-  assert.equal(observedSignal, controller.signal);
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--profile',
+      'dev',
+      '--expected-generation',
+      '0',
+    ]),
+    /unknown option --expected-generation/,
+  );
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--profile',
+      'dev',
+      '--activation-url',
+      'http://router.test:4101/__skiff/activate-assembly',
+    ]),
+    /unknown option --activation-url/,
+  );
 });

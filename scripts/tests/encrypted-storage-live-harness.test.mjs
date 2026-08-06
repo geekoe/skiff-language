@@ -22,6 +22,22 @@ const productionTuple = {
   assemblyIdentity: productionAssembly,
   configSnapshotId: productionConfigSnapshot,
 };
+const productionDeployments = [
+  {
+    serviceId: 'example.com/encrypted-live-default',
+    contractVersion: '0.1.0',
+    deploymentRevision: 'revision-1',
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v4:sha256:${'1'.repeat(64)}`,
+  },
+  {
+    serviceId: 'example.com/encrypted-live-mapped',
+    contractVersion: '0.1.0',
+    deploymentRevision: 'revision-1',
+    deploymentArtifactIdentity:
+      `skiff-deployment-artifact-v4:sha256:${'2'.repeat(64)}`,
+  },
+];
 const ownerFiles = [
   'encrypted-storage-live-contract.mjs',
   'encrypted-storage-live-mongo-probe.mjs',
@@ -83,20 +99,20 @@ test('encrypted-storage harness keeps its exact public surface', () => {
       'observeTransientEncryptedStorage',
       'rawDocument',
       'rawDocuments',
-      'readCommittedGeneration',
       'readKeyring',
       'readLogs',
       'replaceRawDocument',
       'request',
       'requireRetirementGate',
       'restartRuntime',
-      'restoreProductionAssembly',
+      'restoreProductionDeployments',
       'runLiveTestRunner',
       'runSkiff',
       'runtimeLogs',
       'setRawFields',
       'stopOwnedProcessGroups',
       'writeKeyring',
+      'writeRunnableConfigs',
     ],
   );
   const instance = new EncryptedStorageLiveHarness(
@@ -104,8 +120,6 @@ test('encrypted-storage harness keeps its exact public surface', () => {
     { ports: { base: 45000, mongo: 45500 } },
   );
   assert.deepEqual(Object.keys(instance).sort(), [
-    'activationState',
-    'activationUrl',
     'cleaned',
     'cleanupFallbackGroups',
     'cleanupFallbackUsed',
@@ -117,6 +131,7 @@ test('encrypted-storage harness keeps its exact public surface', () => {
     'paths',
     'portLease',
     'ports',
+    'productionAssembly',
     'retirementGateActive',
     'routerHttpUrl',
   ]);
@@ -128,10 +143,8 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     artifactRoot: '/tmp/canonical-store',
     baseAssembly: productionAssembly,
     baseConfigSnapshot: productionConfigSnapshot,
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
     ingressUrl: 'http://ingress.test:4100',
     profile: 'dev',
-    expectedGeneration: 7,
   });
   assert.deepEqual(args, [
     'run',
@@ -152,14 +165,10 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     '--base-config-snapshot',
     productionConfigSnapshot,
     '--live',
-    '--activation-url',
-    'http://router.test:4101/__skiff/activate-assembly',
     '--ingress-url',
     'http://ingress.test:4100',
     '--profile',
     'dev',
-    '--expected-generation',
-    '7',
     '--deny-skips',
     '--require-tests',
   ]);
@@ -169,14 +178,12 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     '--platform-source-root',
     '--base-assembly',
     '--base-config-snapshot',
-    '--activation-url',
     '--ingress-url',
     '--profile',
-    '--expected-generation',
   ]) {
     assert.equal(args.filter((value) => value === singleton).length, 1, singleton);
   }
-  for (const legacy of ['--allow-network', '--config']) {
+  for (const legacy of ['--allow-network', '--config', '--activation-url', '--expected-generation']) {
     assert.equal(args.includes(legacy), false, legacy);
   }
 });
@@ -216,7 +223,7 @@ test('encrypted-storage build-only command owns all three canonical roots', () =
 test('encrypted-storage production assembly comes only from a complete real receipt', () => {
   assert.deepEqual(
     encryptedStorageProductionAssembly(completeBuildReceipt()),
-    productionTuple,
+    { ...productionTuple, deployments: productionDeployments },
   );
   for (const [label, mutate] of [
     ['runtime assembly receipt is missing', (receipt) => {
@@ -254,14 +261,13 @@ test('encrypted-storage production assembly comes only from a complete real rece
   }
 });
 
-test('successful test activation is followed by production restore in generation order', async () => {
-  const activationState = {
-    currentGeneration: 8,
-    productionAssembly: productionTuple,
-  };
+test('successful test run is followed by an unconditional idempotent production restore', async () => {
   const events = [];
   const result = await runEncryptedStorageTestLifecycle({
-    activationState,
+    productionAssembly: {
+      ...productionTuple,
+      deployments: productionDeployments,
+    },
     runTest: async (input) => {
       events.push(['test', input]);
     },
@@ -270,35 +276,33 @@ test('successful test activation is followed by production restore in generation
       events.push(['cleanup', storage.database]);
       return { ...storage, dropped: true };
     },
-    restoreProductionAssembly: async (input) => {
-      events.push(['restore', input]);
+    restoreProductionDeployments: async (assembly) => {
+      events.push(['restore', assembly]);
     },
   });
   assert.deepEqual(events, [
     ['test', {
       baseAssembly: productionAssembly,
       baseConfigSnapshot: productionConfigSnapshot,
-      expectedGeneration: 8,
     }],
     ['cleanup', 'transient'],
     ['restore', {
-      assembly: productionTuple,
-      expectedGeneration: 9,
+      assemblyIdentity: productionAssembly,
+      configSnapshotId: productionConfigSnapshot,
+      deployments: productionDeployments,
     }],
   ]);
-  assert.equal(activationState.currentGeneration, 10);
   assert.deepEqual(result.storage, { database: 'transient', dropped: true });
 });
 
 test('production restore still runs after post-test observation failure', async () => {
-  const activationState = {
-    currentGeneration: 2,
-    productionAssembly: productionTuple,
-  };
   const restored = [];
   await assert.rejects(
     runEncryptedStorageTestLifecycle({
-      activationState,
+      productionAssembly: {
+        ...productionTuple,
+        deployments: productionDeployments,
+      },
       runTest: async () => undefined,
       observeStorage: async () => {
         throw new Error('storage observation failed');
@@ -306,30 +310,27 @@ test('production restore still runs after post-test observation failure', async 
       cleanupStorage: async () => {
         throw new Error('cleanup must not run without storage');
       },
-      restoreProductionAssembly: async (input) => {
-        restored.push(input.expectedGeneration);
+      restoreProductionDeployments: async (assembly) => {
+        restored.push(assembly.assemblyIdentity);
       },
     }),
     /storage observation failed/,
   );
-  assert.deepEqual(restored, [3]);
-  assert.equal(activationState.currentGeneration, 4);
+  assert.deepEqual(restored, [productionAssembly]);
 });
 
-test('test and restore failures remain aggregated after generation is proven', async () => {
-  const activationState = {
-    currentGeneration: 12,
-    productionAssembly: productionTuple,
-  };
+test('test and restore failures remain aggregated without generation proof', async () => {
   const error = await runEncryptedStorageTestLifecycle({
-    activationState,
+    productionAssembly: {
+      ...productionTuple,
+      deployments: productionDeployments,
+    },
     runTest: async () => {
       throw new Error('test runner failed');
     },
     observeStorage: async () => ({ database: 'transient' }),
     cleanupStorage: async (storage) => storage,
-    readCommittedGeneration: async () => 13,
-    restoreProductionAssembly: async () => {
+    restoreProductionDeployments: async () => {
       throw new Error('production restore failed');
     },
   }).then(
@@ -340,7 +341,6 @@ test('test and restore failures remain aggregated after generation is proven', a
   assert.match(error.message, /test runner failed/);
   assert.match(error.message, /production restore failed/);
   assert.equal(error.errors.length, 2);
-  assert.equal(activationState.currentGeneration, 13);
 });
 
 test('direct ingress request uses only the manifest path and business headers', () => {
@@ -385,6 +385,9 @@ test('encrypted-storage production sources have no retired harness surface', asy
     '--default-packages-dir',
     '--no-reload',
     'reload-artifacts',
+    '--activation-url',
+    '--expected-generation',
+    'activation_state',
     'x-skiff-service',
     'x-skiff-version',
     'sk-live-test-runner-secret',
@@ -419,11 +422,19 @@ function completeBuildReceipt() {
       {
         deployment: {
           serviceId: 'example.com/encrypted-live-default',
+          contractVersion: '0.1.0',
+          deploymentRevision: 'revision-1',
+          deploymentArtifactIdentity:
+            `skiff-deployment-artifact-v4:sha256:${'1'.repeat(64)}`,
         },
       },
       {
         deployment: {
           serviceId: 'example.com/encrypted-live-mapped',
+          contractVersion: '0.1.0',
+          deploymentRevision: 'revision-1',
+          deploymentArtifactIdentity:
+            `skiff-deployment-artifact-v4:sha256:${'2'.repeat(64)}`,
         },
       },
     ],

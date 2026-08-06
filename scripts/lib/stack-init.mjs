@@ -7,27 +7,20 @@ import {
   runConfigSnapshotAuthoring,
   runStdSeedAuthoring,
 } from './package-service-authoring.mjs';
-import { captureCheckedCommand } from './command-execution.mjs';
 import {
   loadStackConfig,
   parseStackYaml,
-  posixShellQuote,
   requireRemoteStackConfig,
 } from './stack-config.mjs';
 import { renderEcosystemConfig } from './stack-deploy.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
-const ACTIVATION_STATE_SCHEMA_VERSION = 'skiff-profile-activation-state-v1';
-const ACTIVATION_STATE_DATABASE = 'skiff-router';
-const ACTIVATION_STATE_COLLECTION = 'activation_state';
-const ROUTER_HEALTH_PROBE_TIMEOUT_MS = 500;
 
 export async function initStack({
   configDir,
   skiffRoot,
   shell = createStackShell({ skiffRoot }),
-  fetchImpl = fetch,
   authoring = {
     runCompilerAuthoring,
     runConfigSnapshotAuthoring,
@@ -36,7 +29,7 @@ export async function initStack({
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
   if (stack.config.remote === undefined) {
-    return initLocalStack({ stack, skiffRoot, authoring, fetchImpl });
+    return initLocalStack({ stack, skiffRoot, authoring });
   }
   requireRemoteStackConfig(stack, 'stack init');
   const profile = stack.config.profile;
@@ -93,30 +86,6 @@ export async function initStack({
     await writeFile(ecosystemPath, renderEcosystemConfig({ remoteSkiff, nodeBin }));
     await shell.rsync(ecosystemPath, `${host}:${remoteSkiff}/ecosystem.config.cjs`);
 
-    const stateDocument = {
-      _id: profile,
-      revision: 0,
-      state: {
-        schemaVersion: ACTIVATION_STATE_SCHEMA_VERSION,
-        profile,
-        committed: {
-          generation: 0,
-          assembly: { assemblyIdentity },
-          configSnapshot: { snapshotId: configSnapshotId },
-        },
-        pending: null,
-      },
-    };
-    const evalScript = [
-      `db.getSiblingDB(${JSON.stringify(ACTIVATION_STATE_DATABASE)})`,
-      `.getCollection(${JSON.stringify(ACTIVATION_STATE_COLLECTION)})`,
-      `.insertOne(${JSON.stringify(stateDocument)});`,
-    ].join('');
-    await shell.remoteRun(
-      host,
-      `mongosh ${posixShellQuote(serviceDbMongoUrl)} --quiet --eval ${posixShellQuote(evalScript)}`,
-    );
-
     const pm2 = `PATH=${nodeBin}:$PATH pm2`;
     await shell.remoteRun(host, `cd ${remoteSkiff} && ${pm2} delete skiff-router || true`);
     await shell.remoteRun(
@@ -127,14 +96,12 @@ export async function initStack({
 
     return {
       profile,
-      generation: 0,
       assemblyIdentity,
       configSnapshotId,
       std: stdReceipt,
       actorRoutingProjection: ACTOR_ROUTING_PROJECTION_RECORD_PATH,
       remoteSkiff,
       artifacts: `${remoteSkiff}/artifacts`,
-      activationState: `${ACTIVATION_STATE_DATABASE}.${ACTIVATION_STATE_COLLECTION}`,
       ecosystem: `${remoteSkiff}/ecosystem.config.cjs`,
     };
   } finally {
@@ -146,7 +113,6 @@ async function initLocalStack({
   stack,
   skiffRoot,
   authoring,
-  fetchImpl,
 }) {
   const profile = stack.config.profile;
   const instanceFile = path.join(stack.paths.buildRoot, 'instance.yml');
@@ -161,13 +127,6 @@ async function initLocalStack({
   }
   if (instance.schemaVersion !== 'skiff-instance-v1' || instance.profile !== profile) {
     throw new Error('instance.yml must be skiff-instance-v1 with the configDir profile');
-  }
-  if (typeof instance.activationUrl === 'string') {
-    await assertLocalRouterStopped({
-      fetchImpl,
-      activationUrl: instance.activationUrl,
-      runtime: stack.paths.buildRoot,
-    });
   }
   const artifactRoot = instance.artifactRoot;
   const serviceDbMongoUrl = stack.router.serviceDb?.mongoUrl;
@@ -203,60 +162,11 @@ async function initLocalStack({
   await authoring.runStdSeedAuthoring({ skiffRoot, artifactRoot });
   await access(path.join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH));
 
-  const stateDocument = {
-    _id: profile,
-    revision: 0,
-    state: {
-      schemaVersion: ACTIVATION_STATE_SCHEMA_VERSION,
-      profile,
-      committed: {
-        generation: 0,
-        assembly: { assemblyIdentity },
-        configSnapshot: { snapshotId: configSnapshotId },
-      },
-      pending: null,
-    },
-  };
-  const evalScript = [
-    `db.getSiblingDB(${JSON.stringify(ACTIVATION_STATE_DATABASE)})`,
-    `.getCollection(${JSON.stringify(ACTIVATION_STATE_COLLECTION)})`,
-    `.replaceOne({_id: ${JSON.stringify(profile)}}, ${JSON.stringify(stateDocument)}, {upsert: true});`,
-  ].join('');
-  await captureLocalMongo(evalScript, serviceDbMongoUrl);
-
   return {
     profile,
-    generation: 0,
     assemblyIdentity,
     configSnapshotId,
     mode: 'local',
     artifactRoot,
   };
-}
-
-async function captureLocalMongo(evalScript, mongoUrl) {
-  await captureCheckedCommand(
-    'mongosh',
-    [mongoUrl, '--quiet', '--eval', evalScript],
-    { cwd: process.cwd() },
-  );
-}
-
-export async function assertLocalRouterStopped({
-  fetchImpl = fetch,
-  activationUrl,
-  runtime,
-}) {
-  const healthUrl = new URL('/__router/health', activationUrl).toString();
-  try {
-    await fetchImpl(healthUrl, {
-      method: 'GET',
-      signal: AbortSignal.timeout(ROUTER_HEALTH_PROBE_TIMEOUT_MS),
-    });
-  } catch {
-    return;
-  }
-  throw new Error(
-    `router is still running (health probe at ${healthUrl} responded); stack init resets the Mongo activation_state document to generation 0, which desyncs the running router epoch and breaks subsequent activations. Run "skiff instance down --runtime ${runtime}" first, then re-run stack init`,
-  );
 }

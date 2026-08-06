@@ -235,27 +235,26 @@ test('watch classifies root config changes separately from code and external man
   assert.deepEqual(kinds, ['config', 'config', 'code']);
 });
 
-test('a failing package batch never sends activation prepare', async () => {
+test('a failing package batch never reaches the config snapshot step', async () => {
   const fixture = await rootsFixture('batch-failure');
-  let requests = 0;
+  let snapshotRuns = 0;
   await assert.rejects(
     runDevSyncOnce({
       roots: fixture.roots,
       profile: 'dev',
       artifactRoot: fixture.artifactRoot,
-      expectedGeneration: 0,
       compilerRunner: async ({ kind }) => {
         if (kind === 'package') throw new Error('package compile failed');
         return compilerReceipt({ kind });
       },
-      fetchImpl: async () => {
-        requests += 1;
-        return jsonResponse({});
+      configSnapshotRunner: async () => {
+        snapshotRuns += 1;
+        return snapshotReceipt;
       },
     }),
     /package compile failed/,
   );
-  assert.equal(requests, 0);
+  assert.equal(snapshotRuns, 0);
 });
 
 test('dev sync has one package phase and consumes generated service receipts before assembly', async () => {
@@ -266,8 +265,6 @@ test('dev sync has one package phase and consumes generated service receipts bef
     roots: fixture.roots,
     profile: 'dev',
     artifactRoot: fixture.artifactRoot,
-    expectedGeneration: 7,
-    activationId: 'activation-8',
     compilerRunner: async (input) => {
       if (input.kind === 'assembly') {
         assemblyInput = input;
@@ -286,20 +283,12 @@ test('dev sync has one package phase and consumes generated service receipts bef
       }]);
       return snapshotReceipt;
     },
-    fetchImpl: async (_url, init) => {
-      if (init.method === 'GET') {
-        return activeAssemblyHealth(7, '1', '2');
-      }
-      events.push('prepare');
-      return jsonResponse({ committed: { generation: 8, assembly: { assemblyIdentity } } });
-    },
   });
   assert.deepEqual(events, [
     'package:ordinary:dev',
     'package:service:dev',
     'assembly:dev',
     'snapshot:dev',
-    'prepare',
   ]);
   assert.equal(result.packageArtifactReceipts.length, 2);
   assert.equal(result.serviceContractReceipts.length, 1);
@@ -337,7 +326,7 @@ test('dev sync defers roots until exact package/service pointers are available',
   assert.deepEqual(attempts, ['ordinary', 'service', 'ordinary']);
 });
 
-test('config-only sync publishes and activates a fresh snapshot without rebuilding code artifacts', async () => {
+test('config-only sync publishes a fresh snapshot without rebuilding code artifacts', async () => {
   const fixture = await rootsFixture('config-only');
   const serviceRoot = fixture.roots.find(({ root }) => basename(root) === 'service').root;
   let compilerCalls = 0;
@@ -345,21 +334,11 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
     roots: fixture.roots,
     profile: 'dev',
     artifactRoot: fixture.artifactRoot,
-    expectedGeneration: 0,
     compilerRunner: async (input) => {
       compilerCalls += 1;
       return compilerReceipt(input);
     },
     configSnapshotRunner: async () => snapshotReceiptFor('4'),
-    fetchImpl: async (_url, { body, method }) => {
-      if (method === 'GET') {
-        return activeAssemblyHealth(0, '1', '2');
-      }
-      const request = JSON.parse(body);
-      assert.equal(request.schemaVersion, 'skiff-assembly-activation-request-v3');
-      assert.equal(request.configSnapshot.snapshotId, configSnapshotId);
-      return jsonResponse({ committed: { generation: 1 } });
-    },
   });
   assert.equal(compilerCalls, 3);
 
@@ -372,7 +351,6 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
     roots: fixture.roots,
     profile: 'dev',
     artifactRoot: fixture.artifactRoot,
-    expectedGeneration: 1,
     buildState: reusableDevBuildState(first),
     compilerRunner: async () => {
       throw new Error('config-only sync must not invoke compiler');
@@ -381,15 +359,6 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
       assert.equal(sources[0].root, serviceRoot);
       return snapshotReceiptFor('6');
     },
-    fetchImpl: async (_url, { body, method }) => {
-      if (method === 'GET') {
-        return activeAssemblyHealth(1, '1', '2');
-      }
-      const request = JSON.parse(body);
-      assert.deepEqual(request.assembly, { assemblyIdentity });
-      assert.deepEqual(request.configSnapshot, { snapshotId: secondSnapshotId });
-      return jsonResponse({ committed: { generation: 2 } });
-    },
   });
   assert.deepEqual(second.runtimeAssemblyReceipt, first.runtimeAssemblyReceipt);
   assert.notDeepEqual(
@@ -397,6 +366,7 @@ test('config-only sync publishes and activates a fresh snapshot without rebuildi
     first.runtimeConfigSnapshotReceipt,
   );
   assert.equal(compilerCalls, 3);
+  assert.equal(second.runtimeConfigSnapshotReceipt.snapshot.snapshotId, secondSnapshotId);
 });
 
 async function rootsFixture(name) {
@@ -448,29 +418,7 @@ function compilerReceipt({ kind, root = '' }) {
   throw new Error(`unexpected independent compiler phase ${kind}`);
 }
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-function activeAssemblyHealth(generation, assemblyDigit, snapshotDigit) {
-  return jsonResponse({
-    ok: true,
-    activeAssembly: {
-      profile: 'dev',
-      generation,
-      assemblyIdentity:
-        `skiff-runtime-assembly-v3:sha256:${assemblyDigit.repeat(64)}`,
-      configSnapshotId:
-        `skiff-runtime-config-snapshot-v1:${snapshotDigit.repeat(32)}`,
-    },
-  });
-}
-
 const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'3'.repeat(64)}`;
-const configSnapshotId = `skiff-runtime-config-snapshot-v1:${'4'.repeat(32)}`;
 const snapshotReceipt = snapshotReceiptFor('4');
 
 function snapshotReceiptFor(digit) {

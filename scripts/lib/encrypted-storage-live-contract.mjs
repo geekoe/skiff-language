@@ -25,10 +25,8 @@ export function encryptedStorageTestRunnerArgs({
   artifactRoot,
   baseAssembly,
   baseConfigSnapshot,
-  activationUrl,
   ingressUrl,
   profile,
-  expectedGeneration,
 }) {
   requiredAbsolutePath(testFile, 'encrypted-storage test file');
   requiredAbsolutePath(artifactRoot, 'encrypted-storage artifact root');
@@ -38,14 +36,12 @@ export function encryptedStorageTestRunnerArgs({
   if (!RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(baseConfigSnapshot ?? '')) {
     throw new Error('encrypted-storage base config snapshot must be canonical');
   }
-  requiredActivationUrl(activationUrl);
   requiredIngressUrl(ingressUrl);
   if (profile !== ENCRYPTED_STORAGE_TARGET_PROFILE) {
     throw new Error(
       `encrypted-storage target profile must be ${ENCRYPTED_STORAGE_TARGET_PROFILE}`,
     );
   }
-  requiredGeneration(expectedGeneration, 'encrypted-storage expected generation');
   return [
     'run',
     '--locked',
@@ -65,14 +61,10 @@ export function encryptedStorageTestRunnerArgs({
     '--base-config-snapshot',
     baseConfigSnapshot,
     '--live',
-    '--activation-url',
-    activationUrl,
     '--ingress-url',
     ingressUrl,
     '--profile',
     profile,
-    '--expected-generation',
-    String(expectedGeneration),
     '--deny-skips',
     '--require-tests',
   ];
@@ -156,9 +148,15 @@ export function encryptedStorageProductionAssembly(receipt) {
   if (!setsEqual(serviceIds, REQUIRED_SERVICE_IDS)) {
     throw new Error('required service roots are incomplete');
   }
+  const deployments = receipt.serviceDeploymentReceipts.map((entry) => {
+    const deployment = entry?.deployment;
+    exactDeploymentRef(deployment);
+    return deployment;
+  });
   return Object.freeze({
     assemblyIdentity: assembly.assemblyIdentity,
     configSnapshotId: configSnapshot.snapshotId,
+    deployments,
   });
 }
 
@@ -195,65 +193,35 @@ export function encryptedStorageIngressRequest({
 }
 
 export async function runEncryptedStorageTestLifecycle({
-  activationState,
+  productionAssembly,
   runTest,
   observeStorage,
   cleanupStorage,
-  restoreProductionAssembly,
-  readCommittedGeneration,
+  restoreProductionDeployments,
 }) {
-  assertActivationState(activationState);
+  assertProductionAssembly(productionAssembly);
   for (const [name, operation] of Object.entries({
     runTest,
     observeStorage,
     cleanupStorage,
-    restoreProductionAssembly,
+    restoreProductionDeployments,
   })) {
     if (typeof operation !== 'function') {
       throw new Error(`encrypted-storage lifecycle requires ${name}`);
     }
   }
-  const expectedGeneration = activationState.currentGeneration;
-  const baseAssembly = activationState.productionAssembly.assemblyIdentity;
-  const baseConfigSnapshot =
-    activationState.productionAssembly.configSnapshotId;
+  const baseAssembly = productionAssembly.assemblyIdentity;
+  const baseConfigSnapshot = productionAssembly.configSnapshotId;
   const [testOutcome, observationOutcome] = await Promise.allSettled([
     Promise.resolve().then(() => runTest({
       baseAssembly,
       baseConfigSnapshot,
-      expectedGeneration,
     })),
     Promise.resolve().then(() => observeStorage()),
   ]);
   const failures = [];
-  let testActivationCommitted = false;
-  if (testOutcome.status === 'fulfilled') {
-    activationState.currentGeneration += 1;
-    testActivationCommitted = true;
-  } else {
+  if (testOutcome.status === 'rejected') {
     failures.push(contextualError('test runner failed', testOutcome.reason));
-    if (typeof readCommittedGeneration === 'function') {
-      try {
-        const committedGeneration = await readCommittedGeneration();
-        requiredGeneration(
-          committedGeneration,
-          'encrypted-storage observed committed generation',
-        );
-        if (committedGeneration === expectedGeneration + 1) {
-          activationState.currentGeneration = committedGeneration;
-          testActivationCommitted = true;
-        } else if (committedGeneration !== expectedGeneration) {
-          failures.push(new Error(
-            `encrypted-storage test generation is indeterminate: expected ${expectedGeneration} or ${expectedGeneration + 1}, observed ${committedGeneration}`,
-          ));
-        }
-      } catch (error) {
-        failures.push(contextualError(
-          'failed to determine whether test activation committed',
-          error,
-        ));
-      }
-    }
   }
 
   let storage;
@@ -270,16 +238,13 @@ export async function runEncryptedStorageTestLifecycle({
     ));
   }
 
-  if (testActivationCommitted) {
-    try {
-      await restoreProductionAssembly({
-        assembly: activationState.productionAssembly,
-        expectedGeneration: activationState.currentGeneration,
-      });
-      activationState.currentGeneration += 1;
-    } catch (error) {
-      failures.push(contextualError('production restore failed', error));
-    }
+  // Restore is unconditional and idempotent: the release pointer table is the
+  // only mutable deployment state, so pointing every production key back at
+  // its production buildId always returns the instance to the baseline.
+  try {
+    await restoreProductionDeployments(productionAssembly);
+  } catch (error) {
+    failures.push(contextualError('production restore failed', error));
   }
   if (failures.length > 0) {
     throw new AggregateError(
@@ -287,7 +252,7 @@ export async function runEncryptedStorageTestLifecycle({
       `encrypted-storage live test lifecycle failed: ${failures.map((error) => error.message).join('; ')}`,
     );
   }
-  return { storage, currentGeneration: activationState.currentGeneration };
+  return { storage };
 }
 
 function requiredAbsolutePath(value, label) {
@@ -309,20 +274,6 @@ function requiredUrl(value, label) {
   return parsed;
 }
 
-function requiredActivationUrl(value) {
-  const parsed = requiredUrl(value, 'encrypted-storage activation URL');
-  if (
-    parsed.pathname !== '/__skiff/activate-assembly'
-    || parsed.search
-    || parsed.hash
-  ) {
-    throw new Error(
-      'encrypted-storage activation URL must point exactly to /__skiff/activate-assembly',
-    );
-  }
-  return parsed;
-}
-
 function requiredIngressUrl(value) {
   const parsed = requiredUrl(value, 'encrypted-storage ingress URL');
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
@@ -331,15 +282,22 @@ function requiredIngressUrl(value) {
   return parsed;
 }
 
-function requiredGeneration(value, label) {
-  if (
-    !Number.isSafeInteger(value)
-    || Object.is(value, -0)
-    || value < 0
-    || value > Number.MAX_SAFE_INTEGER - 2
-  ) {
-    throw new Error(`${label} must be a non-negative safe generation`);
+function exactDeploymentRef(value) {
+  const fields = [
+    'contractVersion',
+    'deploymentArtifactIdentity',
+    'deploymentRevision',
+    'serviceId',
+  ];
+  if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== fields.join(',')) {
+    throw new Error('encrypted-storage deployment must be an exact ServiceDeploymentRef');
   }
+  for (const field of fields) {
+    if (typeof value[field] !== 'string' || value[field].length === 0) {
+      throw new Error(`encrypted-storage deployment.${field} must be a non-empty string`);
+    }
+  }
+  return value;
 }
 
 function exactStringSet(values, select) {
@@ -367,19 +325,13 @@ function setsEqual(left, right) {
     && [...left].every((value) => right.has(value));
 }
 
-function assertActivationState(state) {
+function assertProductionAssembly(state) {
   if (!isPlainObject(state)) {
-    throw new Error('encrypted-storage lifecycle requires caller-owned activation state');
+    throw new Error('encrypted-storage lifecycle requires caller-owned production assembly');
   }
-  requiredGeneration(
-    state.currentGeneration,
-    'encrypted-storage current generation',
-  );
-  const assembly = state.productionAssembly;
+  const assembly = state;
   if (
-    !isPlainObject(assembly)
-    || Object.keys(assembly).length !== 2
-    || !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity ?? '')
+    !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity ?? '')
     || !RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(
       assembly.configSnapshotId ?? '',
     )
@@ -387,6 +339,14 @@ function assertActivationState(state) {
     throw new Error(
       'encrypted-storage lifecycle requires a canonical production assembly',
     );
+  }
+  if (!Array.isArray(assembly.deployments) || assembly.deployments.length === 0) {
+    throw new Error(
+      'encrypted-storage lifecycle requires the production deployment refs',
+    );
+  }
+  for (const deployment of assembly.deployments) {
+    exactDeploymentRef(deployment);
   }
 }
 

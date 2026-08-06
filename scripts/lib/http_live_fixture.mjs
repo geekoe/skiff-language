@@ -3,30 +3,24 @@
 // Writes a real service source with HTTP gateway entries (rawHttp unary /
 // stream, typedJson unary, service-managed CORS, service error, slow and
 // burst endpoints), then produces the real compiler package/assembly/config
-// snapshot artifacts and seeds the committed activation state into the
-// canonical Rust activation namespace (post-cutover the Router is always the
-// Rust binary; the Runtime, artifact and committed tuple stay fixed).
+// snapshot artifacts and seeds the release pointer table (the router's only
+// mutable deployment state) into the canonical artifact store.
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { captureCheckedCommand } from './command-execution.mjs';
-import { createMongoshCommand } from './mongosh-json-command.mjs';
 import {
   runCompilerAuthoring,
   runConfigSnapshotAuthoring,
 } from './package-service-authoring.mjs';
+import { writeReleasePointerSeed } from './release-pointer-seed.mjs';
 
 export const HTTP_LIVE_SERVICE_ID = 'test.skiff/router-rust-http-live';
 export const HTTP_LIVE_VERSION = '0.1.0';
 export const HTTP_LIVE_PROFILE = 'http-live';
-export const HTTP_LIVE_GENERATION = 1;
 export const HTTP_LIVE_REPLICA_ID = 'skiff-runtime-http-live-replica';
 
-export const RUST_HTTP_LIVE_DATABASE = 'skiff-router';
-export const RUST_HTTP_LIVE_STATE_COLLECTION = 'activation_state';
-
-const ACTIVATION_STATE_SCHEMA_VERSION = 'skiff-profile-activation-state-v1';
 const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
 const ACTOR_ROUTING_PROJECTION_CONTENT =
   '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
@@ -46,7 +40,7 @@ const BURST_EMITS = Array.from(
 
 export function httpLiveMongoUrl(mongoPort) {
   return (
-    `mongodb://127.0.0.1:${mongoPort}/${RUST_HTTP_LIVE_DATABASE}`
+    `mongodb://127.0.0.1:${mongoPort}/skiff-router`
     + '?directConnection=true&replicaSet=rs0&retryWrites=false'
   );
 }
@@ -341,41 +335,31 @@ export async function authorHttpLiveArtifact({
   };
 }
 
-export async function seedHttpLiveCommittedState({
-  mongoUrl,
+export async function seedHttpLiveReleasePointers({
+  artifactRoot,
   profile = HTTP_LIVE_PROFILE,
-  generation = HTTP_LIVE_GENERATION,
-  assemblyIdentity,
-  configSnapshotId,
+  deployment,
 }) {
-  const mongosh = createMongoshCommand();
-  const state = {
-    schemaVersion: ACTIVATION_STATE_SCHEMA_VERSION,
+  return writeReleasePointerSeed({
+    artifactRoot,
     profile,
-    committed: {
-      generation,
-      assembly: { assemblyIdentity },
-      configSnapshot: { snapshotId: configSnapshotId },
-    },
-    pending: null,
-  };
-  const document = {
-    _id: profile,
-    revision: 0,
-    state,
-  };
-  const script = [
-    `db.getSiblingDB(${JSON.stringify(RUST_HTTP_LIVE_DATABASE)})`,
-    `.getCollection(${JSON.stringify(RUST_HTTP_LIVE_STATE_COLLECTION)})`,
-    `.insertOne(${JSON.stringify(document)});`,
-  ].join('');
-  await mongosh.run([
-    mongoUrl,
-    '--quiet',
-    '--eval',
-    script,
-  ], { cwd: process.cwd() });
-  return { profile, generation, assemblyIdentity, configSnapshotId };
+    deployment,
+    recordPath: httpLiveDeploymentRecordPath(deployment),
+  });
+}
+
+export function httpLiveDeploymentRecordPath(deployment) {
+  const hex = deployment.deploymentArtifactIdentity.slice(
+    deployment.deploymentArtifactIdentity.lastIndexOf(':') + 1,
+  );
+  return [
+    'records',
+    'service-deployments',
+    deployment.serviceId.replaceAll('.', '~d').replaceAll('/', '~s'),
+    deployment.contractVersion,
+    deployment.deploymentRevision,
+    `${hex}.json`,
+  ].join('/');
 }
 
 function isPlainObject(value) {

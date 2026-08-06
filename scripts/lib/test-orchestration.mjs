@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep as pathSeparator } from 'node:path';
 
@@ -16,8 +16,6 @@ const EXCLUDED_DIGEST_DIRECTORIES = new Set([
   '.skiff-package-store',
   '.vscode',
 ]);
-
-const BOOTSTRAP_PROFILE = 'skiff-test';
 
 export async function discoverTestFiles(roots) {
   const found = new Set();
@@ -242,11 +240,6 @@ export async function publishSources({
     const invocation = source.bootstrap === true
       ? bootstrapSeedInvocation({ skiffRoot, store })
       : packagePublishInvocation({ skiffRoot, store, root: source.root });
-    if (source.bootstrap === true) {
-      // The bootstrap initializes the profile activation state with an
-      // expected-absent CAS, so a reused store must reset that state first.
-      await resetBootstrapProfileState(store, BOOTSTRAP_PROFILE);
-    }
     const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
       cwd: invocation.cwd,
       env,
@@ -423,18 +416,6 @@ export function renderPlan({ mode, store, sourceEntries, testLabel, baseLabel })
   lines.push(`tests:    ${testLabel}`);
   lines.push(`base:     ${baseLabel}`);
   return lines.join('\n');
-}
-
-function bootstrapProfileStatePath(store, profile) {
-  return join(store, 'profiles', profile, 'activation.json');
-}
-
-async function resetBootstrapProfileState(store, profile) {
-  try {
-    await rm(bootstrapProfileStatePath(store, profile), { force: true });
-  } catch (error) {
-    throw new Error(`failed to reset bootstrap profile state for ${profile}: ${error.message}`);
-  }
 }
 
 function bootstrapSeedInvocation({ skiffRoot, store }) {

@@ -6,23 +6,24 @@
 // snapshot with the real snapshot tooling, starts an isolated temporary Mongo
 // replica set (never the stable 27017), builds the explicit `skiff-router`
 // Rust binary, and drives the ignored `bootstrap_live_probe` test which:
-//   - seeds the committed activation state and publishes the initial epoch;
+//   - seeds the release pointer table and starts the router from the empty
+//     committed baseline;
 //   - spawns the real router process and asserts the `router.bootstrap` frame
 //     over the `/runtime` WebSocket;
-//   - asserts missing / malformed / pending / identity mismatch / snapshot
-//     missing / loader saturation / shutdown all fail closed with zero epoch
+//   - asserts missing / malformed / profile mismatch / snapshot missing /
+//     loader saturation / shutdown all fail closed with zero epoch
 //     publication and zero process residue.
 //
 // The harness never touches the stable instance, stable Mongo, PM2, or the
 // fixed 4004-4007 ports. Router ports are leased in 45000-45999 and the
-// temporary mongod uses the repository's activation-state harness convention.
+// temporary mongod uses the repository's live-harness convention.
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ActivationStateMongoHarness } from './lib/activation-state-live-harness.mjs';
+import { MongodLiveHarness } from './lib/mongod-live-harness.mjs';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { captureCheckedCommand } from './lib/command-execution.mjs';
 import { leaseConsecutiveLocalPorts } from './lib/local-port-lease.mjs';
@@ -43,8 +44,8 @@ const FORBIDDEN_PORTS = new Set([
   ...range(44000, 44999),
 ]);
 // The production assembly connects with the repository defaults (database
-// `skiff-router`, collection `activation_state`); the probe seeds the same
-// namespace so the spawned router process reads the identical state.
+// `skiff-router`); the probe drives the same serviceDb namespace so the
+// spawned router process and Runtime see identical state.
 const DATABASE = 'skiff-router';
 
 let harness;
@@ -126,7 +127,7 @@ try {
   assertNotForbidden(runtimePort);
 
   console.log('router-live:bootstrap: starting isolated Mongo replica set');
-  harness = await ActivationStateMongoHarness.create({ repoRoot });
+  harness = await MongodLiveHarness.create({ repoRoot });
   await harness.start();
 
   const targetDir = cargoTargetDir(repoRoot);

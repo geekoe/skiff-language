@@ -31,7 +31,6 @@ test('local instance spec derives processes, ports, and shared facts from config
 
   assert.equal(spec.schemaVersion, 'skiff-instance-v1');
   assert.equal(spec.profile, 'dev');
-  assert.equal(spec.activationUrl, 'http://127.0.0.1:4101/__skiff/activate-assembly');
   assert.equal(spec.compilerBinary, resolve(skiffRoot, 'build/runtime-stack/bin/skiff-compiler'));
   assert.deepEqual(
     spec.processes.map((process) => process.name),

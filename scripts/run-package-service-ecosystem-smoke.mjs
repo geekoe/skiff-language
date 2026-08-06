@@ -5,7 +5,6 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runPackageServiceI02Combined } from './lib/package-service-i02-combined-real.mjs';
 import { runPackageServiceSmokeSelfTest } from './lib/package-service-ecosystem-smoke-self-test.mjs';
 
 const scriptCheckout = await realpath(
@@ -20,16 +19,11 @@ assert.equal(
   scriptCheckout,
   'smoke must run from the explicitly selected Skiff checkout',
 );
+assert.equal(args.selfTest, true, 'the ecosystem smoke runner only supports its hermetic self-test');
 assert.ok(args.replicas === 1 || args.replicas === 2, '--replicas must be 1 or 2');
 assert.equal(args.probe, 'skiff-cutover', '--probe must be skiff-cutover');
 
-const result = args.selfTest
-  ? await runPackageServiceSmokeSelfTest(args.replicas)
-  : await runPackageServiceI02Combined({
-      checkout,
-      replicaCount: args.replicas,
-      profile,
-    });
+const result = await runPackageServiceSmokeSelfTest(args.replicas);
 process.stdout.write(`${JSON.stringify(result)}\n`);
 
 function parseArgs(values) {

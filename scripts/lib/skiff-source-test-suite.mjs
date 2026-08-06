@@ -166,7 +166,6 @@ export async function runCanonicalSkiffSourceTests({
   runtimeOwner = runInIsolatedTestRuntime,
   runCommand = runOwnedCommand,
   readHostReceipt = readPackageServiceHostFixtureReceipt,
-  readActiveGeneration = readSkiffSourceActiveGeneration,
   log = console.log,
 } = {}) {
   const plan = createCanonicalSkiffSourceTestPlan({ skiffRoot, registry });
@@ -180,14 +179,6 @@ export async function runCanonicalSkiffSourceTests({
       const profile = requiredText(
         isolatedEnv.SKIFF_TEST_ENVIRONMENT,
         'isolated runtime profile',
-      );
-      const activationUrl = requiredText(
-        isolatedEnv.SKIFF_TEST_ACTIVATION_URL,
-        'isolated runtime activation URL',
-      );
-      let expectedGeneration = requiredGeneration(
-        isolatedEnv.SKIFF_TEST_EXPECTED_GENERATION,
-        'isolated runtime expected generation',
       );
       log(`[skiff-tests] bootstrapping source artifacts: ${stack.sourceArtifactRoot}`);
       await runCommand(
@@ -220,23 +211,8 @@ export async function runCanonicalSkiffSourceTests({
             root: entry.absoluteRoot,
             artifactRoot: stack.sourceArtifactRoot,
           }),
-          {
-            cwd: skiffRoot,
-            env: {
-              ...isolatedEnv,
-              SKIFF_TEST_EXPECTED_GENERATION: String(expectedGeneration),
-            },
-            signal,
-          },
+          { cwd: skiffRoot, env: isolatedEnv, signal },
         );
-        expectedGeneration = await readAdvancedGeneration({
-          readActiveGeneration,
-          activationUrl,
-          profile,
-          previousGeneration: expectedGeneration,
-          signal,
-          child: entry.id,
-        });
       }
       if (typeof stack.tempRoot !== 'string' || stack.tempRoot.length === 0) {
         throw new Error('isolated runtime owner omitted its temporary workspace');
@@ -266,92 +242,11 @@ export async function runCanonicalSkiffSourceTests({
           baseAssembly: receipt.baseAssembly.assemblyIdentity,
           baseConfigSnapshot: receipt.baseConfigSnapshot.snapshotId,
         }),
-        {
-          cwd: skiffRoot,
-          env: {
-            ...isolatedEnv,
-            SKIFF_TEST_EXPECTED_GENERATION: String(expectedGeneration),
-          },
-          signal,
-        },
+        { cwd: skiffRoot, env: isolatedEnv, signal },
       );
-      await readAdvancedGeneration({
-        readActiveGeneration,
-        activationUrl,
-        profile,
-        previousGeneration: expectedGeneration,
-        signal,
-        child: 'package-service-host',
-      });
     },
   });
   return plan;
-}
-
-export async function readSkiffSourceActiveGeneration({
-  activationUrl,
-  profile,
-  signal,
-  fetchImpl = fetch,
-}) {
-  let healthUrl;
-  try {
-    healthUrl = new URL('/__router/health', activationUrl).toString();
-  } catch (error) {
-    throw new Error(`isolated runtime activation URL cannot select Router health: ${errorMessage(error)}`);
-  }
-  let response;
-  try {
-    response = await fetchImpl(healthUrl, {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-      signal,
-    });
-  } catch (error) {
-    throw new Error(`failed to read isolated Router active generation: ${errorMessage(error)}`);
-  }
-  const text = await response.text();
-  let health;
-  try {
-    health = JSON.parse(text);
-  } catch {
-    throw new Error('isolated Router health returned invalid JSON after a source-test child');
-  }
-  if (!response.ok) {
-    throw new Error(`isolated Router health returned HTTP ${response.status} after a source-test child`);
-  }
-  const active = health?.activeAssembly;
-  if (
-    health?.ok !== true
-    || health.pendingActivation !== null
-    || active?.profile !== profile
-    || !Number.isSafeInteger(active?.generation)
-    || active.generation < 0
-  ) {
-    throw new Error('isolated Router health did not return the exact settled active generation after a source-test child');
-  }
-  return active.generation;
-}
-
-async function readAdvancedGeneration({
-  readActiveGeneration,
-  activationUrl,
-  profile,
-  previousGeneration,
-  signal,
-  child,
-}) {
-  const generation = await readActiveGeneration({
-    activationUrl,
-    profile,
-    signal,
-  });
-  if (!Number.isSafeInteger(generation) || generation <= previousGeneration) {
-    throw new Error(
-      `source-test child ${child} did not advance the active generation beyond ${previousGeneration}`,
-    );
-  }
-  return generation;
 }
 
 function validateContractRef(value, label) {
@@ -408,17 +303,6 @@ function requiredText(value, label) {
     throw new Error(`${label} must be a non-empty trimmed string`);
   }
   return value;
-}
-
-function requiredGeneration(value, label) {
-  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) {
-    throw new Error(`${label} must be a canonical non-negative integer`);
-  }
-  const generation = Number(value);
-  if (!Number.isSafeInteger(generation)) {
-    throw new Error(`${label} must be a safe integer`);
-  }
-  return generation;
 }
 
 function errorMessage(error) {

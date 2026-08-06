@@ -137,7 +137,6 @@ export async function runPackageServiceHostNegativeProbe({
             cwd: absoluteSkiffRoot,
             env: {
               ...isolatedEnv,
-              SKIFF_TEST_EXPECTED_GENERATION: '0',
               SKIFF_TEST_INGRESS_URL: proxy.url,
             },
           },

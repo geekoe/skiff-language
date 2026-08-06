@@ -1,24 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import { cargoTargetDir } from './cargo-target-dir.mjs';
 import { captureAttachedCommand } from './command-execution.mjs';
 
-export const defaultAssemblyActivationUrl =
-  'http://127.0.0.1:4001/__skiff/activate-assembly';
-export const maxExpectedAssemblyGeneration = Number.MAX_SAFE_INTEGER - 1;
-
-const activationProfilePattern = /^[A-Za-z0-9._-]{1,200}$/;
-const activationTokenPattern = /^[\x21-\x7e]{1,200}$/;
-const runtimeAssemblyIdentityPattern =
-  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
+const profilePattern = /^[A-Za-z0-9._-]{1,200}$/;
 const runtimeConfigSnapshotIdPattern =
   /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 
 export async function runAuthoringObjectCommand(kind, rawArgs, {
   skiffRoot,
-  fetchImpl = fetch,
   stdout = console.log,
 } = {}) {
   const action = rawArgs[0];
@@ -26,48 +17,22 @@ export async function runAuthoringObjectCommand(kind, rawArgs, {
     stdout(objectUsage(kind));
     return null;
   }
-  if (action !== 'build' && action !== 'publish' && !(kind === 'assembly' && action === 'activate')) {
+  if (action !== 'build' && action !== 'publish') {
     throw new Error(`unknown ${kind} command ${action || '(missing)'}\n${objectUsage(kind)}`);
   }
   const parsed = parseObjectArgs(kind, action, rawArgs.slice(1));
-  const compilerAction = action === 'activate' ? 'build' : action;
   const receipt = await runCompilerAuthoring({
     skiffRoot,
     kind,
-    action: compilerAction,
+    action,
     root: parsed.root,
     rootDeployments: parsed.rootDeployments,
     artifactRoot: parsed.artifactRoot,
     profile: parsed.profile,
   });
 
-  let result = receipt;
-  if (action === 'activate') {
-    const assembly = receipt?.runtimeAssemblyReceipt?.assembly;
-    const profile = receipt?.runtimeAssemblyReceipt?.profile;
-    if (!isPlainObject(assembly) || typeof profile !== 'string') {
-      throw new Error('compiler assembly build did not return a typed RuntimeAssembly receipt');
-    }
-    const { request, response } = await requestAssemblyActivation({
-      fetchImpl,
-      activationUrl: parsed.activationUrl,
-      activationId: parsed.activationId,
-      expectedGeneration: parsed.expectedGeneration,
-      profile,
-      assembly,
-      configSnapshot: parsed.configSnapshot,
-    });
-    result = {
-      ...receipt,
-      assemblyActivationReceipt: {
-        request,
-        response,
-      },
-    };
-  }
-
-  stdout(parsed.json ? JSON.stringify(result, null, 2) : renderAuthoringResult(result));
-  return result;
+  stdout(parsed.json ? JSON.stringify(receipt, null, 2) : renderAuthoringResult(receipt));
+  return receipt;
 }
 
 export function renderAuthoringResult(result) {
@@ -107,66 +72,6 @@ export function renderAuthoringResult(result) {
     }
   }
   return lines.join('\n');
-}
-
-export async function requestAssemblyActivation({
-  fetchImpl = fetch,
-  activationUrl = defaultAssemblyActivationUrl,
-  activationId = `skiff-${randomUUID()}`,
-  expectedGeneration,
-  profile,
-  assembly,
-  configSnapshot,
-  signal,
-}) {
-  if (
-    typeof expectedGeneration !== 'number'
-    || Object.is(expectedGeneration, -0)
-    || !Number.isSafeInteger(expectedGeneration)
-    || expectedGeneration < 0
-    || expectedGeneration > maxExpectedAssemblyGeneration
-  ) {
-    throw new Error(
-      `assembly activation expectedGeneration must be between 0 and ${maxExpectedAssemblyGeneration}`,
-    );
-  }
-  if (
-    typeof profile !== 'string'
-    || profile === '.'
-    || profile === '..'
-    || !activationProfilePattern.test(profile)
-  ) {
-    throw new Error('assembly activation profile must be a canonical ASCII profile token');
-  }
-  if (typeof activationId !== 'string' || !activationTokenPattern.test(activationId)) {
-    throw new Error('assembly activation activationId must be an ASCII visible token between 1 and 200 bytes');
-  }
-  if (
-    !isPlainObject(assembly)
-    || Object.keys(assembly).length !== 1
-    || typeof assembly.assemblyIdentity !== 'string'
-    || !runtimeAssemblyIdentityPattern.test(assembly.assemblyIdentity)
-  ) {
-    throw new Error('assembly activation requires an exact RuntimeAssembly reference');
-  }
-  if (
-    !isPlainObject(configSnapshot)
-    || Object.keys(configSnapshot).length !== 1
-    || typeof configSnapshot.snapshotId !== 'string'
-    || !runtimeConfigSnapshotIdPattern.test(configSnapshot.snapshotId)
-  ) {
-    throw new Error('assembly activation requires an exact RuntimeConfigSnapshot reference');
-  }
-  const request = {
-    schemaVersion: 'skiff-assembly-activation-request-v3',
-    profile,
-    activationId,
-    expectedGeneration,
-    assembly,
-    configSnapshot,
-  };
-  const response = await postActivation(fetchImpl, activationUrl, request, signal);
-  return { request, response };
 }
 
 export async function runCompilerAuthoring({
@@ -327,7 +232,7 @@ export function configSnapshotAuthoringInvocation({
     typeof profile !== 'string'
     || profile === '.'
     || profile === '..'
-    || !activationProfilePattern.test(profile)
+    || !profilePattern.test(profile)
   ) {
     throw new Error('config snapshot authoring requires an explicit canonical profile');
   }
@@ -455,12 +360,6 @@ export function parseObjectArgs(kind, action, rawArgs) {
   if (kind === 'assembly') {
     optionsWithValues.add('--root-deployment');
   }
-  if (action === 'activate') {
-    optionsWithValues.add('--activation-url');
-    optionsWithValues.add('--activation-id');
-    optionsWithValues.add('--expected-generation');
-    optionsWithValues.add('--config-snapshot');
-  }
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
     if (argument === '--json') {
@@ -482,8 +381,6 @@ export function parseObjectArgs(kind, action, rawArgs) {
       }
       if (option === '--root-deployment') {
         rootDeployments.push(parseRootDeployment(value));
-      } else if (option === '--config-snapshot') {
-        options.set(option, parseConfigSnapshotRef(value));
       } else {
         options.set(option, value);
       }
@@ -518,36 +415,11 @@ export function parseObjectArgs(kind, action, rawArgs) {
   if (kind === 'assembly' && options.get('--profile') === undefined) {
     throw new Error(`skiff assembly ${action} requires --profile`);
   }
-  let expectedGeneration;
-  if (action === 'activate') {
-    const rawGeneration = options.get('--expected-generation');
-    if (rawGeneration === undefined || !/^(?:0|[1-9][0-9]*)$/.test(rawGeneration)) {
-      throw new Error('skiff assembly activate requires a non-negative integer --expected-generation');
-    }
-    expectedGeneration = Number(rawGeneration);
-    if (
-      !Number.isSafeInteger(expectedGeneration)
-      || expectedGeneration > maxExpectedAssemblyGeneration
-    ) {
-      throw new Error(`--expected-generation must not exceed ${maxExpectedAssemblyGeneration}`);
-    }
-    const activationId = options.get('--activation-id');
-    if (activationId !== undefined && !activationTokenPattern.test(activationId)) {
-      throw new Error('--activation-id must be an ASCII visible token between 1 and 200 bytes');
-    }
-    if (options.get('--config-snapshot') === undefined) {
-      throw new Error('skiff assembly activate requires --config-snapshot');
-    }
-  }
   return {
     root,
     rootDeployments: normalizedRootDeployments,
     artifactRoot: resolve(artifactRoot),
     profile: options.get('--profile') ?? 'dev',
-    activationUrl: options.get('--activation-url') ?? defaultAssemblyActivationUrl,
-    activationId: options.get('--activation-id'),
-    configSnapshot: options.get('--config-snapshot'),
-    expectedGeneration,
     json: flags.has('--json'),
   };
 }
@@ -559,8 +431,6 @@ export function objectUsage(kind) {
   }
   return [
     "usage: skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]",
-    "       skiff assembly activate --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]",
-    "       skiff assembly sync-state --artifact-root <dir> --profile <name> --activation-url <url> --mongo-url <url> [--json]",
   ].join('\n');
 }
 
@@ -572,24 +442,6 @@ function parseRootDeployment(source) {
     throw new Error(`--root-deployment requires exact ServiceDeploymentRef JSON: ${error.message}`);
   }
   return normalizeRootDeployment(value, '--root-deployment');
-}
-
-function parseConfigSnapshotRef(source) {
-  let value;
-  try {
-    value = JSON.parse(source);
-  } catch (error) {
-    throw new Error(`--config-snapshot requires exact RuntimeConfigSnapshotRef JSON: ${error.message}`);
-  }
-  if (
-    !isPlainObject(value)
-    || Object.keys(value).length !== 1
-    || typeof value.snapshotId !== 'string'
-    || !runtimeConfigSnapshotIdPattern.test(value.snapshotId)
-  ) {
-    throw new Error('--config-snapshot must be an exact RuntimeConfigSnapshotRef object');
-  }
-  return { snapshotId: value.snapshotId };
 }
 
 function normalizeRootDeployments(values) {
@@ -639,35 +491,6 @@ function normalizeRootDeployment(value, label) {
     }
   }
   return Object.fromEntries(fields.map((field) => [field, value[field]]));
-}
-
-async function postActivation(fetchImpl, url, request, signal) {
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-      signal,
-    });
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason;
-    throw new Error(`assembly activation request failed for ${url}: ${error.message}`);
-  }
-  const text = await response.text();
-  let body = null;
-  if (text.trim().length > 0) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  }
-  if (!response.ok) {
-    const detail = typeof body === 'string' ? body : JSON.stringify(body);
-    throw new Error(`assembly activation rejected with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-  }
-  return body;
 }
 
 function isPlainObject(value) {

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { captureCheckedCommand } from './command-execution.mjs';
 import { assertPortsClosed, leaseLocalPorts } from './local-port-lease.mjs';
 import { createMongoshCommand } from './mongosh-json-command.mjs';
 
@@ -19,21 +18,23 @@ const FORBIDDEN_PORTS = new Set([
 const REPLICA_SET_NAME = 'rs0';
 
 /**
- * Temporary single-node Mongo replica set for the P-activation-state probe.
+ * Temporary single-node Mongo replica set for managed live checks.
  *
  * Follows the repository's existing live harness conventions
  * (`encrypted-storage-live-*`): leased port in 45000-45999, mktemp dbPath,
  * mongosh-driven `rs.initiate`, and guaranteed cleanup (SIGTERM -> SIGKILL,
  * temp root removal, port lease release, port-closed assertion). Never touches
- * the stable Mongo on 27017 or the stable Skiff instance.
+ * the stable Mongo on 27017 or the stable Skiff instance. The Router no longer
+ * connects to Mongo; the replica set exists so the Runtime's serviceDb still
+ * has a real endpoint.
  */
-export class ActivationStateMongoHarness {
+export class MongodLiveHarness {
   static async create({ repoRoot = process.cwd() } = {}) {
     const { port, release } = await leaseProbePort();
-    const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-activation-state-live-'));
+    const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-mongod-live-'));
     const dbPath = join(tempRoot, 'db');
     await mkdir(dbPath, { recursive: true });
-    return new ActivationStateMongoHarness({
+    return new MongodLiveHarness({
       repoRoot,
       port,
       tempRoot,
@@ -72,38 +73,7 @@ export class ActivationStateMongoHarness {
     });
     await this.waitUntilReady();
     await this.initializeReplicaSet();
-    console.log(`activation-state probe mongod ready on 127.0.0.1:${this.port}`);
-  }
-
-  async runProbe(database = 'skiff_router_activation_probe') {
-    try {
-      const { stdout } = await captureCheckedCommand(
-        'cargo',
-        [
-          'test',
-          '-p',
-          'skiff-router',
-          '--test',
-          'activation_mongo_probe',
-          '--',
-          '--ignored',
-          '--nocapture',
-        ],
-        {
-          cwd: this.repoRoot,
-          env: {
-            ...process.env,
-            SKIFF_ACTIVATION_MONGO_URL: this.mongoUrl,
-            SKIFF_ACTIVATION_MONGO_DB: database,
-          },
-        },
-      );
-      process.stdout.write(stdout);
-    } catch (error) {
-      process.stdout.write(error?.stdout ?? '');
-      process.stderr.write(error?.stderr ?? '');
-      throw error;
-    }
+    console.log(`live-check mongod ready on 127.0.0.1:${this.port}`);
   }
 
   async cleanup() {
@@ -133,7 +103,7 @@ export class ActivationStateMongoHarness {
       errors.push(error);
     }
     if (errors.length > 0) {
-      throw new AggregateError(errors, 'activation-state probe cleanup failed');
+      throw new AggregateError(errors, 'live-check mongod cleanup failed');
     }
   }
 
@@ -203,7 +173,7 @@ export class ActivationStateMongoHarness {
 }
 
 function spawnMongodProcess({ port, dbPath, logPath }) {
-  // child-process-owner: activation-state-mongo-spawn
+  // child-process-owner: mongod-live-spawn
   return spawn(
     'mongod',
     [

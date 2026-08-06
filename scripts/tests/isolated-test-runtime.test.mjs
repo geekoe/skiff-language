@@ -87,16 +87,16 @@ test('isolated instance spec pins runtime-stack binaries and derived URLs', asyn
     });
     await writeFile(configPath, configText);
     assert.match(configText, /^  - name: mongo$/m);
-    assert.match(configText, /^  - name: router$/m);
-    assert.match(configText, /^  - name: runtime$/m);
-    assert.match(configText, /http:\/\/127\.0\.0\.1:46043\/__skiff\/activate-assembly/);
-    assert.match(configText, /http:\/\/127\.0\.0\.1:46043\/__router\/health/);
+  assert.match(configText, /^  - name: router$/m);
+  assert.match(configText, /^  - name: runtime$/m);
+  assert.match(configText, /http:\/\/127\.0\.0\.1:46043\/__router\/health/);
+  assert.doesNotMatch(configText, /activate-assembly/);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
 });
 
-test('bootstrap comes from current checkout and writes only canonical generation zero', () => {
+test('bootstrap comes from current checkout and seeds only the canonical baseline records', () => {
   const args = bootstrapCanonicalArgs({
     skiffRoot: '/checkout/skiff',
     artifactRoot: '/tmp/isolated/dev-home/artifacts',
@@ -226,24 +226,18 @@ test('isolated instance initialization provisions runnable configs and dirs', as
   }
 });
 
-test('readiness requires one exact connected replica and its own capability handshake', () => {
-  const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}`;
-  const configSnapshotId =
-    `skiff-runtime-config-snapshot-v1:${'2'.repeat(32)}`;
+test('readiness requires one connected replica and its own capability handshake', () => {
   const bootstrap = {
     profile: 'skiff-test',
     bootstrap: {
-      generation: 0,
-      assembly: { assemblyIdentity },
-      configSnapshot: { snapshotId: configSnapshotId },
+      assembly: { assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}` },
     },
   };
   const readyHealth = {
     activeAssembly: {
       profile: 'skiff-test',
-      generation: 0,
-      assemblyIdentity,
-      configSnapshotId,
+      releaseCount: 1,
+      buildIds: ['deployment-a'],
     },
     capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
     replicas: [{
@@ -251,9 +245,6 @@ test('readiness requires one exact connected replica and its own capability hand
       profile: 'skiff-test',
       connected: true,
       state: 'healthy',
-      generation: 0,
-      assemblyIdentity,
-      configSnapshotId,
     }],
   };
   assert.equal(
@@ -269,12 +260,6 @@ test('readiness requires one exact connected replica and its own capability hand
   const healthMutations = [
     ['active profile differs', (health) => { health.activeAssembly.profile = 'other'; }],
     ['active profile is missing', (health) => { delete health.activeAssembly.profile; }],
-    ['active generation differs', (health) => { health.activeAssembly.generation = 1; }],
-    ['active generation is missing', (health) => { delete health.activeAssembly.generation; }],
-    ['active assembly differs', (health) => { health.activeAssembly.assemblyIdentity = 'other'; }],
-    ['active assembly is missing', (health) => { delete health.activeAssembly.assemblyIdentity; }],
-    ['active config snapshot differs', (health) => { health.activeAssembly.configSnapshotId = 'other'; }],
-    ['active config snapshot is missing', (health) => { delete health.activeAssembly.configSnapshotId; }],
     ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
     ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
     ['replica profile differs', (health) => { health.replicas[0].profile = 'other'; }],
@@ -283,12 +268,6 @@ test('readiness requires one exact connected replica and its own capability hand
     ['replica connected is missing', (health) => { delete health.replicas[0].connected; }],
     ['replica state is not healthy', (health) => { health.replicas[0].state = 'draining'; }],
     ['replica state is missing', (health) => { delete health.replicas[0].state; }],
-    ['replica generation differs', (health) => { health.replicas[0].generation = 1; }],
-    ['replica generation is missing', (health) => { delete health.replicas[0].generation; }],
-    ['replica assembly differs', (health) => { health.replicas[0].assemblyIdentity = 'other'; }],
-    ['replica assembly is missing', (health) => { delete health.replicas[0].assemblyIdentity; }],
-    ['replica config snapshot differs', (health) => { health.replicas[0].configSnapshotId = 'other'; }],
-    ['replica config snapshot is missing', (health) => { delete health.replicas[0].configSnapshotId; }],
     ['capability runtime differs', (health) => { health.capabilityConnections[0].runtimeId = 'runtime-2'; }],
     ['capability runtime is missing', (health) => { delete health.capabilityConnections[0].runtimeId; }],
     ['capability connected is false', (health) => { health.capabilityConnections[0].connected = false; }],
@@ -315,9 +294,7 @@ test('readiness requires one exact connected replica and its own capability hand
 
   const receiptMutations = [
     ['bootstrap profile is missing', (receipt) => { delete receipt.profile; }],
-    ['bootstrap generation is missing', (receipt) => { delete receipt.bootstrap.generation; }],
-    ['bootstrap assembly is missing', (receipt) => { delete receipt.bootstrap.assembly; }],
-    ['bootstrap config snapshot is missing', (receipt) => { delete receipt.bootstrap.configSnapshot; }],
+    ['bootstrap payload is missing', (receipt) => { delete receipt.bootstrap; }],
   ];
   for (const [scenario, mutate] of receiptMutations) {
     const receipt = structuredClone(bootstrap);
@@ -339,9 +316,6 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
       observed.bootstrapReceipt = { profile: 'skiff-test', bootstrap: {} };
       return observed.bootstrapReceipt;
     },
-    seedActivationState: async (input) => {
-      observed.activationState = input;
-    },
     spawnSupervisor: (input) => {
       observed.supervisor = input;
       return { pid: 1000 };
@@ -359,7 +333,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     dependencies,
     validateBootstrapReceipt: (receipt) => {
       observed.validatedBootstrapReceipt = receipt;
-      assert.match(observed.supervisor.startupGate, /activation-seeded\.ready$/);
+      assert.match(observed.supervisor.startupGate, /bootstrap-seeded\.ready$/);
     },
     runTest: async (environment) => { observed.runnerEnv = environment; },
   });
@@ -372,6 +346,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
   assert.match(observed.config, /^  - name: runtime$/m);
   assert.match(observed.config, /46003/);
   assert.doesNotMatch(observed.config, /27017/);
+  assert.doesNotMatch(observed.config, /activate-assembly/);
   assert.match(
     observed.config,
     new RegExp(JSON.stringify(join(expectedSkiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router'))),
@@ -380,15 +355,6 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
   assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
   assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
   assert.strictEqual(observed.validatedBootstrapReceipt, observed.bootstrapReceipt);
-  assert.equal(
-    observed.activationState.artifactRoot,
-    '/tmp/isolated-runtime-double/instance/dev-home/artifacts',
-  );
-  assert.equal(observed.activationState.profile, 'skiff-test');
-  assert.strictEqual(
-    observed.activationState.bootstrap,
-    observed.bootstrapReceipt,
-  );
   assert.equal(observed.supervisor.skiffRoot, expectedSkiffRoot);
   assert.strictEqual(observed.supervisor.env, observed.bootstrap.env);
   assert.strictEqual(observed.runnerEnv, observed.bootstrap.env);
@@ -405,7 +371,8 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       runTest: async (environment, _signal, stack) => {
         actions.push('test');
         assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
-        assert.equal(environment.SKIFF_TEST_ACTIVATION_URL.includes(':46001/'), true);
+        assert.equal(environment.SKIFF_TEST_ACTIVATION_URL, undefined);
+        assert.equal(environment.SKIFF_TEST_EXPECTED_GENERATION, undefined);
         assert.equal(stack.sourceArtifactRoot, '/tmp/isolated-runtime-double/source-artifacts');
         if (failing) {
           throw new Error('test failed');
@@ -420,7 +387,7 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
     }
     assert.deepEqual(actions, [
       'lease', 'temp', 'workspace-claim', 'source-artifacts', 'config', 'config-owner',
-      'instance-init', 'spawn', 'mongo-started', 'mongo-primary', 'bootstrap', 'activation-state',
+      'instance-init', 'spawn', 'mongo-started', 'mongo-primary', 'bootstrap',
       'startup-gate', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
@@ -569,7 +536,7 @@ test('every ordered startup stage fails precisely and completes owned cleanup', 
   const scenarios = [
     ['Mongo spawn', 'waitMongoStarted', 'mongo spawn exploded'],
     ['Mongo primary election', 'waitMongoPrimary', 'primary election exploded'],
-    ['activation seed', 'seedActivationState', 'activation seed exploded'],
+    ['bootstrap seed', 'seedBootstrap', 'bootstrap seed exploded'],
     ['Router/Runtime readiness', 'waitReady', 'isolated Router startup failed'],
   ];
   for (const [diagnostic, operation, detail] of scenarios) {
@@ -578,7 +545,7 @@ test('every ordered startup stage fails precisely and completes owned cleanup', 
         actions.push(operation === 'spawnSupervisor' ? 'spawn' : {
           waitMongoStarted: 'mongo-started',
           waitMongoPrimary: 'mongo-primary',
-          seedActivationState: 'activation-state',
+          seedBootstrap: 'bootstrap',
           waitReady: 'ready',
         }[operation]);
         throw new Error(detail);
@@ -745,7 +712,6 @@ function lifecycleDouble(overrides = {}) {
     },
     waitMongoStarted: async () => { actions.push('mongo-started'); },
     waitMongoPrimary: async () => { actions.push('mongo-primary'); },
-    seedActivationState: async () => { actions.push('activation-state'); },
     releaseStartupGate: async () => { actions.push('startup-gate'); },
     waitReady: async () => { actions.push('ready'); },
     stopSupervisor: async () => { actions.push('stop-supervisor'); },

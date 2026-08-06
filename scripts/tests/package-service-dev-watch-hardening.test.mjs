@@ -18,7 +18,6 @@ import {
   runDevRegistryCommand,
 } from '../lib/package-service-dev-registry.mjs';
 import {
-  activateDevAssembly,
   classifyAuthoringRoot,
   readDevRegistry,
   runDevSyncOnce,
@@ -36,123 +35,7 @@ const targetConfig = {
   snapshotId: `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`,
 };
 
-test('managed activation restart accepts an already committed generation one tuple', async () => {
-  let posts = 0;
-  const result = await activateDevAssembly({
-    activationUrl: 'http://router.test:4101/custom/activation',
-    profile: 'dev',
-    assembly: targetAssembly,
-    configSnapshot: targetConfig,
-    fetchImpl: async (url, init) => {
-      assert.equal(url, 'http://router.test:4101/__router/health');
-      assert.equal(init.method, 'GET');
-      posts += init.method === 'POST' ? 1 : 0;
-      return healthResponse({
-        generation: 1,
-        assembly: targetAssembly,
-        configSnapshot: targetConfig,
-      });
-    },
-  });
-  assert.equal(posts, 0);
-  assert.equal(result.response.idempotent, true);
-  assert.equal(result.response.committed.generation, 1);
-});
-
-test('managed activation treats a lost commit response as idempotent success', async () => {
-  let active = activeTuple(1, '1', '2');
-  let request;
-  const result = await activateDevAssembly({
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    profile: 'dev',
-    assembly: targetAssembly,
-    configSnapshot: targetConfig,
-    fetchImpl: async (_url, init) => {
-      if (init.method === 'GET') {
-        return healthResponse(active);
-      }
-      request = JSON.parse(init.body);
-      active = {
-        profile: 'dev',
-        generation: 2,
-        assembly: targetAssembly,
-        configSnapshot: targetConfig,
-      };
-      throw new Error('connection reset after commit');
-    },
-  });
-  assert.equal(request.expectedGeneration, 1);
-  assert.equal(result.response.idempotent, true);
-  assert.equal(result.response.committed.generation, 2);
-});
-
-test('managed activation rereads generation and retries a competing 409 with bounded backoff', async () => {
-  let active = activeTuple(1, '1', '2');
-  const requests = [];
-  const waits = [];
-  const result = await activateDevAssembly({
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    profile: 'dev',
-    assembly: targetAssembly,
-    configSnapshot: targetConfig,
-    wait: async (milliseconds) => waits.push(milliseconds),
-    fetchImpl: async (_url, init) => {
-      if (init.method === 'GET') {
-        return healthResponse(active);
-      }
-      const request = JSON.parse(init.body);
-      requests.push(request);
-      if (requests.length === 1) {
-        active = activeTuple(2, '3', '4');
-        return jsonResponse({
-          error: { code: 'Conflict', message: 'generation changed' },
-        }, 409);
-      }
-      active = {
-        profile: 'dev',
-        generation: 3,
-        assembly: targetAssembly,
-        configSnapshot: targetConfig,
-      };
-      return jsonResponse({ ok: true, committed: active });
-    },
-  });
-  assert.deepEqual(requests.map(({ expectedGeneration }) => expectedGeneration), [1, 2]);
-  assert.equal(requests[0].activationId, requests[1].activationId);
-  assert.deepEqual(waits, [50]);
-  assert.equal(result.response.committed.generation, 3);
-});
-
-test('managed activation accepts an already committed same-assembly tuple with a drifted snapshot', async () => {
-  let posts = 0;
-  const result = await activateDevAssembly({
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    profile: 'dev',
-    assembly: targetAssembly,
-    configSnapshot: targetConfig,
-    fetchImpl: async (url, init) => {
-      assert.equal(init.method, 'GET');
-      posts += init.method === 'POST' ? 1 : 0;
-      return healthResponse({
-        profile: 'dev',
-        generation: 7,
-        assembly: targetAssembly,
-        configSnapshot: {
-          snapshotId: `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`,
-        },
-      });
-    },
-  });
-  assert.equal(posts, 0);
-  assert.equal(result.response.idempotent, true);
-  assert.equal(result.response.committed.generation, 7);
-  assert.equal(
-    result.response.activeAssembly.configSnapshotId,
-    `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`,
-  );
-});
-
-test('watch retry reuses the retained build state when only activation failed', async () => {
+test('watch retry reuses the retained build state when the post-publish step failed', async () => {
   const fixture = await serviceFixture('watch-retry-reuse', 'example.com/watch-reuse');
   const registryPath = join(fixture.temp, 'watch.json');
   const entry = await classifyAuthoringRoot(fixture.root);
@@ -165,7 +48,7 @@ test('watch retry reuses the retained build state when only activation failed', 
       syncRunner: async ({ buildState }) => {
         buildStates.push(buildState);
         if (buildStates.length === 1) {
-          const error = new Error('assembly activation rejected with HTTP 504: timed out');
+          const error = new Error('config snapshot production failed: timed out');
           error.reusableBuildState = { marker: 'retained-build' };
           throw error;
         }
@@ -201,7 +84,7 @@ test('watch does not reuse the retained build state after a source change', asyn
       syncRunner: async ({ buildState }) => {
         buildStates.push(buildState);
         if (buildStates.length === 1) {
-          const error = new Error('assembly activation rejected with HTTP 504: timed out');
+          const error = new Error('config snapshot production failed: timed out');
           error.reusableBuildState = { marker: 'retained-build' };
           throw error;
         }
@@ -495,7 +378,7 @@ test('watch preserves last-known-good registry across invalid live roots, bad JS
   assert.equal(errors.some((message) => message.includes('ENOENT')), true);
 });
 
-test('watch does not synthesize an empty activation before its first valid registry', async () => {
+test('watch does not synthesize a sync before its first valid registry', async () => {
   const fixture = await serviceFixture('watch-first-registry', 'example.com/watch-first');
   const registryPath = join(fixture.temp, 'missing-watch.json');
   const calls = [];
@@ -611,7 +494,7 @@ test('empty registry still builds the explicit empty assembly candidate', async 
   assert.deepEqual(result.serviceDeploymentReceipts, []);
 });
 
-test('removing the final service converges watch to one exact empty assembly and snapshot pair', async () => {
+test('removing the final service converges watch to one exact empty assembly and snapshot pair without coordination', async () => {
   const fixture = await serviceFixture('remove-last', 'example.com/remove-last');
   const registryPath = join(fixture.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
@@ -630,9 +513,9 @@ test('removing the final service converges watch to one exact empty assembly and
   const emptyConfig = {
     snapshotId: `skiff-runtime-config-snapshot-v1:${'f'.repeat(32)}`,
   };
-  let active = activeTuple(0, '1', '2');
-  const activationRequests = [];
+  const assemblyResults = [];
   let watchWaits = 0;
+  let networkCalls = 0;
 
   await assert.rejects(
     runDevWatch({
@@ -662,6 +545,7 @@ test('removing the final service converges watch to one exact empty assembly and
         const assembly = input.rootDeployments.length === 0
           ? emptyAssembly
           : nonemptyAssembly;
+        assemblyResults.push(input.rootDeployments.length);
         return {
           runtimeAssemblyReceipt: {
             assembly,
@@ -679,19 +563,9 @@ test('removing the final service converges watch to one exact empty assembly and
             : 'runtime-config/snapshots/nonempty.json',
         },
       }),
-      fetchImpl: async (_url, init) => {
-        if (init.method === 'GET') {
-          return healthResponse(active);
-        }
-        const request = JSON.parse(init.body);
-        activationRequests.push(request);
-        active = {
-          profile: 'dev',
-          generation: active.generation + 1,
-          assembly: request.assembly,
-          configSnapshot: request.configSnapshot,
-        };
-        return jsonResponse({ ok: true, committed: active });
+      fetchImpl: async () => {
+        networkCalls += 1;
+        return jsonResponse({});
       },
       printResult: () => {},
       wait: async () => {
@@ -714,25 +588,8 @@ test('removing the final service converges watch to one exact empty assembly and
     /remove-last sequence complete/,
   );
 
-  assert.deepEqual(
-    activationRequests.map((request) => ({
-      expectedGeneration: request.expectedGeneration,
-      assembly: request.assembly,
-      configSnapshot: request.configSnapshot,
-    })),
-    [
-      {
-        expectedGeneration: 0,
-        assembly: nonemptyAssembly,
-        configSnapshot: nonemptyConfig,
-      },
-      {
-        expectedGeneration: 1,
-        assembly: emptyAssembly,
-        configSnapshot: emptyConfig,
-      },
-    ],
-  );
+  assert.deepEqual(assemblyResults, [1, 0]);
+  assert.equal(networkCalls, 0);
   assert.deepEqual((await readDevRegistry(registryPath)).roots, []);
 });
 
@@ -741,8 +598,6 @@ function watchOptions(registryPath) {
     roots: [],
     config: registryPath,
     artifactRoot: join(dirname(registryPath), 'artifacts'),
-    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
-    activationId: undefined,
     profile: undefined,
     pollIntervalMs: 500,
     watch: true,
@@ -761,33 +616,6 @@ async function serviceFixture(name, serviceId) {
 async function writeServiceRoot(root, serviceId) {
   await writePackageRoot(root, { packageId: `${serviceId}-package` });
   await writeFile(join(root, 'service.yml'), `id: ${serviceId}\n`);
-}
-
-function activeTuple(generation, assemblyDigit, snapshotDigit) {
-  return {
-    profile: 'dev',
-    generation,
-    assembly: {
-      assemblyIdentity:
-        `skiff-runtime-assembly-v3:sha256:${assemblyDigit.repeat(64)}`,
-    },
-    configSnapshot: {
-      snapshotId:
-        `skiff-runtime-config-snapshot-v1:${snapshotDigit.repeat(32)}`,
-    },
-  };
-}
-
-function healthResponse(active) {
-  return jsonResponse({
-    ok: true,
-    activeAssembly: {
-      profile: active.profile ?? 'dev',
-      generation: active.generation,
-      assemblyIdentity: active.assembly.assemblyIdentity,
-      configSnapshotId: active.configSnapshot.snapshotId,
-    },
-  });
 }
 
 function jsonResponse(body, status = 200) {

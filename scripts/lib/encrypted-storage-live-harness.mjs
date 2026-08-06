@@ -30,10 +30,7 @@ import {
   createEncryptedStorageLiveMongoProbe,
 } from './encrypted-storage-live-mongo-probe.mjs';
 import { isolatedInstanceOperations } from './isolated-test-runtime-instance.mjs';
-import { requestAssemblyActivation } from './package-service-authoring.mjs';
-import {
-  validatePackageServiceActivationReceipt,
-} from './package-service-ecosystem-smoke-oracle.mjs';
+import { writeReleasePointerSeed } from './release-pointer-seed.mjs';
 import {
   renderRouterConfig,
   renderRuntimeConfig,
@@ -97,15 +94,10 @@ export class EncryptedStorageLiveHarness {
     this.portLease = portLease;
     this.ports = portLease.ports;
     this.routerHttpUrl = `http://127.0.0.1:${this.ports.base}`;
-    this.activationUrl =
-      `http://127.0.0.1:${this.ports.base + 1}/__skiff/activate-assembly`;
     this.controlHealthUrl =
       `http://127.0.0.1:${this.ports.base + 1}/__router/health`;
     this.mongoUrl = `mongodb://127.0.0.1:${this.ports.mongo}/?directConnection=true&replicaSet=rs0&retryWrites=false`;
-    this.activationState = {
-      currentGeneration: 0,
-      productionAssembly: undefined,
-    };
+    this.productionAssembly = undefined;
     this.instanceOperations = isolatedInstanceOperations({
       skiffRoot: repoRoot,
       baseEnv: process.env,
@@ -126,7 +118,7 @@ export class EncryptedStorageLiveHarness {
     this.instanceInitialized = true;
     await this.writeRunnableConfigs();
     await this.writeKeyring(keyring);
-    this.activationState.productionAssembly = await this.buildProductionAssembly();
+    this.productionAssembly = await this.buildProductionAssembly();
     try {
       await this.runSkiff([
         'instance',
@@ -136,17 +128,6 @@ export class EncryptedStorageLiveHarness {
         'mongo',
       ]);
       await this.initializeReplicaSet();
-      await this.instanceOperations.seedActivationState({
-        mongoPort: this.ports.mongo,
-        bootstrap: {
-          profile: TARGET_PROFILE,
-          bootstrap: {
-            generation: this.activationState.currentGeneration,
-            assembly: this.activationState.productionAssembly,
-          },
-        },
-        signal: new AbortController().signal,
-      });
       await this.runSkiff(['instance', 'up', '--runtime', this.paths.instanceRoot]);
       await this.assertProductionAssemblyReady();
     } catch (error) {
@@ -171,7 +152,6 @@ export class EncryptedStorageLiveHarness {
       artifactsPath: join(devHome, 'artifacts'),
       devReload: false,
       requestTimeoutMs: 20000,
-      activationPrepareTimeoutMs: 120000,
       httpPort: this.ports.base,
       httpMaxRequestBytes: 67108864,
       httpMaxResponseBytes: 8388608,
@@ -208,11 +188,10 @@ export class EncryptedStorageLiveHarness {
   async runLiveTestRunner(testFile) {
     const databasesBefore = new Set(await this.databaseNames());
     const result = await runEncryptedStorageTestLifecycle({
-      activationState: this.activationState,
+      productionAssembly: this.productionAssembly,
       runTest: ({
         baseAssembly,
         baseConfigSnapshot,
-        expectedGeneration,
       }) => runCommand(
         'cargo',
         encryptedStorageTestRunnerArgs({
@@ -220,10 +199,8 @@ export class EncryptedStorageLiveHarness {
           artifactRoot: this.paths.artifactRoot,
           baseAssembly,
           baseConfigSnapshot,
-          activationUrl: this.activationUrl,
           ingressUrl: this.routerHttpUrl,
           profile: TARGET_PROFILE,
-          expectedGeneration,
         }),
         { cwd: repoRoot },
       ),
@@ -241,87 +218,59 @@ export class EncryptedStorageLiveHarness {
         }
         return { ...storage, dropped: true, droppedBy };
       },
-      readCommittedGeneration: () => this.readCommittedGeneration(),
-      restoreProductionAssembly: (input) => this.restoreProductionAssembly(input),
+      restoreProductionDeployments: (productionAssembly) =>
+        this.restoreProductionDeployments(productionAssembly),
     });
     return result.storage;
   }
 
-  async readCommittedGeneration() {
-    const response = await fetch(this.controlHealthUrl);
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `router health returned HTTP ${response.status}${text ? `: ${text}` : ''}`,
-      );
+  async restoreProductionDeployments(productionAssembly) {
+    for (const deployment of productionAssembly.deployments) {
+      await writeReleasePointerSeed({
+        artifactRoot: this.paths.artifactRoot,
+        profile: TARGET_PROFILE,
+        deployment,
+        recordPath: encryptedStorageDeploymentRecordPath(deployment),
+      });
     }
-    let health;
-    try {
-      health = JSON.parse(text);
-    } catch (error) {
-      throw new Error(`router health returned invalid JSON: ${error.message}`);
-    }
-    const generation = health?.activeAssembly?.generation;
-    if (
-      health?.ok !== true
-      || health?.pendingActivation !== null
-      || health?.activeAssembly?.profile !== TARGET_PROFILE
-      || !Number.isSafeInteger(generation)
-      || generation < 0
-    ) {
-      throw new Error('router health did not expose one committed dev generation');
-    }
-    return generation;
+    return productionAssembly;
   }
 
   async assertProductionAssemblyReady() {
+    const expectedBuildIds = new Set(
+      this.productionAssembly.deployments.map(
+        (deployment) => deployment.deploymentArtifactIdentity,
+      ),
+    );
     for (let attempt = 0; attempt < 1200; attempt += 1) {
       try {
         const response = await fetch(this.controlHealthUrl);
         if (response.ok) {
           const health = await response.json();
           const active = health?.activeAssembly;
+          const buildIds = Array.isArray(active?.buildIds)
+            ? active.buildIds
+            : [];
           const matchingReplica = (health?.replicas ?? []).some((replica) =>
             replica?.connected === true
             && replica?.state === 'healthy'
-            && replica?.profile === TARGET_PROFILE
-            && replica?.generation === this.activationState.currentGeneration
-            && replica?.assemblyIdentity
-              === this.activationState.productionAssembly.assemblyIdentity);
+            && replica?.profile === TARGET_PROFILE);
           if (
             health?.ok === true
-            && health?.pendingActivation === null
             && active?.profile === TARGET_PROFILE
-            && active?.generation === this.activationState.currentGeneration
-            && active?.assemblyIdentity
-              === this.activationState.productionAssembly.assemblyIdentity
+            && expectedBuildIds.size > 0
+            && [...expectedBuildIds].every((buildId) => buildIds.includes(buildId))
             && matchingReplica
           ) {
             return;
           }
         }
       } catch {
-        // Router and Runtime may still be converging on the seeded generation.
+        // Router and Runtime may still be converging on the seeded pointers.
       }
       await delay(100);
     }
-    throw new Error('production RuntimeAssembly did not become ready at generation 0');
-  }
-
-  async restoreProductionAssembly({ assembly, expectedGeneration }) {
-    const activation = await requestAssemblyActivation({
-      activationUrl: this.activationUrl,
-      expectedGeneration,
-      profile: TARGET_PROFILE,
-      assembly: { assemblyIdentity: assembly.assemblyIdentity },
-      configSnapshot: { snapshotId: assembly.configSnapshotId },
-    });
-    validatePackageServiceActivationReceipt(activation, {
-      profile: TARGET_PROFILE,
-      assemblyIdentity: assembly.assemblyIdentity,
-      configSnapshotId: assembly.configSnapshotId,
-      expectedGeneration,
-    });
+    throw new Error('production deployment pointers did not become ready on the Router');
   }
 
   async restartRuntime(keyring, { retirementAuthorized = false } = {}) {
@@ -566,6 +515,20 @@ export class EncryptedStorageLiveHarness {
 
 function runCommand(command, args, options) {
   return runAttachedCommand(command, args, options);
+}
+
+function encryptedStorageDeploymentRecordPath(deployment) {
+  const hex = deployment.deploymentArtifactIdentity.slice(
+    deployment.deploymentArtifactIdentity.lastIndexOf(':') + 1,
+  );
+  return [
+    'records',
+    'service-deployments',
+    deployment.serviceId.replaceAll('.', '~d').replaceAll('/', '~s'),
+    deployment.contractVersion,
+    deployment.deploymentRevision,
+    `${hex}.json`,
+  ].join('/');
 }
 
 function removesExistingKey(currentKeyring, nextKeyring) {

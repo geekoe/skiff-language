@@ -154,7 +154,7 @@ async function startIsolatedTestRuntime({
     const configPath = join(instanceRoot, 'instance.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
-    const startupGate = join(instanceRoot, 'activation-seeded.ready');
+    const startupGate = join(instanceRoot, 'bootstrap-seeded.ready');
     const startupReady = join(instanceRoot, 'mongo-started.ready');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
@@ -203,7 +203,7 @@ async function startIsolatedTestRuntime({
       ops.waitMongoStarted({ startupReady, supervisor, signal }));
     await stageCall('Mongo primary election', () =>
       ops.waitMongoPrimary({ mongoPort, supervisor, signal }));
-    const bootstrap = await stageCall('activation seed', async () => {
+    const bootstrap = await stageCall('bootstrap seed', async () => {
       const receipt = await ops.seedBootstrap({
         skiffRoot,
         artifactRoot,
@@ -212,13 +212,6 @@ async function startIsolatedTestRuntime({
         signal,
       });
       validateBootstrapReceipt?.(receipt);
-      await ops.seedActivationState({
-        mongoPort,
-        artifactRoot,
-        profile,
-        bootstrap: receipt,
-        signal,
-      });
       await ops.releaseStartupGate(startupGate, ownershipReceipt);
       return receipt;
     });
