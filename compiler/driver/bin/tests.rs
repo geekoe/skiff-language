@@ -192,6 +192,142 @@ fn human_service_api_output_is_explicit_for_zero_api() {
     );
 }
 
+#[test]
+fn release_actions_validate_required_options_and_reject_unknown_options() {
+    let missing_artifact_root =
+        run_error(&["release", "set", "--profile", "dev", "--deployment", "{}"]);
+    assert_eq!(missing_artifact_root, "--artifact-root is required");
+
+    let missing_profile = run_error(&[
+        "release",
+        "get",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--service",
+        "example.echo",
+        "--version",
+        "1.0.0",
+    ]);
+    assert_eq!(missing_profile, "--profile is required");
+
+    let missing_deployment = run_error(&[
+        "release",
+        "set",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+    ]);
+    assert_eq!(
+        missing_deployment,
+        "release set requires --deployment '<exact ServiceDeploymentRef JSON>'"
+    );
+
+    let missing_service = run_error(&[
+        "release",
+        "unset",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+        "--version",
+        "1.0.0",
+    ]);
+    assert_eq!(missing_service, "release unset requires --service <id>");
+
+    let missing_version = run_error(&[
+        "release",
+        "get",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+        "--service",
+        "example.echo",
+    ]);
+    assert_eq!(missing_version, "release get requires --version <v>");
+
+    let unknown = run_error(&[
+        "release",
+        "set",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+        "--deployment",
+        "{}",
+        "--revision",
+        "revision-1",
+    ]);
+    assert!(
+        unknown.contains("unknown release set option --revision"),
+        "{unknown}"
+    );
+}
+
+#[test]
+fn release_actions_reject_malformed_and_mismatched_expected_pointers() {
+    const DEPLOYMENT: &str = "{\"serviceId\":\"example.echo\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"revision-1\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}";
+    let malformed = run_error(&[
+        "release",
+        "set",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+        "--deployment",
+        DEPLOYMENT,
+        "--expected",
+        "not-json",
+    ]);
+    assert!(
+        malformed.contains("--expected requires exact ReleasePointer JSON"),
+        "{malformed}"
+    );
+
+    let mismatched = run_error(&[
+        "release",
+        "unset",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--profile",
+        "dev",
+        "--service",
+        "example.echo",
+        "--version",
+        "1.0.0",
+        "--expected",
+        "{\"schemaVersion\":\"skiff-release-pointer-v1\",\"profile\":\"prod\",\"deployment\":{\"serviceId\":\"example.echo\",\"contractVersion\":\"1.0.0\",\"deploymentRevision\":\"revision-1\",\"deploymentArtifactIdentity\":\"skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"recordPath\":\"records/service-deployments/example~decho/1.0.0/revision-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json\"}",
+    ]);
+    assert!(
+        mismatched.contains("must target the same profile, service, and version"),
+        "{mismatched}"
+    );
+}
+
+#[test]
+fn release_actions_reject_unknown_actions_and_duplicate_options() {
+    let unknown_action = run_error(&["release", "swap", "--artifact-root", "/tmp/skiff-artifacts"]);
+    assert_eq!(
+        unknown_action,
+        "unknown release action swap; expected set, unset, or get"
+    );
+
+    let duplicate = run_error(&[
+        "release",
+        "set",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--artifact-root",
+        "/tmp/other-artifacts",
+        "--profile",
+        "dev",
+        "--deployment",
+        "{}",
+    ]);
+    assert_eq!(duplicate, "--artifact-root was provided more than once");
+}
+
 fn run_error(args: &[&str]) -> String {
     run_with_args(args.iter().map(|argument| (*argument).to_owned()))
         .unwrap_err()

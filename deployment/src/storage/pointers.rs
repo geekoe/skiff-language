@@ -158,7 +158,10 @@ impl RuntimeAssemblyPointer {
 }
 
 impl ReleasePointer {
-    pub fn new(profile: impl Into<String>, deployment: ServiceDeploymentRef) -> StorageResult<Self> {
+    pub fn new(
+        profile: impl Into<String>,
+        deployment: ServiceDeploymentRef,
+    ) -> StorageResult<Self> {
         let profile = profile.into();
         ReleasePointerPath::new(
             &profile,
@@ -399,16 +402,17 @@ impl CanonicalArtifactStore {
             let current = read_locked_bytes(destination)?
                 .map(|bytes| parse_pointer(destination, &bytes, ReleasePointer::validate))
                 .transpose()?;
-            if current.as_ref() != expected {
-                return Err(EcosystemStorageError::CasMismatch {
-                    path: destination.to_path_buf(),
-                    message: "current pointer does not equal expected pointer".to_string(),
-                });
+            if let Some(expected) = expected {
+                if current.as_ref() != Some(expected) {
+                    return Err(EcosystemStorageError::CasMismatch {
+                        path: destination.to_path_buf(),
+                        message: "current pointer does not equal expected pointer".to_string(),
+                    });
+                }
             }
             if current.is_some() {
-                fs::remove_file(destination).map_err(|source| {
-                    io_error("remove release pointer", destination, source)
-                })?;
+                fs::remove_file(destination)
+                    .map_err(|source| io_error("remove release pointer", destination, source))?;
                 sync_directory(
                     destination
                         .parent()

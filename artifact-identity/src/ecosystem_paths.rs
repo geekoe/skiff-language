@@ -224,7 +224,10 @@ impl ReleasePointerPath {
         let profile = safe_segment(profile, "profile")?;
         let service = coordinate_segment(service_id, "serviceId")?;
         let version = safe_segment(version, "contractVersion")?;
-        relative(format!("pointers/releases/{profile}/{service}/{version}.json")).map(Self)
+        relative(format!(
+            "pointers/releases/{profile}/{service}/{version}.json"
+        ))
+        .map(Self)
     }
 }
 

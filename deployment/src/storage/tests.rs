@@ -539,9 +539,7 @@ fn release_pointer_round_trip_atomic_overwrite_cas_and_unset() {
     let first_pointer = ReleasePointer::new("dev", first_ref).unwrap();
     let second_pointer = ReleasePointer::new("dev", second_ref).unwrap();
     let pointer_path = ReleasePointerPath::new("dev", "example.echo", "1.0.0").unwrap();
-    let host_path = store
-        .root()
-        .join(pointer_path.as_relative_path().as_path());
+    let host_path = store.root().join(pointer_path.as_relative_path().as_path());
 
     store.write_release_pointer(&first_pointer).unwrap();
     assert_eq!(
@@ -580,7 +578,9 @@ fn release_pointer_round_trip_atomic_overwrite_cas_and_unset() {
     let mut tampered = original.clone();
     tampered.push(b'\n');
     fs::write(&host_path, tampered).unwrap();
-    assert!(store.read_release_pointer("dev", "example.echo", "1.0.0").is_err());
+    assert!(store
+        .read_release_pointer("dev", "example.echo", "1.0.0")
+        .is_err());
     fs::write(&host_path, &original).unwrap();
 
     let missing_ref = skiff_artifact_model::ServiceDeploymentRef {
@@ -604,15 +604,28 @@ fn release_pointer_round_trip_atomic_overwrite_cas_and_unset() {
         store
             .read_release_pointer("prod", "example.echo", "1.0.0")
             .unwrap(),
-        Some(prod_pointer)
+        Some(prod_pointer.clone())
     );
+    assert_eq!(
+        store
+            .unset_release_pointer("prod", "example.echo", "1.0.0", None)
+            .unwrap(),
+        Some(prod_pointer.clone()),
+        "unset without expectation must remove an existing pointer"
+    );
+    assert_eq!(
+        store
+            .unset_release_pointer("prod", "example.echo", "1.0.0", None)
+            .unwrap(),
+        None
+    );
+
     assert_eq!(
         store
             .read_release_pointer("dev", "example.echo", "1.0.0")
             .unwrap(),
         Some(second_pointer.clone())
     );
-
     assert!(store
         .unset_release_pointer("dev", "example.echo", "1.0.0", Some(&first_pointer))
         .is_err());
