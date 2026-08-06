@@ -21,11 +21,13 @@ const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json
 const ACTIVATION_STATE_SCHEMA_VERSION = 'skiff-profile-activation-state-v1';
 const ACTIVATION_STATE_DATABASE = 'skiff-router';
 const ACTIVATION_STATE_COLLECTION = 'activation_state';
+const ROUTER_HEALTH_PROBE_TIMEOUT_MS = 500;
 
 export async function initStack({
   configDir,
   skiffRoot,
   shell = createStackShell({ skiffRoot }),
+  fetchImpl = fetch,
   authoring = {
     runCompilerAuthoring,
     runConfigSnapshotAuthoring,
@@ -34,7 +36,7 @@ export async function initStack({
 }) {
   const stack = await loadStackConfig(configDir, { skiffRoot });
   if (stack.config.remote === undefined) {
-    return initLocalStack({ stack, skiffRoot, authoring });
+    return initLocalStack({ stack, skiffRoot, authoring, fetchImpl });
   }
   requireRemoteStackConfig(stack, 'stack init');
   const profile = stack.config.profile;
@@ -144,6 +146,7 @@ async function initLocalStack({
   stack,
   skiffRoot,
   authoring,
+  fetchImpl,
 }) {
   const profile = stack.config.profile;
   const instanceFile = path.join(stack.paths.buildRoot, 'instance.yml');
@@ -158,6 +161,13 @@ async function initLocalStack({
   }
   if (instance.schemaVersion !== 'skiff-instance-v1' || instance.profile !== profile) {
     throw new Error('instance.yml must be skiff-instance-v1 with the configDir profile');
+  }
+  if (typeof instance.activationUrl === 'string') {
+    await assertLocalRouterStopped({
+      fetchImpl,
+      activationUrl: instance.activationUrl,
+      runtime: stack.paths.buildRoot,
+    });
   }
   const artifactRoot = instance.artifactRoot;
   const serviceDbMongoUrl = stack.router.serviceDb?.mongoUrl;
@@ -229,5 +239,24 @@ async function captureLocalMongo(evalScript, mongoUrl) {
     'mongosh',
     [mongoUrl, '--quiet', '--eval', evalScript],
     { cwd: process.cwd() },
+  );
+}
+
+export async function assertLocalRouterStopped({
+  fetchImpl = fetch,
+  activationUrl,
+  runtime,
+}) {
+  const healthUrl = new URL('/__router/health', activationUrl).toString();
+  try {
+    await fetchImpl(healthUrl, {
+      method: 'GET',
+      signal: AbortSignal.timeout(ROUTER_HEALTH_PROBE_TIMEOUT_MS),
+    });
+  } catch {
+    return;
+  }
+  throw new Error(
+    `router is still running (health probe at ${healthUrl} responded); stack init resets the Mongo activation_state document to generation 0, which desyncs the running router epoch and breaks subsequent activations. Run "skiff instance down --runtime ${runtime}" first, then re-run stack init`,
   );
 }

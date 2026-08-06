@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { initStack } from '../lib/stack-init.mjs';
+import { initStack, assertLocalRouterStopped } from '../lib/stack-init.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
 
@@ -73,31 +73,77 @@ test('init fails closed when the actor routing projection record is missing', as
   assert.equal(calls.filter((call) => call.op === 'ssh').length, 0);
 });
 
+test('init refuses local mode before authoring while the router is still running', async (t) => {
+  const { configDir, authoring, authoringState } = await initFixture(t, {
+    mode: 'local',
+  });
+  const fetchImpl = async () => ({ ok: true, status: 200 });
+  await assert.rejects(
+    initStack({ configDir, skiffRoot, authoring, fetchImpl }),
+    (error) => (
+      /router is still running/.test(error.message)
+      && /skiff instance down --runtime/.test(error.message)
+    ),
+  );
+  assert.equal(authoringState.assemblyCall, undefined);
+});
+
+test('router-stopped probe derives the health URL and tolerates a refused connection', async () => {
+  const probed = [];
+  const fetchImpl = async (url, options) => {
+    probed.push({ url, options });
+    throw new Error('connect ECONNREFUSED 127.0.0.1:4101');
+  };
+  await assertLocalRouterStopped({
+    fetchImpl,
+    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
+    runtime: 'build/runtime-stack',
+  });
+  assert.equal(probed.length, 1);
+  assert.equal(probed[0].url, 'http://router.test:4101/__router/health');
+  assert.ok(probed[0].options.signal instanceof AbortSignal);
+});
+
+test('router-stopped probe fails closed when the router answers with an HTTP error status', async () => {
+  await assert.rejects(
+    assertLocalRouterStopped({
+      fetchImpl: async () => ({ ok: false, status: 500 }),
+      activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
+      runtime: 'build/runtime-stack',
+    }),
+    /router is still running/,
+  );
+});
+
 async function initFixture(t, {
   router = undefined,
+  mode = 'remote',
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'skiff-stack-init-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const configDir = join(root, 'configDir');
   await mkdir(configDir, { recursive: true });
+  const buildRoot = mode === 'local' ? join(root, 'build') : 'build/runtime-stack';
   await writeFile(join(configDir, 'build.yml'), [
     'target: x86_64-unknown-linux-gnu',
     'zigDir: /cache/zig',
-    'buildRoot: build/runtime-stack',
+    `buildRoot: ${JSON.stringify(buildRoot)}`,
     'cargoTargetDir: build/cargo-target',
     '',
   ].join('\n'));
   await writeFile(join(configDir, 'config.yml'), [
     'profile: prod',
-    'remote:',
-    '  host: init.test',
-    '  remoteSkiff: /srv/skiff',
-    '  nodeBin: /opt/node/bin',
-    'verify:',
-    '  httpPort: 4000',
-    '  controlPort: 4001',
-    '  telemetryPort: 4002',
-    '  healthPath: /__router/health',
+    ...(mode === 'local' ? [] : [
+      'remote:',
+      '  host: init.test',
+      '  remoteSkiff: /srv/skiff',
+      '  nodeBin: /opt/node/bin',
+      'verify:',
+      '  httpPort: 4000',
+      '  controlPort: 4001',
+      '  telemetryPort: 4002',
+      '  healthPath: /__router/health',
+    ]),
     '',
   ].join('\n'));
   await writeFile(join(configDir, 'router.yml'), router ?? [
@@ -116,6 +162,16 @@ async function initFixture(t, {
     join(configDir, 'telemetry.yml'),
     'telemetry:\n  host: 127.0.0.1\n  port: 4002\n',
   );
+  if (mode === 'local') {
+    await mkdir(buildRoot, { recursive: true });
+    await writeFile(join(buildRoot, 'instance.yml'), [
+      'schemaVersion: skiff-instance-v1',
+      'profile: prod',
+      `artifactRoot: ${JSON.stringify(join(root, 'artifacts'))}`,
+      'activationUrl: http://router.test:4101/__skiff/activate-assembly',
+      '',
+    ].join('\n'));
+  }
 
   const calls = [];
   const shell = {
