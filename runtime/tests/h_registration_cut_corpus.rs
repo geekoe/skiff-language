@@ -42,7 +42,7 @@ const REQUIRED_FRAMES: [&str; 12] = [
     "legacy.runtime.register",
 ];
 
-const REQUIRED_SCENARIOS: [&str; 19] = [
+const REQUIRED_SCENARIOS: [&str; 20] = [
     "accept-sequence",
     "wrong-order-health-before-capabilities",
     "wrong-order-register-before-capabilities",
@@ -62,6 +62,7 @@ const REQUIRED_SCENARIOS: [&str; 19] = [
     "disconnect-mid-handshake",
     "re-register-exact-idempotent",
     "re-register-stale-after-ack",
+    "capabilities-refresh-same-replica",
 ];
 
 #[derive(Debug, Clone, Deserialize)]

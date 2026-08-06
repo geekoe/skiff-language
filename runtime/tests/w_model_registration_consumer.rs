@@ -225,7 +225,7 @@ mod tests {
                     .to_string(),
             );
         }
-        const REQUIRED: [&str; 19] = [
+        const REQUIRED: [&str; 20] = [
             "accept-sequence",
             "wrong-order-health-before-capabilities",
             "wrong-order-register-before-capabilities",
@@ -245,6 +245,7 @@ mod tests {
             "disconnect-mid-handshake",
             "re-register-exact-idempotent",
             "re-register-stale-after-ack",
+            "capabilities-refresh-same-replica",
         ];
         for required in REQUIRED {
             assert!(
