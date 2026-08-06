@@ -9,15 +9,13 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind,
-    GatewayAdapterPlan, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
-    GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
-    PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, RuntimeAssembly,
-    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_artifact_model::GatewayAdapterSource;
 use skiff_artifact_model::GatewayExternalSchema;
@@ -26,10 +24,9 @@ use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
-use skiff_router::http::{EpochHttpIngressResolver, HttpGatewaySurfaceView, HttpIngressResolver};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_router::http::{
+    HttpGatewaySurfaceView, HttpIngressResolver, StoreHttpIngressResolver,
+};
 
 pub const SERVICE_ID: &str = "example.com/service-1";
 pub const CONTRACT_VERSION: &str = "1.0.0";
@@ -165,89 +162,6 @@ fn fixture_store() -> Arc<CanonicalArtifactStore> {
     }))
 }
 
-pub fn fixture_epoch() -> Arc<RoutingEpoch> {
-    let deployment = fixture_deployment();
-    let assembly = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new(ASSEMBLY_IDENTITY),
-        roots: vec![deployment.clone()],
-        resolved_deployments: vec![deployment.clone()],
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: vec![
-            GatewayIngressBinding {
-                selector: IngressSelector {
-                    protocol: IngressProtocol::Http,
-                    method: Some("POST".to_string()),
-                    path: "/items".to_string(),
-                },
-                deployment: deployment.clone(),
-                gateway_entry_key: GatewayEntryKey::parse("items").expect("key"),
-                gateway_entry_identity: fixture_service_deployment()
-                    .gateway_entries
-                    .get(&GatewayEntryKey::parse("items").expect("key"))
-                    .expect("items entry")
-                    .gateway_entry_identity
-                    .clone(),
-            },
-            GatewayIngressBinding {
-                selector: IngressSelector {
-                    protocol: IngressProtocol::Http,
-                    method: Some("GET".to_string()),
-                    path: "/events".to_string(),
-                },
-                deployment: deployment.clone(),
-                gateway_entry_key: GatewayEntryKey::parse("events").expect("key"),
-                gateway_entry_identity: fixture_service_deployment()
-                    .gateway_entries
-                    .get(&GatewayEntryKey::parse("events").expect("key"))
-                    .expect("events entry")
-                    .gateway_entry_identity
-                    .clone(),
-            },
-            GatewayIngressBinding {
-                selector: IngressSelector {
-                    protocol: IngressProtocol::Http,
-                    method: Some("OPTIONS".to_string()),
-                    path: "/items".to_string(),
-                },
-                deployment: deployment.clone(),
-                gateway_entry_key: GatewayEntryKey::parse("items-options").expect("key"),
-                gateway_entry_identity: fixture_service_deployment()
-                    .gateway_entries
-                    .get(&GatewayEntryKey::parse("items-options").expect("key"))
-                    .expect("items-options entry")
-                    .gateway_entry_identity
-                    .clone(),
-            },
-        ],
-    };
-    let snapshot = RuntimeConfigSnapshot::new(
-        "prod",
-        RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(CONFIG_SNAPSHOT_ID).expect("snapshot id"),
-        },
-        Vec::new(),
-    )
-    .expect("snapshot fixture");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-    Arc::new(
-        RoutingEpoch::new("prod", 42, Arc::new(assembly), Arc::new(snapshot), catalog)
-            .expect("epoch fixture"),
-    )
-}
-
 fn surface_entry(
     mode: GatewayDispatchMode,
     adapter_kind: GatewayAdapterKind,
@@ -346,13 +260,19 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             ),
         ),
     ]);
-    Arc::new(EpochHttpIngressResolver::new_with_live_artifact_store(
+    Arc::new(StoreHttpIngressResolver::new_with_live_artifact_store(
         Arc::new(
             HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)
                 .expect("surface view fixture"),
         ),
         (*fixture_store()).clone(),
+        "prod",
     ))
+}
+
+/// Fixture profile used by the shared artifact store release pointers.
+pub fn fixture_profile() -> &'static str {
+    "prod"
 }
 
 #[derive(Debug, Clone)]

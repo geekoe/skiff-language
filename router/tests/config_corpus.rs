@@ -179,7 +179,6 @@ mod tests {
                 assert_eq!(config.dev_reload, Some(true));
                 assert_eq!(config.release_mode, Some(false));
                 assert_eq!(config.request_timeout_ms, 20_000);
-                assert_eq!(config.activation_prepare_timeout_ms, 120_000);
                 assert_eq!(config.http_port, 4000);
                 assert_eq!(config.http_max_request_bytes, 67_108_864);
                 assert_eq!(config.http_max_response_bytes, 8_388_608);
@@ -215,7 +214,6 @@ mod tests {
                 assert_eq!(config.runtime_path, "/runtime");
                 assert_eq!(config.websocket_path, "/ws");
                 assert_eq!(config.request_timeout_ms, 20_000);
-                assert_eq!(config.activation_prepare_timeout_ms, 120_000);
                 assert_eq!(
                     config.manifests,
                     vec![valid_dir.join("fixtures/hello/manifest.json")]
@@ -233,7 +231,6 @@ mod tests {
                 assert_eq!(config.artifacts_path, PathBuf::from("/tmp/skiff/artifacts"));
                 assert_eq!(config.dev_reload, Some(true));
                 assert_eq!(config.request_timeout_ms, 20_000);
-                assert_eq!(config.activation_prepare_timeout_ms, 120_000);
                 assert_eq!(config.http_port, 4000);
                 assert_eq!(config.http_max_request_bytes, 67_108_864);
                 assert_eq!(config.http_max_response_bytes, 8_388_608);

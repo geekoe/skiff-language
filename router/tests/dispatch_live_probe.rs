@@ -39,17 +39,11 @@ use bytes::Bytes;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::Value;
 use skiff_artifact_model::{
-    AssemblyActivationControl, GatewayEntryIdentity, IngressProtocol, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotRef,
+    GatewayEntryIdentity, IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
 };
 use skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH;
 use skiff_router::config::load_router_config;
@@ -58,9 +52,6 @@ use skiff_router::http::{CancelSignal, DispatchRequest, HttpDispatchError, Unary
 use skiff_router::listener::ListenerStartOptions;
 use skiff_router::supervisor::{RouterComponents, RouterSupervisor};
 use skiff_router::HttpDispatchPort;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_router_bootstrap_frame, decode_typed_binary_frame,
     RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability, RuntimeHealthFrameHeader,
@@ -85,10 +76,9 @@ const MAX_CONCURRENCY: u64 = 4;
 const ECHO_PATH: &str = "/echo";
 const SLOW_PATH: &str = "/slow";
 
-const HANDSHAKE_SEQUENCE: [&str; 5] = [
+const HANDSHAKE_SEQUENCE: [&str; 4] = [
     "router.bootstrap",
     "runtime.capabilities",
-    "assembly.activation",
     "runtime.registered",
     "runtime.health",
 ];
@@ -180,34 +170,9 @@ impl LiveProfile {
     }
 }
 
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect temporary Mongo repository"),
-    )
-}
-
 fn seed_runtime_home(home: &Path, replica_id: &str) {
     std::fs::create_dir_all(home).expect("create runtime home");
     std::fs::write(home.join("runtime-id"), format!("{replica_id}\n")).expect("seed runtime-id");
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = ProfileActivationState::initial(
-        &live.profile,
-        live.generation,
-        live.assembly_ref(),
-        live.snapshot_ref(),
-    );
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -662,15 +627,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                 let header =
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
                 assert_eq!(header.activation.profile, live.profile);
-                assert_eq!(header.activation.generation, live.generation);
-                assert_eq!(
-                    header.activation.assembly.assembly_identity.as_str(),
-                    live.assembly_identity
-                );
-                assert_eq!(
-                    header.activation.config_snapshot.snapshot_id.to_string(),
-                    live.config_snapshot_id
-                );
             }
             "runtime.capabilities" => {
                 assert_eq!(*direction, Direction::ToRouter);
@@ -684,10 +640,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                         .contains(&RuntimeDispatchModeCapability::Unary),
                     "real Runtime must advertise unary for the admitted HTTP gateway assembly"
                 );
-            }
-            "assembly.activation" => {
-                assert_eq!(*direction, Direction::ToRouter);
-                assert_register_control(live, bytes);
             }
             "runtime.registered" => {
                 assert_eq!(*direction, Direction::ToRuntime);
@@ -710,30 +662,7 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
     }
 }
 
-fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
-    let control =
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
-            .expect("decode register frame");
-    match control {
-        AssemblyActivationControl::Register {
-            profile,
-            generation,
-            assembly,
-            config_snapshot,
-            replica_id,
-        } => {
-            assert_eq!(profile, live.profile);
-            assert_eq!(generation, live.generation);
-            assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
-            assert_eq!(
-                config_snapshot.snapshot_id.to_string(),
-                live.config_snapshot_id
-            );
-            assert!(replica_id.starts_with("skiff-runtime-live-dispatch-replica-"));
-        }
-        other => panic!("expected Register control, got {other:?}"),
-    }
-}
+fn assert_register_control_removed(_live: &LiveProfile) {}
 
 // ---------------------------------------------------------------------------
 // Fake ingress: production `HttpDispatchPort` adapter driven by the probe.
@@ -747,17 +676,40 @@ fn dispatch_request(
     payload: &[u8],
     timeout_ms: u64,
 ) -> (DispatchRequest, CancelSignal) {
-    let epoch = Arc::clone(&components.epoch);
-    let binding = epoch
-        .ingress_projection()
+    // M4: the binding is the release-resolved HTTP surface (production
+    // resolver over the live artifact store).
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(
+        &components.config.artifacts_path,
+    )
+    .expect("open artifact store");
+    let release: Arc<dyn skiff_router::release::ReleaseResolver> =
+        Arc::new(skiff_router::release::StoreReleaseResolver::new(store.clone()));
+    let profile = components.assembly.profile().to_string();
+    let deployments = release
+        .all_deployments(&profile)
+        .expect("release pointer scan");
+    let deployment = deployments
+        .iter()
+        .find(|deployment| deployment.service_id == "example.com/service-1")
+        .or_else(|| deployments.first())
+        .expect("published deployment");
+    let record = store
+        .read_service_deployment(deployment)
+        .expect("deployment record");
+    let ingress = record
+        .ingress
         .iter()
         .find(|binding| {
             binding.selector.protocol == IngressProtocol::Http
                 && binding.selector.path == path
                 && binding.selector.method.as_deref() == Some("POST")
         })
-        .unwrap_or_else(|| panic!("epoch must project HTTP ingress {path}"));
-    let method = binding
+        .unwrap_or_else(|| panic!("release ingress for {path}"));
+    let entry = record
+        .gateway_entries
+        .get(&ingress.gateway_entry_key)
+        .expect("gateway entry");
+    let method = ingress
         .selector
         .method
         .clone()
@@ -772,15 +724,15 @@ fn dispatch_request(
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: epoch.assembly().assembly_identity.clone(),
-            assembly_generation: epoch.assembly_generation(),
-            deployment: binding.deployment.clone(),
-            build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
-            gateway_entry_identity: binding.gateway_entry_identity.clone(),
+            assembly_identity: None,
+            assembly_generation: None,
+            deployment: deployment.clone(),
+            build_id: Some(deployment.deployment_artifact_identity.to_string()),
+            gateway_entry_identity: entry.gateway_entry_identity.clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,
                 method: method.clone(),
-                path: binding.selector.path.clone(),
+                path: ingress.selector.path.clone(),
             },
         },
         client_session: None,
@@ -816,21 +768,13 @@ fn dispatch_request(
 }
 
 fn wrong_deployment_request(
-    components: &RouterComponents,
+    _components: &RouterComponents,
     request_id: &str,
 ) -> (DispatchRequest, CancelSignal) {
-    let epoch = Arc::clone(&components.epoch);
-    let binding = epoch
-        .ingress_projection()
-        .iter()
-        .find(|binding| {
-            binding.selector.protocol == IngressProtocol::Http && binding.selector.path == ECHO_PATH
-        })
-        .expect("echo ingress binding");
-    let mut deployment = binding.deployment.clone();
-    deployment.service_id = "test.skiff/not-in-epoch".to_string();
     let (mut request, signal) =
-        dispatch_request(components, request_id, "unary", ECHO_PATH, b"{}", 5000);
+        dispatch_request(_components, request_id, "unary", ECHO_PATH, b"{}", 5000);
+    let mut deployment = request.header.routing.deployment.clone();
+    deployment.service_id = "test.skiff/not-in-epoch".to_string();
     request.header.routing.deployment = deployment;
     (request, signal)
 }
@@ -923,14 +867,10 @@ mod tests {
         seed_runtime_home(&live.runtime_home_b, REPLICA_B);
         materialize_projection(&live);
 
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-        seed_committed(&live, &repository).await;
-
         let config_path = write_router_config(&live);
         let config = load_router_config(config_path.to_str().expect("config path utf8"))
             .expect("router config");
-        let supervisor = RouterSupervisor::assemble_with(&config, &live.profile, repository)
+        let supervisor = RouterSupervisor::assemble(&config)
             .await
             .expect("assemble production router composition");
         let components = Arc::clone(supervisor.components());

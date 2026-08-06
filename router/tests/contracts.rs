@@ -27,13 +27,12 @@ mod tests {
             [
                 RuntimeFrameFamily::Session,
                 RuntimeFrameFamily::Request,
-                RuntimeFrameFamily::Activation,
                 RuntimeFrameFamily::Connection,
                 RuntimeFrameFamily::Actor,
                 RuntimeFrameFamily::Task,
             ]
         );
-        assert_eq!(RUNTIME_FRAME_FAMILY_RULES.len(), 6);
+        assert_eq!(RUNTIME_FRAME_FAMILY_RULES.len(), 5);
         for rule in RUNTIME_FRAME_FAMILY_RULES {
             assert_eq!(rule.family.direction(), rule.direction);
             assert_eq!(rule.family.payload_presence(), rule.payload_presence);

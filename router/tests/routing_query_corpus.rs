@@ -24,14 +24,24 @@ fn assert_lease_matches_fixture(
         })
         .expect("lease session must come from the fixture");
     assert_eq!(lease.registration_revision, session.revision, "revision");
-    assert_eq!(
-        lease.exact_registered_tuple,
+    assert!(
+        !lease.cancellation.cancelled,
+        "projected lease must never carry a cancelled marker"
+    );
+    assert!(
+        lease.capabilities.supports(fixture.query.mode),
+        "projected lease must support the queried mode"
+    );
+    assert!(
         session
-            .tuple
-            .as_ref()
-            .map(tuple_from_fixture)
-            .expect("fixture session must carry a tuple"),
-        "lease must carry the exact session tuple"
+            .loaded_build_ids
+            .iter()
+            .any(|id| id == &fixture.query.build_id.as_deref().unwrap_or(
+                &fixture.epoch.deployment.deployment_artifact_identity
+            ))
+            || (session.lazy_load
+                && session.artifact_root == fixture.router_artifact_root),
+        "lease build-id eligibility must match the fixture"
     );
     assert!(
         !lease.cancellation.cancelled,
@@ -66,12 +76,6 @@ mod tests {
                 "{name} deployment coordinates"
             );
             assert!(!fixture.expect.note.is_empty(), "{name} note");
-            if let Some(directory_generation) = fixture.directory_current_epoch_generation {
-                assert_ne!(
-                    directory_generation, fixture.epoch.generation,
-                    "{name} captured epoch must differ from directory current"
-                );
-            }
             assert!(
                 REQUIRED_SCENARIOS.contains(&name),
                 "{name} must be a required scenario"
@@ -90,7 +94,6 @@ mod tests {
                 );
             }
 
-            let epoch = build_epoch(&fixture.epoch);
             let view = build_view(&fixture);
             let query = build_query(&fixture);
             let query_port = RuntimeCandidateQuery;
@@ -138,29 +141,10 @@ mod tests {
                 .all(|session| !session.heartbeat_fresh),
             "fixture session must be heartbeat-stale"
         );
-        let epoch = build_epoch(&fixture.epoch);
         let view = build_view(&fixture);
         let query = build_query(&fixture);
         let leases = RuntimeCandidateQuery.query(&view, &query);
         assert_eq!(leases.len(), 1);
-    }
-
-    #[test]
-    fn routing_query_captured_epoch_is_a_whole_lease() {
-        // Scenario 09: the query must only use the captured epoch (generation 42)
-        // even when the directory's current generation (43) differs; old captured
-        // epochs continue to project their own exact tuple without a global pin
-        // map.
-        let json = include_str!(
-        "../../runtime/transport/testdata/routing-query/scenarios/09-epoch-capture-is-whole-lease.json"
-    );
-        let fixture: ScenarioFixture = serde_json::from_str(json).expect("whole-lease fixture");
-        let epoch = build_epoch(&fixture.epoch);
-        let view = build_view(&fixture);
-        let query = build_query(&fixture);
-        let leases = RuntimeCandidateQuery.query(&view, &query);
-        assert_eq!(candidate_ids(&fixture, &leases), vec!["s1"]);
-        assert_eq!(leases[0].exact_registered_tuple, epoch.registered_tuple());
     }
 
     #[test]
@@ -169,7 +153,6 @@ mod tests {
         "../../runtime/transport/testdata/routing-query/scenarios/01-exact-single-candidate.json"
     );
         let fixture: ScenarioFixture = serde_json::from_str(json).expect("unary fixture");
-        let epoch = build_epoch(&fixture.epoch);
         let view = build_view(&fixture);
         let mut query = build_query(&fixture);
         assert_eq!(query.mode, DispatchMode::Unary);

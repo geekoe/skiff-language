@@ -8,23 +8,15 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity, DeploymentRevision,
-    RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-    ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
 };
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::routing::{
     CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
     RegisteredSessionLease, RoutingQueryCounters,
 };
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_router::session::identity::RuntimeSessionEpoch;
 
-pub const REQUIRED_SCENARIOS: [&str; 12] = [
+pub const REQUIRED_SCENARIOS: [&str; 11] = [
     "exact-single-candidate",
     "multiple-replicas-exact",
     "cancelled-excluded",
@@ -33,7 +25,6 @@ pub const REQUIRED_SCENARIOS: [&str; 12] = [
     "build-id-registered-wins-over-root-mismatch",
     "capability-server-stream-missing-excluded",
     "heartbeat-freshness-ignored",
-    "epoch-capture-is-whole-lease",
     "lazy-load-exact-root-candidate",
     "lazy-load-root-mismatch-excluded",
     "build-id-loaded-with-missing-capability-excluded",
@@ -72,10 +63,6 @@ pub fn scenario_files() -> Vec<(&'static str, &'static str)> {
         (
             "heartbeat-freshness-ignored",
             include_str!("../../../runtime/transport/testdata/routing-query/scenarios/08-heartbeat-freshness-ignored.json"),
-        ),
-        (
-            "epoch-capture-is-whole-lease",
-            include_str!("../../../runtime/transport/testdata/routing-query/scenarios/09-epoch-capture-is-whole-lease.json"),
         ),
         (
             "lazy-load-exact-root-candidate",
@@ -121,15 +108,6 @@ pub struct QueryFixture {
     pub build_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TupleFixture {
-    pub profile: String,
-    pub generation: u64,
-    pub assembly: String,
-    pub config_snapshot: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionFixture {
@@ -137,7 +115,6 @@ pub struct SessionFixture {
     pub session_epoch: SessionEpochFixture,
     pub revision: u64,
     pub registered: bool,
-    pub tuple: Option<TupleFixture>,
     pub cancelled: bool,
     pub capabilities: Vec<String>,
     #[serde(default = "default_true")]
@@ -169,8 +146,6 @@ pub struct ScenarioFixture {
     #[serde(default = "default_revision")]
     pub directory_revision: u64,
     #[serde(default)]
-    pub directory_current_epoch_generation: Option<u64>,
-    #[serde(default)]
     pub router_artifact_root: Option<String>,
     pub epoch: EpochFixture,
     pub query: QueryFixture,
@@ -190,12 +165,6 @@ pub struct ExpectFixture {
     pub note: String,
 }
 
-pub fn snapshot_ref(id: &str) -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: RuntimeConfigSnapshotId::parse(id).expect("fixture snapshot id must parse"),
-    }
-}
-
 pub fn deployment_ref(deployment: &DeploymentFixture) -> ServiceDeploymentRef {
     ServiceDeploymentRef {
         service_id: deployment.service_id.clone(),
@@ -204,59 +173,6 @@ pub fn deployment_ref(deployment: &DeploymentFixture) -> ServiceDeploymentRef {
         deployment_artifact_identity: DeploymentArtifactIdentity::new(
             deployment.deployment_artifact_identity.clone(),
         ),
-    }
-}
-
-/// Builds a real immutable `RoutingEpoch` from the corpus epoch block. The
-/// deployment block becomes the epoch's exact deployment projection.
-pub fn build_epoch(fixture: &EpochFixture) -> Arc<RoutingEpoch> {
-    let assembly = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new(fixture.assembly_identity.clone()),
-        roots: Vec::new(),
-        resolved_deployments: vec![deployment_ref(&fixture.deployment)],
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    let snapshot = RuntimeConfigSnapshot::new(
-        fixture.profile.clone(),
-        snapshot_ref(&fixture.config_snapshot_id),
-        Vec::new(),
-    )
-    .expect("fixture snapshot must be valid");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty actor projection");
-    let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-    Arc::new(
-        RoutingEpoch::new(
-            fixture.profile.clone(),
-            fixture.generation,
-            Arc::new(assembly),
-            Arc::new(snapshot),
-            catalog,
-        )
-        .expect("fixture epoch must be valid"),
-    )
-}
-
-pub fn tuple_from_fixture(tuple: &TupleFixture) -> RegisteredAssemblyTuple {
-    RegisteredAssemblyTuple {
-        profile: tuple.profile.clone(),
-        generation: tuple.generation,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(tuple.assembly.clone()),
-        },
-        config_snapshot: snapshot_ref(&tuple.config_snapshot),
     }
 }
 
@@ -273,7 +189,6 @@ pub fn build_view(fixture: &ScenarioFixture) -> CandidateDirectoryView {
                     connection_generation: session.session_epoch.connection_generation,
                 },
                 registered: session.registered,
-                registered_tuple: session.tuple.as_ref().map(tuple_from_fixture),
                 registration_revision: session.revision,
                 cancelled: session.cancelled,
                 capabilities: DispatchCapabilities {

@@ -1,50 +1,29 @@
 //! W-routing-query × W-session seam: the stateless query runs against the
 //! real `RuntimeRegistrationDirectory` (multi-replica, cancellation,
-//! transition/replacement) with a real immutable `RoutingEpoch` (delivery
-//! obligation 2 of the C-routing-query contract).
+//! replacement) with build-id based candidate projection (contract v2 §1/§3).
+//! M4: registration is capabilities-only — no tuple, no transition.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity, DeploymentRevision,
-    RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-    ServiceDeploymentRef, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-};
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
+use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use skiff_router::routing::{
     CandidateQuery, DispatchCapabilities, DispatchMode, RegisteredSessionLease,
     RuntimeCandidateQuery,
 };
 use skiff_router::session::consumer::ConsumerManifest;
 use skiff_router::session::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::layer::SessionRegistrationFacts;
 use skiff_router::session::ConsumerKind;
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 
-const ASSEMBLY: &str = "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const SNAPSHOT: &str = "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-const FULL_SET: [ConsumerKind; 7] = [
+const FULL_SET: [ConsumerKind; 6] = [
     ConsumerKind::AdmissionPool,
     ConsumerKind::HealthLedger,
     ConsumerKind::RequestDispatcher,
     ConsumerKind::RuntimeGenerationPinLedger,
     ConsumerKind::WebSocketRequestBroker,
     ConsumerKind::ActorSessionOwner,
-    ConsumerKind::ActivationCoordinator,
 ];
-
-fn snapshot_ref(id: &str) -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: RuntimeConfigSnapshotId::parse(id).expect("snapshot id"),
-    }
-}
 
 fn deployment() -> ServiceDeploymentRef {
     ServiceDeploymentRef {
@@ -54,53 +33,6 @@ fn deployment() -> ServiceDeploymentRef {
         deployment_artifact_identity: DeploymentArtifactIdentity::new(
             "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         ),
-    }
-}
-
-fn epoch(generation: u64) -> Arc<RoutingEpoch> {
-    let assembly = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new(ASSEMBLY),
-        roots: Vec::new(),
-        resolved_deployments: vec![deployment()],
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    let snapshot =
-        RuntimeConfigSnapshot::new("prod", snapshot_ref(SNAPSHOT), Vec::new()).expect("snapshot");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-    Arc::new(
-        RoutingEpoch::new(
-            "prod",
-            generation,
-            Arc::new(assembly),
-            Arc::new(snapshot),
-            catalog,
-        )
-        .expect("epoch"),
-    )
-}
-
-fn tuple(generation: u64) -> RegisteredAssemblyTuple {
-    RegisteredAssemblyTuple {
-        profile: "prod".to_string(),
-        generation,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(ASSEMBLY),
-        },
-        config_snapshot: snapshot_ref(SNAPSHOT),
     }
 }
 
@@ -136,10 +68,9 @@ fn query_build_id() -> String {
 fn register_and_ack(
     directory: &mut RuntimeRegistrationDirectory,
     session: &RuntimeSessionEpoch,
-    tuple: &RegisteredAssemblyTuple,
 ) {
     directory
-        .publish_pending(session, tuple.clone(), &FULL_SET)
+        .publish_pending(session, &FULL_SET)
         .expect("registration");
     assert!(
         directory.mark_registered(session),
@@ -174,11 +105,10 @@ mod tests {
     fn routing_query_directory_seam_projects_all_exact_replicas_deterministically() {
         let mut directory =
             RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
-        let tuple_42 = tuple(42);
         let a = session("runtime-a", 1);
         let b = session("runtime-b", 3);
-        register_and_ack(&mut directory, &a, &tuple_42);
-        register_and_ack(&mut directory, &b, &tuple_42);
+        register_and_ack(&mut directory, &a);
+        register_and_ack(&mut directory, &b);
 
         let capabilities = HashMap::from([
             (a.clone(), full_facts()),
@@ -195,7 +125,11 @@ mod tests {
             "snapshot order is deterministic by replica id"
         );
         for lease in &leases {
-            assert_eq!(lease.exact_registered_tuple, tuple_42);
+            assert_eq!(
+                lease.registered_build_ids,
+                vec![query_build_id()],
+                "M4 lease carries the capabilities-loaded build ids"
+            );
             // The directory's revision counter is global: the first publish is
             // revision 1, the second 2. The production snapshot uses per-session
             // revisions (no view-level marker), so both are current candidates.
@@ -214,11 +148,10 @@ mod tests {
     fn routing_query_directory_seam_excludes_cancelled_and_pending_sessions() {
         let mut directory =
             RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
-        let tuple_42 = tuple(42);
         let a = session("runtime-a", 1);
         let b = session("runtime-b", 1);
-        register_and_ack(&mut directory, &a, &tuple_42);
-        register_and_ack(&mut directory, &b, &tuple_42);
+        register_and_ack(&mut directory, &a);
+        register_and_ack(&mut directory, &b);
         assert!(
             directory.begin_close(&a).is_some(),
             "close protocol marks cancelled"
@@ -227,7 +160,7 @@ mod tests {
         // A pending session (published but not ACKed) is never routable.
         let pending = session("runtime-c", 1);
         directory
-            .publish_pending(&pending, tuple_42.clone(), &FULL_SET)
+            .publish_pending(&pending, &FULL_SET)
             .expect("pending registration");
 
         let capabilities = HashMap::from([
@@ -246,45 +179,15 @@ mod tests {
     }
 
     #[test]
-    fn routing_query_directory_transition_reads_one_complete_revision() {
-        let mut directory =
-            RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
-        let a = session("runtime-a", 1);
-        register_and_ack(&mut directory, &a, &tuple(42));
-
-        let tuple_43 = tuple(43);
-        let outcome = directory.transition(&a, tuple_43.clone(), &tuple_43, None);
-        assert_eq!(
-            outcome,
-            skiff_router::session::directory::TransitionOutcome::Published { revision: 2 }
-        );
-
-        // The record holds one complete new revision: new tuple with new
-        // revision, never a mixture of old tuple + new revision.
-        let record = directory.record(&a).expect("session record");
-        assert_eq!(record.registered_tuple, Some(tuple_43.clone()));
-        assert_eq!(record.registration_revision, 2);
-
-        // The candidate projection is build-id based (contract v2 §1): the
-        // transitioned session stays eligible with its updated revision.
-        let capabilities = HashMap::from([(a.clone(), full_facts())]);
-        let leases = project(&directory, &capabilities);
-        assert_eq!(leases.len(), 1);
-        assert_eq!(leases[0].registration_revision, 2);
-        assert_eq!(leases[0].exact_registered_tuple, tuple_43);
-    }
-
-    #[test]
     fn routing_query_directory_replacement_never_projects_the_cancelled_old_session() {
         let mut directory =
             RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
-        let tuple_42 = tuple(42);
         let old = session("runtime-a", 1);
         let new = session("runtime-a", 2);
-        register_and_ack(&mut directory, &old, &tuple_42);
+        register_and_ack(&mut directory, &old);
 
         let pending = directory
-            .publish_pending(&new, tuple_42.clone(), &FULL_SET)
+            .publish_pending(&new, &FULL_SET)
             .expect("replacement registration");
         assert_eq!(pending.cancelled_old, Some(old.clone()));
         assert!(
@@ -312,12 +215,11 @@ mod tests {
     fn routing_query_directory_seam_capabilities_are_injected_by_the_caller() {
         let mut directory =
             RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
-        let tuple_42 = tuple(42);
         let unary_only = session("runtime-a", 1);
         let both = session("runtime-b", 1);
         let unbound = session("runtime-c", 1);
         for s in [&unary_only, &both, &unbound] {
-            register_and_ack(&mut directory, s, &tuple_42);
+            register_and_ack(&mut directory, s);
         }
 
         let mut unary_only_facts = full_facts();
@@ -352,5 +254,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["runtime-b"]
         );
+    }
+
+    #[test]
+    fn routing_query_directory_lazy_load_holder_projects_for_any_build_id() {
+        let mut directory =
+            RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(FULL_SET));
+        let lazy = session("runtime-a", 1);
+        register_and_ack(&mut directory, &lazy);
+
+        // Lazy-load capability holder sharing the router artifact root is a
+        // candidate for an arbitrary (not-yet-loaded) build id (contract v2
+        // §1 rule 3).
+        let mut lazy_facts = full_facts();
+        lazy_facts.registration = RegistrationFacts {
+            registered_build_ids: Vec::new(),
+            lazy_load: true,
+            artifact_root: Some("/shared/artifacts".to_string()),
+        };
+        let capabilities = HashMap::from([(lazy.clone(), lazy_facts)]);
+        let view = RuntimeCandidateQuery::snapshot_directory_view(
+            &directory,
+            &capabilities,
+            Some("/shared/artifacts".to_string()),
+        );
+        let leases = RuntimeCandidateQuery.query(
+            &view,
+            &CandidateQuery {
+                mode: DispatchMode::Unary,
+                build_id: "skiff-deployment-artifact-v4:sha256:9999999999999999999999999999999999999999999999999999999999999999"
+                    .to_string(),
+            },
+        );
+        assert_eq!(leases.len(), 1);
+        assert!(leases[0].lazy_load);
+        assert_eq!(leases[0].artifact_root.as_deref(), Some("/shared/artifacts"));
+        assert!(leases[0].registered_build_ids.is_empty());
     }
 }

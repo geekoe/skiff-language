@@ -10,10 +10,11 @@
 //! builds the explicit Rust `skiff-router` and `runtime` binaries. This
 //! ignored test then:
 //!
-//!   - assembles the production `RouterSupervisor` in-process with the real
-//!     Mongo activation repository and Mongo TaskStore pointing at the
-//!     probe-owned database (the only difference from the router binary: the
-//!     database is injected so the shared local Mongo is never touched);
+//!   - assembles the production `RouterSupervisor` in-process with a Mongo
+//!     TaskStore pointing at the probe-owned database (the only difference
+//!     from the router binary: the database is injected so the shared local
+//!     Mongo is never touched); M4: no activation repository, no committed
+//!     state seed — the release pointer table comes from authoring;
 //!   - starts the production HTTP/control listeners on the leased ports;
 //!   - spawns real `runtime` processes whose WebSocket connections are
 //!     observed through a test-only relay (real Router control listener <->
@@ -50,20 +51,9 @@ use mongodb::bson::{doc, Document};
 use mongodb::options::ClientOptions;
 use mongodb::{Client, Collection, Database};
 use serde_json::Value;
-use skiff_artifact_model::{
-    AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-};
-use skiff_deployment::activation_state::ProfileActivationState;
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
-};
 use skiff_router::config::load_router_config;
 use skiff_router::listener::ListenerStartOptions;
 use skiff_router::supervisor::{RouterSupervisor, SupervisorListeners};
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_router_bootstrap_frame, decode_typed_binary_frame,
     RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability, RuntimeHealthFrameHeader,
@@ -83,10 +73,9 @@ const MAX_CONCURRENCY: u64 = 16;
 const SERVICE_ID: &str = "test.skiff/durable-task-e2e-live";
 const VERSION: &str = "1.0.0";
 
-const HANDSHAKE_SEQUENCE: [&str; 5] = [
+const HANDSHAKE_SEQUENCE: [&str; 4] = [
     "router.bootstrap",
     "runtime.capabilities",
-    "assembly.activation",
     "runtime.registered",
     "runtime.health",
 ];
@@ -97,9 +86,6 @@ struct LiveProfile {
     service_database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
-    config_snapshot_id: String,
-    generation: u64,
     http_port: u16,
     runtime_port: u16,
     relay_port: u16,
@@ -131,9 +117,6 @@ impl LiveProfile {
         let relay_port = required("SKIFF_DURABLE_TASK_E2E_RELAY_PORT")
             .parse()
             .expect("relay port");
-        let generation = required("SKIFF_DURABLE_TASK_E2E_GENERATION")
-            .parse()
-            .expect("generation");
         let entrypoints_json = required("SKIFF_DURABLE_TASK_E2E_ENTRYPOINTS");
         let deployment_json = required("SKIFF_DURABLE_TASK_E2E_DEPLOYMENT");
         let deployment_raw: Value =
@@ -173,9 +156,6 @@ impl LiveProfile {
             service_database: required("SKIFF_DURABLE_TASK_E2E_SERVICE_DATABASE"),
             artifact_root: PathBuf::from(required("SKIFF_DURABLE_TASK_E2E_ARTIFACT_ROOT")),
             profile: required("SKIFF_DURABLE_TASK_E2E_PROFILE"),
-            assembly_identity: required("SKIFF_DURABLE_TASK_E2E_ASSEMBLY_IDENTITY"),
-            config_snapshot_id: required("SKIFF_DURABLE_TASK_E2E_CONFIG_SNAPSHOT_ID"),
-            generation,
             http_port,
             runtime_port,
             relay_port,
@@ -192,23 +172,6 @@ impl LiveProfile {
             .get(key)
             .cloned()
             .unwrap_or_else(|| panic!("missing fixture entrypoint {key}"))
-    }
-
-    fn assembly_ref(&self) -> RuntimeAssemblyRef {
-        RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
-        }
-    }
-
-    fn snapshot_ref(&self) -> RuntimeConfigSnapshotRef {
-        RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                &self.config_snapshot_id,
-            )
-            .expect("config snapshot id"),
-        }
     }
 
     fn router_runtime_url(&self) -> String {
@@ -264,18 +227,6 @@ impl LiveProfile {
     }
 }
 
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect probe Mongo repository"),
-    )
-}
-
 async fn connect_task_store(live: &LiveProfile) -> Arc<dyn TaskStore> {
     let options = MongoTaskStoreOptions {
         database: live.database.clone(),
@@ -291,19 +242,6 @@ async fn connect_task_store(live: &LiveProfile) -> Arc<dyn TaskStore> {
 fn seed_runtime_home(home: &Path) {
     std::fs::create_dir_all(home).expect("create runtime home");
     std::fs::write(home.join("runtime-id"), format!("{REPLICA_ID}\n")).expect("seed runtime-id");
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = ProfileActivationState::initial(
-        &live.profile,
-        live.generation,
-        live.assembly_ref(),
-        live.snapshot_ref(),
-    );
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -725,15 +663,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                 let header =
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
                 assert_eq!(header.activation.profile, live.profile);
-                assert_eq!(header.activation.generation, live.generation);
-                assert_eq!(
-                    header.activation.assembly.assembly_identity.as_str(),
-                    live.assembly_identity
-                );
-                assert_eq!(
-                    header.activation.config_snapshot.snapshot_id.to_string(),
-                    live.config_snapshot_id
-                );
             }
             "runtime.capabilities" => {
                 assert_eq!(*direction, Direction::ToRouter);
@@ -747,10 +676,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                         .contains(&RuntimeDispatchModeCapability::Unary),
                     "real Runtime must advertise unary for the admitted HTTP gateway assembly"
                 );
-            }
-            "assembly.activation" => {
-                assert_eq!(*direction, Direction::ToRouter);
-                assert_register_control(live, bytes);
             }
             "runtime.registered" => {
                 assert_eq!(*direction, Direction::ToRuntime);
@@ -766,32 +691,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
             }
             other => panic!("unexpected handshake frame {other}"),
         }
-    }
-}
-
-fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
-    let control =
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
-            .expect("decode register frame");
-    match control {
-        AssemblyActivationControl::Register {
-            replica_id,
-            profile,
-            generation,
-            assembly,
-            config_snapshot,
-            ..
-        } => {
-            assert_eq!(replica_id, REPLICA_ID);
-            assert_eq!(profile, live.profile);
-            assert_eq!(generation, live.generation);
-            assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
-            assert_eq!(
-                config_snapshot.snapshot_id.to_string(),
-                live.config_snapshot_id
-            );
-        }
-        other => panic!("unexpected assembly activation control {other:?}"),
     }
 }
 
@@ -812,18 +711,15 @@ async fn wait_for_replica_handshake(
                 bytes,
             } = kind
             {
-                if observed != "assembly.activation" {
+                if observed != "runtime.capabilities" {
                     continue;
                 }
-                let Ok(control) = decode_assembly_activation_frame(
-                    AssemblyActivationFrameDirection::RuntimeToRouter,
-                    bytes,
-                ) else {
+                let Ok((header, _)) =
+                    decode_typed_binary_frame::<RuntimeCapabilitiesFrameHeader>(bytes)
+                else {
                     continue;
                 };
-                if let AssemblyActivationControl::Register { replica_id, .. } = control {
-                    connections.insert(replica_id, *connection);
-                }
+                connections.insert(header.runtime_id, *connection);
             }
         }
         if let Some(connection) = connections.get(REPLICA_ID) {
@@ -1064,7 +960,6 @@ async fn assemble_supervisor(
     Arc<dyn TaskStore>,
     SupervisorListeners,
 ) {
-    let repository = connect_repository(live).await;
     let task_store = connect_task_store(live).await;
     task_store
         .ensure_indexes()
@@ -1073,14 +968,9 @@ async fn assemble_supervisor(
     let config = load_router_config(config_path.to_str().expect("config path utf8"))
         .expect("load router config");
     let supervisor = Arc::new(
-        RouterSupervisor::assemble_with_task_store(
-            &config,
-            &live.profile,
-            repository,
-            Arc::clone(&task_store),
-        )
-        .await
-        .expect("assemble production router composition"),
+        RouterSupervisor::assemble_with_task_store(&config, Arc::clone(&task_store))
+            .await
+            .expect("assemble production router composition"),
     );
     let listeners = supervisor
         .start_listeners(&ListenerStartOptions {
@@ -1147,10 +1037,6 @@ mod tests {
         let live = LiveProfile::from_env();
         seed_runtime_home(&live.runtime_home);
         drop_probe_databases(&live).await;
-
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-        seed_committed(&live, &repository).await;
 
         let config_path = write_router_config(&live);
         let (supervisor, _task_store, listeners) = assemble_supervisor(&live, &config_path).await;

@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use skiff_artifact_model::AssemblyActivationControl;
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::{start_listeners_with_session, ListenerStartOptions};
 use skiff_router::session::consumer::{ConsumerManifest, SessionConsumer};
@@ -14,10 +13,6 @@ use skiff_router::session::health::RuntimeHealthLedger;
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::layer::{SessionLayer, SessionLayerOptions, SessionTiming};
 use skiff_router::session::ConsumerKind;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, encode_assembly_activation_frame,
-    AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, encode_binary_frame, RuntimeCapabilitiesFrameHeader,
 };
@@ -27,7 +22,6 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -51,29 +45,10 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
     }
 }
 
-fn committed_epoch() -> skiff_router::session::RegisteredAssemblyTuple {
-    skiff_router::session::RegisteredAssemblyTuple {
-        profile: "prod".to_string(),
-        generation: 42,
-        assembly: skiff_artifact_model::RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("snapshot id"),
-        },
-    }
-}
-
 fn timing() -> SessionTiming {
     SessionTiming {
         bootstrap: Duration::from_secs(10),
         capabilities: Duration::from_secs(10),
-        register: Duration::from_secs(10),
         ack_write: Duration::from_secs(5),
         close_barrier: Duration::from_secs(2),
         shutdown_total: Duration::from_secs(5),
@@ -157,8 +132,6 @@ async fn start_with(
 ) -> (skiff_router::listener::RouterListeners, Arc<SessionLayer>) {
     let config = test_config(runtime_max_concurrency);
     let options = SessionLayerOptions {
-        committed_epoch: Some(committed_epoch()),
-        pending_epoch: None,
         manifest: ConsumerManifest::installed([
             ConsumerKind::HealthLedger,
             ConsumerKind::RequestDispatcher,
@@ -234,7 +207,6 @@ async fn complete(
 ) {
     let _ = recv_binary(socket).await;
     send_binary(socket, capabilities_bytes(replica)).await;
-    send_binary(socket, register_bytes(replica)).await;
     let _ = recv_binary(socket).await;
 }
 
@@ -244,32 +216,6 @@ fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
         decode_typed_binary_frame(&bytes).expect("capabilities decodes");
     header.runtime_id = replica_id.to_string();
     encode_binary_frame(&header, &[]).expect("capabilities encodes")
-}
-
-fn register_bytes(replica_id: &str) -> Vec<u8> {
-    let bytes = frame(&frames(), "register.prod.42.a");
-    let control =
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &bytes)
-            .expect("register decodes");
-    let AssemblyActivationControl::Register {
-        profile,
-        generation,
-        assembly,
-        config_snapshot,
-        ..
-    } = control
-    else {
-        panic!("expected register");
-    };
-    let control = AssemblyActivationControl::Register {
-        profile,
-        generation,
-        assembly,
-        config_snapshot,
-        replica_id: replica_id.to_string(),
-    };
-    encode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &control)
-        .expect("register encodes")
 }
 
 #[cfg(test)]
@@ -369,8 +315,6 @@ mod tests {
     fn session_consumer_manifest_checker_rejects_mismatch() {
         let (gated, _) = GatedConsumer::new(None);
         let options = SessionLayerOptions {
-            committed_epoch: Some(committed_epoch()),
-            pending_epoch: None,
             // RequestDispatcher consumer registered but missing from the manifest.
             manifest: ConsumerManifest::installed([ConsumerKind::HealthLedger]),
             consumers: vec![Arc::new(RuntimeHealthLedger::new()), gated],

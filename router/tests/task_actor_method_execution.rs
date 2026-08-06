@@ -5,6 +5,7 @@
 mod dispatch_harness;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,9 +18,12 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, PackageArtifactRef,
     PackageBuildId, PackageLocalAbiIdentity, RecoverableExpectedTypePlan,
     RecoverableExpectedTypeRoot, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
-    RuntimeConfigSnapshotRef, TypeRefIr,
+    RuntimeConfigSnapshotRef, ServiceDeploymentRef, TypeRefIr,
 };
-use skiff_deployment::projection::actor_routing::{ActorRoutingMethod, ActorRoutingRef};
+use skiff_deployment::projection::actor_routing::{
+    ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
+    ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+};
 use skiff_router::actor::{
     ActivateInitialControlRequest, ActivationControlPort, ActorActivationBrokerOptions,
     ActorActivationRequestBroker, ActorInvocationRelay, ActorInvocationRelayOptions,
@@ -27,15 +31,15 @@ use skiff_router::actor::{
     ActorOwnerRouteAuthority, ActorOwnershipRegistry, CommitFenceFacts, IdleEvictControlPort,
     LeaseSchedulerOptions,
 };
-use skiff_router::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use skiff_router::session::demux::InboundFrameSink;
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::supervisor::actor::ActorComponents;
 use skiff_router::supervisor::actor_sink::ActorFrameSink;
 use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
     DurableTaskControl, RouterTaskAttemptAdmission, TaskActorOwnerPort, TaskControlCounters,
+    TaskExecutionImageSource,
 };
 use skiff_router::telemetry::{NoopTaskTelemetrySink, TaskTelemetrySink};
 use skiff_router::ws::Clock;
@@ -209,36 +213,94 @@ fn corpus_image() -> TaskExecutionImageRef {
     }
 }
 
-fn actor_epoch() -> Arc<RoutingEpoch> {
-    let method = ActorRoutingMethod {
-        actor: ActorRoutingRef {
-            service_id: SERVICE_ID.to_string(),
-            actor_abi_identity: actor_abi(),
-        },
-        actor_implementation_identity: implementation(),
-        method_identity: method_identity(),
-        deployment: dispatch_harness::corpus_deployment_ref(),
-        package: PackageArtifactRef {
-            package_id: "example.com/pkg".to_string(),
-            package_version: "1.0.0".to_string(),
-            package_build_id: PackageBuildId::new(framed(
-                PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-                b'c',
-            )),
-            package_local_abi_identity: PackageLocalAbiIdentity::new(framed(
-                PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
-                b'c',
-            )),
-        },
-    };
-    dispatch_harness::build_epoch_with_actor_methods(
-        dispatch_harness::CORPUS_PROFILE,
-        dispatch_harness::CORPUS_GENERATION,
-        dispatch_harness::CORPUS_ASSEMBLY_IDENTITY,
-        dispatch_harness::CORPUS_CONFIG_SNAPSHOT_ID,
-        dispatch_harness::corpus_deployment_ref(),
-        vec![method],
+/// Temp artifact root carrying the fixture actor routing projection record
+/// (M4: the catalog view lazy-loads from the artifact store; no epoch).
+struct CatalogRoot {
+    root: PathBuf,
+}
+
+impl CatalogRoot {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "skiff-router-task-actor-method-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create artifact root");
+        skiff_deployment::storage::CanonicalArtifactStore::create(&root)
+            .expect("create artifact store");
+        let projection = ActorRoutingProjection::new(
+            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+            vec![ActorRoutingMethod {
+                actor: ActorRoutingRef {
+                    service_id: SERVICE_ID.to_string(),
+                    actor_abi_identity: actor_abi(),
+                },
+                actor_implementation_identity: implementation(),
+                method_identity: method_identity(),
+                deployment: dispatch_harness::corpus_deployment_ref(),
+                package: PackageArtifactRef {
+                    package_id: "example.com/pkg".to_string(),
+                    package_version: "1.0.0".to_string(),
+                    package_build_id: PackageBuildId::new(framed(
+                        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+                        b'c',
+                    )),
+                    package_local_abi_identity: PackageLocalAbiIdentity::new(framed(
+                        PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+                        b'c',
+                    )),
+                },
+            }],
+        )
+        .expect("projection");
+        let bytes = skiff_canonical_json::canonical_json_bytes(&projection)
+            .expect("canonical projection");
+        let path = root.join(skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+        std::fs::create_dir_all(path.parent().expect("projection parent"))
+            .expect("create projection dirs");
+        std::fs::write(path, bytes).expect("write projection record");
+        Self { root }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for CatalogRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn projection_ref() -> skiff_router::artifact::ActorRoutingProjectionRef {
+    skiff_router::artifact::ActorRoutingProjectionRef::new(
+        skiff_artifact_identity::ArtifactRelativePath::new(
+            skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+            "actor routing projection record",
+        )
+        .expect("projection path"),
     )
+}
+
+/// Always-eligible image source for the admission gate (the fixture
+/// deployment is the corpus deployment).
+#[derive(Debug, Default)]
+struct FakeImageSource;
+
+impl TaskExecutionImageSource for FakeImageSource {
+    fn resolve(&self, _header: &skiff_runtime_transport::protocol::TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef> {
+        Some(corpus_image())
+    }
+
+    fn contains_service(&self, _service_id: &str) -> bool {
+        true
+    }
+
+    fn contains_deployment(&self, _deployment: &ServiceDeploymentRef) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Default)]
@@ -280,7 +342,7 @@ struct FakeTaskActorOwnerPort {
 }
 
 impl TaskActorOwnerPort for FakeTaskActorOwnerPort {
-    fn candidates(&self, _tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
+    fn candidates_by_build_id(&self, _build_id: &str) -> Vec<RuntimeSessionEpoch> {
         self.candidates.lock().expect("candidates lock").clone()
     }
 
@@ -361,9 +423,7 @@ fn rig() -> Rig {
         Duration::from_millis(20),
     ));
     let worker = control.spawn_worker();
-    let epoch = actor_epoch();
-    let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
-    epoch_store.publish(Arc::clone(&epoch));
+    let catalog_root = CatalogRoot::new();
     let session_handle = SessionHandle::new();
     let registry = Arc::new(ActorOwnershipRegistry::new());
     let activation_control = Arc::new(FakeActivationControl::default());
@@ -381,7 +441,10 @@ fn rig() -> Rig {
         Arc::new(FakeIdleEvict),
         LeaseSchedulerOptions::default(),
     ));
-    let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch_store)));
+    let catalog_view = Arc::new(
+        ActorMethodCatalogView::new(catalog_root.path(), projection_ref())
+            .expect("catalog view"),
+    );
     let actor = Arc::new(ActorComponents {
         registry: Arc::clone(&registry),
         activation_broker,
@@ -403,7 +466,8 @@ fn rig() -> Rig {
     let sink = Arc::new(ActorFrameSink::new(
         Arc::clone(&actor),
         session_handle,
-        Arc::clone(&epoch_store),
+        skiff_deployment::storage::CanonicalArtifactStore::open(catalog_root.path())
+            .expect("open artifact store"),
         Arc::new(FakeWriter::default()) as Arc<dyn WsSessionWriter>,
         Arc::clone(&clock) as Arc<dyn Clock>,
         Arc::clone(&control) as Arc<dyn skiff_router::task::ActorAttemptTerminalSink>,
@@ -411,9 +475,7 @@ fn rig() -> Rig {
     let deferred_actor_sink: Arc<Mutex<Option<Arc<ActorFrameSink>>>> =
         Arc::new(Mutex::new(Some(Arc::clone(&sink))));
     let admission = Arc::new(RouterTaskAttemptAdmission::new(
-        Arc::new(dispatch_harness::FakeEpochSource {
-            epoch: Some(Arc::clone(&epoch)),
-        }),
+        Arc::new(FakeImageSource),
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&control),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -528,8 +590,7 @@ fn commit_owner(
             facts.epoch,
             "runtime-a",
             &ActorOwnerRouteAuthority {
-                assembly_identity: dispatch_harness::CORPUS_ASSEMBLY_IDENTITY.to_string(),
-                assembly_generation: dispatch_harness::CORPUS_GENERATION,
+                build_id: dispatch_harness::CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY.to_string(),
             },
             0,
         )

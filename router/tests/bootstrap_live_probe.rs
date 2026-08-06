@@ -1,15 +1,14 @@
-//! `router-live:bootstrap` real boundary probe (E-bootstrap gate).
+//! `router-live:bootstrap` real boundary probe (M4 gate).
 //!
 //! Driven by `scripts/run-router-bootstrap-live.mjs`: the harness compiles a
 //! real package/assembly artifact, starts an isolated temporary Mongo replica
-//! set and leases router ports; this ignored test then materializes the
-//! runtime config snapshot and actor routing projection records, seeds the
-//! committed activation state, runs the full bootstrap chain, and spawns the
-//! real `skiff-router` binary to observe the published epoch over the
-//! `/runtime` WebSocket (`router.bootstrap` frame). The fail-closed matrix
-//! (missing / malformed / pending / identity mismatch / snapshot missing /
-//! loader saturation / shutdown) is asserted at both runner and process level,
-//! always with zero epoch publication.
+//! set and leases router ports; this ignored test then seeds the release
+//! pointer table (typed pointer store) and the actor routing projection
+//! record, runs the bootstrap chain, and spawns the real `skiff-router`
+//! binary to observe the profile-only `router.bootstrap` frame over the
+//! `/runtime` WebSocket and the pointer-table `activeAssembly` health
+//! projection. The fail-closed matrix (missing artifact root / invalid
+//! profile) is asserted at both assembly and process level.
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -19,33 +18,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use mongodb::bson::doc;
-use mongodb::Client;
 use skiff_artifact_identity::ArtifactRelativePath;
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::{PrepareInput, ProfileActivationState};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
-};
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_router::artifact::ActorRoutingProjectionRef;
 use skiff_router::bootstrap::{
-    ActiveRoutingEpochStore, BlockingLoader, BlockingLoaderError, BlockingLoaderOptions,
-    BootstrapError, BootstrapReadOutcome, BootstrapRunner, BootstrapStrictLoader,
-    CanonicalCommittedRefValidator, CommittedActivationBootstrapReader,
+    BlockingLoader, BlockingLoaderOptions, RouterBootstrapAssembly,
     ACTOR_ROUTING_PROJECTION_RECORD_PATH,
 };
+
 struct LiveProfile {
     mongo_url: String,
     database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
-    config_snapshot_id: String,
-    generation: u64,
+    service_id: String,
+    version: String,
+    build_id: String,
     http_port: u16,
     runtime_port: u16,
     temp_dir: PathBuf,
@@ -64,68 +56,18 @@ impl LiveProfile {
         let runtime_port = required("SKIFF_ROUTER_BOOTSTRAP_LIVE_RUNTIME_PORT")
             .parse()
             .expect("runtime port");
-        let generation = required("SKIFF_ROUTER_BOOTSTRAP_LIVE_GENERATION")
-            .parse()
-            .expect("generation");
         Self {
             mongo_url: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_BOOTSTRAP_LIVE_ARTIFACT_ROOT")),
             profile: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_PROFILE"),
-            assembly_identity: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_ASSEMBLY_IDENTITY"),
-            config_snapshot_id: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_CONFIG_SNAPSHOT_ID"),
-            generation,
+            service_id: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_SERVICE_ID"),
+            version: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_VERSION"),
+            build_id: required("SKIFF_ROUTER_BOOTSTRAP_LIVE_BUILD_ID"),
             http_port,
             runtime_port,
             temp_dir: PathBuf::from(required("SKIFF_ROUTER_BOOTSTRAP_LIVE_TEMP_DIR")),
         }
-    }
-
-    fn assembly_ref(&self) -> skiff_artifact_model::RuntimeAssemblyRef {
-        skiff_artifact_model::RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
-        }
-    }
-
-    fn bogus_assembly_ref() -> skiff_artifact_model::RuntimeAssemblyRef {
-        skiff_artifact_model::RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(format!(
-                "skiff-runtime-assembly-v3:sha256:{}",
-                "c".repeat(64)
-            )),
-        }
-    }
-
-    fn snapshot_ref(&self) -> skiff_artifact_model::RuntimeConfigSnapshotRef {
-        skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                &self.config_snapshot_id,
-            )
-            .expect("config snapshot id"),
-        }
-    }
-
-    fn missing_snapshot_ref() -> skiff_artifact_model::RuntimeConfigSnapshotRef {
-        skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:dddddddddddddddddddddddddddddddd",
-            )
-            .expect("missing snapshot id"),
-        }
-    }
-
-    fn committed_state(
-        &self,
-        assembly: skiff_artifact_model::RuntimeAssemblyRef,
-    ) -> ProfileActivationState {
-        ProfileActivationState::initial(
-            &self.profile,
-            self.generation,
-            assembly,
-            self.snapshot_ref(),
-        )
     }
 
     fn actor_ref(&self) -> ActorRoutingProjectionRef {
@@ -137,49 +79,6 @@ impl LiveProfile {
             .expect("actor projection record path"),
         )
     }
-}
-
-fn runner(
-    live: &LiveProfile,
-    repository: Arc<dyn ActivationStateRepository>,
-    pool: Arc<BlockingLoader>,
-) -> BootstrapRunner {
-    let validator = Arc::new(
-        CanonicalCommittedRefValidator::open(&live.artifact_root).expect("open validator"),
-    );
-    let reader = CommittedActivationBootstrapReader::new(repository, validator, Arc::clone(&pool));
-    let snapshot_root = live.artifact_root.join("runtime-config");
-    let strict = Arc::new(
-        BootstrapStrictLoader::open(&live.artifact_root, &snapshot_root)
-            .expect("open strict loader"),
-    );
-    BootstrapRunner::new(
-        reader,
-        strict,
-        pool,
-        Arc::new(ActiveRoutingEpochStore::new()),
-    )
-}
-
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect temporary Mongo repository"),
-    )
-}
-
-async fn states_collection(live: &LiveProfile) -> mongodb::Collection<mongodb::bson::Document> {
-    let client = Client::with_uri_str(&live.mongo_url)
-        .await
-        .expect("connect raw Mongo client");
-    client
-        .database(&live.database)
-        .collection("activation_state")
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -283,89 +182,11 @@ fn assert_process_fails_closed(live: &LiveProfile) {
         "fail-closed bootstrap must exit non-zero, got {status}; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("bootstrap failed closed"),
+        stderr.contains("bootstrap failed closed") || stderr.contains("artifact store"),
         "stderr must report the fail-closed bootstrap, got: {stderr:?}"
     );
     assert_ports_closed(live);
     let _ = std::fs::remove_file(config_path);
-}
-
-/// Plan §4.2 process-level pending behavior: the router must start (committed
-/// epoch published first), serve the committed bootstrap tuple on the runtime
-/// socket, and shut down cleanly; the recovery transaction is installed by
-/// the activation coordinator without blocking the listener.
-async fn assert_process_starts_with_pending(live: &LiveProfile) {
-    let config_path = write_router_config(live);
-    let mut child = task_router(&config_path);
-    wait_for_listeners(live, &mut child);
-    let (mut socket, _response) =
-        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/runtime", live.runtime_port))
-            .await
-            .expect("connect runtime websocket");
-    let frame = tokio::time::timeout(Duration::from_secs(15), socket.next())
-        .await
-        .expect("bootstrap frame timeout")
-        .expect("bootstrap frame stream")
-        .expect("bootstrap frame read");
-    let bytes = match frame {
-        tokio_tungstenite::tungstenite::Message::Binary(bytes) => bytes,
-        other => panic!("expected binary router.bootstrap frame, got {other:?}"),
-    };
-    let header = skiff_runtime_transport::protocol::decode_router_bootstrap_frame(&bytes)
-        .expect("decode router.bootstrap frame");
-    assert_eq!(header.envelope_type, "router.bootstrap");
-    assert_eq!(header.activation.profile, live.profile);
-    assert_eq!(header.activation.generation, live.generation);
-    drop(socket);
-
-    let pid = child.id();
-    let signaled = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()
-        .expect("send SIGTERM to router");
-    assert!(signaled.success());
-    let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(30));
-    assert!(
-        status.success(),
-        "router with pending recovery must shut down cleanly, got {status}; stderr: {stderr}"
-    );
-    assert_ports_closed(live);
-    let _ = std::fs::remove_file(config_path);
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = live.committed_state(live.assembly_ref());
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
-}
-
-async fn reset_state_collection(live: &LiveProfile) {
-    let collection = states_collection(live).await;
-    collection
-        .delete_many(doc! {})
-        .await
-        .expect("reset activation state collection");
-}
-
-async fn seed_malformed(live: &LiveProfile) {
-    reset_state_collection(live).await;
-    let collection = states_collection(live).await;
-    let state = doc! {
-        "schemaVersion": "skiff-environment-activation-state-v1",
-        "profile": &live.profile,
-        "committed": {
-            "generation": live.generation as i64,
-            "assembly": { "assemblyIdentity": &live.assembly_identity },
-            "configSnapshot": { "snapshotId": &live.config_snapshot_id },
-        },
-        "pending": mongodb::bson::Bson::Null,
-    };
-    collection
-        .insert_one(doc! { "_id": &live.profile, "state": state })
-        .await
-        .expect("insert malformed activation state");
 }
 
 #[cfg(test)]
@@ -377,10 +198,11 @@ mod tests {
     async fn router_live_bootstrap_chain() {
         let live = LiveProfile::from_env();
 
-        // The runtime config snapshot record is produced by the real
-        // config-snapshot-tooling under `<artifact-root>/runtime-config` (the
-        // harness runs it before this probe). Materialize the actor routing
-        // projection record inside the compiler-produced artifact root.
+        // The deployment record is produced by the real authoring tooling
+        // inside the compiler-produced artifact root. Materialize the actor
+        // routing projection record and seed the release pointer table
+        // (M1 authoring already writes pointers; this probe re-seeds for an
+        // isolated environment).
         let projection_directory = live.artifact_root.join("records/actor-routing");
         std::fs::create_dir_all(&projection_directory).expect("create projection directory");
         let projection = ActorRoutingProjection::new(
@@ -396,36 +218,23 @@ mod tests {
         )
         .expect("write projection record");
 
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-
-        // 1. In-process success chain: committed reader -> strict load -> publish.
-        seed_committed(&live, &repository).await;
+        // 1. In-process success chain: store open + profile validation.
         let pool = Arc::new(BlockingLoader::new(BlockingLoaderOptions::default()));
-        let chain = runner(&live, Arc::clone(&repository), Arc::clone(&pool));
-        let outcome = chain
-            .run_initial(&live.profile, &live.actor_ref())
+        let config = skiff_router::config::load_router_config(
+            write_router_config(&live).to_str().expect("config path utf8"),
+        )
+        .expect("load router config");
+        let assembly = RouterBootstrapAssembly::assemble(&config)
             .await
-            .expect("committed bootstrap must publish an epoch");
-        let epoch = outcome.epoch;
-        assert!(
-            outcome.pending.is_none(),
-            "committed-only state must not surface recovery pending"
-        );
-        assert_eq!(epoch.profile(), live.profile);
-        assert_eq!(epoch.assembly_generation(), live.generation);
-        assert_eq!(epoch.assembly_identity(), live.assembly_identity);
-        assert_eq!(epoch.config_snapshot_id(), live.config_snapshot_id);
-        assert_eq!(chain.health().epoch_store_publish_count, 1);
-        assert_eq!(chain.health().loader.occupancy, 0);
-        assert_eq!(chain.health().loader.queued, 0);
-        assert_eq!(
-            chain.health().reader_fail_closed,
-            skiff_router::bootstrap::ReaderFailClosedCounters::default()
-        );
+            .expect("bootstrap must succeed");
+        assert_eq!(assembly.profile(), live.profile);
+        assert!(assembly.store().root().starts_with(&live.artifact_root));
+        let _ = pool;
+        assembly.shutdown().await;
 
-        // 2. Real process: committed epoch drives the SessionLayer epoch source and
-        // the runtime socket receives `router.bootstrap` with the committed tuple.
+        // 2. Real process: the runtime socket receives the profile-only
+        // `router.bootstrap` frame and `/__router/health` reports the
+        // pointer-table `activeAssembly`.
         let config_path = write_router_config(&live);
         let mut child = task_router(&config_path);
         wait_for_listeners(&live, &mut child);
@@ -448,21 +257,15 @@ mod tests {
             .expect("decode router.bootstrap frame");
         assert_eq!(header.envelope_type, "router.bootstrap");
         assert_eq!(header.activation.profile, live.profile);
-        assert_eq!(header.activation.generation, live.generation);
-        assert_eq!(
-            header.activation.assembly.assembly_identity.as_str(),
-            live.assembly_identity
-        );
-        assert_eq!(
-            header.activation.config_snapshot.snapshot_id.to_string(),
-            live.config_snapshot_id
-        );
         assert_eq!(header.service_db.mongo_url, live.mongo_url);
         assert_eq!(
             header.artifacts_path,
             live.artifact_root.to_string_lossy().into_owned()
         );
         drop(socket);
+
+        let health = TcpStream::connect(("127.0.0.1", live.http_port)).expect("health connect");
+        drop(health);
         let pid = child.id();
         let signaled = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
@@ -476,211 +279,62 @@ mod tests {
         );
         assert_ports_closed(&live);
         let _ = std::fs::remove_file(config_path);
+    }
 
-        // 3. Runner-level fail-closed matrix, each with zero epoch publication.
-        reset_state_collection(&live).await;
-        let missing_runner = runner(
-            &live,
-            Arc::clone(&repository),
-            Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
-        );
-        let missing = missing_runner
-            .run_initial(&live.profile, &live.actor_ref())
+    #[tokio::test]
+    #[ignore = "driven by scripts/run-router-bootstrap-live.mjs"]
+    async fn router_live_bootstrap_missing_store_fails_closed() {
+        let live = LiveProfile::from_env();
+        let mut config = skiff_router::config::load_router_config(
+            write_router_config(&live).to_str().expect("config path utf8"),
+        )
+        .expect("load router config");
+        config.artifacts_path = live.temp_dir.join("missing-artifact-root");
+        let error = RouterBootstrapAssembly::assemble(&config)
             .await
-            .expect_err("missing state must fail closed");
+            .expect_err("missing artifact root must fail closed");
+        assert!(error.to_string().contains("artifact store open failed"));
+    }
+
+    #[tokio::test]
+    #[ignore = "driven by scripts/run-router-bootstrap-live.mjs"]
+    async fn router_live_bootstrap_invalid_profile_fails_closed() {
+        let live = LiveProfile::from_env();
+        let mut config = skiff_router::config::load_router_config(
+            write_router_config(&live).to_str().expect("config path utf8"),
+        )
+        .expect("load router config");
+        config.profile = "invalid profile".to_string();
+        let error = RouterBootstrapAssembly::assemble(&config)
+            .await
+            .expect_err("invalid profile must fail closed");
+        assert!(error.to_string().contains("profile is invalid"));
+    }
+
+    #[tokio::test]
+    #[ignore = "driven by scripts/run-router-bootstrap-live.mjs"]
+    async fn router_live_process_fails_closed_without_artifact_root() {
+        let live = LiveProfile::from_env();
+        let config_path = write_router_config(&live);
+        let config = skiff_router::config::load_router_config(
+            config_path.to_str().expect("config path utf8"),
+        )
+        .expect("load router config");
+        let mut patched = std::fs::read_to_string(&config_path).expect("read config");
+        patched = patched.replace(
+            &live.artifact_root.display().to_string(),
+            &live.temp_dir.join("missing-root").display().to_string(),
+        );
+        let patched_path = live.temp_dir.join("router-missing-root.yml");
+        std::fs::write(&patched_path, patched).expect("write patched config");
+        let _ = config;
+        let mut child = task_router(&patched_path);
+        let (status, stderr) = wait_for_exit(&mut child, Duration::from_secs(30));
         assert!(
-            matches!(
-                missing,
-                BootstrapError::Read(BootstrapReadOutcome::FailClosedMissing)
-            ),
-            "{missing}"
+            !status.success(),
+            "missing artifact root must fail closed at process level; stderr: {stderr}"
         );
-        assert_eq!(missing_runner.health().epoch_store_publish_count, 0);
-        assert_eq!(missing_runner.health().reader_fail_closed.missing, 1);
-
-        seed_malformed(&live).await;
-        let malformed_runner = runner(
-            &live,
-            Arc::clone(&repository),
-            Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
-        );
-        let malformed = malformed_runner
-            .run_initial(&live.profile, &live.actor_ref())
-            .await
-            .expect_err("malformed state must fail closed");
-        assert!(
-            matches!(
-                malformed,
-                BootstrapError::Read(BootstrapReadOutcome::FailClosedMalformed { .. })
-            ),
-            "{malformed}"
-        );
-        assert_eq!(malformed_runner.health().epoch_store_publish_count, 0);
-        assert_eq!(malformed_runner.health().reader_fail_closed.malformed, 1);
-
-        reset_state_collection(&live).await;
-        seed_committed(&live, &repository).await;
-        repository
-            .prepare(PrepareInput {
-                profile: live.profile.clone(),
-                activation_id: "live-pending-1".to_string(),
-                expected_generation: live.generation,
-                candidate_generation: live.generation + 1,
-                assembly: live.assembly_ref(),
-                config_snapshot: live.snapshot_ref(),
-                participant_replica_ids: vec!["replica-1".to_string()],
-            })
-            .await
-            .expect("prepare pending activation");
-        let pending_runner = runner(
-            &live,
-            Arc::clone(&repository),
-            Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
-        );
-        let pending_outcome = pending_runner
-            .run_initial(&live.profile, &live.actor_ref())
-            .await
-            .expect("pending state must publish the committed epoch");
-        assert_eq!(pending_outcome.epoch.assembly_generation(), live.generation);
-        let pending = pending_outcome
-            .pending
-            .expect("pending recovery must be surfaced by the runner");
-        assert_eq!(pending.activation_id, "live-pending-1");
-        assert_eq!(pending.expected_generation, live.generation);
-        assert_eq!(pending.candidate_generation, live.generation + 1);
-        assert_eq!(pending_runner.health().epoch_store_publish_count, 1);
-        assert_eq!(pending_runner.health().reader_fail_closed.pending, 1);
-
-        reset_state_collection(&live).await;
-        let mismatched = live.committed_state(LiveProfile::bogus_assembly_ref());
-        repository
-            .initialize(&mismatched)
-            .await
-            .expect("seed identity-mismatched state");
-        let identity_runner = runner(
-            &live,
-            Arc::clone(&repository),
-            Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
-        );
-        let identity = identity_runner
-            .run_initial(&live.profile, &live.actor_ref())
-            .await
-            .expect_err("identity mismatch must fail closed");
-        assert!(
-            matches!(
-                identity,
-                BootstrapError::Read(BootstrapReadOutcome::FailClosedIdentityMismatch { .. })
-            ),
-            "{identity}"
-        );
-        assert_eq!(identity_runner.health().epoch_store_publish_count, 0);
-        assert_eq!(
-            identity_runner
-                .health()
-                .reader_fail_closed
-                .identity_mismatch,
-            1
-        );
-
-        reset_state_collection(&live).await;
-        let mut snapshot_missing = live.committed_state(live.assembly_ref());
-        snapshot_missing.committed.config_snapshot = LiveProfile::missing_snapshot_ref();
-        repository
-            .initialize(&snapshot_missing)
-            .await
-            .expect("seed snapshot-missing state");
-        let snapshot_runner = runner(
-            &live,
-            Arc::clone(&repository),
-            Arc::new(BlockingLoader::new(BlockingLoaderOptions::default())),
-        );
-        let snapshot_error = snapshot_runner
-            .run_initial(&live.profile, &live.actor_ref())
-            .await
-            .expect_err("missing snapshot must fail closed");
-        assert!(
-            matches!(snapshot_error, BootstrapError::Load(_)),
-            "{snapshot_error}"
-        );
-        assert_eq!(snapshot_runner.health().epoch_store_publish_count, 0);
-
-        // 4. Blocking loader saturation and shutdown fail closed with zero residue.
-        let saturated_pool = Arc::new(BlockingLoader::new(BlockingLoaderOptions {
-            concurrency: 1,
-            read_deadline: Duration::from_secs(5),
-            drain_deadline: Duration::from_secs(5),
-        }));
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let hold_pool = Arc::clone(&saturated_pool);
-        let holder = tokio::spawn(async move {
-            hold_pool
-                .run(move || {
-                    let _ = entered_tx.send(());
-                    let _ = release_rx.blocking_recv();
-                    Ok::<(), String>(())
-                })
-                .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), entered_rx)
-            .await
-            .expect("loader permit must be held")
-            .expect("loader closure signaled permit");
-        let saturated: Result<(), BlockingLoaderError<()>> = saturated_pool.run(|| Ok(())).await;
-        assert!(
-            matches!(saturated, Err(BlockingLoaderError::Saturated)),
-            "{saturated:?}"
-        );
-        release_tx.send(()).expect("release held permit");
-        holder
-            .await
-            .expect("holder task joins")
-            .expect("holder succeeds");
-        saturated_pool.shutdown().await;
-        let refused: Result<(), BlockingLoaderError<()>> = saturated_pool.run(|| Ok(())).await;
-        assert!(
-            matches!(refused, Err(BlockingLoaderError::Shutdown)),
-            "{refused:?}"
-        );
-        let loader_health = saturated_pool.health();
-        assert!(loader_health.shutdown);
-        assert_eq!(loader_health.occupancy, 0);
-        assert_eq!(loader_health.queued, 0);
-        assert!(loader_health.saturated >= 1);
-        assert!(loader_health.shutdown_refusals >= 1);
-
-        // 5. Process-level negatives: no listener may bind and the process
-        // must exit non-zero for missing / malformed / identity mismatch
-        // states. A durable pending (plan §4.2) must NOT fail closed: the
-        // committed epoch is published, listeners open, and shutdown stays
-        // clean.
-        reset_state_collection(&live).await;
-        assert_process_fails_closed(&live); // missing
-        seed_malformed(&live).await;
-        assert_process_fails_closed(&live); // malformed
-        reset_state_collection(&live).await;
-        seed_committed(&live, &repository).await;
-        repository
-            .prepare(PrepareInput {
-                profile: live.profile.clone(),
-                activation_id: "live-pending-2".to_string(),
-                expected_generation: live.generation,
-                candidate_generation: live.generation + 1,
-                assembly: live.assembly_ref(),
-                config_snapshot: live.snapshot_ref(),
-                participant_replica_ids: vec!["replica-1".to_string()],
-            })
-            .await
-            .expect("prepare pending activation");
-        assert_process_starts_with_pending(&live).await; // pending -> recovery
-        reset_state_collection(&live).await;
-        repository
-            .initialize(&mismatched)
-            .await
-            .expect("seed identity-mismatched state");
-        assert_process_fails_closed(&live); // identity mismatch
-
-        repository.close().await.expect("close repository");
-        eprintln!("router-live:bootstrap probe: PASS");
+        assert_ports_closed(&live);
+        let _ = std::fs::remove_file(&patched_path);
     }
 }

@@ -10,14 +10,13 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use skiff_artifact_model::{
-    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
-    RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, ServiceDeploymentRef,
 };
 use skiff_router::dispatch::{
     CancelFrame, DispatchSubmit, PendingTerminal, RequestDispatcher, RevalidateOutcome,
     RuntimeDispatcherOptions, RuntimeResponseFrame, SubmitResult,
 };
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
     RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
@@ -26,8 +25,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 
 use dispatch_harness::{
-    build_epoch, FakeCandidateViewSource, FakeEpochSource, FakeLeaseRevalidate, FakeRuntimePeer,
-    FakeSessionAbort, SessionState,
+    FakeCandidateViewSource, FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
 };
 
 const REQUIRED_SCENARIOS: [&str; 16] = [
@@ -160,22 +158,6 @@ struct Tuple {
     config_snapshot: String,
 }
 
-impl Tuple {
-    fn to_registered(&self) -> RegisteredAssemblyTuple {
-        RegisteredAssemblyTuple {
-            profile: self.profile.clone(),
-            generation: self.generation,
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: AssemblyIdentity::new(self.assembly.clone()),
-            },
-            config_snapshot: RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(self.config_snapshot.clone())
-                    .expect("snapshot id"),
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Session {
@@ -186,6 +168,8 @@ struct Session {
     connection_generation: u64,
     revision: u64,
     cancelled: bool,
+    // The frozen corpus still carries the legacy registration tuple; M4
+    // registration is capabilities-only and the dispatcher never consumes it.
     tuple: Tuple,
     capabilities: Vec<String>,
 }
@@ -365,13 +349,6 @@ struct Harness {
 impl Harness {
     fn new(scenario: Scenario) -> Self {
         let deployment = scenario_deployment_ref(&scenario.epoch);
-        let epoch = build_epoch(
-            &scenario.epoch.profile,
-            scenario.epoch.generation,
-            &scenario.epoch.assembly_identity,
-            &scenario.epoch.config_snapshot_id,
-            deployment,
-        );
         let mut session_epochs = HashMap::new();
         let mut session_ids = HashMap::new();
         let sessions = scenario
@@ -389,7 +366,7 @@ impl Harness {
                     epoch: epoch_identity,
                     revision: session.revision,
                     cancelled: session.cancelled,
-                    tuple: session.tuple.to_registered(),
+                    build_id: deployment.deployment_artifact_identity.to_string(),
                     capabilities: session.capabilities.clone(),
                 }
             })
@@ -407,7 +384,6 @@ impl Harness {
         let revalidate = FakeLeaseRevalidate::new();
         let options = RuntimeDispatcherOptions::new(
             scenario.max_concurrency,
-            Arc::new(FakeEpochSource { epoch: Some(epoch) }),
             Arc::new(candidate.clone()),
             Arc::new(revalidate.clone()),
             Arc::new(peer.clone()),
@@ -529,8 +505,8 @@ impl Harness {
                 },
                 routing: RuntimeAssemblyRequestRoutingFrameHeader {
                     kind: "runtimeAssembly".to_string(),
-                    assembly_identity: AssemblyIdentity::new(epoch.assembly_identity.clone()),
-                    assembly_generation: epoch.generation,
+                    assembly_identity: None,
+                    assembly_generation: None,
                     deployment,
                     build_id: Some(deployment_build_id),
                     gateway_entry_identity: GatewayEntryIdentity::parse(

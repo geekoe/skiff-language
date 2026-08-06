@@ -6,9 +6,10 @@
 //! with that exact ServiceDeploymentRef, produces the runtime config
 //! snapshot, starts an isolated temporary Mongo replica set, leases router
 //! ports and builds both explicit Rust binaries. This ignored test seeds the
-//! committed activation state, spawns the real `skiff-router` binary and the
-//! real `runtime` binary (direct runtime WS, no test relay), then drives a
-//! real client WebSocket:
+//! actor routing projection record, spawns the real `skiff-router` binary and
+//! the real `runtime` binary (direct runtime WS, no test relay); M4: the
+//! release pointer table comes from authoring, no activation state is
+//! seeded. The probe then drives a real client WebSocket:
 //!   - the frozen JSON-RPC id lexeme corpus (`1e0->1`, `-0->0`, unsafe ids,
 //!     parse/invalidRequest platform errors) through the full chain;
 //!   - business replacement (`maxConnections: 1`, close-oldest) with socket
@@ -29,15 +30,9 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
 };
 use skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH;
 use tokio::net::TcpStream as TokioTcpStream;
@@ -63,9 +58,6 @@ struct LiveProfile {
     database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
-    config_snapshot_id: String,
-    generation: u64,
     http_port: u16,
     runtime_port: u16,
     runtime_bin: PathBuf,
@@ -86,39 +78,21 @@ impl LiveProfile {
         let runtime_port = required("SKIFF_ROUTER_WS_LIVE_RUNTIME_PORT")
             .parse()
             .expect("runtime port");
-        let generation = required("SKIFF_ROUTER_WS_LIVE_GENERATION")
-            .parse()
-            .expect("generation");
+        let profile = std::env::var("SKIFF_ROUTER_WS_LIVE_ENVIRONMENT")
+            .or_else(|_| std::env::var("SKIFF_ROUTER_WS_LIVE_PROFILE"))
+            .unwrap_or_else(|_| {
+                panic!("SKIFF_ROUTER_WS_LIVE_ENVIRONMENT is required; run through scripts/check-router-ws-live.mjs")
+            });
         Self {
             mongo_url: required("SKIFF_ROUTER_WS_LIVE_MONGO_URL"),
             database: required("SKIFF_ROUTER_WS_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_WS_LIVE_ARTIFACT_ROOT")),
-            profile: required("SKIFF_ROUTER_WS_LIVE_PROFILE"),
-            assembly_identity: required("SKIFF_ROUTER_WS_LIVE_ASSEMBLY_IDENTITY"),
-            config_snapshot_id: required("SKIFF_ROUTER_WS_LIVE_CONFIG_SNAPSHOT_ID"),
-            generation,
+            profile,
             http_port,
             runtime_port,
             runtime_bin: PathBuf::from(required("SKIFF_ROUTER_WS_LIVE_RUNTIME_BIN")),
             runtime_home: PathBuf::from(required("SKIFF_ROUTER_WS_LIVE_RUNTIME_HOME")),
             temp_dir: PathBuf::from(required("SKIFF_ROUTER_WS_LIVE_TEMP_DIR")),
-        }
-    }
-
-    fn assembly_ref(&self) -> RuntimeAssemblyRef {
-        RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
-        }
-    }
-
-    fn snapshot_ref(&self) -> RuntimeConfigSnapshotRef {
-        RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                &self.config_snapshot_id,
-            )
-            .expect("config snapshot id"),
         }
     }
 
@@ -129,18 +103,6 @@ impl LiveProfile {
     }
 }
 
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect temporary Mongo repository"),
-    )
-}
-
 fn seed_runtime_home(live: &LiveProfile) {
     std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
     std::fs::write(
@@ -148,19 +110,6 @@ fn seed_runtime_home(live: &LiveProfile) {
         format!("{REPLICA_ID}\n"),
     )
     .expect("seed runtime-id");
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = ProfileActivationState::initial(
-        &live.profile,
-        live.generation,
-        live.assembly_ref(),
-        live.snapshot_ref(),
-    );
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -668,10 +617,6 @@ mod tests {
         seed_runtime_home(&live);
         materialize_projection(&live);
 
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-        seed_committed(&live, &repository).await;
-
         let router_config_path = write_router_config(&live);
         let mut router = task_router(&router_config_path);
         wait_for_listeners(&live, &mut router);
@@ -747,7 +692,6 @@ mod tests {
 
         let _ = std::fs::remove_file(&router_config_path);
         let _ = std::fs::remove_file(&runtime_config_path);
-        repository.close().await.expect("close repository");
         eprintln!("router-live:ws probe: PASS");
     }
 }

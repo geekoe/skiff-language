@@ -16,7 +16,7 @@ mod tests {
 
     use crate::http_common;
     use crate::http_common::{
-        fixture_epoch, fixture_resolver, send_request, service_headers, CONTRACT_VERSION,
+        fixture_resolver, send_request, service_headers, CONTRACT_VERSION,
         SERVICE_ID,
     };
 
@@ -26,7 +26,6 @@ mod tests {
         let dispatcher = Arc::new(dispatcher);
         let server = start_http_gateway(
             HttpGatewayServerOptions::new("127.0.0.1:0".parse().expect("bind"), 1024 * 1024, 4096),
-            fixture_epoch(),
             fixture_resolver(),
             dispatcher.clone(),
         )

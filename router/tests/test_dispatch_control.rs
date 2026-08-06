@@ -13,21 +13,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use skiff_artifact_identity::{assign_runtime_assembly_identity, runtime_assembly_ref};
 use skiff_artifact_model::{
     GatewayEntryKey, GatewayIngressBinding, IngressProtocol, IngressSelector, RuntimeAssemblyRef,
     RuntimeConfigSnapshotRef, ServiceDeploymentRef,
 };
-use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::fixtures::{runtime_assembly_fixture, service_deployment_fixture};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_router::activation::memory::MemoryActivationStateRepository;
-use skiff_router::activation::ActivationStateRepository;
+use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::ListenerStartOptions;
 use skiff_router::supervisor::RouterSupervisor;
@@ -104,6 +100,11 @@ fn materialize() -> RealChain {
         deployment_revision: deployment.deployment_revision.clone(),
         deployment_artifact_identity: deployment.deployment_artifact_identity.clone(),
     };
+    let release_pointer = ReleasePointer::new("dev", deployment_ref.clone())
+        .expect("release pointer");
+    artifact_store
+        .write_release_pointer(&release_pointer)
+        .expect("write release pointer");
     let gateway_entry = deployment
         .gateway_entries
         .get(&GatewayEntryKey::parse(GATEWAY_KEY).expect("gateway key"))
@@ -152,7 +153,6 @@ fn materialize() -> RealChain {
 
 fn config(artifact_root: &Path) -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -174,15 +174,6 @@ fn config(artifact_root: &Path) -> RouterConfig {
         telemetry: None,
         websocket_path: "/ws".to_string(),
     }
-}
-
-fn committed_state(chain: &RealChain) -> ProfileActivationState {
-    ProfileActivationState::initial(
-        PROFILE,
-        GENERATION,
-        chain.assembly_ref.clone(),
-        snapshot_ref(),
-    )
 }
 
 fn test_dispatch_body(chain: &RealChain) -> serde_json::Value {
@@ -257,19 +248,10 @@ async fn start_stack() -> (
     skiff_router::supervisor::SupervisorListeners,
 ) {
     let chain = materialize();
-    let repository = Arc::new(MemoryActivationStateRepository::new());
-    repository
-        .initialize(&committed_state(&chain))
-        .await
-        .expect("seed committed state");
     let config = config(chain._root.path());
-    let supervisor = RouterSupervisor::assemble_with(
-        &config,
-        PROFILE,
-        Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
-    )
-    .await
-    .expect("production composition must assemble");
+    let supervisor = RouterSupervisor::assemble(&config)
+        .await
+        .expect("production composition must assemble");
     let listeners = supervisor
         .start_listeners(&ListenerStartOptions::default())
         .await
@@ -310,14 +292,16 @@ mod tests {
         assert!(status.contains("409"), "expected 409, got {status:?}");
         assert!(body.contains("AssemblyActivationRejected"));
 
-        // Generation mismatch -> 409.
-        let mut stale = test_dispatch_body(&chain);
-        stale["routing"]["assemblyGeneration"] = serde_json::json!(GENERATION + 1);
-        let bytes = serde_json::to_vec(&stale).expect("body serializes");
+        // Unpublished deployment -> 409 (release pointer resolution fails
+        // closed; M4 has no generation tuple).
+        let mut unpublished = test_dispatch_body(&chain);
+        unpublished["routing"]["deployment"]["serviceId"] =
+            serde_json::json!("example.com/never-published");
+        let bytes = serde_json::to_vec(&unpublished).expect("body serializes");
         let (status, body) =
             raw_request(control_addr, "POST", "/__skiff/test-dispatch", &bytes).await;
         assert!(status.contains("409"), "expected 409, got {status:?}");
-        assert!(body.contains("does not match the exact active assembly generation"));
+        assert!(body.contains("does not match a published release pointer"));
 
         // Exact valid dispatch reaches the production dispatcher; with no
         // registered Runtime it fails closed as 503 AssemblyParticipantsUnavailable.

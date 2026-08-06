@@ -3,8 +3,12 @@
 //!
 //! Coverage: TS-compatible base shape + §10 counters, `?detail=loop-risk`
 //! parity, GET-only 405 semantics, registered-session observation lifecycle
-//! (register → health → fresh loopRisk runtime → disconnect → zero), and an
-//! error terminal returning the projection to zero.
+//! (capabilities → health → fresh loopRisk runtime → disconnect → zero), and
+//! an error terminal returning the projection to zero.
+//!
+//! M4: `activeAssembly` is the release pointer table projection
+//! (`{ profile, releaseCount, buildIds }`); `pendingActivation` /
+//! `activeRoutingEpoch` are retired.
 //!
 mod health_common;
 
@@ -12,8 +16,7 @@ use serde_json::Value;
 
 use crate::health_common::{
     assemble, complete_handshake, connect_runtime, health_bytes, health_json, materialize,
-    raw_request, register_bytes, send_binary, start_listeners, wait_until_health, GENERATION,
-    PROFILE, REPLICA_A, REPLICA_B,
+    raw_request, send_binary, start_listeners, wait_until_health, PROFILE, REPLICA_A, REPLICA_B,
 };
 
 #[cfg(test)]
@@ -54,8 +57,6 @@ mod tests {
             ("actor", "invocation.pending"),
             ("actor", "control.pending"),
             ("actor", "lease.evictionPending"),
-            ("activation", "participantBindings"),
-            ("mailboxes", "coordinator.occupancy"),
             ("writerQueues", "wsSlowClientCount"),
             ("tasks", "liveSessionTasks"),
             ("tasks", "renewingAttempts"),
@@ -76,13 +77,14 @@ mod tests {
             health["capabilityConnections"].as_array().map(Vec::len),
             Some(0)
         );
-        assert_eq!(counters["shutdown"]["coordinatorShutdown"], false);
         assert_eq!(counters["shutdown"]["dispatcherStopped"], false);
         assert!(
-            counters["activeRoutingEpoch"]["publishCount"]
-                .as_u64()
-                .unwrap()
-                >= 1
+            health.get("pendingActivation").is_none(),
+            "M4 retires pendingActivation"
+        );
+        assert!(
+            health.get("activeRoutingEpoch").is_none(),
+            "M4 retires activeRoutingEpoch"
         );
     }
 
@@ -100,17 +102,15 @@ mod tests {
         );
         assert_eq!(health["ok"], true);
         assert_eq!(health["activeAssembly"]["profile"], PROFILE);
-        assert_eq!(health["activeAssembly"]["generation"], GENERATION);
-        assert_eq!(
-            health["activeAssembly"]["assemblyIdentity"],
-            chain.assembly_ref.assembly_identity.as_str()
+        assert_eq!(health["activeAssembly"]["releaseCount"], 1);
+        let build_ids = health["activeAssembly"]["buildIds"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            build_ids.iter().any(|id| id.as_str() == Some(&chain.build_id)),
+            "activeAssembly.buildIds must contain the published build id"
         );
-        assert_eq!(
-            health["activeAssembly"]["configSnapshotId"],
-            chain.config_snapshot_ref.snapshot_id.as_str()
-        );
-        assert_eq!(health["activeAssembly"]["ingressCount"], 0);
-        assert!(health["pendingActivation"].is_null());
         assert_steady_zero(&health);
 
         let (status, detail) = health_json(control_addr, "/__router/health?detail=loop-risk").await;
@@ -236,17 +236,20 @@ mod tests {
             crate::health_common::capabilities_bytes(REPLICA_B),
         )
         .await;
-        // Stale generation: the exact register is rejected and the session
-        // is closed (fail-closed).
+        // The retired `runtime.register` frame terminates the exact session
+        // (M4: registration is capabilities-only; the legacy bytes fail
+        // closed as a malformed frame).
         send_binary(
             &mut runtime,
-            register_bytes(
-                REPLICA_B,
-                PROFILE,
-                GENERATION + 1,
-                &chain.assembly_ref,
-                &chain.config_snapshot_ref,
-            ),
+            skiff_runtime_transport::protocol::encode_binary_frame(
+                &serde_json::json!({
+                    "schemaVersion": skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION,
+                    "type": "runtime.register",
+                    "runtimeId": REPLICA_B,
+                }),
+                &[],
+            )
+            .expect("register frame encodes"),
         )
         .await;
 

@@ -6,13 +6,14 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
+use skiff_artifact_identity::ArtifactRelativePath;
 use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+    ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_router::actor::ActorLogicalKey;
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
+use skiff_router::artifact::{ActorRoutingCatalog, ActorRoutingProjectionRef};
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::InboundFrameSink;
 use skiff_router::supervisor::actor::assemble_actor_components;
@@ -20,7 +21,6 @@ use skiff_router::supervisor::actor_sink::ActorFrameSink;
 use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::ws::types::SystemClock;
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 use skiff_runtime_transport::actor_method::{
     encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
     ActorMethodDeadlineFrameHeader, ActorMethodFrame, ActorMethodInvokeFrameHeader,
@@ -35,35 +35,40 @@ use skiff_runtime_transport::protocol::{
     ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
-fn fixture_epoch() -> Arc<RoutingEpoch> {
-    let assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-    let snapshot = RuntimeConfigSnapshot::new(
-        "prod",
-        skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("snapshot id"),
-        },
-        Vec::new(),
-    )
-    .expect("snapshot fixture");
+/// Fresh temporary artifact root with an empty current actor routing
+/// projection record; returns the root, the opened store and the projection
+/// reference consumed by the actor components (M4: no routing epoch).
+fn fixture_root() -> (
+    std::path::PathBuf,
+    CanonicalArtifactStore,
+    ActorRoutingProjectionRef,
+) {
+    let root = std::env::temp_dir().join(format!(
+        "skiff-gates-wiring-actor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create temp artifact root");
+    let store = CanonicalArtifactStore::open(&root).expect("open artifact store");
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
         Vec::new(),
     )
     .expect("empty projection");
-    let catalog = ActorRoutingCatalog::from_projection(Arc::new(projection));
-    Arc::new(
-        RoutingEpoch::new(
-            "prod",
-            1,
-            Arc::new(assembly),
-            Arc::new(snapshot),
-            Arc::new(catalog),
+    store
+        .write_actor_routing_projection(&projection)
+        .expect("write actor routing projection");
+    let actor_projection = ActorRoutingProjectionRef::new(
+        ArtifactRelativePath::new(
+            ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+            "actor routing projection record",
         )
-        .expect("epoch"),
-    )
+        .expect("record path"),
+    );
+    (root, store, actor_projection)
 }
 
 #[derive(Debug, Default)]
@@ -83,31 +88,21 @@ impl WsSessionWriter for FakeWsSessionWriter {
     }
 }
 
-fn sink() -> (
-    ActorFrameSink,
-    Arc<FakeWsSessionWriter>,
-    Arc<ActiveRoutingEpochStore>,
-) {
-    let epoch = fixture_epoch();
-    let epoch_store = Arc::new(ActiveRoutingEpochStore::new());
-    epoch_store.publish(Arc::clone(&epoch));
+fn sink() -> (ActorFrameSink, Arc<FakeWsSessionWriter>) {
+    let (root, store, actor_projection) = fixture_root();
     let session = SessionHandle::new();
-    let components = assemble_actor_components(
-        Arc::clone(&epoch),
-        Arc::clone(&epoch_store),
-        session.clone(),
-    )
-    .expect("actor components");
+    let components = assemble_actor_components(&root, actor_projection, session.clone())
+        .expect("actor components");
     let writer = Arc::new(FakeWsSessionWriter::default());
     let sink = ActorFrameSink::new(
         components,
         session,
-        Arc::clone(&epoch_store),
+        store,
         writer.clone(),
         Arc::new(SystemClock),
         Arc::new(skiff_router::task::NoopActorAttemptTerminalSink),
     );
-    (sink, writer, epoch_store)
+    (sink, writer)
 }
 
 fn runtime() -> RuntimeSessionEpoch {
@@ -167,6 +162,10 @@ fn assembly_identity_str() -> String {
     format!("skiff-runtime-assembly-v3:sha256:{}", digest("assembly"))
 }
 
+fn route_build_id() -> String {
+    format!("skiff-service-deployment-v2:sha256:{}", digest("route"))
+}
+
 fn abi_identity() -> skiff_artifact_model::ActorAbiIdentity {
     skiff_artifact_model::ActorAbiIdentity::new(format!(
         "skiff-actor-abi-v1:sha256:{}",
@@ -187,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_or_create_without_owner_fails_closed_with_error_frame() {
-        let (sink, writer, _) = sink();
+        let (sink, writer) = sink();
         let header = ActorGetOrCreateRequestFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "actor.getOrCreate.request".to_string(),
@@ -230,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_remove_and_replace_respond_with_canonical_frames() {
-        let (sink, writer, _) = sink();
+        let (sink, writer) = sink();
         let session = runtime();
 
         let find = ActorFindRequestFrameHeader {
@@ -312,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_owner_control_frame_is_a_direction_violation() {
-        let (sink, writer, _) = sink();
+        let (sink, writer) = sink();
         let header = ActorOwnerControlFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "actor.owner.control".to_string(),
@@ -338,8 +337,7 @@ mod tests {
                 eviction_request_id: None,
             },
             route_authority: ActorOwnerRouteAuthorityFrameHeader {
-                assembly_identity: assembly_identity_str(),
-                assembly_generation: 1,
+                build_id: route_build_id(),
             },
             transition: None,
             bootstrap: Some(skiff_runtime_transport::actor_owner::ActorActivationBootstrapFrameHeader {
@@ -365,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_actor_frame_type_is_malformed() {
-        let (sink, writer, _) = sink();
+        let (sink, writer) = sink();
         let bytes = skiff_runtime_transport::protocol::encode_binary_frame(
             &serde_json::json!({
                 "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
@@ -386,7 +384,7 @@ mod tests {
         // projection catalog (A2 hard cut / C-actor §3.1). A miss must fail
         // closed exactly like the TS dispatcher's UnknownMethod rejection:
         // no synthetic error frame, no owner forward, no session terminal.
-        let (sink, writer, _) = sink();
+        let (sink, writer) = sink();
         let key = actor_key();
         let invoke = ActorMethodInvokeFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),

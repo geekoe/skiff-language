@@ -3,9 +3,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use skiff_artifact_model::{
-    AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-};
 use skiff_router::config::RouterConfig;
 use skiff_router::session::demux::{
     DemuxEvent, DemuxOutcome, InboundFrameSink, InboundSinkSet, RuntimeFrameDemux,
@@ -13,9 +10,6 @@ use skiff_router::session::demux::{
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::layer::{SessionFrameWriter, SessionLayer, SessionLayerOptions};
 use skiff_router::session::TerminalKind;
-use skiff_runtime_transport::assembly_activation::{
-    encode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, RequestCancelFrameHeader, ResponseEndFrameHeader,
     ResponseEndFrameMetadata, RuntimeFrameFamily, RuntimeHttpResponseFrameHeader,
@@ -57,7 +51,6 @@ impl SessionFrameWriter for RecordingWriter {
 
 fn test_config() -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -155,19 +148,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
-    struct FamilySink(RuntimeFrameFamily);
-
-    impl InboundFrameSink for FamilySink {
-        fn family(&self) -> RuntimeFrameFamily {
-            self.0
-        }
-
-        fn handle(&self, _session: &RuntimeSessionEpoch, _raw: &[u8]) -> Result<(), TerminalKind> {
-            Ok(())
-        }
-    }
-
     fn request_family_frame() -> Vec<u8> {
         let header = ResponseEndFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -182,32 +162,6 @@ mod tests {
         encode_binary_frame(&header, b"ok".as_slice()).expect("encode response.end")
     }
 
-    fn activation_prepared_frame() -> Vec<u8> {
-        let control = skiff_artifact_model::AssemblyActivationControl::Prepared {
-        profile: "prod".to_string(),
-        activation_id: "activation-1".to_string(),
-        expected_generation: 7,
-        candidate_generation: 8,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("snapshot id"),
-        },
-        replica_id: "runtime-a".to_string(),
-    };
-        encode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            &control,
-        )
-        .expect("encode prepared")
-    }
-
     fn request_cancel_frame() -> Vec<u8> {
         let header = RequestCancelFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -218,12 +172,25 @@ mod tests {
         encode_binary_frame(&header, &[]).expect("encode request.cancel")
     }
 
+    /// Legacy `assembly.activation` bytes (retired in M4): a well-framed
+    /// frame whose type has no installed family prefix.
+    fn legacy_activation_prepared_bytes() -> Vec<u8> {
+        encode_binary_frame(
+            &serde_json::json!({
+                "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+                "type": "assembly.activation.prepare",
+                "activationId": "activation-1",
+            }),
+            &[],
+        )
+        .expect("legacy activation frame encodes")
+    }
+
     #[test]
     fn demux_preserves_unimplemented_without_sinks_and_injects_installed_sinks() {
         let demux = RuntimeFrameDemux;
         let request_bytes = request_family_frame();
         let cancel_bytes = request_cancel_frame();
-        let activation_bytes = activation_prepared_frame();
 
         // Empty sink set: identical to the W-session `classify` behavior.
         let empty = InboundSinkSet::default();
@@ -245,20 +212,17 @@ mod tests {
                 family: RuntimeFrameFamily::Request
             })
         ));
+        // The retired `assembly.activation` family has no wire prefix anymore:
+        // its legacy bytes fail closed as a malformed frame (M4).
         assert!(matches!(
-            demux.classify_with_sinks(&activation_bytes, &empty),
-            DemuxOutcome::Handled(DemuxEvent::Unimplemented {
-                family: RuntimeFrameFamily::Activation
-            })
+            demux.classify_with_sinks(&legacy_activation_prepared_bytes(), &empty),
+            DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
         ));
 
         // Installed sinks receive the raw frame through `DemuxEvent::Sink`.
         let sink = Arc::new(RecordingSink::default());
         let set = InboundSinkSet {
             request: Some(Arc::clone(&sink) as Arc<dyn InboundFrameSink>),
-            activation_transaction: Some(
-                Arc::new(FamilySink(RuntimeFrameFamily::Activation)) as Arc<dyn InboundFrameSink>
-            ),
             ..InboundSinkSet::default()
         };
         let DemuxOutcome::Handled(DemuxEvent::Sink {
@@ -273,13 +237,6 @@ mod tests {
             demux.classify_with_sinks(&cancel_bytes, &set),
             DemuxOutcome::Handled(DemuxEvent::Sink {
                 family: RuntimeFrameFamily::Request,
-                ..
-            })
-        ));
-        assert!(matches!(
-            demux.classify_with_sinks(&activation_bytes, &set),
-            DemuxOutcome::Handled(DemuxEvent::Sink {
-                family: RuntimeFrameFamily::Activation,
                 ..
             })
         ));

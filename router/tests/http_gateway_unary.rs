@@ -14,7 +14,7 @@ mod tests {
 
     use crate::http_common;
     use crate::http_common::{
-        fixture_deployment_identity, fixture_epoch, fixture_resolver, send_request,
+        fixture_deployment_identity, fixture_resolver, send_request,
         service_headers, CONTRACT_VERSION, DEPLOYMENT_REVISION, SERVICE_ID,
     };
 
@@ -29,7 +29,6 @@ mod tests {
                 1024 * 1024,
                 max_response_bytes,
             ),
-            fixture_epoch(),
             fixture_resolver(),
             dispatcher.clone(),
         )
@@ -70,11 +69,14 @@ mod tests {
         assert_eq!(header.mode, "unary");
         assert_eq!(header.request_id, header.request_id);
         assert_eq!(header.routing.kind, "runtimeAssembly");
-        assert_eq!(
-            header.routing.assembly_identity.as_str(),
-            http_common::ASSEMBLY_IDENTITY
+        assert!(
+            header.routing.assembly_identity.is_none(),
+            "M4: router does not fill the assembly identity tuple"
         );
-        assert_eq!(header.routing.assembly_generation, 42);
+        assert!(
+            header.routing.assembly_generation.is_none(),
+            "M4: router does not fill the generation tuple"
+        );
         assert_eq!(header.routing.deployment.service_id, SERVICE_ID);
         assert_eq!(header.routing.deployment.contract_version, CONTRACT_VERSION);
         assert_eq!(

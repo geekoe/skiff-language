@@ -36,7 +36,7 @@ use skiff_runtime_transport::protocol::{
     PayloadPresenceRule, RuntimeFrameFamily,
 };
 
-use actor_support::{actor_wire_dir, hex_bytes};
+use actor_support::{actor_wire_dir, hex_bytes, ROUTE_BUILD_ID};
 
 const REQUIRED_FRAMES: [&str; 20] = [
     "actor.getOrCreate.request",
@@ -476,8 +476,7 @@ mod tests {
             owner_runtime_id: header.runtime_id.clone(),
             owner_connection: "conn-runtime-a".to_string(),
             route_authority: ActorOwnerRouteAuthority {
-                assembly_identity: header.activation_identity.assembly_identity.clone(),
-                assembly_generation: header.activation_identity.generation,
+                build_id: ROUTE_BUILD_ID.to_string(),
             },
             deadline: header.deadline.clone(),
             test_case_capability: header.test_case_capability.clone(),

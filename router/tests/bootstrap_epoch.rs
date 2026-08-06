@@ -1,55 +1,99 @@
-//! W-bootstrap epoch tests.
+//! W-bootstrap epoch tests (M4): the `RoutingEpoch` is retired; the actor
+//! routing catalog is now loaded lazily on demand through
+//! `ActorMethodCatalogView` (artifact store projection record, cached for the
+//! process lifetime, fail-closed on missing/malformed records).
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
+use skiff_artifact_identity::ArtifactRelativePath;
+use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
+use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_router::actor::{ActorMethodCatalogView, CatalogQuery};
+use skiff_router::artifact::ActorRoutingProjectionRef;
+use skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH;
 
-fn assembly() -> Arc<skiff_artifact_model::RuntimeAssembly> {
-    Arc::new(empty_runtime_assembly_fixture().expect("assembly fixture"))
+static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct TestRoot {
+    parent: PathBuf,
+    root: PathBuf,
 }
 
-fn snapshot_ref() -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-            "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("snapshot id"),
+impl TestRoot {
+    fn new() -> Self {
+        let sequence = TEMP_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let parent = std::env::temp_dir().join(format!(
+            "skiff-router-w-bootstrap-epoch-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&parent).expect("create temp parent");
+        Self {
+            parent: parent.clone(),
+            root: parent.join("root"),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
     }
 }
 
-fn snapshot(profile: &str) -> Arc<RuntimeConfigSnapshot> {
-    Arc::new(
-        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture"),
-    )
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.parent);
+    }
 }
 
-fn catalog() -> Arc<ActorRoutingCatalog> {
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)))
-}
-
-fn epoch(profile: &str, generation: u64) -> Arc<RoutingEpoch> {
-    Arc::new(
-        RoutingEpoch::new(
-            profile,
-            generation,
-            assembly(),
-            snapshot(profile),
-            catalog(),
+fn projection_ref() -> ActorRoutingProjectionRef {
+    ActorRoutingProjectionRef::new(
+        ArtifactRelativePath::new(
+            ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+            "actor routing projection record",
         )
-        .expect("epoch fixture"),
+        .expect("projection path"),
     )
+}
+
+fn projection_path(root: &Path) -> PathBuf {
+    root.join(ACTOR_ROUTING_PROJECTION_RECORD_PATH)
+}
+
+fn write_projection(root: &Path, projection: &ActorRoutingProjection) {
+    let path = projection_path(root);
+    fs::create_dir_all(path.parent().expect("projection parent"))
+        .expect("create projection dirs");
+    let bytes = canonical_json_bytes(projection).expect("canonical projection");
+    fs::write(path, bytes).expect("write projection");
+}
+
+fn abi(byte: char) -> ActorAbiIdentity {
+    ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", byte.to_string().repeat(64)))
+}
+
+fn implementation(byte: char) -> ActorImplementationIdentity {
+    ActorImplementationIdentity::new(format!(
+        "skiff-actor-implementation-v1:sha256:{}",
+        byte.to_string().repeat(64)
+    ))
+}
+
+fn method(byte: char) -> ActorMethodIdentity {
+    ActorMethodIdentity::new(format!(
+        "skiff-actor-method-v1:sha256:{}",
+        byte.to_string().repeat(64)
+    ))
+}
+
+fn empty_projection() -> ActorRoutingProjection {
+    ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), Vec::new())
+        .expect("empty projection")
 }
 
 #[cfg(test)]
@@ -57,103 +101,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn epoch_exposes_frozen_corpus_fields() {
-        let epoch = epoch("prod", 7);
-        assert_eq!(epoch.profile(), "prod");
-        assert_eq!(epoch.assembly_generation(), 7);
-        assert_eq!(
-            epoch.assembly_identity(),
-            epoch.assembly().assembly_identity.as_str()
+    fn catalog_view_loads_lazily_and_caches() {
+        let root = TestRoot::new();
+        fs::create_dir_all(root.path()).expect("create root");
+        CanonicalArtifactStore::create(root.path()).expect("create artifact store");
+        write_projection(root.path(), &empty_projection());
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
+            .expect("view opens");
+        assert_eq!(view.loads(), 0);
+        let query = CatalogQuery::new(
+            "example.com/service-1".to_string(),
+            abi('a'),
+            implementation('b'),
+            method('c'),
         );
-        assert_eq!(
-            epoch.config_snapshot_id(),
-            epoch.snapshot().snapshot_ref().snapshot_id.as_str()
+        assert!(!view.has_method(&query), "empty projection has no methods");
+        assert_eq!(view.loads(), 1, "one on-demand load");
+        let _ = view.has_method(&query);
+        assert_eq!(view.loads(), 1, "cached: no second load");
+        assert_eq!(view.schema_version(), ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn catalog_view_fails_closed_on_missing_projection() {
+        let root = TestRoot::new();
+        fs::create_dir_all(root.path()).expect("create root");
+        CanonicalArtifactStore::create(root.path()).expect("create artifact store");
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
+            .expect("view opens");
+        let query = CatalogQuery::new(
+            "example.com/service-1".to_string(),
+            abi('a'),
+            implementation('b'),
+            method('c'),
         );
-        assert!(epoch.ingress_projection().is_empty());
-        assert!(epoch.deployment_projection().is_empty());
-        assert!(epoch.actor_catalog().is_empty());
-    }
-
-    #[test]
-    fn epoch_rejects_snapshot_profile_mismatch() {
-        let result = RoutingEpoch::new("prod", 1, assembly(), snapshot("stage"), catalog());
-        let error = result.expect_err("profile mismatch must fail closed");
-        assert!(error.to_string().contains("profile mismatch"), "{error}");
-    }
-
-    #[test]
-    fn epoch_maps_to_registered_assembly_tuple_for_session_seam() {
-        let epoch = epoch("prod", 7);
-        let tuple = epoch.registered_tuple();
-        assert_eq!(tuple.profile, "prod");
-        assert_eq!(tuple.generation, 7);
-        assert_eq!(tuple.assembly_identity(), epoch.assembly_identity());
-        assert_eq!(tuple.snapshot_id(), epoch.config_snapshot_id());
-    }
-
-    #[test]
-    fn store_publishes_whole_epoch_and_keeps_old_arcs_alive() {
-        let store = ActiveRoutingEpochStore::new();
-        assert_eq!(store.capture(), None);
-        assert_eq!(store.publish_count(), 0);
-
-        let first = epoch("prod", 1);
-        store.publish(Arc::clone(&first));
-        assert_eq!(store.capture().as_ref(), Some(&first));
-        assert_eq!(store.publish_count(), 1);
-
-        let second = epoch("prod", 2);
-        store.publish(Arc::clone(&second));
-        assert_eq!(store.capture().as_ref(), Some(&second));
-        assert_eq!(store.publish_count(), 2);
-        assert_eq!(first.assembly_generation(), 1);
-        assert_eq!(second.assembly_generation(), 2);
-    }
-
-    #[test]
-    fn store_health_exposes_active_epoch_and_publish_count() {
-        let store = ActiveRoutingEpochStore::new();
-        assert_eq!(store.health().publish_count, 0);
-        assert_eq!(store.health().current, None);
-
-        let epoch = epoch("prod", 42);
-        store.publish(Arc::clone(&epoch));
-        let health = store.health();
-        assert_eq!(health.publish_count, 1);
-        let current = health.current.expect("current epoch");
-        assert_eq!(current.profile, "prod");
-        assert_eq!(current.assembly_generation, 42);
-        assert_eq!(current.assembly_identity, epoch.assembly_identity());
-        assert_eq!(
-            current.config_snapshot_id,
-            "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert!(
+            !view.has_method(&query),
+            "missing projection must fail closed"
         );
     }
 
     #[test]
-    fn store_never_holds_pending_state() {
-        let store = ActiveRoutingEpochStore::new();
-        let epoch = epoch("prod", 1);
-        store.publish(epoch);
-        let captured = store.capture().expect("captured epoch");
-        assert_eq!(captured.registered_tuple().generation, 1);
-        assert_eq!(store.publish_count(), 1);
-    }
-
-    #[test]
-    fn committed_bootstrap_refs_map_onto_wire_activation_header_fields() {
-        let committed = skiff_deployment::storage::CommittedActivation {
-            generation: 7,
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                    "skiff-runtime-assembly-v3:sha256:".to_string() + &"a".repeat(64),
-                ),
-            },
-            config_snapshot: snapshot_ref(),
-        };
-        let refs = skiff_router::bootstrap::CommittedBootstrapRefs::project_committed(&committed);
-        assert_eq!(refs.generation, 7);
-        assert_eq!(refs.assembly, committed.assembly);
-        assert_eq!(refs.config_snapshot, committed.config_snapshot);
+    fn catalog_view_fails_closed_on_malformed_projection() {
+        let root = TestRoot::new();
+        fs::create_dir_all(root.path()).expect("create root");
+        CanonicalArtifactStore::create(root.path()).expect("create artifact store");
+        let path = projection_path(root.path());
+        fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        fs::write(path, b"not json").expect("write malformed projection");
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
+            .expect("view opens");
+        let query = CatalogQuery::new(
+            "example.com/service-1".to_string(),
+            abi('a'),
+            implementation('b'),
+            method('c'),
+        );
+        assert!(
+            !view.has_method(&query),
+            "malformed projection must fail closed"
+        );
     }
 }

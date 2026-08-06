@@ -11,26 +11,15 @@ use std::time::{Duration, SystemTime};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use skiff_artifact_identity::runtime_assembly_ref;
-use skiff_artifact_model::{
-    AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::ProfileActivationState;
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
+use skiff_deployment::fixtures::service_deployment_fixture;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_router::activation::memory::MemoryActivationStateRepository;
-use skiff_router::activation::ActivationStateRepository;
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::ListenerStartOptions;
 use skiff_router::supervisor::RouterSupervisor;
-use skiff_runtime_config_snapshot::{RuntimeConfigSnapshot, RuntimeConfigSnapshotStore};
-use skiff_runtime_transport::assembly_activation::{
-    encode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
     RuntimeDispatchModeCapability, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
@@ -41,7 +30,6 @@ use tokio::time::timeout;
 
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROFILE: &str = "prod";
-pub const GENERATION: u64 = 7;
 pub const REPLICA_A: &str = "runtime-health-a";
 pub const REPLICA_B: &str = "runtime-health-b";
 
@@ -79,34 +67,29 @@ impl Drop for TestRoot {
 
 pub struct RealChain {
     pub _root: TestRoot,
-    pub assembly_ref: RuntimeAssemblyRef,
-    pub config_snapshot_ref: RuntimeConfigSnapshotRef,
-}
-
-pub fn snapshot_ref() -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-            "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("snapshot id"),
-    }
+    pub build_id: String,
 }
 
 pub fn materialize(profile: &str) -> RealChain {
     let root = TestRoot::new();
     std::fs::create_dir_all(root.path()).expect("create artifact root");
-    let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
-        .expect("create snapshot store");
-    let snapshot =
-        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
-    snapshot_store.publish(&snapshot).expect("publish snapshot");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
-    let assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
+    let mut deployment =
+        service_deployment_fixture().expect("deployment fixture");
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
+        .expect("assign deployment identity");
     artifact_store
-        .write_runtime_assembly(&assembly)
-        .expect("write assembly");
-    let assembly_ref = runtime_assembly_ref(&assembly).expect("assembly ref");
+        .write_service_deployment(&deployment)
+        .expect("write deployment record");
+    let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    let release_pointer =
+        skiff_deployment::storage::ReleasePointer::new(profile, reference.clone())
+            .expect("release pointer");
+    artifact_store
+        .write_release_pointer(&release_pointer)
+        .expect("write release pointer");
+    let build_id = reference.deployment_artifact_identity.to_string();
     let directory = root.path().join("records/actor-routing");
     std::fs::create_dir_all(&directory).expect("create actor routing records directory");
     let projection = ActorRoutingProjection::new(
@@ -122,14 +105,12 @@ pub fn materialize(profile: &str) -> RealChain {
     .expect("write projection record");
     RealChain {
         _root: root,
-        assembly_ref,
-        config_snapshot_ref: snapshot_ref(),
+        build_id,
     }
 }
 
 pub fn config(artifact_root: &Path) -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -153,29 +134,11 @@ pub fn config(artifact_root: &Path) -> RouterConfig {
     }
 }
 
-pub fn committed_state(chain: &RealChain) -> ProfileActivationState {
-    ProfileActivationState::initial(
-        PROFILE,
-        GENERATION,
-        chain.assembly_ref.clone(),
-        chain.config_snapshot_ref.clone(),
-    )
-}
-
 pub async fn assemble(chain: &RealChain) -> RouterSupervisor {
-    let repository = std::sync::Arc::new(MemoryActivationStateRepository::new());
-    repository
-        .initialize(&committed_state(chain))
-        .await
-        .expect("seed committed state");
     let config = config(chain._root.path());
-    RouterSupervisor::assemble_with(
-        &config,
-        PROFILE,
-        repository as std::sync::Arc<dyn ActivationStateRepository>,
-    )
-    .await
-    .expect("production composition must assemble")
+    RouterSupervisor::assemble(&config)
+        .await
+        .expect("production composition must assemble")
 }
 
 pub async fn start_listeners(
@@ -278,24 +241,6 @@ pub fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
     encode_binary_frame(&header, &[]).expect("capabilities encodes")
 }
 
-pub fn register_bytes(
-    replica_id: &str,
-    profile: &str,
-    generation: u64,
-    assembly: &RuntimeAssemblyRef,
-    config_snapshot: &RuntimeConfigSnapshotRef,
-) -> Vec<u8> {
-    let control = AssemblyActivationControl::Register {
-        profile: profile.to_string(),
-        generation,
-        assembly: assembly.clone(),
-        config_snapshot: config_snapshot.clone(),
-        replica_id: replica_id.to_string(),
-    };
-    encode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &control)
-        .expect("register encodes")
-}
-
 pub fn health_bytes(replica_id: &str) -> Vec<u8> {
     let now = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -318,9 +263,9 @@ pub fn health_bytes(replica_id: &str) -> Vec<u8> {
     encode_binary_frame(&header, &[]).expect("health encodes")
 }
 
-/// Completes the runtime handshake: reads `router.bootstrap`, sends
-/// capabilities + Register, and reads the `runtime.registered` ACK.
-pub async fn complete_handshake(socket: &mut PeerSocket, replica_id: &str, chain: &RealChain) {
+/// Completes the runtime handshake (M4): reads `router.bootstrap`, sends
+/// capabilities (the registration), and reads the `runtime.registered` ACK.
+pub async fn complete_handshake(socket: &mut PeerSocket, replica_id: &str, _chain: &RealChain) {
     let bootstrap = recv_binary(socket).await;
     assert!(
         bootstrap
@@ -329,17 +274,6 @@ pub async fn complete_handshake(socket: &mut PeerSocket, replica_id: &str, chain
         "expected router.bootstrap frame"
     );
     send_binary(socket, capabilities_bytes(replica_id)).await;
-    send_binary(
-        socket,
-        register_bytes(
-            replica_id,
-            PROFILE,
-            GENERATION,
-            &chain.assembly_ref,
-            &chain.config_snapshot_ref,
-        ),
-    )
-    .await;
     let ack = recv_binary(socket).await;
     assert!(
         ack.windows(b"runtime.registered".len())

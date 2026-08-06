@@ -25,12 +25,12 @@ mod tests {
     use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
     use skiff_router::http::fake::{FakeDispatchPlan, FakeHttpDispatcher};
     use skiff_router::http::{
-        start_http_gateway, EpochHttpIngressResolver, HttpGatewayServerOptions,
+        start_http_gateway, HttpGatewayServerOptions, StoreHttpIngressResolver,
         HttpIngressResolver,
     };
     use skiff_router::http::selector::ServiceDeploymentSelector;
 
-    use crate::http_common::{fixture_epoch, send_request};
+    use crate::http_common::send_request;
 
     const SERVICE_ID: &str = "example.com/release-resolver";
     const CONTRACT_VERSION: &str = "2.0.0";
@@ -156,10 +156,11 @@ mod tests {
         (store, guard)
     }
 
-    fn resolver(store: &CanonicalArtifactStore) -> EpochHttpIngressResolver {
-        EpochHttpIngressResolver::new_with_live_artifact_store(
+    fn resolver(store: &CanonicalArtifactStore) -> StoreHttpIngressResolver {
+        StoreHttpIngressResolver::new_with_live_artifact_store(
             Arc::new(skiff_router::http::HttpGatewaySurfaceView::default()),
             store.clone(),
+            PROFILE,
         )
     }
 
@@ -172,10 +173,9 @@ mod tests {
         let deployment = deployment("1");
         let (store, _guard) = store_with_pointer(&deployment);
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
         let binding = resolver
-            .resolve(&epoch, &selector(), "POST", "/greet")
+            .resolve(&selector(), "POST", "/greet")
             .expect("release ingress resolves");
         assert_eq!(binding.deployment.service_id, SERVICE_ID);
         assert_eq!(binding.deployment.contract_version, CONTRACT_VERSION);
@@ -209,10 +209,9 @@ mod tests {
             .write_service_deployment(&deployment)
             .expect("write deployment record");
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
         let error = resolver
-            .resolve(&epoch, &selector(), "POST", "/greet")
+            .resolve(&selector(), "POST", "/greet")
             .expect_err("unset release pointer must fail closed");
         let (status, code) = release_error(&error);
         assert_eq!((status, code), (404, "ReleaseNotFound"));
@@ -229,10 +228,9 @@ mod tests {
         std::fs::remove_file(store.root().join(record_path.as_relative_path().as_path()))
             .expect("remove deployment record");
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
         let error = resolver
-            .resolve(&epoch, &selector(), "POST", "/greet")
+            .resolve(&selector(), "POST", "/greet")
             .expect_err("broken pointer target must fail closed");
         let (status, code) = release_error(&error);
         assert_eq!((status, code), (500, "InternalGatewayError"));
@@ -245,14 +243,13 @@ mod tests {
         let deployment = deployment("1");
         let (store, _guard) = store_with_pointer(&deployment);
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
         let error = resolver
-            .resolve(&epoch, &selector(), "GET", "/greet")
+            .resolve(&selector(), "GET", "/greet")
             .expect_err("wrong method fails closed");
         assert_eq!(release_error(&error), (404, "AssemblyIngressNotFound"));
         let error = resolver
-            .resolve(&epoch, &selector(), "POST", "/nope")
+            .resolve(&selector(), "POST", "/nope")
             .expect_err("unknown path fails closed");
         assert_eq!(release_error(&error), (404, "AssemblyIngressNotFound"));
     }
@@ -262,10 +259,9 @@ mod tests {
         let v1 = deployment("1");
         let (store, _guard) = store_with_pointer(&v1);
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
         let first = resolver
-            .resolve(&epoch, &selector(), "POST", "/greet")
+            .resolve(&selector(), "POST", "/greet")
             .expect("v1 resolves");
         assert_eq!(first.build_id, v1.deployment_artifact_identity.as_str());
 
@@ -286,7 +282,7 @@ mod tests {
             .expect("overwrite release pointer");
 
         let second = resolver
-            .resolve(&epoch, &selector(), "POST", "/greet")
+            .resolve(&selector(), "POST", "/greet")
             .expect("v2 resolves after pointer overwrite");
         assert_eq!(second.build_id, v2.deployment_artifact_identity.as_str());
         assert_ne!(second.build_id, first.build_id);
@@ -297,15 +293,14 @@ mod tests {
         let deployment = deployment("1");
         let (store, _guard) = store_with_pointer(&deployment);
         let resolver = resolver(&store);
-        let epoch = fixture_epoch();
 
-        assert!(resolver.has_ingress_path(&epoch, &selector(), "/greet"));
-        assert!(!resolver.has_ingress_path(&epoch, &selector(), "/other"));
+        assert!(resolver.has_ingress_path(&selector(), "/greet"));
+        assert!(!resolver.has_ingress_path(&selector(), "/other"));
         let unknown_selector = ServiceDeploymentSelector {
             service_id: "example.com/unknown".to_string(),
             contract_version: CONTRACT_VERSION.to_string(),
         };
-        assert!(!resolver.has_ingress_path(&epoch, &unknown_selector, "/greet"));
+        assert!(!resolver.has_ingress_path(&unknown_selector, "/greet"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -314,7 +309,6 @@ mod tests {
         let (store, _guard) = store_with_pointer(&deployment);
         let server = start_http_gateway(
             HttpGatewayServerOptions::new("127.0.0.1:0".parse().expect("bind"), 1024 * 1024, 4096),
-            fixture_epoch(),
             Arc::new(resolver(&store)),
             Arc::new(FakeHttpDispatcher::new(vec![FakeDispatchPlan::UnaryOk {
                 status: 200,

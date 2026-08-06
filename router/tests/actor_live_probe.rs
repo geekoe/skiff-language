@@ -4,8 +4,9 @@
 //! real compiler artifact (actor-full-chain-acceptance fixture), starts an
 //! isolated temporary Mongo replica set, leases router + two relay ports and
 //! builds explicit Rust router/runtime binaries. This ignored test then:
-//!   - seeds the committed activation state and spawns the real `skiff-router`
-//!     binary;
+//!   - seeds the actor routing projection record and spawns the real
+//!     `skiff-router` binary (M4: the release pointer table comes from
+//!     authoring, no activation state is seeded);
 //!   - tasks two real `runtime` binaries with independent runtime homes,
 //!     each connected through a test-only WS relay to the real Router;
 //!   - drives HTTP unary probes through the real Router into the fixture:
@@ -28,25 +29,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use skiff_artifact_model::{
-    AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-};
-use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
-};
 use skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_response_end_frame, decode_response_error_frame,
     decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_task_submit_request_frame, RuntimeHealthFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    encode_task_submit_request_frame, RuntimeCapabilitiesFrameHeader, RuntimeHealthFrameHeader,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
@@ -65,10 +56,9 @@ const LIVE_TIMEOUT: Duration = Duration::from_secs(180);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENCY: u64 = 16;
 
-const HANDSHAKE_SEQUENCE: [&str; 5] = [
+const HANDSHAKE_SEQUENCE: [&str; 4] = [
     "router.bootstrap",
     "runtime.capabilities",
-    "assembly.activation",
     "runtime.registered",
     "runtime.health",
 ];
@@ -78,9 +68,6 @@ struct LiveProfile {
     database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
-    config_snapshot_id: String,
-    generation: u64,
     http_port: u16,
     runtime_port: u16,
     relay_one_port: u16,
@@ -119,9 +106,6 @@ impl LiveProfile {
         let relay_two_port = required("SKIFF_ROUTER_ACTOR_LIVE_RELAY_TWO_PORT")
             .parse()
             .expect("relay two port");
-        let generation = required("SKIFF_ROUTER_ACTOR_LIVE_GENERATION")
-            .parse()
-            .expect("generation");
         let entrypoints_json = required("SKIFF_ROUTER_ACTOR_LIVE_ENTRYPOINTS");
         let deployment_json = required("SKIFF_ROUTER_ACTOR_LIVE_DEPLOYMENT");
         let deployment_raw: serde_json::Value =
@@ -176,9 +160,6 @@ impl LiveProfile {
             database: required("SKIFF_ROUTER_ACTOR_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_ACTOR_LIVE_ARTIFACT_ROOT")),
             profile: required("SKIFF_ROUTER_ACTOR_LIVE_PROFILE"),
-            assembly_identity: required("SKIFF_ROUTER_ACTOR_LIVE_ASSEMBLY_IDENTITY"),
-            config_snapshot_id: required("SKIFF_ROUTER_ACTOR_LIVE_CONFIG_SNAPSHOT_ID"),
-            generation,
             http_port,
             runtime_port,
             relay_one_port,
@@ -199,23 +180,6 @@ impl LiveProfile {
             .unwrap_or_else(|| panic!("missing fixture entrypoint {key}"))
     }
 
-    fn assembly_ref(&self) -> RuntimeAssemblyRef {
-        RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
-        }
-    }
-
-    fn snapshot_ref(&self) -> RuntimeConfigSnapshotRef {
-        RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                &self.config_snapshot_id,
-            )
-            .expect("config snapshot id"),
-        }
-    }
-
     fn router_runtime_url(&self) -> String {
         format!("ws://127.0.0.1:{}/runtime", self.runtime_port)
     }
@@ -229,34 +193,9 @@ impl LiveProfile {
     }
 }
 
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect temporary Mongo repository"),
-    )
-}
-
 fn seed_runtime_home(home: &Path, replica_id: &str) {
     std::fs::create_dir_all(home).expect("create runtime home");
     std::fs::write(home.join("runtime-id"), format!("{replica_id}\n")).expect("seed runtime-id");
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = ProfileActivationState::initial(
-        &live.profile,
-        live.generation,
-        live.assembly_ref(),
-        live.snapshot_ref(),
-    );
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -797,18 +736,15 @@ async fn wait_for_replica_handshake(
                 bytes,
             } = kind
             {
-                if observed != "assembly.activation" {
+                if observed != "runtime.capabilities" {
                     continue;
                 }
-                let Ok(control) = decode_assembly_activation_frame(
-                    AssemblyActivationFrameDirection::RuntimeToRouter,
-                    bytes,
-                ) else {
+                let Ok((header, _)) =
+                    decode_typed_binary_frame::<RuntimeCapabilitiesFrameHeader>(bytes)
+                else {
                     continue;
                 };
-                if let AssemblyActivationControl::Register { replica_id, .. } = control {
-                    connections.insert(replica_id, *connection);
-                }
+                connections.insert(header.runtime_id, *connection);
             }
         }
         if let Some(connection) = connections.get(expected_replica) {
@@ -927,10 +863,8 @@ async fn dispatch_unary(
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                live.assembly_identity.clone(),
-            ),
-            assembly_generation: live.generation,
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: live.deployment_ref(),
             build_id: Some(live.deployment_ref().deployment_artifact_identity.to_string()),
             gateway_entry_identity: skiff_artifact_model::GatewayEntryIdentity::parse(
@@ -1210,10 +1144,6 @@ mod tests {
         seed_runtime_home(&live.runtime_one_home, REPLICA_ONE_ID);
         seed_runtime_home(&live.runtime_two_home, REPLICA_TWO_ID);
         materialize_projection(&live);
-
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-        seed_committed(&live, &repository).await;
 
         let config_path = write_router_config(&live);
         let mut router = task_router(&config_path);
@@ -1590,7 +1520,6 @@ mod tests {
         let _ = std::fs::remove_file(&config_path);
         let _ = std::fs::remove_file(&runtime_one_config);
         let _ = std::fs::remove_file(&runtime_two_config);
-        repository.close().await.expect("close repository");
         eprintln!("router-live:actor probe: PASS");
     }
 }

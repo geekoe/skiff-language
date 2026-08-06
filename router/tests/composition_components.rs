@@ -1,28 +1,27 @@
 //! W-composition component tests: `HttpDispatchPort` ↔ `RequestDispatcher`
 //! adapter (contract conversion, reject mapping, unary/stream round-trip,
-//! timeout/cancel), request-family sink, activation enqueue port, WS
-//! responder and the actor outbound control ports.
+//! timeout/cancel), request-family sink, WS responder and the actor outbound
+//! control ports. M4: no activation enqueue/transaction ports (retired).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity, DeploymentRevision,
-    GatewayEntryIdentity, RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-    ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, PackageArtifactRef,
+    PackageBuildId, PackageLocalAbiIdentity, ServiceDeploymentRef,
 };
 use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
+    ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::activation::SessionEnqueuePort;
-use skiff_router::actor::{ActivationControlPort, IdleEvictControlPort};
-use skiff_router::bootstrap::RoutingEpoch;
+use skiff_router::actor::{ActivationControlPort, ActorMethodCatalogView, IdleEvictControlPort};use skiff_router::artifact::ActorRoutingProjectionRef;
 use skiff_router::dispatch::{
-    CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
-    RuntimeDispatcherOptions, RuntimePeer, SessionAbortControl,
+    CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RuntimeDispatcherOptions, RuntimePeer,
+    SessionAbortControl,
 };
 use skiff_router::http::dispatch::{
     cancel_channel, DispatchRequest, HttpDispatchError, HttpDispatchPort, PendingTerminalSource,
@@ -34,22 +33,14 @@ use skiff_router::routing::{
 use skiff_router::session::consumer::{ConsumerKind, ConsumerManifest};
 use skiff_router::session::demux::InboundFrameSink;
 use skiff_router::session::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::layer::{SessionLayer, SessionLayerOptions, SessionRegistrationFacts};
 use skiff_router::supervisor::http::{
     dispatch_submit_from_request, DispatcherHttpPort, PendingHttpRouter, RequestFrameSink,
 };
-use skiff_router::supervisor::session_ports::{
-    ActivationSessionEnqueuePort, SessionHandle, WsRuntimeResponder,
-};
-use skiff_router::supervisor::sinks::ActivationTransactionSink;
+use skiff_router::supervisor::session_ports::{SessionHandle, WsRuntimeResponder};
 use skiff_router::ws::BrokerRuntimeResponse;
 use skiff_router::ws::RuntimeResponder;
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, encode_assembly_activation_frame,
-    AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::connection_protocol::{
     decode_connection_response_frame, ConnectionResponseOutcome,
 };
@@ -64,67 +55,15 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
 };
-fn assembly_identity() -> AssemblyIdentity {
-    AssemblyIdentity::new(
-        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    )
-}
-
 fn deployment() -> ServiceDeploymentRef {
     ServiceDeploymentRef {
         service_id: "example.com/docs".to_string(),
         contract_version: "example.com/docs@1".to_string(),
         deployment_revision: DeploymentRevision::new("deployment-revision-1"),
         deployment_artifact_identity: DeploymentArtifactIdentity::new(
-            "skiff-deployment-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "skiff-deployment-artifact-v4:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         ),
     }
-}
-
-fn snapshot_ref() -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-            "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        )
-        .expect("snapshot id"),
-    }
-}
-
-fn epoch() -> Arc<RoutingEpoch> {
-    let assembly = RuntimeAssembly {
-        schema_version: "skiff-runtime-assembly-v3".to_string(),
-        assembly_identity: assembly_identity(),
-        roots: Vec::new(),
-        resolved_deployments: vec![deployment()],
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    let snapshot =
-        RuntimeConfigSnapshot::new("prod", snapshot_ref(), Vec::new()).expect("snapshot fixture");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    let catalog =
-        skiff_router::artifact::ActorRoutingCatalog::from_projection(Arc::new(projection));
-    Arc::new(
-        RoutingEpoch::new(
-            "prod",
-            7,
-            Arc::new(assembly),
-            Arc::new(snapshot),
-            Arc::new(catalog),
-        )
-        .expect("epoch"),
-    )
 }
 
 fn manifest() -> ConsumerManifest {
@@ -133,7 +72,6 @@ fn manifest() -> ConsumerManifest {
         ConsumerKind::RequestDispatcher,
         ConsumerKind::RuntimeGenerationPinLedger,
         ConsumerKind::WebSocketRequestBroker,
-        ConsumerKind::ActivationCoordinator,
     ])
 }
 
@@ -144,17 +82,14 @@ fn registered_directory() -> (RuntimeRegistrationDirectory, RuntimeSessionEpoch)
         replica_id: "runtime-a".to_string(),
         connection_generation: 1,
     };
-    let tuple = epoch().registered_tuple();
     directory
         .publish_pending(
             &session,
-            tuple,
             &[
                 ConsumerKind::HealthLedger,
                 ConsumerKind::RequestDispatcher,
                 ConsumerKind::RuntimeGenerationPinLedger,
                 ConsumerKind::WebSocketRequestBroker,
-                ConsumerKind::ActivationCoordinator,
             ],
         )
         .expect("publish pending");
@@ -197,26 +132,6 @@ struct OkRevalidate;
 impl LeaseRevalidate for OkRevalidate {
     fn revalidate(&self, _request_id: &str, _lease: &RegisteredSessionLease) -> RevalidateOutcome {
         RevalidateOutcome::Ok
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SomeEpochSource {
-    epoch: std::sync::Arc<RoutingEpoch>,
-}
-
-impl RoutingEpochSource for SomeEpochSource {
-    fn capture(&self) -> Option<Arc<RoutingEpoch>> {
-        Some(self.epoch.clone())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct NoneEpochSource;
-
-impl RoutingEpochSource for NoneEpochSource {
-    fn capture(&self) -> Option<Arc<RoutingEpoch>> {
-        None
     }
 }
 
@@ -276,7 +191,6 @@ impl SessionAbortControl for RecordingAbort {
 
 fn dispatcher_pair(
     directory: Arc<Mutex<RuntimeRegistrationDirectory>>,
-    epoch: Arc<RoutingEpoch>,
 ) -> (
     Arc<skiff_router::dispatch::RequestDispatcher>,
     Arc<RecordingPeer>,
@@ -286,9 +200,6 @@ fn dispatcher_pair(
         skiff_router::dispatch::RequestDispatcher::new(
             RuntimeDispatcherOptions::new(
                 4,
-                Arc::new(SomeEpochSource {
-                    epoch: epoch.clone(),
-                }),
                 Arc::new(DirectoryViewSource { directory }),
                 Arc::new(OkRevalidate),
                 Arc::clone(&peer) as Arc<dyn RuntimePeer>,
@@ -312,8 +223,8 @@ fn request_start_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestS
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: assembly_identity(),
-            assembly_generation: 7,
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: deployment(),
             build_id: Some(deployment().deployment_artifact_identity.to_string()),
             gateway_entry_identity: GatewayEntryIdentity::parse(
@@ -375,14 +286,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatcher_http_port_rejects_with_no_epoch() {
-        let (directory, _) = registered_directory();
+    async fn dispatcher_http_port_rejects_without_candidates() {
+        let mut directory = RuntimeRegistrationDirectory::new(&manifest());
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        directory
+            .publish_pending(
+                &session,
+                &[
+                    ConsumerKind::HealthLedger,
+                    ConsumerKind::RequestDispatcher,
+                    ConsumerKind::RuntimeGenerationPinLedger,
+                    ConsumerKind::WebSocketRequestBroker,
+                ],
+            )
+            .expect("publish pending");
+        // No registered session: the candidate projection is empty and the
+        // dispatch must fail closed (503 no eligible runtime).
         let peer = Arc::new(RecordingPeer::default());
         let dispatcher = Arc::new(
             skiff_router::dispatch::RequestDispatcher::new(
                 RuntimeDispatcherOptions::new(
                     4,
-                    Arc::new(NoneEpochSource),
                     Arc::new(DirectoryViewSource {
                         directory: Arc::new(Mutex::new(directory)),
                     }),
@@ -400,9 +327,9 @@ mod tests {
             Duration::from_secs(5),
         );
         let error = adapter
-            .dispatch_unary(http_request("req-no-epoch"))
+            .dispatch_unary(http_request("req-no-candidate"))
             .await
-            .expect_err("no epoch must fail closed");
+            .expect_err("no candidate must fail closed");
         match error {
             HttpDispatchError::Control {
                 status: Some(503), ..
@@ -414,7 +341,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_http_port_unary_round_trip_through_request_sink() {
         let (directory, session) = registered_directory();
-        let (dispatcher, peer) = dispatcher_pair(Arc::new(Mutex::new(directory)), epoch());
+        let (dispatcher, peer) = dispatcher_pair(Arc::new(Mutex::new(directory)));
         let router = Arc::new(PendingHttpRouter::new());
         let sink = Arc::new(RequestFrameSink::new(
             Arc::clone(&dispatcher),
@@ -504,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_http_port_stream_round_trip_through_request_sink() {
         let (directory, session) = registered_directory();
-        let (dispatcher, _peer) = dispatcher_pair(Arc::new(Mutex::new(directory)), epoch());
+        let (dispatcher, _peer) = dispatcher_pair(Arc::new(Mutex::new(directory)));
         let router = Arc::new(PendingHttpRouter::new());
         let sink = Arc::new(RequestFrameSink::new(
             Arc::clone(&dispatcher),
@@ -586,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_http_port_client_disconnect_terminates_pending() {
         let (directory, session) = registered_directory();
-        let (dispatcher, peer) = dispatcher_pair(Arc::new(Mutex::new(directory)), epoch());
+        let (dispatcher, peer) = dispatcher_pair(Arc::new(Mutex::new(directory)));
         let router = Arc::new(PendingHttpRouter::new());
         let _sink = Arc::new(RequestFrameSink::new(
             Arc::clone(&dispatcher),
@@ -641,14 +568,11 @@ mod tests {
             Arc::new(GenericConsumer(ConsumerKind::RequestDispatcher)),
             Arc::new(GenericConsumer(ConsumerKind::RuntimeGenerationPinLedger)),
             Arc::new(GenericConsumer(ConsumerKind::WebSocketRequestBroker)),
-            Arc::new(GenericConsumer(ConsumerKind::ActivationCoordinator)),
         ];
         let layer = Arc::new(
             SessionLayer::with_options(
                 config,
                 SessionLayerOptions {
-                    committed_epoch: None,
-                    pending_epoch: None,
                     manifest,
                     consumers,
                     timing: Default::default(),
@@ -687,7 +611,6 @@ mod tests {
     impl RouterConfigFixture {
         fn config() -> skiff_router::config::RouterConfig {
             skiff_router::config::RouterConfig {
-                activation_prepare_timeout_ms: 120_000,
                 artifacts_path: "/opt/skiff/artifacts".into(),
                 dev_reload: None,
                 host: "127.0.0.1".to_string(),
@@ -710,223 +633,6 @@ mod tests {
                 websocket_path: "/ws".to_string(),
             }
         }
-    }
-
-    #[tokio::test]
-    async fn activation_enqueue_port_encodes_prepare_and_fails_closed_on_queue_full() {
-        let (_layer, handle, writer, session) = session_layer_with_writer();
-        let port = ActivationSessionEnqueuePort::new(handle);
-        let control = skiff_artifact_model::AssemblyActivationControl::Prepare {
-            profile: "prod".to_string(),
-            activation_id: "activation-1".to_string(),
-            expected_generation: 7,
-            candidate_generation: 8,
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: assembly_identity(),
-            },
-            config_snapshot: snapshot_ref(),
-            replica_id: "runtime-a".to_string(),
-            service_db: None,
-        };
-        let binding = skiff_router::activation::ActivationParticipantBinding {
-            replica_id: "runtime-a".to_string(),
-            session_epoch: session.clone(),
-        };
-        assert_eq!(
-            port.enqueue_prepare(&binding, &control),
-            skiff_router::activation::EnqueueResult::Ok
-        );
-        let bytes = writer.recorded().pop().expect("prepare frame written");
-        let decoded = decode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RouterToRuntime,
-            &bytes,
-        )
-        .expect("prepare frame must decode");
-        assert!(
-            matches!(decoded, skiff_artifact_model::AssemblyActivationControl::Prepare { activation_id, .. } if activation_id == "activation-1")
-        );
-
-        writer.fail_next();
-        assert_eq!(
-            port.enqueue_prepare(&binding, &control),
-            skiff_router::activation::EnqueueResult::QueueFull
-        );
-    }
-
-    #[tokio::test]
-    async fn ws_runtime_responder_encodes_connection_response() {
-        let (_layer, handle, writer, session) = session_layer_with_writer();
-        let responder = WsRuntimeResponder::new(handle, session.clone());
-        let response = BrokerRuntimeResponse {
-            request_id: "peer-1".to_string(),
-            outcome: ConnectionResponseOutcome::Success,
-            remote: None,
-            payload: br#""result""#.to_vec(),
-        };
-        responder.respond(&response).expect("respond writes frame");
-        let bytes = writer.recorded().pop().expect("response frame written");
-        let (header, payload) = decode_connection_response_frame(&bytes).expect("decode response");
-        assert_eq!(header.request_id, "peer-1");
-        assert_eq!(payload, br#""result""#);
-    }
-
-    #[tokio::test]
-    async fn activation_transaction_sink_delivers_prepared_ack() {
-        let (_layer, handle, writer, session) = session_layer_with_writer();
-        // The coordinator handle is created with fake ports; a prepared ACK must
-        // be accepted into its mailbox (no durable effect is asserted here).
-        use skiff_router::activation::{
-            ActivationCoordinator, ActivationCoordinatorOptions, ActivationCoordinatorPorts,
-            NoopHealthSink,
-        };
-        let ports = ActivationCoordinatorPorts {
-            repository: Arc::new(NoopRepository),
-            loader: Arc::new(NoopLoader),
-            candidates: Arc::new(NoopCandidates),
-            sessions: Arc::new(ActivationSessionEnqueuePort::new(handle.clone())),
-            publish: Arc::new(NoopPublish),
-            health: Arc::new(NoopHealthSink),
-        };
-        let coordinator =
-            ActivationCoordinator::spawn(ports, ActivationCoordinatorOptions::default());
-        let sink = ActivationTransactionSink::new(coordinator.clone());
-        let control = skiff_artifact_model::AssemblyActivationControl::Prepared {
-            profile: "prod".to_string(),
-            activation_id: "activation-1".to_string(),
-            expected_generation: 7,
-            candidate_generation: 8,
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: assembly_identity(),
-            },
-            config_snapshot: snapshot_ref(),
-            replica_id: "runtime-a".to_string(),
-        };
-        let bytes = encode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            &control,
-        )
-        .expect("encode prepared");
-        sink.handle(&session, &bytes).expect("ack accepted");
-        // ACK delivery is async through the mailbox; wait for the coordinator to
-        // observe the event by polling health (phase stays idle without a
-        // transaction, so just ensure no immediate failure path ran).
-        let _ = writer;
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    struct NoopRepository;
-
-    #[async_trait::async_trait]
-    impl skiff_router::activation::ActivationStateRepository for NoopRepository {
-        async fn read(
-            &self,
-            _profile: &str,
-        ) -> Result<
-            skiff_deployment::activation_state::ProfileActivationState,
-            skiff_router::activation::RepositoryError,
-        > {
-            Err(
-                skiff_router::activation::error::RepositoryError::CasMismatch {
-                    profile: "prod".to_string(),
-                    message: "noop".to_string(),
-                },
-            )
-        }
-        async fn initialize(
-            &self,
-            _state: &skiff_deployment::activation_state::ProfileActivationState,
-        ) -> Result<
-            skiff_deployment::activation_state::ProfileActivationState,
-            skiff_router::activation::RepositoryError,
-        > {
-            unimplemented!("noop repository")
-        }
-        async fn prepare(
-            &self,
-            _input: skiff_router::activation::PrepareInput,
-        ) -> Result<
-            skiff_deployment::activation_state::ProfileActivationState,
-            skiff_router::activation::RepositoryError,
-        > {
-            unimplemented!("noop repository")
-        }
-        async fn commit(
-            &self,
-            _input: skiff_router::activation::CommitInput,
-        ) -> Result<
-            skiff_deployment::activation_state::ProfileActivationState,
-            skiff_router::activation::RepositoryError,
-        > {
-            unimplemented!("noop repository")
-        }
-        async fn abort(
-            &self,
-            _input: skiff_router::activation::AbortInput,
-        ) -> Result<
-            skiff_deployment::activation_state::ProfileActivationState,
-            skiff_router::activation::RepositoryError,
-        > {
-            unimplemented!("noop repository")
-        }
-        async fn append_audit(
-            &self,
-            _event: &skiff_deployment::activation_state::ActivationAuditEvent,
-        ) -> Result<(), skiff_router::activation::RepositoryError> {
-            unimplemented!("noop repository")
-        }
-        async fn ensure_indexes(&self) -> Result<(), skiff_router::activation::RepositoryError> {
-            Ok(())
-        }
-        fn health(&self) -> skiff_router::activation::health::ActivationRepositoryHealth {
-            skiff_router::activation::health::ActivationRepositoryHealth::default()
-        }
-        async fn close(&self) -> Result<(), skiff_router::activation::RepositoryError> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    struct NoopLoader;
-
-    #[async_trait::async_trait]
-    impl skiff_router::activation::BlockingLoaderPort for NoopLoader {
-        async fn load_candidate(
-            &self,
-            _refs: &skiff_router::activation::CandidateEpochRefs,
-        ) -> Result<Arc<RoutingEpoch>, skiff_router::activation::coordinator::CandidateLoadError>
-        {
-            unimplemented!("noop loader")
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    struct NoopCandidates;
-
-    impl skiff_router::activation::RuntimeCandidateQueryPort for NoopCandidates {
-        fn freeze(
-            &self,
-            _profile: &str,
-        ) -> Result<
-            Vec<RegisteredSessionLease>,
-            skiff_router::activation::coordinator::ActivationCandidateError,
-        > {
-            Ok(Vec::new())
-        }
-
-        fn revalidate(
-            &self,
-            _activation_id: &str,
-            _frozen: &[skiff_router::activation::ActivationParticipantBinding],
-        ) -> skiff_router::activation::ActivationRevalidateOutcome {
-            skiff_router::activation::ActivationRevalidateOutcome::Ok
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    struct NoopPublish;
-
-    impl skiff_router::activation::PublishCommittedEpochPort for NoopPublish {
-        fn publish(&self, _epoch: Arc<RoutingEpoch>) {}
     }
 
     #[derive(Debug, Clone)]
@@ -998,26 +704,91 @@ mod tests {
         }
     }
 
-    fn register_session_in_layer(
-        layer: &SessionLayer,
-        session: &RuntimeSessionEpoch,
-        tuple: &RegisteredAssemblyTuple,
-    ) {
+    fn register_session_in_layer(layer: &SessionLayer, session: &RuntimeSessionEpoch) {
         let mut directory = layer.directory_lock();
         directory
             .publish_pending(
                 session,
-                tuple.clone(),
                 &[
                     ConsumerKind::HealthLedger,
                     ConsumerKind::RequestDispatcher,
                     ConsumerKind::RuntimeGenerationPinLedger,
                     ConsumerKind::WebSocketRequestBroker,
-                    ConsumerKind::ActivationCoordinator,
                 ],
             )
             .expect("publish pending");
         assert!(directory.mark_registered(session));
+    }
+
+    /// Temp artifact root with the fixture actor routing projection record
+    /// (the M4 catalog view lazy-loads from the artifact store).
+    struct CatalogRoot {
+        root: PathBuf,
+    }
+
+    impl CatalogRoot {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "skiff-router-composition-components-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("create artifact root");
+            skiff_deployment::storage::CanonicalArtifactStore::create(&root)
+                .expect("create artifact store");
+            let projection = ActorRoutingProjection::new(
+                ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+                vec![ActorRoutingMethod {
+                    actor: ActorRoutingRef {
+                        service_id: "example.com/docs".to_string(),
+                        actor_abi_identity: actor_abi(),
+                    },
+                    actor_implementation_identity: actor_implementation(),
+                    method_identity: skiff_artifact_model::ActorMethodIdentity::new(
+                        "skiff-actor-method-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    ),
+                    deployment: deployment(),
+                    package: PackageArtifactRef {
+                        package_id: "example.com/docs".to_string(),
+                        package_version: "0.1.0".to_string(),
+                        package_build_id: PackageBuildId::new(
+                            "skiff-package-build-v10:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        ),
+                        package_local_abi_identity: PackageLocalAbiIdentity::new(
+                            "skiff-package-local-abi-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                        ),
+                    },
+                }],
+            )
+            .expect("projection");
+            let bytes = skiff_canonical_json::canonical_json_bytes(&projection)
+                .expect("canonical projection");
+            let path = root.join(skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH);
+            std::fs::create_dir_all(path.parent().expect("projection parent"))
+                .expect("create projection dirs");
+            std::fs::write(path, bytes).expect("write projection record");
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for CatalogRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn projection_ref() -> ActorRoutingProjectionRef {
+        ActorRoutingProjectionRef::new(
+            skiff_artifact_identity::ArtifactRelativePath::new(
+                skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+                "actor routing projection record",
+            )
+            .expect("projection path"),
+        )
     }
 
     #[tokio::test]
@@ -1032,7 +803,7 @@ mod tests {
         };
 
         let (layer, handle, writer, session) = session_layer_with_writer();
-        register_session_in_layer(&layer, &session, &epoch().registered_tuple());
+        register_session_in_layer(&layer, &session);
         let registry = Arc::new(skiff_router::actor::ActorOwnershipRegistry::new());
         let key = actor_key();
         let abi = actor_abi();
@@ -1058,8 +829,9 @@ mod tests {
             owner_runtime_id: "runtime-a".to_string(),
             owner_connection: "conn-a".to_string(),
             route_authority: ActorOwnerRouteAuthority {
-                assembly_identity: assembly_identity().into_string(),
-                assembly_generation: 7,
+                build_id: deployment()
+                    .deployment_artifact_identity
+                    .to_string(),
             },
             bootstrap_bytes: b"bootstrap".to_vec(),
             deadline: ActorMethodDeadlineFrameHeader {
@@ -1100,10 +872,13 @@ mod tests {
         };
 
         let (layer, handle, writer, session) = session_layer_with_writer();
-        register_session_in_layer(&layer, &session, &epoch().registered_tuple());
-        let store = skiff_router::bootstrap::ActiveRoutingEpochStore::new();
-        store.publish(epoch());
-        let port = ActorIdleEvictControlPort::new(handle, Arc::new(store));
+        register_session_in_layer(&layer, &session);
+        let catalog_root = CatalogRoot::new();
+        let view = Arc::new(
+            ActorMethodCatalogView::new(catalog_root.path(), projection_ref())
+                .expect("catalog view opens"),
+        );
+        let port = ActorIdleEvictControlPort::new(handle, view);
         let key = actor_key();
         let fence = ActorOwnerFence {
             epoch: 7,
@@ -1120,10 +895,11 @@ mod tests {
         let header = decode_actor_owner_control_frame(&bytes).expect("decode idleEvict");
         assert_eq!(header.operation, ActorOwnerControlOperation::IdleEvict);
         assert_eq!(header.fence.eviction_request_id.as_deref(), Some("evict-1"));
-        assert_eq!(header.route_authority.assembly_generation, 7);
         assert_eq!(
-            header.route_authority.assembly_identity,
-            assembly_identity().into_string()
+            header.route_authority.build_id,
+            deployment()
+                .deployment_artifact_identity
+                .to_string()
         );
     }
 }

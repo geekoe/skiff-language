@@ -1,26 +1,15 @@
-//! W-composition public test: `RouterSupervisor` full production assembly
-//! over a real artifact root and the memory repository, the static consumer
-//! manifest, the installed sink bundle, and a real-socket HTTP listener
-//! wiring check.
+//! E-bootstrap production wiring tests (M4): `RouterSupervisor` assembles the
+//! full composition over a real artifact root with the release pointer table
+//! seeded (deployment record + pointer), starts the listeners and exercises
+//! the fail-closed HTTP ingress path. The Mongo activation repository seam is
+//! retired.
 
-use skiff_artifact_identity::runtime_assembly_ref;
-use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::ProfileActivationState;
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_router::activation::memory::MemoryActivationStateRepository;
-use skiff_router::activation::ActivationStateRepository;
 use skiff_router::config::RouterConfig;
 use skiff_router::listener::ListenerStartOptions;
 use skiff_router::supervisor::RouterSupervisor;
-use skiff_runtime_config_snapshot::{RuntimeConfigSnapshot, RuntimeConfigSnapshotStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -55,58 +44,47 @@ impl Drop for TestRoot {
     }
 }
 
-fn snapshot_ref() -> skiff_artifact_model::RuntimeConfigSnapshotRef {
-    skiff_artifact_model::RuntimeConfigSnapshotRef {
-        snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-            "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("snapshot id"),
-    }
-}
-
-struct RealChain {
-    _root: TestRoot,
-    assembly_ref: skiff_artifact_model::RuntimeAssemblyRef,
-}
-
-fn materialize(profile: &str) -> RealChain {
+fn materialize(profile: &str) -> TestRoot {
     let root = TestRoot::new();
     fs::create_dir_all(root.path()).expect("create artifact root");
-    let snapshot_store = RuntimeConfigSnapshotStore::create(root.path().join("runtime-config"))
-        .expect("create snapshot store");
-    let snapshot =
-        RuntimeConfigSnapshot::new(profile, snapshot_ref(), Vec::new()).expect("snapshot fixture");
-    snapshot_store.publish(&snapshot).expect("publish snapshot");
-    let artifact_store =
-        CanonicalArtifactStore::create(root.path()).expect("create artifact store");
-    let assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-    artifact_store
-        .write_runtime_assembly(&assembly)
-        .expect("write assembly");
-    let assembly_ref = runtime_assembly_ref(&assembly).expect("assembly ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
+        .expect("create artifact store");
+
+    let mut deployment = skiff_deployment::fixtures::service_deployment_fixture()
+        .expect("deployment fixture");
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
+        .expect("assign deployment identity");
+    store
+        .write_service_deployment(&deployment)
+        .expect("write deployment record");
+    let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    store
+        .write_release_pointer(
+            &skiff_deployment::storage::ReleasePointer::new(profile, reference)
+                .expect("release pointer"),
+        )
+        .expect("write release pointer");
 
     let directory = root.path().join("records/actor-routing");
     fs::create_dir_all(&directory).expect("create actor routing records directory");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+    let projection = skiff_deployment::projection::actor_routing::ActorRoutingProjection::new(
+        skiff_deployment::projection::actor_routing::ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
+            .to_string(),
         Vec::new(),
     )
     .expect("empty projection");
-    let bytes = canonical_json_bytes(&projection).expect("canonical projection bytes");
+    let bytes = skiff_canonical_json::canonical_json_bytes(&projection)
+        .expect("canonical projection bytes");
     fs::write(
         root.path().join("records/actor-routing/current.json"),
         bytes,
     )
     .expect("write projection record");
-    RealChain {
-        _root: root,
-        assembly_ref,
-    }
+    root
 }
 
 fn config(artifact_root: &Path) -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 1_000,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -114,7 +92,7 @@ fn config(artifact_root: &Path) -> RouterConfig {
         http_max_response_bytes: 1_048_576,
         http_port: 0,
         manifests: Vec::new(),
-        profile: "dev".to_string(),
+        profile: "prod".to_string(),
         release_mode: Some(true),
         request_timeout_ms: 1_000,
         rewrite: Vec::new(),
@@ -130,16 +108,12 @@ fn config(artifact_root: &Path) -> RouterConfig {
     }
 }
 
-fn committed_state(chain: &RealChain) -> ProfileActivationState {
-    ProfileActivationState::initial("prod", 7, chain.assembly_ref.clone(), snapshot_ref())
-}
-
 async fn raw_get(addr: std::net::SocketAddr, path: &str) -> (String, String) {
     let mut stream = tokio::net::TcpStream::connect(addr)
         .await
         .expect("connect to public http");
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Skiff-Service: example.com/docs\r\nX-Skiff-Version: 1.0.0\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Skiff-Service: example.com/service-1\r\nX-Skiff-Version: 1.0.0\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -191,21 +165,12 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_assembles_full_composition_and_wires_public_http() {
-        let chain = materialize("prod");
-        let repository = Arc::new(MemoryActivationStateRepository::new());
-        repository
-            .initialize(&committed_state(&chain))
-            .await
-            .expect("seed committed state");
-        let config = config(chain._root.path());
+        let root = materialize("prod");
+        let config = config(root.path());
 
-        let supervisor = RouterSupervisor::assemble_with(
-            &config,
-            "prod",
-            Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
-        )
-        .await
-        .expect("production composition must assemble");
+        let supervisor = RouterSupervisor::assemble(&config)
+            .await
+            .expect("production composition must assemble");
 
         let components = supervisor.components();
         // Static consumer manifest: exactly the installed session-keyed owners.
@@ -217,42 +182,30 @@ mod tests {
                 skiff_router::session::ConsumerKind::RuntimeGenerationPinLedger,
                 skiff_router::session::ConsumerKind::WebSocketRequestBroker,
                 skiff_router::session::ConsumerKind::ActorSessionOwner,
-                skiff_router::session::ConsumerKind::ActivationCoordinator,
             ]
         );
-        // Installed sink bundle: request/connection/activation/actor/task
-        // all wired (E-actor-rust installed the real task inbound sink).
+        // Installed sink bundle: request/connection/actor/task all wired.
         let sinks = components.session.inbound_sinks();
         assert!(sinks.request.is_some());
         assert!(sinks.connection.is_some());
-        assert!(sinks.activation_transaction.is_some());
         assert!(sinks.actor.is_some());
         assert!(sinks.task.is_some());
 
         // Components are live and empty.
         assert_eq!(components.dispatcher.pending_count(), 0);
-        assert_eq!(
-            components.coordinator.phase(),
-            skiff_router::activation::ActivationPhase::Idle
-        );
-        assert_eq!(
-            components.actor.catalog_view.schema_version(),
-            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
-        );
-        assert!(components.surface_view.is_empty());
+        assert!(!components.surface_view.is_empty());
         assert_eq!(components.pending_http.pending_count(), 0);
 
-        // Real-socket wiring: public HTTP is served by the production adapter
-        // through the ingress resolver (empty fixture -> 404 platform error).
+        // Real-socket wiring: unknown service -> 404 ReleaseNotFound.
         let listeners = supervisor
             .start_listeners(&ListenerStartOptions::default())
             .await
             .expect("listeners start");
         let http_addr = listeners.public_http.addr();
-        let (status, body) = raw_get(http_addr, "/docs").await;
+        let (status, body) = raw_get(http_addr, "/items").await;
         assert!(
             status.contains("404"),
-            "expected platform 404 for missing release ingress, got {status:?}"
+            "expected platform 404 for unknown release ingress, got {status:?}"
         );
         assert!(body.contains("ReleaseNotFound"));
 
@@ -264,109 +217,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supervisor_fails_closed_without_committed_epoch() {
-        let chain = materialize("prod");
-        let repository = Arc::new(MemoryActivationStateRepository::new());
-        let config = config(chain._root.path());
-        let result = RouterSupervisor::assemble_with(
-            &config,
-            "prod",
-            Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
-        )
-        .await;
+    async fn supervisor_fails_closed_without_an_artifact_root() {
+        let root = TestRoot::new();
+        let config = config(root.path());
+        let result = RouterSupervisor::assemble(&config).await;
         assert!(
             result.is_err(),
-            "missing durable committed state must fail closed"
+            "missing artifact root must fail closed"
         );
     }
 
     #[tokio::test]
-    async fn runtime_control_serves_activation_http_route_additively() {
-        let chain = materialize("prod");
-        let repository = Arc::new(MemoryActivationStateRepository::new());
-        repository
-            .initialize(&committed_state(&chain))
+    async fn supervisor_fails_closed_on_invalid_profile() {
+        let root = materialize("prod");
+        let mut config = config(root.path());
+        config.profile = "invalid profile".to_string();
+        let result = RouterSupervisor::assemble(&config).await;
+        assert!(
+            result.is_err(),
+            "invalid profile must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_control_serves_health_and_test_dispatch_routes() {
+        let root = materialize("prod");
+        let config = config(root.path());
+        let supervisor = RouterSupervisor::assemble(&config)
             .await
-            .expect("seed committed state");
-        let config = config(chain._root.path());
-        let supervisor = RouterSupervisor::assemble_with(
-            &config,
-            "prod",
-            Arc::clone(&repository) as Arc<dyn ActivationStateRepository>,
-        )
-        .await
-        .expect("production composition must assemble");
+            .expect("production composition must assemble");
         let listeners = supervisor
             .start_listeners(&ListenerStartOptions::default())
             .await
             .expect("listeners start");
         let control_addr = listeners.runtime_control.addr();
 
-        // GET on the activation endpoint -> 405 with allow: POST (TS parity).
-        let (status, body) =
-            raw_request(control_addr, "GET", "/__skiff/activate-assembly", b"").await;
-        assert!(
-            status.contains("405"),
-            "expected 405 for non-POST activation request, got {status:?}"
-        );
-        assert!(
-            body.to_ascii_lowercase().contains("allow: post"),
-            "405 must advertise POST, got {body:?}"
-        );
-        assert!(body.contains("MethodNotAllowed"));
-
-        // Malformed JSON -> 400 with the TS error shape.
-        let (status, body) = raw_request(
-            control_addr,
-            "POST",
-            "/__skiff/activate-assembly",
-            b"{not json",
-        )
-        .await;
-        assert!(
-            status.contains("400"),
-            "expected 400 for malformed activation body, got {status:?}"
-        );
-        assert!(body.contains("AssemblyActivationRejected"));
-
-        // Strict decode rejects unknown fields.
-        let unknown = br#"{
-            "schemaVersion": "skiff-assembly-activation-request-v2",
-            "profile": "prod",
-            "activationId": "activation-8",
-            "expectedGeneration": 7,
-            "assembly": {"assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            "configSnapshot": {"snapshotId": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-            "unexpectedField": true
-        }"#;
-        let (status, body) =
-            raw_request(control_addr, "POST", "/__skiff/activate-assembly", unknown).await;
-        assert!(
-            status.contains("400"),
-            "expected 400 for unknown activation field, got {status:?}"
-        );
-        assert!(body.contains("unknown field"));
-
-        // Body cap (1 MiB) -> TS classifyActivationError status 409.
-        let oversized = vec![b' '; 1024 * 1024 + 1];
-        let (status, body) = raw_request(
-            control_addr,
-            "POST",
-            "/__skiff/activate-assembly",
-            &oversized,
-        )
-        .await;
-        assert!(
-            status.contains("409"),
-            "expected 409 for oversized activation body, got {status:?}"
-        );
-        assert!(body.contains("1 MiB"));
-
-        // Unrelated control paths keep the legacy empty 200 behavior.
-        let (status, _) = raw_request(control_addr, "GET", "/__router/health", b"").await;
+        // Health route is served with a JSON body (GET-only).
+        let (status, body) = raw_request(control_addr, "GET", "/__router/health", b"").await;
         assert!(
             status.contains("200"),
-            "unrelated control path must keep the legacy empty 200, got {status:?}"
+            "health must be 200, got {status:?}"
+        );
+        assert!(
+            body.contains("\"ok\":true"),
+            "health must report ok, got {body:?}"
+        );
+
+        // The retired activation endpoint is no longer served (empty 200).
+        let (status, _) = raw_request(
+            control_addr,
+            "POST",
+            "/__skiff/activate-assembly",
+            br#"{"profile":"prod"}"#,
+        )
+        .await;
+        assert!(
+            status.contains("200"),
+            "retired activation endpoint must keep the empty 200, got {status:?}"
         );
 
         listeners

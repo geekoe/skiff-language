@@ -51,8 +51,7 @@ mod tests {
                 facts.epoch,
                 "runtime-a",
                 &skiff_router::actor::ActorOwnerRouteAuthority {
-                    assembly_identity: "assembly".to_string(),
-                    assembly_generation: 1,
+                    build_id: "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 },
                 0,
             )

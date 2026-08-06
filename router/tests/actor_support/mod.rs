@@ -16,9 +16,8 @@ use skiff_runtime_transport::actor_method::{
 };
 use skiff_runtime_transport::protocol::{ActivationIdentityFrameMetadata, ActorKeyFrameMetadata};
 
-pub const ROUTE_ASSEMBLY_IDENTITY: &str =
-    "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-pub const ROUTE_ASSEMBLY_GENERATION: u64 = 42;
+pub const ROUTE_BUILD_ID: &str =
+    "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 pub fn abi() -> ActorAbiIdentity {
     ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", "a".repeat(64)))
@@ -81,8 +80,7 @@ pub fn actor_ref_wire(epoch: u64) -> ActorLogicalRefFrameHeader {
 
 pub fn route_authority() -> ActorOwnerRouteAuthority {
     ActorOwnerRouteAuthority {
-        assembly_identity: ROUTE_ASSEMBLY_IDENTITY.to_string(),
-        assembly_generation: ROUTE_ASSEMBLY_GENERATION,
+        build_id: ROUTE_BUILD_ID.to_string(),
     }
 }
 
@@ -93,8 +91,9 @@ pub fn route_authority_wire(
 
 pub fn activation_identity_wire(runtime_id: &str) -> ActivationIdentityFrameMetadata {
     ActivationIdentityFrameMetadata {
-        assembly_identity: ROUTE_ASSEMBLY_IDENTITY.to_string(),
-        generation: ROUTE_ASSEMBLY_GENERATION,
+        assembly_identity: "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        generation: 42,
         runtime_replica_id: runtime_id.to_string(),
         deployment_revision: "rev-1".to_string(),
     }

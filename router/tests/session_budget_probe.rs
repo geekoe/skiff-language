@@ -18,7 +18,6 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn config() -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -42,29 +41,9 @@ fn config() -> RouterConfig {
     }
 }
 
-fn epoch() -> skiff_router::session::RegisteredAssemblyTuple {
-    skiff_router::session::RegisteredAssemblyTuple {
-        profile: "prod".to_string(),
-        generation: 42,
-        assembly: skiff_artifact_model::RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("snapshot id"),
-        },
-    }
-}
-
 async fn start_with_budgets(budgets: SessionBudgets) -> skiff_router::listener::RouterListeners {
     let config = config();
     let options = SessionLayerOptions {
-        committed_epoch: Some(epoch()),
-        pending_epoch: None,
         manifest: ConsumerManifest::default_installed(),
         consumers: vec![Arc::new(RuntimeHealthLedger::new())],
         timing: Default::default(),

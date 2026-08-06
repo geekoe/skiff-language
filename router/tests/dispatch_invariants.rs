@@ -12,8 +12,8 @@ use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use dispatch_harness::{
-    corpus_epoch, request, session_state, task_attempt, FakeCandidateViewSource, FakeEpochSource,
-    FakeLeaseRevalidate, FakeRuntimePeer, FakeSessionAbort, SessionState,
+    request, session_state, task_attempt, FakeCandidateViewSource, FakeLeaseRevalidate,
+    FakeRuntimePeer, FakeSessionAbort, SessionState,
 };
 
 struct Rig {
@@ -46,9 +46,6 @@ impl Rig {
         let revalidate = FakeLeaseRevalidate::new();
         let mut options = RuntimeDispatcherOptions::new(
             max_concurrency,
-            Arc::new(FakeEpochSource {
-                epoch: Some(corpus_epoch()),
-            }),
             Arc::new(candidate.clone()),
             Arc::new(revalidate.clone()),
             Arc::new(peer.clone()),
@@ -542,30 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_no_epoch_source_fails_closed() {
-        let candidate = FakeCandidateViewSource::new(vec![session_state("s1", "runtime-a", 1)]);
-        let peer = FakeRuntimePeer::new();
-        let abort = FakeSessionAbort::new();
-        let revalidate = FakeLeaseRevalidate::new();
-        let options = RuntimeDispatcherOptions::new(
-            2,
-            Arc::new(FakeEpochSource { epoch: None }),
-            Arc::new(candidate),
-            Arc::new(revalidate),
-            Arc::new(peer),
-            Arc::new(abort),
-        )
-        .expect("options");
-        let dispatcher = RequestDispatcher::new(options).expect("dispatcher");
-        let reason = match dispatcher.submit(request("req-1", "unary")) {
-            SubmitResult::Rejected { reason, .. } => reason,
-            other => panic!("expected reject, got {other:?}"),
-        };
-        assert_eq!(reason, SubmitRejectReason::NoCandidate);
-        assert_eq!(dispatcher.health().admission.permits_held, 0);
-    }
-
-    #[test]
     fn dispatch_stream_error_after_start_fails_without_cancel() {
         let rig = Rig::new(2);
         rig.accept("req-1", "serverStream");
@@ -635,7 +608,6 @@ mod tests {
             other => panic!("expected accept, got {other:?}"),
         };
         assert_eq!(session_epoch, rig.session);
-        assert!(rig.dispatcher.pending_epoch("req-1").is_some());
         let lease = rig.dispatcher.pending_lease("req-1").expect("lease");
         assert_eq!(lease.session_epoch, rig.session);
         assert_eq!(

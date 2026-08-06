@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
     decode_router_bootstrap_frame, decode_router_bootstrap_frame_header, encode_binary_frame,
-    encode_router_bootstrap_frame, CapturedBootstrapEpoch, RouterBootstrapFrameHeader,
+    encode_router_bootstrap_frame, RouterBootstrapFrameHeader,
     RouterBootstrapSource, RuntimeBootstrapProvider, StatelessRuntimeBootstrapProvider,
     ROUTER_BOOTSTRAP_FRAME_TYPE,
 };
@@ -76,7 +76,7 @@ mod tests {
                 (true, Ok(header)) => {
                     assert_eq!(header.envelope_type, ROUTER_BOOTSTRAP_FRAME_TYPE);
                     assert_eq!(header.activation.profile, "prod");
-                    assert_eq!(header.activation.generation, 7);
+
                     let frame = encode_router_bootstrap_frame(&header)
                         .unwrap_or_else(|error| panic!("{id} must encode: {error}"));
                     let decoded = decode_router_bootstrap_frame(&frame)
@@ -160,12 +160,7 @@ mod tests {
             artifacts_path: header.artifacts_path.clone(),
             service_db: header.service_db.clone(),
             http: header.http.clone(),
-            activation: CapturedBootstrapEpoch {
-                profile: header.activation.profile.clone(),
-                generation: header.activation.generation,
-                assembly: header.activation.assembly.clone(),
-                config_snapshot: header.activation.config_snapshot.clone(),
-            },
+            profile: header.activation.profile.clone(),
         };
         let provider = StatelessRuntimeBootstrapProvider;
         let constructed = provider

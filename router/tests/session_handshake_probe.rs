@@ -20,7 +20,6 @@ use skiff_router::listener::{start_listeners_with_session, ListenerStartOptions,
 use skiff_router::session::consumer::ConsumerManifest;
 use skiff_router::session::demux::InboundSinkSet;
 use skiff_router::session::health::RuntimeHealthLedger;
-use skiff_router::session::identity::RegisteredAssemblyTuple;
 use skiff_router::session::layer::{SessionLayer, SessionLayerOptions, SessionTiming};
 use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::sinks::ConnectionFrameSink;
@@ -69,7 +68,6 @@ fn frame(frames: &Value, name: &str) -> Vec<u8> {
 
 fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
     RouterConfig {
-        activation_prepare_timeout_ms: 120_000,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
@@ -93,28 +91,8 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
     }
 }
 
-fn committed_epoch() -> RegisteredAssemblyTuple {
-    RegisteredAssemblyTuple {
-        profile: "prod".to_string(),
-        generation: 42,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("snapshot id"),
-        },
-    }
-}
-
 fn layer_options(timing: Option<SessionTiming>) -> SessionLayerOptions {
     SessionLayerOptions {
-        committed_epoch: Some(committed_epoch()),
-        pending_epoch: None,
         manifest: ConsumerManifest::default_installed(),
         consumers: vec![Arc::new(RuntimeHealthLedger::new())],
         timing: timing.unwrap_or_default(),
@@ -285,10 +263,9 @@ mod tests {
         wait_until(|| layer.health().observed_total() == 1).await;
         let snapshot = layer.health_snapshot();
         assert_eq!(snapshot.registered_sessions, 1);
-        assert_eq!(snapshot.health_before_ack, 0);
         assert_eq!(snapshot.pre_auth_connections, 0, "ACK released pre-auth");
         assert_eq!(
-            layer.candidates(&committed_epoch()),
+            layer.directory_lock().candidates(),
             vec![skiff_router::session::RuntimeSessionEpoch {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 1,
@@ -360,7 +337,7 @@ mod tests {
         expect_closed(&mut first).await;
         wait_until(|| layer.health_snapshot().registered_sessions == 1).await;
         assert_eq!(
-            layer.candidates(&committed_epoch()),
+            layer.directory_lock().candidates(),
             vec![skiff_router::session::RuntimeSessionEpoch {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 2,
@@ -404,7 +381,6 @@ mod tests {
         let timing = SessionTiming {
             bootstrap: Duration::from_secs(10),
             capabilities: Duration::from_millis(150),
-            register: Duration::from_millis(150),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(2),
             shutdown_total: Duration::from_secs(5),
@@ -476,7 +452,6 @@ mod tests {
         let timing = SessionTiming {
             bootstrap: Duration::from_millis(150),
             capabilities: Duration::from_millis(150),
-            register: Duration::from_millis(150),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(2),
             shutdown_total: Duration::from_secs(5),
@@ -506,7 +481,6 @@ mod tests {
         let timing = SessionTiming {
             bootstrap: Duration::from_secs(10),
             capabilities: Duration::from_secs(3),
-            register: Duration::from_secs(3),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(2),
             shutdown_total: Duration::from_secs(5),
@@ -538,7 +512,7 @@ mod tests {
         wait_until(|| layer.health_snapshot().registered_sessions == 1).await;
         assert_eq!(layer.health_snapshot().registered_sessions, 1);
         assert_eq!(
-            layer.candidates(&committed_epoch()),
+            layer.directory_lock().candidates(),
             vec![skiff_router::session::RuntimeSessionEpoch {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 2,

@@ -1,12 +1,10 @@
 //! Batch 12 health projection: wire-shape and zero/nonzero counter contract
-//! tests at the health output layer.
+//! tests at the health output layer. M4: `activeAssembly` is the release
+//! pointer table projection; the coordinator/activation/repository counter
+//! sections are retired.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use skiff_artifact_model::{
-    AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-};
-use skiff_router::activation::{ActivationCoordinatorHealth, ActivationPhase, DecisionState};
 use skiff_router::actor::{
     ActivationHealth, ActorHealthSnapshot, CatalogHealth, ControlHealth, InvocationHealth,
     LeaseHealth, OwnershipHealth,
@@ -20,7 +18,7 @@ use skiff_router::health::{
     ActiveAssemblyProjection, HealthCounters, LoopRiskProjection, LoopRiskRuntimeProjection,
     SessionFacts,
 };
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::ws::{BrokerHealthSnapshot, IndexHealthSnapshot, LedgerHealthSnapshot};
 use skiff_runtime_transport::protocol::{
     RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
@@ -29,24 +27,6 @@ use skiff_runtime_transport::protocol::{
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tuple() -> RegisteredAssemblyTuple {
-        RegisteredAssemblyTuple {
-        profile: "prod".to_string(),
-        generation: 7,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("snapshot"),
-        },
-    }
-    }
 
     fn session(replica: &str) -> RuntimeSessionEpoch {
         RuntimeSessionEpoch {
@@ -91,28 +71,6 @@ mod tests {
             task: TaskHealth::default(),
             stopped: false,
         };
-        let coordinator = ActivationCoordinatorHealth {
-            phase: ActivationPhase::Idle,
-            profile: None,
-            activation_id: None,
-            expected_generation: None,
-            candidate_generation: None,
-            participant_bindings: 0,
-            prepared_acks: 0,
-            reject_acks: 0,
-            stale_acks: 0,
-            session_aborts: 0,
-            decision: DecisionState::Idle,
-            recovery_active: false,
-            rebound_participants: 0,
-            waiting_replicas: Vec::new(),
-            readiness: false,
-            mailbox_occupancy: 0,
-            mailbox_capacity: 64,
-            mailbox_saturation: 0,
-            shutdown: false,
-            last_failure: None,
-        };
         let actor = ActorHealthSnapshot {
             catalog: CatalogHealth::default(),
             ownership: OwnershipHealth::default(),
@@ -123,7 +81,6 @@ mod tests {
         };
         build_counters(
             &dispatcher,
-            &coordinator,
             &actor,
             &skiff_router::health::counters::DurableTaskCounters::default(),
             &IndexHealthSnapshot {
@@ -143,33 +100,15 @@ mod tests {
 
     fn build_counters(
         dispatcher: &DispatcherHealthSnapshot,
-        coordinator: &ActivationCoordinatorHealth,
         actor: &ActorHealthSnapshot,
         tasks: &skiff_router::health::counters::DurableTaskCounters,
         index: &IndexHealthSnapshot,
         ledger: &LedgerHealthSnapshot,
         broker: &BrokerHealthSnapshot,
     ) -> HealthCounters {
-        let mut activation = skiff_router::health::counters::ActivationCounters::from(coordinator);
-        activation.repository = skiff_router::health::counters::RepositoryCounters::default();
         HealthCounters {
-            active_routing_epoch: skiff_router::health::counters::ActiveRoutingEpochCounters {
-                publish_count: 1,
-                active: Some(skiff_router::health::counters::ActiveEpochTuple {
-                    profile: "prod".to_string(),
-                    generation: 7,
-                    assembly_identity: tuple().assembly_identity().to_string(),
-                    config_snapshot_id: tuple().snapshot_id().to_string(),
-                }),
-            },
             bootstrap: skiff_router::health::counters::BootstrapCounters {
-                reader: skiff_router::health::counters::ReaderFailClosedCountersDto {
-                    missing: 0,
-                    malformed: 0,
-                    identity_mismatch: 0,
-                    pending: 0,
-                    repository: 0,
-                },
+                profile: "prod".to_string(),
             },
             blocking_loader: skiff_router::health::counters::BlockingLoaderCounters {
                 concurrency: 8,
@@ -194,7 +133,6 @@ mod tests {
             health: skiff_router::health::counters::HealthObservationCounters {
                 observations: 0,
                 observed_total: 0,
-                health_before_ack: 0,
             },
             barrier: skiff_router::health::counters::BarrierCounters {
                 pending: 0,
@@ -219,15 +157,8 @@ mod tests {
             ),
             broker: skiff_router::health::counters::BrokerCounters::from(broker),
             actor: skiff_router::health::counters::ActorCounters::from(actor),
-            activation,
             http: skiff_router::health::counters::HttpCounters::default(),
-            mailboxes: skiff_router::health::counters::MailboxCounters {
-                coordinator: skiff_router::health::counters::CoordinatorMailboxCounters {
-                    occupancy: 0,
-                    capacity: 64,
-                    saturation: 0,
-                },
-            },
+            mailboxes: skiff_router::health::counters::MailboxCounters::default(),
             writer_queues: skiff_router::health::counters::WriterQueueCounters {
                 ws_slow_client_count: 0,
                 ws_observed_write_bytes_total: 0,
@@ -235,9 +166,6 @@ mod tests {
             tasks: tasks.clone(),
             shutdown: skiff_router::health::counters::ShutdownResidueCounters {
                 session_fail_stop: None,
-                coordinator_shutdown: false,
-                repository_driver_closed: false,
-                repository_driver_shutdown_residue: 0,
                 dispatcher_stopped: false,
                 ws_fail_stop_reason: None,
             },
@@ -248,21 +176,28 @@ mod tests {
     fn base_render_keeps_ts_shape_and_exposes_all_counter_sections() {
         let active = ActiveAssemblyProjection {
             profile: "prod".to_string(),
-            generation: 7,
-            assembly_identity: tuple().assembly_identity().to_string(),
-            config_snapshot_id: tuple().snapshot_id().to_string(),
-            ingress_count: 0,
+            release_count: 1,
+            build_ids: vec!["skiff-deployment-artifact-v4:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()],
             loaded_build_ids: Vec::new(),
             router_artifact_root: None,
         };
-        let value = render_base(true, Some(&active), None, &[], &[], &zero_health_counters());
+        let value = render_base(true, Some(&active), &[], &[], &zero_health_counters());
         let object = value.as_object().expect("health must be an object");
-        assert_eq!(object.len(), 6, "TS base shape plus counters");
+        assert_eq!(object.len(), 5, "TS base shape plus counters");
         assert_eq!(value["ok"], true);
-        assert!(value["pendingActivation"].is_null());
+        assert_eq!(value["activeAssembly"]["profile"], "prod");
+        assert_eq!(value["activeAssembly"]["releaseCount"], 1);
+        assert_eq!(value["activeAssembly"]["buildIds"].as_array().map(Vec::len), Some(1));
+        assert!(
+            value.get("pendingActivation").is_none(),
+            "M4 retires pendingActivation"
+        );
+        assert!(
+            value.get("activeRoutingEpoch").is_none(),
+            "M4 retires activeRoutingEpoch"
+        );
         assert_eq!(value["replicas"].as_array().map(Vec::len), Some(0));
         for section in [
-            "activeRoutingEpoch",
             "bootstrap",
             "blockingLoader",
             "sessions",
@@ -276,7 +211,6 @@ mod tests {
             "generationLeases",
             "broker",
             "actor",
-            "activation",
             "http",
             "mailboxes",
             "writerQueues",
@@ -308,16 +242,6 @@ mod tests {
             task: TaskHealth::default(),
             stopped: false,
         };
-        let coordinator = ActivationCoordinatorHealth {
-            phase: ActivationPhase::Prepared,
-            profile: Some("prod".to_string()),
-            activation_id: Some("activation-x".to_string()),
-            expected_generation: Some(6),
-            candidate_generation: Some(7),
-            participant_bindings: 2,
-            prepared_acks: 1,
-            ..ActivationCoordinatorHealth::default()
-        };
         let mut actor = ActorHealthSnapshot::default();
         actor.ownership.current_fences = 3;
         actor.invocation.pending = 4;
@@ -332,7 +256,6 @@ mod tests {
         };
         let counters = build_counters(
             &dispatcher,
-            &coordinator,
             &actor,
             &tasks,
             &IndexHealthSnapshot {
@@ -370,13 +293,15 @@ mod tests {
         assert_eq!(value["tasks"]["backlogReady"], 4);
         assert_eq!(value["tasks"]["submissionsAccepted"], 5);
         assert_eq!(value["tasks"]["settlementsFailed"], 6);
-        assert_eq!(value["activation"]["phase"], "prepared");
-        assert_eq!(value["activation"]["activationId"], "activation-x");
         assert_eq!(value["actor"]["ownership"]["currentFences"], 3);
         assert_eq!(value["actor"]["invocation"]["pending"], 4);
         assert_eq!(value["clientConnections"]["connectionCount"], 1);
         assert_eq!(value["generationLeases"]["pinsAcquired"], 2);
         assert_eq!(value["broker"]["outboundPending"], 1);
+        assert!(
+            value.get("activation").is_none(),
+            "M4 retires the coordinator activation counter section"
+        );
     }
 
     #[test]
@@ -384,7 +309,6 @@ mod tests {
         let facts = vec![
             SessionFacts {
                 session: session("runtime-a"),
-                tuple: tuple(),
                 registered: true,
                 cancelled: false,
                 registered_build_ids: Vec::new(),
@@ -393,7 +317,6 @@ mod tests {
             },
             SessionFacts {
                 session: session("runtime-b"),
-                tuple: tuple(),
                 registered: false,
                 cancelled: true,
                 registered_build_ids: Vec::new(),
@@ -402,7 +325,6 @@ mod tests {
             },
             SessionFacts {
                 session: session("runtime-c"),
-                tuple: tuple(),
                 registered: false,
                 cancelled: false,
                 registered_build_ids: Vec::new(),
@@ -452,7 +374,6 @@ mod tests {
     fn loop_risk_runtimes_only_include_observed_registered_sessions() {
         let facts = vec![SessionFacts {
             session: session("runtime-a"),
-            tuple: tuple(),
             registered: true,
             cancelled: false,
             registered_build_ids: Vec::new(),
@@ -508,7 +429,6 @@ mod tests {
     fn replica_projection_omits_registered_at_and_pin_counts_are_zero() {
         let facts = vec![SessionFacts {
             session: session("runtime-a"),
-            tuple: tuple(),
             registered: true,
             cancelled: false,
             registered_build_ids: Vec::new(),

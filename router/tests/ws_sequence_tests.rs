@@ -492,7 +492,7 @@ mod tests {
         ));
         assert_eq!(lane.ledger.snapshot().pins_acquired, 1);
         let mut conflict = tuple.clone();
-        conflict.assembly_generation = 8;
+        conflict.build_id = format!("skiff-service-deployment-v2:sha256:{}", "b".repeat(64));
         assert!(matches!(
             lane.ledger.handle_acquire(
                 &runtime_session("r1"),
@@ -520,7 +520,7 @@ mod tests {
             .expect_connection(tuple.clone())
             .expect("expect");
         let mut mismatch = tuple.clone();
-        mismatch.assembly_generation = 8;
+        mismatch.build_id = format!("skiff-service-deployment-v2:sha256:{}", "b".repeat(64));
         assert!(matches!(
             lane.ledger.handle_acquire(
                 &runtime_session("r1"),

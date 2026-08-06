@@ -35,20 +35,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_capabilities_health_and_register_are_handled() {
+    fn session_capabilities_and_health_are_handled() {
         let demux = RuntimeFrameDemux;
         match demux.classify(&corpus_frame("capabilities.runtime-a")) {
             DemuxOutcome::Handled(DemuxEvent::Capabilities(header)) => {
                 assert_eq!(header.runtime_id, "runtime-a");
             }
             other => panic!("expected capabilities, got {other:?}"),
-        }
-        match demux.classify(&corpus_frame("register.prod.42.a")) {
-            DemuxOutcome::Handled(DemuxEvent::Register(register)) => {
-                assert_eq!(register.replica_id, "runtime-a");
-                assert_eq!(register.generation, 42);
-            }
-            other => panic!("expected register, got {other:?}"),
         }
         match demux.classify(&corpus_frame("health.empty")) {
             DemuxOutcome::Handled(DemuxEvent::Health(header)) => {
@@ -59,9 +52,12 @@ mod tests {
     }
     #[test]
     fn session_legacy_register_is_rejected_by_demux() {
+        // The legacy `runtime.register` tuple frame is retired (M4):
+        // capabilities-only registration; the bytes fail closed as a
+        // malformed frame.
         assert_eq!(
             RuntimeFrameDemux.classify(&corpus_frame("legacy.runtime.register")),
-            DemuxOutcome::Handled(DemuxEvent::LegacyRegister)
+            DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
         );
     }
 
@@ -99,42 +95,21 @@ mod tests {
     }
 
     #[test]
-    fn session_activation_transaction_variants_are_unimplemented_for_w_session() {
-        use skiff_artifact_model::{
-            AssemblyActivationControl, AssemblyIdentity, RuntimeAssemblyRef,
-            RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-        };
-        use skiff_runtime_transport::assembly_activation::{
-            encode_assembly_activation_frame, AssemblyActivationFrameDirection,
-        };
-        let prepared = AssemblyActivationControl::Prepared {
-        profile: "prod".to_string(),
-        activation_id: "activation-1".to_string(),
-        expected_generation: 42,
-        candidate_generation: 43,
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("snapshot id"),
-        },
-        replica_id: "runtime-a".to_string(),
-    };
-        let bytes = encode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            &prepared,
+    fn session_retired_activation_family_fails_closed_as_malformed() {
+        // The `assembly.activation` frame family is retired (M4): its legacy
+        // bytes have no installed family prefix and terminate the exact
+        // session as a malformed frame.
+        let bytes = encode_binary_frame(
+            &json!({
+                "type": "assembly.activation.prepare",
+                "activationId": "activation-1",
+            }),
+            &[],
         )
-        .expect("prepared frame encodes");
+        .expect("legacy activation frame encodes");
         assert_eq!(
             RuntimeFrameDemux.classify(&bytes),
-            DemuxOutcome::Handled(DemuxEvent::Unimplemented {
-                family: RuntimeFrameFamily::Activation
-            })
+            DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
         );
     }
 

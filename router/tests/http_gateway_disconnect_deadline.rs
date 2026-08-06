@@ -16,7 +16,7 @@ mod tests {
 
     use crate::http_common;
     use crate::http_common::{
-        fixture_epoch, fixture_resolver, send_request, service_headers, StreamClient,
+        fixture_resolver, send_request, service_headers, StreamClient,
     };
 
     async fn start_server(
@@ -30,7 +30,6 @@ mod tests {
         };
         let server = start_http_gateway(
             options,
-            fixture_epoch(),
             fixture_resolver(),
             dispatcher.clone(),
         )

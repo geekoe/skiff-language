@@ -24,8 +24,7 @@ mod tests {
 
     fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
         RouterConfig {
-            activation_prepare_timeout_ms: 120_000,
-            artifacts_path: PathBuf::from("/tmp/skiff-artifacts"),
+                artifacts_path: PathBuf::from("/tmp/skiff-artifacts"),
             dev_reload: None,
             host: "127.0.0.1".to_string(),
             http_max_request_bytes: 1,

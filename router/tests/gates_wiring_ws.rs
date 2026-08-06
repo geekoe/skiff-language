@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use skiff_artifact_model::{
-    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
     ServiceDeploymentRef,
 };
 use skiff_router::dispatch::RuntimeAdmissionPool;
@@ -65,11 +65,8 @@ fn sha_digest(seed: &str) -> String {
     digest
 }
 
-fn assembly_identity() -> AssemblyIdentity {
-    AssemblyIdentity::new(format!(
-        "skiff-runtime-assembly-v3:sha256:{}",
-        sha_digest("assembly")
-    ))
+fn build_id() -> String {
+    format!("skiff-deployment-artifact-v4:sha256:{}", sha_digest("deployment"))
 }
 
 fn binding() -> WsBinding {
@@ -216,8 +213,7 @@ fn record(connection_id: &str, runtime: &RuntimeSessionEpoch) -> WsConnectionRec
         runtime: runtime.clone(),
         binding: binding(),
         business_identity: None,
-        assembly_identity: assembly_identity(),
-        assembly_generation: 1,
+        build_id: build_id(),
     }
 }
 
@@ -268,8 +264,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                1,
+                &build_id(),
                 &skiff_router::supervisor::ws::WsConnectMetadata {
                     url: "ws://127.0.0.1/ws".to_string(),
                     query: vec![RuntimeAssemblyRequestNameValueFrameHeader {
@@ -333,8 +328,7 @@ mod tests {
                 "wsconn-error-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                1,
+                &build_id(),
                 &skiff_router::supervisor::ws::WsConnectMetadata {
                     url: "ws://127.0.0.1/ws".to_string(),
                     query: Vec::new(),
@@ -345,7 +339,6 @@ mod tests {
             )
             .expect("connect begin");
 
-        let epoch = dispatch_harness::corpus_epoch();
         let candidate =
             dispatch_harness::FakeCandidateViewSource::new(vec![dispatch_harness::session_state(
                 "s1",
@@ -354,7 +347,6 @@ mod tests {
             )]);
         let options = RuntimeDispatcherOptions::new(
             4,
-            Arc::new(dispatch_harness::FakeEpochSource { epoch: Some(epoch) }),
             Arc::new(candidate),
             Arc::new(dispatch_harness::FakeLeaseRevalidate::new()),
             Arc::new(dispatch_harness::FakeRuntimePeer::new()),
@@ -478,8 +470,7 @@ mod tests {
         let tuple = WebSocketGenerationLifecycleTuple {
             router_session_id: "session".to_string(),
             service_id: "example.com/chat".to_string(),
-            assembly_identity: assembly_identity(),
-            assembly_generation: 1,
+            build_id: build_id(),
             websocket_entry_id: websocket_entry(),
             connection_id: "wsconn-1".to_string(),
         };
@@ -500,8 +491,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                1,
+                &build_id(),
                 &Default::default(),
                 1000,
             )
@@ -555,8 +545,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                1,
+                &build_id(),
                 &Default::default(),
                 1000,
             )
@@ -579,8 +568,7 @@ mod tests {
                 "wsconn-2",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                1,
+                &build_id(),
                 &Default::default(),
                 1000,
             )

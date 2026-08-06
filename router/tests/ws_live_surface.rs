@@ -22,17 +22,10 @@ use skiff_artifact_model::{
     PackageBuildId, PackageLocalAbiIdentity, ServiceContractRef, ServiceDeployment,
     ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
+use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_router::http::HttpIngressResolver;
 use skiff_router::supervisor::http::load_http_surface_view;
-use skiff_router::supervisor::ws::{load_ws_surface_view, ws_surface_view_from_store};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot as RuntimeConfigSnapshotValue;
+use skiff_router::supervisor::ws::load_ws_surface_view;
 
 const SERVICE_ID: &str = "test.skiff/router-rust-ws-live";
 const CONTRACT_VERSION: &str = "0.1.0";
@@ -231,38 +224,21 @@ mod tests {
         deployment
     }
 
-    fn epoch_with_deployment(
-        deployment_ref: skiff_artifact_model::ServiceDeploymentRef,
-    ) -> Arc<RoutingEpoch> {
-        let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-        assembly.resolved_deployments = vec![deployment_ref];
-        let snapshot = RuntimeConfigSnapshotValue::new(
-            "ws-live",
-            skiff_artifact_model::RuntimeConfigSnapshotRef {
-                snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                    "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("snapshot id"),
-            },
-            Vec::new(),
-        )
-        .expect("snapshot fixture");
-        let projection = ActorRoutingProjection::new(
-            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-            Vec::new(),
-        )
-        .expect("empty projection");
-        let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-        Arc::new(
-            RoutingEpoch::new(
-                "ws-live",
-                1,
-                Arc::new(assembly),
-                Arc::new(snapshot),
-                catalog,
-            )
-            .expect("epoch fixture"),
-        )
+    fn write_deployment_with_pointer(
+        root: &std::path::Path,
+        deployment: &ServiceDeployment,
+        profile: &str,
+    ) -> skiff_artifact_model::ServiceDeploymentRef {
+        let store = CanonicalArtifactStore::create(root).expect("create artifact store");
+        store
+            .write_service_deployment(deployment)
+            .expect("write deployment");
+        let reference = skiff_artifact_identity::service_deployment_ref(deployment);
+        let pointer = ReleasePointer::new(profile, reference.clone()).expect("release pointer");
+        store
+            .write_release_pointer(&pointer)
+            .expect("write release pointer");
+        reference
     }
 
     fn temp_artifact_root() -> (std::path::PathBuf, temp_guard::TempGuard) {
@@ -291,18 +267,11 @@ mod tests {
     #[test]
     fn mixed_http_websocket_deployment_loads_both_surfaces() {
         let deployment = deployment();
-        let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
         let (artifact_root, guard) = temp_artifact_root();
-        let store = CanonicalArtifactStore::create(&artifact_root).expect("create artifact store");
-        store
-            .write_service_deployment(&deployment)
-            .expect("write mixed deployment");
-        drop(store);
-
-        let epoch = epoch_with_deployment(reference.clone());
+        let reference = write_deployment_with_pointer(&artifact_root, &deployment, "ws-live");
 
         // HTTP surface: only the HTTP entry, no fail-closed on WS entries.
-        let http = load_http_surface_view(&artifact_root, &epoch).expect("HTTP surface loads");
+        let http = load_http_surface_view(&artifact_root, "ws-live").expect("HTTP surface loads");
         assert_eq!(http.len(), 1, "HTTP view contains only the HTTP entry");
         assert!(
             http.get(&reference, &entry_key("health")).is_some(),
@@ -318,7 +287,7 @@ mod tests {
         );
 
         // WS surface: connect binding + method table, no HTTP entry.
-        let ws = load_ws_surface_view(&artifact_root, &epoch).expect("WS surface loads");
+        let ws = load_ws_surface_view(&artifact_root, "ws-live").expect("WS surface loads");
         let binding = ws
             .resolve(SERVICE_ID, WS_PATH)
             .expect("WS connect binding resolves");
@@ -337,7 +306,6 @@ mod tests {
         );
         assert_eq!(ws.len(), 1, "WS view contains only the WS connect binding");
 
-        drop(epoch);
         drop(guard);
     }
 
@@ -354,54 +322,39 @@ mod tests {
             gateway_entry_key: entry_key("health"),
         }];
         assign_service_deployment_identity(&mut deployment).expect("assign deployment identity");
-        let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
         let (artifact_root, guard) = temp_artifact_root();
-        let store = CanonicalArtifactStore::create(&artifact_root).expect("create artifact store");
-        store
-            .write_service_deployment(&deployment)
-            .expect("write http-only deployment");
-        drop(store);
+        let reference = write_deployment_with_pointer(&artifact_root, &deployment, "ws-live");
 
-        let epoch = epoch_with_deployment(reference.clone());
-        let http = load_http_surface_view(&artifact_root, &epoch).expect("HTTP surface loads");
+        let http = load_http_surface_view(&artifact_root, "ws-live").expect("HTTP surface loads");
         assert_eq!(http.len(), 1);
         assert!(http.get(&reference, &entry_key("health")).is_some());
-        let ws = load_ws_surface_view(&artifact_root, &epoch).expect("empty WS surface loads");
+        let ws = load_ws_surface_view(&artifact_root, "ws-live").expect("empty WS surface loads");
         assert_eq!(ws.len(), 0, "HTTP-only deployment has no WS binding");
 
-        drop(epoch);
         drop(guard);
     }
 
     #[test]
-    fn generation_switch_rebuilds_ws_surface_with_current_deployment() {
-        // F9 regression: the WS connect admission resolves its binding from
-        // the live epoch. A generation switch publishes a new deployment
-        // revision; a startup-loaded static surface would keep the stale
-        // revision and the connect candidate query would fail with
-        // DeploymentNotInEpoch (WS connects 503 until router restart).
+    fn release_pointer_switch_rebuilds_ws_surface_with_current_deployment() {
+        // F9 regression (M4 form): the WS connect admission resolves its
+        // binding from the live release pointer table. A pointer switch
+        // publishes a new deployment revision; a startup-loaded static
+        // surface would keep the stale revision and the connect candidate
+        // query would fail with no eligible runtime (WS connects 503 until
+        // router restart).
 
         let deployment_v1 = deployment();
-        let ref_v1 = skiff_artifact_identity::service_deployment_ref(&deployment_v1);
         let (artifact_root, guard) = temp_artifact_root();
-        let store = CanonicalArtifactStore::create(&artifact_root).expect("create artifact store");
-        store
-            .write_service_deployment(&deployment_v1)
-            .expect("write v1 deployment");
-        let epoch_v1 = epoch_with_deployment(ref_v1.clone());
+        let ref_v1 = write_deployment_with_pointer(&artifact_root, &deployment_v1, "ws-live");
         let startup_surface =
-            load_ws_surface_view(&artifact_root, &epoch_v1).expect("startup surface");
+            load_ws_surface_view(&artifact_root, "ws-live").expect("startup surface");
 
-        // Generation switch: same service/path, new deployment revision.
+        // Pointer switch: same service/path, new deployment revision.
         let mut deployment_v2 = deployment_v1.clone();
         deployment_v2.deployment_revision = DeploymentRevision::new("2");
         assign_service_deployment_identity(&mut deployment_v2)
             .expect("assign v2 deployment identity");
-        let ref_v2 = skiff_artifact_identity::service_deployment_ref(&deployment_v2);
-        store
-            .write_service_deployment(&deployment_v2)
-            .expect("write v2 deployment");
-        let epoch_v2 = epoch_with_deployment(ref_v2.clone());
+        let ref_v2 = write_deployment_with_pointer(&artifact_root, &deployment_v2, "ws-live");
 
         // The startup surface keeps the stale revision.
         let stale_binding = startup_surface
@@ -414,19 +367,17 @@ mod tests {
 
         // The live rebuild resolves the current deployment revision.
         let live_surface =
-            ws_surface_view_from_store(&store, &epoch_v2).expect("live WS surface rebuilds");
+            load_ws_surface_view(&artifact_root, "ws-live").expect("live WS surface rebuilds");
         let current_binding = live_surface
             .resolve(SERVICE_ID, WS_PATH)
             .expect("current binding resolves");
         assert_eq!(
             current_binding.deployment.deployment_revision, ref_v2.deployment_revision,
-            "generation switch must not leave the connect binding on a stale deployment revision"
+            "pointer switch must not leave the connect binding on a stale deployment revision"
         );
         assert_eq!(current_binding.methods.len(), 1);
         assert!(current_binding.connect_handler);
 
-        drop(epoch_v1);
-        drop(epoch_v2);
         drop(guard);
     }
 
@@ -465,25 +416,7 @@ mod tests {
             .write_release_pointer(&relay_pointer)
             .expect("write relay release pointer");
 
-        let epoch = epoch_with_models_deployments(
-            "surface-dup",
-            &aihub_ref,
-            &relay_ref,
-            aihub
-                .gateway_entries
-                .get(&entry_key("v1ModelsGet"))
-                .expect("aihub entry")
-                .gateway_entry_identity
-                .clone(),
-            relay
-                .gateway_entries
-                .get(&entry_key("v1ModelsGet"))
-                .expect("relay entry")
-                .gateway_entry_identity
-                .clone(),
-        );
-
-        let http = load_http_surface_view(&artifact_root, &epoch)
+        let http = load_http_surface_view(&artifact_root, "surface-dup")
             .expect("HTTP surface loads with duplicate gateway entry keys");
         assert_eq!(
             http.len(),
@@ -499,11 +432,11 @@ mod tests {
             "relay surface exists"
         );
 
-        let resolver =
-            skiff_router::http::EpochHttpIngressResolver::new_with_live_artifact_store(
-                Arc::new(http),
-                store.clone(),
-            );
+        let resolver = skiff_router::http::ingress::StoreHttpIngressResolver::new_with_live_artifact_store(
+            Arc::new(http),
+            store.clone(),
+            "surface-dup",
+        );
         let aihub_selector = skiff_router::http::selector::ServiceDeploymentSelector {
             service_id: AIHUB_SERVICE.to_string(),
             contract_version: CONTRACT_VERSION.to_string(),
@@ -513,25 +446,24 @@ mod tests {
             contract_version: CONTRACT_VERSION.to_string(),
         };
         let aihub_binding = resolver
-            .resolve(&epoch, &aihub_selector, "GET", "/v1/models")
+            .resolve(&aihub_selector, "GET", "/v1/models")
             .expect("aihub selector resolves the shared key");
         assert_eq!(aihub_binding.deployment.service_id, AIHUB_SERVICE);
         assert_eq!(aihub_binding.gateway_entry_key.as_str(), "v1ModelsGet");
 
         let relay_binding = resolver
-            .resolve(&epoch, &relay_selector, "GET", "/v1/models")
+            .resolve(&relay_selector, "GET", "/v1/models")
             .expect("relay selector resolves the shared key");
         assert_eq!(relay_binding.deployment.service_id, RELAY_SERVICE);
         assert_eq!(relay_binding.gateway_entry_key.as_str(), "v1ModelsGet");
 
         assert!(
             resolver
-                .resolve(&epoch, &aihub_selector, "GET", "/v1/other")
+                .resolve(&aihub_selector, "GET", "/v1/other")
                 .is_err(),
             "unmatched path still fails closed"
         );
 
-        drop(epoch);
         drop(guard);
     }
 
@@ -572,60 +504,5 @@ mod tests {
         };
         assign_service_deployment_identity(&mut deployment).expect("assign deployment identity");
         deployment
-    }
-
-    fn epoch_with_models_deployments(
-        profile: &str,
-        aihub_ref: &skiff_artifact_model::ServiceDeploymentRef,
-        relay_ref: &skiff_artifact_model::ServiceDeploymentRef,
-        aihub_identity: skiff_artifact_model::GatewayEntryIdentity,
-        relay_identity: skiff_artifact_model::GatewayEntryIdentity,
-    ) -> Arc<RoutingEpoch> {
-        let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-        assembly.roots = vec![aihub_ref.clone(), relay_ref.clone()];
-        assembly.resolved_deployments = vec![aihub_ref.clone(), relay_ref.clone()];
-        assembly.gateway_ingress = vec![
-            GatewayIngressBinding {
-                selector: IngressSelector {
-                    protocol: IngressProtocol::Http,
-                    method: Some("GET".to_string()),
-                    path: "/v1/models".to_string(),
-                },
-                deployment: aihub_ref.clone(),
-                gateway_entry_key: entry_key("v1ModelsGet"),
-                gateway_entry_identity: aihub_identity,
-            },
-            GatewayIngressBinding {
-                selector: IngressSelector {
-                    protocol: IngressProtocol::Http,
-                    method: Some("GET".to_string()),
-                    path: "/v1/models".to_string(),
-                },
-                deployment: relay_ref.clone(),
-                gateway_entry_key: entry_key("v1ModelsGet"),
-                gateway_entry_identity: relay_identity,
-            },
-        ];
-        let snapshot = RuntimeConfigSnapshotValue::new(
-            profile,
-            skiff_artifact_model::RuntimeConfigSnapshotRef {
-                snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                    "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("snapshot id"),
-            },
-            Vec::new(),
-        )
-        .expect("snapshot fixture");
-        let projection = ActorRoutingProjection::new(
-            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-            Vec::new(),
-        )
-        .expect("empty projection");
-        let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-        Arc::new(
-            RoutingEpoch::new(profile, 1, Arc::new(assembly), Arc::new(snapshot), catalog)
-                .expect("epoch fixture"),
-        )
     }
 }

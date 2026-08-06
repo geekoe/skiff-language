@@ -11,24 +11,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use skiff_artifact_model::{AssemblyIdentity, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef};
 use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, ServiceDeploymentRef,
 };
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingMethod, ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::dispatch::{
     capabilities_from_wire_names, CandidateViewSource, DispatchSubmit, LeaseRevalidate,
-    RequestAuthority, RevalidateOutcome, RoutingEpochSource, RuntimePeer, SessionAbortControl,
-    TaskAttemptSubmit,
+    RequestAuthority, RevalidateOutcome, RuntimePeer, SessionAbortControl, TaskAttemptSubmit,
 };
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
@@ -46,24 +37,12 @@ pub struct SessionState {
     pub epoch: RuntimeSessionEpoch,
     pub revision: u64,
     pub cancelled: bool,
-    pub tuple: RegisteredAssemblyTuple,
+    pub build_id: String,
     pub capabilities: Vec<String>,
 }
 
 /// Shared artifact root for the harness lazy-load advertisement.
 pub const SHARED_ARTIFACT_ROOT: &str = "shared-artifact-root";
-
-/// Fixed captured epoch (C-routing-query whole-epoch lease seam).
-#[derive(Debug)]
-pub struct FakeEpochSource {
-    pub epoch: Option<Arc<RoutingEpoch>>,
-}
-
-impl RoutingEpochSource for FakeEpochSource {
-    fn capture(&self) -> Option<Arc<RoutingEpoch>> {
-        self.epoch.clone()
-    }
-}
 
 /// Fake directory view source over a mutable session-state view.
 ///
@@ -104,15 +83,14 @@ impl CandidateViewSource for FakeCandidateViewSource {
             .map(|session| CandidateSession {
                 session_epoch: session.epoch.clone(),
                 registered: true,
-                registered_tuple: Some(session.tuple.clone()),
                 registration_revision: session.revision,
                 cancelled: session.cancelled,
                 capabilities: capabilities_from_wire_names(&session.capabilities),
                 // Admission-corpus scenarios exercise dispatch admission, not
                 // the build-id rule (contract v2 §1 covers that separately):
                 // every harness session is lazy-load eligible against the
-                // shared artifact root.
-                registered_build_ids: Vec::new(),
+                // shared artifact root and carries the session build id.
+                registered_build_ids: vec![session.build_id.clone()],
                 lazy_load: true,
                 artifact_root: Some(SHARED_ARTIFACT_ROOT.to_string()),
             })
@@ -254,62 +232,6 @@ impl SessionAbortControl for FakeSessionAbort {
     }
 }
 
-/// Builds a real immutable `RoutingEpoch` from corpus scenario fields.
-///
-/// The fixture assembly's identity is replaced with the scenario value so
-/// `epoch.registered_tuple()` projects the exact corpus tuple (the same way
-/// the frozen routing-query reference derives the expected tuple).
-pub fn build_epoch(
-    profile: &str,
-    generation: u64,
-    assembly_identity: &str,
-    config_snapshot_id: &str,
-    deployment: ServiceDeploymentRef,
-) -> Arc<RoutingEpoch> {
-    build_epoch_with_actor_methods(
-        profile,
-        generation,
-        assembly_identity,
-        config_snapshot_id,
-        deployment,
-        Vec::new(),
-    )
-}
-
-/// Builds a real immutable `RoutingEpoch` with an explicit actor routing
-/// projection (E2b actor-method task tests).
-pub fn build_epoch_with_actor_methods(
-    profile: &str,
-    generation: u64,
-    assembly_identity: &str,
-    config_snapshot_id: &str,
-    deployment: ServiceDeploymentRef,
-    methods: Vec<ActorRoutingMethod>,
-) -> Arc<RoutingEpoch> {
-    let mut assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-    assembly.assembly_identity = AssemblyIdentity::new(assembly_identity);
-    assembly.resolved_deployments = vec![deployment];
-    let snapshot = Arc::new(
-        RuntimeConfigSnapshot::new(
-            profile,
-            RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id)
-                    .expect("config snapshot id"),
-            },
-            Vec::new(),
-        )
-        .expect("snapshot fixture"),
-    );
-    let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(
-        ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
-            .expect("empty projection"),
-    )));
-    Arc::new(
-        RoutingEpoch::new(profile, generation, Arc::new(assembly), snapshot, catalog)
-            .expect("epoch fixture"),
-    )
-}
-
 pub const CORPUS_PROFILE: &str = "prod";
 pub const CORPUS_GENERATION: u64 = 42;
 pub const CORPUS_ASSEMBLY_IDENTITY: &str =
@@ -321,17 +243,6 @@ pub const CORPUS_CONTRACT_VERSION: &str = "1.0.0";
 pub const CORPUS_DEPLOYMENT_REVISION: &str = "deployment-1";
 pub const CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY: &str =
     "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-
-/// Fixed corpus-shaped epoch for invariant tests.
-pub fn corpus_epoch() -> Arc<RoutingEpoch> {
-    build_epoch(
-        CORPUS_PROFILE,
-        CORPUS_GENERATION,
-        CORPUS_ASSEMBLY_IDENTITY,
-        CORPUS_CONFIG_SNAPSHOT_ID,
-        corpus_deployment_ref(),
-    )
-}
 
 /// Fixed corpus-shaped deployment reference.
 pub fn corpus_deployment_ref() -> ServiceDeploymentRef {
@@ -355,17 +266,7 @@ pub fn session_state(id: &str, replica_id: &str, connection_generation: u64) -> 
         },
         revision: 1,
         cancelled: false,
-        tuple: RegisteredAssemblyTuple {
-            profile: CORPUS_PROFILE.to_string(),
-            generation: CORPUS_GENERATION,
-            assembly: skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY),
-            },
-            config_snapshot: RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(CORPUS_CONFIG_SNAPSHOT_ID)
-                    .expect("snapshot id"),
-            },
-        },
+        build_id: CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY.to_string(),
         capabilities: vec!["unary".to_string(), "serverStream".to_string()],
     }
 }
@@ -382,8 +283,8 @@ pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestSta
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY),
-            assembly_generation: CORPUS_GENERATION,
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: ServiceDeploymentRef {
                 service_id: CORPUS_SERVICE_ID.to_string(),
                 contract_version: CORPUS_CONTRACT_VERSION.to_string(),
@@ -436,8 +337,7 @@ pub fn request(request_id: &str, mode: &str) -> DispatchSubmit {
 /// Fixed corpus-shaped task parent authority.
 pub fn authority_for_session(session: &RuntimeSessionEpoch) -> RequestAuthority {
     RequestAuthority {
-        assembly_identity: CORPUS_ASSEMBLY_IDENTITY.to_string(),
-        assembly_generation: CORPUS_GENERATION,
+        build_id: CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY.to_string(),
         deployment: corpus_deployment_ref(),
         session_epoch: session.clone(),
     }
@@ -461,8 +361,8 @@ pub fn task_attempt(
             },
             routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY.to_string()),
-                assembly_generation: CORPUS_GENERATION,
+                assembly_identity: None,
+                assembly_generation: None,
                 deployment: corpus_deployment_ref(),
                 build_id: Some(corpus_deployment_ref().deployment_artifact_identity.to_string()),
             },

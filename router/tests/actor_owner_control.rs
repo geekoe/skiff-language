@@ -12,7 +12,7 @@ use skiff_router::actor::{
 };
 use skiff_runtime_transport::actor_owner::ActorOwnerControlOperation;
 
-use actor_support::{fence, route_authority};
+use actor_support::{fence, route_authority, ROUTE_BUILD_ID};
 
 const REQUIRED_SCENARIOS: [&str; 4] = [
     "control-ack-exact-correlation",
@@ -204,7 +204,7 @@ mod tests {
         let (fence, authority) = broker.pending_snapshot("req:1").expect("snapshot");
         assert_eq!(fence.owner_runtime_id, "runtime-b");
         assert_eq!(fence.epoch, 7);
-        assert_eq!(authority.assembly_generation, 42);
+        assert_eq!(authority.build_id, ROUTE_BUILD_ID);
     }
 
     #[test]

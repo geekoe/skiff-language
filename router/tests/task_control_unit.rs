@@ -18,7 +18,7 @@ use skiff_artifact_model::{
 };
 use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use skiff_router::session::demux::InboundFrameSink;
-use skiff_router::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::supervisor::actor::{assemble_actor_components, ActorComponents};
 use skiff_router::supervisor::actor_sink::ActorFrameSink;
 use skiff_router::supervisor::session_ports::SessionHandle;
@@ -106,7 +106,7 @@ struct FakeTaskActorOwnerPort {
 }
 
 impl TaskActorOwnerPort for FakeTaskActorOwnerPort {
-    fn candidates(&self, _tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
+    fn candidates_by_build_id(&self, _build_id: &str) -> Vec<RuntimeSessionEpoch> {
         self.candidates.lock().expect("candidates lock").clone()
     }
 
@@ -134,17 +134,26 @@ fn actor_lane_stub() -> (
     Arc<FakeTaskActorOwnerPort>,
     Arc<Mutex<Option<Arc<ActorFrameSink>>>>,
 ) {
-    let epoch = dispatch_harness::corpus_epoch();
-    let epoch_store = Arc::new(skiff_router::bootstrap::ActiveRoutingEpochStore::new());
-    epoch_store.publish(Arc::clone(&epoch));
+    let root = temp_artifact_root();
     let session = SessionHandle::new();
-    let components = assemble_actor_components(epoch, Arc::clone(&epoch_store), session.clone())
-        .expect("actor components");
+    let components = assemble_actor_components(
+        &root,
+        skiff_router::artifact::ActorRoutingProjectionRef::new(
+            skiff_artifact_identity::ArtifactRelativePath::new(
+                skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+                "actor routing projection record",
+            )
+            .expect("actor projection path"),
+        ),
+        session.clone(),
+    )
+    .expect("actor components");
     let writer = Arc::new(FakeWriter::default());
     let sink = Arc::new(ActorFrameSink::new(
         Arc::clone(&components),
         session,
-        epoch_store,
+        skiff_deployment::storage::CanonicalArtifactStore::open(&root)
+            .expect("artifact store open"),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TestClock::default()),
         Arc::new(NoopActorAttemptTerminalSink),
@@ -152,6 +161,20 @@ fn actor_lane_stub() -> (
     let port = Arc::new(FakeTaskActorOwnerPort::default());
     let deferred = Arc::new(Mutex::new(Some(sink)));
     (components, port, deferred)
+}
+
+/// Temporary empty artifact root for the actor lane stub.
+fn temp_artifact_root() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "skiff-task-control-actor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&path).expect("create temp root");
+    path
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +199,13 @@ impl TaskExecutionImageSource for FakeImageSource {
 
     fn contains_service(&self, service_id: &str) -> bool {
         self.services.iter().any(|known| known == service_id)
+    }
+
+    fn contains_deployment(
+        &self,
+        deployment: &skiff_artifact_model::ServiceDeploymentRef,
+    ) -> bool {
+        &self.image.deployment == deployment
     }
 }
 
@@ -1122,13 +1152,10 @@ fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> C
     let worker = control.spawn_worker();
     let peer = dispatch_harness::FakeRuntimePeer::new();
     let abort = dispatch_harness::FakeSessionAbort::new();
-    let epoch = dispatch_harness::corpus_epoch();
     let candidate = dispatch_harness::FakeCandidateViewSource::new(sessions);
     let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
     let admission = Arc::new(RouterTaskAttemptAdmission::new(
-        Arc::new(dispatch_harness::FakeEpochSource {
-            epoch: Some(epoch.clone()),
-        }),
+        Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&control),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -1152,7 +1179,6 @@ fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> C
         RequestDispatcher::new(
             RuntimeDispatcherOptions::new(
                 8,
-                Arc::new(dispatch_harness::FakeEpochSource { epoch: Some(epoch) }),
                 Arc::new(candidate),
                 Arc::new(dispatch_harness::FakeLeaseRevalidate::new()),
                 Arc::new(peer.clone()),
@@ -1358,9 +1384,7 @@ async fn admission_uncertain_when_control_plane_not_assembled() {
     ));
     let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
     let admission = RouterTaskAttemptAdmission::new(
-        Arc::new(dispatch_harness::FakeEpochSource {
-            epoch: Some(dispatch_harness::corpus_epoch()),
-        }),
+        Arc::new(FakeImageSource::new(corpus_image())),
         Arc::clone(&deferred_dispatcher),
         Arc::clone(&control),
         Arc::clone(&clock) as Arc<dyn Clock>,

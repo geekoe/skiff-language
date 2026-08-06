@@ -9,19 +9,12 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
-use skiff_deployment::fixtures::empty_runtime_assembly_fixture;
-use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-};
-use skiff_router::artifact::ActorRoutingCatalog;
-use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::http::fake::FakeHttpDispatcher;
-use skiff_router::http::ingress::EpochHttpIngressResolver;
+use skiff_router::http::ingress::StoreHttpIngressResolver;
 use skiff_router::http::{
     start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,
     HttpGatewayServerOptions, HttpGatewaySurfaceView,
 };
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -46,42 +39,14 @@ impl GatewayUpgradeHandler for MarkerHandler {
     }
 }
 
-fn empty_resolver() -> Arc<EpochHttpIngressResolver> {
-    Arc::new(EpochHttpIngressResolver::new(Arc::new(
-        HttpGatewaySurfaceView::from_deployment_gateway_entries(&BTreeMap::new())
-            .expect("empty surface"),
-    )))
-}
-
-fn fixture_epoch() -> Arc<RoutingEpoch> {
-    let assembly = empty_runtime_assembly_fixture().expect("assembly fixture");
-    let snapshot = RuntimeConfigSnapshot::new(
+fn empty_resolver() -> Arc<StoreHttpIngressResolver> {
+    Arc::new(StoreHttpIngressResolver::new(
+        Arc::new(
+            HttpGatewaySurfaceView::from_deployment_gateway_entries(&BTreeMap::new())
+                .expect("empty surface"),
+        ),
         "prod",
-        skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("snapshot id"),
-        },
-        Vec::new(),
-    )
-    .expect("snapshot fixture");
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
-    )
-    .expect("empty projection");
-    let catalog = ActorRoutingCatalog::from_projection(Arc::new(projection));
-    Arc::new(
-        RoutingEpoch::new(
-            "prod",
-            1,
-            Arc::new(assembly),
-            Arc::new(snapshot),
-            Arc::new(catalog),
-        )
-        .expect("epoch"),
-    )
+    ))
 }
 
 async fn start(seam: bool) -> (HttpGatewayServer, std::net::SocketAddr) {
@@ -103,7 +68,6 @@ async fn start(seam: bool) -> (HttpGatewayServer, std::net::SocketAddr) {
     };
     let server = start_http_gateway(
         options,
-        fixture_epoch(),
         empty_resolver(),
         Arc::new(FakeHttpDispatcher::new(vec![])),
     )

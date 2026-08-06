@@ -12,7 +12,7 @@
 mod ws_harness;
 
 use skiff_artifact_model::{
-    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
     ServiceDeploymentRef,
 };
 use skiff_router::dispatch::RuntimeAdmissionPool;
@@ -65,11 +65,8 @@ mod tests {
         digest
     }
 
-    fn assembly_identity() -> AssemblyIdentity {
-        AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            sha_digest("assembly")
-        ))
+    fn build_id() -> String {
+        format!("skiff-service-deployment-v2:sha256:{}", sha_digest("build"))
     }
 
     fn binding() -> WsBinding {
@@ -104,8 +101,7 @@ mod tests {
             runtime: runtime.clone(),
             binding: binding(),
             business_identity: None,
-            assembly_identity: assembly_identity(),
-            assembly_generation: 7,
+            build_id: build_id(),
         }
     }
 
@@ -116,8 +112,7 @@ mod tests {
         let mut tuple = pin_tuple(connection_id, &runtime.replica_id);
         tuple.router_session_id =
             format!("{}#{}", runtime.replica_id, runtime.connection_generation);
-        tuple.assembly_identity = assembly_identity();
-        tuple.assembly_generation = 7;
+        tuple.build_id = build_id();
         tuple.websocket_entry_id = websocket_entry();
         tuple
     }
@@ -274,15 +269,9 @@ mod tests {
         let mut service = runtime_minted_tuple("c1", &runtime);
         service.service_id = "other.example/chat".to_string();
         cases.push(service);
-        let mut assembly = runtime_minted_tuple("c1", &runtime);
-        assembly.assembly_identity = AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            "d".repeat(64)
-        ));
-        cases.push(assembly);
-        let mut generation = runtime_minted_tuple("c1", &runtime);
-        generation.assembly_generation = 8;
-        cases.push(generation);
+        let mut wrong_build = runtime_minted_tuple("c1", &runtime);
+        wrong_build.build_id = format!("skiff-service-deployment-v2:sha256:{}", "d".repeat(64));
+        cases.push(wrong_build);
         let mut entry = runtime_minted_tuple("c1", &runtime);
         entry.websocket_entry_id = format!("skiff-websocket-entry-v1:sha256:{}", "e".repeat(64));
         cases.push(entry);
@@ -378,8 +367,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                7,
+                &build_id(),
                 &WsConnectMetadata::default(),
                 1000,
             )
@@ -397,9 +385,9 @@ mod tests {
         let mut wrong_connection = tuple.clone();
         wrong_connection.connection_id = "wsconn-2".to_string();
         assert!(!sender.is_pending_acquire_sender(&runtime, &wrong_connection));
-        let mut wrong_generation = tuple.clone();
-        wrong_generation.assembly_generation = 8;
-        assert!(!sender.is_pending_acquire_sender(&runtime, &wrong_generation));
+        let mut wrong_build = tuple.clone();
+        wrong_build.build_id = format!("skiff-service-deployment-v2:sha256:{}", "d".repeat(64));
+        assert!(!sender.is_pending_acquire_sender(&runtime, &wrong_build));
 
         store.connect_response(
             &request_id,
@@ -428,8 +416,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                7,
+                &build_id(),
                 &WsConnectMetadata::default(),
                 1000,
             )
@@ -442,8 +429,7 @@ mod tests {
                 "wsconn-2",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                7,
+                &build_id(),
                 &WsConnectMetadata::default(),
                 1000,
             )
@@ -493,8 +479,7 @@ mod tests {
                 "wsconn-1",
                 &binding(),
                 &runtime,
-                &assembly_identity(),
-                7,
+                &build_id(),
                 &WsConnectMetadata::default(),
                 1000,
             )
