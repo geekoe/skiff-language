@@ -67,20 +67,9 @@ pub(super) async fn admitted_gateway_host() -> (RuntimeHost, HashMap<String, Act
     (host, routes)
 }
 
-pub(in crate::host::router_session::tests) fn blocking_activation_fixture() -> (
-    Arc<RuntimeAssembly>,
-    PathBuf,
-    skiff_runtime_config_snapshot::RuntimeConfigSnapshot,
-) {
+pub(in crate::host::router_session::tests) fn registration_fixture() -> PathBuf {
     let fixture = pinned_route_fixture(false);
-    let resolver = fixture.resolver();
-    let (_, snapshot_resolver) =
-        crate::loader::config_snapshot::snapshot_for_assembly("test", &fixture.assembly, &resolver);
-    (
-        Arc::clone(&fixture.assembly),
-        fixture.artifact_root.clone(),
-        snapshot_resolver.snapshot().clone(),
-    )
+    fixture.artifact_root.clone()
 }
 
 pub(crate) async fn admitted_current_scope_gateway_host(
@@ -420,55 +409,44 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
     let service_db = AssemblyActivationServiceDb {
         mongo_url: "mongodb://pinned-route.invalid".to_string(),
     };
-    let assembly_a = skiff_artifact_identity::runtime_assembly_ref(&fixture_a.assembly).unwrap();
-    let assembly_b = skiff_artifact_identity::runtime_assembly_ref(&fixture_b.assembly).unwrap();
-    let (config_a, config_resolver_a) = crate::loader::config_snapshot::snapshot_for_assembly(
-        "pinned-route",
-        &fixture_a.assembly,
-        &resolver_a,
-    );
-    let (config_b, config_resolver_b) = crate::loader::config_snapshot::snapshot_for_assembly(
-        "pinned-route",
-        &fixture_b.assembly,
-        &resolver_b,
+    let deployment_a = fixture_a
+        .assembly
+        .resolved_deployments
+        .first()
+        .expect("pinned route fixture A deployment")
+        .clone();
+    let deployment_b = fixture_b
+        .assembly
+        .resolved_deployments
+        .first()
+        .expect("pinned route fixture B deployment")
+        .clone();
+    assert_ne!(
+        deployment_a.deployment_artifact_identity,
+        deployment_b.deployment_artifact_identity,
+        "replacement fixture must distinguish deployment build ids"
     );
     host.assembly_admission
-        .recover_committed(
-            "pinned-route",
-            1,
-            &assembly_a,
-            &config_a,
-            &resolver_a,
-            &config_resolver_a,
-            Some(&service_db),
-        )
+        .deployment_image_or_lazy_load(&deployment_a, &resolver_a, Some(&service_db), "pinned-route")
         .await
-        .expect("WebSocket generation one should admit");
+        .expect("pinned route deployment A should lazy load");
     let physical_a = host
         .lookup_active_assembly_request_route(&physical_key_a)
-        .expect("generation one physical WebSocket route");
+        .expect("pinned route A physical WebSocket route");
     let method_a = host
         .lookup_active_assembly_request_route(&method_key_a)
-        .expect("generation one WebSocket method route");
+        .expect("pinned route A WebSocket method route");
     let methods_a = websocket_method_routes(&host, &fixture_a.assembly);
     host.assembly_admission
-        .recover_committed(
-            "pinned-route",
-            2,
-            &assembly_b,
-            &config_b,
-            &resolver_b,
-            &config_resolver_b,
-            Some(&service_db),
-        )
+        .deployment_image_or_lazy_load(&deployment_b, &resolver_b, Some(&service_db), "pinned-route")
         .await
-        .expect("WebSocket generation two should admit");
+        .expect("pinned route deployment B should lazy load");
     let physical_b = host
         .lookup_active_assembly_request_route(&physical_key_b)
-        .expect("generation two physical WebSocket route");
+        .expect("pinned route B physical WebSocket route");
     let method_b = host
         .lookup_active_assembly_request_route(&method_key_b)
-        .expect("generation two WebSocket method route");
+        .expect("pinned route B WebSocket method route");
     ReloadedWebSocketGatewayHost {
         host,
         physical_a,
@@ -873,10 +851,6 @@ fn compile_fixture_variant(
     store
         .write_runtime_assembly(&assembly)
         .expect("gateway RuntimeAssembly record");
-    skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-        artifact_root.join("runtime-config"),
-    )
-    .expect("gateway runtime config snapshot store");
     let assembly = Arc::new(assembly);
     CompiledGatewayFixture {
         assembly,

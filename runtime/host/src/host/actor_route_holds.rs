@@ -3,14 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::loader::assembly_admission::ActiveAssembly;
 
-/// Strong holds on complete assemblies kept alive by live Actor owner
-/// executions (owner invoke and owner control) pinned to an exact route
-/// generation. A generation becomes unresolvable once the active assembly
-/// moves on and no live Actor execution holds it, so the WebSocket generation
-/// lifecycle can still reclaim retired contexts when its own pins release.
+/// Strong holds on complete deployment images kept alive by live Actor owner
+/// executions (owner invoke and owner control) anchored to an exact buildId.
+/// The hold key is the deployment artifact identity carried by the route
+/// authority; there is no generation dimension.
 #[derive(Default)]
 pub(crate) struct ActorRouteHoldRegistry {
-    holds: Mutex<HashMap<(String, u64), HoldEntry>>,
+    holds: Mutex<HashMap<String, HoldEntry>>,
 }
 
 struct HoldEntry {
@@ -20,12 +19,16 @@ struct HoldEntry {
 
 pub(crate) struct ActorRouteHoldGuard {
     registry: Arc<ActorRouteHoldRegistry>,
-    key: (String, u64),
+    key: String,
 }
 
 impl ActorRouteHoldRegistry {
-    pub(crate) fn acquire(self: &Arc<Self>, active: &Arc<ActiveAssembly>) -> ActorRouteHoldGuard {
-        let key = (active.identity().as_str().to_string(), active.generation());
+    pub(crate) fn acquire(
+        self: &Arc<Self>,
+        build_id: impl Into<String>,
+        active: &Arc<ActiveAssembly>,
+    ) -> ActorRouteHoldGuard {
+        let key = build_id.into();
         let mut holds = self
             .holds
             .lock()
@@ -41,21 +44,17 @@ impl ActorRouteHoldRegistry {
         }
     }
 
-    pub(crate) fn find(
-        &self,
-        assembly_identity: &str,
-        generation: u64,
-    ) -> Option<Arc<ActiveAssembly>> {
+    pub(crate) fn find(&self, build_id: &str) -> Option<Arc<ActiveAssembly>> {
         let holds = self
             .holds
             .lock()
             .expect("Actor route hold registry lock poisoned");
         holds
-            .get(&(assembly_identity.to_string(), generation))
+            .get(build_id)
             .map(|entry| Arc::clone(&entry.active))
     }
 
-    fn release(&self, key: &(String, u64)) {
+    fn release(&self, key: &str) {
         let mut holds = self
             .holds
             .lock()

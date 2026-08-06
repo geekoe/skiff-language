@@ -177,7 +177,6 @@ impl RuntimeHost {
             .route_or_lazy_load(
                 key,
                 &bootstrap.resolver,
-                &bootstrap.config_snapshot_store,
                 Some(&bootstrap.service_db),
                 bootstrap.activation.profile.as_str(),
             )
@@ -210,7 +209,7 @@ impl RuntimeHost {
                     .to_string(),
             });
         }
-        let request = websocket_connect_ingress_from_wire(&header);
+        let request = websocket_connect_ingress_from_wire(&route, &header);
         Ok(AdmittedWebSocketConnectRequest {
             route,
             header,
@@ -240,7 +239,7 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
-        let request = http_gateway_request_from_admitted_wire(&header, body)?;
+        let request = http_gateway_request_from_admitted_wire(&route, &header, body)?;
         Ok(AdmittedHttpGatewayRequest {
             route,
             header,
@@ -270,7 +269,6 @@ impl RuntimeHost {
             .deployment_image_or_lazy_load(
                 deployment,
                 &bootstrap.resolver,
-                &bootstrap.config_snapshot_store,
                 Some(&bootstrap.service_db),
                 bootstrap.activation.profile.as_str(),
             )
@@ -382,8 +380,6 @@ impl RuntimeHost {
             .websocket_jsonrpc_execution_route(
                 router_session_id,
                 &request.connection_id,
-                &routing.assembly_identity,
-                routing.assembly_generation,
                 routing.build_id.as_deref(),
                 &request.websocket_entry_id,
                 &ingress.path,
@@ -425,15 +421,16 @@ enum AdmittedRuntimeAssemblyRequest {
 }
 
 fn gateway_ingress_pin(
-    assembly_identity: &skiff_artifact_model::AssemblyIdentity,
-    assembly_generation: u64,
-    deployment: &skiff_artifact_model::ServiceDeploymentRef,
+    route: &ActiveAssemblyRoute,
     gateway_entry_identity: &skiff_artifact_model::GatewayEntryIdentity,
 ) -> RuntimeGatewayIngressPin {
+    // The pin derives from the loaded buildId-keyed route, not from the
+    // request frame's assembly tuple: the buildId is the only routing
+    // dimension and the frame tuple is tolerated/defaulted.
     RuntimeGatewayIngressPin {
-        assembly_identity: assembly_identity.clone(),
-        assembly_generation,
-        deployment: deployment.clone(),
+        assembly_identity: route.assembly_identity().clone(),
+        assembly_generation: route.generation(),
+        deployment: route.deployment().clone(),
         gateway_entry_identity: gateway_entry_identity.clone(),
     }
 }
@@ -455,6 +452,7 @@ fn wire_routing_build_id(header: &RuntimeAssemblyRequestStartFrameWireHeader) ->
 }
 
 fn http_gateway_request_from_admitted_wire(
+    route: &ActiveAssemblyRoute,
     header: &RuntimeAssemblyRequestStartFrameHeader,
     body: Vec<u8>,
 ) -> Result<RuntimeHttpGatewayRequest> {
@@ -470,12 +468,7 @@ fn http_gateway_request_from_admitted_wire(
     Ok(RuntimeHttpGatewayRequest {
         request_id: header.request_id.clone(),
         dispatch_mode,
-        pin: gateway_ingress_pin(
-            &header.routing.assembly_identity,
-            header.routing.assembly_generation,
-            &header.routing.deployment,
-            &header.routing.gateway_entry_identity,
-        ),
+        pin: gateway_ingress_pin(route, &header.routing.gateway_entry_identity),
         ingress_method: header.routing.ingress.method.clone(),
         ingress_path: header.routing.ingress.path.clone(),
         http_request: BinaryHttpRequestMetadata {
@@ -491,17 +484,13 @@ fn http_gateway_request_from_admitted_wire(
 }
 
 fn websocket_connect_ingress_from_wire(
+    route: &ActiveAssemblyRoute,
     header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
 ) -> RuntimeWebSocketConnectIngress {
     let request = &header.websocket_connect;
     RuntimeWebSocketConnectIngress {
         request_id: header.request_id.clone(),
-        pin: gateway_ingress_pin(
-            &header.routing.assembly_identity,
-            header.routing.assembly_generation,
-            &header.routing.deployment,
-            &header.routing.gateway_entry_identity,
-        ),
+        pin: gateway_ingress_pin(route, &header.routing.gateway_entry_identity),
         ingress_path: header.routing.ingress.path.clone(),
         connection_id: request.connection_id.clone(),
         url: request.url.clone(),

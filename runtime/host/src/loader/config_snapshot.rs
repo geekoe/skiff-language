@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::Context;
 use skiff_artifact_model::{PackageBuildId, PackageRequirementKey, ServiceDeploymentRef};
-use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 use skiff_runtime_linker::AssemblyLinkedCandidate;
 
 use crate::config_view::RuntimeConfigView;
@@ -26,120 +24,12 @@ impl ActivationConfigViews {
     }
 }
 
-pub(crate) fn materialize_snapshot_config(
-    candidate: &AssemblyLinkedCandidate,
-    snapshot: &RuntimeConfigSnapshot,
-) -> anyhow::Result<BTreeMap<ServiceDeploymentRef, ActivationConfigViews>> {
-    let mut materialized = BTreeMap::new();
-    for (deployment, _) in candidate.activations() {
-        let views = materialize_deployment_config(candidate, snapshot, deployment)?;
-        materialized.insert(deployment.clone(), views);
-    }
-    Ok(materialized)
-}
-
-/// Materializes the config projection for exactly one deployment partition of
-/// the bootstrap config snapshot.
+/// Materializes empty config views for every deployment of a candidate.
 ///
-/// The snapshot is read on demand per deployment instead of requiring an exact
-/// snapshot/assembly deployment set match. A deployment (or package) partition
-/// that is absent from the snapshot materializes as empty views; the migration
-/// to config baked into deployment records is out of scope for this stage.
-pub(crate) fn materialize_deployment_config(
-    candidate: &AssemblyLinkedCandidate,
-    snapshot: &RuntimeConfigSnapshot,
-    deployment: &ServiceDeploymentRef,
-) -> anyhow::Result<ActivationConfigViews> {
-    let activation = candidate
-        .activation(deployment)
-        .ok_or_else(|| anyhow::anyhow!("config projection targets an unknown activation"))?;
-    let partition = snapshot
-        .deployments()
-        .iter()
-        .find(|partition| partition.deployment() == deployment);
-    let package_values = partition
-        .map(|partition| {
-            partition
-                .packages()
-                .iter()
-                .map(|package| (package.package_build_id().clone(), package))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
-
-    let image = candidate.execution_image();
-    let closure = activation_package_closure(candidate, deployment)?;
-    let mut package_views = Vec::with_capacity(image.execution_packages().len());
-    for (slot, package) in image.execution_packages().iter().enumerate() {
-        if package.code_slot().index() != slot {
-            anyhow::bail!(
-                "active execution image package slot mismatch: expected {slot}, got {}",
-                package.code_slot().index()
-            );
-        }
-        let Some(config) = package_values.get(package.package_build_id()) else {
-            package_views.push(RuntimeConfigView::empty());
-            continue;
-        };
-        if !closure.contains(package.package_build_id()) {
-            anyhow::bail!(
-                "RuntimeConfigSnapshot deployment {deployment:?} packages do not exactly match its Package closure"
-            );
-        }
-        let shape = skiff_artifact_model::config_shape_from_package_requirements(
-            &package.artifact().runtime_requirements.config,
-        )
-        .with_context(|| {
-            format!(
-                "Package {} has invalid config requirements",
-                package.package_build_id()
-            )
-        })?;
-        package_views.push(
-            RuntimeConfigView::from_resolved_config(config.config_value(), shape).with_context(
-                || {
-                format!(
-                    "RuntimeConfigSnapshot deployment {deployment:?} does not satisfy Package {} config requirements",
-                    package.package_build_id()
-                )
-                },
-            )?,
-        );
-    }
-    let implementation_slot = image
-        .code_by_build(activation.implementation_package_build_id())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "activation {deployment:?} implementation Package is not in the execution image"
-            )
-        })?
-        .code_slot()
-        .index();
-    let service = package_views
-        .get(implementation_slot)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("implementation Package config slot is missing"))?;
-    Ok(ActivationConfigViews {
-        service,
-        packages: package_views,
-    })
-}
-
-pub(crate) fn validate_snapshot_profile(
-    snapshot: &RuntimeConfigSnapshot,
-    trusted_profile: &str,
-) -> anyhow::Result<()> {
-    if snapshot.profile() != trusted_profile {
-        anyhow::bail!(
-            "RuntimeConfigSnapshot {} rejected: profile mismatch",
-            snapshot.snapshot_ref().snapshot_id
-        );
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-pub(crate) fn materialize_empty_config_for_test(
+/// The runtime no longer receives a router-supplied config snapshot; config
+/// baked into deployment records is a later milestone, so deployments
+/// materialize empty views until that lands.
+pub(crate) fn materialize_empty_config(
     candidate: &AssemblyLinkedCandidate,
 ) -> anyhow::Result<BTreeMap<ServiceDeploymentRef, ActivationConfigViews>> {
     let image = candidate.execution_image();
@@ -159,13 +49,13 @@ pub(crate) fn materialize_empty_config_for_test(
         }
         let implementation_slot = image
             .code_by_build(activation.implementation_package_build_id())
-            .ok_or_else(|| anyhow::anyhow!("test activation implementation Package is missing"))?
+            .ok_or_else(|| anyhow::anyhow!("activation implementation Package is missing"))?
             .code_slot()
             .index();
         let service = package_views
             .get(implementation_slot)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("test implementation Package config slot is missing"))?;
+            .ok_or_else(|| anyhow::anyhow!("implementation Package config slot is missing"))?;
         materialized.insert(
             deployment.clone(),
             ActivationConfigViews {
@@ -212,97 +102,4 @@ fn activation_package_closure(
         }
     }
     Ok(closure)
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TestSnapshotResolveError;
-
-#[cfg(test)]
-impl std::fmt::Display for TestSnapshotResolveError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("test config snapshot ref mismatch")
-    }
-}
-
-#[cfg(test)]
-impl std::error::Error for TestSnapshotResolveError {}
-
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct TestSnapshotResolver {
-    snapshot: RuntimeConfigSnapshot,
-}
-
-#[cfg(test)]
-impl TestSnapshotResolver {
-    pub(crate) fn new(snapshot: RuntimeConfigSnapshot) -> Self {
-        Self { snapshot }
-    }
-
-    pub(crate) fn snapshot(&self) -> &RuntimeConfigSnapshot {
-        &self.snapshot
-    }
-}
-
-#[cfg(test)]
-impl skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver for TestSnapshotResolver {
-    type Error = TestSnapshotResolveError;
-
-    fn resolve(
-        &self,
-        reference: &skiff_artifact_model::RuntimeConfigSnapshotRef,
-    ) -> Result<RuntimeConfigSnapshot, Self::Error> {
-        (self.snapshot.snapshot_ref() == reference)
-            .then(|| self.snapshot.clone())
-            .ok_or(TestSnapshotResolveError)
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn snapshot_for_assembly<R>(
-    profile: &str,
-    assembly: &skiff_artifact_model::RuntimeAssembly,
-    resolver: &R,
-) -> (
-    skiff_artifact_model::RuntimeConfigSnapshotRef,
-    TestSnapshotResolver,
-)
-where
-    R: skiff_runtime_loader::RuntimeAssemblyContentResolver + ?Sized,
-{
-    let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let deployments = assembly
-        .resolved_deployments
-        .iter()
-        .map(|deployment_ref| {
-            let deployment = resolver
-                .resolve_deployment(deployment_ref)
-                .expect("test deployment should resolve");
-            let mut packages = BTreeSet::from([deployment.implementation.package_build_id.clone()]);
-            packages.extend(
-                deployment
-                    .package_bindings
-                    .iter()
-                    .map(|binding| binding.package.package_build_id.clone()),
-            );
-            skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
-                deployment_ref.clone(),
-                packages
-                    .into_iter()
-                    .map(|package_build_id| {
-                        skiff_runtime_config_snapshot::RuntimeConfigPackage::new(
-                            package_build_id,
-                            Default::default(),
-                        )
-                        .expect("empty test Package config should be valid")
-                    })
-                    .collect(),
-            )
-            .expect("test config deployment should be valid")
-        })
-        .collect();
-    let snapshot = RuntimeConfigSnapshot::new(profile, reference.clone(), deployments)
-        .expect("test config snapshot should be valid");
-    (reference, TestSnapshotResolver::new(snapshot))
 }

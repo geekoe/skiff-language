@@ -534,8 +534,17 @@ impl RuntimeHost {
             .ok_or_else(|| ActorOwnerExecutionFailure::new("Actor service is not active"))?;
         *route_hold_cell
             .lock()
-            .expect("Actor owner route hold cell lock poisoned") =
-            Some(self.actor_route_holds.acquire(route.active_assembly()));
+            .expect("Actor owner route hold cell lock poisoned") = Some(
+            self.actor_route_holds.acquire(
+                route
+                    .activation()
+                    .identity()
+                    .deployment
+                    .deployment_artifact_identity
+                    .as_str(),
+                route.active_assembly(),
+            ),
+        );
         let budget = Arc::new(ExecutionBudget::new(
             skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),
             effective_deadline(&header.invoke.deadline).map(|duration| Instant::now() + duration),
@@ -665,7 +674,15 @@ fn build_owner_control_execution(
     let route = host
         .actor_execution_route(&control.route_authority, &control.fence.service_id)
         .ok()??;
-    let route_hold = host.actor_route_holds.acquire(route.active_assembly());
+    let route_hold = host.actor_route_holds.acquire(
+        route
+            .activation()
+            .identity()
+            .deployment
+            .deployment_artifact_identity
+            .as_str(),
+        route.active_assembly(),
+    );
     let cancellation = skiff_runtime_capability_context::CancellationToken::new();
     let budget = Arc::new(ExecutionBudget::new(
         skiff_runtime_request::execution_budget::ExecutionBudgetConfig::runtime_default(),

@@ -347,7 +347,7 @@ mod websocket_jsonrpc_target {
             "host-dispatch-old-connection",
         );
 
-        assert_eq!(physical_b.generation(), 2);
+        assert_eq!(physical_b.generation(), 0);
         assert!(!Arc::ptr_eq(
             method_a.execution_image(),
             method_b.execution_image()
@@ -364,10 +364,16 @@ mod websocket_jsonrpc_target {
             },
             routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: physical_a.assembly_identity().clone(),
-                assembly_generation: physical_a.generation(),
+                assembly_identity: None,
+                assembly_generation: None,
                 deployment: method_a.deployment().clone(),
-                build_id: None,
+                build_id: Some(
+                    physical_a
+                        .deployment()
+                        .deployment_artifact_identity
+                        .as_str()
+                        .to_string(),
+                ),
                 gateway_entry_identity: method_a.gateway_entry_identity().clone(),
                 ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
@@ -430,9 +436,7 @@ mod websocket_jsonrpc_target {
 struct JsonRpcExecutionRouteLookup<'a> {
     router_session_id: &'a str,
     connection_id: &'a str,
-    assembly_identity: &'a skiff_artifact_model::AssemblyIdentity,
-    assembly_generation: u64,
-    build_id: Option<&'a str>,
+    build_id: &'a str,
     websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
     path: &'a str,
     method: &'a str,
@@ -450,9 +454,7 @@ impl JsonRpcExecutionRouteLookup<'_> {
             .websocket_jsonrpc_execution_route(
                 self.router_session_id,
                 self.connection_id,
-                self.assembly_identity,
-                self.assembly_generation,
-                self.build_id,
+                Some(self.build_id),
                 self.websocket_entry_id,
                 self.path,
                 self.method,
@@ -471,9 +473,7 @@ fn execution_route_lookup<'a>(
     JsonRpcExecutionRouteLookup {
         router_session_id: ROUTER_SESSION,
         connection_id,
-        assembly_identity: physical.assembly_identity(),
-        assembly_generation: physical.generation(),
-        build_id: None,
+        build_id: physical.deployment().deployment_artifact_identity.as_str(),
         websocket_entry_id,
         path: &method.selector().path,
         method: method.selector().method.as_deref().unwrap(),
@@ -740,17 +740,20 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
         resolved_a.method_route.service_protocol_identity(),
         method_b.service_protocol_identity()
     );
-    assert_eq!(resolved_a.target.assembly_generation(), 1);
-    assert_eq!(resolved_b.target.assembly_generation(), 2);
+    assert_eq!(resolved_a.target.assembly_generation(), 0);
+    assert_eq!(resolved_b.target.assembly_generation(), 0);
+    assert_ne!(
+        resolved_a.method_route.deployment(),
+        resolved_b.method_route.deployment(),
+        "distinct deployment build ids must keep distinct pinned routes"
+    );
 
     let target_only_a = host
         .websocket_generations
         .websocket_jsonrpc_target(
             lookup_a.router_session_id,
             lookup_a.connection_id,
-            lookup_a.assembly_identity,
-            lookup_a.assembly_generation,
-            lookup_a.build_id,
+            Some(lookup_a.build_id),
             lookup_a.websocket_entry_id,
             lookup_a.path,
             lookup_a.method,
@@ -775,11 +778,7 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
             ..lookup_a
         },
         JsonRpcExecutionRouteLookup {
-            assembly_identity: physical_b.assembly_identity(),
-            ..lookup_a
-        },
-        JsonRpcExecutionRouteLookup {
-            assembly_generation: lookup_a.assembly_generation + 1,
+            build_id: physical_b.deployment().deployment_artifact_identity.as_str(),
             ..lookup_a
         },
         JsonRpcExecutionRouteLookup {
@@ -1045,10 +1044,16 @@ fn handlerless_connect_header(
         },
         routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: route.deployment().clone(),
-            build_id: None,
+            build_id: Some(
+                route
+                    .deployment()
+                    .deployment_artifact_identity
+                    .as_str()
+                    .to_string(),
+            ),
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,

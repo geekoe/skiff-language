@@ -47,8 +47,8 @@ async fn websocket_jsonrpc_host_maps_typed_outcomes_and_preserves_success_payloa
         physical_b,
         ..
     } = pinned_host().await;
-    assert_eq!(physical_a.generation(), 1);
-    assert_eq!(physical_b.generation(), 2);
+    assert_eq!(physical_a.generation(), 0);
+    assert_eq!(physical_b.generation(), 0);
 
     let (outcome, payload) = invoke(
         &host,
@@ -227,12 +227,14 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
 
     let mut wrong_identity = base.clone();
     wrong_identity.request_id = "host-jsonrpc-reject-assembly".to_string();
-    wrong_identity.routing.assembly_identity = physical_b.assembly_identity().clone();
+    wrong_identity.routing.build_id =
+        Some(physical_b.deployment().deployment_artifact_identity.as_str().to_string());
     assert_wire_rejection(&host, wrong_identity).await;
 
     let mut wrong_generation = base.clone();
     wrong_generation.request_id = "host-jsonrpc-reject-generation".to_string();
-    wrong_generation.routing.assembly_generation += 1;
+    wrong_generation.routing.build_id =
+        Some(format!("skiff-deployment-artifact-v4:sha256:{}", "0".repeat(64)));
     assert_wire_rejection(&host, wrong_generation).await;
 
     let wrong_websocket_entry_id = WebSocketEntryId::parse(format!(
@@ -496,10 +498,16 @@ fn jsonrpc_header(
         },
         routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: physical.assembly_identity().clone(),
-            assembly_generation: physical.generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: method.deployment().clone(),
-            build_id: None,
+            build_id: Some(
+                physical
+                    .deployment()
+                    .deployment_artifact_identity
+                    .as_str()
+                    .to_string(),
+            ),
             gateway_entry_identity: method.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,

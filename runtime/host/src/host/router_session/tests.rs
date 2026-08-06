@@ -15,10 +15,6 @@ use skiff_runtime_transport::{
         encode_actor_owner_invoke_frame, ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader,
         ActorOwnerRouteAuthorityFrameHeader,
     },
-    assembly_activation::{
-        decode_assembly_activation_frame, encode_assembly_activation_frame,
-        AssemblyActivationFrameDirection,
-    },
     connection_protocol::{
         encode_connection_response_frame, ConnectionResponseFrameHeader, ConnectionResponseOutcome,
     },
@@ -78,7 +74,6 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     assert_eq!(host.connection_requests.active_timer_count(), 0);
 }
 
-mod activation_prepare;
 mod connection_lifecycle;
 mod control_response_lifecycle;
 mod foreign_db_exact_identity;
@@ -175,8 +170,8 @@ fn actor_owner_test_invoke(
             declaration_owner: declaration_owner.clone(),
         },
         route_authority: ActorOwnerRouteAuthorityFrameHeader {
-            assembly_identity: format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64)),
-            assembly_generation: 1,
+            build_id: "skiff-deployment-artifact-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
         },
         invoke: ActorMethodInvokeFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -944,10 +939,6 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
-    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-        artifact_path.join("runtime-config"),
-    )
-    .expect("test config snapshot store should open");
     let typed = TypedEnvelope {
         envelope_type: "router.bootstrap".to_string(),
         rest: serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
@@ -955,20 +946,7 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://router-owned" },
             "activation": {
-                "profile": "test",
-                "generation": 7,
-                "assembly": {
-                    "assemblyIdentity": format!(
-                        "skiff-runtime-assembly-v3:sha256:{}",
-                        "a".repeat(64)
-                    )
-                },
-                "configSnapshot": {
-                    "snapshotId": format!(
-                        "skiff-runtime-config-snapshot-v1:{}",
-                        "a".repeat(32)
-                    )
-                }
+                "profile": "test"
             },
             "http": { "maxResponseBytes": 67108864 }
         }))
@@ -988,16 +966,7 @@ fn connection_bootstrap_fixes_exact_artifact_path_and_db_transport() {
         bootstrap.service_db.mongo_url,
         "mongodb://router-owned".to_string()
     );
-    assert_eq!(
-        bootstrap.config_snapshot_store.root(),
-        config_snapshot_store.root()
-    );
     assert_eq!(bootstrap.activation.profile, "test");
-    assert_eq!(bootstrap.activation.generation, 7);
-    assert_eq!(
-        bootstrap.activation.assembly.assembly_identity.as_str(),
-        format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64))
-    );
     assert_eq!(bootstrap.max_response_bytes, 67_108_864);
 }
 
@@ -1303,81 +1272,17 @@ async fn binary_router_control_decode_error_propagates() {
     assert!(artifact_fingerprint.is_none());
 }
 
-#[test]
-fn binary_assembly_activation_command_uses_router_to_runtime_codec() {
-    let activation = assembly_activation_control("prepare");
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &activation,
-    )
-    .expect("router activation command should encode");
-
-    assert_eq!(
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RouterToRuntime, &frame)
-            .expect("Router activation command should decode"),
-        activation
-    );
-}
-
-#[test]
-fn assembly_activation_frame_type_is_identified_without_applying_production_behavior() {
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &assembly_activation_control("prepare"),
-    )
-    .expect("router activation command should encode");
-    assert_eq!(
-        super::activation::router_binary_frame_type(&frame).unwrap(),
-        skiff_runtime_transport::assembly_activation::ASSEMBLY_ACTIVATION_FRAME_TYPE
-    );
-}
-
-#[tokio::test]
-async fn assembly_activation_fails_closed_before_connection_bootstrap() {
-    let host = test_host();
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &assembly_activation_control("prepare"),
-    )
-    .expect("router activation command should encode");
-    let mut bootstrap = None;
-    let mut handshake = super::handshake::ClientHandshake::registered();
-
-    let error = super::dispatch_router_binary_frame_inner(
-        &host,
-        "skiff-router-session-v1:opaque:test-session",
-        &frame,
-        &sender,
-        None,
-        &mut bootstrap,
-        &mut handshake,
-        RouterSessionChildTaskDispatch::Detached,
-    )
-    .await
-    .expect_err("activation before bootstrap must fail");
-
-    assert!(error
-        .to_string()
-        .contains("assembly activation requires router.bootstrap first"));
-}
-
 #[tokio::test]
 async fn duplicate_connection_bootstrap_fails_closed() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
     let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-duplicate");
     std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
-    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-        artifact_path.join("runtime-config"),
-    )
-    .expect("test config snapshot store should open");
     let mut bootstrap = Some(super::ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
         )
         .expect("test resolver should open"),
-        config_snapshot_store,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
@@ -1391,20 +1296,7 @@ async fn duplicate_connection_bootstrap_fails_closed() {
             "artifactsPath": artifact_path,
             "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:27017" },
             "activation": {
-                "profile": "test",
-                "generation": 0,
-                "assembly": {
-                    "assemblyIdentity": format!(
-                        "skiff-runtime-assembly-v3:sha256:{}",
-                        "a".repeat(64)
-                    )
-                },
-                "configSnapshot": {
-                    "snapshotId": format!(
-                        "skiff-runtime-config-snapshot-v1:{}",
-                        "a".repeat(32)
-                    )
-                }
+                "profile": "test"
             },
             "http": { "maxResponseBytes": 67108864 }
         }),
@@ -1431,159 +1323,8 @@ async fn duplicate_connection_bootstrap_fails_closed() {
         .contains("router.bootstrap must appear exactly once per connection"));
 }
 
-#[tokio::test]
-async fn activation_rejects_superseded_transient_service_db_wire() {
-    let host = test_host();
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let artifact_path = std::env::temp_dir().join("skiff-runtime-bootstrap-service-db");
-    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
-    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-        artifact_path.join("runtime-config"),
-    )
-    .expect("test config snapshot store should open");
-    let mut bootstrap = Some(super::ConnectionBootstrap {
-        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
-            &artifact_path,
-        )
-        .expect("test resolver should open"),
-        config_snapshot_store,
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://bootstrap-owner".to_string(),
-        },
-        activation: super::test_bootstrap_activation(),
-        max_response_bytes: 67_108_864,
-    });
-    let mut activation = serde_json::to_value(assembly_activation_control("prepare"))
-        .expect("activation should encode as JSON");
-    activation
-        .as_object_mut()
-        .expect("activation should be an object")
-        .insert(
-            "serviceDb".to_string(),
-            json!({ "mongoUrl": "mongodb://transient-owner" }),
-        );
-    let activation: skiff_artifact_model::AssemblyActivationControl =
-        serde_json::from_value(activation).expect("legacy activation wire should decode");
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &activation,
-    )
-    .expect("activation frame should encode");
-    let mut handshake = super::handshake::ClientHandshake::registered();
-
-    let error = super::dispatch_router_binary_frame_inner(
-        &host,
-        "skiff-router-session-v1:opaque:test-session",
-        &frame,
-        &sender,
-        None,
-        &mut bootstrap,
-        &mut handshake,
-        RouterSessionChildTaskDispatch::Detached,
-    )
-    .await
-    .expect_err("transient serviceDb must fail");
-
-    assert!(error
-        .to_string()
-        .contains("assembly activation serviceDb is not supported"));
-}
-
-#[tokio::test]
-async fn activation_rejects_profile_other_than_runtime_frozen_domain_before_resolution() {
-    let host = test_host();
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let artifact_path = std::env::temp_dir().join(format!(
-        "skiff-runtime-bootstrap-profile-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&artifact_path).expect("test artifact root should exist");
-    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-        artifact_path.join("runtime-config"),
-    )
-    .expect("test config snapshot store should open");
-    let mut bootstrap = Some(super::ConnectionBootstrap {
-        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
-            &artifact_path,
-        )
-        .expect("test resolver should open"),
-        config_snapshot_store,
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://bootstrap-owner".to_string(),
-        },
-        activation: super::test_bootstrap_activation(),
-        max_response_bytes: 67_108_864,
-    });
-    let mut activation = serde_json::to_value(assembly_activation_control("prepare"))
-        .expect("activation should encode as JSON");
-    activation
-        .as_object_mut()
-        .expect("activation should be an object")
-        .insert("profile".to_string(), json!("prod"));
-    let activation: skiff_artifact_model::AssemblyActivationControl =
-        serde_json::from_value(activation).expect("activation control should decode");
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &activation,
-    )
-    .expect("activation frame should encode");
-    let mut handshake = super::handshake::ClientHandshake::registered();
-
-    let error = super::dispatch_router_binary_frame_inner(
-        &host,
-        "skiff-router-session-v1:opaque:test-session",
-        &frame,
-        &sender,
-        None,
-        &mut bootstrap,
-        &mut handshake,
-        RouterSessionChildTaskDispatch::Detached,
-    )
-    .await
-    .expect_err("foreign activation profile must fail before snapshot resolution");
-
-    assert!(error
-        .to_string()
-        .contains("does not match Runtime frozen profile"));
-}
-
 #[test]
-fn assembly_activation_reply_uses_runtime_to_router_codec() {
-    let activation = assembly_activation_control("prepared");
-    let frame = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RuntimeToRouter,
-        &activation,
-    )
-    .expect("runtime activation reply should encode");
-    let decoded =
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &frame)
-            .expect("runtime activation reply should decode in runtime-to-router direction");
-
-    assert_eq!(decoded, activation);
-}
-
-fn assembly_activation_control(
-    control_type: &str,
-) -> skiff_artifact_model::AssemblyActivationControl {
-    serde_json::from_value(json!({
-        "type": control_type,
-        "profile": "test",
-        "activationId": "activation-42",
-        "expectedGeneration": 41,
-        "candidateGeneration": 42,
-        "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        },
-        "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        },
-        "replicaId": "runtime-base"
-    }))
-    .expect("assembly activation control fixture should decode")
-}
-
-#[tokio::test]
-async fn text_json_request_start_is_rejected_on_runtime_websocket() {
+fn text_json_request_start_is_rejected_on_runtime_websocket() {
     let error = reject_router_text_message(
         &json!({
             "type": "request.start",

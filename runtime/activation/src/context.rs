@@ -12,11 +12,16 @@ use crate::capability::CallbackCapabilityTable;
 pub struct ActivationId(String);
 
 impl ActivationId {
+    /// Derives the activation identity from the deployment tuple
+    /// (`buildId` + human deployment coordinates) plus the runtime replica id.
+    ///
+    /// The router-coordinated assembly tuple (identity/generation) is no longer
+    /// a deployment dimension: an activation is anchored to the exact
+    /// deployment buildId, so the same deployment always yields the same
+    /// activation id regardless of any assembly-level generation.
     pub fn from_identity(identity: &ActivationIdentity) -> Self {
         let deployment = &identity.deployment;
         Self(frame_identity_parts(&[
-            identity.assembly_identity.as_str(),
-            &identity.assembly_generation.to_string(),
             &identity.runtime_replica_id,
             &deployment.service_id,
             &deployment.contract_version,

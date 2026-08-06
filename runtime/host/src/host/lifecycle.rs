@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::warn;
 
-use crate::error::{Result, RuntimeError};
+use crate::error::Result;
 
 use super::{router_session, RuntimeHost};
 
@@ -38,46 +38,5 @@ impl RuntimeHost {
 
     async fn run_router_session_once(&self) -> Result<()> {
         router_session::run_once(self.clone()).await
-    }
-
-    pub(super) async fn recover_durable_committed(
-        &self,
-        profile: &str,
-        generation: u64,
-        assembly: &skiff_artifact_model::RuntimeAssemblyRef,
-        config_snapshot: &skiff_artifact_model::RuntimeConfigSnapshotRef,
-        resolver: &skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
-        config_snapshot_resolver: &skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
-        service_db: &skiff_artifact_model::AssemblyActivationServiceDb,
-    ) -> Result<()> {
-        self.freeze_bootstrap_profile(profile).map_err(|error| {
-            RuntimeError::invalid_artifact(format!(
-                "router bootstrap activation profile check failed: {error:#}"
-            ))
-        })?;
-        self.assembly_admission
-            .discard_transient_for_reconnect()
-            .map_err(|error| {
-                RuntimeError::invalid_artifact(format!(
-                    "committed recovery staging reset failed: {error}"
-                ))
-            })?;
-        self.assembly_admission
-            .recover_committed(
-                profile,
-                generation,
-                assembly,
-                config_snapshot,
-                resolver,
-                config_snapshot_resolver,
-                Some(service_db),
-            )
-            .await
-            .map_err(|error| {
-                RuntimeError::invalid_artifact(format!(
-                    "committed assembly admission failed: {error:#}"
-                ))
-            })?;
-        Ok(())
     }
 }

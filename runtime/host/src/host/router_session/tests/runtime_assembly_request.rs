@@ -508,16 +508,19 @@ async fn host_http_gateway_exact_route_identity_generation_mode_and_http_metadat
     assert_eq!(http_status(&response), 200);
     assert_eq!(body, br#""url-host""#);
 
-    let mut wrong_assembly = exact.clone();
-    wrong_assembly.routing.assembly_identity = AssemblyIdentity::new(format!(
-        "skiff-runtime-assembly-v3:sha256:{}",
+    let mut wrong_build_id = exact.clone();
+    wrong_build_id.routing.build_id = Some(format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
         "f".repeat(64)
     ));
-    cases.push(("assembly", wrong_assembly));
+    cases.push(("build-id", wrong_build_id));
 
-    let mut wrong_generation = exact.clone();
-    wrong_generation.routing.assembly_generation += 1;
-    cases.push(("generation", wrong_generation));
+    let mut mismatched_build_id = exact.clone();
+    mismatched_build_id.routing.build_id = Some(format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
+        "0".repeat(64)
+    ));
+    cases.push(("mismatched-build-id", mismatched_build_id));
 
     let mut wrong_gateway_identity = exact.clone();
     wrong_gateway_identity.routing.gateway_entry_identity =
@@ -1044,8 +1047,8 @@ fn canonical_header(
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: route.deployment().clone(),
             build_id: None,
             gateway_entry_identity: route.gateway_entry_identity().clone(),
@@ -1092,8 +1095,8 @@ fn direct_task_header(
         },
         routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: route.deployment().clone(),
             build_id: None,
         },

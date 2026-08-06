@@ -20,6 +20,10 @@ type LoadedDeploymentCell = OnceCell<Arc<ActiveAssembly>>;
 ///   first caller runs the load and every waiter observes the same result.
 ///   A failed load leaves the cell uninitialized and drops the strong handle,
 ///   so the next request re-enters the critical section and retries.
+///
+/// The lazy-load closure is the only production registration source: every
+/// buildId materializes once under its critical section and the append-only
+/// set keeps the first image.
 #[derive(Debug, Default)]
 pub(crate) struct LoadedDeploymentRegistry {
     cells: OnceLock<Mutex<HashMap<String, Weak<LoadedDeploymentCell>>>>,
@@ -46,7 +50,13 @@ impl LoadedDeploymentRegistry {
             .collect()
     }
 
-    /// Registers an already materialized deployment under its buildId.
+    /// Registers one materialized deployment image under its buildId.
+    ///
+    /// The loaded set is append-only per buildId: the first materialization
+    /// wins (content-addressed identity means later materializations of the
+    /// same buildId carry identical content). The lazy-load closure is the
+    /// only production registration source; the committed-recovery image
+    /// (M2 transitional dual-image case) no longer exists.
     pub(crate) fn register(&self, build_id: impl Into<String>, active: Arc<ActiveAssembly>) {
         self.loaded
             .write()

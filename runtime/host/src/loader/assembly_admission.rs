@@ -1,41 +1,46 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+#[cfg(test)]
+use std::sync::RwLock;
+
+#[cfg(test)]
 use anyhow::Context;
 use skiff_artifact_model::{
-    AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyActivationServiceDb,
-    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GatewayAdapterKind,
-    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayProtocolSurface, GatewayWebSocketRpcProfile, IngressProtocol, IngressSelector,
-    RuntimeAssembly, RuntimeAssemblyRef, RuntimeConfigSnapshotRef, ServiceContractRef,
+    AssemblyActivationServiceDb, AssemblyIdentity, BoundaryOperationDescriptor,
+    ContractOperationId, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketRpcProfile, IngressProtocol, IngressSelector, ServiceContractRef,
     ServiceDeploymentRef, ServiceIngressKey, WebSocketEntryId,
 };
+#[cfg(test)]
+use skiff_artifact_model::RuntimeAssembly;
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linker::{
     link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
 };
 use skiff_runtime_loader::{
-    DeploymentReleasePointerResolver, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader,
-    RuntimeAssemblyRecordResolver, ServiceContractStore,
+    DeploymentReleasePointerResolver, RuntimeAssemblyRecordResolver, ServiceContractStore,
 };
+#[cfg(test)]
+use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
 use skiff_runtime_request::{
-    cancellation::CancellationToken, RuntimeAssemblyHttpGatewayTarget,
-    RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketJsonRpcPhysicalRoute,
-    RuntimeAssemblyWebSocketJsonRpcTarget,
+    RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
+    RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
 };
 use skiff_runtime_transport::actor_owner::ActorOwnerRouteAuthorityFrameHeader;
 use time::OffsetDateTime;
+#[cfg(test)]
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(test)]
+use tracing::warn;
 
 use super::active_assembly_context::{admitted_websocket_entry, ActiveAssemblyContextSet};
 use crate::capability_context::DbProviderSource;
 use crate::host::RuntimeHost;
 
-mod candidate;
 mod loaded_deployments;
-mod provisioning;
-mod recovery;
 
 use loaded_deployments::LoadedDeploymentRegistry;
 
@@ -48,35 +53,12 @@ pub(crate) struct ActiveAssembly {
     contexts: Arc<ActiveAssemblyContextSet>,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct PreparedAssembly {
     generation: u64,
-    config_snapshot: RuntimeConfigSnapshotRef,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AssemblyTransition {
-    profile: String,
-    activation_id: String,
-    expected_generation: u64,
-    candidate_generation: u64,
-    assembly: RuntimeAssemblyRef,
-    config_snapshot: RuntimeConfigSnapshotRef,
-}
-
-#[derive(Debug)]
-struct StagedAssembly {
-    transition: AssemblyTransition,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommittedAssembly {
-    profile: String,
-    generation: u64,
-    assembly: RuntimeAssemblyRef,
-    config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 /// One request-entry route pinned to the exact active generation used for lookup.
@@ -88,7 +70,7 @@ pub(crate) struct ActiveAssemblyRoute {
     activation: Arc<ActivationContext>,
 }
 
-/// Immutable committed-assembly snapshot for one Actor owner execution.
+/// Immutable deployment-anchored execution route for one Actor owner execution.
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveActorExecutionRoute {
     active: Arc<ActiveAssembly>,
@@ -404,6 +386,7 @@ impl ActiveAssembly {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssemblyCandidateStage {
     Load,
@@ -412,6 +395,7 @@ pub(crate) enum AssemblyCandidateStage {
     Admit,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AssemblyCandidateHealth {
     pub(crate) generation: u64,
@@ -420,6 +404,7 @@ pub(crate) struct AssemblyCandidateHealth {
     pub(crate) started_at: OffsetDateTime,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AssemblyAdmissionOutcome {
     pub(crate) generation: u64,
@@ -430,6 +415,7 @@ pub(crate) struct AssemblyAdmissionOutcome {
     pub(crate) error: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct AssemblyAdmissionHealth {
     pub(crate) active_identity: Option<AssemblyIdentity>,
@@ -439,27 +425,29 @@ pub(crate) struct AssemblyAdmissionHealth {
     pub(crate) last_outcome: Option<AssemblyAdmissionOutcome>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct AssemblyAdmissionState {
     next_generation: u64,
     active: Option<Arc<ActiveAssembly>>,
-    committed: Option<CommittedAssembly>,
-    staged: Option<StagedAssembly>,
-    preparing: Option<AssemblyTransition>,
     candidate: Option<AssemblyCandidateHealth>,
     last_outcome: Option<AssemblyAdmissionOutcome>,
 }
 
-/// The sole owner of candidate build serialization and the active whole-assembly pointer.
+/// The sole owner of candidate build serialization and the loaded buildId
+/// registry. There is no whole-assembly committed tuple: requests route by
+/// buildId through the lazy-load registry.
 #[derive(Debug)]
 pub(crate) struct AssemblyAdmissionController {
     runtime_replica_id: String,
     db_provider: DbProviderSource,
+    #[cfg(test)]
     reload: Mutex<()>,
+    #[cfg(test)]
     state: RwLock<AssemblyAdmissionState>,
-    /// Append-only set of deployments loaded under their buildId (M2 lazy-load
+    /// Append-only set of deployments loaded under their buildId (lazy-load
     /// registry). This is the routing authority: every request locates its
-    /// deployment here, never through the whole-assembly active pointer.
+    /// deployment here, never through a whole-assembly pointer.
     loaded: Arc<LoadedDeploymentRegistry>,
 }
 
@@ -477,14 +465,15 @@ impl AssemblyAdmissionController {
         Self {
             runtime_replica_id: runtime_replica_id.into(),
             db_provider,
+            #[cfg(test)]
             reload: Mutex::new(()),
+            #[cfg(test)]
             state: RwLock::new(AssemblyAdmissionState::default()),
             loaded: Arc::new(LoadedDeploymentRegistry::default()),
         }
     }
 
-    /// Test-only direct admission for focused loader/linker coverage. Production activation
-    /// publishes only through durable committed recovery or Router prepare/commit.
+    /// Test-only direct admission for focused loader/linker coverage.
     #[cfg(test)]
     pub(crate) async fn admit<R>(
         &self,
@@ -505,9 +494,7 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(
-                generation, &identity, assembly, resolver, None, None, None, None,
-            )
+            .build_started_candidate(generation, &identity, assembly, resolver, None, None)
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -518,6 +505,7 @@ impl AssemblyAdmissionController {
         Ok(active)
     }
 
+    #[cfg(test)]
     async fn build_started_candidate<R>(
         &self,
         generation: u64,
@@ -526,25 +514,10 @@ impl AssemblyAdmissionController {
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: Option<&str>,
-        config_snapshot_ref: Option<&RuntimeConfigSnapshotRef>,
-        config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<PreparedAssembly>
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
     {
-        let config_snapshot_ref = match (config_snapshot_ref, config_snapshot) {
-            (Some(reference), Some(snapshot)) if snapshot.snapshot_ref() == reference => {
-                reference.clone()
-            }
-            (Some(_), Some(_)) => {
-                anyhow::bail!("resolved RuntimeConfigSnapshot content mismatches exact ref")
-            }
-            #[cfg(test)]
-            (None, None) => skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref(),
-            _ => anyhow::bail!(
-                "Runtime activation requires one exact RuntimeConfigSnapshot ref and record"
-            ),
-        };
         let hydrated = match RuntimeAssemblyLoader::new(resolver).load(assembly) {
             Ok(hydrated) => hydrated,
             Err(error) => {
@@ -595,7 +568,6 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             profile,
-            config_snapshot,
         )
         .await
         {
@@ -613,12 +585,12 @@ impl AssemblyAdmissionController {
         };
         Ok(PreparedAssembly {
             generation,
-            config_snapshot: config_snapshot_ref,
             candidate,
             contexts,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn active(&self) -> anyhow::Result<Option<Arc<ActiveAssembly>>> {
         Ok(self
             .state
@@ -628,6 +600,7 @@ impl AssemblyAdmissionController {
             .clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn health(&self) -> anyhow::Result<AssemblyAdmissionHealth> {
         let state = self
             .state
@@ -692,26 +665,18 @@ impl AssemblyAdmissionController {
     /// Load failures (missing record, missing release pointer, unreachable
     /// directory, invalid content) fast-fail every waiting request; nothing is
     /// registered on failure.
-    pub(crate) async fn route_or_lazy_load<R, C>(
+    pub(crate) async fn route_or_lazy_load<R>(
         &self,
         key: &ServiceIngressKey,
         resolver: &R,
-        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
     ) -> anyhow::Result<ActiveAssemblyRoute>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let active = self
-            .deployment_image_or_lazy_load(
-                &key.deployment,
-                resolver,
-                config_snapshot_resolver,
-                service_db,
-                profile,
-            )
+            .deployment_image_or_lazy_load(&key.deployment, resolver, service_db, profile)
             .await?;
         self.route_from_active(active, key)?.ok_or_else(|| {
             anyhow::anyhow!(
@@ -723,43 +688,33 @@ impl AssemblyAdmissionController {
 
     /// Resolves the loaded image for one exact deployment, lazy-loading it
     /// under its per-buildId critical section when absent.
-    pub(crate) async fn deployment_image_or_lazy_load<R, C>(
+    pub(crate) async fn deployment_image_or_lazy_load<R>(
         &self,
         deployment: &ServiceDeploymentRef,
         resolver: &R,
-        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let build_id = deployment.deployment_artifact_identity.as_str();
         self.loaded
             .load_or_wait(build_id, || {
-                self.load_lazy_deployment(
-                    deployment,
-                    resolver,
-                    config_snapshot_resolver,
-                    service_db,
-                    profile,
-                )
+                self.load_lazy_deployment(deployment, resolver, service_db, profile)
             })
             .await
     }
 
-    async fn load_lazy_deployment<R, C>(
+    async fn load_lazy_deployment<R>(
         &self,
         deployment: &ServiceDeploymentRef,
         resolver: &R,
-        config_snapshot_resolver: &C,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
     {
         let reference = deployment;
         info!(
@@ -774,37 +729,6 @@ impl AssemblyAdmissionController {
             .map_err(|error| error.context("lazy-load deployment link failed"))?;
         validate_candidate(&candidate)?;
         let candidate = Arc::new(candidate);
-        let config_snapshot_ref = self
-            .state
-            .read()
-            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?
-            .committed
-            .as_ref()
-            .map(|committed| committed.config_snapshot.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "lazy-load deployment {reference:?} requires a bootstrapped config snapshot"
-                )
-            })?;
-        let config_snapshot = config_snapshot_resolver
-            .resolve(&config_snapshot_ref)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "RuntimeConfigSnapshot {} resolution failed during lazy load",
-                    config_snapshot_ref.snapshot_id
-                )
-            })?;
-        if *config_snapshot.snapshot_ref() != config_snapshot_ref {
-            anyhow::bail!(
-                "RuntimeConfigSnapshot {} rejected: resolved content does not match the requested opaque id",
-                config_snapshot_ref.snapshot_id
-            );
-        }
-        if let Err(error) =
-            super::config_snapshot::validate_snapshot_profile(&config_snapshot, profile)
-        {
-            anyhow::bail!("lazy-load deployment {reference:?} rejected: {error}");
-        }
         let contexts = ActiveAssemblyContextSet::from_candidate(
             &candidate,
             0,
@@ -812,7 +736,6 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             Some(profile),
-            Some(&config_snapshot),
         )
         .await
         .map_err(|error| {
@@ -863,31 +786,6 @@ impl AssemblyAdmissionController {
         }))
     }
 
-    /// Resolves the exact immutable route authority carried by an Actor owner
-    /// invoke/control frame against the current active assembly only. The Host
-    /// layer additionally consults route holds owned by live Actor executions;
-    /// anything else fails closed so a G1 chain cannot be silently re-executed
-    /// on a newer generation.
-    pub(crate) fn actor_execution_route(
-        &self,
-        authority: &ActorOwnerRouteAuthorityFrameHeader,
-        service_id: &str,
-    ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
-        let Some(active) = state.active.as_ref() else {
-            return Ok(None);
-        };
-        if active.generation() != authority.assembly_generation
-            || active.identity().as_str() != authority.assembly_identity
-        {
-            return Ok(None);
-        }
-        actor_route_from_active(Arc::clone(active), service_id)
-    }
-
     #[cfg(test)]
     fn begin_candidate(&self, identity: AssemblyIdentity) -> anyhow::Result<u64> {
         let mut state = self
@@ -914,6 +812,7 @@ impl AssemblyAdmissionController {
         Ok(generation)
     }
 
+    #[cfg(test)]
     fn advance_candidate(
         &self,
         generation: u64,
@@ -943,6 +842,7 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
+    #[cfg(test)]
     fn fail_candidate(
         &self,
         generation: u64,
@@ -957,6 +857,7 @@ impl AssemblyAdmissionController {
         )
     }
 
+    #[cfg(test)]
     fn fail_candidate_with_health_error(
         &self,
         generation: u64,
@@ -970,7 +871,6 @@ impl AssemblyAdmissionController {
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         ensure_current_candidate(&state, generation, identity)?;
         state.candidate = None;
-        state.preparing = None;
         state.last_outcome = Some(AssemblyAdmissionOutcome {
             generation,
             identity: identity.clone(),
@@ -984,23 +884,7 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
-    fn fail_candidate_config_snapshot_profile(
-        &self,
-        generation: u64,
-        identity: &AssemblyIdentity,
-        config_snapshot: &RuntimeConfigSnapshotRef,
-    ) -> anyhow::Result<()> {
-        self.fail_candidate_with_health_error(
-            generation,
-            identity,
-            AssemblyCandidateStage::Load,
-            format!(
-                "RuntimeConfigSnapshot {} profile mismatch",
-                config_snapshot.snapshot_id
-            ),
-        )
-    }
-
+    #[cfg(test)]
     #[cfg(test)]
     fn publish(
         &self,
@@ -1024,7 +908,6 @@ impl AssemblyAdmissionController {
         // either the complete previous assembly or the complete new generation, never a mix.
         state.active = Some(Arc::clone(&active));
         state.candidate = None;
-        state.preparing = None;
         state.last_outcome = Some(AssemblyAdmissionOutcome {
             generation,
             identity,
@@ -1044,104 +927,6 @@ impl AssemblyAdmissionController {
 }
 
 impl RuntimeHost {
-    /// Applies one router-coordinated activation transition through the exact
-    /// production record resolver boundary.
-    pub async fn apply_assembly_activation_control<R, C>(
-        &self,
-        control: AssemblyActivationControl,
-        resolver: &R,
-        config_snapshot_resolver: &C,
-    ) -> anyhow::Result<Option<AssemblyActivationControl>>
-    where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
-    {
-        self.apply_bootstrapped_assembly_activation_control(
-            control,
-            resolver,
-            config_snapshot_resolver,
-            None,
-        )
-        .await
-    }
-
-    /// Production activation with the connection bootstrap's fixed DB transport binding.
-    pub async fn apply_bootstrapped_assembly_activation_control<R, C>(
-        &self,
-        control: AssemblyActivationControl,
-        resolver: &R,
-        config_snapshot_resolver: &C,
-        service_db: Option<&AssemblyActivationServiceDb>,
-    ) -> anyhow::Result<Option<AssemblyActivationControl>>
-    where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
-    {
-        let profile = activation_control_profile(&control);
-        match self.trusted_profile() {
-            Some(frozen) if frozen == profile => {}
-            Some(frozen) => anyhow::bail!(
-                "assembly activation profile {profile} does not match Runtime frozen profile {frozen}"
-            ),
-            None => anyhow::bail!(
-                "assembly activation profile {profile} requires a router bootstrap profile first"
-            ),
-        }
-        self.assembly_admission
-            .apply_activation_control(control, resolver, config_snapshot_resolver, service_db)
-            .await
-    }
-
-    /// Production activation with a connection-scoped cancellation token for Prepare.
-    ///
-    /// Router Abort and session teardown signal this token before waiting for the
-    /// serialized admission transition. Commit and Abort themselves are never
-    /// cancellable through this path.
-    pub(crate) async fn apply_cancellable_bootstrapped_assembly_activation_control<R, C>(
-        &self,
-        control: AssemblyActivationControl,
-        resolver: &R,
-        config_snapshot_resolver: &C,
-        service_db: Option<&AssemblyActivationServiceDb>,
-        cancellation: &CancellationToken,
-    ) -> anyhow::Result<Option<AssemblyActivationControl>>
-    where
-        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
-        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
-    {
-        let profile = activation_control_profile(&control);
-        match self.trusted_profile() {
-            Some(frozen) if frozen == profile => {}
-            Some(frozen) => anyhow::bail!(
-                "assembly activation profile {profile} does not match Runtime frozen profile {frozen}"
-            ),
-            None => anyhow::bail!(
-                "assembly activation profile {profile} requires a router bootstrap profile first"
-            ),
-        }
-        self.assembly_admission
-            .apply_cancellable_activation_control(
-                control,
-                resolver,
-                config_snapshot_resolver,
-                service_db,
-                cancellation,
-            )
-            .await
-    }
-
-    /// Returns only the currently committed whole-assembly registration.
-    pub fn active_assembly_registration(
-        &self,
-    ) -> anyhow::Result<Option<AssemblyActivationControl>> {
-        self.assembly_admission.registration()
-    }
-
-    #[allow(dead_code)] // Phase 04 execution consumes an immutable active-generation snapshot.
-    pub(crate) fn active_runtime_assembly(&self) -> anyhow::Result<Option<Arc<ActiveAssembly>>> {
-        self.assembly_admission.active()
-    }
-
     #[cfg(test)]
     pub(crate) fn runtime_assembly_admission_health(
         &self,
@@ -1162,37 +947,17 @@ impl RuntimeHost {
         authority: &ActorOwnerRouteAuthorityFrameHeader,
         service_id: &str,
     ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
-        if let Some(route) = self
-            .assembly_admission
-            .actor_execution_route(authority, service_id)?
-        {
-            return Ok(Some(route));
-        }
-        if let Some(active) = self
-            .actor_route_holds
-            .find(&authority.assembly_identity, authority.assembly_generation)
-        {
-            return actor_route_from_active(active, service_id);
-        }
-        anyhow::bail!(
-            "Actor route authority {} generation {} is not retained",
-            authority.assembly_identity,
-            authority.assembly_generation
-        );
+        let Some(active) = self.actor_route_holds.find(&authority.build_id) else {
+            anyhow::bail!(
+                "Actor route authority buildId {} is not retained",
+                authority.build_id
+            );
+        };
+        actor_route_from_active(active, service_id)
     }
 }
 
-fn activation_control_profile(control: &AssemblyActivationControl) -> &str {
-    match control {
-        AssemblyActivationControl::Prepare { profile, .. }
-        | AssemblyActivationControl::Prepared { profile, .. }
-        | AssemblyActivationControl::Reject { profile, .. }
-        | AssemblyActivationControl::Commit { profile, .. }
-        | AssemblyActivationControl::Abort { profile, .. }
-        | AssemblyActivationControl::Register { profile, .. } => profile,
-    }
-}
-
+#[cfg(test)]
 impl AssemblyCandidateStage {
     fn as_str(self) -> &'static str {
         match self {
@@ -1223,6 +988,7 @@ impl AssemblyCandidateStage {
     }
 }
 
+#[cfg(test)]
 fn ensure_current_candidate(
     state: &AssemblyAdmissionState,
     generation: u64,
@@ -1239,47 +1005,9 @@ fn ensure_current_candidate(
     Ok(())
 }
 
-/// The sole committed publication primitive shared by online commit and durable recovery.
-/// Callers hold the admission state write lock, so active context and committed tuple become
-/// visible atomically.
-fn publish_committed_locked(
-    state: &mut AssemblyAdmissionState,
-    prepared: PreparedAssembly,
-    committed: CommittedAssembly,
-) -> anyhow::Result<Arc<ActiveAssembly>> {
-    let admitted_at = OffsetDateTime::now_utc();
-    let identity = prepared.candidate.assembly().assembly_identity.clone();
-    if prepared.generation != committed.generation
-        || identity != committed.assembly.assembly_identity
-        || prepared.config_snapshot != committed.config_snapshot
-    {
-        anyhow::bail!(
-            "prepared assembly/config snapshot does not match committed publication tuple"
-        );
-    }
-    let active = Arc::new(ActiveAssembly {
-        generation: prepared.generation,
-        admitted_at,
-        candidate: prepared.candidate,
-        contexts: prepared.contexts,
-    });
-    state.next_generation = state.next_generation.max(committed.generation);
-    state.active = Some(Arc::clone(&active));
-    state.committed = Some(committed);
-    state.staged = None;
-    state.preparing = None;
-    state.candidate = None;
-    state.last_outcome = Some(AssemblyAdmissionOutcome {
-        generation: active.generation(),
-        identity,
-        succeeded: true,
-        stage: AssemblyCandidateStage::Admit,
-        observed_at: admitted_at,
-        error: None,
-    });
-    Ok(active)
-}
-
+/// The test-only admission publication primitive. Callers hold the admission
+/// state write lock, so the active pointer becomes visible atomically with the
+/// candidate/outcome transition.
 fn actor_route_from_active(
     active: Arc<ActiveAssembly>,
     service_id: &str,
@@ -1305,16 +1033,6 @@ fn actor_route_from_active(
         .ok_or_else(|| anyhow::anyhow!("Actor service activation context is missing"))?;
     drop(deployments);
     Ok(Some(ActiveActorExecutionRoute { active, activation }))
-}
-
-fn reject_reason_for_stage(stage: AssemblyCandidateStage) -> AssemblyActivationRejectReason {
-    match stage {
-        AssemblyCandidateStage::Load => AssemblyActivationRejectReason::Load,
-        AssemblyCandidateStage::Link => AssemblyActivationRejectReason::Link,
-        AssemblyCandidateStage::Validate | AssemblyCandidateStage::Admit => {
-            AssemblyActivationRejectReason::Admission
-        }
-    }
 }
 
 fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()> {

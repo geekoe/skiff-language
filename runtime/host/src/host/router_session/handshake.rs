@@ -6,16 +6,15 @@
 //! connect
 //! <- Router sends router.bootstrap
 //! -> Runtime sends runtime.capabilities
-//! -> Runtime sends assembly.activation:Register
 //! <- Router sends runtime.registered ACK
 //! -> Runtime starts runtime.health
 //! ```
 //!
 //! This struct is the single phase authority for one Router session. It is
 //! deliberately free of sockets and time; `router_session.rs` drives it.
-//! Wrong order, identity change, duplicate bootstrap, legacy inbound frames,
-//! direction violations, ACK-before-register and business-frames-before-ACK
-//! are all strict terminals (C-model-registration §2.3).
+//! Wrong order, identity change, duplicate bootstrap, direction violations,
+//! ACK-before-registration and business-frames-before-ACK are all strict
+//! terminals (C-model-registration §2.3).
 
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ use std::time::Duration;
 pub enum ClientHandshakePhase {
     WaitingBootstrap,
     BootstrapReceived,
-    RegisterSent,
+    RegistrationSent,
     Registered,
     Closed,
 }
@@ -32,7 +31,6 @@ pub enum ClientHandshakePhase {
 pub enum ClientTerminalKind {
     WrongOrder,
     IdentityChange,
-    LegacyRegisterRejected,
     DirectionViolation,
     BootstrapTimeout,
     RegisteredTimeout,
@@ -45,9 +43,6 @@ impl ClientTerminalKind {
         match self {
             Self::WrongOrder => "frame arrived outside its handshake phase",
             Self::IdentityChange => "registered ACK identity does not match this Runtime replica",
-            Self::LegacyRegisterRejected => {
-                "legacy runtime registration frame is not a handshake frame"
-            }
             Self::DirectionViolation => "runtime-to-router frame arrived from the Router",
             Self::BootstrapTimeout => "router.bootstrap deadline expired",
             Self::RegisteredTimeout => "runtime.registered ACK deadline expired",
@@ -83,8 +78,8 @@ impl Default for HandshakeDeadlines {
 pub struct ClientHandshake {
     phase: ClientHandshakePhase,
     terminal: Option<ClientTerminalKind>,
-    /// Capabilities + Register are queued right after bootstrap; the writer
-    /// must flush both before an inbound ACK can be accepted.
+    /// Capabilities are queued right after bootstrap; the writer must flush
+    /// the frame before an inbound ACK can be accepted.
     registration_writes_pending: u8,
 }
 
@@ -108,11 +103,11 @@ impl ClientHandshake {
         }
     }
 
-    /// Test shortcut: bootstrap received and both registration frames queued,
+    /// Test shortcut: bootstrap received and the capabilities frame queued,
     /// waiting for the ACK (used by frame-level ACK tests).
     pub fn register_sent() -> Self {
         Self {
-            phase: ClientHandshakePhase::RegisterSent,
+            phase: ClientHandshakePhase::RegistrationSent,
             terminal: None,
             registration_writes_pending: 0,
         }
@@ -147,14 +142,14 @@ impl ClientHandshake {
         Ok(())
     }
 
-    /// Capabilities + Register were queued after bootstrap.
+    /// Capabilities were queued after bootstrap.
     pub fn mark_registration_queued(&mut self) {
-        self.registration_writes_pending = 2;
+        self.registration_writes_pending = 1;
     }
 
-    /// One of the queued handshake outbound frames was flushed to the socket.
-    /// The phase becomes `RegisterSent` only after both frames are on the
-    /// wire, so an ACK can never be accepted before the Register actually
+    /// The queued handshake outbound frame was flushed to the socket. The
+    /// phase becomes `RegistrationSent` only after the frame is on the wire,
+    /// so an ACK can never be accepted before the capabilities actually
     /// reached the Router.
     pub fn on_registration_write_flushed(&mut self) {
         if self.registration_writes_pending == 0 {
@@ -167,19 +162,20 @@ impl ClientHandshake {
                 ClientHandshakePhase::BootstrapReceived,
                 "registration writes must flush before the phase moves on"
             );
-            self.phase = ClientHandshakePhase::RegisterSent;
+            self.phase = ClientHandshakePhase::RegistrationSent;
         }
     }
 
-    /// `runtime.registered` ACK: only valid after the Register was flushed,
-    /// and the ACK runtime_id must equal this Runtime's replica identity.
+    /// `runtime.registered` ACK: only valid after the capabilities were
+    /// flushed, and the ACK runtime_id must equal this Runtime's replica
+    /// identity.
     pub fn on_registered(
         &mut self,
         ack_runtime_id: &str,
         expected_runtime_id: &str,
     ) -> Result<(), ClientTerminalKind> {
         match self.phase {
-            ClientHandshakePhase::RegisterSent => {
+            ClientHandshakePhase::RegistrationSent => {
                 if ack_runtime_id != expected_runtime_id {
                     let terminal = ClientTerminalKind::IdentityChange;
                     self.set_terminal(terminal);
@@ -188,11 +184,9 @@ impl ClientHandshake {
                 self.phase = ClientHandshakePhase::Registered;
                 Ok(())
             }
-            // E-activation §4.1 step 9/§8: a post-commit same-session
-            // re-register sends a fresh Register and receives a second
-            // `runtime.registered` ACK while the session is already
-            // Registered; the repeated ACK for the same replica identity is
-            // idempotent. A mismatched identity stays a strict terminal.
+            // A repeated `runtime.registered` ACK for the same replica
+            // identity is idempotent; a mismatched identity stays a strict
+            // terminal.
             ClientHandshakePhase::Registered => {
                 if ack_runtime_id != expected_runtime_id {
                     let terminal = ClientTerminalKind::IdentityChange;
@@ -219,14 +213,10 @@ impl ClientHandshake {
         Ok(())
     }
 
-    /// Frames that only flow Runtime->Router (or legacy registration) cannot
-    /// arrive from the Router.
+    /// Frames that only flow Runtime->Router cannot arrive from the Router.
     pub fn on_direction_violation(&mut self, frame_type: &str) -> ClientTerminalKind {
-        let terminal = if frame_type == "runtime.register" {
-            ClientTerminalKind::LegacyRegisterRejected
-        } else {
-            ClientTerminalKind::DirectionViolation
-        };
+        let _ = frame_type;
+        let terminal = ClientTerminalKind::DirectionViolation;
         self.set_terminal(terminal);
         terminal
     }
@@ -238,7 +228,7 @@ impl ClientHandshake {
             }
             (
                 ClientTimeoutKind::Registered,
-                ClientHandshakePhase::BootstrapReceived | ClientHandshakePhase::RegisterSent,
+                ClientHandshakePhase::BootstrapReceived | ClientHandshakePhase::RegistrationSent,
             ) => ClientTerminalKind::RegisteredTimeout,
             _ => ClientTerminalKind::WrongOrder,
         };

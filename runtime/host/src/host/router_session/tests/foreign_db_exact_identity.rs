@@ -486,25 +486,20 @@ async fn shared_test_assembly_isolation() {
     })
     .unwrap();
     let resolver = FilesystemRuntimeAssemblyContentResolver::open(&runtime_artifacts).unwrap();
-    let (config_snapshot, config_resolver) = crate::loader::config_snapshot::snapshot_for_assembly(
-        "p3x-foreign-db",
-        &shared_assembly,
-        &resolver,
-    );
-    host.assembly_admission
-        .recover_committed(
-            "p3x-foreign-db",
-            1,
-            &assembly_ref,
-            &config_snapshot,
-            &resolver,
-            &config_resolver,
-            Some(&AssemblyActivationServiceDb {
-                mongo_url: "mongodb://p3x.invalid".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
+    let service_db = AssemblyActivationServiceDb {
+        mongo_url: "mongodb://p3x.invalid".to_string(),
+    };
+    for entrypoint in test_fixture
+        .cases
+        .iter()
+        .map(|case| case.entrypoint.deployment.clone())
+        .collect::<Vec<_>>()
+    {
+        host.assembly_admission
+            .deployment_image_or_lazy_load(&entrypoint, &resolver, Some(&service_db), "p3x-foreign-db")
+            .await
+            .expect("case entrypoint deployment should lazy load");
+    }
 
     let routes = test_fixture
         .cases
@@ -645,8 +640,8 @@ fn test_case_header(
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: route.deployment().clone(),
             build_id: None,
             gateway_entry_identity: route.gateway_entry_identity().clone(),

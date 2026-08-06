@@ -558,8 +558,11 @@ fn pending_initial_activation_control(
         request_id: request_id.to_string(),
         operation: ActorOwnerControlOperation::ActivateInitial,
         route_authority: ActorOwnerRouteAuthorityFrameHeader {
-            assembly_identity: route.assembly_identity().to_string(),
-            assembly_generation: route.generation(),
+            build_id: route
+                .deployment()
+                .deployment_artifact_identity
+                .as_str()
+                .to_string(),
         },
         fence: ActorOwnerControlFenceFrameHeader {
             service_id: route.deployment().service_id.clone(),
@@ -815,10 +818,11 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
 
     let (host, pinned, assembly, resolver) =
         super::runtime_assembly_request::fixture::current_scope_gateway_host_for_reload().await;
-    assert_eq!(pinned.generation(), 1);
+    let pinned_build_id = pinned.deployment().deployment_artifact_identity.as_str();
 
-    // G1 work hangs while G2 is already active. The Host must keep resolving
-    // further G1-authority work on the exact G1 generation held by that work.
+    // G1 work hangs while the same buildId is admitted again. The Host must
+    // keep resolving further buildId-authority work on the exact image held
+    // by that work.
     let (hang_control, hang_hash) = pending_initial_activation_control(
         &pinned,
         HANG_CREATE,
@@ -837,8 +841,11 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
     );
     let child_gate =
         skiff_runtime_eval::actor_executor::install_actor_create_test_gate(child_hash, false);
-    assert_eq!(hang_control.route_authority.assembly_generation, 1);
-    assert_eq!(child_control.route_authority.assembly_generation, 1);
+    assert_eq!(
+        hang_control.route_authority.build_id, pinned_build_id,
+        "authority must carry the deployment buildId"
+    );
+    assert_eq!(child_control.route_authority.build_id, pinned_build_id);
 
     let (client_io, server_io) = duplex(16 * 1024);
     let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
@@ -915,24 +922,17 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
         .expect("G1 create must reach the deterministic gate");
     assert!(host
         .actor_route_holds
-        .find(pinned.assembly_identity().as_str(), 1)
+        .find(pinned_build_id)
         .is_some());
 
-    // Reload to G2 while the G1 create is still hung. The exact G1 generation
-    // is retained only by the live G1 work, so a new G1 child control must
-    // still execute on G1 rather than silently moving to G2.
+    // Re-admit the same buildId while the create is still hung. The exact
+    // image is retained only by the live work, so a new child control with
+    // the same buildId must still execute on the retained image rather than
+    // silently moving to the re-admitted one.
     host.assembly_admission
         .admit(Arc::clone(&assembly), &resolver)
         .await
-        .expect("current-scope generation two should admit");
-    assert_eq!(
-        host.assembly_admission
-            .active()
-            .unwrap()
-            .unwrap()
-            .generation(),
-        2
-    );
+        .expect("current-scope re-admission should admit");
     router
         .send(Message::Binary(
             encode_actor_owner_control_frame(&child_control)
@@ -961,7 +961,8 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
 
     let mut missing = hang_control.clone();
     missing.request_id = MISSING_GENERATION.to_string();
-    missing.route_authority.assembly_generation = 999;
+    missing.route_authority.build_id =
+        format!("skiff-deployment-artifact-v4:sha256:{}", "9".repeat(64));
     router
         .send(Message::Binary(
             encode_actor_owner_control_frame(&missing).unwrap().into(),
@@ -971,14 +972,14 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
     let rejected = next_ack(&mut router, MISSING_GENERATION).await;
     assert!(
         !rejected.accepted,
-        "missing retained generation must fail closed: {:?}",
+        "missing retained buildId must fail closed: {:?}",
         rejected.reason
     );
 
     let mut mismatched = child_control.clone();
     mismatched.request_id = MISMATCHED_IDENTITY.to_string();
-    mismatched.route_authority.assembly_identity =
-        format!("skiff-runtime-assembly-v3:sha256:{}", "0".repeat(64));
+    mismatched.route_authority.build_id =
+        format!("skiff-deployment-artifact-v4:sha256:{}", "0".repeat(64));
     router
         .send(Message::Binary(
             encode_actor_owner_control_frame(&mismatched)
@@ -990,7 +991,7 @@ async fn activate_initial_pins_exact_retained_generation_after_reload_and_fails_
     let rejected_identity = next_ack(&mut router, MISMATCHED_IDENTITY).await;
     assert!(
         !rejected_identity.accepted,
-        "mismatched assembly identity must fail closed: {:?}",
+        "mismatched buildId must fail closed: {:?}",
         rejected_identity.reason
     );
 

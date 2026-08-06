@@ -2,24 +2,19 @@
 //!
 //! Drives the production Runtime session loop (`run_connected_session`) over
 //! an in-memory duplex WebSocket pair, exercising the frozen §3.5 handshake
-//! from the Runtime side: bootstrap -> capabilities + Register -> registered
-//! ACK -> health. Wrong order, identity change, duplicate bootstrap, legacy
-//! inbound frames, business frames before the ACK and deadlines are strict
-//! terminals (C-model-registration §2.3).
+//! from the Runtime side: bootstrap -> capabilities -> registered ACK ->
+//! health. Wrong order, identity change, duplicate bootstrap, legacy inbound
+//! frames, business frames before the ACK and deadlines are strict terminals
+//! (C-model-registration §2.3).
 
 use std::path::PathBuf;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use skiff_artifact_model::AssemblyActivationControl;
 use skiff_runtime_transport::{
-    assembly_activation::{
-        decode_assembly_activation_frame, encode_assembly_activation_frame,
-        AssemblyActivationFrameDirection, ASSEMBLY_ACTIVATION_FRAME_TYPE,
-    },
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RuntimeCapabilitiesFrameHeader,
-        RuntimeRegisteredFrameHeader, TypedEnvelope, RUNTIME_FRAME_SCHEMA_VERSION,
+        RuntimeRegisteredFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 use tokio::{
@@ -34,8 +29,6 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
-use super::*;
-
 const RUNTIME_ID: &str = "runtime-a";
 const SESSION: &str = "skiff-router-session-v1:opaque:h-registration-cut";
 
@@ -44,24 +37,11 @@ struct HandshakeSession {
     router: WebSocketStream<tokio::io::DuplexStream>,
     session_task: tokio::task::JoinHandle<crate::error::Result<()>>,
     artifact_root: PathBuf,
-    assembly_ref: skiff_artifact_model::RuntimeAssemblyRef,
-    config_snapshot_ref: skiff_artifact_model::RuntimeConfigSnapshotRef,
 }
 
 impl HandshakeSession {
     async fn start(label: &str) -> Self {
-        let (assembly, artifact_root, config_snapshot) =
-            super::runtime_assembly_request::fixture::blocking_activation_fixture();
-        let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&assembly)
-            .expect("fixture assembly identity");
-        let config_snapshot_ref = config_snapshot.snapshot_ref().clone();
-        let snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::open(
-            artifact_root.join("runtime-config"),
-        )
-        .expect("test config snapshot store");
-        snapshot_store
-            .publish(&config_snapshot)
-            .expect("test config snapshot publication");
+        let artifact_root = super::runtime_assembly_request::fixture::registration_fixture();
 
         let host = crate::host::RuntimeHost::new(crate::host::RuntimeConfig {
             db_provider: super::test_db_provider(),
@@ -94,8 +74,6 @@ impl HandshakeSession {
             router,
             session_task,
             artifact_root,
-            assembly_ref,
-            config_snapshot_ref,
         }
     }
 
@@ -107,10 +85,7 @@ impl HandshakeSession {
                 "artifactsPath": self.artifact_root,
                 "serviceDb": { "mongoUrl": "mongodb://h-registration-cut" },
                 "activation": {
-                    "profile": "test",
-                    "generation": 1,
-                    "assembly": self.assembly_ref,
-                    "configSnapshot": self.config_snapshot_ref,
+                    "profile": "test"
                 },
                 "http": { "maxResponseBytes": 1024 }
             }),
@@ -153,16 +128,6 @@ impl HandshakeSession {
         header
     }
 
-    async fn recv_register(&mut self) -> AssemblyActivationControl {
-        let frame = self.recv_binary("register").await;
-        let control = decode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            &frame,
-        )
-        .expect("register frame");
-        control
-    }
-
     async fn send_registered_ack(&mut self, runtime_id: &str) {
         let ack = encode_binary_frame(
             &RuntimeRegisteredFrameHeader {
@@ -198,22 +163,6 @@ impl HandshakeSession {
     }
 }
 
-async fn corpus_frame_hex(frame_name: &str) -> Vec<u8> {
-    let corpus = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../transport/testdata/registration-handshake/frames.json"),
-    )
-    .expect("registration-handshake corpus must be readable");
-    let catalog: serde_json::Value = serde_json::from_str(&corpus).expect("corpus JSON");
-    let hex = catalog["frames"][frame_name]["frameHex"]
-        .as_str()
-        .expect("corpus frame hex");
-    (0..hex.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("corpus hex byte"))
-        .collect()
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn accept_sequence_registers_then_ack_then_health() {
     let mut session = HandshakeSession::start("accept").await;
@@ -222,22 +171,8 @@ async fn accept_sequence_registers_then_ack_then_health() {
     let capabilities = session.recv_capabilities().await;
     assert_eq!(capabilities.runtime_id, RUNTIME_ID);
 
-    let register = session.recv_register().await;
-    let AssemblyActivationControl::Register {
-        profile,
-        generation,
-        replica_id,
-        ..
-    } = register
-    else {
-        panic!("bootstrap must be answered with assembly.activation:Register");
-    };
-    assert_eq!(profile, "test");
-    assert_eq!(generation, 1);
-    assert_eq!(replica_id, RUNTIME_ID);
-
-    // Health must NOT be emitted before the registered ACK: nothing may be
-    // on the wire between the Register and the ACK.
+    // Health must NOT be emitted before the registered ACK: nothing may be on
+    // the wire between the capabilities and the ACK.
     assert!(
         timeout(
             Duration::from_millis(40),
@@ -279,7 +214,6 @@ async fn registered_ack_identity_change_is_terminal() {
     let mut session = HandshakeSession::start("ack-identity").await;
     session.send_bootstrap().await;
     let _ = session.recv_capabilities().await;
-    let _ = session.recv_register().await;
     session.send_registered_ack("runtime-other").await;
     let error = session
         .wait_for_session()
@@ -296,7 +230,6 @@ async fn duplicate_bootstrap_is_wrong_order_terminal() {
     let mut session = HandshakeSession::start("duplicate-bootstrap").await;
     session.send_bootstrap().await;
     let _ = session.recv_capabilities().await;
-    let _ = session.recv_register().await;
     session.send_bootstrap().await;
     let error = session
         .wait_for_session()
@@ -313,51 +246,26 @@ async fn business_frame_before_ack_is_wrong_order_terminal() {
     let mut session = HandshakeSession::start("business-before-ack").await;
     session.send_bootstrap().await;
     let _ = session.recv_capabilities().await;
-    let _ = session.recv_register().await;
-    let prepare = encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        &AssemblyActivationControl::Prepare {
-            profile: "test".to_string(),
-            activation_id: "pre-ack".to_string(),
-            expected_generation: 1,
-            candidate_generation: 2,
-            assembly: session.assembly_ref.clone(),
-            config_snapshot: session.config_snapshot_ref.clone(),
-            replica_id: RUNTIME_ID.to_string(),
-            service_db: None,
-        },
+    let request = encode_binary_frame(
+        &json!({
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "request.start",
+            "requestId": "pre-ack-business"
+        }),
+        &[],
     )
-    .expect("prepare frame");
+    .expect("business frame should encode");
     session
         .router
-        .send(Message::Binary(prepare.into()))
+        .send(Message::Binary(request.into()))
         .await
-        .expect("send prepare before ACK");
+        .expect("send business frame before ACK");
     let error = session
         .wait_for_session()
         .await
         .expect_err("business frame before ACK must terminate the session");
     assert!(
         error.to_string().contains("WrongOrder"),
-        "unexpected error: {error:?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn legacy_register_from_router_is_terminal() {
-    let mut session = HandshakeSession::start("legacy-inbound").await;
-    let legacy = corpus_frame_hex("legacy.runtime.register").await;
-    session
-        .router
-        .send(Message::Binary(legacy.into()))
-        .await
-        .expect("send legacy frame");
-    let error = session
-        .wait_for_session()
-        .await
-        .expect_err("legacy inbound registration must terminate the session");
-    assert!(
-        error.to_string().contains("LegacyRegisterRejected"),
         "unexpected error: {error:?}"
     );
 }

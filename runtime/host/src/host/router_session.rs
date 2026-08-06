@@ -19,10 +19,6 @@ use skiff_runtime_transport::{
         ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE, ACTOR_OWNER_CONTROL_FRAME_TYPE,
         ACTOR_OWNER_FAILURE_FRAME_TYPE, ACTOR_OWNER_INVOKE_FRAME_TYPE,
     },
-    assembly_activation::{
-        decode_assembly_activation_frame, AssemblyActivationFrameDirection,
-        ASSEMBLY_ACTIVATION_FRAME_TYPE,
-    },
     connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     protocol::{
@@ -41,7 +37,6 @@ use skiff_runtime_transport::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::mpsc,
-    task::JoinSet,
     time::{Duration, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
@@ -49,14 +44,9 @@ use tracing::{info, warn};
 
 use crate::error::{Result, RuntimeError};
 
-mod activation;
 mod handshake;
 pub(crate) mod task_submit;
 
-use activation::{
-    cleanup_session_activation, dispatch_session_activation_frame, router_binary_frame_type,
-    terminal_message, SessionActivationState,
-};
 use handshake::{
     ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
     HandshakeDeadlines,
@@ -70,8 +60,6 @@ fn handshake_terminal_error(terminal: ClientTerminalKind) -> RuntimeError {
         format!("{terminal:?}")
     ))
 }
-
-const TERMINAL_ABORT_GRACE: Duration = Duration::from_millis(2);
 
 pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (ws, _) = connect_async(&host.router_url)
@@ -165,8 +153,6 @@ where
     // detaching Tokio tasks, so every exit path drops all in-flight activation/test leases before
     // session teardown returns.
     let mut child_tasks = RouterSessionChildTasks::default();
-    let mut activation_state = SessionActivationState::Idle;
-    let mut activation_prepare_tasks = JoinSet::new();
 
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
@@ -177,55 +163,6 @@ where
         health_zero_transition_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
-            activation_state.assert_task_invariant(&activation_prepare_tasks)?;
-
-            // Give an exact Abort that raced prepare completion one bounded read opportunity.
-            // Once this single probe is consumed, terminal delivery is forced before the
-            // ordinary fair session select can read another frame.
-            if activation_state.should_probe_terminal_abort() {
-                let inbound = tokio::time::timeout(TERMINAL_ABORT_GRACE, ws.next()).await;
-                activation_state.finish_terminal_abort_probe()?;
-                if let Ok(message) = inbound {
-                    if !handle_router_session_message(
-                        &host,
-                        &mut ws,
-                        message,
-                        &router_session_id,
-                        &sender,
-                        &mut health_reporter,
-                        &mut bootstrap,
-                        &mut handshake,
-                        &mut child_tasks,
-                        &mut activation_state,
-                        &mut activation_prepare_tasks,
-                    )
-                    .await?
-                    {
-                        break;
-                    }
-                    if handshake.phase() == ClientHandshakePhase::BootstrapReceived {
-                        handshake_deadline = Some(
-                            tokio::time::Instant::now() + handshake_deadlines.registered,
-                        );
-                    } else if matches!(
-                        handshake.phase(),
-                        ClientHandshakePhase::Registered | ClientHandshakePhase::Closed
-                    ) {
-                        handshake_deadline = None;
-                    }
-                    continue;
-                }
-            }
-
-            if activation_state.is_terminal_ready() {
-                let message = terminal_message(&activation_state)?;
-                #[cfg(test)]
-                activation::inject_terminal_send_failure(&activation_state)?;
-                send_writer_message(&mut ws, message).await?;
-                activation_state.mark_terminal_sent()?;
-                continue;
-            }
-
             tokio::select! {
                 message = ws.next() => {
                     if !handle_router_session_message(
@@ -238,8 +175,6 @@ where
                         &mut bootstrap,
                         &mut handshake,
                         &mut child_tasks,
-                        &mut activation_state,
-                        &mut activation_prepare_tasks,
                     )
                     .await?
                     {
@@ -265,24 +200,6 @@ where
                     if handshake.phase() == ClientHandshakePhase::Registered {
                         handshake_deadline = None;
                     }
-                }
-                completed = activation_prepare_tasks.join_next(), if activation_state.is_preparing() => {
-                    let result = match completed {
-                        Some(Ok(Ok(result))) => result,
-                        Some(Ok(Err(error))) => return Err(error),
-                        Some(Err(error)) => return Err(RuntimeError::Decode(format!(
-                            "assembly activation prepare task failed: {error}"
-                        ))),
-                        None => return Err(RuntimeError::Decode(
-                            "pending assembly activation task disappeared".to_string()
-                        )),
-                    };
-                    if !activation_prepare_tasks.is_empty() {
-                        return Err(RuntimeError::Decode(
-                            "multiple assembly activation prepare tasks were active".to_string()
-                        ));
-                    }
-                    activation_state.complete_prepare(result)?;
                 }
                 _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
                     health_reporter.send_periodic(&host, &sender).await?;
@@ -310,14 +227,9 @@ where
     // Dropping the owned futures synchronously runs their activation and test-derived lease RAII.
     // Do this before closing Actor/test registries, so teardown never races a surviving child.
     drop(child_tasks);
-    let activation_cleanup_result =
-        cleanup_session_activation(&host, &mut activation_state, &mut activation_prepare_tasks)
-            .await;
     let disconnect_result = session_guard.close();
     drop(sender);
-    session_result
-        .and(activation_cleanup_result)
-        .and(disconnect_result)
+    session_result.and(disconnect_result)
 }
 
 async fn handle_router_session_message<S>(
@@ -330,8 +242,6 @@ async fn handle_router_session_message<S>(
     bootstrap: &mut Option<ConnectionBootstrap>,
     handshake: &mut ClientHandshake,
     child_tasks: &mut RouterSessionChildTasks,
-    activation_state: &mut SessionActivationState,
-    activation_prepare_tasks: &mut JoinSet<activation::ActivationPrepareTaskResult>,
 ) -> Result<bool>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -354,7 +264,7 @@ where
             } else if frame_type != "runtime.registered"
                 && matches!(
                     frame_type.as_str(),
-                    "runtime.capabilities" | "runtime.health" | "runtime.register"
+                    "runtime.capabilities" | "runtime.health"
                 )
             {
                 let terminal = handshake.on_direction_violation(&frame_type);
@@ -364,31 +274,17 @@ where
                     return Err(handshake_terminal_error(terminal));
                 }
             }
-            if frame_type == ASSEMBLY_ACTIVATION_FRAME_TYPE {
-                if let Some(reply) = dispatch_session_activation_frame(
-                    host,
-                    &bytes,
-                    bootstrap,
-                    activation_state,
-                    activation_prepare_tasks,
-                )
-                .await?
-                {
-                    send_writer_message(ws, reply).await?;
-                }
-            } else {
-                dispatch_router_binary_frame_with_health(
-                    host,
-                    router_session_id,
-                    &bytes,
-                    sender,
-                    health_reporter,
-                    bootstrap,
-                    handshake,
-                    child_tasks,
-                )
-                .await?;
-            }
+            dispatch_router_binary_frame_with_health(
+                host,
+                router_session_id,
+                &bytes,
+                sender,
+                health_reporter,
+                bootstrap,
+                handshake,
+                child_tasks,
+            )
+            .await?;
         }
         Message::Ping(_) => {
             ws.flush().await.map_err(|error| {
@@ -405,6 +301,12 @@ where
         Message::Frame(_) => {}
     }
     Ok(true)
+}
+
+fn router_binary_frame_type(bytes: &[u8]) -> Result<String> {
+    let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
+        .map_err(super::transport_error_into_runtime_error)?;
+    Ok(typed.envelope_type)
 }
 
 type RouterSessionChildTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -514,7 +416,6 @@ impl Drop for ConnectedRouterSessionGuard {
 #[derive(Clone)]
 pub(crate) struct ConnectionBootstrap {
     pub(crate) resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
-    pub(crate) config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
     pub(crate) service_db: skiff_artifact_model::AssemblyActivationServiceDb,
     pub(crate) activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
     pub(crate) max_response_bytes: usize,
@@ -524,20 +425,7 @@ pub(crate) struct ConnectionBootstrap {
 fn test_bootstrap_activation(
 ) -> skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader {
     serde_json::from_value(serde_json::json!({
-        "profile": "test",
-        "generation": 0,
-        "assembly": {
-            "assemblyIdentity": format!(
-                "skiff-runtime-assembly-v3:sha256:{}",
-                "a".repeat(64)
-            )
-        },
-        "configSnapshot": {
-            "snapshotId": format!(
-                "skiff-runtime-config-snapshot-v1:{}",
-                "a".repeat(32)
-            )
-        }
+        "profile": "test"
     }))
     .expect("test bootstrap activation must decode")
 }
@@ -553,10 +441,6 @@ fn test_connection_bootstrap(name: &str) -> Result<ConnectionBootstrap> {
     Ok(ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
-        )
-        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-            artifact_path.join("runtime-config"),
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
@@ -584,16 +468,11 @@ fn decode_connection_bootstrap(
         &header.artifacts_path,
     )
     .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
-    let config_snapshot_store = skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::open(
-        std::path::Path::new(&header.artifacts_path).join("runtime-config"),
-    )
-    .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
     let service_db = skiff_artifact_model::AssemblyActivationServiceDb {
         mongo_url: header.service_db.mongo_url.clone(),
     };
     Ok(ConnectionBootstrap {
         resolver,
-        config_snapshot_store,
         service_db,
         activation: header.activation,
         max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
@@ -728,10 +607,6 @@ async fn dispatch_router_binary_frame(
             &artifact_path,
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-            artifact_path.join("runtime-config"),
-        )
-        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
             mongo_url: "mongodb://127.0.0.1:27017".to_string(),
         },
@@ -765,10 +640,6 @@ async fn dispatch_router_binary_frame_with_http_response_max(
     let mut bootstrap = Some(ConnectionBootstrap {
         resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
             &artifact_path,
-        )
-        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore::create(
-            artifact_path.join("runtime-config"),
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
         service_db: skiff_artifact_model::AssemblyActivationServiceDb {
@@ -834,51 +705,20 @@ async fn dispatch_router_binary_frame_inner(
                 ));
             }
             let installed = decode_connection_bootstrap(typed, &payload)?;
+            // Bootstrap carries only the profile and the artifact root: no
+            // committed tuple, no config snapshot, no recovery.
+            host.freeze_bootstrap_profile(&installed.activation.profile)
+                .map_err(|error| {
+                    RuntimeError::Decode(format!(
+                        "router bootstrap activation profile check failed: {error:#}"
+                    ))
+                })?;
             host.set_bootstrap_artifact_root(
                 installed.resolver.store().root().display().to_string(),
             );
-            host.recover_durable_committed(
-                &installed.activation.profile,
-                installed.activation.generation,
-                &installed.activation.assembly,
-                &installed.activation.config_snapshot,
-                &installed.resolver,
-                &installed.config_snapshot_store,
-                &installed.service_db,
-            )
-            .await?;
             host.queue_connection_registration(sender.clone())?;
             handshake.mark_registration_queued();
             *bootstrap = Some(installed);
-        }
-        ASSEMBLY_ACTIVATION_FRAME_TYPE => {
-            let bootstrap = bootstrap.as_ref().ok_or_else(|| {
-                RuntimeError::Decode(
-                    "assembly activation requires router.bootstrap first".to_string(),
-                )
-            })?;
-            let control = decode_assembly_activation_frame(
-                AssemblyActivationFrameDirection::RouterToRuntime,
-                bytes,
-            )
-            .map_err(super::transport_error_into_runtime_error)?;
-            let applied = host
-                .apply_bootstrapped_assembly_activation_control(
-                    control,
-                    &bootstrap.resolver,
-                    &bootstrap.config_snapshot_store,
-                    Some(&bootstrap.service_db),
-                )
-                .await
-                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-            // The dispatch surface derives from the active assembly, which an
-            // activation commit may replace (e.g. a runtime that connected
-            // under the seeded empty assembly then loads a real one); refresh
-            // the router's view so admission can route to this session.
-            host.queue_runtime_capabilities(sender.clone())?;
-            if let Some(reply) = applied {
-                super::RuntimeHost::queue_assembly_activation(sender.clone(), &reply)?;
-            }
         }
         WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE => {
             host.websocket_generations
@@ -912,7 +752,7 @@ async fn dispatch_router_binary_frame_inner(
         }
         "router.control" => {
             return Err(RuntimeError::Decode(
-                "router.control artifactRoots/serviceConfig reload is not supported; use exact assembly activation control"
+                "router.control artifactRoots/serviceConfig reload is not supported"
                     .to_string(),
             ));
         }

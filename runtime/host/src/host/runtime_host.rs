@@ -180,10 +180,6 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn trusted_profile(&self) -> Option<&str> {
-        self.frozen_profile.get().map(String::as_str)
-    }
-
     /// Records the artifact root opened by the router bootstrap resolver. It is
     /// advertised in capabilities frames so the router can treat this runtime
     /// as a lazy-load candidate over the same store.

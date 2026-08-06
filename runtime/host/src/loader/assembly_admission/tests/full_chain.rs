@@ -14,11 +14,8 @@ use skiff_runtime_eval::RuntimeAssemblyEvalResolver;
 use skiff_runtime_linked_program::DbObjectTargetId;
 use skiff_runtime_loader::DeploymentReleasePointerResolver;
 
-use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for_assembly;
-
 use super::super::*;
 
-mod db_index_provisioning;
 mod lazy_load;
 
 struct CountingResolver {
@@ -760,63 +757,6 @@ fn insert_db_collection(file: &mut FileIrUnit, type_name: &str, collection_name:
     skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
 }
 
-fn insert_db_contract(file: &mut FileIrUnit, type_name: &str) {
-    let fields = BTreeMap::from([
-        ("id".to_string(), TypeRefIr::builtin("string")),
-        ("status".to_string(), TypeRefIr::builtin("string")),
-    ]);
-    let type_index = file.type_table.len() as u32;
-    file.type_table.push(TypeDeclIr {
-        name: type_name.to_string(),
-        descriptor: TypeDescriptorIr::Record {
-            fields: fields.clone(),
-        },
-        type_params: Vec::new(),
-        implements: Vec::new(),
-        source_span: None,
-    });
-    file.declarations.types.insert(
-        type_name.to_string(),
-        TypeDeclarationIr {
-            type_index,
-            symbol: format!("{}.{}", file.module_path, type_name),
-            source_span: None,
-        },
-    );
-    file.declarations.db.insert(
-        type_name.to_string(),
-        DbDeclarationIr {
-            type_ref: TypeRefIr::LocalType { type_index },
-            type_name: type_name.to_string(),
-            collection_name: None,
-            implements: None,
-            identity_fields: BTreeMap::from([
-                ("id".to_string(), TypeRefIr::builtin("string")),
-                ("status".to_string(), TypeRefIr::builtin("string")),
-                ("updatedAt".to_string(), TypeRefIr::builtin("string")),
-            ]),
-            kind: DbObjectKindIr::Contract,
-            key: DbObjectKeyIr {
-                name: "id".to_string(),
-                ty: TypeRefIr::builtin("string"),
-            },
-            fields: fields
-                .into_iter()
-                .map(|(name, ty)| DbObjectFieldIr {
-                    name,
-                    ty,
-                    storage: DbFieldStorageIr::Identity,
-                })
-                .collect(),
-            retention: None,
-            leases: Vec::new(),
-            indexes: Vec::new(),
-            source_span: None,
-        },
-    );
-    skiff_artifact_identity::assign_file_ir_identity(file).unwrap();
-}
-
 #[derive(Clone, Default, Debug)]
 struct CapturingDbProvider {
     inputs: Arc<Mutex<Vec<skiff_runtime_capability_context::DbProviderBuildInput>>>,
@@ -832,441 +772,6 @@ impl skiff_runtime_capability_context::DbProviderFactory for CapturingDbProvider
         self.inputs.lock().unwrap().push(input);
         Ok(skiff_runtime_capability_context::DbCapabilitySource::unavailable())
     }
-}
-
-fn mapping_service_db() -> AssemblyActivationServiceDb {
-    AssemblyActivationServiceDb {
-        mongo_url: "mongodb://fixture.invalid".to_string(),
-    }
-}
-
-fn fixture_config_snapshot(
-    fixture: &FullChainFixture,
-    values: BTreeMap<(ServiceDeploymentRef, PackageBuildId), BTreeMap<String, serde_json::Value>>,
-) -> (
-    RuntimeConfigSnapshotRef,
-    crate::loader::config_snapshot::TestSnapshotResolver,
-) {
-    let reference = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let snapshot = fixture_config_snapshot_record(fixture, reference.clone(), values);
-    (
-        reference,
-        crate::loader::config_snapshot::TestSnapshotResolver::new(snapshot),
-    )
-}
-
-fn fixture_config_snapshot_record(
-    fixture: &FullChainFixture,
-    reference: RuntimeConfigSnapshotRef,
-    values: BTreeMap<(ServiceDeploymentRef, PackageBuildId), BTreeMap<String, serde_json::Value>>,
-) -> skiff_runtime_config_snapshot::RuntimeConfigSnapshot {
-    let deployments = fixture
-        .assembly
-        .resolved_deployments
-        .iter()
-        .map(|deployment_ref| {
-            let deployment = fixture
-                .resolver
-                .resolve_deployment(deployment_ref)
-                .expect("fixture deployment should resolve");
-            let mut packages = BTreeSet::from([deployment.implementation.package_build_id.clone()]);
-            packages.extend(
-                deployment
-                    .package_bindings
-                    .iter()
-                    .map(|binding| binding.package.package_build_id.clone()),
-            );
-            skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
-                deployment_ref.clone(),
-                packages
-                    .into_iter()
-                    .map(|package_build_id| {
-                        let config = values
-                            .get(&(deployment_ref.clone(), package_build_id.clone()))
-                            .cloned()
-                            .unwrap_or_default();
-                        skiff_runtime_config_snapshot::RuntimeConfigPackage::new(
-                            package_build_id,
-                            config,
-                        )
-                        .expect("fixture Package config should be valid")
-                    })
-                    .collect(),
-            )
-            .expect("fixture deployment config should be valid")
-        })
-        .collect();
-    let snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        "fixture",
-        reference.clone(),
-        deployments,
-    )
-    .expect("fixture config snapshot should be valid");
-    snapshot
-}
-
-#[tokio::test]
-async fn committed_recovery_nonempty_generation_survives_restart_with_exact_registration() {
-    let fixture = FullChainFixture::new();
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("prod", &fixture.assembly, &fixture.resolver);
-
-    let first = AssemblyAdmissionController::new(
-        "runtime-a",
-        skiff_runtime_capability_context::DbProviderSource::unavailable(),
-    );
-    let first_active = first
-        .recover_committed(
-            "prod",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            None,
-        )
-        .await
-        .expect("non-empty committed generation must recover");
-    let first_reads = fixture.resolver.reads.load(Ordering::SeqCst);
-    assert_eq!(first_active.generation(), 7);
-    assert!(!first_active.is_empty());
-    assert!(first_reads > 1);
-    assert!(matches!(
-        first.registration().unwrap(),
-        Some(AssemblyActivationControl::Register {
-            generation: 7,
-            assembly,
-            replica_id,
-            ..
-        }) if assembly == reference && replica_id == "runtime-a"
-    ));
-
-    let restarted = AssemblyAdmissionController::new(
-        "runtime-a",
-        skiff_runtime_capability_context::DbProviderSource::unavailable(),
-    );
-    let restarted_active = restarted
-        .recover_committed(
-            "prod",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            None,
-        )
-        .await
-        .expect("restart must rebuild the same non-empty committed generation");
-    assert_eq!(restarted_active.generation(), 7);
-    assert_eq!(restarted_active.identity(), &reference.assembly_identity);
-    assert!(fixture.resolver.reads.load(Ordering::SeqCst) > first_reads);
-    assert!(matches!(
-        restarted.registration().unwrap(),
-        Some(AssemblyActivationControl::Register {
-            generation: 7,
-            assembly,
-            replica_id,
-            ..
-        }) if assembly == reference && replica_id == "runtime-a"
-    ));
-}
-
-#[tokio::test]
-async fn config_snapshot_materializes_on_demand_per_deployment_partition() {
-    let fixture = FullChainFixture::new();
-    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-
-    let missing_deployment_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let exact =
-        fixture_config_snapshot_record(&fixture, missing_deployment_ref.clone(), BTreeMap::new());
-    let missing_deployment = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        "fixture",
-        missing_deployment_ref.clone(),
-        exact
-            .deployments()
-            .iter()
-            .filter(|partition| partition.deployment() != &fixture.consumer_deployment_ref)
-            .cloned()
-            .collect(),
-    )
-    .unwrap();
-
-    let missing_package_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let exact =
-        fixture_config_snapshot_record(&fixture, missing_package_ref.clone(), BTreeMap::new());
-    let missing_package = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        "fixture",
-        missing_package_ref.clone(),
-        exact
-            .deployments()
-            .iter()
-            .map(|partition| {
-                if partition.deployment() == &fixture.consumer_deployment_ref {
-                    skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
-                        partition.deployment().clone(),
-                        Vec::new(),
-                    )
-                    .unwrap()
-                } else {
-                    partition.clone()
-                }
-            })
-            .collect(),
-    )
-    .unwrap();
-
-    let extra_package_ref = skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref();
-    let exact =
-        fixture_config_snapshot_record(&fixture, extra_package_ref.clone(), BTreeMap::new());
-    let extra_package = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
-        "fixture",
-        extra_package_ref.clone(),
-        exact
-            .deployments()
-            .iter()
-            .map(|partition| {
-                if partition.deployment() == &fixture.consumer_deployment_ref {
-                    let mut packages = partition.packages().to_vec();
-                    packages.push(
-                        skiff_runtime_config_snapshot::RuntimeConfigPackage::new(
-                            PackageBuildId::new("build:not-in-assembly"),
-                            BTreeMap::new(),
-                        )
-                        .unwrap(),
-                    );
-                    packages.sort_by(|left, right| {
-                        left.package_build_id().cmp(right.package_build_id())
-                    });
-                    skiff_runtime_config_snapshot::RuntimeConfigDeployment::new(
-                        partition.deployment().clone(),
-                        packages,
-                    )
-                    .unwrap()
-                } else {
-                    partition.clone()
-                }
-            })
-            .collect(),
-    )
-    .unwrap();
-
-    // M2 on-demand materialization: a missing deployment partition, a missing
-    // package partition and an extra package partition all admit; views are
-    // materialized per deployment with empty fallbacks instead of requiring an
-    // exact snapshot/assembly partition match.
-    for (reference, snapshot) in [
-        (missing_deployment_ref, missing_deployment),
-        (missing_package_ref, missing_package),
-        (extra_package_ref, extra_package),
-    ] {
-        let controller = AssemblyAdmissionController::default();
-        let active = controller
-            .recover_committed(
-                "fixture",
-                1,
-                &assembly_ref,
-                &reference,
-                &fixture.resolver,
-                &crate::loader::config_snapshot::TestSnapshotResolver::new(snapshot),
-                None,
-            )
-            .await
-            .expect("on-demand config snapshot must admit");
-        assert!(controller.active().unwrap().is_some());
-        let views = active
-            .contexts()
-            .config_views(&fixture.consumer_deployment_ref)
-            .expect("consumer config views");
-        assert!(views.packages().len() >= 1);
-    }
-}
-
-#[tokio::test]
-async fn config_snapshot_validates_required_types_and_isolates_deployment_views() {
-    let fixture = FullChainFixture::with_consumer_config(PackageConfigRequirement {
-        path: "api.key".to_string(),
-        access: PackageConfigAccess::Required {
-            value_type: "string".to_string(),
-        },
-    });
-    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-
-    for value in [None, Some(serde_json::json!({"api": {"key": 42}}))] {
-        let values = value
-            .map(|value| {
-                let serde_json::Value::Object(config) = value else {
-                    unreachable!()
-                };
-                BTreeMap::from([(
-                    (
-                        fixture.consumer_deployment_ref.clone(),
-                        fixture.consumer_package_ref.package_build_id.clone(),
-                    ),
-                    config.into_iter().collect(),
-                )])
-            })
-            .unwrap_or_default();
-        let (reference, resolver) = fixture_config_snapshot(&fixture, values);
-        let controller = AssemblyAdmissionController::default();
-        let error = controller
-            .recover_committed(
-                "fixture",
-                1,
-                &assembly_ref,
-                &reference,
-                &fixture.resolver,
-                &resolver,
-                None,
-            )
-            .await
-            .expect_err("missing or mistyped required config must fail admission");
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("required value is missing") || message.contains("must be a string"),
-            "unexpected error: {message}"
-        );
-        assert!(controller.active().unwrap().is_none());
-    }
-
-    let serde_json::Value::Object(config) = serde_json::json!({"api": {"key": "top-secret"}})
-    else {
-        unreachable!()
-    };
-    let values = BTreeMap::from([(
-        (
-            fixture.consumer_deployment_ref.clone(),
-            fixture.consumer_package_ref.package_build_id.clone(),
-        ),
-        config.into_iter().collect(),
-    )]);
-    let (reference, resolver) = fixture_config_snapshot(&fixture, values);
-    let controller = AssemblyAdmissionController::default();
-    let active = controller
-        .recover_committed(
-            "fixture",
-            1,
-            &assembly_ref,
-            &reference,
-            &fixture.resolver,
-            &resolver,
-            None,
-        )
-        .await
-        .expect("exact typed config snapshot should activate");
-    let consumer = active
-        .contexts()
-        .config_views(&fixture.consumer_deployment_ref)
-        .unwrap();
-    let provider = active
-        .contexts()
-        .config_views(&fixture.provider_deployment_ref)
-        .unwrap();
-    assert_eq!(
-        consumer.service().resolved_config_value()["api"]["key"],
-        "top-secret"
-    );
-    assert_eq!(
-        provider.service().resolved_config_value(),
-        &serde_json::json!({})
-    );
-    assert!(!format!("{consumer:?}").contains("top-secret"));
-}
-
-#[tokio::test]
-async fn provider_owner_rebinding_selects_provider_config_instead_of_caller_config() {
-    let fixture = FullChainFixture::with_consumer_config(PackageConfigRequirement {
-        path: "api.key".to_string(),
-        access: PackageConfigAccess::Required {
-            value_type: "string".to_string(),
-        },
-    });
-    let values = BTreeMap::from([
-        (
-            (
-                fixture.consumer_deployment_ref.clone(),
-                fixture.consumer_package_ref.package_build_id.clone(),
-            ),
-            BTreeMap::from([("api".to_string(), serde_json::json!({"key": "caller-key"}))]),
-        ),
-        (
-            (
-                fixture.provider_deployment_ref.clone(),
-                fixture.provider_package_ref.package_build_id.clone(),
-            ),
-            BTreeMap::from([(
-                "api".to_string(),
-                serde_json::json!({"key": "provider-key"}),
-            )]),
-        ),
-    ]);
-    let (reference, resolver) = fixture_config_snapshot(&fixture, values);
-    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let controller = AssemblyAdmissionController::default();
-    let active = controller
-        .recover_committed(
-            "fixture",
-            1,
-            &assembly_ref,
-            &reference,
-            &fixture.resolver,
-            &resolver,
-            None,
-        )
-        .await
-        .expect("two-owner config snapshot should activate");
-    let caller = active
-        .contexts()
-        .activation_for_deployment(&fixture.consumer_deployment_ref)
-        .expect("caller activation");
-    let caller_request = RequestActivationContext::begin(caller).expect("request generation");
-    let eval = skiff_runtime_eval::RuntimeAssemblyEvalTarget::new(
-        Arc::clone(active.candidate().execution_image()),
-        caller_request,
-        Arc::clone(active.contexts()) as Arc<dyn RuntimeAssemblyEvalResolver>,
-    )
-    .expect("caller eval target");
-    let linked_call = active
-        .candidate()
-        .shared_image()
-        .resolve_activation_relative_service_call(
-            &fixture.consumer_package_ref.package_build_id,
-            &fixture.consumer_file_ir_identity,
-            ServiceCallRefIndex::new(0),
-        )
-        .expect("linked service call");
-    let provider = eval
-        .resolve_service_call(&linked_call)
-        .expect("provider target");
-    let provider_eval = eval
-        .with_request_activation(provider.provider_request().clone())
-        .expect("provider eval target");
-    crate::eval_capability_adapter::provider_execution_facts_for_test(
-        active.contexts(),
-        active.candidate().execution_image(),
-        &provider_eval,
-        skiff_runtime_eval::program_execution::ActivationExecutionOperation::ServiceCall {
-            operation_id: fixture.provider_operation_id.clone(),
-        },
-    )
-    .expect("provider owner facts");
-
-    let caller_config = active
-        .contexts()
-        .config_views(&fixture.consumer_deployment_ref)
-        .expect("caller config");
-    let provider_config = active
-        .contexts()
-        .config_views(&fixture.provider_deployment_ref)
-        .expect("provider config");
-    assert_eq!(
-        caller_config.service().resolved_config_value()["api"]["key"],
-        "caller-key"
-    );
-    assert_eq!(
-        provider_config.service().resolved_config_value()["api"]["key"],
-        "provider-key"
-    );
 }
 
 #[tokio::test]
@@ -1384,38 +889,18 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
 #[tokio::test]
 async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_reload() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-mapping",
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
-    let service_db = mapping_service_db();
 
     controller
-        .recover_committed(
-            "fixture",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&service_db),
-        )
+        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
         .await
         .expect("Package-owned collection fixture must admit");
     controller
-        .recover_committed(
-            "fixture",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&service_db),
-        )
+        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
         .await
         .expect("reload must rebuild the exact Package-owned metadata");
 
@@ -1454,24 +939,13 @@ async fn logical_collection_identity_reaches_db_provider_exactly_and_survives_re
 #[tokio::test]
 async fn reachable_db_metadata_requires_router_supplied_service_db() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
     let controller = AssemblyAdmissionController::new(
         "runtime-missing-service-db",
         skiff_runtime_capability_context::DbProviderSource::new(CapturingDbProvider::default()),
     );
 
     let error = controller
-        .recover_committed(
-            "fixture",
-            7,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            None,
-        )
+        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
         .await
         .expect_err("DB metadata without Router serviceDb must fail closed");
 
@@ -1493,9 +967,6 @@ async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
                 .unwrap();
             fixture.resolver.assembly = Arc::new(fixture.assembly.clone());
         }
-        let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-        let (config_snapshot, config_resolver) =
-            config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
         let provider = CapturingDbProvider::default();
         let controller = AssemblyAdmissionController::new(
             format!("runtime-diamond-{reverse_links}"),
@@ -1503,15 +974,7 @@ async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
         );
 
         controller
-            .recover_committed(
-                "fixture",
-                7,
-                &reference,
-                &config_snapshot,
-                &fixture.resolver,
-                &config_resolver,
-                Some(&mapping_service_db()),
-            )
+            .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
             .await
             .expect("identical stateful diamond must admit");
 
@@ -1535,9 +998,6 @@ async fn identical_stateful_diamond_has_one_metadata_owner_in_any_edge_order() {
 #[tokio::test]
 async fn equal_bare_collection_names_from_service_and_package_remain_distinct_targets() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), Some("package_secret"));
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-service-collision",
@@ -1545,15 +1005,7 @@ async fn equal_bare_collection_names_from_service_and_package_remain_distinct_ta
     );
 
     controller
-        .recover_committed(
-            "fixture",
-            1,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
+        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
         .await
         .expect("Package identity, not the bare name, owns physical collection storage");
 
@@ -2309,24 +1761,13 @@ async fn admit_contract_implementation_fixture(
     fixture: &ContractImplementationFixture,
     runtime_id: &str,
 ) -> anyhow::Result<(Arc<CapturingDbProvider>, Arc<ActiveAssembly>)> {
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (config_snapshot, config_resolver) =
-        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
     let provider = CapturingDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         runtime_id,
         skiff_runtime_capability_context::DbProviderSource::new(provider.clone()),
     );
     let active = controller
-        .recover_committed(
-            "fixture",
-            9,
-            &reference,
-            &config_snapshot,
-            &fixture.resolver,
-            &config_resolver,
-            Some(&mapping_service_db()),
-        )
+        .admit(Arc::new(fixture.assembly.clone()), &fixture.resolver)
         .await?;
     Ok((Arc::new(provider), active))
 }

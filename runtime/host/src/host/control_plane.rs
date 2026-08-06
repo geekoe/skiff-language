@@ -6,17 +6,13 @@ use serde_json::Value;
 use serde_json::{json, Map};
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
-use skiff_artifact_model::{
-    AssemblyActivationControl, GatewayDispatchMode, GatewayEntryProtocolSurface,
-    GatewayProtocolSurface,
-};
+use skiff_artifact_model::{GatewayDispatchMode, GatewayEntryProtocolSurface, GatewayProtocolSurface};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
 #[cfg(any())]
 use skiff_runtime_transport::protocol::{
     RouterControlEnvelope, RouterControlPackageConfig, RouterControlServiceConfig,
 };
 use skiff_runtime_transport::{
-    assembly_activation::{encode_assembly_activation_frame, AssemblyActivationFrameDirection},
     protocol::{
         encode_binary_frame, RuntimeCapabilitiesFrameHeader,
         RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability, TelemetryEvent,
@@ -92,18 +88,14 @@ impl RuntimeHost {
         }
     }
 
+    /// The single connection registration step: advertise capabilities only.
+    /// There is no Register frame; the loaded buildId set and the artifact
+    /// root are the whole registration payload.
     pub(crate) fn queue_connection_registration(
         &self,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<()> {
-        self.queue_runtime_capabilities(sender.clone())?;
-        if let Some(register) = self
-            .active_assembly_registration()
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?
-        {
-            Self::queue_assembly_activation(sender, &register)?;
-        }
-        Ok(())
+        self.queue_runtime_capabilities(sender)
     }
 
     #[cfg(any())]
@@ -147,20 +139,6 @@ impl RuntimeHost {
             .send(RouterWriterMessage::Binary(frame))
             .map_err(|_| RuntimeError::Decode("runtime writer channel closed".to_string()))?;
         Ok(())
-    }
-
-    pub(crate) fn queue_assembly_activation(
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        control: &AssemblyActivationControl,
-    ) -> Result<()> {
-        let frame = encode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            control,
-        )
-        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        sender
-            .send(RouterWriterMessage::Binary(frame))
-            .map_err(|_| RuntimeError::Decode("runtime writer channel closed".to_string()))
     }
 
     pub(super) fn log_registered(&self, rest: &serde_json::Map<String, Value>) {

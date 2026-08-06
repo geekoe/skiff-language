@@ -4,7 +4,7 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    AssemblyIdentity, GatewayEntryIdentity, GatewayWebSocketRpcProfile, WebSocketEntryId,
+    GatewayEntryIdentity, GatewayWebSocketRpcProfile, WebSocketEntryId,
 };
 use skiff_runtime_request::{RouterWriterMessage, RuntimeAssemblyWebSocketJsonRpcTarget};
 use skiff_runtime_transport::websocket_generation_lifecycle::{
@@ -150,8 +150,11 @@ impl WebSocketGenerationRegistry {
         let tuple = WebSocketGenerationLifecycleTuple {
             router_session_id: router_session_id.to_string(),
             service_id: route.entry().owner().service_id.clone(),
-            assembly_identity: route.assembly_identity().clone(),
-            assembly_generation: route.generation(),
+            build_id: route
+                .deployment()
+                .deployment_artifact_identity
+                .as_str()
+                .to_string(),
             websocket_entry_id,
             connection_id,
         };
@@ -181,7 +184,7 @@ impl WebSocketGenerationRegistry {
         if let Some(existing) = state.pins.get(&connection_key) {
             if existing.tuple != tuple {
                 return Err(RuntimeError::Decode(
-                    "WebSocket connection already pins a different assembly tuple".to_string(),
+                    "WebSocket connection already pins a different deployment build".to_string(),
                 ));
             }
         } else {
@@ -208,8 +211,7 @@ impl WebSocketGenerationRegistry {
             event = "runtime.websocket_generation_acquire_queued",
             router_session_id = %request_tuple(&request).router_session_id,
             service_id = %request_tuple(&request).service_id,
-            assembly_identity = %request_tuple(&request).assembly_identity,
-            assembly_generation = request_tuple(&request).assembly_generation,
+            build_id = %request_tuple(&request).build_id,
             websocket_entry_id = %request_tuple(&request).websocket_entry_id,
             connection_id = %request_tuple(&request).connection_id,
         );
@@ -348,8 +350,7 @@ impl WebSocketGenerationRegistry {
                     event = "runtime.websocket_generation_acquired",
                     router_session_id = %tuple.router_session_id,
                     service_id = %tuple.service_id,
-                    assembly_identity = %tuple.assembly_identity,
-                    assembly_generation = tuple.assembly_generation,
+                    build_id = %tuple.build_id,
                     websocket_entry_id = %tuple.websocket_entry_id,
                     connection_id = %tuple.connection_id,
                 );
@@ -391,8 +392,6 @@ impl WebSocketGenerationRegistry {
         &self,
         router_session_id: &str,
         connection_id: &str,
-        assembly_identity: &skiff_artifact_model::AssemblyIdentity,
-        assembly_generation: u64,
         build_id: Option<&str>,
         websocket_entry_id: &str,
     ) -> Result<ActiveAssemblyRoute> {
@@ -403,34 +402,32 @@ impl WebSocketGenerationRegistry {
         };
         let pin = state.pins.get(&key).ok_or_else(|| {
             RuntimeError::Unsupported(
-                "WebSocket JSON-RPC request has no acquired generation pin".to_string(),
+                "WebSocket JSON-RPC request has no acquired build pin".to_string(),
             )
         })?;
         if !pin.acquired {
             return Err(RuntimeError::Unsupported(
-                "WebSocket JSON-RPC generation pin has no exact acquire receipt".to_string(),
+                "WebSocket JSON-RPC build pin has no exact acquire receipt".to_string(),
             ));
         }
-        // M2 routing authority: a frame carrying an exact buildId is matched
-        // against the pinned route's deployment artifact identity. Routers
-        // without buildId support keep the legacy assembly identity/generation
-        // pin match (the pin recorded the connect frame's own tuple).
-        let tuple_matches = match build_id {
+        // The buildId is the only routing dimension: a frame carrying an
+        // exact buildId must match the pinned route's deployment artifact
+        // identity. The pinned deployment ref carries the same buildId, so
+        // requests without a buildId still fail closed on the route join
+        // performed by the physical entry matching below.
+        let build_id_matches = match build_id {
             Some(build_id) => {
                 build_id == pin.route.deployment().deployment_artifact_identity.as_str()
             }
-            None => {
-                pin.tuple.assembly_identity == *assembly_identity
-                    && pin.tuple.assembly_generation == assembly_generation
-            }
+            None => true,
         };
-        if !tuple_matches
+        if !build_id_matches
             || pin.tuple.websocket_entry_id != websocket_entry_id
             || pin.tuple.service_id != pin.route.entry().owner().service_id
         {
             return Err(RuntimeError::Protocol {
                 target: connection_id.to_string(),
-                message: "WebSocket JSON-RPC tuple does not match its acquired generation pin"
+                message: "WebSocket JSON-RPC tuple does not match its acquired build pin"
                     .to_string(),
             });
         }
@@ -442,8 +439,6 @@ impl WebSocketGenerationRegistry {
         &self,
         router_session_id: &str,
         connection_id: &str,
-        assembly_identity: &AssemblyIdentity,
-        assembly_generation: u64,
         build_id: Option<&str>,
         websocket_entry_id: &WebSocketEntryId,
         path: &str,
@@ -454,8 +449,6 @@ impl WebSocketGenerationRegistry {
         let physical_route = self.acquired_physical_route(
             router_session_id,
             connection_id,
-            assembly_identity,
-            assembly_generation,
             build_id,
             websocket_entry_id.as_str(),
         )?;
@@ -488,8 +481,6 @@ impl WebSocketGenerationRegistry {
         &self,
         router_session_id: &str,
         connection_id: &str,
-        assembly_identity: &AssemblyIdentity,
-        assembly_generation: u64,
         build_id: Option<&str>,
         websocket_entry_id: &WebSocketEntryId,
         path: &str,
@@ -501,8 +492,6 @@ impl WebSocketGenerationRegistry {
             .websocket_jsonrpc_execution_route(
                 router_session_id,
                 connection_id,
-                assembly_identity,
-                assembly_generation,
                 build_id,
                 websocket_entry_id,
                 path,
@@ -582,8 +571,7 @@ impl WebSocketGenerationRegistry {
                         event = "runtime.websocket_generation_released",
                         router_session_id = %tuple.router_session_id,
                         service_id = %tuple.service_id,
-                        assembly_identity = %tuple.assembly_identity,
-                        assembly_generation = tuple.assembly_generation,
+                        build_id = %tuple.build_id,
                         websocket_entry_id = %tuple.websocket_entry_id,
                         connection_id = %tuple.connection_id,
                     );

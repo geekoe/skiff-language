@@ -20,7 +20,7 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::{AssemblyLinkedCandidate, LinkedGatewayEntry};
 
-use super::config_snapshot::{materialize_snapshot_config, ActivationConfigViews};
+use super::config_snapshot::ActivationConfigViews;
 
 /// Converts a capability/provider error into an anyhow error without dropping the root
 /// cause. Opaque wire payloads can Display as an empty string; fall back to `Debug` so
@@ -57,7 +57,6 @@ impl ActiveAssemblyContextSet {
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: Option<&str>,
-        config_snapshot: Option<&skiff_runtime_config_snapshot::RuntimeConfigSnapshot>,
     ) -> anyhow::Result<Self> {
         if runtime_replica_id.trim().is_empty() {
             anyhow::bail!("runtime replica id must be non-empty for activation construction");
@@ -66,16 +65,14 @@ impl ActiveAssemblyContextSet {
         let mut activations_by_deployment = BTreeMap::new();
         let mut contracts_by_deployment = BTreeMap::new();
         let mut operation_targets = BTreeMap::new();
-        let config_views = match config_snapshot {
-            Some(snapshot) => materialize_snapshot_config(candidate, snapshot)?,
-            #[cfg(test)]
-            None => super::config_snapshot::materialize_empty_config_for_test(candidate)?,
-            #[cfg(not(test))]
-            None => anyhow::bail!("production activation requires a RuntimeConfigSnapshot"),
-        }
-        .into_iter()
-        .map(|(deployment, views)| (deployment, Arc::new(views)))
-        .collect();
+        // Config snapshots are no longer a router-supplied committed tuple.
+        // The runtime has no snapshot source of its own yet (config baked into
+        // deployment records is a later milestone), so every deployment
+        // materializes empty config views.
+        let config_views = super::config_snapshot::materialize_empty_config(candidate)?
+            .into_iter()
+            .map(|(deployment, views)| (deployment, Arc::new(views)))
+            .collect();
         let runtime_program_db_by_deployment = candidate_db_metadata(candidate)?;
         let db_contract_bindings = validate_db_contract_implementations(candidate)?
             .into_iter()

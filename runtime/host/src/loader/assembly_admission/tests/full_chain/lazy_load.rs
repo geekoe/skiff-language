@@ -5,11 +5,9 @@ use skiff_runtime_capability_context::DbProviderSource;
 
 use super::*;
 
-type TestConfigResolver = crate::loader::config_snapshot::TestSnapshotResolver;
-
 /// Adds one additional self-contained deployment (no cross-service
 /// dependencies) to the fixture resolver so it can be lazy-loaded under a
-/// buildId that is not part of the recovered committed assembly.
+/// buildId that is not part of the fixture assembly.
 fn extra_self_contained_deployment(fixture: &mut FullChainFixture, revision: &str) -> ServiceDeploymentRef {
     let provider = fixture
         .resolver
@@ -121,36 +119,15 @@ fn consumer_contract_ref(fixture: &FullChainFixture) -> ServiceContractRef {
         .clone()
 }
 
-async fn recovered_controller(
-    fixture: &FullChainFixture,
-) -> (AssemblyAdmissionController, RuntimeConfigSnapshotRef, TestConfigResolver) {
-    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
-    let (snapshot, snapshot_resolver) =
-        config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
-    let controller = AssemblyAdmissionController::new(
-        "runtime-lazy",
-        DbProviderSource::unavailable(),
-    );
-    controller
-        .recover_committed(
-            "fixture",
-            1,
-            &reference,
-            &snapshot,
-            &fixture.resolver,
-            &snapshot_resolver,
-            None,
-        )
-        .await
-        .expect("committed baseline should recover");
-    (controller, snapshot, snapshot_resolver)
+async fn fresh_controller() -> AssemblyAdmissionController {
+    AssemblyAdmissionController::new("runtime-lazy", DbProviderSource::unavailable())
 }
 
 #[tokio::test]
 async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
     let mut fixture = FullChainFixture::new();
     let extra = extra_self_contained_deployment(&mut fixture, "lazy-revision-1");
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
+    let controller = fresh_controller().await;
     assert!(!controller.is_loaded(extra.deployment_artifact_identity.as_str()));
 
     let reads_before = fixture.resolver.reads.load(Ordering::SeqCst);
@@ -158,7 +135,6 @@ async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
         .deployment_image_or_lazy_load(
             &extra,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -177,7 +153,6 @@ async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
         .deployment_image_or_lazy_load(
             &extra,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -194,14 +169,13 @@ async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
 #[tokio::test]
 async fn lazy_load_fast_fails_on_missing_record_and_does_not_register() {
     let fixture = FullChainFixture::new();
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
+    let controller = fresh_controller().await;
     let missing = missing_deployment_ref();
 
     let error = controller
         .deployment_image_or_lazy_load(
             &missing,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -216,7 +190,6 @@ async fn lazy_load_fast_fails_on_missing_record_and_does_not_register() {
         .deployment_image_or_lazy_load(
             &missing,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -229,7 +202,7 @@ async fn lazy_load_fast_fails_on_missing_record_and_does_not_register() {
 async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencies() {
     let mut fixture = FullChainFixture::new();
     let entry = unloaded_consumer_variant(&mut fixture, "consumer-lazy-revision");
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
+    let controller = fresh_controller().await;
     assert!(!controller.is_loaded(entry.deployment_artifact_identity.as_str()));
 
     let reads_before = fixture.resolver.reads.load(Ordering::SeqCst);
@@ -237,7 +210,6 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
         .deployment_image_or_lazy_load(
             &entry,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -265,7 +237,6 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
         .deployment_image_or_lazy_load(
             &fixture.provider_deployment_ref,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -276,10 +247,14 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
         reads_before,
         "closure provider buildId must not re-read artifact records"
     );
-    // The bootstrap recovery registers the committed generation first, so the
-    // provider buildId resolves to the committed image (registered via
-    // `or_insert`). Both the committed image and the closure image carry the
-    // provider activation, so the resolved image must still serve it.
+    // The lazy-load closure is the only registration source: the provider
+    // buildId was registered by the closure image itself, so the resolved
+    // image must be the very same closure image serving the provider
+    // activation.
+    assert!(
+        Arc::ptr_eq(&provider_image, &loaded),
+        "single closure image must own every buildId it registered"
+    );
     assert!(
         provider_image
             .candidate()
@@ -311,13 +286,12 @@ async fn lazy_load_fast_fails_when_provider_release_pointer_is_missing() {
     let entry = unloaded_consumer_variant(&mut fixture, "consumer-no-pointer");
     // Remove the provider release pointer: the closure cannot resolve.
     fixture.resolver.release_pointers.clear();
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
+    let controller = fresh_controller().await;
 
     let error = controller
         .deployment_image_or_lazy_load(
             &entry,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -333,7 +307,6 @@ async fn lazy_load_fast_fails_when_provider_release_pointer_is_missing() {
         .deployment_image_or_lazy_load(
             &entry,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -379,13 +352,12 @@ async fn lazy_load_fast_fails_on_dependency_cycles_and_registers_nothing() {
             (consumer_contract.service_id, consumer_contract.contract_version),
             entry.clone(),
         );
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
+    let controller = fresh_controller().await;
 
     let error = controller
         .deployment_image_or_lazy_load(
             &entry,
             &fixture.resolver,
-            &snapshot_resolver,
             None,
             "fixture",
         )
@@ -405,10 +377,8 @@ async fn concurrent_lazy_load_materializes_exactly_once() {
     let extra = extra_self_contained_deployment(&mut fixture, "lazy-revision-concurrent");
     let extra_concurrent =
         extra_self_contained_deployment(&mut fixture, "lazy-revision-concurrent-2");
-    let (controller, _snapshot, snapshot_resolver) = recovered_controller(&fixture).await;
-    let controller = Arc::new(controller);
+    let controller = Arc::new(fresh_controller().await);
     let resolver = Arc::new(fixture.resolver);
-    let snapshot_resolver = Arc::new(snapshot_resolver);
     let extra = Arc::new(extra);
     let extra_concurrent = Arc::new(extra_concurrent);
 
@@ -418,7 +388,6 @@ async fn concurrent_lazy_load_materializes_exactly_once() {
         .deployment_image_or_lazy_load(
             &extra,
             resolver.as_ref(),
-            snapshot_resolver.as_ref(),
             None,
             "fixture",
         )
@@ -434,14 +403,12 @@ async fn concurrent_lazy_load_materializes_exactly_once() {
     for _ in 0..8 {
         let controller = Arc::clone(&controller);
         let resolver = Arc::clone(&resolver);
-        let snapshot_resolver = Arc::clone(&snapshot_resolver);
         let extra = Arc::clone(&extra_concurrent);
         handles.push(tokio::spawn(async move {
             controller
                 .deployment_image_or_lazy_load(
                     &extra,
                     resolver.as_ref(),
-                    snapshot_resolver.as_ref(),
                     None,
                     "fixture",
                 )

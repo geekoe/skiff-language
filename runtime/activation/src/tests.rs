@@ -94,6 +94,36 @@ fn drop_probe(counter: &Arc<AtomicUsize>) -> CallbackCapabilityPayload {
 }
 
 #[test]
+fn activation_id_is_derived_from_deployment_build_id_and_replica_not_assembly_tuple() {
+    let deployment_ref = deployment("service-a", "r1");
+    let mut first = ActivationIdentity {
+        assembly_identity: AssemblyIdentity::new("assembly-a"),
+        assembly_generation: 7,
+        runtime_replica_id: "replica-a".to_string(),
+        deployment: deployment_ref.clone(),
+    };
+    let tuple_variant = ActivationIdentity {
+        assembly_identity: AssemblyIdentity::new("assembly-b"),
+        assembly_generation: 99,
+        runtime_replica_id: "replica-a".to_string(),
+        deployment: deployment_ref.clone(),
+    };
+    assert_eq!(
+        first.activation_id(),
+        tuple_variant.activation_id(),
+        "the assembly tuple must not participate in the activation id"
+    );
+    assert_eq!(first.activation_id().as_str(), tuple_variant.activation_id().as_str());
+
+    first.deployment = deployment("service-b", "r1");
+    assert_ne!(first.activation_id(), tuple_variant.activation_id());
+
+    first.deployment = deployment_ref;
+    first.runtime_replica_id = "replica-b".to_string();
+    assert_ne!(first.activation_id(), tuple_variant.activation_id());
+}
+
+#[test]
 fn activation_context_isolates_same_package_build_across_deployments() {
     let first = activation(
         "service-a",
