@@ -4,8 +4,6 @@ artifactsPath: ../var/skiff-artifacts
 devReload: true
 releaseMode: false
 requestTimeoutMs: 20000
-activation:
-  prepareTimeoutMs: 120000
 http:
   port: 4000
   maxRequestBytes: 67108864

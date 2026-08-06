@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -52,7 +52,8 @@ struct Catalog {
 }
 
 fn corpus_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("transport/testdata/registration-handshake")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/transport/testdata/registration-handshake")
 }
 
 fn catalog() -> Catalog {

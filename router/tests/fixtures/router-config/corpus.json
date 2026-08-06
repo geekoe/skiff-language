@@ -60,7 +60,6 @@
     { "name": "file-backend-empty", "path": "invalid/file-backend-empty.yml", "error": "router config fileBackend must configure local or oss" },
     { "name": "file-backend-missing-credential", "path": "invalid/file-backend-missing-credential.yml", "error": "router config fileBackend\\.oss requires accessKeySecretEnv or accessKeySecret" },
     { "name": "invalid-host-type", "path": "invalid/invalid-host-type.yml", "error": "router config host must be a non-empty string" },
-    { "name": "invalid-runtime-concurrency-string", "path": "invalid/invalid-runtime-concurrency-string.yml", "error": "router config runtime.maxConcurrency must be a positive integer" },
-    { "name": "invalid-activation-string", "path": "invalid/invalid-activation-string.yml", "error": "router config activation.prepareTimeoutMs must be a positive integer" }
+    { "name": "invalid-runtime-concurrency-string", "path": "invalid/invalid-runtime-concurrency-string.yml", "error": "router config runtime.maxConcurrency must be a positive integer" }
   ]
 }

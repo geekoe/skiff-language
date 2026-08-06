@@ -16,8 +16,13 @@ use serde_json::Value;
 
 use crate::health_common::{
     assemble, complete_handshake, connect_runtime, health_bytes, health_json, materialize,
-    raw_request, send_binary, start_listeners, wait_until_health, PROFILE, REPLICA_A, REPLICA_B,
+    raw_request, send_binary, start_listeners, wait_until_health, REPLICA_A, REPLICA_B,
 };
+
+/// The shared harness composition always runs the router with profile "dev"
+/// (`health_common::config`), so release pointers must be materialized under
+/// that profile for the M4 pointer-table projection to observe them.
+const ROUTER_PROFILE: &str = "dev";
 
 #[cfg(test)]
 mod tests {
@@ -90,7 +95,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_route_serves_ts_compatible_shape_zero_counters_and_loop_risk_detail() {
-        let chain = materialize(PROFILE);
+        let chain = materialize(ROUTER_PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();
@@ -101,7 +106,11 @@ mod tests {
             "health must return 200, got {status:?}"
         );
         assert_eq!(health["ok"], true);
-        assert_eq!(health["activeAssembly"]["profile"], PROFILE);
+        // M4: `activeAssembly` is the release pointer table projection keyed
+        // by the router bootstrap profile; the shared harness runs the
+        // composition with profile "dev", so the pointer must be materialized
+        // under that same profile for the projection to include it.
+        assert_eq!(health["activeAssembly"]["profile"], ROUTER_PROFILE);
         assert_eq!(health["activeAssembly"]["releaseCount"], 1);
         let build_ids = health["activeAssembly"]["buildIds"]
             .as_array()
@@ -160,7 +169,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_reflects_registered_session_and_returns_to_zero_after_disconnect() {
-        let chain = materialize(PROFILE);
+        let chain = materialize(ROUTER_PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();
@@ -226,7 +235,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn health_returns_to_zero_after_error_terminal() {
-        let chain = materialize(PROFILE);
+        let chain = materialize(ROUTER_PROFILE);
         let supervisor = assemble(&chain).await;
         let listeners = start_listeners(&supervisor).await;
         let control_addr = listeners.runtime_control.addr();

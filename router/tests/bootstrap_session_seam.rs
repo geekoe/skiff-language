@@ -36,8 +36,8 @@ fn config() -> RouterConfig {
 mod tests {
     use super::*;
 
-    #[test]
-    fn session_bootstrap_bytes_carry_profile_artifact_root_and_service_db() {
+    #[tokio::test]
+    async fn session_bootstrap_bytes_carry_profile_artifact_root_and_service_db() {
         let layer = SessionLayer::with_options(config(), SessionLayerOptions::default())
             .expect("session layer options are valid");
         let bytes = layer

@@ -82,7 +82,10 @@ mod tests {
             .await
             .expect("assembly must succeed");
         assert_eq!(assembly.profile(), "prod");
-        assert!(assembly.store().root().starts_with(root.path()));
+        // The store canonicalizes its root (macOS maps `/var` to
+        // `/private/var`), so compare against the canonicalized path.
+        let expected_root = fs::canonicalize(root.path()).expect("canonicalize artifact root");
+        assert_eq!(assembly.store().root(), expected_root);
         assembly.shutdown().await;
     }
 

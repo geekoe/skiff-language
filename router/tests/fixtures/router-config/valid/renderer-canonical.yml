@@ -3,8 +3,6 @@ host: 127.0.0.1
 artifactsPath: "/tmp/skiff/artifacts"
 devReload: true
 requestTimeoutMs: 20000
-activation:
-  prepareTimeoutMs: 120000
 
 http:
   port: 4000
