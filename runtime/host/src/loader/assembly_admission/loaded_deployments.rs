@@ -55,6 +55,23 @@ impl LoadedDeploymentRegistry {
             .or_insert(active);
     }
 
+    /// Registers one materialized dependency-closure image under every buildId
+    /// it carries. The loaded set, and therefore the capability advertisement,
+    /// then covers the whole closure (entry plus providers), not only the
+    /// entry deployment.
+    pub(crate) fn register_closure(
+        &self,
+        deployments: impl IntoIterator<Item = skiff_artifact_model::ServiceDeploymentRef>,
+        active: Arc<ActiveAssembly>,
+    ) {
+        for deployment in deployments {
+            self.register(
+                deployment.deployment_artifact_identity.as_str(),
+                Arc::clone(&active),
+            );
+        }
+    }
+
     /// Per-buildId critical section. Loads the deployment exactly once per
     /// buildId; concurrent waiters observe the same result and a failed load
     /// fast-fails every waiting request.
