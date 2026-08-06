@@ -93,6 +93,7 @@ export async function runDevWatch(options, dependencies = {}) {
   let lastRegistryError;
   let successful;
   let pending;
+  let lastBuild;
   let attempt = 0;
   let retryDelayMs = 1000;
   let retryAt = 0;
@@ -188,7 +189,9 @@ export async function runDevWatch(options, dependencies = {}) {
     }
 
     try {
-      const configOnly = successful?.codeFingerprint === pending.codeFingerprint;
+      const reuseBuildState =
+        successful?.codeFingerprint === pending.codeFingerprint
+        || lastBuild?.codeFingerprint === pending.codeFingerprint;
       const result = await syncRunner({
         roots: pending.roots,
         profile: pending.profile,
@@ -202,7 +205,9 @@ export async function runDevWatch(options, dependencies = {}) {
         configSnapshotRunner:
           dependencies.configSnapshotRunner ?? runConfigSnapshotAuthoring,
         activationWait: dependencies.activationWait ?? delay,
-        buildState: configOnly ? successful.buildState : undefined,
+        buildState: reuseBuildState
+          ? (successful?.buildState ?? lastBuild?.state)
+          : undefined,
       });
       successful = {
         ...pending,
@@ -221,6 +226,13 @@ export async function runDevWatch(options, dependencies = {}) {
       emitResult(result, options.json);
     } catch (error) {
       reportError(error);
+      const retained = reusableBuildStateFromError(error);
+      if (retained !== undefined && pending !== undefined) {
+        lastBuild = {
+          codeFingerprint: pending.codeFingerprint,
+          state: retained,
+        };
+      }
       attempt += 1;
       retryAt = now() + retryDelayMs;
       retryDelayMs = Math.min(retryDelayMs * 2, 30000);
@@ -326,21 +338,50 @@ export async function runDevSyncOnce({
   if (buildOnly) {
     return result;
   }
-  const activation = await activateDevAssembly({
-    fetchImpl,
-    activationUrl,
-    activationId,
-    profile,
-    assembly: assemblyReceipt.assembly,
-    configSnapshot: configSnapshotReceipt.snapshot,
-    wait: activationWait,
-  });
+  let activation;
+  try {
+    activation = await activateDevAssembly({
+      fetchImpl,
+      activationUrl,
+      activationId,
+      profile,
+      assembly: assemblyReceipt.assembly,
+      configSnapshot: configSnapshotReceipt.snapshot,
+      wait: activationWait,
+    });
+  } catch (error) {
+    // Retain the complete build so watch retries can reuse it when only the
+    // activation failed and the source tree is unchanged, instead of
+    // republishing every root on each retry.
+    throw attachReusableBuildState(error, build);
+  }
   const activated = {
     ...result,
     assemblyActivationReceipt: activation,
   };
   devBuildStates.set(activated, build);
   return activated;
+}
+
+function attachReusableBuildState(error, build) {
+  if (
+    (error instanceof Error || (error !== null && typeof error === 'object'))
+    && build !== undefined
+  ) {
+    try {
+      error.reusableBuildState = build;
+    } catch {
+      // non-extensible error objects still propagate; the state is best-effort
+    }
+  }
+  return error;
+}
+
+export function reusableBuildStateFromError(error) {
+  if (error === null || typeof error !== 'object') {
+    return undefined;
+  }
+  return error.reusableBuildState;
 }
 
 export function reusableDevBuildState(result) {

@@ -139,13 +139,13 @@ function alreadyCommittedActivation({
         profile,
         generation: active.generation,
         assembly,
-        configSnapshot,
+        configSnapshot: active.configSnapshot,
       },
       activeAssembly: {
         profile,
         generation: active.generation,
         assemblyIdentity: assembly.assemblyIdentity,
-        configSnapshotId: configSnapshot.snapshotId,
+        configSnapshotId: active.configSnapshot.snapshotId,
       },
       idempotent: true,
     },
@@ -161,9 +161,11 @@ function assertMatchingRouterProfile(active, profile) {
 }
 
 function matchesActivationTarget(active, target) {
+  // Assembly identity is the authoritative "already deployed" signal: every
+  // dev-sync rebuild re-derives the config snapshot id even for unchanged
+  // content, so snapshot equality would never match across rebuilds.
   return active.profile === target.profile
-    && active.assembly.assemblyIdentity === target.assembly.assemblyIdentity
-    && active.configSnapshot.snapshotId === target.configSnapshot.snapshotId;
+    && active.assembly.assemblyIdentity === target.assembly.assemblyIdentity;
 }
 
 function isActivationConflict(error) {

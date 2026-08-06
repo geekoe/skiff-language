@@ -123,6 +123,113 @@ test('managed activation rereads generation and retries a competing 409 with bou
   assert.equal(result.response.committed.generation, 3);
 });
 
+test('managed activation accepts an already committed same-assembly tuple with a drifted snapshot', async () => {
+  let posts = 0;
+  const result = await activateDevAssembly({
+    activationUrl: 'http://router.test:4101/__skiff/activate-assembly',
+    profile: 'dev',
+    assembly: targetAssembly,
+    configSnapshot: targetConfig,
+    fetchImpl: async (url, init) => {
+      assert.equal(init.method, 'GET');
+      posts += init.method === 'POST' ? 1 : 0;
+      return healthResponse({
+        profile: 'dev',
+        generation: 7,
+        assembly: targetAssembly,
+        configSnapshot: {
+          snapshotId: `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`,
+        },
+      });
+    },
+  });
+  assert.equal(posts, 0);
+  assert.equal(result.response.idempotent, true);
+  assert.equal(result.response.committed.generation, 7);
+  assert.equal(
+    result.response.activeAssembly.configSnapshotId,
+    `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`,
+  );
+});
+
+test('watch retry reuses the retained build state when only activation failed', async () => {
+  const fixture = await serviceFixture('watch-retry-reuse', 'example.com/watch-reuse');
+  const registryPath = join(fixture.temp, 'watch.json');
+  const entry = await classifyAuthoringRoot(fixture.root);
+  await writeDevRegistry(registryPath, { profile: 'dev', roots: [entry] });
+  const buildStates = [];
+  const errors = [];
+  let clock = 0;
+  await assert.rejects(
+    runDevWatch(watchOptions(registryPath), {
+      syncRunner: async ({ buildState }) => {
+        buildStates.push(buildState);
+        if (buildStates.length === 1) {
+          const error = new Error('assembly activation rejected with HTTP 504: timed out');
+          error.reusableBuildState = { marker: 'retained-build' };
+          throw error;
+        }
+        return {};
+      },
+      buildStateFromResult: () => ({}),
+      printResult: () => {},
+      reportError: (error) => errors.push(error.message),
+      now: () => clock,
+      wait: async () => {
+        clock += 1500;
+        if (clock > 4500) {
+          throw new Error('watch retry sequence complete');
+        }
+      },
+    }),
+    /watch retry sequence complete/,
+  );
+  assert.equal(buildStates[0], undefined);
+  assert.deepEqual(buildStates[1], { marker: 'retained-build' });
+  assert.equal(errors.length, 1);
+});
+
+test('watch does not reuse the retained build state after a source change', async () => {
+  const fixture = await serviceFixture('watch-no-reuse', 'example.com/watch-no-reuse');
+  const registryPath = join(fixture.temp, 'watch.json');
+  const entry = await classifyAuthoringRoot(fixture.root);
+  await writeDevRegistry(registryPath, { profile: 'dev', roots: [entry] });
+  const buildStates = [];
+  let clock = 0;
+  await assert.rejects(
+    runDevWatch(watchOptions(registryPath), {
+      syncRunner: async ({ buildState }) => {
+        buildStates.push(buildState);
+        if (buildStates.length === 1) {
+          const error = new Error('assembly activation rejected with HTTP 504: timed out');
+          error.reusableBuildState = { marker: 'retained-build' };
+          throw error;
+        }
+        return {};
+      },
+      buildStateFromResult: () => ({}),
+      printResult: () => {},
+      reportError: () => {},
+      now: () => clock,
+      wait: async () => {
+        clock += 1500;
+        if (clock === 1500) {
+          await writeFile(
+            join(fixture.root, 'main.skiff'),
+            'function health() -> string { return "changed" }\n',
+          );
+        }
+        if (clock > 4500) {
+          throw new Error('watch no-reuse sequence complete');
+        }
+      },
+    }),
+    /watch no-reuse sequence complete/,
+  );
+  assert.equal(buildStates[0], undefined);
+  assert.equal(buildStates[1], undefined);
+});
+
 test('registry writer atomically replaces the file and persists service identity in v2', async () => {
   const fixture = await serviceFixture('atomic', 'example.com/atomic');
   const registryPath = join(fixture.temp, 'watch.json');
