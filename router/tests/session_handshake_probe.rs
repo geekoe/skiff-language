@@ -5,18 +5,18 @@
 //! `runtime.registered` frames are byte-identical to the fixtures, negative
 //! frames close the connection with zero directory residue, replacement and
 //! pre-auth limits behave, and shutdown drains via the barrier.
+//!
+//! M4: registration is capabilities-only — no Register frame, no epoch
+//! tuple; the handshake is bootstrap → capabilities → ACK.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
-use skiff_artifact_model::{
-    AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-};
+use serde_json::{Value, json};
 use skiff_router::config::RouterConfig;
-use skiff_router::listener::{start_listeners_with_session, ListenerStartOptions, RouterListeners};
+use skiff_router::listener::{ListenerStartOptions, RouterListeners, start_listeners_with_session};
 use skiff_router::session::consumer::ConsumerManifest;
 use skiff_router::session::demux::InboundSinkSet;
 use skiff_router::session::health::RuntimeHealthLedger;
@@ -31,11 +31,11 @@ use skiff_router::ws::{
     WebSocketLane, WebSocketLaneOptions,
 };
 use skiff_runtime_transport::protocol::{
-    encode_binary_frame, ConnectionSendFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    ConnectionSendFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION, encode_binary_frame,
 };
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -75,7 +75,7 @@ fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
         http_max_response_bytes: 8_388_608,
         http_port: 4000,
         manifests: vec![],
-        profile: "dev".to_string(),
+        profile: "prod".to_string(),
         release_mode: None,
         request_timeout_ms: 20_000,
         rewrite: vec![],
@@ -173,7 +173,6 @@ async fn complete_handshake(socket: &mut PeerSocket, frames: &Value) {
         "wire router.bootstrap must match the corpus bytes"
     );
     send_binary(socket, frame(frames, "capabilities.runtime-a")).await;
-    send_binary(socket, frame(frames, "register.prod.42.a")).await;
     let ack = recv_binary(socket).await;
     assert_eq!(
         ack,
@@ -279,17 +278,19 @@ mod tests {
         assert_eq!(snapshot.consumer_permits_held, 0);
     }
     #[tokio::test(flavor = "multi_thread")]
-    async fn duplicate_register_pre_ack_closes_with_zero_directory_residue() {
+    async fn identity_change_pre_ack_closes_with_zero_directory_residue() {
         let frames = corpus_frames();
-        // Delay the ACK write so the duplicate register is deterministically
-        // processed in RegisterValidated (before the ACK reaches the wire).
+        // Delay the ACK write so the identity change is deterministically
+        // processed while the first capabilities are still pending (pre-ACK).
+        // M4: registration is capabilities-only; a second capabilities with
+        // a different replica on the same connection is an identity change
+        // and terminates the session.
         let (listeners, layer) =
             start(test_config(4), None, Some(Duration::from_millis(300))).await;
         let mut socket = connect(listeners.runtime_control.addr()).await;
         let _ = recv_binary(&mut socket).await;
         send_binary(&mut socket, frame(&frames, "capabilities.runtime-a")).await;
-        send_binary(&mut socket, frame(&frames, "register.prod.42.a")).await;
-        send_binary(&mut socket, frame(&frames, "register.prod.42.a")).await;
+        send_binary(&mut socket, frame(&frames, "capabilities.runtime-b")).await;
         expect_closed(&mut socket).await;
         let snapshot = layer.health_snapshot();
         assert_eq!(snapshot.registered_sessions, 0);
@@ -301,21 +302,56 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn negative_handshake_frames_close_connection() {
         let frames = corpus_frames();
-        let cases: [(&str, bool); 4] = [
-            // (frame sent after capabilities, expect register-before-capabilities too)
-            ("register.prod.42.a", false),
-            ("register.prod.41.a", true),
-            ("register.prod.42.b", true),
-            ("legacy.runtime.register", true),
+        // The legacy `runtime.register` tuple frame is retired (M4); its
+        // bytes are built inline and fail closed as a malformed frame.
+        let legacy_register = encode_binary_frame(
+            &json!({
+                "schemaVersion": "skiff-runtime-frame-v4",
+                "type": "runtime.register",
+                "runtimeId": "runtime-a",
+                "generation": 42,
+            }),
+            &[],
+        )
+        .expect("legacy register encodes");
+        // (frame label, bytes, sent after capabilities)
+        let cases: [(&str, Vec<u8>, bool); 5] = [
+            // Wrong order: health before the capabilities registration.
+            (
+                "health-before-capabilities",
+                frame(&frames, "health.empty"),
+                false,
+            ),
+            // Outbound-only frames arriving from the Runtime are direction
+            // violations.
+            (
+                "registered-as-inbound",
+                frame(&frames, "registered.runtime-a"),
+                false,
+            ),
+            (
+                "bootstrap-as-inbound",
+                frame(&frames, "bootstrap.prod.42"),
+                false,
+            ),
+            // Retired registration family (M4): tuple bytes fail closed.
+            ("legacy-register", legacy_register, false),
+            // Outbound-only frame after the capabilities bind still closes.
+            (
+                "registered-after-capabilities",
+                frame(&frames, "registered.runtime-a"),
+                true,
+            ),
         ];
-        for (negative_frame, after_capabilities) in cases {
+        for (_label, negative_frame, after_capabilities) in cases {
             let (listeners, layer) = start(test_config(4), None, None).await;
             let mut socket = connect(listeners.runtime_control.addr()).await;
             let _ = recv_binary(&mut socket).await;
             if after_capabilities {
                 send_binary(&mut socket, frame(&frames, "capabilities.runtime-a")).await;
+                let _ = recv_binary(&mut socket).await;
             }
-            send_binary(&mut socket, frame(&frames, negative_frame)).await;
+            send_binary(&mut socket, negative_frame).await;
             expect_closed(&mut socket).await;
             assert_eq!(layer.health_snapshot().registered_sessions, 0);
             assert_eq!(layer.health_snapshot().pending_sessions, 0);
@@ -363,7 +399,6 @@ mod tests {
 
         // Complete the first handshake: the pre-auth permit releases on ACK.
         send_binary(&mut first, frame(&frames, "capabilities.runtime-a")).await;
-        send_binary(&mut first, frame(&frames, "register.prod.42.a")).await;
         let _ = recv_binary(&mut first).await;
         wait_until(|| layer.health_snapshot().pre_auth_connections == 0).await;
 
@@ -377,7 +412,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn handshake_timeouts_close_connection_and_release_pre_auth() {
-        let frames = corpus_frames();
         let timing = SessionTiming {
             bootstrap: Duration::from_secs(10),
             capabilities: Duration::from_millis(150),
@@ -391,10 +425,12 @@ mod tests {
         let _ = recv_binary(&mut no_capabilities).await;
         expect_closed(&mut no_capabilities).await;
 
-        let mut no_register = connect(listeners.runtime_control.addr()).await;
-        let _ = recv_binary(&mut no_register).await;
-        send_binary(&mut no_register, frame(&frames, "capabilities.runtime-a")).await;
-        expect_closed(&mut no_register).await;
+        // M4: capabilities are the registration — after bootstrap the
+        // capabilities deadline is the last handshake deadline; there is no
+        // register phase to time out.
+        let mut second = connect(listeners.runtime_control.addr()).await;
+        let _ = recv_binary(&mut second).await;
+        expect_closed(&mut second).await;
 
         wait_until(|| layer.health_snapshot().pre_auth_connections == 0).await;
         assert_eq!(layer.health_snapshot().registered_sessions, 0);
@@ -429,7 +465,6 @@ mod tests {
         let mut second = connect(listeners.runtime_control.addr()).await;
         let _ = recv_binary(&mut second).await;
         send_binary(&mut second, frame(&frames, "capabilities.runtime-b")).await;
-        send_binary(&mut second, frame(&frames, "register.prod.42.b")).await;
         let _ = recv_binary(&mut second).await;
 
         wait_until(|| layer.health_snapshot().registered_sessions == 2).await;
@@ -460,7 +495,7 @@ mod tests {
         let mut socket = connect(listeners.runtime_control.addr()).await;
         complete_handshake(&mut socket, &frames).await;
         // Every handshake deadline has long expired; a registered session
-        // must never be closed by the bootstrap/capabilities/register window.
+        // must never be closed by the bootstrap/capabilities window.
         tokio::time::sleep(Duration::from_millis(400)).await;
         let snapshot = layer.health_snapshot();
         assert_eq!(snapshot.registered_sessions, 1);
@@ -490,7 +525,6 @@ mod tests {
         let _ = recv_binary(&mut socket).await;
         tokio::time::sleep(Duration::from_millis(1_200)).await;
         send_binary(&mut socket, frame(&frames, "capabilities.runtime-a")).await;
-        send_binary(&mut socket, frame(&frames, "register.prod.42.a")).await;
         let _ = recv_binary(&mut socket).await;
         wait_until(|| layer.health_snapshot().registered_sessions == 1).await;
         assert_eq!(layer.health_snapshot().registered_sessions, 1);

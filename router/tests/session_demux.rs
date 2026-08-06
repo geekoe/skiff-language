@@ -2,9 +2,9 @@
 //! C-session §6, C-model-registration §2.2).
 
 use serde_json::json;
-use skiff_router::session::demux::{DemuxEvent, DemuxOutcome, RuntimeFrameDemux};
 use skiff_router::session::TerminalKind;
-use skiff_runtime_transport::protocol::{encode_binary_frame, RuntimeFrameFamily};
+use skiff_router::session::demux::{DemuxEvent, DemuxOutcome, RuntimeFrameDemux};
+use skiff_runtime_transport::protocol::{RuntimeFrameFamily, encode_binary_frame};
 
 fn hex_decode(hex: &str) -> Vec<u8> {
     (0..hex.len())
@@ -53,10 +53,21 @@ mod tests {
     #[test]
     fn session_legacy_register_is_rejected_by_demux() {
         // The legacy `runtime.register` tuple frame is retired (M4):
-        // capabilities-only registration; the bytes fail closed as a
-        // malformed frame.
+        // capabilities-only registration; its bytes fail closed as a
+        // malformed frame. The corpus no longer carries the retired bytes,
+        // so they are rebuilt inline from the legacy header shape.
+        let bytes = encode_binary_frame(
+            &json!({
+                "schemaVersion": "skiff-runtime-frame-v4",
+                "type": "runtime.register",
+                "runtimeId": "runtime-a",
+                "generation": 42,
+            }),
+            &[],
+        )
+        .expect("legacy register frame encodes");
         assert_eq!(
-            RuntimeFrameDemux.classify(&corpus_frame("legacy.runtime.register")),
+            RuntimeFrameDemux.classify(&bytes),
             DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
         );
     }
