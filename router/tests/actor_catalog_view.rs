@@ -211,11 +211,20 @@ mod tests {
         assert_eq!(view.loads(), 1);
         // Replacing the record on disk must not refresh the cached catalog
         // (single on-demand load per process; M4 has no epoch replacement).
+        // The multi-entry record shares its first entry with the cached
+        // single-entry catalog, so the miss probe must use an entry that is
+        // genuinely absent from the loaded catalog.
         store
             .write_actor_routing_projection(&second)
             .expect("write second projection");
-        let replacement = method_from_projection(&second);
-        assert!(!view.has_method(&query_from_method(&replacement)));
+        let replacement = &second.methods[1];
+        let replacement_query = CatalogQuery::new(
+            replacement.actor.service_id.clone(),
+            replacement.actor.actor_abi_identity.clone(),
+            replacement.actor_implementation_identity.clone(),
+            replacement.method_identity.clone(),
+        );
+        assert!(!view.has_method(&replacement_query));
         assert_eq!(view.loads(), 1);
     }
 

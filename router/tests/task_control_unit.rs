@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
-    PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
+    DeploymentArtifactIdentity, PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
+    RuntimeConfigSnapshotRef,
 };
 use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use skiff_router::session::demux::InboundFrameSink;
@@ -1323,12 +1324,15 @@ async fn admission_rejected_provable_when_image_not_admitted() {
     let rig = control_rig();
     let now = rig.store.now().await.expect("now");
     let mut image = corpus_image();
-    image.assembly = RuntimeAssemblyRef {
-        assembly_identity: AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            "f".repeat(64)
-        )),
-    };
+    // M4: the membership gate is release-pointer resolvability (build id),
+    // not the assembly identity. A frozen image whose deployment is not
+    // contained in the image source is provably unadmitted.
+    let mut deployment = image.deployment.clone();
+    deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
+        "f".repeat(64)
+    ));
+    image.deployment = deployment;
     rig.store
         .create(record(TASK_ID, image, now, TaskState::Scheduled))
         .await

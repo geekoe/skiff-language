@@ -760,7 +760,7 @@ mod tests {
                             "skiff-package-build-v10:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                         ),
                         package_local_abi_identity: PackageLocalAbiIdentity::new(
-                            "skiff-package-local-abi-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                            "skiff-package-local-abi-v7:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                         ),
                     },
                 }],

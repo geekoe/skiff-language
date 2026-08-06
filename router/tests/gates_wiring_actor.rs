@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use skiff_artifact_identity::ArtifactRelativePath;
 use skiff_deployment::projection::actor_routing::{
-    ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
-    ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
+    ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
+    ACTOR_ROUTING_PROJECTION_RECORD_PATH, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_router::actor::ActorLogicalKey;
@@ -35,9 +35,12 @@ use skiff_runtime_transport::protocol::{
     ActorRemoveRequestFrameHeader, ActorReplaceRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
-/// Fresh temporary artifact root with an empty current actor routing
-/// projection record; returns the root, the opened store and the projection
-/// reference consumed by the actor components (M4: no routing epoch).
+/// Fresh temporary artifact root carrying the current actor routing
+/// projection record consumed by the actor components (M4: no routing epoch).
+/// The projection resolves the fixture actor (`example.com/actors`, the
+/// `digest("abi")`/`digest("impl")` identities used by the frame headers) so
+/// get-or-create reaches the owner-selection gate; the invoked method
+/// identity is deliberately distinct so method-admission misses stay misses.
 fn fixture_root() -> (
     std::path::PathBuf,
     CanonicalArtifactStore,
@@ -53,11 +56,41 @@ fn fixture_root() -> (
     ));
     std::fs::create_dir_all(&root).expect("create temp artifact root");
     let store = CanonicalArtifactStore::open(&root).expect("open artifact store");
+    let method = ActorRoutingMethod {
+        actor: ActorRoutingRef {
+            service_id: "example.com/actors".to_string(),
+            actor_abi_identity: abi_identity(),
+        },
+        actor_implementation_identity: implementation_identity(),
+        method_identity: skiff_artifact_model::ActorMethodIdentity::new(format!(
+            "skiff-actor-method-v1:sha256:{}",
+            digest("fixture-method")
+        )),
+        deployment: skiff_artifact_model::ServiceDeploymentRef {
+            service_id: "example.com/actors".to_string(),
+            contract_version: "example.com/actors@1".to_string(),
+            deployment_revision: skiff_artifact_model::DeploymentRevision::new("deployment-1"),
+            deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
+                format!("skiff-deployment-artifact-v4:sha256:{}", digest("deploy")),
+            ),
+        },
+        package: skiff_artifact_model::PackageArtifactRef {
+            package_id: "example.com/actors".to_string(),
+            package_version: "0.1.0".to_string(),
+            package_build_id: skiff_artifact_model::PackageBuildId::new(format!(
+                "skiff-package-build-v10:sha256:{}",
+                digest("pkg")
+            )),
+            package_local_abi_identity: skiff_artifact_model::PackageLocalAbiIdentity::new(
+                format!("skiff-package-local-abi-v7:sha256:{}", digest("pkg-abi")),
+            ),
+        },
+    };
     let projection = ActorRoutingProjection::new(
         ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        Vec::new(),
+        vec![method],
     )
-    .expect("empty projection");
+    .expect("projection");
     store
         .write_actor_routing_projection(&projection)
         .expect("write actor routing projection");
@@ -211,9 +244,10 @@ mod tests {
         };
         let bytes = encode_binary_frame(&header, b"bootstrap").expect("encode getOrCreate");
         let result = sink.handle(&runtime(), &bytes);
-        // The production activation control port is not wired to a live session
-        // in this unit context, so the broker fails closed and the sink writes an
-        // error frame (fail closed rather than a session terminal).
+        // The fixture projection resolves the actor's deployment, but no
+        // session layer is wired in this unit context, so owner selection
+        // fails closed and the sink writes an error frame (fail closed
+        // rather than a session terminal).
         assert!(result.is_ok());
         let frames = writer.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);

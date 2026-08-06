@@ -6,7 +6,7 @@ mod dispatch_harness;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -221,8 +221,12 @@ struct CatalogRoot {
 
 impl CatalogRoot {
     fn new() -> Self {
+        // Unique per view/rig: parallel tests must not share (and clobber)
+        // the `records/actor-routing/current.json` record path.
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "skiff-router-task-actor-method-{}",
+            "skiff-router-task-actor-method-{}-{id}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -407,6 +411,10 @@ struct Rig {
     clock: Arc<TestClock>,
     session: RuntimeSessionEpoch,
     worker: tokio::task::JoinHandle<()>,
+    /// Keeps the artifact root alive for the whole test: the M4 catalog view
+    /// loads lazily on the first query (during admission), so the fixture
+    /// root must outlive rig construction.
+    _catalog_root: CatalogRoot,
 }
 
 fn rig() -> Rig {
@@ -508,6 +516,7 @@ fn rig() -> Rig {
         clock,
         session,
         worker,
+        _catalog_root: catalog_root,
     }
 }
 
