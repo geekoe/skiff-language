@@ -393,6 +393,7 @@ impl WebSocketGenerationRegistry {
         connection_id: &str,
         assembly_identity: &skiff_artifact_model::AssemblyIdentity,
         assembly_generation: u64,
+        build_id: Option<&str>,
         websocket_entry_id: &str,
     ) -> Result<ActiveAssemblyRoute> {
         let state = self.lock_state()?;
@@ -410,8 +411,20 @@ impl WebSocketGenerationRegistry {
                 "WebSocket JSON-RPC generation pin has no exact acquire receipt".to_string(),
             ));
         }
-        if pin.tuple.assembly_identity != *assembly_identity
-            || pin.tuple.assembly_generation != assembly_generation
+        // M2 routing authority: a frame carrying an exact buildId is matched
+        // against the pinned route's deployment artifact identity. Routers
+        // without buildId support keep the legacy assembly identity/generation
+        // pin match (the pin recorded the connect frame's own tuple).
+        let tuple_matches = match build_id {
+            Some(build_id) => {
+                build_id == pin.route.deployment().deployment_artifact_identity.as_str()
+            }
+            None => {
+                pin.tuple.assembly_identity == *assembly_identity
+                    && pin.tuple.assembly_generation == assembly_generation
+            }
+        };
+        if !tuple_matches
             || pin.tuple.websocket_entry_id != websocket_entry_id
             || pin.tuple.service_id != pin.route.entry().owner().service_id
         {
@@ -431,6 +444,7 @@ impl WebSocketGenerationRegistry {
         connection_id: &str,
         assembly_identity: &AssemblyIdentity,
         assembly_generation: u64,
+        build_id: Option<&str>,
         websocket_entry_id: &WebSocketEntryId,
         path: &str,
         method: &str,
@@ -442,6 +456,7 @@ impl WebSocketGenerationRegistry {
             connection_id,
             assembly_identity,
             assembly_generation,
+            build_id,
             websocket_entry_id.as_str(),
         )?;
         let method_route = physical_route
@@ -475,6 +490,7 @@ impl WebSocketGenerationRegistry {
         connection_id: &str,
         assembly_identity: &AssemblyIdentity,
         assembly_generation: u64,
+        build_id: Option<&str>,
         websocket_entry_id: &WebSocketEntryId,
         path: &str,
         method: &str,
@@ -487,6 +503,7 @@ impl WebSocketGenerationRegistry {
                 connection_id,
                 assembly_identity,
                 assembly_generation,
+                build_id,
                 websocket_entry_id,
                 path,
                 method,

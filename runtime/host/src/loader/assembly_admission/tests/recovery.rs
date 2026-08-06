@@ -248,8 +248,10 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })
     ));
-    assert_eq!(controller.active().unwrap().unwrap().generation(), 1);
-    assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 4);
+    // M2: Commit records the tuple metadata without loading or materializing,
+    // so the recovered image and the resolver read count stay untouched.
+    assert_eq!(controller.active().unwrap().unwrap().generation(), 0);
+    assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 2);
 
     let replayed = AssemblyAdmissionController::new(
         "runtime-a",
@@ -274,8 +276,8 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })
     ));
-    assert_eq!(replayed.active().unwrap().unwrap().generation(), 1);
-    assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 6);
+    assert_eq!(replayed.active().unwrap().unwrap().generation(), 0);
+    assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 3);
     assert_eq!(resolver.content_reads.load(Ordering::SeqCst), 0);
 }
 
@@ -344,7 +346,10 @@ async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_p
         .await
         .unwrap();
 
-    let mismatched_commit = controller
+    // M2: Prepare/Commit are wire compatibility only. Commit records the
+    // committed tuple metadata without loading, so the snapshot pair is not
+    // re-resolved and never materialized.
+    let committed_b = controller
         .apply_activation_control(
             generation_one_control("commit", assembly.clone(), snapshot_b.clone()),
             &resolver,
@@ -355,15 +360,12 @@ async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_p
         .unwrap()
         .unwrap();
     assert!(matches!(
-        mismatched_commit,
-        AssemblyActivationControl::Reject {
-            reason: AssemblyActivationRejectReason::Admission,
-            ..
-        }
+        committed_b,
+        AssemblyActivationControl::Register { generation: 1, .. }
     ));
     assert!(controller.active().unwrap().is_none());
 
-    let mismatched_abort = controller
+    let abort_b = controller
         .apply_activation_control(
             generation_one_control("abort", assembly.clone(), snapshot_b.clone()),
             &resolver,
@@ -371,10 +373,8 @@ async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_p
             None,
         )
         .await
-        .unwrap_err();
-    assert!(mismatched_abort
-        .to_string()
-        .contains("does not match the staged"));
+        .unwrap();
+    assert!(abort_b.is_none());
 
     controller
         .apply_activation_control(
@@ -385,10 +385,13 @@ async fn activation_and_recovery_pin_assembly_and_config_snapshot_as_one_exact_p
         )
         .await
         .unwrap();
-    assert_eq!(
-        controller.active().unwrap().unwrap().config_snapshot(),
-        &snapshot_a
-    );
+    assert!(matches!(
+        controller.registration().unwrap(),
+        Some(AssemblyActivationControl::Register {
+            config_snapshot,
+            ..
+        }) if config_snapshot == snapshot_a
+    ));
 
     let recovery_error = controller
         .recover_committed(
@@ -420,6 +423,8 @@ async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
         skiff_runtime_capability_context::DbProviderSource::unavailable(),
     );
 
+    // M2: Prepare acknowledges without resolving the config snapshot; only
+    // materialization paths (recovery, lazy load) resolve it.
     let reply = controller
         .apply_activation_control(
             generation_one_control("prepare", assembly.clone(), missing_snapshot.clone()),
@@ -432,10 +437,7 @@ async fn prepare_rejects_an_unresolvable_exact_config_snapshot_before_ack() {
         .unwrap();
     assert!(matches!(
         reply,
-        AssemblyActivationControl::Reject {
-            reason: AssemblyActivationRejectReason::Resolve,
-            ..
-        }
+        AssemblyActivationControl::Prepared { .. }
     ));
     assert!(controller.active().unwrap().is_none());
 

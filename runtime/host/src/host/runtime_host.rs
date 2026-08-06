@@ -68,6 +68,7 @@ pub struct RuntimeHost {
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
+    pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
     pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
@@ -163,6 +164,7 @@ impl RuntimeHost {
                 base_runtime_id.clone(),
                 db_provider,
             )),
+            artifact_root: Arc::new(StdMutex::new(None)),
             blob_store: Arc::new(StdMutex::new(None)),
             request_supervisor: Arc::new(RequestSupervisor::new()),
             websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
@@ -180,6 +182,21 @@ impl RuntimeHost {
 
     pub(crate) fn trusted_profile(&self) -> Option<&str> {
         self.frozen_profile.get().map(String::as_str)
+    }
+
+    /// Records the artifact root opened by the router bootstrap resolver. It is
+    /// advertised in capabilities frames so the router can treat this runtime
+    /// as a lazy-load candidate over the same store.
+    pub(crate) fn set_bootstrap_artifact_root(&self, root: impl Into<String>) {
+        if let Ok(mut slot) = self.artifact_root.lock() {
+            if slot.is_none() {
+                *slot = Some(root.into());
+            }
+        }
+    }
+
+    pub(crate) fn bootstrap_artifact_root(&self) -> Option<String> {
+        self.artifact_root.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Freezes the trusted activation profile on first router bootstrap and

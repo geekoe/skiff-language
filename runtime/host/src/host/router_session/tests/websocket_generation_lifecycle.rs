@@ -42,7 +42,9 @@ async fn websocket_generation_old_route_survives_reload_until_disconnect_without
     let (host, generation_a, generation_b) = fixture::reloaded_gateway_host().await;
     host.websocket_generations.connect(ROUTER_SESSION).unwrap();
     assert_eq!(generation_a.generation(), 1);
-    assert_eq!(generation_b.generation(), 2);
+    // M2 loaded set is append-only per buildId: re-admitting the same
+    // deployment resolves to the same loaded image.
+    assert_eq!(generation_b.generation(), 1);
 
     let (sender, mut receiver) = mpsc::unbounded_channel();
     host.queue_websocket_generation_acquire_for_test(
@@ -170,9 +172,11 @@ async fn websocket_generation_release_is_exact_idempotent_and_fail_closed() {
         }
     ));
     assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
+    // M2 loaded set is append-only: the deployment image stays strongly held
+    // by the loaded registry, so release only reclaims the generation pin.
     assert!(
-        retired_context.upgrade().is_none(),
-        "release should reclaim the retired generation after its last connection pin"
+        retired_context.upgrade().is_some(),
+        "loaded registry must keep the deployment image alive after release"
     );
 
     assert_eq!(
@@ -363,6 +367,7 @@ mod websocket_jsonrpc_target {
                 assembly_identity: physical_a.assembly_identity().clone(),
                 assembly_generation: physical_a.generation(),
                 deployment: method_a.deployment().clone(),
+                build_id: None,
                 gateway_entry_identity: method_a.gateway_entry_identity().clone(),
                 ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
@@ -427,6 +432,7 @@ struct JsonRpcExecutionRouteLookup<'a> {
     connection_id: &'a str,
     assembly_identity: &'a skiff_artifact_model::AssemblyIdentity,
     assembly_generation: u64,
+    build_id: Option<&'a str>,
     websocket_entry_id: &'a skiff_artifact_model::WebSocketEntryId,
     path: &'a str,
     method: &'a str,
@@ -446,6 +452,7 @@ impl JsonRpcExecutionRouteLookup<'_> {
                 self.connection_id,
                 self.assembly_identity,
                 self.assembly_generation,
+                self.build_id,
                 self.websocket_entry_id,
                 self.path,
                 self.method,
@@ -466,6 +473,7 @@ fn execution_route_lookup<'a>(
         connection_id,
         assembly_identity: physical.assembly_identity(),
         assembly_generation: physical.generation(),
+        build_id: None,
         websocket_entry_id,
         path: &method.selector().path,
         method: method.selector().method.as_deref().unwrap(),
@@ -742,6 +750,7 @@ async fn websocket_jsonrpc_target_matches_websocket_jsonrpc_execution_route_for_
             lookup_a.connection_id,
             lookup_a.assembly_identity,
             lookup_a.assembly_generation,
+            lookup_a.build_id,
             lookup_a.websocket_entry_id,
             lookup_a.path,
             lookup_a.method,
@@ -865,9 +874,11 @@ async fn websocket_jsonrpc_execution_route_rejects_tentative_and_released_pin_an
     drop(acquire);
     drop(method_a);
     drop(physical_a);
+    // M2 loaded set is append-only: release reclaims the generation pin but
+    // the deployment image stays strongly held by the loaded registry.
     assert!(
-        retired_context.upgrade().is_none(),
-        "release must reclaim the retired route owner"
+        retired_context.upgrade().is_some(),
+        "loaded registry must keep the deployment image alive after release"
     );
 }
 
@@ -909,9 +920,11 @@ async fn websocket_jsonrpc_execution_route_rejects_disconnected_pin_and_reclaims
     );
     drop(method_a);
     drop(physical_a);
+    // M2 loaded set is append-only: disconnect reclaims the generation pin
+    // but the deployment image stays strongly held by the loaded registry.
     assert!(
-        retired_context.upgrade().is_none(),
-        "disconnect must reclaim the retired route owner"
+        retired_context.upgrade().is_some(),
+        "loaded registry must keep the deployment image alive after disconnect"
     );
 }
 
@@ -1035,6 +1048,7 @@ fn handlerless_connect_header(
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             deployment: route.deployment().clone(),
+            build_id: None,
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,

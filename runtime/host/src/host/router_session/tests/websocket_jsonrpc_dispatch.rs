@@ -272,11 +272,12 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
 
     let wrong_session = with_request_id(&base, "host-jsonrpc-reject-session");
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let bootstrap = super::super::test_connection_bootstrap("jsonrpc-dispatch").unwrap();
     host.spawn_runtime_assembly_request(
         OTHER_ROUTER_SESSION,
         RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(wrong_session),
         br#"{"value":"must-not-run"}"#.to_vec(),
-        1_024,
+        &bootstrap,
         sender,
     )
     .await;
@@ -498,6 +499,7 @@ fn jsonrpc_header(
             assembly_identity: physical.assembly_identity().clone(),
             assembly_generation: physical.generation(),
             deployment: method.deployment().clone(),
+            build_id: None,
             gateway_entry_identity: method.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                 protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,

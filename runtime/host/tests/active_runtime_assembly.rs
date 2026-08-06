@@ -330,13 +330,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_rejects_dev_config_snapshot_for_prod_before_ack() {
+    async fn prepare_acks_dev_config_snapshot_without_resolving() {
         let assembly = Arc::new(empty_assembly());
         let reference = skiff_artifact_identity::runtime_assembly_ref(&assembly).unwrap();
         let resolver = EmptyAssemblyResolver { assembly };
         let (config_snapshot, config_resolver) = empty_snapshot("dev");
         let host = runtime_host("runtime-a");
 
+        // M2: Prepare acknowledges without resolving or materializing the
+        // config snapshot; profile validation happens on materialization paths
+        // (recovery, lazy load) only.
         let reply = host
             .apply_assembly_activation_control(
                 transition("prepare", reference, config_snapshot, "runtime-a"),
@@ -344,15 +347,12 @@ mod tests {
                 &config_resolver,
             )
             .await
-            .expect("profile mismatch is a fail-closed activation reply")
-            .expect("prepare must receive a reply");
+            .expect("prepare must receive a reply")
+            .expect("prepare must return a terminal reply");
 
         assert!(matches!(
             reply,
-            AssemblyActivationControl::Reject {
-                reason: AssemblyActivationRejectReason::Admission,
-                ..
-            }
+            AssemblyActivationControl::Prepared { .. }
         ));
         assert!(host.active_assembly_registration().unwrap().is_none());
     }
@@ -450,7 +450,10 @@ mod tests {
                 "b".repeat(64)
             )),
         };
-        let rejected = first
+        // M2: Prepare acknowledges without resolving the assembly record, so an
+        // unknown ref is not materialized here; the tuple is recorded on Commit
+        // and any request for its build id fast-fails through the lazy path.
+        let accepted = first
             .apply_assembly_activation_control(
                 AssemblyActivationControl::Prepare {
                     profile: "prod".to_string(),
@@ -469,11 +472,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(
-            rejected,
-            AssemblyActivationControl::Reject {
-                reason: AssemblyActivationRejectReason::Resolve,
-                ..
-            }
+            accepted,
+            AssemblyActivationControl::Prepared { .. }
         ));
         assert_eq!(
             first.active_assembly_registration().unwrap().unwrap(),

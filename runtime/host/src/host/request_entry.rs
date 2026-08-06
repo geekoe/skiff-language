@@ -16,11 +16,13 @@ mod assembly_wire;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
-    /// Resolves a canonical ingress only from one immutable active assembly generation.
+    /// Resolves a canonical ingress from the already-loaded deployment
+    /// registry (no lazy load). Test paths use this after direct admission.
     ///
     /// The canonical wire bridge supplies the selector. This entry performs no artifact access or
     /// candidate mutation and returns the activation plus exact linked gateway entry pinned by
     /// `ActiveAssemblyRoute`.
+    #[cfg(test)]
     pub(crate) fn lookup_active_assembly_request_route(
         &self,
         key: &ServiceIngressKey,

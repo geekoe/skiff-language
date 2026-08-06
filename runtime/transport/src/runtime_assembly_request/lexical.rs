@@ -153,6 +153,24 @@ where
     Ok(value)
 }
 
+/// Optional exact deployment build id carried by newer router request.start
+/// routing segments. Older routers omit the field; the runtime falls back to
+/// the deployment ref's artifact identity when it is absent.
+pub(super) fn deserialize_optional_build_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.trim().is_empty() {
+        return Err(de::Error::custom(
+            "runtimeAssembly routing.buildId must be a non-empty string",
+        ));
+    }
+    Ok(Some(value))
+}
+
 pub(super) fn deserialize_websocket_jsonrpc_unary_dispatch_mode<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>

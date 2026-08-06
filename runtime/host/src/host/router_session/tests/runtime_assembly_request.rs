@@ -768,20 +768,25 @@ async fn host_cancel_races_success_error_and_deadline_with_one_terminal_owner() 
 }
 
 #[tokio::test]
-async fn host_http_gateway_reload_pins_old_route_and_rejects_stale_wire() {
+async fn host_http_gateway_same_build_id_is_idempotent_and_legacy_routing_generation_is_ignored() {
     let (host, pinned, current) = fixture::reloaded_gateway_host().await;
     assert_eq!(pinned.generation(), 1);
-    assert_eq!(current.generation(), 2);
-    assert!(!Arc::ptr_eq(pinned.context_set(), current.context_set()));
+    // M2 loaded set is append-only per buildId: re-admitting the same
+    // deployment keeps the first loaded image.
+    assert_eq!(current.generation(), 1);
+    assert!(Arc::ptr_eq(pinned.context_set(), current.context_set()));
     assert!(pinned.request_target().is_ok());
 
+    // A frame carrying the legacy routing tuple (assembly identity/generation)
+    // still resolves: the runtime no longer consumes those fields for
+    // admission, only the exact deployment ref (and buildId when present).
     let stale = canonical_header(&pinned, "host-http-stale");
     let frame = encode_binary_frame(&stale, br#""stale""#).unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     dispatch(&host, &frame, &sender).await.unwrap();
     assert!(matches!(
         recv_terminal(&mut receiver).await,
-        Terminal::Error(_, _)
+        Terminal::End(_, _)
     ));
     assert_no_second_frame(&mut receiver).await;
 }
@@ -1042,6 +1047,7 @@ fn canonical_header(
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             deployment: route.deployment().clone(),
+            build_id: None,
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,
@@ -1089,6 +1095,7 @@ fn direct_task_header(
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             deployment: route.deployment().clone(),
+            build_id: None,
         },
         invocation: RuntimeAssemblyTaskInvocationFrameHeader {
             kind: "task".to_string(),
