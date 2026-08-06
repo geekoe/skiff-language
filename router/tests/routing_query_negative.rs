@@ -126,7 +126,7 @@ mod tests {
         let mut query = query();
         query.deployment = deployment("example.com/other-service");
 
-        let result = RuntimeCandidateQuery.query(&epoch, &view, &query);
+        let result = RuntimeCandidateQuery.query(&view, &query);
         assert_eq!(result, Err(CandidateQueryError::DeploymentNotInEpoch));
         assert!(
             result.is_err(),
@@ -142,7 +142,7 @@ mod tests {
         let view = view(Some(1), vec![session]);
 
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("excluded sessions return empty, not an error");
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_cancelled, 1);
@@ -157,7 +157,7 @@ mod tests {
         let view = view(Some(1), vec![session]);
 
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("unregistered session returns empty");
         assert!(leases.is_empty());
         // §5.6 has no unregistered counter; exclusion is silent by design.
@@ -179,7 +179,7 @@ mod tests {
         let view = view(Some(2), vec![stale, current]);
 
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("torn view is not an error; stale session is excluded");
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].session_epoch.replica_id, "runtime-b");
@@ -198,7 +198,7 @@ mod tests {
         let view = view(Some(1), vec![first, duplicate]);
 
         let leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &query())
+            .query(&view, &query())
             .expect("duplicate view entries still project");
         assert_eq!(leases.len(), 1);
     }
@@ -232,7 +232,7 @@ mod tests {
             vec![profile, generation, assembly, config_snapshot],
         );
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("mismatched tuples return empty");
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_tuple_mismatch, 4);
@@ -248,7 +248,7 @@ mod tests {
         let view = view(Some(1), vec![session]);
 
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("multi-rule failure returns empty");
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_tuple_mismatch, 1);
@@ -264,7 +264,7 @@ mod tests {
         let view = view(Some(1), vec![session]);
 
         let (leases, counters) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &query())
+            .query_with_counters(&view, &query())
             .expect("unknown capabilities fail closed");
         assert!(leases.is_empty());
         assert_eq!(counters.excluded_capability, 1);
@@ -272,7 +272,7 @@ mod tests {
         let mut stream_query = query();
         stream_query.mode = DispatchMode::ServerStream;
         let (stream_leases, _) = RuntimeCandidateQuery
-            .query_with_counters(&epoch, &view, &stream_query)
+            .query_with_counters(&view, &stream_query)
             .expect("serverStream query");
         assert!(stream_leases.is_empty());
     }

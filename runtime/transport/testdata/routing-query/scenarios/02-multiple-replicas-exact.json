@@ -13,11 +13,17 @@
       "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   },
-  "query": { "mode": "unary" },
+  "query": {
+    "mode": "unary",
+    "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "sessions": [
     {
       "id": "s1",
-      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "sessionEpoch": {
+        "replicaId": "runtime-a",
+        "connectionGeneration": 1
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -27,11 +33,22 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
-      "capabilities": ["unary", "serverStream"]
+      "capabilities": [
+        "unary",
+        "serverStream"
+      ],
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": false,
+      "artifactRoot": null
     },
     {
       "id": "s2",
-      "sessionEpoch": { "replicaId": "runtime-b", "connectionGeneration": 3 },
+      "sessionEpoch": {
+        "replicaId": "runtime-b",
+        "connectionGeneration": 3
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -41,11 +58,23 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
-      "capabilities": ["unary", "serverStream"]
+      "capabilities": [
+        "unary",
+        "serverStream"
+      ],
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": false,
+      "artifactRoot": null
     }
   ],
   "expect": {
-    "candidates": ["s1", "s2"],
+    "candidates": [
+      "s1",
+      "s2"
+    ],
     "note": "every exact replica is a candidate; ordering is pool-owned"
-  }
+  },
+  "routerArtifactRoot": null
 }

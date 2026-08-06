@@ -112,15 +112,22 @@ impl PendingHttpHandle {
 }
 
 /// C-routing-query directory view source: coherent lock-held snapshot plus
-/// the per-session dispatch capability binding retained by the session layer.
+/// the per-session registration facts (dispatch capabilities + build ids +
+/// lazy-load advertisement) retained by the session layer, with the router's
+/// own artifact root injected for the lazy-load candidate rule
+/// (integration-contract-v2 §1).
 #[derive(Debug, Clone)]
 pub struct SessionCandidateViewSource {
     session: SessionHandle,
+    router_artifact_root: Option<String>,
 }
 
 impl SessionCandidateViewSource {
-    pub fn new(session: SessionHandle) -> Self {
-        Self { session }
+    pub fn new(session: SessionHandle, router_artifact_root: Option<String>) -> Self {
+        Self {
+            session,
+            router_artifact_root,
+        }
     }
 }
 
@@ -129,12 +136,17 @@ impl CandidateViewSource for SessionCandidateViewSource {
         let Some(layer) = self.session.layer() else {
             return CandidateDirectoryView {
                 revision: None,
+                router_artifact_root: self.router_artifact_root.clone(),
                 sessions: Vec::new(),
             };
         };
-        let capabilities = layer.dispatch_capabilities_snapshot();
+        let registration_facts = layer.registration_facts_snapshot();
         let directory = layer.directory_lock();
-        RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities)
+        RuntimeCandidateQuery::snapshot_directory_view(
+            &directory,
+            &registration_facts,
+            self.router_artifact_root.clone(),
+        )
     }
 }
 

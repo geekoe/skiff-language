@@ -436,16 +436,16 @@ impl RoutingCandidateQueryPortAdapter {
         }
         for deployment in epoch.deployment_projection() {
             for mode in [DispatchMode::Unary, DispatchMode::ServerStream] {
-                let candidates = query
-                    .query(
-                        epoch,
-                        &view,
-                        &CandidateQuery {
-                            mode,
-                            deployment: deployment.clone(),
-                        },
-                    )
-                    .map_err(|error| ActivationCandidateError::Query(error.to_string()))?;
+                let candidates = query.query(
+                    &view,
+                    &CandidateQuery {
+                        mode,
+                        build_id: deployment
+                            .deployment_artifact_identity
+                            .as_str()
+                            .to_string(),
+                    },
+                );
                 for lease in candidates {
                     if seen.insert(lease.session_epoch.clone()) {
                         leases.push(lease);

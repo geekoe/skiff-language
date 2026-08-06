@@ -13,11 +13,17 @@
       "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   },
-  "query": { "mode": "unary" },
+  "query": {
+    "mode": "unary",
+    "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "sessions": [
     {
       "id": "s1",
-      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "sessionEpoch": {
+        "replicaId": "runtime-a",
+        "connectionGeneration": 1
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -27,11 +33,20 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": true,
-      "capabilities": ["unary", "serverStream"]
+      "capabilities": [
+        "unary",
+        "serverStream"
+      ],
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": false,
+      "artifactRoot": null
     }
   ],
   "expect": {
     "candidates": [],
     "note": "cancelled session is never a candidate even with exact tuple"
-  }
+  },
+  "routerArtifactRoot": null
 }

@@ -15,6 +15,18 @@ use std::collections::{BTreeSet, HashMap};
 use super::consumer::{ConsumerKind, ConsumerManifest};
 use super::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
 
+/// Registration facts refreshed from every `runtime.capabilities` frame
+/// (integration-contract-v2 §1/§3): the loaded build-id set and the
+/// lazy-load advertisement. Each capabilities refresh overwrites the facts;
+/// the Register frame tuple is retained but is no longer the unique
+/// registration identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RegistrationFacts {
+    pub registered_build_ids: Vec<String>,
+    pub lazy_load: bool,
+    pub artifact_root: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub registered_tuple: Option<RegisteredAssemblyTuple>,
@@ -23,6 +35,7 @@ pub struct SessionRecord {
     pub cancelled: bool,
     pub consumer_permits: Vec<ConsumerKind>,
     pub barrier_acked: BTreeSet<ConsumerKind>,
+    pub registration_facts: RegistrationFacts,
 }
 
 impl SessionRecord {
@@ -34,7 +47,14 @@ impl SessionRecord {
             cancelled: false,
             consumer_permits: permits,
             barrier_acked: BTreeSet::new(),
+            registration_facts: RegistrationFacts::default(),
         }
+    }
+
+    /// Overwrites the capabilities-refresh registration facts (contract §3:
+    /// every refresh replaces the previous facts).
+    pub fn update_registration_facts(&mut self, facts: RegistrationFacts) {
+        self.registration_facts = facts;
     }
 
     pub fn barrier_complete(&self) -> bool {
@@ -290,6 +310,10 @@ impl RuntimeRegistrationDirectory {
 
     pub fn record(&self, session: &RuntimeSessionEpoch) -> Option<&SessionRecord> {
         self.sessions_by_epoch.get(session)
+    }
+
+    pub fn record_mut(&mut self, session: &RuntimeSessionEpoch) -> Option<&mut SessionRecord> {
+        self.sessions_by_epoch.get_mut(session)
     }
 
     pub fn session_count(&self) -> usize {

@@ -13,11 +13,17 @@
       "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   },
-  "query": { "mode": "serverStream" },
+  "query": {
+    "mode": "serverStream",
+    "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "sessions": [
     {
       "id": "s1",
-      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "sessionEpoch": {
+        "replicaId": "runtime-a",
+        "connectionGeneration": 1
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -27,11 +33,19 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
-      "capabilities": ["unary"]
+      "capabilities": [
+        "unary"
+      ],
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": false,
+      "artifactRoot": null
     }
   ],
   "expect": {
     "candidates": [],
     "note": "missing serverStream capability excludes the session"
-  }
+  },
+  "routerArtifactRoot": null
 }

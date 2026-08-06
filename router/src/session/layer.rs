@@ -32,7 +32,7 @@ use super::consumer::{
     TerminalDeliveryError,
 };
 use super::demux::{InboundSinkSet, RegistrationFrameSink, RuntimeFrameDemux};
-use super::directory::RuntimeRegistrationDirectory;
+use super::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
 use super::handshake::EpochContext;
 use super::health::RuntimeHealthLedger;
 use super::identity::{RegisteredAssemblyTuple, RuntimeConnectionEpoch, RuntimeSessionEpoch};
@@ -144,6 +144,18 @@ struct SessionTaskHandle {
     join: JoinHandle<()>,
 }
 
+/// Per-session registration facts refreshed from the `runtime.capabilities`
+/// frame (integration-contract-v2 §1/§3): dispatch modes plus the loaded
+/// build-id set and the lazy-load advertisement. The session task records
+/// them on every capabilities bound/refresh; the layer keeps the coherent
+/// snapshot for the candidate query and writes them through to the directory
+/// record when it exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionRegistrationFacts {
+    pub dispatch: DispatchCapabilities,
+    pub registration: RegistrationFacts,
+}
+
 /// W-session assembly owner (see module doc).
 #[derive(Debug)]
 pub struct SessionLayer {
@@ -170,7 +182,7 @@ pub struct SessionLayer {
     epoch_index: Mutex<HashMap<RuntimeSessionEpoch, String>>,
     frame_writers: Mutex<HashMap<RuntimeSessionEpoch, Arc<dyn SessionFrameWriter>>>,
     inbound_sinks: Mutex<Arc<InboundSinkSet>>,
-    dispatch_capabilities: Mutex<HashMap<RuntimeSessionEpoch, DispatchCapabilities>>,
+    registration_facts: Mutex<HashMap<RuntimeSessionEpoch, SessionRegistrationFacts>>,
     registration_observer: Mutex<Option<Arc<dyn RegistrationObserver>>>,
 }
 
@@ -257,7 +269,7 @@ impl SessionLayer {
             epoch_index: Mutex::new(HashMap::new()),
             frame_writers: Mutex::new(HashMap::new()),
             inbound_sinks: Mutex::new(Arc::new(InboundSinkSet::default())),
-            dispatch_capabilities: Mutex::new(HashMap::new()),
+            registration_facts: Mutex::new(HashMap::new()),
             registration_observer: Mutex::new(None),
         })
     }
@@ -459,37 +471,75 @@ impl SessionLayer {
             .contains_key(session)
     }
 
-    /// Retains the validated dispatch capability binding for one bound
-    /// session (composition seam; the handshake already validated the
-    /// `runtime.capabilities` frame). Removed with the session.
-    pub fn record_dispatch_capabilities(
+    /// Records the validated `runtime.capabilities` registration facts for
+    /// one bound session (integration-contract-v2 §3): every refresh
+    /// overwrites the previous facts. The facts are retained in the layer
+    /// snapshot and written through to the directory record when the session
+    /// record already exists (a bound-but-not-yet-registered session keeps
+    /// the cached facts; `sync_registration_facts` applies them once the
+    /// record is published).
+    pub fn record_registration_facts(
         &self,
         session: &RuntimeSessionEpoch,
-        capabilities: DispatchCapabilities,
+        facts: SessionRegistrationFacts,
     ) {
-        self.dispatch_capabilities
+        self.registration_facts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session.clone(), capabilities);
+            .insert(session.clone(), facts.clone());
+        let mut directory = self.directory_lock();
+        if let Some(record) = directory.record_mut(session) {
+            record.update_registration_facts(facts.registration);
+        }
     }
 
-    pub fn remove_dispatch_capabilities(&self, session: &RuntimeSessionEpoch) {
-        self.dispatch_capabilities
+    /// Applies the cached capabilities facts to the exact directory record
+    /// (called right after the register publish created the record; the
+    /// capabilities frame arrives before `runtime.register`).
+    pub fn sync_registration_facts(&self, session: &RuntimeSessionEpoch) {
+        let facts = self
+            .registration_facts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session)
+            .cloned();
+        if let Some(facts) = facts {
+            let mut directory = self.directory_lock();
+            if let Some(record) = directory.record_mut(session) {
+                record.update_registration_facts(facts.registration);
+            }
+        }
+    }
+
+    pub fn remove_registration_facts(&self, session: &RuntimeSessionEpoch) {
+        self.registration_facts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(session);
     }
 
-    /// Coherent snapshot of the per-session dispatch capability bindings
-    /// (C-routing-query seam; `RuntimeCandidateQuery::snapshot_directory_view`
+    /// Coherent snapshot of the per-session registration facts (the
+    /// C-routing-query seam; `RuntimeCandidateQuery::snapshot_directory_view`
     /// consumes it under the directory lock).
-    pub fn dispatch_capabilities_snapshot(
+    pub fn registration_facts_snapshot(
         &self,
-    ) -> HashMap<RuntimeSessionEpoch, DispatchCapabilities> {
-        self.dispatch_capabilities
+    ) -> HashMap<RuntimeSessionEpoch, SessionRegistrationFacts> {
+        self.registration_facts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Coherent snapshot of the per-session dispatch capability bindings
+    /// (health projection seam; dispatch modes are projected out of the
+    /// registration facts).
+    pub fn dispatch_capabilities_snapshot(
+        &self,
+    ) -> HashMap<RuntimeSessionEpoch, DispatchCapabilities> {
+        self.registration_facts_snapshot()
+            .into_iter()
+            .map(|(session, facts)| (session, facts.dispatch))
+            .collect()
     }
 
     /// Current exact session for one replica (composition seam for

@@ -13,7 +13,9 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use hyper_util::rt::TokioIo;
-use skiff_runtime_transport::protocol::RuntimeDispatchModeCapability;
+use skiff_runtime_transport::protocol::{
+    RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep_until, timeout, Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -27,7 +29,7 @@ use super::handshake::{
     CapabilitiesEvent, HandshakePhase, HandshakeState, HealthEvent, TerminalKind, TimeoutKind,
 };
 use super::identity::{RuntimeConnectionEpoch, RuntimeSessionEpoch};
-use super::layer::{SessionCloseReason, SessionFrameWriter, SessionLayer};
+use super::layer::{SessionCloseReason, SessionFrameWriter, SessionLayer, SessionRegistrationFacts};
 
 pub type RuntimeSocket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 pub type RuntimeSocketRead = SplitStream<RuntimeSocket>;
@@ -259,7 +261,7 @@ pub(crate) async fn run_session_task(
     ));
     if let Some(session) = &bound_session {
         layer.unregister_frame_writer(session);
-        layer.remove_dispatch_capabilities(session);
+        layer.remove_registration_facts(session);
     }
     close_session(
         &layer,
@@ -308,19 +310,7 @@ fn process_event(
                         outbound: outbound.clone(),
                     }),
                 );
-                layer.record_dispatch_capabilities(
-                    &session,
-                    DispatchCapabilities {
-                        unary: header
-                            .capabilities
-                            .dispatch_modes
-                            .iter()
-                            .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
-                        server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
-                            matches!(mode, RuntimeDispatchModeCapability::ServerStream)
-                        }),
-                    },
-                );
+                layer.record_registration_facts(&session, registration_facts(&header));
                 *bound_session = Some(session);
                 *phase_started_at = Instant::now();
             }
@@ -329,19 +319,7 @@ fn process_event(
                     machine.terminal_with(TerminalKind::WrongOrder);
                     return;
                 };
-                layer.record_dispatch_capabilities(
-                    &session,
-                    DispatchCapabilities {
-                        unary: header
-                            .capabilities
-                            .dispatch_modes
-                            .iter()
-                            .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
-                        server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
-                            matches!(mode, RuntimeDispatchModeCapability::ServerStream)
-                        }),
-                    },
-                );
+                layer.record_registration_facts(&session, registration_facts(&header));
             }
             CapabilitiesEvent::Terminal(_) => {}
         },
@@ -367,9 +345,11 @@ fn process_event(
                     if let Some(old) = cancelled_old {
                         layer.request_close(&old, SessionCloseReason::Replaced);
                     }
+                    layer.sync_registration_facts(&session);
                     start_ack_write(layer, machine, &session, ack_started_at, ack_wait, outbound);
                 }
                 super::demux::RegistrationSinkOutput::TransitionPublished { .. } => {
+                    layer.sync_registration_facts(&session);
                     start_ack_write(layer, machine, &session, ack_started_at, ack_wait, outbound);
                 }
                 super::demux::RegistrationSinkOutput::Idempotent => {}
@@ -427,6 +407,29 @@ fn process_event(
             }
             machine.terminal_with(TerminalKind::UnimplementedFamily);
         }
+    }
+}
+
+/// Projects the validated `runtime.capabilities` header onto the per-session
+/// registration facts (integration-contract-v2 §1/§3): dispatch modes plus
+/// the loaded build-id set and the lazy-load advertisement.
+fn registration_facts(header: &RuntimeCapabilitiesFrameHeader) -> SessionRegistrationFacts {
+    SessionRegistrationFacts {
+        dispatch: DispatchCapabilities {
+            unary: header
+                .capabilities
+                .dispatch_modes
+                .iter()
+                .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
+            server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
+                matches!(mode, RuntimeDispatchModeCapability::ServerStream)
+            }),
+        },
+        registration: super::directory::RegistrationFacts {
+            registered_build_ids: header.capabilities.loaded_build_ids.clone(),
+            lazy_load: header.capabilities.lazy_load,
+            artifact_root: header.capabilities.artifact_root.clone(),
+        },
     }
 }
 

@@ -168,6 +168,19 @@ impl HealthAggregator {
                 assembly_identity: epoch.assembly_identity().to_string(),
                 config_snapshot_id: epoch.config_snapshot_id().to_string(),
                 ingress_count: epoch.ingress_projection().len(),
+                loaded_build_ids: {
+                    let mut ids = facts
+                        .iter()
+                        .filter(|fact| fact.registered && !fact.cancelled)
+                        .flat_map(|fact| fact.registered_build_ids.iter().cloned())
+                        .collect::<Vec<_>>();
+                    ids.sort();
+                    ids.dedup();
+                    ids
+                },
+                router_artifact_root: Some(
+                    components.config.artifacts_path.to_string_lossy().into_owned(),
+                ),
             });
 
         let profile = active

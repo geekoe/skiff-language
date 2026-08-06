@@ -54,12 +54,23 @@ pub fn capabilities_from_wire_names(names: &[String]) -> DispatchCapabilities {
 }
 
 /// Builds the canonical query input for one admission from the validated
-/// `request.start` header (C-routing-query §2.1: mode + exact deployment).
-pub fn candidate_query_from_request(request: &DispatchSubmit) -> CandidateQuery {
-    CandidateQuery {
-        mode: request.mode(),
-        deployment: request.header.routing.deployment.clone(),
-    }
+/// `request.start` header (integration-contract-v2 §1: mode + routing
+/// buildId). A header without a routing buildId fails closed (no candidate).
+pub fn candidate_query_from_request(request: &DispatchSubmit) -> Option<CandidateQuery> {
+    candidate_query_from_build_id(request.mode(), request.header.routing.build_id.as_deref())
+}
+
+/// Builds the canonical query input from a dispatch mode and an optional
+/// routing buildId (task-attempt and WS-connect admissions use the same
+/// helper; `None` buildId fails closed).
+pub fn candidate_query_from_build_id(
+    mode: DispatchMode,
+    build_id: Option<&str>,
+) -> Option<CandidateQuery> {
+    build_id.map(|build_id| CandidateQuery {
+        mode,
+        build_id: build_id.to_string(),
+    })
 }
 
 /// Directory view source consumed by the admission pipeline

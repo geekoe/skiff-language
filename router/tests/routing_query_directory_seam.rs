@@ -338,7 +338,7 @@ mod tests {
         stream_query.mode = DispatchMode::ServerStream;
         let view = RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities);
         let stream_leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &stream_query)
+            .query(&view, &stream_query)
             .expect("serverStream query");
         assert_eq!(
             stream_leases

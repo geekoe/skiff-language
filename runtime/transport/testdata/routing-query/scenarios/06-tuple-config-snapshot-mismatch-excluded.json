@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "tuple-config-snapshot-mismatch-excluded",
+  "scenario": "build-id-registered-wins-over-root-mismatch",
   "epoch": {
     "profile": "prod",
     "generation": 42,
@@ -13,11 +13,17 @@
       "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   },
-  "query": { "mode": "unary" },
+  "query": {
+    "mode": "unary",
+    "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "sessions": [
     {
       "id": "s1",
-      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "sessionEpoch": {
+        "replicaId": "runtime-a",
+        "connectionGeneration": 1
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -27,11 +33,22 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:cccccccccccccccccccccccccccccccc"
       },
       "cancelled": false,
-      "capabilities": ["unary", "serverStream"]
+      "capabilities": [
+        "unary",
+        "serverStream"
+      ],
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": true,
+      "artifactRoot": "/elsewhere/artifacts"
     }
   ],
   "expect": {
-    "candidates": [],
-    "note": "config snapshot mismatch excludes the session"
-  }
+    "candidates": [
+      "s1"
+    ],
+    "note": "the OR rule: the buildId is registered, so a lazyLoad root mismatch does not exclude the session"
+  },
+  "routerArtifactRoot": "/shared/artifacts"
 }

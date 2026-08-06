@@ -13,11 +13,17 @@
       "deploymentArtifactIdentity": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   },
-  "query": { "mode": "unary" },
+  "query": {
+    "mode": "unary",
+    "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
   "sessions": [
     {
       "id": "s1",
-      "sessionEpoch": { "replicaId": "runtime-a", "connectionGeneration": 1 },
+      "sessionEpoch": {
+        "replicaId": "runtime-a",
+        "connectionGeneration": 1
+      },
       "revision": 1,
       "registered": true,
       "tuple": {
@@ -27,12 +33,23 @@
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
-      "capabilities": ["unary", "serverStream"],
-      "heartbeatFresh": false
+      "capabilities": [
+        "unary",
+        "serverStream"
+      ],
+      "heartbeatFresh": false,
+      "loadedBuildIds": [
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "lazyLoad": false,
+      "artifactRoot": null
     }
   ],
   "expect": {
-    "candidates": ["s1"],
+    "candidates": [
+      "s1"
+    ],
     "note": "heartbeat freshness is not an admission input"
-  }
+  },
+  "routerArtifactRoot": null
 }

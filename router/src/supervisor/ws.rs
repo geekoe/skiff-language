@@ -288,18 +288,16 @@ impl WsConnectSelector for ProductionWsConnectSelector {
         connection_id: &str,
         binding: &WsBinding,
     ) -> Result<RuntimeSessionEpoch, String> {
-        let epoch = self
+        let _epoch = self
             .epoch_store
             .capture()
             .ok_or_else(|| "no active routing epoch for websocket connect".to_string())?;
         let view = self.view.view();
         let query = CandidateQuery {
             mode: DispatchMode::Unary,
-            deployment: binding.deployment.clone(),
+            build_id: binding.deployment.deployment_artifact_identity.as_str().to_string(),
         };
-        let leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &query)
-            .map_err(|error| format!("websocket connect candidate query failed: {error}"))?;
+        let leases = RuntimeCandidateQuery.query(&view, &query);
         let selected = self
             .pool
             .select(&leases, None)

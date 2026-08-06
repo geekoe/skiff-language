@@ -28,9 +28,16 @@ pub struct SessionFacts {
     pub tuple: RegisteredAssemblyTuple,
     pub registered: bool,
     pub cancelled: bool,
+    pub registered_build_ids: Vec<String>,
+    pub lazy_load: bool,
+    pub artifact_root: Option<String>,
 }
 
 /// `activeAssembly` (TS shape; `ingressCount` from the immutable epoch).
+/// `loadedBuildIds` / `routerArtifactRoot` are the lazy-load deployment
+/// extension (integration-contract-v2 §3/health): the union of build ids
+/// currently registered by connected capability-holders plus the router's
+/// own artifact store root used by the candidate rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveAssemblyProjection {
@@ -39,6 +46,10 @@ pub struct ActiveAssemblyProjection {
     pub assembly_identity: String,
     pub config_snapshot_id: String,
     pub ingress_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loaded_build_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_artifact_root: Option<String>,
 }
 
 /// `capabilityConnections[]` (TS shape; `registeredAt` is omitted because the
@@ -56,6 +67,16 @@ pub struct CapabilityConnectionProjection {
 pub struct CapabilitiesProjection {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dispatch_modes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_root: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub lazy_load: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub loaded_build_ids: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// `replicas[]` (TS shape; `registeredAt` omitted, see leaf §5b).
@@ -212,6 +233,9 @@ pub fn project_capability_connections(
                 connected: !fact.cancelled && connected.contains(&fact.session),
                 capabilities: CapabilitiesProjection {
                     dispatch_modes: modes,
+                    artifact_root: fact.artifact_root.clone(),
+                    lazy_load: fact.lazy_load,
+                    loaded_build_ids: fact.registered_build_ids.clone(),
                 },
             })
         })
@@ -262,6 +286,9 @@ pub fn session_facts(directory: &RuntimeRegistrationDirectory) -> Vec<SessionFac
                 tuple: record.registered_tuple.clone()?,
                 registered: record.routable,
                 cancelled: record.cancelled,
+                registered_build_ids: record.registration_facts.registered_build_ids.clone(),
+                lazy_load: record.registration_facts.lazy_load,
+                artifact_root: record.registration_facts.artifact_root.clone(),
             })
         })
         .collect()
@@ -326,6 +353,9 @@ mod tests {
             },
             registered: true,
             cancelled: false,
+            registered_build_ids: Vec::new(),
+            lazy_load: false,
+            artifact_root: None,
         }];
         let connected = facts
             .iter()
@@ -362,6 +392,9 @@ mod tests {
             },
             registered: true,
             cancelled: false,
+            registered_build_ids: Vec::new(),
+            lazy_load: false,
+            artifact_root: None,
         }];
         let connected = facts
             .iter()
