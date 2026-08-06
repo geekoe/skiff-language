@@ -68,6 +68,24 @@ pub(crate) fn materialize_config(
     let mut materialized = BTreeMap::new();
     for (deployment, activation) in candidate.activations() {
         let closure = activation_package_closure(candidate, deployment)?;
+        let needs_config = closure.iter().any(|build_id| {
+            image
+                .code_by_build(build_id)
+                .is_some_and(|package| !package.artifact().runtime_requirements.config.is_empty())
+        });
+        // The snapshot store publishes after the deployment records (watch
+        // order); a deployment with config requirements that the newest
+        // snapshot does not cover is a publish-in-flight window, not a
+        // config-free deployment. Failing here leaves the buildId unloaded
+        // (fail-fast, nothing cached) so the next request retries once the
+        // snapshot lands; caching an empty config view would pin the broken
+        // state forever.
+        if needs_config && !config_by_deployment.contains_key(deployment) {
+            anyhow::bail!(
+                "runtime config snapshot does not cover deployment {} (publish in flight?)",
+                deployment.deployment_artifact_identity
+            );
+        }
         let mut package_views = Vec::with_capacity(image.execution_packages().len());
         for package in image.execution_packages() {
             if closure.contains(package.package_build_id()) {
