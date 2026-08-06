@@ -381,7 +381,7 @@ pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestSta
                     CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY,
                 ),
             },
-            build_id: None,
+            build_id: Some(CORPUS_DEPLOYMENT_ARTIFACT_IDENTITY.to_string()),
             gateway_entry_identity: GatewayEntryIdentity::parse(
                 "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             )
@@ -453,7 +453,7 @@ pub fn task_attempt(
                 assembly_identity: AssemblyIdentity::new(CORPUS_ASSEMBLY_IDENTITY.to_string()),
                 assembly_generation: CORPUS_GENERATION,
                 deployment: corpus_deployment_ref(),
-                build_id: None,
+                build_id: Some(corpus_deployment_ref().deployment_artifact_identity.to_string()),
             },
             invocation: RuntimeAssemblyTaskInvocationFrameHeader {
                 kind: "task".to_string(),
