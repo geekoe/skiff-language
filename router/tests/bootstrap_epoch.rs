@@ -67,14 +67,16 @@ fn projection_path(root: &Path) -> PathBuf {
 
 fn write_projection(root: &Path, projection: &ActorRoutingProjection) {
     let path = projection_path(root);
-    fs::create_dir_all(path.parent().expect("projection parent"))
-        .expect("create projection dirs");
+    fs::create_dir_all(path.parent().expect("projection parent")).expect("create projection dirs");
     let bytes = canonical_json_bytes(projection).expect("canonical projection");
     fs::write(path, bytes).expect("write projection");
 }
 
 fn abi(byte: char) -> ActorAbiIdentity {
-    ActorAbiIdentity::new(format!("skiff-actor-abi-v1:sha256:{}", byte.to_string().repeat(64)))
+    ActorAbiIdentity::new(format!(
+        "skiff-actor-abi-v1:sha256:{}",
+        byte.to_string().repeat(64)
+    ))
 }
 
 fn implementation(byte: char) -> ActorImplementationIdentity {
@@ -92,8 +94,11 @@ fn method(byte: char) -> ActorMethodIdentity {
 }
 
 fn empty_projection() -> ActorRoutingProjection {
-    ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), Vec::new())
-        .expect("empty projection")
+    ActorRoutingProjection::new(
+        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+        Vec::new(),
+    )
+    .expect("empty projection")
 }
 
 #[cfg(test)]
@@ -106,8 +111,7 @@ mod tests {
         fs::create_dir_all(root.path()).expect("create root");
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
         write_projection(root.path(), &empty_projection());
-        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
-            .expect("view opens");
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref()).expect("view opens");
         assert_eq!(view.loads(), 0);
         let query = CatalogQuery::new(
             "example.com/service-1".to_string(),
@@ -119,7 +123,10 @@ mod tests {
         assert_eq!(view.loads(), 1, "one on-demand load");
         let _ = view.has_method(&query);
         assert_eq!(view.loads(), 1, "cached: no second load");
-        assert_eq!(view.schema_version(), ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION);
+        assert_eq!(
+            view.schema_version(),
+            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -127,8 +134,7 @@ mod tests {
         let root = TestRoot::new();
         fs::create_dir_all(root.path()).expect("create root");
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
-        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
-            .expect("view opens");
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref()).expect("view opens");
         let query = CatalogQuery::new(
             "example.com/service-1".to_string(),
             abi('a'),
@@ -149,8 +155,7 @@ mod tests {
         let path = projection_path(root.path());
         fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
         fs::write(path, b"not json").expect("write malformed projection");
-        let view = ActorMethodCatalogView::new(root.path(), projection_ref())
-            .expect("view opens");
+        let view = ActorMethodCatalogView::new(root.path(), projection_ref()).expect("view opens");
         let query = CatalogQuery::new(
             "example.com/service-1".to_string(),
             abi('a'),

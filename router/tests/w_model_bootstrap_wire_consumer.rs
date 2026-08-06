@@ -9,9 +9,8 @@ use std::path::PathBuf;
 use serde_json::Value;
 use skiff_runtime_transport::protocol::{
     decode_router_bootstrap_frame, decode_router_bootstrap_frame_header, encode_binary_frame,
-    encode_router_bootstrap_frame, RouterBootstrapFrameHeader,
-    RouterBootstrapSource, RuntimeBootstrapProvider, StatelessRuntimeBootstrapProvider,
-    ROUTER_BOOTSTRAP_FRAME_TYPE,
+    encode_router_bootstrap_frame, RouterBootstrapFrameHeader, RouterBootstrapSource,
+    RuntimeBootstrapProvider, StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
 };
 
 fn corpus_path() -> PathBuf {

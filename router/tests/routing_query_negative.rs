@@ -5,12 +5,10 @@
 
 use std::sync::Arc;
 
-use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
-};
+use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use skiff_router::routing::{
-    CandidateDirectoryView, CandidateQuery, CandidateSession,
-    DispatchCapabilities, DispatchMode, RuntimeCandidateQuery,
+    CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
+    RuntimeCandidateQuery,
 };
 use skiff_router::session::identity::RuntimeSessionEpoch;
 

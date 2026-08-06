@@ -78,10 +78,9 @@ mod tests {
         let root = TestRoot::new();
         fs::create_dir_all(root.path()).expect("create artifact root");
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
-        let assembly =
-            RouterBootstrapAssembly::assemble(&config("dev", root.path()))
-                .await
-                .expect("bootstrap must succeed");
+        let assembly = RouterBootstrapAssembly::assemble(&config("dev", root.path()))
+            .await
+            .expect("bootstrap must succeed");
         assert_eq!(assembly.profile(), "dev");
         assembly.shutdown().await;
     }

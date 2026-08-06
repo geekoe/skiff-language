@@ -15,9 +15,7 @@ mod tests {
     use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 
     use crate::http_common;
-    use crate::http_common::{
-        fixture_resolver, send_request, service_headers, StreamClient,
-    };
+    use crate::http_common::{fixture_resolver, send_request, service_headers, StreamClient};
 
     async fn start_server(
         dispatcher: FakeHttpDispatcher,
@@ -28,13 +26,9 @@ mod tests {
             request_timeout,
             ..HttpGatewayServerOptions::new("127.0.0.1:0".parse().expect("bind"), 1024 * 1024, 4096)
         };
-        let server = start_http_gateway(
-            options,
-            fixture_resolver(),
-            dispatcher.clone(),
-        )
-        .await
-        .expect("start http gateway");
+        let server = start_http_gateway(options, fixture_resolver(), dispatcher.clone())
+            .await
+            .expect("start http gateway");
         (server, (*dispatcher).clone())
     }
 

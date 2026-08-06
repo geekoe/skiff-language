@@ -78,10 +78,9 @@ mod tests {
         fs::create_dir_all(root.path()).expect("create artifact root");
         skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
             .expect("create artifact store");
-        let assembly =
-            RouterBootstrapAssembly::assemble(&config("prod", root.path()))
-                .await
-                .expect("assembly must succeed");
+        let assembly = RouterBootstrapAssembly::assemble(&config("prod", root.path()))
+            .await
+            .expect("assembly must succeed");
         assert_eq!(assembly.profile(), "prod");
         assert!(assembly.store().root().starts_with(root.path()));
         assembly.shutdown().await;
@@ -94,7 +93,9 @@ mod tests {
             .await
             .expect_err("missing artifact root must fail closed");
         assert!(
-            error.to_string().contains("canonical artifact store open failed"),
+            error
+                .to_string()
+                .contains("canonical artifact store open failed"),
             "unexpected error: {error}"
         );
     }
@@ -107,7 +108,9 @@ mod tests {
             .await
             .expect_err("file artifact root must fail closed");
         assert!(
-            error.to_string().contains("canonical artifact store open failed"),
+            error
+                .to_string()
+                .contains("canonical artifact store open failed"),
             "unexpected error: {error}"
         );
     }
@@ -135,10 +138,9 @@ mod tests {
         fs::create_dir_all(root.path()).expect("create artifact root");
         skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
             .expect("create artifact store");
-        let assembly =
-            RouterBootstrapAssembly::assemble(&config("prod", root.path()))
-                .await
-                .expect("assembly must succeed");
+        let assembly = RouterBootstrapAssembly::assemble(&config("prod", root.path()))
+            .await
+            .expect("assembly must succeed");
         assert_eq!(
             assembly.actor_projection().record_path.as_str(),
             skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH
@@ -155,10 +157,9 @@ mod tests {
         fs::create_dir_all(root.path()).expect("create artifact root");
         skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
             .expect("create artifact store");
-        let assembly =
-            RouterBootstrapAssembly::assemble(&config("prod", root.path()))
-                .await
-                .expect("assembly must succeed");
+        let assembly = RouterBootstrapAssembly::assemble(&config("prod", root.path()))
+            .await
+            .expect("assembly must succeed");
         assembly.shutdown().await;
         assembly.shutdown().await;
         let _ = Arc::new(assembly);

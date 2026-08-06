@@ -103,9 +103,7 @@ fn view_from_projection(projection: &ActorRoutingProjection) -> ActorMethodCatal
 }
 
 fn method_from_projection(projection: &ActorRoutingProjection) -> ActorRoutingMethod {
-    ActorRoutingCatalog::from_projection(Arc::new(projection.clone()))
-        .entries()[0]
-        .clone()
+    ActorRoutingCatalog::from_projection(Arc::new(projection.clone())).entries()[0].clone()
 }
 
 fn query_from_method(method: &ActorRoutingMethod) -> CatalogQuery {

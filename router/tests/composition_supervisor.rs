@@ -50,8 +50,8 @@ fn materialize(profile: &str) -> TestRoot {
     let store = skiff_deployment::storage::CanonicalArtifactStore::create(root.path())
         .expect("create artifact store");
 
-    let mut deployment = skiff_deployment::fixtures::service_deployment_fixture()
-        .expect("deployment fixture");
+    let mut deployment =
+        skiff_deployment::fixtures::service_deployment_fixture().expect("deployment fixture");
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
         .expect("assign deployment identity");
     store
@@ -221,10 +221,7 @@ mod tests {
         let root = TestRoot::new();
         let config = config(root.path());
         let result = RouterSupervisor::assemble(&config).await;
-        assert!(
-            result.is_err(),
-            "missing artifact root must fail closed"
-        );
+        assert!(result.is_err(), "missing artifact root must fail closed");
     }
 
     #[tokio::test]
@@ -233,10 +230,7 @@ mod tests {
         let mut config = config(root.path());
         config.profile = "invalid profile".to_string();
         let result = RouterSupervisor::assemble(&config).await;
-        assert!(
-            result.is_err(),
-            "invalid profile must fail closed"
-        );
+        assert!(result.is_err(), "invalid profile must fail closed");
     }
 
     #[tokio::test]
@@ -254,10 +248,7 @@ mod tests {
 
         // Health route is served with a JSON body (GET-only).
         let (status, body) = raw_request(control_addr, "GET", "/__router/health", b"").await;
-        assert!(
-            status.contains("200"),
-            "health must be 200, got {status:?}"
-        );
+        assert!(status.contains("200"), "health must be 200, got {status:?}");
         assert!(
             body.contains("\"ok\":true"),
             "health must report ok, got {body:?}"

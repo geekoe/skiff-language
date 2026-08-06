@@ -61,8 +61,7 @@ fn projection_ref() -> ActorRoutingProjectionRef {
 
 fn write_projection(root: &Path, bytes: &[u8]) {
     let path = root.join(ACTOR_ROUTING_PROJECTION_RECORD_PATH);
-    fs::create_dir_all(path.parent().expect("projection parent"))
-        .expect("create projection dirs");
+    fs::create_dir_all(path.parent().expect("projection parent")).expect("create projection dirs");
     fs::write(path, bytes).expect("write projection");
 }
 
@@ -95,8 +94,8 @@ mod tests {
     #[test]
     fn strict_loader_open_fails_closed_on_missing_root() {
         let root = TestRoot::new();
-        let error = BootstrapStrictLoader::open(root.path())
-            .expect_err("missing root must fail closed");
+        let error =
+            BootstrapStrictLoader::open(root.path()).expect_err("missing root must fail closed");
         assert!(matches!(error, BootstrapLoadFailure::Open(_)));
     }
 

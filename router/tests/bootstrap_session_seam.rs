@@ -38,12 +38,11 @@ mod tests {
 
     #[test]
     fn session_bootstrap_bytes_carry_profile_artifact_root_and_service_db() {
-        let layer = SessionLayer::with_options(
-            config(),
-            SessionLayerOptions::default(),
-        )
-        .expect("session layer options are valid");
-        let bytes = layer.bootstrap_bytes().expect("bootstrap bytes are always available");
+        let layer = SessionLayer::with_options(config(), SessionLayerOptions::default())
+            .expect("session layer options are valid");
+        let bytes = layer
+            .bootstrap_bytes()
+            .expect("bootstrap bytes are always available");
         let header = decode_router_bootstrap_frame(&bytes).expect("bootstrap frame decodes");
         assert_eq!(header.activation.profile, "dev");
         assert_eq!(header.artifacts_path, "/opt/skiff/artifacts");

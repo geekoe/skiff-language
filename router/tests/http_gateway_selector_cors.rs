@@ -16,8 +16,7 @@ mod tests {
 
     use crate::http_common;
     use crate::http_common::{
-        fixture_resolver, send_request, service_headers, CONTRACT_VERSION,
-        SERVICE_ID,
+        fixture_resolver, send_request, service_headers, CONTRACT_VERSION, SERVICE_ID,
     };
 
     async fn start_server(

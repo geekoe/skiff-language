@@ -678,12 +678,12 @@ fn dispatch_request(
 ) -> (DispatchRequest, CancelSignal) {
     // M4: the binding is the release-resolved HTTP surface (production
     // resolver over the live artifact store).
-    let store = skiff_deployment::storage::CanonicalArtifactStore::open(
-        &components.config.artifacts_path,
-    )
-    .expect("open artifact store");
-    let release: Arc<dyn skiff_router::release::ReleaseResolver> =
-        Arc::new(skiff_router::release::StoreReleaseResolver::new(store.clone()));
+    let store =
+        skiff_deployment::storage::CanonicalArtifactStore::open(&components.config.artifacts_path)
+            .expect("open artifact store");
+    let release: Arc<dyn skiff_router::release::ReleaseResolver> = Arc::new(
+        skiff_router::release::StoreReleaseResolver::new(store.clone()),
+    );
     let profile = components.assembly.profile().to_string();
     let deployments = release
         .all_deployments(&profile)

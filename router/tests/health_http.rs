@@ -108,7 +108,9 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(
-            build_ids.iter().any(|id| id.as_str() == Some(&chain.build_id)),
+            build_ids
+                .iter()
+                .any(|id| id.as_str() == Some(&chain.build_id)),
             "activeAssembly.buildIds must contain the published build id"
         );
         assert_steady_zero(&health);

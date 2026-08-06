@@ -15,7 +15,9 @@ use serde_json::Value;
 use skiff_router::session::consumer::ConsumerManifest;
 use skiff_router::session::demux::{RegistrationFrameSink, RegistrationSinkOutput};
 use skiff_router::session::directory::RuntimeRegistrationDirectory;
-use skiff_router::session::handshake::{CapabilitiesEvent, HandshakeState, HealthEvent, TimeoutKind};
+use skiff_router::session::handshake::{
+    CapabilitiesEvent, HandshakeState, HealthEvent, TimeoutKind,
+};
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::pre_auth::PreAuthPool;
 use skiff_router::session::{ConsumerKind, HandshakePhase, TerminalKind};
@@ -46,15 +48,9 @@ struct FrameEntry {
 #[derive(Debug, Clone)]
 enum SemanticFrame {
     Bootstrap,
-    Capabilities {
-        runtime_id: String,
-    },
-    Registered {
-        runtime_id: String,
-    },
-    Health {
-        runtime_id: String,
-    },
+    Capabilities { runtime_id: String },
+    Registered { runtime_id: String },
+    Health { runtime_id: String },
 }
 
 fn hex_decode(hex: &str) -> Vec<u8> {
@@ -93,11 +89,10 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
     let bytes = hex_decode(&entry.frame_hex);
     match entry.decode_as.as_str() {
         "RouterBootstrap" => {
-            let header: RouterBootstrapFrameHeader =
-                decode_router_bootstrap_frame_header(
-                    decode_binary_frame(&bytes).expect("frame decodes").header,
-                )
-                .expect("bootstrap decodes");
+            let header: RouterBootstrapFrameHeader = decode_router_bootstrap_frame_header(
+                decode_binary_frame(&bytes).expect("frame decodes").header,
+            )
+            .expect("bootstrap decodes");
             let _ = header;
             SemanticFrame::Bootstrap
         }
@@ -109,8 +104,10 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
             }
         }
         "Registered" => {
-            let (typed, _): (skiff_runtime_transport::protocol::RuntimeRegisteredFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&bytes).expect("registered decodes");
+            let (typed, _): (
+                skiff_runtime_transport::protocol::RuntimeRegisteredFrameHeader,
+                Vec<u8>,
+            ) = decode_typed_binary_frame(&bytes).expect("registered decodes");
             SemanticFrame::Registered {
                 runtime_id: typed.runtime_id,
             }
@@ -142,9 +139,8 @@ mod tests {
 
         // accept-sequence: bootstrap -> capabilities bind -> ACK -> health.
         let mut machine = HandshakeState::new();
-        let mut directory = RuntimeRegistrationDirectory::new(
-            &ConsumerManifest::installed(CONSUMERS),
-        );
+        let mut directory =
+            RuntimeRegistrationDirectory::new(&ConsumerManifest::installed(CONSUMERS));
         machine
             .on_bootstrap_written()
             .expect("bootstrap write in Accepted");
@@ -161,10 +157,7 @@ mod tests {
                     &CONSUMERS,
                 );
                 assert!(
-                    matches!(
-                        output,
-                        RegistrationSinkOutput::PendingPublished { .. }
-                    ),
+                    matches!(output, RegistrationSinkOutput::PendingPublished { .. }),
                     "capabilities bind publishes the pending record"
                 );
             }
@@ -234,10 +227,9 @@ mod tests {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let value: Value = serde_json::from_str(
-                &std::fs::read_to_string(&path).expect("scenario readable"),
-            )
-            .expect("scenario decodes");
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("scenario readable"))
+                    .expect("scenario decodes");
             names.push(
                 value["scenario"]
                     .as_str()

@@ -7,9 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
-};
+use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use skiff_router::routing::{
     CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
     RegisteredSessionLease, RoutingQueryCounters,
@@ -209,11 +207,13 @@ pub fn build_view(fixture: &ScenarioFixture) -> CandidateDirectoryView {
 pub fn build_query(fixture: &ScenarioFixture) -> CandidateQuery {
     CandidateQuery {
         mode: fixture.query.mode,
-        build_id: fixture
-            .query
-            .build_id
-            .clone()
-            .unwrap_or_else(|| fixture.epoch.deployment.deployment_artifact_identity.clone()),
+        build_id: fixture.query.build_id.clone().unwrap_or_else(|| {
+            fixture
+                .epoch
+                .deployment
+                .deployment_artifact_identity
+                .clone()
+        }),
     }
 }
 
@@ -250,11 +250,13 @@ pub fn expected_counters(fixture: &ScenarioFixture) -> RoutingQueryCounters {
         candidates_returned: fixture.expect.candidates.len() as u64,
         ..RoutingQueryCounters::default()
     };
-    let build_id = fixture
-        .query
-        .build_id
-        .clone()
-        .unwrap_or_else(|| fixture.epoch.deployment.deployment_artifact_identity.clone());
+    let build_id = fixture.query.build_id.clone().unwrap_or_else(|| {
+        fixture
+            .epoch
+            .deployment
+            .deployment_artifact_identity
+            .clone()
+    });
     for session in &fixture.sessions {
         let build_id_eligible = session.loaded_build_ids.iter().any(|id| id == &build_id)
             || (session.lazy_load && session.artifact_root == fixture.router_artifact_root);

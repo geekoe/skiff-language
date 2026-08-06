@@ -221,7 +221,9 @@ mod tests {
         // 1. In-process success chain: store open + profile validation.
         let pool = Arc::new(BlockingLoader::new(BlockingLoaderOptions::default()));
         let config = skiff_router::config::load_router_config(
-            write_router_config(&live).to_str().expect("config path utf8"),
+            write_router_config(&live)
+                .to_str()
+                .expect("config path utf8"),
         )
         .expect("load router config");
         let assembly = RouterBootstrapAssembly::assemble(&config)
@@ -286,7 +288,9 @@ mod tests {
     async fn router_live_bootstrap_missing_store_fails_closed() {
         let live = LiveProfile::from_env();
         let mut config = skiff_router::config::load_router_config(
-            write_router_config(&live).to_str().expect("config path utf8"),
+            write_router_config(&live)
+                .to_str()
+                .expect("config path utf8"),
         )
         .expect("load router config");
         config.artifacts_path = live.temp_dir.join("missing-artifact-root");
@@ -301,7 +305,9 @@ mod tests {
     async fn router_live_bootstrap_invalid_profile_fails_closed() {
         let live = LiveProfile::from_env();
         let mut config = skiff_router::config::load_router_config(
-            write_router_config(&live).to_str().expect("config path utf8"),
+            write_router_config(&live)
+                .to_str()
+                .expect("config path utf8"),
         )
         .expect("load router config");
         config.profile = "invalid profile".to_string();

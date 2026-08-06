@@ -75,8 +75,7 @@ pub fn materialize(profile: &str) -> RealChain {
     std::fs::create_dir_all(root.path()).expect("create artifact root");
     let artifact_store =
         CanonicalArtifactStore::create(root.path()).expect("create artifact store");
-    let mut deployment =
-        service_deployment_fixture().expect("deployment fixture");
+    let mut deployment = service_deployment_fixture().expect("deployment fixture");
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
         .expect("assign deployment identity");
     artifact_store

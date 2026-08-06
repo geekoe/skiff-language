@@ -100,8 +100,8 @@ fn materialize() -> RealChain {
         deployment_revision: deployment.deployment_revision.clone(),
         deployment_artifact_identity: deployment.deployment_artifact_identity.clone(),
     };
-    let release_pointer = ReleasePointer::new("dev", deployment_ref.clone())
-        .expect("release pointer");
+    let release_pointer =
+        ReleasePointer::new("dev", deployment_ref.clone()).expect("release pointer");
     artifact_store
         .write_release_pointer(&release_pointer)
         .expect("write release pointer");

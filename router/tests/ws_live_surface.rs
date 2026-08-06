@@ -432,11 +432,12 @@ mod tests {
             "relay surface exists"
         );
 
-        let resolver = skiff_router::http::ingress::StoreHttpIngressResolver::new_with_live_artifact_store(
-            Arc::new(http),
-            store.clone(),
-            "surface-dup",
-        );
+        let resolver =
+            skiff_router::http::ingress::StoreHttpIngressResolver::new_with_live_artifact_store(
+                Arc::new(http),
+                store.clone(),
+                "surface-dup",
+            );
         let aihub_selector = skiff_router::http::selector::ServiceDeploymentSelector {
             service_id: AIHUB_SERVICE.to_string(),
             contract_version: CONTRACT_VERSION.to_string(),

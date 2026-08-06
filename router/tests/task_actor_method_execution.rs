@@ -254,8 +254,8 @@ impl CatalogRoot {
             }],
         )
         .expect("projection");
-        let bytes = skiff_canonical_json::canonical_json_bytes(&projection)
-            .expect("canonical projection");
+        let bytes =
+            skiff_canonical_json::canonical_json_bytes(&projection).expect("canonical projection");
         let path = root.join(skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH);
         std::fs::create_dir_all(path.parent().expect("projection parent"))
             .expect("create projection dirs");
@@ -290,7 +290,10 @@ fn projection_ref() -> skiff_router::artifact::ActorRoutingProjectionRef {
 struct FakeImageSource;
 
 impl TaskExecutionImageSource for FakeImageSource {
-    fn resolve(&self, _header: &skiff_runtime_transport::protocol::TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef> {
+    fn resolve(
+        &self,
+        _header: &skiff_runtime_transport::protocol::TaskSubmitRequestFrameHeaderV2,
+    ) -> Option<TaskExecutionImageRef> {
         Some(corpus_image())
     }
 
@@ -442,8 +445,7 @@ fn rig() -> Rig {
         LeaseSchedulerOptions::default(),
     ));
     let catalog_view = Arc::new(
-        ActorMethodCatalogView::new(catalog_root.path(), projection_ref())
-            .expect("catalog view"),
+        ActorMethodCatalogView::new(catalog_root.path(), projection_ref()).expect("catalog view"),
     );
     let actor = Arc::new(ActorComponents {
         registry: Arc::clone(&registry),

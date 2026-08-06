@@ -8,6 +8,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use skiff_artifact_identity::assign_service_deployment_identity;
+use skiff_artifact_model::GatewayAdapterSource;
+use skiff_artifact_model::GatewayExternalSchema;
 use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
     DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind, GatewayAdapterPlan,
@@ -17,16 +20,11 @@ use skiff_artifact_model::{
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
-use skiff_artifact_model::GatewayAdapterSource;
-use skiff_artifact_model::GatewayExternalSchema;
-use skiff_artifact_identity::assign_service_deployment_identity;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
-use skiff_router::http::{
-    HttpGatewaySurfaceView, HttpIngressResolver, StoreHttpIngressResolver,
-};
+use skiff_router::http::{HttpGatewaySurfaceView, HttpIngressResolver, StoreHttpIngressResolver};
 
 pub const SERVICE_ID: &str = "example.com/service-1";
 pub const CONTRACT_VERSION: &str = "1.0.0";
@@ -59,10 +57,7 @@ fn fixture_service_deployment() -> ServiceDeployment {
         gateway_entries: BTreeMap::from([
             (
                 GatewayEntryKey::parse("items").expect("key"),
-                surface_entry(
-                    GatewayDispatchMode::Unary,
-                    GatewayAdapterKind::TypedJson,
-                ),
+                surface_entry(GatewayDispatchMode::Unary, GatewayAdapterKind::TypedJson),
             ),
             (
                 GatewayEntryKey::parse("events").expect("key"),
@@ -73,10 +68,7 @@ fn fixture_service_deployment() -> ServiceDeployment {
             ),
             (
                 GatewayEntryKey::parse("items-options").expect("key"),
-                surface_entry(
-                    GatewayDispatchMode::Unary,
-                    GatewayAdapterKind::TypedJson,
-                ),
+                surface_entry(GatewayDispatchMode::Unary, GatewayAdapterKind::TypedJson),
             ),
         ]),
         ingress: vec![
@@ -176,13 +168,12 @@ fn surface_entry(
     } else {
         None
     };
-    let response_schema = if adapter_kind == GatewayAdapterKind::TypedJson
-        && mode == GatewayDispatchMode::Unary
-    {
-        Some(GatewayExternalSchema::String)
-    } else {
-        None
-    };
+    let response_schema =
+        if adapter_kind == GatewayAdapterKind::TypedJson && mode == GatewayDispatchMode::Unary {
+            Some(GatewayExternalSchema::String)
+        } else {
+            None
+        };
     let stream_item_schema = if mode == GatewayDispatchMode::ServerStream {
         Some(GatewayExternalSchema::String)
     } else {
@@ -234,10 +225,7 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
                 deployment.clone(),
                 GatewayEntryKey::parse("items").expect("key"),
             ),
-            surface_entry(
-                GatewayDispatchMode::Unary,
-                GatewayAdapterKind::TypedJson,
-            ),
+            surface_entry(GatewayDispatchMode::Unary, GatewayAdapterKind::TypedJson),
         ),
         (
             (
@@ -254,10 +242,7 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
                 deployment.clone(),
                 GatewayEntryKey::parse("items-options").expect("key"),
             ),
-            surface_entry(
-                GatewayDispatchMode::Unary,
-                GatewayAdapterKind::TypedJson,
-            ),
+            surface_entry(GatewayDispatchMode::Unary, GatewayAdapterKind::TypedJson),
         ),
     ]);
     Arc::new(StoreHttpIngressResolver::new_with_live_artifact_store(

@@ -65,10 +65,7 @@ fn query_build_id() -> String {
     deployment().deployment_artifact_identity.to_string()
 }
 
-fn register_and_ack(
-    directory: &mut RuntimeRegistrationDirectory,
-    session: &RuntimeSessionEpoch,
-) {
+fn register_and_ack(directory: &mut RuntimeRegistrationDirectory, session: &RuntimeSessionEpoch) {
     directory
         .publish_pending(session, &FULL_SET)
         .expect("registration");
@@ -110,10 +107,7 @@ mod tests {
         register_and_ack(&mut directory, &a);
         register_and_ack(&mut directory, &b);
 
-        let capabilities = HashMap::from([
-            (a.clone(), full_facts()),
-            (b.clone(), full_facts()),
-        ]);
+        let capabilities = HashMap::from([(a.clone(), full_facts()), (b.clone(), full_facts())]);
         let leases = project(&directory, &capabilities);
 
         assert_eq!(
@@ -195,10 +189,8 @@ mod tests {
             "replacement becomes routable"
         );
 
-        let capabilities = HashMap::from([
-            (old.clone(), full_facts()),
-            (new.clone(), full_facts()),
-        ]);
+        let capabilities =
+            HashMap::from([(old.clone(), full_facts()), (new.clone(), full_facts())]);
         let leases = project(&directory, &capabilities);
         assert_eq!(
             leases
@@ -288,7 +280,10 @@ mod tests {
         );
         assert_eq!(leases.len(), 1);
         assert!(leases[0].lazy_load);
-        assert_eq!(leases[0].artifact_root.as_deref(), Some("/shared/artifacts"));
+        assert_eq!(
+            leases[0].artifact_root.as_deref(),
+            Some("/shared/artifacts")
+        );
         assert!(leases[0].registered_build_ids.is_empty());
     }
 }

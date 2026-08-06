@@ -187,7 +187,10 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["activeAssembly"]["profile"], "prod");
         assert_eq!(value["activeAssembly"]["releaseCount"], 1);
-        assert_eq!(value["activeAssembly"]["buildIds"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            value["activeAssembly"]["buildIds"].as_array().map(Vec::len),
+            Some(1)
+        );
         assert!(
             value.get("pendingActivation").is_none(),
             "M4 retires pendingActivation"

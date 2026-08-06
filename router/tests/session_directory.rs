@@ -129,9 +129,7 @@ mod tests {
     fn mark_registered_makes_the_session_routable_and_candidates_follow_build_id() {
         let mut directory = RuntimeRegistrationDirectory::new(&full_manifest());
         let s = session("runtime-a", 1);
-        directory
-            .publish_pending(&s, &FULL_SET)
-            .expect("publish");
+        directory.publish_pending(&s, &FULL_SET).expect("publish");
         assert!(
             !directory.record(&s).expect("record").routable,
             "pending publish is not routable before the ACK"
@@ -156,9 +154,7 @@ mod tests {
     fn candidates_by_build_id_honors_lazy_load_with_matching_artifact_root() {
         let mut directory = RuntimeRegistrationDirectory::new(&full_manifest());
         let s = session("runtime-a", 1);
-        directory
-            .publish_pending(&s, &FULL_SET)
-            .expect("publish");
+        directory.publish_pending(&s, &FULL_SET).expect("publish");
         directory.mark_registered(&s);
         directory
             .record_mut(&s)
@@ -185,9 +181,7 @@ mod tests {
     fn close_barrier_returns_permits_to_zero() {
         let mut directory = RuntimeRegistrationDirectory::new(&full_manifest());
         let s = session("runtime-a", 1);
-        directory
-            .publish_pending(&s, &FULL_SET)
-            .expect("publish");
+        directory.publish_pending(&s, &FULL_SET).expect("publish");
         directory.mark_registered(&s);
         assert_eq!(directory.permits_held(), FULL_SET.len());
         let start = directory.begin_close(&s).expect("close starts");

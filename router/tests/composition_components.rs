@@ -18,7 +18,8 @@ use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
     ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::actor::{ActivationControlPort, ActorMethodCatalogView, IdleEvictControlPort};use skiff_router::artifact::ActorRoutingProjectionRef;
+use skiff_router::actor::{ActivationControlPort, ActorMethodCatalogView, IdleEvictControlPort};
+use skiff_router::artifact::ActorRoutingProjectionRef;
 use skiff_router::dispatch::{
     CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RuntimeDispatcherOptions, RuntimePeer,
     SessionAbortControl,
@@ -122,7 +123,11 @@ impl CandidateViewSource for DirectoryViewSource {
                 },
             },
         )]);
-        RuntimeCandidateQuery::snapshot_directory_view(&directory, &capabilities, Some("shared-artifact-root".to_string()))
+        RuntimeCandidateQuery::snapshot_directory_view(
+            &directory,
+            &capabilities,
+            Some("shared-artifact-root".to_string()),
+        )
     }
 }
 
@@ -829,9 +834,7 @@ mod tests {
             owner_runtime_id: "runtime-a".to_string(),
             owner_connection: "conn-a".to_string(),
             route_authority: ActorOwnerRouteAuthority {
-                build_id: deployment()
-                    .deployment_artifact_identity
-                    .to_string(),
+                build_id: deployment().deployment_artifact_identity.to_string(),
             },
             bootstrap_bytes: b"bootstrap".to_vec(),
             deadline: ActorMethodDeadlineFrameHeader {
@@ -897,9 +900,7 @@ mod tests {
         assert_eq!(header.fence.eviction_request_id.as_deref(), Some("evict-1"));
         assert_eq!(
             header.route_authority.build_id,
-            deployment()
-                .deployment_artifact_identity
-                .to_string()
+            deployment().deployment_artifact_identity.to_string()
         );
     }
 }

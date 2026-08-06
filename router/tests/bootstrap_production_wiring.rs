@@ -96,7 +96,9 @@ mod tests {
             .await
             .expect_err("missing artifact root must fail closed");
         assert!(
-            error.to_string().contains("canonical artifact store open failed"),
+            error
+                .to_string()
+                .contains("canonical artifact store open failed"),
             "unexpected error: {error}"
         );
     }

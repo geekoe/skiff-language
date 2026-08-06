@@ -12,8 +12,7 @@
 mod ws_harness;
 
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
-    ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, ServiceDeploymentRef,
 };
 use skiff_router::dispatch::RuntimeAdmissionPool;
 use skiff_router::session::identity::RuntimeSessionEpoch;

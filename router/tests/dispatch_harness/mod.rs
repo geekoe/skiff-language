@@ -364,7 +364,11 @@ pub fn task_attempt(
                 assembly_identity: None,
                 assembly_generation: None,
                 deployment: corpus_deployment_ref(),
-                build_id: Some(corpus_deployment_ref().deployment_artifact_identity.to_string()),
+                build_id: Some(
+                    corpus_deployment_ref()
+                        .deployment_artifact_identity
+                        .to_string(),
+                ),
             },
             invocation: RuntimeAssemblyTaskInvocationFrameHeader {
                 kind: "task".to_string(),

@@ -201,10 +201,7 @@ impl TaskExecutionImageSource for FakeImageSource {
         self.services.iter().any(|known| known == service_id)
     }
 
-    fn contains_deployment(
-        &self,
-        deployment: &skiff_artifact_model::ServiceDeploymentRef,
-    ) -> bool {
+    fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef) -> bool {
         &self.image.deployment == deployment
     }
 }

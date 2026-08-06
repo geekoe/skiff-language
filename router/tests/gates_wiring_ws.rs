@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity,
-    ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, ServiceDeploymentRef,
 };
 use skiff_router::dispatch::RuntimeAdmissionPool;
 use skiff_router::session::identity::RuntimeSessionEpoch;
@@ -66,7 +65,10 @@ fn sha_digest(seed: &str) -> String {
 }
 
 fn build_id() -> String {
-    format!("skiff-deployment-artifact-v4:sha256:{}", sha_digest("deployment"))
+    format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
+        sha_digest("deployment")
+    )
 }
 
 fn binding() -> WsBinding {

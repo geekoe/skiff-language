@@ -14,9 +14,7 @@ mod tests {
     use skiff_router::http::{start_http_gateway, HttpGatewayServer, HttpGatewayServerOptions};
     use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 
-    use crate::http_common::{
-        fixture_resolver, send_request, service_headers, StreamClient,
-    };
+    use crate::http_common::{fixture_resolver, send_request, service_headers, StreamClient};
 
     async fn start_stream_server(
         dispatcher: FakeHttpDispatcher,
@@ -35,13 +33,9 @@ mod tests {
             stream_channel_capacity: channel_capacity,
             ..options
         };
-        let server = start_http_gateway(
-            options,
-            fixture_resolver(),
-            dispatcher.clone(),
-        )
-        .await
-        .expect("start http gateway");
+        let server = start_http_gateway(options, fixture_resolver(), dispatcher.clone())
+            .await
+            .expect("start http gateway");
         (server, (*dispatcher).clone())
     }
 
