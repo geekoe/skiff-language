@@ -1,6 +1,6 @@
 # Runtime Lazy-Load Deployment — 实现计划
 
-状态：M1–M4 已落地（2026-08-06 合入 main）；M5 收尾中（CLI 与验证）。
+状态：M1–M5 全部落地（2026-08-07）。
 目标模型与平台侧契约见
 `doc/architecture/runtime-lazy-load-deployment.md`。本目录存放本特性的任务描述
 （leaf 文件），按里程碑拆分，后续补充。
@@ -58,12 +58,14 @@ handshake corpus 计数）保持。`assembly sync-state` 属 activation 协调�
   （变更 → 发布 → 指针更新 → 请求生效）无协调状态；整仓编译 0 error，
   router 401 / runtime-host 417 / transport 254 / deployment / test-runner 全绿。✅
 
-### M5：流水线与验证（进行中，2026-08-07）
+### M5：流水线与验证 ✅（已完成，2026-08-07）
 
-- `skiff deploy`（publish + 指针更新 + 可选预载提示）/ verify / rollback（指针指回旧 buildId）。
-  未开始：CLI 尚未实现（M1 已交付 `skiff release set/unset/get`，deploy 高层命令待建）。
-- agine 侧验证：chat-smoke / two-hosts 全绿；同版本覆盖用例；回滚用例。待验证。
-- 文档：架构文档与实现文档同步收敛（本文即 M5 文档任务，进行中）。
+- `skiff deploy`（publish + 指针更新 + verify）/ `verify` / `rollback`（rollback 记录 + CAS）CLI。
+- agine 侧验证全绿：chat-smoke / two-hosts（playwright 1 passed）/ 同版本覆盖 / 回滚。
+- 验证中发现并修复的 M4/M5 回归：冷启动 dispatch modes 通告、旧 watch 残留连接循环、
+  懒加载 config 解析（snapshot 记录）、config 快照发布竞态（失败重试、不缓存空 config）、
+  actor owner 解析（catalog 契约）、task 镜像 assemblyIdentity 前缀派生。
+- 文档：架构文档与实现文档收敛。
 
 ## 3. 非目标
 
