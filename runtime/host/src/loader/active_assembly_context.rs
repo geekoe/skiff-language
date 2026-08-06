@@ -57,6 +57,7 @@ impl ActiveAssemblyContextSet {
         db_provider: &DbProviderSource,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: Option<&str>,
+        artifact_root: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
         if runtime_replica_id.trim().is_empty() {
             anyhow::bail!("runtime replica id must be non-empty for activation construction");
@@ -65,14 +66,16 @@ impl ActiveAssemblyContextSet {
         let mut activations_by_deployment = BTreeMap::new();
         let mut contracts_by_deployment = BTreeMap::new();
         let mut operation_targets = BTreeMap::new();
-        // Config snapshots are no longer a router-supplied committed tuple.
-        // The runtime has no snapshot source of its own yet (config baked into
-        // deployment records is a later milestone), so every deployment
-        // materializes empty config views.
-        let config_views = super::config_snapshot::materialize_empty_config(candidate)?
-            .into_iter()
-            .map(|(deployment, views)| (deployment, Arc::new(views)))
-            .collect();
+        // Config comes from the published runtime-config snapshot records
+        // (M5): the newest whole-profile merge is looked up per deployment.
+        // Without an artifact root (test admit machines) views stay empty.
+        let config_views = match artifact_root {
+            Some(root) => super::config_snapshot::materialize_config(candidate, root)?,
+            None => super::config_snapshot::materialize_empty_config(candidate)?,
+        }
+        .into_iter()
+        .map(|(deployment, views)| (deployment, Arc::new(views)))
+        .collect();
         let runtime_program_db_by_deployment = candidate_db_metadata(candidate)?;
         let db_contract_bindings = validate_db_contract_implementations(candidate)?
             .into_iter()

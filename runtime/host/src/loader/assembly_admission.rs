@@ -586,6 +586,7 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             profile,
+            None,
         )
         .await
         {
@@ -696,12 +697,13 @@ impl AssemblyAdmissionController {
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
+        artifact_root: Option<&std::path::Path>,
     ) -> anyhow::Result<ActiveAssemblyRoute>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
     {
         let active = self
-            .deployment_image_or_lazy_load(&key.deployment, resolver, service_db, profile)
+            .deployment_image_or_lazy_load(&key.deployment, resolver, service_db, profile, artifact_root)
             .await?;
         self.route_from_active(active, key)?.ok_or_else(|| {
             anyhow::anyhow!(
@@ -719,6 +721,7 @@ impl AssemblyAdmissionController {
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
+        artifact_root: Option<&std::path::Path>,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
@@ -726,7 +729,7 @@ impl AssemblyAdmissionController {
         let build_id = deployment.deployment_artifact_identity.as_str();
         self.loaded
             .load_or_wait(build_id, || {
-                self.load_lazy_deployment(deployment, resolver, service_db, profile)
+                self.load_lazy_deployment(deployment, resolver, service_db, profile, artifact_root)
             })
             .await
     }
@@ -737,6 +740,7 @@ impl AssemblyAdmissionController {
         resolver: &R,
         service_db: Option<&AssemblyActivationServiceDb>,
         profile: &str,
+        artifact_root: Option<&std::path::Path>,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
@@ -761,6 +765,7 @@ impl AssemblyAdmissionController {
             &self.db_provider,
             service_db,
             Some(profile),
+            artifact_root,
         )
         .await
         .map_err(|error| {

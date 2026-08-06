@@ -496,7 +496,9 @@ async fn shared_test_assembly_isolation() {
         .collect::<Vec<_>>()
     {
         host.assembly_admission
-            .deployment_image_or_lazy_load(&entrypoint, &resolver, Some(&service_db), "p3x-foreign-db")
+            .deployment_image_or_lazy_load(
+                &entrypoint, &resolver, Some(&service_db), "p3x-foreign-db", None,
+            )
             .await
             .expect("case entrypoint deployment should lazy load");
     }

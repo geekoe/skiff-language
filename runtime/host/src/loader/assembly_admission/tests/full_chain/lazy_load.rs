@@ -137,7 +137,8 @@ async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect("first request must trigger the lazy load");
     assert!(fixture.resolver.reads.load(Ordering::SeqCst) > reads_before);
@@ -155,7 +156,8 @@ async fn lazy_load_materializes_new_build_id_once_and_registers_it() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect("second request must resolve the loaded image");
     assert_eq!(
@@ -178,7 +180,8 @@ async fn lazy_load_fast_fails_on_missing_record_and_does_not_register() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect_err("missing deployment record must fast-fail");
     assert!(format!("{error:#}").contains("failed to resolve deployment"));
@@ -192,7 +195,8 @@ async fn lazy_load_fast_fails_on_missing_record_and_does_not_register() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect_err("missing deployment record must keep fast-failing");
     assert!(format!("{error:#}").contains("failed to resolve deployment"));
@@ -212,7 +216,8 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect("cross-service entry must lazy-load its whole dependency closure");
     assert!(fixture.resolver.reads.load(Ordering::SeqCst) > reads_before);
@@ -239,7 +244,8 @@ async fn lazy_load_materializes_dependency_closure_for_cross_service_dependencie
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect("provider buildId must resolve from the loaded closure image");
     assert_eq!(
@@ -294,7 +300,8 @@ async fn lazy_load_fast_fails_when_provider_release_pointer_is_missing() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect_err("missing provider release pointer must fast-fail");
     assert!(
@@ -309,7 +316,8 @@ async fn lazy_load_fast_fails_when_provider_release_pointer_is_missing() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect_err("missing provider release pointer must keep fast-failing");
     assert!(
@@ -360,7 +368,8 @@ async fn lazy_load_fast_fails_on_dependency_cycles_and_registers_nothing() {
             &fixture.resolver,
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect_err("dependency cycle must fail closed");
     assert!(
@@ -390,7 +399,8 @@ async fn concurrent_lazy_load_materializes_exactly_once() {
             resolver.as_ref(),
             None,
             "fixture",
-        )
+    None,)
+
         .await
         .expect("baseline lazy load");
     let single_load_reads = resolver.reads.load(Ordering::SeqCst) - reads_before;
@@ -411,6 +421,7 @@ async fn concurrent_lazy_load_materializes_exactly_once() {
                     resolver.as_ref(),
                     None,
                     "fixture",
+                    None,
                 )
                 .await
                 .expect("concurrent lazy load must succeed")

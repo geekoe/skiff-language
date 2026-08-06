@@ -179,6 +179,7 @@ impl RuntimeHost {
                 &bootstrap.resolver,
                 Some(&bootstrap.service_db),
                 bootstrap.activation.profile.as_str(),
+                Some(bootstrap.resolver.store().root()),
             )
             .await
             .map_err(|error| RuntimeError::Decode(error.to_string()))
@@ -271,6 +272,7 @@ impl RuntimeHost {
                 &bootstrap.resolver,
                 Some(&bootstrap.service_db),
                 bootstrap.activation.profile.as_str(),
+                Some(bootstrap.resolver.store().root()),
             )
             .await
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;

@@ -427,7 +427,9 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
         "replacement fixture must distinguish deployment build ids"
     );
     host.assembly_admission
-        .deployment_image_or_lazy_load(&deployment_a, &resolver_a, Some(&service_db), "pinned-route")
+        .deployment_image_or_lazy_load(
+            &deployment_a, &resolver_a, Some(&service_db), "pinned-route", None,
+        )
         .await
         .expect("pinned route deployment A should lazy load");
     let physical_a = host
@@ -438,7 +440,9 @@ pub(crate) async fn reloaded_websocket_gateway_host() -> ReloadedWebSocketGatewa
         .expect("pinned route A WebSocket method route");
     let methods_a = websocket_method_routes(&host, &fixture_a.assembly);
     host.assembly_admission
-        .deployment_image_or_lazy_load(&deployment_b, &resolver_b, Some(&service_db), "pinned-route")
+        .deployment_image_or_lazy_load(
+            &deployment_b, &resolver_b, Some(&service_db), "pinned-route", None,
+        )
         .await
         .expect("pinned route deployment B should lazy load");
     let physical_b = host
