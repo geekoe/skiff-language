@@ -320,10 +320,9 @@ mod tests {
                 runtime_artifact_root: None,
                 base_assembly: None,
                 base_config_snapshot: None,
-                activation_url: None,
+                control_url: None,
                 ingress_url: None,
                 target_profile: "skiff-test".to_string(),
-                expected_generation: 0,
             },
         )
         .expect_err("runner must reject a source root without a kind:test service")

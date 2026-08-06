@@ -1,10 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{Map, Value};
-use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
-use skiff_deployment::storage::{
-    CommittedActivation, PendingActivation, ProfileActivationState,
-    PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
-};
 use skiff_runtime_model::service_error::{OpaqueServiceError, ServiceErrorEnvelope};
 
 use crate::canonical_fixture::CanonicalFixtureError;
@@ -23,46 +18,17 @@ pub(super) struct ControlErrorResponse {
     pub(super) message: String,
 }
 
+/// The router's release pointer table projection carried by `/__router/health`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ActivationReceipt {
+pub(super) struct ActiveAssemblyProjection {
     pub(super) profile: String,
-    pub(super) generation: u64,
-    pub(super) assembly: RuntimeAssemblyRef,
-    pub(super) config_snapshot: RuntimeConfigSnapshotRef,
+    pub(super) release_count: u64,
+    pub(super) build_ids: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HealthSnapshot {
-    pub(super) active: ActivationReceipt,
-    pub(super) pending_activation: bool,
-    pub(super) capability_connections: Vec<CapabilityConnection>,
-    pub(super) replicas: Vec<ReplicaSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CapabilityConnection {
-    pub(super) runtime_id: String,
-    pub(super) connected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ReplicaSnapshot {
-    pub(super) replica_id: String,
-    pub(super) profile: String,
-    pub(super) generation: u64,
-    pub(super) assembly: RuntimeAssemblyRef,
-    pub(super) config_snapshot: RuntimeConfigSnapshotRef,
-    pub(super) state: ReplicaState,
-    pub(super) connected: bool,
-    pub(super) connection_pin_count: u64,
-    pub(super) connection_release_ack_count: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ReplicaState {
-    Healthy,
-    Draining,
-    Disconnected,
+    pub(super) active: ActiveAssemblyProjection,
 }
 
 pub(super) fn decode_test_dispatch_response(
@@ -77,13 +43,6 @@ pub(super) fn decode_control_error_response(
 ) -> Result<ControlErrorResponse, CanonicalFixtureError> {
     decode_control_error_response_inner(body)
         .map_err(|message| wire_error("control error response", message))
-}
-
-pub(super) fn decode_activation_receipt(
-    body: &str,
-) -> Result<ActivationReceipt, CanonicalFixtureError> {
-    decode_activation_receipt_inner(body)
-        .map_err(|message| wire_error("assembly activation receipt", message))
 }
 
 pub(super) fn decode_health_snapshot(body: &str) -> Result<HealthSnapshot, CanonicalFixtureError> {
@@ -372,545 +331,56 @@ fn validate_dispatch_http_response(header: &Map<String, Value>) -> Result<(), St
     Ok(())
 }
 
-fn decode_activation_receipt_inner(body: &str) -> Result<ActivationReceipt, String> {
-    let value = decode_json(body, "activation receipt")?;
-    let root = exact_object(
-        &value,
-        &["ok", "committed", "activeAssembly", "replicas"],
-        &[],
-        "activation receipt",
-    )?;
-    require_true(root, "ok", "activation receipt")?;
-    let committed = decode_committed(field(root, "committed", "activation receipt")?)?;
-    let active = decode_active(
-        field(root, "activeAssembly", "activation receipt")?,
-        false,
-        "activation receipt activeAssembly",
-    )?;
-    decode_replicas(field(root, "replicas", "activation receipt")?)?;
-    if committed.generation != active.generation
-        || committed.assembly != active.assembly
-        || committed.config_snapshot != active.config_snapshot
-    {
-        return Err("committed and activeAssembly tuples differ".to_string());
-    }
-    validate_activation_state(&active, None)?;
-    Ok(active)
-}
-
 fn decode_health_snapshot_inner(body: &str) -> Result<HealthSnapshot, String> {
     let value = decode_json(body, "router health")?;
-    let root = exact_object(
-        &value,
-        &[
-            "ok",
-            "activeAssembly",
-            "pendingActivation",
-            "capabilityConnections",
-            "replicas",
-        ],
-        &["counters"],
-        "router health",
-    )?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| "router health must be an object".to_string())?;
     require_true(root, "ok", "router health")?;
-    if let Some(counters) = root.get("counters") {
-        decode_counters(counters)?;
-    }
-    let active = decode_active(
-        field(root, "activeAssembly", "router health")?,
-        true,
-        "router health activeAssembly",
-    )?;
-    let pending = decode_pending(field(root, "pendingActivation", "router health")?)?;
-    validate_activation_state(&active, pending.clone())?;
-    Ok(HealthSnapshot {
-        active,
-        pending_activation: pending.is_some(),
-        capability_connections: decode_capability_connections(field(
-            root,
-            "capabilityConnections",
-            "router health",
-        )?)?,
-        replicas: decode_replicas(field(root, "replicas", "router health")?)?,
-    })
+    let active = decode_active_projection(field(root, "activeAssembly", "router health")?)?;
+    Ok(HealthSnapshot { active })
 }
 
-fn validate_activation_state(
-    active: &ActivationReceipt,
-    pending: Option<PendingActivation>,
-) -> Result<(), String> {
-    ProfileActivationState {
-        schema_version: PROFILE_ACTIVATION_STATE_SCHEMA_VERSION.to_string(),
-        profile: active.profile.clone(),
-        committed: CommittedActivation {
-            generation: active.generation,
-            assembly: active.assembly.clone(),
-            config_snapshot: active.config_snapshot.clone(),
-        },
-        pending,
-    }
-    .validate()
-    .map_err(|error| format!("activation state validation failed: {error}"))
-}
-
-struct CommittedCoordinate {
-    generation: u64,
-    assembly: RuntimeAssemblyRef,
-    config_snapshot: RuntimeConfigSnapshotRef,
-}
-
-fn decode_committed(value: &Value) -> Result<CommittedCoordinate, String> {
-    let committed = exact_object(
+/// Decodes the router's release pointer table projection. The remaining
+/// health body (capability connections, replica views, counters) is owned by
+/// the router surface and carries no test-runner contract; unknown or
+/// mutated fields there must not fail the readiness gate.
+fn decode_active_projection(value: &Value) -> Result<ActiveAssemblyProjection, String> {
+    let context = "router health activeAssembly";
+    let active = exact_object(
         value,
-        &["generation", "assembly", "configSnapshot"],
+        &["profile", "releaseCount", "buildIds"],
         &[],
-        "committed",
-    )?;
-    Ok(CommittedCoordinate {
-        generation: u64_field(committed, "generation", "committed")?,
-        assembly: decode_assembly_ref(field(committed, "assembly", "committed")?, "committed")?,
-        config_snapshot: decode_config_snapshot_ref(
-            field(committed, "configSnapshot", "committed")?,
-            "committed",
-        )?,
-    })
-}
-
-fn decode_active(
-    value: &Value,
-    with_ingress_count: bool,
-    context: &str,
-) -> Result<ActivationReceipt, String> {
-    let required = if with_ingress_count {
-        &[
-            "profile",
-            "generation",
-            "assemblyIdentity",
-            "configSnapshotId",
-            "ingressCount",
-        ][..]
-    } else {
-        &[
-            "profile",
-            "generation",
-            "assemblyIdentity",
-            "configSnapshotId",
-        ][..]
-    };
-    let active = exact_object(value, required, &[], context)?;
-    if with_ingress_count {
-        u64_field(active, "ingressCount", context)?;
-    }
-    Ok(ActivationReceipt {
-        profile: string_field(active, "profile", context)?.to_string(),
-        generation: u64_field(active, "generation", context)?,
-        assembly: decode_assembly_identity(field(active, "assemblyIdentity", context)?, context)?,
-        config_snapshot: decode_config_snapshot_identity(
-            field(active, "configSnapshotId", context)?,
-            context,
-        )?,
-    })
-}
-
-fn decode_pending(value: &Value) -> Result<Option<PendingActivation>, String> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    let pending = exact_object(
-        value,
-        &[
-            "activationId",
-            "expectedGeneration",
-            "candidateGeneration",
-            "assembly",
-            "configSnapshot",
-            "participantReplicaIds",
-        ],
-        &[],
-        "pendingActivation",
-    )?;
-    Ok(Some(PendingActivation {
-        activation_id: string_field(pending, "activationId", "pendingActivation")?.to_string(),
-        expected_generation: u64_field(pending, "expectedGeneration", "pendingActivation")?,
-        candidate_generation: u64_field(pending, "candidateGeneration", "pendingActivation")?,
-        assembly: decode_assembly_ref(
-            field(pending, "assembly", "pendingActivation")?,
-            "pendingActivation",
-        )?,
-        config_snapshot: decode_config_snapshot_ref(
-            field(pending, "configSnapshot", "pendingActivation")?,
-            "pendingActivation",
-        )?,
-        participant_replica_ids: string_array_field(
-            pending,
-            "participantReplicaIds",
-            "pendingActivation",
-        )?,
-    }))
-}
-
-fn decode_capability_connections(value: &Value) -> Result<Vec<CapabilityConnection>, String> {
-    array(value, "capabilityConnections")?
-        .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            let context = format!("capabilityConnections[{index}]");
-            let connection = exact_object(
-                value,
-                &["runtimeId", "connected", "capabilities"],
-                &["registeredAt"],
-                &context,
-            )?;
-            if let Some(registered_at) = connection.get("registeredAt") {
-                if !registered_at.is_string() {
-                    return Err(format!("{context}.registeredAt must be a string"));
-                }
-            }
-            decode_capabilities(field(connection, "capabilities", &context)?, &context)?;
-            Ok(CapabilityConnection {
-                runtime_id: string_field(connection, "runtimeId", &context)?.to_string(),
-                connected: bool_field(connection, "connected", &context)?,
-            })
-        })
-        .collect()
-}
-
-fn decode_capabilities(value: &Value, parent: &str) -> Result<(), String> {
-    let context = format!("{parent}.capabilities");
-    let capabilities = exact_object(
-        value,
-        &[],
-        &[
-            "dispatchModes",
-            "packageTestDispatch",
-            "requestCancel",
-            "runtimeProgram",
-        ],
-        &context,
-    )?;
-    if let Some(modes) = capabilities.get("dispatchModes") {
-        for mode in array(modes, &format!("{context}.dispatchModes"))? {
-            match mode.as_str() {
-                Some("unary" | "serverStream") => {}
-                _ => return Err(format!("{context}.dispatchModes contains an invalid mode")),
-            }
-        }
-    }
-    for name in ["packageTestDispatch", "requestCancel", "runtimeProgram"] {
-        if capabilities
-            .get(name)
-            .is_some_and(|value| !value.is_boolean())
-        {
-            return Err(format!("{context}.{name} must be a boolean"));
-        }
-    }
-    Ok(())
-}
-
-fn decode_replicas(value: &Value) -> Result<Vec<ReplicaSnapshot>, String> {
-    array(value, "replicas")?
-        .iter()
-        .enumerate()
-        .map(|(index, value)| decode_replica(value, index))
-        .collect()
-}
-
-fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String> {
-    let context = format!("replicas[{index}]");
-    let replica = exact_object(
-        value,
-        &[
-            "replicaId",
-            "profile",
-            "generation",
-            "assemblyIdentity",
-            "configSnapshotId",
-            "state",
-            "connected",
-            "inFlightCount",
-            "connectionPinCount",
-            "connectionReleaseAckCount",
-        ],
-        &["registeredAt", "lastHealthAt", "healthCounters"],
-        &context,
-    )?;
-    u64_field(replica, "inFlightCount", &context)?;
-    let connection_pin_count = safe_u64_field(replica, "connectionPinCount", &context)?;
-    let connection_release_ack_count =
-        safe_u64_field(replica, "connectionReleaseAckCount", &context)?;
-    if let Some(registered_at) = replica.get("registeredAt") {
-        if !registered_at.is_string() {
-            return Err(format!("{context}.registeredAt must be a string"));
-        }
-    }
-    if replica
-        .get("lastHealthAt")
-        .is_some_and(|value| !value.is_string())
-    {
-        return Err(format!("{context}.lastHealthAt must be a string"));
-    }
-    if let Some(counters) = replica.get("healthCounters") {
-        decode_health_counters(counters, &context)?;
-    }
-    let state = match string_field(replica, "state", &context)? {
-        "healthy" => ReplicaState::Healthy,
-        "draining" => ReplicaState::Draining,
-        "disconnected" => ReplicaState::Disconnected,
-        _ => return Err(format!("{context}.state is invalid")),
-    };
-    Ok(ReplicaSnapshot {
-        replica_id: string_field(replica, "replicaId", &context)?.to_string(),
-        profile: string_field(replica, "profile", &context)?.to_string(),
-        generation: u64_field(replica, "generation", &context)?,
-        assembly: decode_assembly_identity(
-            field(replica, "assemblyIdentity", &context)?,
-            &context,
-        )?,
-        config_snapshot: decode_config_snapshot_identity(
-            field(replica, "configSnapshotId", &context)?,
-            &context,
-        )?,
-        state,
-        connected: bool_field(replica, "connected", &context)?,
-        connection_pin_count,
-        connection_release_ack_count,
-    })
-}
-
-fn decode_health_counters(value: &Value, parent: &str) -> Result<(), String> {
-    let context = format!("{parent}.healthCounters");
-    let names = [
-        "outboundRequestsPending",
-        "outboundStreamLeasesActive",
-        "streamRuntimeStreamsActive",
-        "flagBackedCancelWaitersActive",
-        "taskRequestsActive",
-    ];
-    let counters = exact_object(value, &names, &[], &context)?;
-    for name in names {
-        u64_field(counters, name, &context)?;
-    }
-    Ok(())
-}
-
-/// Canonical §10 counting-surface sections (plan §10; batch 12 health leaf).
-///
-/// The base TS-compatible health projection carries these counters as the
-/// optional top-level `counters` object. Every section is required when the
-/// object is present so a missing owner surface fails the wire contract.
-const HEALTH_COUNTER_SECTIONS: &[&str] = &[
-    "activeRoutingEpoch",
-    "bootstrap",
-    "blockingLoader",
-    "sessions",
-    "capabilities",
-    "health",
-    "barrier",
-    "admission",
-    "requestPending",
-    "terminal",
-    "clientConnections",
-    "generationLeases",
-    "broker",
-    "actor",
-    "activation",
-    "http",
-    "mailboxes",
-    "writerQueues",
-    "tasks",
-    "shutdown",
-];
-
-fn decode_counters(value: &Value) -> Result<(), String> {
-    let counters = exact_object(
-        value,
-        HEALTH_COUNTER_SECTIONS,
-        &[],
-        "router health counters",
-    )?;
-    for section in HEALTH_COUNTER_SECTIONS {
-        let section_value = field(counters, section, "router health counters")?;
-        if !section_value.is_object() {
-            return Err(format!(
-                "router health counters.{section} must be an object"
-            ));
-        }
-    }
-    let context = |section: &str| format!("router health counters.{section}");
-
-    let epoch = counters["activeRoutingEpoch"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(epoch, "publishCount", &context("activeRoutingEpoch"))?;
-    if !epoch.get("active").is_none_or(Value::is_object) {
-        return Err(
-            "router health counters.activeRoutingEpoch.active must be an object or null"
-                .to_string(),
-        );
-    }
-
-    let sessions = counters["sessions"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(sessions, "preAuthConnections", &context("sessions"))?;
-    u64_field(sessions, "registeredSessions", &context("sessions"))?;
-    u64_field(sessions, "barrierPending", &context("sessions"))?;
-
-    let capabilities = counters["capabilities"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(capabilities, "connections", &context("capabilities"))?;
-
-    let health = counters["health"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(health, "observations", &context("health"))?;
-
-    let barrier = counters["barrier"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(barrier, "pending", &context("barrier"))?;
-
-    let admission = counters["admission"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(admission, "permitsHeld", &context("admission"))?;
-
-    let request_pending = counters["requestPending"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(request_pending, "unary", &context("requestPending"))?;
-    u64_field(request_pending, "stream", &context("requestPending"))?;
-    u64_field(request_pending, "taskAttempt", &context("requestPending"))?;
-    bool_field(request_pending, "stopped", &context("requestPending"))?;
-
-    let terminal = counters["terminal"]
-        .as_object()
-        .expect("section object checked above");
-    field(terminal, "bySource", &context("terminal"))?;
-
-    let client_connections = counters["clientConnections"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(
-        client_connections,
-        "connectionCount",
-        &context("clientConnections"),
-    )?;
-
-    let generation_leases = counters["generationLeases"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(
-        generation_leases,
-        "pinsAcquired",
-        &context("generationLeases"),
-    )?;
-
-    let broker = counters["broker"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(broker, "outboundPending", &context("broker"))?;
-    u64_field(broker, "inboundPending", &context("broker"))?;
-
-    let actor = counters["actor"]
-        .as_object()
-        .expect("section object checked above");
-    for name in [
-        "catalog",
-        "ownership",
-        "activation",
-        "invocation",
-        "control",
-        "lease",
-    ] {
-        if !actor.get(name).is_some_and(Value::is_object) {
-            return Err(format!(
-                "router health counters.actor.{name} must be an object"
-            ));
-        }
-    }
-
-    let activation = counters["activation"]
-        .as_object()
-        .expect("section object checked above");
-    string_field(activation, "phase", &context("activation"))?;
-    bool_field(activation, "readiness", &context("activation"))?;
-    let repository = activation
-        .get("repository")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "router health counters.activation.repository must be an object".to_string()
-        })?;
-    let driver = repository
-        .get("driver")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "router health counters.activation.repository.driver must be an object".to_string()
-        })?;
-    bool_field(driver, "closed", &context("activation.repository.driver"))?;
-
-    let http = counters["http"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(http, "requests", &context("http"))?;
-
-    let mailboxes = counters["mailboxes"]
-        .as_object()
-        .expect("section object checked above");
-    if !mailboxes.get("coordinator").is_some_and(Value::is_object) {
-        return Err("router health counters.mailboxes.coordinator must be an object".to_string());
-    }
-
-    let writer_queues = counters["writerQueues"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(writer_queues, "wsSlowClientCount", &context("writerQueues"))?;
-
-    let tasks = counters["tasks"]
-        .as_object()
-        .expect("section object checked above");
-    u64_field(tasks, "liveSessionTasks", &context("tasks"))?;
-
-    let shutdown = counters["shutdown"]
-        .as_object()
-        .expect("section object checked above");
-    bool_field(shutdown, "coordinatorShutdown", &context("shutdown"))?;
-    bool_field(shutdown, "dispatcherStopped", &context("shutdown"))?;
-    Ok(())
-}
-
-fn decode_assembly_identity(value: &Value, context: &str) -> Result<RuntimeAssemblyRef, String> {
-    let identity = value
-        .as_str()
-        .ok_or_else(|| format!("{context}.assemblyIdentity must be a string"))?;
-    decode_assembly_ref(
-        &serde_json::json!({ "assemblyIdentity": identity }),
         context,
-    )
-}
-
-fn decode_assembly_ref(value: &Value, context: &str) -> Result<RuntimeAssemblyRef, String> {
-    serde_json::from_value(value.clone())
-        .map_err(|error| format!("{context}.assembly is invalid: {error}"))
-}
-
-fn decode_config_snapshot_identity(
-    value: &Value,
-    context: &str,
-) -> Result<RuntimeConfigSnapshotRef, String> {
-    let identity = value
-        .as_str()
-        .ok_or_else(|| format!("{context}.configSnapshotId must be a string"))?;
-    decode_config_snapshot_ref(&serde_json::json!({ "snapshotId": identity }), context)
-}
-
-fn decode_config_snapshot_ref(
-    value: &Value,
-    context: &str,
-) -> Result<RuntimeConfigSnapshotRef, String> {
-    serde_json::from_value(value.clone())
-        .map_err(|error| format!("{context}.configSnapshot is invalid: {error}"))
+    )?;
+    let build_ids = array(
+        field(active, "buildIds", context)?,
+        &format!("{context}.buildIds"),
+    )?
+    .iter()
+    .enumerate()
+    .map(|(index, value)| {
+        let build_id = value
+            .as_str()
+            .ok_or_else(|| format!("{context}.buildIds[{index}] must be a string"))?;
+        if build_id.is_empty()
+            || build_id.trim() != build_id
+            || build_id
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+        {
+            return Err(format!(
+                "{context}.buildIds[{index}] must be a canonical token"
+            ));
+        }
+        Ok(build_id.to_string())
+    })
+    .collect::<Result<Vec<_>, String>>()?;
+    Ok(ActiveAssemblyProjection {
+        profile: string_field(active, "profile", context)?.to_string(),
+        release_count: u64_field(active, "releaseCount", context)?,
+        build_ids: build_ids.into_iter().collect(),
+    })
 }
 
 fn decode_json(body: &str, context: &str) -> Result<Value, String> {
@@ -960,22 +430,6 @@ fn string_field<'a>(
         .ok_or_else(|| format!("{context}.{name} must be a string"))
 }
 
-fn string_array_field(
-    object: &Map<String, Value>,
-    name: &str,
-    context: &str,
-) -> Result<Vec<String>, String> {
-    array(field(object, name, context)?, &format!("{context}.{name}"))?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(ToString::to_string)
-                .ok_or_else(|| format!("{context}.{name} must contain only strings"))
-        })
-        .collect()
-}
-
 fn bool_field(object: &Map<String, Value>, name: &str, context: &str) -> Result<bool, String> {
     field(object, name, context)?
         .as_bool()
@@ -986,18 +440,6 @@ fn u64_field(object: &Map<String, Value>, name: &str, context: &str) -> Result<u
     field(object, name, context)?
         .as_u64()
         .ok_or_else(|| format!("{context}.{name} must be a canonical unsigned integer"))
-}
-
-fn safe_u64_field(object: &Map<String, Value>, name: &str, context: &str) -> Result<u64, String> {
-    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-
-    let value = u64_field(object, name, context)?;
-    if value > MAX_SAFE_INTEGER {
-        return Err(format!(
-            "{context}.{name} must be a non-negative safe integer"
-        ));
-    }
-    Ok(value)
 }
 
 fn array<'a>(value: &'a Value, context: &str) -> Result<&'a [Value], String> {

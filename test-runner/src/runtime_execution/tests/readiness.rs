@@ -9,67 +9,20 @@ use super::super::test_support::*;
 use super::*;
 
 #[test]
-fn readiness_requires_every_dispatch_ready_dimension() {
+fn readiness_waits_until_every_target_build_id_appears() {
     let responses = vec![
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            valid_pending(),
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability(REPLICA, true)],
-        ),
-        ok_health(2, ASSEMBLY_B, Value::Null, Vec::new(), Vec::new()),
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "draining", true)],
-            vec![capability(REPLICA, true)],
-        ),
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", false)],
-            vec![capability(REPLICA, true)],
-        ),
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability("other-runtime", true)],
-        ),
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability(REPLICA, false)],
-        ),
-        ok_health(
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability(REPLICA, true)],
-        ),
+        ok_health(vec![]),
+        ok_health(vec![DEPLOYMENT_B]),
+        ok_health(vec![DEPLOYMENT_A, DEPLOYMENT_B]),
     ];
 
     let polled = scripted_poll(responses, Duration::from_secs(1));
 
     assert!(polled.result.is_ok());
-    assert_eq!(polled.fetches, 7);
+    assert_eq!(polled.fetches, 3);
     assert_eq!(
         polled.sleeps,
-        vec![
-            Duration::from_millis(10),
-            Duration::from_millis(20),
-            Duration::from_millis(40),
-            Duration::from_millis(80),
-            Duration::from_millis(160),
-            Duration::from_millis(250),
-        ]
+        vec![Duration::from_millis(10), Duration::from_millis(20)]
     );
     assert!(polled
         .fetch_deadlines
@@ -78,63 +31,23 @@ fn readiness_requires_every_dispatch_ready_dimension() {
 }
 
 #[test]
-fn exact_replica_tuple_is_required() {
-    let mut wrong_profile = replica(2, ASSEMBLY_B, "healthy", true);
-    wrong_profile["profile"] = Value::String("other-profile".to_string());
-    let wrong_generation = replica(1, ASSEMBLY_B, "healthy", true);
-    let wrong_assembly = replica(2, ASSEMBLY_A, "healthy", true);
-    let mut wrong_snapshot = replica(2, ASSEMBLY_B, "healthy", true);
-    wrong_snapshot["configSnapshotId"] = Value::String(SNAPSHOT_A.to_string());
+fn extra_active_build_ids_do_not_obstruct_readiness() {
+    let polled = scripted_poll(
+        vec![ok_health(vec![DEPLOYMENT_A, DEPLOYMENT_B, "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"])],
+        Duration::from_secs(1),
+    );
 
-    for (name, non_matching) in [
-        ("profile", wrong_profile),
-        ("generation", wrong_generation),
-        ("assembly", wrong_assembly),
-        ("config snapshot", wrong_snapshot),
-    ] {
-        let polled = scripted_poll(
-            vec![
-                ok_health(
-                    2,
-                    ASSEMBLY_B,
-                    Value::Null,
-                    vec![non_matching],
-                    vec![capability(REPLICA, true)],
-                ),
-                ok_health(
-                    2,
-                    ASSEMBLY_B,
-                    Value::Null,
-                    vec![replica(2, ASSEMBLY_B, "healthy", true)],
-                    vec![capability(REPLICA, true)],
-                ),
-            ],
-            Duration::from_secs(1),
-        );
-        assert!(polled.result.is_ok(), "{name} mismatch did not recover");
-        assert_eq!(polled.fetches, 2, "{name} mismatch was accepted");
-        assert_eq!(polled.sleeps, vec![Duration::from_millis(10)]);
-    }
+    assert!(polled.result.is_ok());
+    assert_eq!(polled.fetches, 1);
+    assert!(polled.sleeps.is_empty());
 }
 
 #[test]
-fn stale_generation_waits_then_succeeds() {
+fn missing_build_ids_waits_then_succeeds() {
     let polled = scripted_poll(
         vec![
-            ok_health(
-                1,
-                ASSEMBLY_A,
-                Value::Null,
-                vec![replica(1, ASSEMBLY_A, "healthy", true)],
-                vec![capability(REPLICA, true)],
-            ),
-            ok_health(
-                2,
-                ASSEMBLY_B,
-                Value::Null,
-                vec![replica(2, ASSEMBLY_B, "healthy", true)],
-                vec![capability(REPLICA, true)],
-            ),
+            ok_health(vec![DEPLOYMENT_A]),
+            ok_health(vec![DEPLOYMENT_A, DEPLOYMENT_B]),
         ],
         Duration::from_secs(1),
     );
@@ -145,13 +58,13 @@ fn stale_generation_waits_then_succeeds() {
 }
 
 #[test]
-fn stale_generation_stops_at_the_absolute_deadline() {
-    let stale = || ok_health(1, ASSEMBLY_A, Value::Null, Vec::new(), Vec::new());
+fn missing_build_ids_stop_at_the_absolute_deadline() {
+    let stale = || ok_health(vec![DEPLOYMENT_A]);
     let polled = scripted_poll(vec![stale(), stale(), stale()], Duration::from_millis(25));
 
     let error = polled.result.unwrap_err().to_string();
     assert!(error.contains("timed out after 25 ms"), "{error}");
-    assert!(error.contains("active generation 1 is behind target 2"));
+    assert!(error.contains("do not yet include"), "{error}");
     assert_eq!(polled.fetches, 2);
     assert_eq!(
         polled.sleeps,
@@ -161,41 +74,14 @@ fn stale_generation_stops_at_the_absolute_deadline() {
 }
 
 #[test]
-fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
+fn profile_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
     let scenarios = vec![
-        (
-            "forward generation",
-            Ok(ok_health(
-                3,
-                ASSEMBLY_B,
-                Value::Null,
-                Vec::new(),
-                Vec::new(),
-            )),
-        ),
         (
             "profile mismatch",
             Ok(HttpResponse {
                 status: 200,
-                body: health_body(
-                    "other-profile",
-                    2,
-                    ASSEMBLY_B,
-                    Value::Null,
-                    Vec::new(),
-                    Vec::new(),
-                ),
+                body: health_body("other-profile", vec![DEPLOYMENT_A, DEPLOYMENT_B]),
             }),
-        ),
-        (
-            "identity conflict",
-            Ok(ok_health(
-                2,
-                ASSEMBLY_A,
-                Value::Null,
-                Vec::new(),
-                Vec::new(),
-            )),
         ),
         (
             "malformed",
@@ -210,8 +96,8 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
                 status: 503,
                 body: serde_json::json!({
                     "error": {
-                        "code": "AssemblyParticipantsUnavailable",
-                        "message": "not ready",
+                        "code": "ReleaseNotFound",
+                        "message": "release not resolvable",
                     },
                 })
                 .to_string(),
@@ -238,58 +124,45 @@ fn forward_mismatch_malformed_non_2xx_and_transport_fail_immediately() {
 }
 
 #[test]
-fn activation_receipt_must_match_the_requested_tuple() {
-    let receipt = || wire::decode_activation_receipt(&activation_receipt_body()).unwrap();
-    let snapshot_b = snapshot_ref(SNAPSHOT_B);
-    assert!(target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_B, &snapshot_b).is_ok());
-    assert!(target_from_receipt(receipt(), "other", 2, ASSEMBLY_B, &snapshot_b).is_err());
-    assert!(target_from_receipt(receipt(), PROFILE, 3, ASSEMBLY_B, &snapshot_b).is_err());
-    assert!(target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_A, &snapshot_b).is_err());
-    assert!(
-        target_from_receipt(receipt(), PROFILE, 2, ASSEMBLY_B, &snapshot_ref(SNAPSHOT_A),).is_err()
+fn target_for_builds_rejects_an_empty_build_id_set() {
+    assert!(target_for_builds(PROFILE, Vec::new()).is_err());
+}
+
+#[test]
+fn readiness_target_preserves_the_dev_profile() {
+    let target = target_for_builds("dev", vec![DEPLOYMENT_B.to_string()]).unwrap();
+    assert_eq!(target.profile, "dev");
+    assert_eq!(
+        target.build_ids,
+        [DEPLOYMENT_B].into_iter().map(str::to_string).collect()
     );
 }
 
 #[test]
-fn readiness_target_preserves_dev_target_profile() {
-    let mut receipt: Value = serde_json::from_str(&activation_receipt_body()).unwrap();
-    receipt["activeAssembly"]["profile"] = Value::String("dev".to_string());
-    let receipt = wire::decode_activation_receipt(&receipt.to_string()).unwrap();
-
-    let target =
-        target_from_receipt(receipt, "dev", 2, ASSEMBLY_B, &snapshot_ref(SNAPSHOT_B)).unwrap();
-
-    assert_eq!(target.profile, "dev");
+fn readiness_target_dedupes_build_ids() {
+    let target = target_for_builds(
+        PROFILE,
+        vec![DEPLOYMENT_A.to_string(), DEPLOYMENT_A.to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        target.build_ids,
+        [DEPLOYMENT_A].into_iter().map(str::to_string).collect()
+    );
 }
 
 fn target() -> ReadinessTarget {
-    target_from_receipt(
-        wire::decode_activation_receipt(&activation_receipt_body()).unwrap(),
+    target_for_builds(
         PROFILE,
-        2,
-        ASSEMBLY_B,
-        &snapshot_ref(SNAPSHOT_B),
+        vec![DEPLOYMENT_A.to_string(), DEPLOYMENT_B.to_string()],
     )
     .unwrap()
 }
 
-fn ok_health(
-    generation: u64,
-    assembly_identity: &str,
-    pending: Value,
-    replicas: Vec<Value>,
-    capabilities: Vec<Value>,
-) -> HttpResponse {
+fn ok_health(build_ids: Vec<&str>) -> HttpResponse {
     HttpResponse {
         status: 200,
-        body: health_body(
-            PROFILE,
-            generation,
-            assembly_identity,
-            pending,
-            replicas,
-            capabilities,
-        ),
+        body: health_body(PROFILE, build_ids),
     }
 }
 

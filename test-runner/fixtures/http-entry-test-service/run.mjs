@@ -44,10 +44,7 @@ const cleanup = await runInIsolatedTestRuntime({
       ),
       {
         cwd: skiffRoot,
-        env: {
-          ...isolatedEnv,
-          SKIFF_TEST_EXPECTED_GENERATION: '0',
-        },
+        env: isolatedEnv,
       },
     );
     const rejectionOutput = `${rejected.stdout}\n${rejected.stderr}`;
@@ -72,10 +69,7 @@ const cleanup = await runInIsolatedTestRuntime({
       ),
       {
         cwd: skiffRoot,
-        env: {
-          ...isolatedEnv,
-          SKIFF_TEST_EXPECTED_GENERATION: '1',
-        },
+        env: isolatedEnv,
       },
     );
     if (happy.code !== 0 || happy.signal !== null) {
@@ -155,13 +149,14 @@ async function assertAssemblyReady(controlUrl, label) {
   const health = await response.json();
   if (
     health?.ok !== true
-    || health.pendingActivation !== null
+    || !Array.isArray(health?.activeAssembly?.buildIds)
+    || health.activeAssembly.buildIds.length === 0
     || !Array.isArray(health.capabilityConnections)
     || health.capabilityConnections.length === 0
     || health.capabilityConnections.some((connection) => connection?.connected !== true)
   ) {
     throw new Error(
-      `${label} Router/Runtime assembly was not ready after the case: ${JSON.stringify(health)}`,
+      `${label} Router/Runtime releases were not ready after the case: ${JSON.stringify(health)}`,
     );
   }
   console.log(`ASSEMBLY_READY ${label} ${JSON.stringify(health)}`);
@@ -171,7 +166,7 @@ function assertLoopbackStack(stack, isolatedEnv) {
   for (const [label, value] of [
     ['control URL', stack.controlUrl],
     ['business ingress URL', stack.routerHttpUrl],
-    ['runner activation URL', isolatedEnv.SKIFF_TEST_ACTIVATION_URL],
+    ['runner control URL', isolatedEnv.SKIFF_TEST_CONTROL_URL],
     ['runner ingress URL', isolatedEnv.SKIFF_TEST_INGRESS_URL],
   ]) {
     if (typeof value !== 'string' || !value.startsWith('http://127.0.0.1:')) {

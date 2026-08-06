@@ -11,10 +11,9 @@ use super::*;
 const RUNNER_OS_ENV_KEYS: &[&str] = &[
     "SKIFF_TEST_ARTIFACT_ROOT",
     "SKIFF_TEST_RUNTIME_ARTIFACT_ROOT",
-    "SKIFF_TEST_ACTIVATION_URL",
+    "SKIFF_TEST_CONTROL_URL",
     "SKIFF_TEST_INGRESS_URL",
     "SKIFF_TEST_ENVIRONMENT",
-    "SKIFF_TEST_EXPECTED_GENERATION",
 ];
 
 fn run_runner<'a>(
@@ -86,10 +85,9 @@ mod tests {
             "--platform-source-root",
             "--base-assembly",
             "--live",
-            "--activation-url",
+            "--control-url",
             "--ingress-url",
             "--profile",
-            "--expected-generation",
             "--deny-skips",
             "--require-tests",
         ] {
@@ -104,6 +102,8 @@ mod tests {
             "--router-reload-url",
             "--packages-dir",
             "--allow-network",
+            "--activation-url",
+            "--expected-generation",
         ] {
             assert!(!help.contains(retired), "help retained {retired}");
             let rejected = run_runner(runner, ["input", retired], &[]);
@@ -188,9 +188,9 @@ mod tests {
         let sentinel = "runner-url-secret";
         for (option, value, expected) in [
             (
-                "--activation-url",
-                format!("http://user:{sentinel}@127.0.0.1:4001/__skiff/activate-assembly"),
-                "activation URL must point exactly",
+                "--control-url",
+                format!("http://127.0.0.1:4001/__router/health?token={sentinel}"),
+                "control URL must be an http:// origin",
             ),
             (
                 "--ingress-url",
@@ -232,7 +232,7 @@ mod tests {
         let incomplete_live = run_runner(runner, base.into_iter().chain(["--live"]), &[]);
         assert_failure_contains(
             &incomplete_live,
-            "--live requires --activation-url, --ingress-url, --profile and --expected-generation",
+            "--live requires --control-url, --ingress-url and --profile",
         );
 
         let cli_target = run_runner(runner, base.into_iter().chain(["--profile", "dev"]), &[]);
@@ -246,12 +246,8 @@ mod tests {
             base,
             &[
                 ("SKIFF_TEST_ENVIRONMENT", "dev"),
-                (
-                    "SKIFF_TEST_ACTIVATION_URL",
-                    "http://127.0.0.1:9/__skiff/activate-assembly",
-                ),
+                ("SKIFF_TEST_CONTROL_URL", "http://127.0.0.1:9"),
                 ("SKIFF_TEST_INGRESS_URL", "http://127.0.0.1:9"),
-                ("SKIFF_TEST_EXPECTED_GENERATION", "7"),
                 ("SKIFF_TEST_RUNTIME_ARTIFACT_ROOT", "/missing-runtime"),
             ],
         );
@@ -304,35 +300,41 @@ mod tests {
         fs::create_dir_all(&separate_runtime).unwrap();
         write_minimal_test_service(&service);
 
-        let options = |runtime_artifact_root, ingress_url| SkiffTestOptions {
+        let options = |runtime_artifact_root, control_url, ingress_url| SkiffTestOptions {
             live: false,
             artifact_root: Some(artifacts.clone()),
             platform_sources: platform_sources(),
             runtime_artifact_root: Some(runtime_artifact_root),
             base_assembly: None,
             base_config_snapshot: None,
-            activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
+            control_url,
             ingress_url,
             target_profile: "runner-preflight".to_string(),
-            expected_generation: 0,
         };
 
         let nested = run_skiff_tests_with_options(
             &[service.clone()],
-            &options(nested_runtime, Some("http://127.0.0.1:9".to_string())),
+            &options(
+                nested_runtime,
+                Some("http://127.0.0.1:9".to_string()),
+                Some("http://127.0.0.1:9".to_string()),
+            ),
         )
         .unwrap_err();
         assert!(matches!(nested, SkiffTestError::MissingIsolatedRuntimeRoot));
 
-        let missing =
-            run_skiff_tests_with_options(&[service.clone()], &options(separate_runtime.clone(), None))
-                .unwrap_err();
+        let missing = run_skiff_tests_with_options(
+            &[service.clone()],
+            &options(separate_runtime.clone(), None, None),
+        )
+        .unwrap_err();
         assert!(matches!(missing, SkiffTestError::MissingCanonicalRuntime));
 
         let invalid = run_skiff_tests_with_options(
-            &[service],
+            &[service.clone()],
             &options(
                 separate_runtime,
+                Some("http://127.0.0.1:9".to_string()),
                 Some("http://127.0.0.1:9/not-an-origin".to_string()),
             ),
         )
@@ -341,6 +343,21 @@ mod tests {
         assert!(
             invalid.contains("ingress URL must be an http:// origin"),
             "{invalid}"
+        );
+
+        let invalid_control = run_skiff_tests_with_options(
+            &[service.clone()],
+            &options(
+                root.path().join("runtime-2"),
+                Some("http://127.0.0.1:9/not-an-origin".to_string()),
+                Some("http://127.0.0.1:9".to_string()),
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            invalid_control.contains("control URL must be an http:// origin"),
+            "{invalid_control}"
         );
     }
 }

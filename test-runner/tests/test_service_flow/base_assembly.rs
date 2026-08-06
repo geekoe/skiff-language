@@ -203,7 +203,7 @@ mod tests {
             Some(receipt.base_config_snapshot.snapshot_id.as_str()),
             "other-test",
         )
-        .expect_err("base config snapshot must not cross activation profiles")
+        .expect_err("base config snapshot must not cross release profiles")
         .to_string();
         assert!(
             cross_profile.contains("does not match target profile"),
@@ -293,7 +293,9 @@ mod tests {
             CanonicalBaseAssembly::default(),
             "base-test",
         )
-        .expect_err("service requirements must fail before activation without a base assembly")
+        .expect_err(
+            "service requirements must fail before release resolution without a base assembly",
+        )
         .to_string();
         assert!(
             missing_base.contains("needs exactly one --base-assembly contract"),

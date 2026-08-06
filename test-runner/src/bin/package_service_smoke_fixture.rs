@@ -6,13 +6,15 @@ use std::{
 };
 
 use serde_json::json;
-use skiff_artifact_identity::{runtime_assembly_ref, PackageArtifactRecordPath};
+use skiff_artifact_identity::{
+    runtime_assembly_ref, service_deployment_ref, PackageArtifactRecordPath,
+};
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, GatewayDispatchMode, RuntimeAssembly,
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_compiler::CompilerPlatformSources;
-use skiff_deployment::storage::{CanonicalArtifactStore, ProfileActivationState};
+use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_runtime_config_snapshot::{
     new_runtime_config_snapshot_ref, RuntimeConfigSnapshot, RuntimeConfigSnapshotStore,
 };
@@ -223,12 +225,11 @@ fn emit_bootstrap(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-bootstrap-v2",
+            "schemaVersion": "skiff-package-service-bootstrap-v3",
             "profile": profile,
             "bootstrap": {
                 "assembly": bootstrap["assembly"],
                 "configSnapshot": bootstrap["configSnapshot"],
-                "generation": bootstrap["generation"],
                 "std": std.to_json(),
             },
         }))?
@@ -372,13 +373,13 @@ fn assemble_fixture_candidate(
     Ok((std, fixture))
 }
 
-/// Seeds a canonical committed epoch (generation 0) for one fixture package:
-/// publishes the fixture's immutable records (service deployment, assembly,
+/// Seeds one fixture package as the current release set for its profile:
+/// publishes the fixture's immutable records (service deployments, assembly,
 /// config snapshot), writes the canonical actor routing projection record and
-/// initializes the profile activation state against the fixture refs. The
-/// emitted `skiff-package-service-bootstrap-v2` receipt drives the isolated
-/// activation-state seed, so the router boots a committed epoch with exact
-/// deployments the activation coordinator can freeze.
+/// sets the release pointer for every published deployment. The emitted
+/// `skiff-package-service-bootstrap-v3` receipt drives the isolated release
+/// seed, so the router resolves the profile's releases without any
+/// coordination state.
 fn seed_committed(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
@@ -390,23 +391,21 @@ fn seed_committed(
     fixture.publish(artifact_root, artifact_root)?;
     write_actor_routing_projection(artifact_root)?;
     let store = CanonicalArtifactStore::open(artifact_root)?;
+    for deployment in &fixture.records.deployments {
+        let deployment_ref = service_deployment_ref(deployment);
+        let pointer = ReleasePointer::new(profile, deployment_ref.clone())?;
+        store.write_release_pointer(&pointer)?;
+    }
     let assembly_ref = runtime_assembly_ref(&fixture.records.assembly)?;
     let config_snapshot_ref = fixture.records.config_snapshot.snapshot_ref().clone();
-    store.initialize_profile_activation(&ProfileActivationState::initial(
-        profile,
-        0,
-        assembly_ref.clone(),
-        config_snapshot_ref.clone(),
-    ))?;
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schemaVersion": "skiff-package-service-bootstrap-v2",
+            "schemaVersion": "skiff-package-service-bootstrap-v3",
             "profile": profile,
             "bootstrap": {
                 "assembly": assembly_ref,
                 "configSnapshot": config_snapshot_ref,
-                "generation": 0,
                 "std": std.to_json(),
             },
         }))?
@@ -458,14 +457,9 @@ fn initialize_empty_profile(
         RuntimeConfigSnapshot::new(profile, config_snapshot_ref.clone(), Vec::new())?;
     RuntimeConfigSnapshotStore::create(store.root().join("runtime-config"))?
         .publish(&config_snapshot)?;
-    store.initialize_profile_activation(&ProfileActivationState::initial(
-        profile,
-        0,
-        reference.clone(),
-        config_snapshot_ref.clone(),
-    ))?;
+    // The empty profile is a baseline with an empty release pointer table;
+    // no coordination state is written for it.
     Ok(json!({
-        "generation": 0,
         "assembly": reference,
         "configSnapshot": config_snapshot_ref,
     }))

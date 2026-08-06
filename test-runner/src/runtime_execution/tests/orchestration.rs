@@ -4,38 +4,6 @@ use std::os::unix::fs::PermissionsExt;
 use super::*;
 
 #[test]
-fn activation_and_business_clients_have_independent_timeout_budgets() {
-    let router_default_prepare_timeout = Duration::from_millis(120_000);
-
-    assert_eq!(ACTIVATION_HTTP_TIMEOUT, Duration::from_millis(150_000));
-    assert!(
-        ACTIVATION_HTTP_TIMEOUT > router_default_prepare_timeout,
-        "the Router must decide a default prepare timeout before the activation client disconnects"
-    );
-    assert_eq!(BUSINESS_HTTP_TIMEOUT, Duration::from_millis(30_000));
-    assert_ne!(ACTIVATION_HTTP_TIMEOUT, BUSINESS_HTTP_TIMEOUT);
-}
-
-#[test]
-fn activation_and_dispatch_call_sites_use_separate_budgets() {
-    let source = include_str!("../../runtime_execution.rs");
-
-    assert_eq!(
-        source
-            .matches("deadline_after(ACTIVATION_HTTP_TIMEOUT)?")
-            .count(),
-        1
-    );
-    assert_eq!(
-        source
-            .matches("deadline_after(BUSINESS_HTTP_TIMEOUT)?")
-            .count(),
-        1
-    );
-    assert!(!source.contains("deadline_after(HTTP_TIMEOUT)"));
-}
-
-#[test]
 fn client_deadline_overflow_fails_closed() {
     let error = deadline_after_from(Instant::now(), Duration::MAX).unwrap_err();
 
@@ -43,34 +11,6 @@ fn client_deadline_overflow_fails_closed() {
         error,
         CanonicalFixtureError::InvalidInput(message) if message == "HTTP deadline overflow"
     ));
-}
-
-#[test]
-fn activation_request_preserves_dev_target_profile() {
-    let assembly = RuntimeAssemblyRef {
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
-    };
-
-    let config_snapshot = test_support::snapshot_ref(test_support::SNAPSHOT_B);
-    let body =
-        activation_request_body("dev", "activation-dev", 7, &assembly, &config_snapshot).unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "schemaVersion": "skiff-assembly-activation-request-v3",
-            "profile": "dev",
-            "activationId": "activation-dev",
-            "expectedGeneration": 7,
-            "assembly": {
-                "assemblyIdentity": test_support::ASSEMBLY_B,
-            },
-            "configSnapshot": {
-                "snapshotId": test_support::SNAPSHOT_B,
-            },
-        })
-    );
 }
 
 #[test]
@@ -92,9 +32,12 @@ fn base_snapshot_profile_is_used_to_align_non_live_test_environment() {
     )
     .unwrap();
     let snapshot_ref = test_support::snapshot_ref(test_support::SNAPSHOT_B);
-    let snapshot =
-        skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new("dev", snapshot_ref.clone(), Vec::new())
-            .unwrap();
+    let snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
+        "dev",
+        snapshot_ref.clone(),
+        Vec::new(),
+    )
+    .unwrap();
     store.publish(&snapshot).unwrap();
 
     let profile = base_snapshot_profile(&root, test_support::SNAPSHOT_B).unwrap();
@@ -104,25 +47,26 @@ fn base_snapshot_profile_is_used_to_align_non_live_test_environment() {
 }
 
 #[test]
-fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case() {
+fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() {
     let timeline = RefCell::new(Vec::new());
-    let activation_calls = Cell::new(0);
+    let activate_calls = Cell::new(0);
     let readiness_calls = Cell::new(0);
     let dispatch_coordinates = RefCell::new(Vec::new());
 
     let summary = execute_shared_assembly_with(
         three_entrypoints(),
-        7,
-        |expected_generation, candidate_generation| {
-            activation_calls.set(activation_calls.get() + 1);
-            timeline.borrow_mut().push("activate".to_string());
-            assert_eq!((expected_generation, candidate_generation), (7, 8));
-            Ok(test_active_assembly(candidate_generation))
+        || {
+            activate_calls.set(activate_calls.get() + 1);
+            timeline.borrow_mut().push("prepare".to_string());
+            Ok(test_active_assembly())
         },
         |active| {
             readiness_calls.set(readiness_calls.get() + 1);
             timeline.borrow_mut().push("readiness".to_string());
-            assert_eq!(active.generation, 8);
+            assert_eq!(
+                active.assembly.assembly_identity.as_str(),
+                test_support::ASSEMBLY_B
+            );
             Ok(())
         },
         |active, entrypoint| {
@@ -131,7 +75,6 @@ fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case()
                 .push(format!("dispatch:{}", entrypoint.case.name));
             dispatch_coordinates.borrow_mut().push((
                 active.assembly.assembly_identity.as_str().to_string(),
-                active.generation,
                 entrypoint.deployment.clone(),
                 entrypoint.gateway_entry_identity.clone(),
             ));
@@ -144,12 +87,12 @@ fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case()
     )
     .unwrap();
 
-    assert_eq!(activation_calls.get(), 1);
+    assert_eq!(activate_calls.get(), 1);
     assert_eq!(readiness_calls.get(), 1);
     assert_eq!(
         &*timeline.borrow(),
         &[
-            "activate",
+            "prepare",
             "readiness",
             "dispatch:case 1",
             "dispatch:case 2",
@@ -161,13 +104,11 @@ fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case()
     assert_eq!(dispatch_coordinates.len(), 3);
     assert!(dispatch_coordinates
         .iter()
-        .all(
-            |(identity, generation, _, _)| identity == test_support::ASSEMBLY_B && *generation == 8
-        ));
+        .all(|(identity, _, _)| identity == test_support::ASSEMBLY_B));
     assert_eq!(
         dispatch_coordinates
             .iter()
-            .map(|(_, _, deployment, _)| deployment.service_id.as_str())
+            .map(|(_, deployment, _)| deployment.service_id.as_str())
             .collect::<Vec<_>>(),
         vec![
             "test.skiff/package/example-1",
@@ -178,7 +119,7 @@ fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case()
     assert_eq!(
         dispatch_coordinates
             .iter()
-            .map(|(_, _, _, gateway)| gateway.as_str())
+            .map(|(_, _, gateway)| gateway.as_str())
             .collect::<Vec<_>>(),
         vec![
             concat!(
@@ -198,18 +139,16 @@ fn shared_executor_activates_and_becomes_ready_once_then_dispatches_every_case()
 }
 
 #[test]
-fn shared_executor_activation_failure_has_an_empty_ledger_and_zero_dispatches() {
+fn shared_executor_prepare_failure_has_an_empty_ledger_and_zero_dispatches() {
     let readiness_calls = Cell::new(0);
     let dispatch_calls = Cell::new(0);
     let error = execute_shared_assembly_with(
         three_entrypoints(),
-        11,
-        |expected_generation, candidate_generation| {
-            assert_eq!((expected_generation, candidate_generation), (11, 12));
+        || {
             Err::<ActivatedAssembly<()>, _>(CanonicalFixtureError::RemoteControl {
-                status: 409,
-                code: "ActivationGenerationMismatch".to_string(),
-                message: "expected generation did not match".to_string(),
+                status: 500,
+                code: "ReleasePointerWriteFailed".to_string(),
+                message: "release pointer table write failed".to_string(),
             })
         },
         |_| {
@@ -225,21 +164,19 @@ fn shared_executor_activation_failure_has_an_empty_ledger_and_zero_dispatches() 
 
     assert_eq!(readiness_calls.get(), 0);
     assert_eq!(dispatch_calls.get(), 0);
-    assert_empty_first_case_ledger(error, "ActivationGenerationMismatch");
+    assert_empty_first_case_ledger(error, "ReleasePointerWriteFailed");
 }
 
 #[test]
 fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
-    let activation_calls = Cell::new(0);
+    let activate_calls = Cell::new(0);
     let readiness_calls = Cell::new(0);
     let dispatch_calls = Cell::new(0);
     let error = execute_shared_assembly_with(
         three_entrypoints(),
-        3,
-        |expected_generation, candidate_generation| {
-            activation_calls.set(activation_calls.get() + 1);
-            assert_eq!((expected_generation, candidate_generation), (3, 4));
-            Ok(test_active_assembly(candidate_generation))
+        || {
+            activate_calls.set(activate_calls.get() + 1);
+            Ok(test_active_assembly())
         },
         |_| {
             readiness_calls.set(readiness_calls.get() + 1);
@@ -254,7 +191,7 @@ fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
     )
     .unwrap_err();
 
-    assert_eq!(activation_calls.get(), 1);
+    assert_eq!(activate_calls.get(), 1);
     assert_eq!(readiness_calls.get(), 1);
     assert_eq!(dispatch_calls.get(), 0);
     let CanonicalFixtureError::SuiteExecution {
@@ -276,37 +213,13 @@ fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
 }
 
 #[test]
-fn shared_executor_generation_overflow_fails_before_activation() {
-    let activation_calls = Cell::new(0);
-    let error = execute_shared_assembly_with(
-        three_entrypoints(),
-        u64::MAX,
-        |_, _| {
-            activation_calls.set(activation_calls.get() + 1);
-            Ok(test_active_assembly(0))
-        },
-        |_| Ok(()),
-        |_, _| Ok(DispatchOutcome::Passed),
-    )
-    .unwrap_err();
-
-    assert_eq!(activation_calls.get(), 0);
-    assert!(matches!(
-        error,
-        CanonicalFixtureError::SuiteExecution { source, .. }
-            if matches!(*source, CanonicalFixtureError::InvalidInput(ref message)
-                if message == "assembly activation expected generation cannot advance")
-    ));
-}
-
-#[test]
 fn test_service_control_body_is_the_exact_http_request() {
     let entrypoint = test_service_entrypoint();
     let assembly = RuntimeAssemblyRef {
         assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
     };
 
-    let body = test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).unwrap();
+    let body = test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
@@ -316,7 +229,6 @@ fn test_service_control_body_is_the_exact_http_request() {
             "routing": {
                 "kind": "runtimeAssembly",
                 "assemblyIdentity": test_support::ASSEMBLY_B,
-                "assemblyGeneration": 7,
                 "deployment": {
                     "serviceId": "test.skiff/package/example",
                     "contractVersion": "1.0.0",
@@ -357,6 +269,7 @@ fn test_service_control_body_is_the_exact_http_request() {
         "gatewayEntryKey",
         "testEffectsEnabled",
         "testEffectDoubles",
+        "assemblyGeneration",
     ] {
         assert!(
             !encoded.contains(retired),
@@ -372,11 +285,11 @@ fn test_service_control_body_rejects_non_http_or_methodless_selectors() {
     };
     let mut entrypoint = test_service_entrypoint();
     entrypoint.selector.protocol = IngressProtocol::WebSocket;
-    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err());
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).is_err());
 
     entrypoint.selector.protocol = IngressProtocol::Http;
     entrypoint.selector.method = None;
-    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, 7, &entrypoint).is_err());
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).is_err());
 }
 
 #[test]
@@ -580,14 +493,13 @@ fn three_entrypoints() -> Vec<CanonicalTestServiceEntrypoint> {
         .collect()
 }
 
-fn test_active_assembly(generation: u64) -> ActivatedAssembly<()> {
+fn test_active_assembly() -> ActivatedAssembly<()> {
     ActivatedAssembly {
         assembly: RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
                 test_support::ASSEMBLY_B,
             ),
         },
-        generation,
         readiness: (),
     }
 }

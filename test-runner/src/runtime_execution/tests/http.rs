@@ -8,15 +8,15 @@ use std::{
 use super::*;
 
 #[test]
-fn hostname_activation_returns_peer_and_explicit_peer_preserves_host_without_dns() {
-    let (activation_addr, activation_server) = spawn_server(|mut stream| {
+fn hostname_control_returns_peer_and_explicit_peer_preserves_host_without_dns() {
+    let (control_addr, control_server) = spawn_server(|mut stream| {
         let request = read_request_head(&mut stream);
-        write_response(&mut stream, b"activated");
+        write_response(&mut stream, b"dispatched");
         request
     });
-    let activation_authority = format!("localhost:{}", activation_addr.port());
-    let activation = request_url(
-        &format!("http://{activation_authority}/__skiff/activate-assembly"),
+    let control_authority = format!("localhost:{}", control_addr.port());
+    let control = request_url(
+        &format!("http://{control_authority}/__skiff/test-dispatch"),
         "POST",
         None,
         b"{}",
@@ -24,11 +24,11 @@ fn hostname_activation_returns_peer_and_explicit_peer_preserves_host_without_dns
         4096,
     )
     .unwrap();
-    assert_eq!(activation.response.body, "activated");
-    assert_eq!(activation.peer_addr, activation_addr);
-    assert_eq!(activation.authority, activation_authority);
-    let activation_request = activation_server.join().unwrap();
-    assert!(activation_request.contains(&format!("Host: {activation_authority}\r\n")));
+    assert_eq!(control.response.body, "dispatched");
+    assert_eq!(control.peer_addr, control_addr);
+    assert_eq!(control.authority, control_authority);
+    let control_request = control_server.join().unwrap();
+    assert!(control_request.contains(&format!("Host: {control_authority}\r\n")));
 
     let (health_addr, health_server) = spawn_server(|mut stream| {
         let request = read_request_head(&mut stream);

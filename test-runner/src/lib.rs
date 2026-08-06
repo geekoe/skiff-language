@@ -3,8 +3,9 @@
 //! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
 //! All selected cases for that service share the compile, resolved config and dependency graph.
 //! Non-live execution then places them, in discovery order, into bounded multi-root assembly
-//! batches. Each case belongs to exactly one batch-scoped assembly and activation generation; it
-//! does not own a separate assembly or generation.
+//! batches. Each case belongs to exactly one batch-scoped assembly; it does not own a separate
+//! assembly. Every batch publishes its immutable records and release pointers, then waits until
+//! the router health projection contains the batch build ids before dispatching.
 //!
 //! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
 //! entry, ingress binding, generated service identity, config snapshot partition, heap, effect
@@ -12,10 +13,7 @@
 //! Every root dispatch receives a new opaque `testCaseCapability`; direct and recursive task
 //! requests inherit that exact capability instead of creating or borrowing one from another root.
 
-use std::{
-    fs,
-    path::PathBuf,
-};
+use std::{fs, path::PathBuf};
 
 use skiff_compiler::CompilerPlatformSources;
 use thiserror::Error;
@@ -58,11 +56,11 @@ pub struct SkiffTestOptions {
     pub runtime_artifact_root: Option<PathBuf>,
     pub base_assembly: Option<String>,
     pub base_config_snapshot: Option<String>,
-    pub activation_url: Option<String>,
+    /// Router control origin serving `/__router/health` and `/__skiff/test-dispatch`.
+    pub control_url: Option<String>,
     pub ingress_url: Option<String>,
-    /// Router/Runtime activation target; it never selects a test service config profile.
+    /// Release pointer table profile; it never selects a test service config profile.
     pub target_profile: String,
-    pub expected_generation: u64,
 }
 
 #[derive(Debug, Error)]
@@ -79,7 +77,7 @@ pub enum SkiffTestError {
     Fixture(#[source] Box<canonical_fixture::CanonicalFixtureError>),
     #[error("input {path} is not inside a package source root")]
     MissingPackageRoot { path: String },
-    #[error("canonical execution requires --activation-url, --ingress-url and --artifact-root")]
+    #[error("canonical execution requires --control-url, --ingress-url and --artifact-root")]
     MissingCanonicalRuntime,
     #[error("live tests require an explicit file and the complete canonical runtime target")]
     InvalidLiveOptions,
@@ -95,29 +93,24 @@ impl From<canonical_fixture::CanonicalFixtureError> for SkiffTestError {
     }
 }
 
-pub fn validate_activation_url(value: &str) -> Result<(), String> {
-    let Some(rest) = value.strip_prefix("http://") else {
-        return Err("activation URL must use http://".to_string());
-    };
-    let Some((authority, path)) = rest.split_once('/') else {
-        return Err("activation URL must include /__skiff/activate-assembly".to_string());
-    };
-    if !is_canonical_http_authority(authority) || path != "__skiff/activate-assembly" {
-        return Err("activation URL must point exactly to /__skiff/activate-assembly".to_string());
-    }
-    Ok(())
+pub fn validate_ingress_url(value: &str) -> Result<(), String> {
+    validate_http_origin(value, "ingress")
 }
 
-pub fn validate_ingress_url(value: &str) -> Result<(), String> {
+pub fn validate_control_url(value: &str) -> Result<(), String> {
+    validate_http_origin(value, "control")
+}
+
+fn validate_http_origin(value: &str, label: &str) -> Result<(), String> {
     let authority = value
         .strip_prefix("http://")
-        .ok_or_else(|| "ingress URL must use http://".to_string())?
+        .ok_or_else(|| format!("{label} URL must use http://"))?
         .strip_suffix('/')
         .unwrap_or_else(|| value.strip_prefix("http://").expect("prefix was checked"));
     if !is_canonical_http_authority(authority) {
-        return Err(
-            "ingress URL must be an http:// origin without path, query or fragment".to_string(),
-        );
+        return Err(format!(
+            "{label} URL must be an http:// origin without path, query or fragment"
+        ));
     }
     Ok(())
 }
@@ -143,9 +136,7 @@ pub fn run_skiff_tests_with_options(
             ),
         });
     }
-    let first = inputs
-        .first()
-        .expect("inputs was checked to be non-empty");
+    let first = inputs.first().expect("inputs was checked to be non-empty");
     let first_metadata = fs::metadata(first).map_err(|source| SkiffTestError::Metadata {
         path: first.display().to_string(),
         source,
@@ -153,11 +144,9 @@ pub fn run_skiff_tests_with_options(
     if options.live && !first_metadata.is_file() {
         return Err(SkiffTestError::InvalidLiveOptions);
     }
-    let package_root =
-        canonical_package::find_package_root(first, first_metadata.is_file()).ok_or_else(|| {
-            SkiffTestError::MissingPackageRoot {
-                path: first.display().to_string(),
-            }
+    let package_root = canonical_package::find_package_root(first, first_metadata.is_file())
+        .ok_or_else(|| SkiffTestError::MissingPackageRoot {
+            path: first.display().to_string(),
         })?;
     let artifact_root = options
         .artifact_root
@@ -183,11 +172,9 @@ pub fn run_skiff_tests_with_options(
             path: input.display().to_string(),
             source,
         })?;
-        let input_package_root =
-            canonical_package::find_package_root(input, metadata.is_file()).ok_or_else(|| {
-                SkiffTestError::MissingPackageRoot {
-                    path: input.display().to_string(),
-                }
+        let input_package_root = canonical_package::find_package_root(input, metadata.is_file())
+            .ok_or_else(|| SkiffTestError::MissingPackageRoot {
+                path: input.display().to_string(),
             })?;
         if input_package_root != package_root {
             return Err(SkiffTestError::MissingPackageRoot {
@@ -227,13 +214,13 @@ pub fn run_skiff_tests_with_options(
         }
         runtime_artifact_root
     };
-    let (Some(activation_url), Some(ingress_url)) = (
-        options.activation_url.as_deref(),
+    let (Some(control_url), Some(ingress_url)) = (
+        options.control_url.as_deref(),
         options.ingress_url.as_deref(),
     ) else {
         return Err(SkiffTestError::MissingCanonicalRuntime);
     };
-    validate_activation_url(activation_url)
+    validate_control_url(control_url)
         .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
     validate_ingress_url(ingress_url)
         .map_err(canonical_fixture::CanonicalFixtureError::InvalidInput)?;
@@ -243,7 +230,7 @@ pub fn run_skiff_tests_with_options(
         cases,
         artifact_root,
         runtime_artifact_root,
-        activation_url,
+        control_url,
         options,
     )?)
 }

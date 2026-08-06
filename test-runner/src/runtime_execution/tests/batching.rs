@@ -29,7 +29,7 @@ fn file_first_batches_preserve_discovery_order_without_splitting_small_files() {
     );
     assert!(batches
         .iter()
-        .all(|batch| batch.len() <= batching::MAX_NON_LIVE_CASES_PER_ACTIVATION));
+        .all(|batch| batch.len() <= batching::MAX_NON_LIVE_CASES_PER_BATCH));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn exact_multiple_of_the_cap_does_not_create_an_empty_batch() {
 }
 
 #[test]
-fn live_explicit_file_cases_remain_one_activation_even_above_the_non_live_cap() {
+fn live_explicit_file_cases_remain_one_batch_even_above_the_non_live_cap() {
     let batches = batching::partition_cases(cases_for_files(&[("live.test.skiff", 20)]), true);
 
     assert_eq!(batch_sizes(&batches), vec![20]);
@@ -287,29 +287,26 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
 }
 
 #[test]
-fn batches_advance_generation_safely_and_dispatch_in_discovery_order() {
+fn batches_prepare_and_dispatch_in_discovery_order() {
     let timeline = RefCell::new(Vec::new());
     let batches = execution_batches(&[("first", 2), ("second", 1)]);
 
     let summary = execute_batches_with(
         batches,
-        40,
-        |context, expected, candidate| {
-            timeline
-                .borrow_mut()
-                .push(format!("activate:{context}:{expected}->{candidate}"));
-            Ok(active(candidate))
+        |context| {
+            timeline.borrow_mut().push(format!("prepare:{context}"));
+            Ok(active(*context))
         },
         |active| {
             timeline
                 .borrow_mut()
-                .push(format!("ready:{}", active.generation));
+                .push(format!("ready:{}", active.readiness));
             Ok(())
         },
         |active, entrypoint| {
             timeline.borrow_mut().push(format!(
                 "dispatch:{}:{}",
-                active.generation, entrypoint.case.name
+                active.readiness, entrypoint.case.name
             ));
             Ok(DispatchOutcome::Passed)
         },
@@ -320,32 +317,31 @@ fn batches_advance_generation_safely_and_dispatch_in_discovery_order() {
     assert_eq!(
         &*timeline.borrow(),
         &[
-            "activate:first:40->41",
-            "ready:41",
-            "dispatch:41:first-0",
-            "dispatch:41:first-1",
-            "activate:second:41->42",
-            "ready:42",
-            "dispatch:42:second-0",
+            "prepare:first",
+            "ready:first",
+            "dispatch:first:first-0",
+            "dispatch:first:first-1",
+            "prepare:second",
+            "ready:second",
+            "dispatch:second:second-0",
         ]
     );
 }
 
 #[test]
-fn later_activation_failure_preserves_all_prior_pass_and_fail_results() {
+fn later_prepare_failure_preserves_all_prior_pass_and_fail_results() {
     let batches = execution_batches(&[("first", 2), ("second", 2)]);
     let error = execute_batches_with(
         batches,
-        7,
-        |context, _, candidate| {
+        |context| {
             if *context == "second" {
                 return Err(CanonicalFixtureError::RemoteControl {
-                    status: 409,
-                    code: "ActivationGenerationMismatch".to_string(),
-                    message: "stale expected generation".to_string(),
+                    status: 500,
+                    code: "ReleasePointerWriteFailed".to_string(),
+                    message: "release pointer table write failed".to_string(),
                 });
             }
-            Ok(active(candidate))
+            Ok(active(*context))
         },
         |_| Ok(()),
         |_, entrypoint| {
@@ -365,7 +361,7 @@ fn later_activation_failure_preserves_all_prior_pass_and_fail_results() {
         source,
     } = error
     else {
-        panic!("activation failure did not preserve the suite ledger");
+        panic!("prepare failure did not preserve the suite ledger");
     };
     assert_eq!(completed.len(), 2);
     assert!(completed[0].passed);
@@ -378,23 +374,22 @@ fn later_activation_failure_preserves_all_prior_pass_and_fail_results() {
     assert!(matches!(
         *source,
         CanonicalFixtureError::RemoteControl { ref code, .. }
-            if code == "ActivationGenerationMismatch"
+            if code == "ReleasePointerWriteFailed"
     ));
 }
 
 #[test]
 fn later_readiness_failure_preserves_ledger_and_stops_current_and_future_dispatch() {
-    let activations = RefCell::new(Vec::new());
+    let prepares = RefCell::new(Vec::new());
     let dispatches = RefCell::new(Vec::new());
     let error = execute_batches_with(
         execution_batches(&[("first", 2), ("second", 1), ("never", 1)]),
-        30,
-        |context, _, candidate| {
-            activations.borrow_mut().push(*context);
-            Ok(active(candidate))
+        |context| {
+            prepares.borrow_mut().push(*context);
+            Ok(active(*context))
         },
         |active| {
-            if active.generation == 32 {
+            if active.readiness == "second" {
                 Err(CanonicalFixtureError::InvalidInput(
                     "second batch was not ready".to_string(),
                 ))
@@ -413,7 +408,7 @@ fn later_readiness_failure_preserves_ledger_and_stops_current_and_future_dispatc
     )
     .unwrap_err();
 
-    assert_eq!(&*activations.borrow(), &["first", "second"]);
+    assert_eq!(&*prepares.borrow(), &["first", "second"]);
     assert_eq!(&*dispatches.borrow(), &["first-0", "first-1"]);
     let CanonicalFixtureError::SuiteExecution {
         completed,
@@ -447,8 +442,7 @@ fn assertion_failure_continues_through_later_batches_once_and_in_order() {
     let dispatches = RefCell::new(Vec::new());
     let summary = execute_batches_with(
         execution_batches(&[("first", 2), ("second", 2)]),
-        15,
-        |_, _, candidate| Ok(active(candidate)),
+        |context| Ok(active(*context)),
         |_| Ok(()),
         |_, entrypoint| {
             dispatches.borrow_mut().push(entrypoint.case.name.clone());
@@ -486,8 +480,7 @@ fn later_dispatch_failure_preserves_prior_batches_and_current_batch_prefix() {
     let batches = execution_batches(&[("first", 1), ("second", 3)]);
     let error = execute_batches_with(
         batches,
-        3,
-        |_, _, candidate| Ok(active(candidate)),
+        |context| Ok(active(*context)),
         |_| Ok(()),
         |_, entrypoint| {
             if entrypoint.case.name == "second-1" {
@@ -525,92 +518,6 @@ fn later_dispatch_failure_preserves_prior_batches_and_current_batch_prefix() {
         *source,
         CanonicalFixtureError::InvalidInput(ref message)
             if message == "runtime transport disappeared"
-    ));
-}
-
-#[test]
-fn generation_limit_before_a_later_batch_keeps_the_completed_ledger() {
-    let error = execute_batches_with(
-        execution_batches(&[("first", 1), ("second", 1)]),
-        skiff_artifact_model::MAX_SAFE_ACTIVATION_GENERATION - 1,
-        |_, _, candidate| Ok(active(candidate)),
-        |_| Ok(()),
-        |_, _| Ok(DispatchOutcome::Passed),
-    )
-    .unwrap_err();
-
-    let CanonicalFixtureError::SuiteExecution {
-        completed,
-        module_path,
-        name,
-        source,
-    } = error
-    else {
-        panic!("generation overflow did not preserve the suite ledger");
-    };
-    assert_eq!(completed.len(), 1);
-    assert_eq!(completed[0].name, "first-0");
-    assert_eq!(
-        (module_path.as_str(), name.as_str()),
-        ("second", "second-0")
-    );
-    assert!(matches!(
-        *source,
-        CanonicalFixtureError::InvalidInput(ref message)
-            if message.contains("expectedGeneration must be between")
-    ));
-}
-
-#[test]
-fn semantic_generation_limit_fails_locally_before_activation() {
-    let activation_calls = std::cell::Cell::new(0);
-    let error = execute_batches_with(
-        execution_batches(&[("first", 1)]),
-        skiff_artifact_model::MAX_SAFE_ACTIVATION_GENERATION,
-        |_, _, candidate| {
-            activation_calls.set(activation_calls.get() + 1);
-            Ok(active(candidate))
-        },
-        |_| Ok(()),
-        |_, _| Ok(DispatchOutcome::Passed),
-    )
-    .unwrap_err();
-
-    assert_eq!(activation_calls.get(), 0);
-    assert!(matches!(
-        error,
-        CanonicalFixtureError::SuiteExecution { source, .. }
-            if matches!(*source, CanonicalFixtureError::InvalidInput(ref message)
-                if message.contains("expectedGeneration must be between"))
-    ));
-}
-
-#[test]
-fn non_candidate_generation_is_rejected_before_readiness_or_dispatch() {
-    let readiness_calls = std::cell::Cell::new(0);
-    let dispatch_calls = std::cell::Cell::new(0);
-    let error = execute_batches_with(
-        execution_batches(&[("first", 1)]),
-        12,
-        |_, _, _| Ok(active(99)),
-        |_| {
-            readiness_calls.set(readiness_calls.get() + 1);
-            Ok(())
-        },
-        |_, _| {
-            dispatch_calls.set(dispatch_calls.get() + 1);
-            Ok(DispatchOutcome::Passed)
-        },
-    )
-    .unwrap_err();
-
-    assert_eq!(readiness_calls.get(), 0);
-    assert_eq!(dispatch_calls.get(), 0);
-    assert!(matches!(
-        error,
-        CanonicalFixtureError::SuiteExecution { source, .. }
-            if matches!(*source, CanonicalFixtureError::InvalidInput(ref message)
-                if message == "assembly activation returned generation 99, expected 13")
     ));
 }
 
@@ -682,15 +589,14 @@ fn test_entrypoint(module: &str, index: usize) -> CanonicalTestServiceEntrypoint
     entrypoint
 }
 
-fn active(generation: u64) -> ActivatedAssembly<()> {
+fn active(context: &str) -> ActivatedAssembly<String> {
     ActivatedAssembly {
         assembly: RuntimeAssemblyRef {
             assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
                 test_support::ASSEMBLY_B,
             ),
         },
-        generation,
-        readiness: (),
+        readiness: context.to_string(),
     }
 }
 

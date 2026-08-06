@@ -137,387 +137,125 @@ fn test_dispatch_malformed_error_frame_is_a_wire_failure() {
 }
 
 #[test]
-fn activation_receipt_and_canonical_pending_decode_strictly() {
-    let receipt = decode_activation_receipt(&activation_receipt_body()).unwrap();
-    assert_eq!(receipt.profile, PROFILE);
-    assert_eq!(receipt.generation, 2);
-    assert_eq!(receipt.assembly.assembly_identity.as_str(), ASSEMBLY_B);
-    assert_eq!(receipt.config_snapshot.snapshot_id.as_str(), SNAPSHOT_B);
-
-    let health = decode_health_snapshot(&health_body(
-        PROFILE,
-        2,
-        ASSEMBLY_B,
-        valid_pending(),
-        vec![replica(2, ASSEMBLY_B, "healthy", true)],
-        vec![capability(REPLICA, true)],
-    ))
-    .unwrap();
-    assert!(health.pending_activation);
-}
-
-#[test]
-fn pending_token_generation_and_assembly_mutations_fail_closed() {
-    assert_pending_mutations_fail(vec![
-        (
-            "invalid activation token",
-            pending(
-                Value::String("bad token".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-        (
-            "non-string activation token",
-            pending(
-                serde_json::json!(7),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-        (
-            "expected generation mismatch",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(1),
-                serde_json::json!(2),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-        (
-            "candidate generation mismatch",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(4),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-        (
-            "non-canonical generation number",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2.0),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-        (
-            "invalid assembly identity",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                "invalid-assembly",
-                serde_json::json!(["runtime-a"]),
-            ),
-        ),
-    ]);
-}
-
-#[test]
-fn pending_candidate_must_remain_within_the_safe_generation_range() {
-    const MAX_SAFE_GENERATION: u64 = 9_007_199_254_740_991;
-    let pending_state = pending(
-        Value::String("activation-max".to_string()),
-        serde_json::json!(MAX_SAFE_GENERATION),
-        serde_json::json!(MAX_SAFE_GENERATION + 1),
-        ASSEMBLY_A,
-        serde_json::json!(["runtime-a"]),
+fn health_decodes_the_release_projection_and_ignores_router_owned_surfaces() {
+    let health =
+        decode_health_snapshot(&health_body(PROFILE, vec![DEPLOYMENT_A, DEPLOYMENT_B])).unwrap();
+    assert_eq!(health.active.profile, PROFILE);
+    assert_eq!(health.active.release_count, 2);
+    assert_eq!(
+        health.active.build_ids,
+        [DEPLOYMENT_A, DEPLOYMENT_B]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     );
 
-    let result = decode_health_snapshot(&health_body(
-        PROFILE,
-        MAX_SAFE_GENERATION,
-        ASSEMBLY_B,
-        pending_state,
-        Vec::new(),
-        Vec::new(),
-    ));
-
-    assert!(result.is_err(), "unsafe pending generation was accepted");
+    let mut extended = valid_health();
+    extended["routerOwnedSurface"] = serde_json::json!({ "nested": true });
+    extended["counters"] = serde_json::json!({ "sessions": { "registeredSessions": 1 } });
+    let health = decode_health_snapshot(&extended.to_string())
+        .expect("router-owned fields must be tolerated");
+    assert_eq!(health.active.release_count, 2);
 }
 
 #[test]
-fn pending_participant_invariant_mutations_fail_closed() {
-    assert_pending_mutations_fail(vec![
-        (
-            "empty participants",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!([]),
-            ),
-        ),
-        (
-            "duplicate participants",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-a", "runtime-a"]),
-            ),
-        ),
-        (
-            "unsorted participants",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime-b", "runtime-a"]),
-            ),
-        ),
-        (
-            "invalid participant token",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!(["runtime a"]),
-            ),
-        ),
-        (
-            "non-string participant",
-            pending(
-                Value::String("activation-three".to_string()),
-                serde_json::json!(2),
-                serde_json::json!(3),
-                ASSEMBLY_A,
-                serde_json::json!([1]),
-            ),
-        ),
-    ]);
-}
-
-#[test]
-fn pending_exact_shape_mutations_fail_closed() {
-    let mut unknown = valid_pending();
-    unknown.as_object_mut().unwrap().insert(
-        "legacyBuildId".to_string(),
-        Value::String("legacy".to_string()),
-    );
-    let mut missing = valid_pending();
-    missing
-        .as_object_mut()
-        .unwrap()
-        .remove("candidateGeneration");
-    let mut invalid_snapshot = valid_pending();
-    invalid_snapshot["configSnapshot"]["snapshotId"] =
-        Value::String("not-a-config-snapshot".to_string());
-    assert_pending_mutations_fail(vec![
-        ("unknown pending field", unknown),
-        ("missing pending field", missing),
-        ("invalid config snapshot", invalid_snapshot),
-    ]);
-}
-
-fn assert_pending_mutations_fail(cases: Vec<(&'static str, Value)>) {
-    for (name, pending) in cases {
-        let result = decode_health_snapshot(&health_body(
-            PROFILE,
-            2,
-            ASSEMBLY_B,
-            pending,
-            Vec::new(),
-            Vec::new(),
-        ));
-        assert!(result.is_err(), "mutation {name} was accepted");
-    }
-}
-
-#[test]
-fn activation_state_safe_generation_and_identity_mutations_fail_closed() {
-    for (name, generation, assembly, profile) in [
-        (
-            "unsafe generation",
-            9_007_199_254_740_992,
-            ASSEMBLY_B,
-            PROFILE,
-        ),
-        ("invalid active assembly", 2, "invalid-assembly", PROFILE),
-        ("invalid profile", 2, ASSEMBLY_B, "../prod"),
-    ] {
-        let result = decode_health_snapshot(&health_body(
-            profile,
-            generation,
-            assembly,
-            Value::Null,
-            Vec::new(),
-            Vec::new(),
-        ));
-        assert!(result.is_err(), "mutation {name} was accepted");
-    }
-
-    let mut invalid_snapshot: Value = serde_json::from_str(&health_body(
-        PROFILE,
-        2,
-        ASSEMBLY_B,
-        Value::Null,
-        Vec::new(),
-        Vec::new(),
-    ))
-    .unwrap();
-    invalid_snapshot["activeAssembly"]["configSnapshotId"] =
-        Value::String("invalid-config-snapshot".to_string());
-    assert!(decode_health_snapshot(&invalid_snapshot.to_string()).is_err());
-}
-
-#[test]
-fn health_unknown_missing_and_wrong_typed_fields_fail_closed() {
+fn health_projection_mutations_fail_closed() {
     let valid = || {
-        serde_json::from_str::<Value>(&health_body(
-            PROFILE,
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability(REPLICA, true)],
-        ))
-        .unwrap()
+        serde_json::from_str::<Value>(&health_body(PROFILE, vec![DEPLOYMENT_A, DEPLOYMENT_B]))
+            .unwrap()
     };
-    let mut unknown = valid();
-    unknown
-        .as_object_mut()
-        .unwrap()
-        .insert("legacy".to_string(), Value::Bool(true));
-    let mut missing = valid();
-    missing.as_object_mut().unwrap().remove("replicas");
-    let mut wrong_type = valid();
-    wrong_type["replicas"][0]["connected"] = Value::String("true".to_string());
+    let mutate = |update: fn(&mut Value)| {
+        let mut mutated = valid();
+        update(&mut mutated);
+        mutated
+    };
+    let cases = vec![
+        (
+            "unknown activeAssembly field",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["legacy"] = Value::Bool(true);
+            }),
+        ),
+        (
+            "missing buildIds",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("buildIds");
+            }),
+        ),
+        (
+            "missing releaseCount",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("releaseCount");
+            }),
+        ),
+        (
+            "missing profile",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("profile");
+            }),
+        ),
+        (
+            "non-array buildIds",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["buildIds"] = Value::String("build".to_string());
+            }),
+        ),
+        (
+            "non-string buildId",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["buildIds"][0] = Value::Bool(true);
+            }),
+        ),
+        (
+            "non-canonical buildId",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["buildIds"][0] = Value::String("build id".to_string());
+            }),
+        ),
+        (
+            "fractional releaseCount",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["releaseCount"] = serde_json::json!(2.5);
+            }),
+        ),
+        (
+            "negative releaseCount",
+            mutate(|value: &mut Value| {
+                value["activeAssembly"]["releaseCount"] = serde_json::json!(-1);
+            }),
+        ),
+    ];
 
-    for (name, value) in [
-        ("unknown", unknown),
-        ("missing", missing),
-        ("wrong type", wrong_type),
-    ] {
+    for (name, value) in cases {
         assert!(
             decode_health_snapshot(&value.to_string()).is_err(),
-            "{name} schema mutation was accepted"
+            "mutation {name} was accepted"
         );
     }
 }
 
 #[test]
-fn health_counters_contract_and_optional_registered_at() {
-    let valid = || {
-        serde_json::from_str::<Value>(&health_body(
-            PROFILE,
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica(2, ASSEMBLY_B, "healthy", true)],
-            vec![capability(REPLICA, true)],
-        ))
-        .unwrap()
-    };
+fn health_missing_ok_or_wrong_ok_fail_closed() {
+    let mut missing = valid_health();
+    missing.as_object_mut().unwrap().remove("ok");
+    assert!(decode_health_snapshot(&missing.to_string()).is_err());
 
-    // The §10 counters object is optional on the base TS-compatible shape.
-    let mut without_counters = valid();
-    without_counters.as_object_mut().unwrap().remove("counters");
-    assert!(
-        decode_health_snapshot(&without_counters.to_string()).is_ok(),
-        "health without counters must stay decodable"
-    );
+    let mut wrong = valid_health();
+    wrong["ok"] = Value::Bool(false);
+    assert!(decode_health_snapshot(&wrong.to_string()).is_err());
 
-    // Unknown or missing counter sections fail closed.
-    let mut unknown_section = valid();
-    unknown_section["counters"]["legacy"] = serde_json::json!({});
-    assert!(decode_health_snapshot(&unknown_section.to_string()).is_err());
-    let mut missing_section = valid();
-    missing_section["counters"]
-        .as_object_mut()
-        .unwrap()
-        .remove("sessions");
-    assert!(decode_health_snapshot(&missing_section.to_string()).is_err());
-    let mut wrong_section = valid();
-    wrong_section["counters"]["sessions"] = serde_json::json!(7);
-    assert!(decode_health_snapshot(&wrong_section.to_string()).is_err());
-
-    // Rust health omits registration timestamps; the decoder treats
-    // registeredAt as optional on replicas and capabilityConnections.
-    let mut no_registered_at = valid();
-    no_registered_at["replicas"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("registeredAt");
-    no_registered_at["capabilityConnections"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("registeredAt");
-    let health = decode_health_snapshot(&no_registered_at.to_string())
-        .expect("registeredAt must be optional");
-    assert_eq!(health.replicas[0].replica_id, REPLICA);
-    assert!(health.capability_connections[0].connected);
-}
-
-#[test]
-fn replica_connection_lifecycle_counts_decode_as_required_safe_integers() {
-    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-
-    let mut replica = replica(2, ASSEMBLY_B, "healthy", true);
-    replica["connectionPinCount"] = serde_json::json!(MAX_SAFE_INTEGER);
-    replica["connectionReleaseAckCount"] = serde_json::json!(17);
-    let health = decode_health_snapshot(&health_body(
-        PROFILE,
-        2,
-        ASSEMBLY_B,
-        Value::Null,
-        vec![replica],
-        vec![capability(REPLICA, true)],
-    ))
-    .unwrap();
-
-    assert_eq!(health.replicas[0].connection_pin_count, MAX_SAFE_INTEGER);
-    assert_eq!(health.replicas[0].connection_release_ack_count, 17);
-}
-
-#[test]
-fn replica_connection_lifecycle_count_mutations_fail_closed() {
-    let valid = || replica(2, ASSEMBLY_B, "healthy", true);
-    let mut cases = Vec::new();
-    for field in ["connectionPinCount", "connectionReleaseAckCount"] {
-        let mut missing = valid();
-        missing.as_object_mut().unwrap().remove(field);
-        cases.push((format!("missing {field}"), missing));
-
-        for (kind, value) in [
-            ("negative", serde_json::json!(-1)),
-            ("fractional", serde_json::json!(1.5)),
-            ("unsafe", serde_json::json!(9_007_199_254_740_992_u64)),
-            ("string", serde_json::json!("1")),
-        ] {
-            let mut mutated = valid();
-            mutated[field] = value;
-            cases.push((format!("{kind} {field}"), mutated));
-        }
-    }
-    let mut unknown = valid();
-    unknown["legacyConnectionPinCount"] = serde_json::json!(0);
-    cases.push(("unknown replica field".to_string(), unknown));
-
-    for (name, replica) in cases {
-        let result = decode_health_snapshot(&health_body(
-            PROFILE,
-            2,
-            ASSEMBLY_B,
-            Value::Null,
-            vec![replica],
-            vec![capability(REPLICA, true)],
-        ));
-        assert!(result.is_err(), "mutation {name} was accepted");
-    }
+    let mut absent = valid_health();
+    absent.as_object_mut().unwrap().remove("activeAssembly");
+    assert!(decode_health_snapshot(&absent.to_string()).is_err());
 }
 
 fn valid_test_dispatch_response() -> Value {

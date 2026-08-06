@@ -8,10 +8,10 @@ use std::{
 use skiff_artifact_model::validate_activation_profile;
 use skiff_compiler::CompilerPlatformSources;
 use skiff_test_runner::{
-    run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
+    run_skiff_tests_with_options, validate_control_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir>... --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --activation-url <url> --ingress-url <url> --profile <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir>... --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --control-url <url> --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]";
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -56,10 +56,9 @@ struct RawCliArgs {
     platform_source_root: Option<PathBuf>,
     base_assembly: Option<String>,
     base_config_snapshot: Option<String>,
-    activation_url: Option<String>,
+    control_url: Option<String>,
     ingress_url: Option<String>,
     profile: Option<String>,
-    expected_generation: Option<u64>,
     live: bool,
     deny_skips: bool,
     require_tests: bool,
@@ -89,10 +88,10 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
                 next(&mut args, &arg)?,
                 &arg,
             )?,
-            "--activation-url" => {
+            "--control-url" => {
                 let value = next(&mut args, &arg)?;
-                validate_activation_url(&value)?;
-                set_once(&mut parsed.activation_url, value, &arg)?;
+                validate_control_url(&value)?;
+                set_once(&mut parsed.control_url, value, &arg)?;
             }
             "--ingress-url" => {
                 let value = next(&mut args, &arg)?;
@@ -103,16 +102,6 @@ fn parse_args(stdout: &mut impl Write) -> Result<Option<CliArgs>, String> {
                 let value = next(&mut args, &arg)?;
                 validate_profile(&value)?;
                 set_once(&mut parsed.profile, value, &arg)?;
-            }
-            "--expected-generation" => {
-                let value = next(&mut args, &arg)?;
-                if parsed
-                    .expected_generation
-                    .replace(parse_generation(&value, "--expected-generation")?)
-                    .is_some()
-                {
-                    return Err("--expected-generation was provided more than once".to_string());
-                }
             }
             "--live" => set_flag(&mut parsed.live, &arg)?,
             "--deny-skips" => set_flag(&mut parsed.deny_skips, &arg)?,
@@ -131,10 +120,9 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         platform_source_root,
         base_assembly,
         base_config_snapshot,
-        activation_url,
+        control_url,
         ingress_url,
         profile,
-        expected_generation,
         live,
         deny_skips,
         require_tests,
@@ -155,23 +143,10 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             "--base-assembly and --base-config-snapshot must be provided together".to_string(),
         );
     }
-    if live
-        && (activation_url.is_none()
-            || ingress_url.is_none()
-            || profile.is_none()
-            || expected_generation.is_none())
-    {
-        return Err(
-            "--live requires --activation-url, --ingress-url, --profile and --expected-generation"
-                .to_string(),
-        );
+    if live && (control_url.is_none() || ingress_url.is_none() || profile.is_none()) {
+        return Err("--live requires --control-url, --ingress-url and --profile".to_string());
     }
-    if !live
-        && (activation_url.is_some()
-            || ingress_url.is_some()
-            || profile.is_some()
-            || expected_generation.is_some())
-    {
+    if !live && (control_url.is_some() || ingress_url.is_some() || profile.is_some()) {
         return Err(
             "non-live targets are supplied only by the isolated runtime harness".to_string(),
         );
@@ -179,18 +154,18 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     let runtime_artifact_root = (!live)
         .then(|| env_path("SKIFF_TEST_RUNTIME_ARTIFACT_ROOT"))
         .flatten();
-    let activation_url = if live {
-        activation_url
+    let control_url = if live {
+        control_url
     } else {
-        env::var("SKIFF_TEST_ACTIVATION_URL").ok()
+        env::var("SKIFF_TEST_CONTROL_URL").ok()
     };
     let ingress_url = if live {
         ingress_url
     } else {
         env::var("SKIFF_TEST_INGRESS_URL").ok()
     };
-    if let Some(value) = activation_url.as_deref() {
-        validate_activation_url(value)?;
+    if let Some(value) = control_url.as_deref() {
+        validate_control_url(value)?;
     }
     if let Some(value) = ingress_url.as_deref() {
         validate_ingress_url(value)?;
@@ -201,14 +176,6 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         env::var("SKIFF_TEST_ENVIRONMENT").unwrap_or_else(|_| "skiff-test".to_string())
     };
     validate_profile(&target_profile)?;
-    let expected_generation = if live {
-        expected_generation.expect("live generation was checked")
-    } else {
-        match env::var("SKIFF_TEST_EXPECTED_GENERATION") {
-            Ok(value) => parse_generation(&value, "SKIFF_TEST_EXPECTED_GENERATION")?,
-            Err(_) => 0,
-        }
-    };
     Ok(CliArgs {
         inputs,
         options: SkiffTestOptions {
@@ -218,10 +185,9 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             runtime_artifact_root,
             base_assembly,
             base_config_snapshot,
-            activation_url,
+            control_url,
             ingress_url,
             target_profile,
-            expected_generation,
         },
         deny_skips,
         require_tests,
@@ -307,12 +273,6 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-fn parse_generation(value: &str, label: &str) -> Result<u64, String> {
-    value
-        .parse::<u64>()
-        .map_err(|_| format!("{label} must be an unsigned integer"))
 }
 
 fn validate_profile(value: &str) -> Result<(), String> {

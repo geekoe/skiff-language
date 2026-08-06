@@ -2,14 +2,14 @@ use std::path::PathBuf;
 
 use crate::test_discovery::TestServiceCase;
 
-pub(super) const MAX_NON_LIVE_CASES_PER_ACTIVATION: usize = 16;
+pub(super) const MAX_NON_LIVE_CASES_PER_BATCH: usize = 16;
 
-pub(super) fn max_non_live_cases_per_activation() -> usize {
-    std::env::var("SKIFF_TEST_MAX_CASES_PER_ACTIVATION")
+pub(super) fn max_non_live_cases_per_batch() -> usize {
+    std::env::var("SKIFF_TEST_MAX_CASES_PER_BATCH")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(MAX_NON_LIVE_CASES_PER_ACTIVATION)
+        .unwrap_or(MAX_NON_LIVE_CASES_PER_BATCH)
 }
 
 pub(super) fn partition_cases(
@@ -52,7 +52,7 @@ fn pack_file_cases(
     current_batch: &mut Vec<TestServiceCase>,
     file_cases: Vec<TestServiceCase>,
 ) {
-    let cap = max_non_live_cases_per_activation();
+    let cap = max_non_live_cases_per_batch();
     if file_cases.is_empty() {
         return;
     }
@@ -69,10 +69,7 @@ fn pack_file_cases(
     }
     let mut remaining = file_cases.into_iter();
     loop {
-        let chunk = remaining
-            .by_ref()
-            .take(cap)
-            .collect::<Vec<_>>();
+        let chunk = remaining.by_ref().take(cap).collect::<Vec<_>>();
         if chunk.is_empty() {
             return;
         }

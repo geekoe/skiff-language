@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    net::SocketAddr,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -10,15 +9,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_artifact_identity::runtime_assembly_ref;
+use skiff_artifact_identity::{runtime_assembly_ref, service_deployment_ref};
 use skiff_artifact_model::{
     IngressProtocol, PackageArtifact, PackageArtifactRef, PackageBuildId, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeployment,
 };
 use skiff_compiler::authoring::{
     package_actor_routing_input, project_assembly_actor_routing_from_inputs,
 };
-use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
 
 use crate::{
@@ -39,7 +38,6 @@ mod http;
 mod readiness;
 mod wire;
 
-const ACTIVATION_HTTP_TIMEOUT: Duration = Duration::from_secs(150);
 const BUSINESS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -52,14 +50,14 @@ pub fn run_package_cases(
     cases: Vec<TestServiceCase>,
     source_artifact_root: &Path,
     runtime_artifact_root: &Path,
-    activation_url: &str,
+    control_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
     inline_effects::reject_legacy_manifest(package_root)?;
     read_root_package_manifest(&options.platform_sources, package_root)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     // Non-live tests should run against whatever environment base they are
-    // pointed at. The isolated activation profile is derived from the base
+    // pointed at. The isolated release profile is derived from the base
     // config snapshot instead of a fixed "skiff-test", so the same test code
     // can run against a dev or skiff-test base without profile matching
     // errors. Live tests keep their explicit --profile contract.
@@ -86,9 +84,11 @@ pub fn run_package_cases(
     let ingress_url = ingress_url.strip_suffix('/').unwrap_or(ingress_url);
     let run_config = load_test_service_run_config(&project, Some(ingress_url))?;
     let case_batches = batching::partition_cases(cases, options.live);
-    let trusted_source = std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT")
-        .is_ok_and(|value| value == "1");
-    let mut publish_session = CanonicalPublishSession::default().with_trusted_source(trusted_source);
+    let trusted_source =
+        std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT").is_ok_and(|value| value == "1");
+    let target_profile = options.target_profile.clone();
+    let mut publish_session =
+        CanonicalPublishSession::default().with_trusted_source(trusted_source);
     let mut package_admissions = PackageAdmissionCache::default();
     let execution_batches = prepare_execution_batches_with(
         case_batches,
@@ -122,6 +122,15 @@ pub fn run_package_cases(
                 runtime_artifact_root,
                 &mut publish_session,
             )?;
+            // The router resolves requests through the release pointer table;
+            // publish every deployment record of this batch under
+            // (profile, serviceId, version) so the batch is immediately
+            // resolvable without any coordination round.
+            write_batch_release_pointers(
+                runtime_artifact_root,
+                &batch.context.deployments,
+                &target_profile,
+            )?;
             Ok(())
         },
     )?;
@@ -135,7 +144,7 @@ pub fn run_package_cases(
     execute_assembly_batches(
         execution_batches,
         runtime_artifact_root,
-        activation_url,
+        control_url,
         ingress_url,
         options,
     )
@@ -158,29 +167,53 @@ fn base_snapshot_profile(
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }
 
+fn write_batch_release_pointers(
+    runtime_artifact_root: &Path,
+    deployments: &[ServiceDeployment],
+    profile: &str,
+) -> Result<(), CanonicalFixtureError> {
+    let store = CanonicalArtifactStore::open(runtime_artifact_root).map_err(|error| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "open runtime artifact store for release pointers: {error}"
+        ))
+    })?;
+    for deployment in deployments {
+        let deployment_ref = service_deployment_ref(deployment);
+        let pointer = ReleasePointer::new(profile, deployment_ref.clone()).map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "build release pointer for {}@{}: {error}",
+                deployment_ref.service_id, deployment_ref.contract_version
+            ))
+        })?;
+        store
+            .write_release_pointer(&pointer)
+            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn execute_assembly_batches(
     batches: Vec<ExecutionBatch<Arc<CanonicalTestRecords>>>,
     runtime_artifact_root: &Path,
-    activation_url: &str,
+    control_url: &str,
     ingress_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
     // The runtime store is immutable for package records; reuse validated
-    // reads across activation batches instead of re-running canonical JSON and
-    // SHA-256 admission for the same package closure on every batch.
+    // reads across batches instead of re-running canonical JSON and SHA-256
+    // admission for the same package closure on every batch.
     let mut package_reads = BTreeMap::<PackageArtifactRef, Arc<PackageArtifact>>::new();
     let mut actor_routing_inputs = BTreeMap::<PackageBuildId, _>::new();
-    let trusted_source = std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT")
-        .is_ok_and(|value| value == "1");
+    let trusted_source =
+        std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT").is_ok_and(|value| value == "1");
     execute_batches_with(
         batches,
-        options.expected_generation,
-        |records, expected_generation, candidate_generation| {
+        |records| {
             // The router's A0/A3 actor method catalog is loaded from the
-            // artifact root's actor routing projection record at activation
-            // time. Publish the exact projection for this batch's deployments
-            // before activating so cross-package actor method invocations are
-            // admitted instead of silently dropped.
+            // artifact root's actor routing projection record when a release
+            // is resolved. Publish the exact projection for this batch's
+            // deployments before readiness so cross-package actor method
+            // invocations are admitted instead of silently dropped.
             let store = CanonicalArtifactStore::open(runtime_artifact_root).map_err(|error| {
                 CanonicalFixtureError::InvalidInput(format!(
                     "open runtime artifact store for actor routing projection: {error}"
@@ -237,100 +270,83 @@ fn execute_assembly_batches(
                 if !actor_routing_inputs.contains_key(&artifact.package_build_id) {
                     let input = package_actor_routing_input(&store, artifact).map_err(|error| {
                         CanonicalFixtureError::InvalidInput(format!(
-                            "actor routing package input failed for the activation batch: {error}"
+                            "actor routing package input failed for the batch: {error}"
                         ))
                     })?;
                     actor_routing_inputs.insert(artifact.package_build_id.clone(), input);
                 }
             }
-            let projection =
-                project_assembly_actor_routing_from_inputs(&records.deployments, &actor_routing_inputs)
-                    .map_err(|error| {
-                        CanonicalFixtureError::InvalidInput(format!(
-                            "actor routing projection failed for the activation batch: {error}"
-                        ))
-                    })?;
+            let projection = project_assembly_actor_routing_from_inputs(
+                &records.deployments,
+                &actor_routing_inputs,
+            )
+            .map_err(|error| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "actor routing projection failed for the batch: {error}"
+                ))
+            })?;
             store
                 .write_actor_routing_projection(&projection)
                 .map_err(|error| {
                     CanonicalFixtureError::InvalidInput(format!(
-                        "write actor routing projection for the activation batch: {error}"
+                        "write actor routing projection for the batch: {error}"
                     ))
                 })?;
             let assembly_ref = runtime_assembly_ref(&records.assembly)
                 .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-            let config_snapshot_ref = records.config_snapshot.snapshot_ref().clone();
-            let requested_identity = assembly_ref.assembly_identity.as_str().to_string();
-            let activation_id = format!(
-                "test-service-{}-{candidate_generation}-{}",
-                std::process::id(),
-                requested_identity.rsplit(':').next().unwrap_or("assembly")
-            );
-            let body = activation_request_body(
-                &options.target_profile,
-                &activation_id,
-                expected_generation,
-                &assembly_ref,
-                &config_snapshot_ref,
-            )?;
-            let activation = http::request_url(
-                activation_url,
-                "POST",
-                None,
-                &body,
-                deadline_after(ACTIVATION_HTTP_TIMEOUT)?,
-                MAX_HTTP_RESPONSE_BYTES,
-            )?;
-            if !(200..300).contains(&activation.response.status) {
-                let error = wire::decode_control_error_response(&activation.response.body)?;
-                return Err(CanonicalFixtureError::RemoteControl {
-                    status: activation.response.status,
-                    code: error.code,
-                    message: error.message,
-                });
-            }
-            let receipt = wire::decode_activation_receipt(&activation.response.body)?;
-            let target = readiness::target_from_receipt(
-                receipt.clone(),
-                &options.target_profile,
-                candidate_generation,
-                &requested_identity,
-                &config_snapshot_ref,
-            )?;
+            let build_ids = records
+                .deployments
+                .iter()
+                .map(|deployment| deployment.deployment_artifact_identity.to_string())
+                .collect();
+            let target = readiness::target_for_builds(&options.target_profile, build_ids)?;
             Ok(ActivatedAssembly {
-                assembly: receipt.assembly,
-                generation: receipt.generation,
+                assembly: assembly_ref,
                 readiness: HttpReadiness {
                     target,
-                    peer_addr: activation.peer_addr,
-                    authority: activation.authority,
+                    control_url: control_url.to_string(),
                 },
             })
         },
         |active| {
+            // The first health fetch resolves the control origin once and
+            // pins the peer for the remaining backoff poll attempts.
+            let peer: std::cell::RefCell<Option<(std::net::SocketAddr, String)>> =
+                std::cell::RefCell::new(None);
             readiness::poll(
                 &active.readiness.target,
                 deadline_after(READINESS_TIMEOUT)?,
                 |deadline| {
-                    http::request_peer(
-                        active.readiness.peer_addr,
-                        &active.readiness.authority,
-                        HEALTH_PATH,
+                    if let Some((peer_addr, authority)) = peer.borrow().as_ref() {
+                        return http::request_peer(
+                            *peer_addr,
+                            authority.as_str(),
+                            HEALTH_PATH,
+                            "GET",
+                            &[],
+                            deadline,
+                            MAX_HTTP_RESPONSE_BYTES,
+                        );
+                    }
+                    let connected = http::request_url(
+                        &format!("{}{}", active.readiness.control_url, HEALTH_PATH),
                         "GET",
+                        None,
                         &[],
                         deadline,
                         MAX_HTTP_RESPONSE_BYTES,
-                    )
+                    )?;
+                    peer.replace(Some((connected.peer_addr, connected.authority)));
+                    Ok(connected.response)
                 },
             )
         },
         |active, entrypoint| {
             execute_business_request_once(|| {
                 execute_control_test_dispatch(
-                    activation_url,
+                    control_url,
                     ingress_url,
                     &active.assembly,
-                    active.generation,
                     entrypoint,
                 )
             })
@@ -363,22 +379,19 @@ fn prepare_execution_batches_with<Input, Context>(
 #[derive(Debug)]
 struct ActivatedAssembly<Readiness> {
     assembly: RuntimeAssemblyRef,
-    generation: u64,
     readiness: Readiness,
 }
 
 #[derive(Debug)]
 struct HttpReadiness {
     target: readiness::ReadinessTarget,
-    peer_addr: SocketAddr,
-    authority: String,
+    control_url: String,
 }
 
 #[cfg(test)]
 fn execute_shared_assembly_with<Readiness>(
     entrypoints: Vec<CanonicalTestServiceEntrypoint>,
-    expected_generation: u64,
-    activate: impl FnOnce(u64, u64) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
+    activate: impl FnOnce() -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
     await_readiness: impl FnOnce(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
     mut dispatch: impl FnMut(
         &ActivatedAssembly<Readiness>,
@@ -392,14 +405,10 @@ fn execute_shared_assembly_with<Readiness>(
             context: (),
             entrypoints,
         }],
-        expected_generation,
-        |(), expected_generation, candidate_generation| {
+        |()| {
             activate
                 .take()
-                .expect("one execution batch activates exactly once")(
-                expected_generation,
-                candidate_generation,
-            )
+                .expect("one execution batch prepares exactly once")()
         },
         |active| {
             await_readiness
@@ -412,12 +421,7 @@ fn execute_shared_assembly_with<Readiness>(
 
 fn execute_batches_with<Context, Readiness>(
     batches: Vec<ExecutionBatch<Context>>,
-    mut expected_generation: u64,
-    mut activate: impl FnMut(
-        &Context,
-        u64,
-        u64,
-    ) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
+    mut activate: impl FnMut(&Context) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
     mut await_readiness: impl FnMut(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
     mut dispatch: impl FnMut(
         &ActivatedAssembly<Readiness>,
@@ -428,48 +432,24 @@ fn execute_batches_with<Context, Readiness>(
     for batch in batches {
         let first = batch.entrypoints.first().ok_or_else(|| {
             CanonicalFixtureError::InvalidInput(
-                "test-service activation batch requires at least one entrypoint".to_string(),
+                "test-service batch requires at least one entrypoint".to_string(),
             )
         })?;
-        let first_case = (first.case.module_path.clone(), first.case.name.clone());
-        let candidate_generation = expected_generation.checked_add(1).ok_or_else(|| {
+        let active = activate(&batch.context).map_err(|source| {
             suite_execution_error(
                 results.clone(),
-                &first_case.0,
-                &first_case.1,
-                CanonicalFixtureError::InvalidInput(
-                    "assembly activation expected generation cannot advance".to_string(),
-                ),
+                &first.case.module_path,
+                &first.case.name,
+                source,
             )
         })?;
-        skiff_artifact_model::validate_transition_generations(
-            expected_generation,
-            candidate_generation,
-        )
-        .map_err(|message| {
-            suite_execution_error(
-                results.clone(),
-                &first_case.0,
-                &first_case.1,
-                CanonicalFixtureError::InvalidInput(message),
-            )
-        })?;
-        let active = activate(&batch.context, expected_generation, candidate_generation).map_err(
-            |source| suite_execution_error(results.clone(), &first_case.0, &first_case.1, source),
-        )?;
-        if active.generation != candidate_generation {
-            return Err(suite_execution_error(
-                results,
-                &first_case.0,
-                &first_case.1,
-                CanonicalFixtureError::InvalidInput(format!(
-                    "assembly activation returned generation {}, expected {candidate_generation}",
-                    active.generation
-                )),
-            ));
-        }
         await_readiness(&active).map_err(|source| {
-            suite_execution_error(results.clone(), &first_case.0, &first_case.1, source)
+            suite_execution_error(
+                results.clone(),
+                &first.case.module_path,
+                &first.case.name,
+                source,
+            )
         })?;
         for entrypoint in batch.entrypoints {
             let outcome = dispatch(&active, &entrypoint).map_err(|source| {
@@ -492,27 +472,8 @@ fn execute_batches_with<Context, Readiness>(
                 message,
             });
         }
-        expected_generation = active.generation;
     }
     Ok(summary_from_results(results))
-}
-
-fn activation_request_body(
-    target_profile: &str,
-    activation_id: &str,
-    expected_generation: u64,
-    assembly: &RuntimeAssemblyRef,
-    config_snapshot: &RuntimeConfigSnapshotRef,
-) -> Result<Vec<u8>, CanonicalFixtureError> {
-    serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": "skiff-assembly-activation-request-v3",
-        "profile": target_profile,
-        "activationId": activation_id,
-        "expectedGeneration": expected_generation,
-        "assembly": assembly,
-        "configSnapshot": config_snapshot,
-    }))
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
 }
 
 fn test_service_run_scope() -> Result<String, CanonicalFixtureError> {
@@ -592,20 +553,12 @@ fn suite_execution_error(
 }
 
 fn execute_control_test_dispatch(
-    activation_url: &str,
+    control_url: &str,
     ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
-    generation: u64,
     entrypoint: &CanonicalTestServiceEntrypoint,
 ) -> Result<http::HttpResponse, CanonicalFixtureError> {
-    let control_url = activation_url
-        .strip_suffix("/__skiff/activate-assembly")
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "activation URL is not canonical for test dispatch".to_string(),
-            )
-        })?;
-    let body = test_dispatch_body(ingress_url, assembly, generation, entrypoint)?;
+    let body = test_dispatch_body(ingress_url, assembly, entrypoint)?;
     let connected = http::request_url(
         &format!("{control_url}/__skiff/test-dispatch"),
         "POST",
@@ -620,7 +573,6 @@ fn execute_control_test_dispatch(
 fn test_dispatch_body(
     ingress_url: &str,
     assembly: &RuntimeAssemblyRef,
-    generation: u64,
     entrypoint: &CanonicalTestServiceEntrypoint,
 ) -> Result<Vec<u8>, CanonicalFixtureError> {
     if entrypoint.selector.protocol != IngressProtocol::Http {
@@ -639,7 +591,6 @@ fn test_dispatch_body(
         "routing": {
             "kind": "runtimeAssembly",
             "assemblyIdentity": assembly.assembly_identity,
-            "assemblyGeneration": generation,
             "deployment": entrypoint.deployment,
             "gatewayEntryIdentity": entrypoint.gateway_entry_identity,
             "ingress": entrypoint.selector,
