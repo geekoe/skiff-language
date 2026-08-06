@@ -739,6 +739,7 @@ mod tests {
                     "deploymentArtifactIdentity": fixture.deployment.deployment_artifact_identity.clone(),
                 },
                 "gatewayEntryIdentity": fixture.gateway_entry_identity.clone(),
+                "buildId": fixture.deployment.deployment_artifact_identity.clone(),
                 "ingress": {
                     "protocol": "http",
                     "method": "POST",
@@ -891,7 +892,7 @@ mod tests {
             {
                 let mut value = body(&fixture);
                 value["routing"]["deployment"]["deploymentArtifactIdentity"] =
-                    serde_json::json!("skiff-service-deployment-v2:sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+                    serde_json::json!("skiff-deployment-artifact-v4:sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
                 value
             },
             {

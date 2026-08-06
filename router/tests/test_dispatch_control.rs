@@ -102,9 +102,6 @@ fn materialize() -> RealChain {
     };
     let release_pointer =
         ReleasePointer::new("dev", deployment_ref.clone()).expect("release pointer");
-    artifact_store
-        .write_release_pointer(&release_pointer)
-        .expect("write release pointer");
     let gateway_entry = deployment
         .gateway_entries
         .get(&GatewayEntryKey::parse(GATEWAY_KEY).expect("gateway key"))
@@ -127,6 +124,9 @@ fn materialize() -> RealChain {
     artifact_store
         .write_service_deployment(&deployment)
         .expect("write deployment");
+    artifact_store
+        .write_release_pointer(&release_pointer)
+        .expect("write release pointer");
     let assembly_ref = runtime_assembly_ref(&assembly).expect("assembly ref");
 
     let directory = root.path().join("records/actor-routing");
