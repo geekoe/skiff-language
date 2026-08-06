@@ -77,89 +77,7 @@
     "PackageArtifact": "pointers/package-artifacts/<package-id>/<package-version>.json",
     "ServiceContract": "pointers/service-contracts/<service-id>/<contract-version>.json",
     "ServiceDeployment": "pointers/service-deployments/<service-id>/<contract-version>.json",
-    "RuntimeAssembly": "pointers/runtime-assemblies/<release>.json",
-    "ProfileActivationState": "profiles/<profile>/activation.json"
-  },
-  "controlWireFields": {
-    "prepare": [
-      "type",
-      "profile",
-      "activationId",
-      "expectedGeneration",
-      "candidateGeneration",
-      "assembly",
-      "configSnapshot",
-      "replicaId"
-    ],
-    "prepared": [
-      "type",
-      "profile",
-      "activationId",
-      "expectedGeneration",
-      "candidateGeneration",
-      "assembly",
-      "configSnapshot",
-      "replicaId"
-    ],
-    "reject": [
-      "type",
-      "profile",
-      "activationId",
-      "expectedGeneration",
-      "candidateGeneration",
-      "assembly",
-      "configSnapshot",
-      "replicaId",
-      "reason"
-    ],
-    "commit": [
-      "type",
-      "profile",
-      "activationId",
-      "expectedGeneration",
-      "candidateGeneration",
-      "assembly",
-      "configSnapshot",
-      "replicaId"
-    ],
-    "abort": [
-      "type",
-      "profile",
-      "activationId",
-      "expectedGeneration",
-      "candidateGeneration",
-      "assembly",
-      "configSnapshot",
-      "replicaId"
-    ],
-    "register": [
-      "type",
-      "profile",
-      "generation",
-      "assembly",
-      "configSnapshot",
-      "replicaId"
-    ]
-  },
-  "runtimeAssemblyFrame": {
-    "schemaVersion": "skiff-runtime-frame-v4",
-    "type": "assembly.activation",
-    "headerFields": [
-      "schemaVersion",
-      "type",
-      "control"
-    ],
-    "payloadBytes": 0,
-    "routerToRuntime": [
-      "prepare",
-      "commit",
-      "abort"
-    ],
-    "runtimeToRouter": [
-      "prepared",
-      "reject",
-      "register"
-    ]
+    "RuntimeAssembly": "pointers/runtime-assemblies/<release>.json"
   },
   "runtimeAssemblyRequestRouting": {
     "kind": "runtimeAssembly",
@@ -167,9 +85,16 @@
       "kind",
       "assemblyIdentity",
       "assemblyGeneration",
+      "deployment",
+      "buildId",
       "gatewayEntryIdentity",
       "ingress"
     ],
+    "tupleFields": [
+      "assemblyIdentity",
+      "assemblyGeneration"
+    ],
+    "tupleSemantics": "optional legacy fields: router stops filling, runtime never pins; buildId + deployment are the only routing dimensions (M4)",
     "ingressFields": [
       "protocol",
       "host",
@@ -180,7 +105,6 @@
     "forbiddenFields": [
       "contractOperationId",
       "gatewayEntryKey",
-      "deployment",
       "activationIdentity"
     ]
   },
@@ -233,11 +157,7 @@
     ],
     "operations": [
       "ensureProfileBootstrap",
-      "readProfile",
-      "prepareProfile",
-      "abortProfile",
-      "commitProfile",
-      "readRouterSnapshot"
+      "readProfile"
     ]
   }
 }

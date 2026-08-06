@@ -1,7 +1,9 @@
 //! TEST-ONLY reference model for `RuntimeGenerationPinLedger`
-//! (C-ws §3, `doc/implementation/router-rust-migration-c-ws-contract.md`).
+//! (C-ws §3, `doc/implementation/router-rust-migration-c-ws-contract.md`;
+//! M4: the per-connection generation pin is keyed by buildId, not the
+//! retired assembly generation).
 //!
-//! Mirrors the canonical TS `WebSocketGenerationLifecycleRouter` semantics:
+//! Mirrors the canonical `WebSocketGenerationLifecycleRouter` semantics:
 //! expect/acquire/release pending/cached acquire/session attachment/release
 //! timeout/runtime disconnect/flush. Not production code.
 
@@ -11,7 +13,7 @@ use std::collections::HashMap;
 struct PinTuple {
     router_session_id: String,
     service_id: String,
-    assembly_generation: u64,
+    build_id: String,
     websocket_entry_id: String,
     connection_id: String,
 }
@@ -21,14 +23,14 @@ impl PinTuple {
         Self {
             router_session_id: router_session_id.to_string(),
             service_id: "example.com/chat".to_string(),
-            assembly_generation: 7,
+            build_id: "skiff-deployment-artifact-v4:sha256:7".to_string(),
             websocket_entry_id: "entry-1".to_string(),
             connection_id: connection_id.to_string(),
         }
     }
 
-    fn with_generation(mut self, generation: u64) -> Self {
-        self.assembly_generation = generation;
+    fn with_build_id(mut self, build_id: &str) -> Self {
+        self.build_id = build_id.to_string();
         self
     }
 
@@ -356,7 +358,7 @@ fn exact_acquire_ack_and_cached_dedupe_keep_single_pin() {
     assert_eq!(ledger.pin_count("r1"), 1);
     // Same request id from a different tuple is a conflict.
     assert!(matches!(
-        ledger.acquire("r1", "acquire-1", &tuple.with_generation(8)),
+        ledger.acquire("r1", "acquire-1", &tuple.with_build_id("skiff-deployment-artifact-v4:sha256:8")),
         AcquireResponse::Reject(RejectCode::RequestConflict)
     ));
     assert_eq!(ledger.pin_count("r1"), 1);
@@ -378,7 +380,7 @@ fn acquire_rejection_codes_are_exact() {
     ledger.expect_connection(tuple.clone());
     // Tuple mismatch.
     assert!(matches!(
-        ledger.acquire("r1", "acquire-1", &tuple.clone().with_generation(8)),
+        ledger.acquire("r1", "acquire-1", &tuple.clone().with_build_id("skiff-deployment-artifact-v4:sha256:8")),
         AcquireResponse::Reject(RejectCode::TupleMismatch)
     ));
     // Exact acquire succeeds and binds the session to r1.
