@@ -45,13 +45,16 @@ runtime 懒加载。激活协调层整体移除。
 - 可选：fire-and-forget 预载提示（无 ack、无 pending）。
 - 验收：新旧版本并行可路由；无候选时快速失败；同版本覆盖后新请求走新 buildId。
 
-### M4：移除 activation 协调层
+### M4：移除 activation 协调层 ✅（已完成，2026-08-06）
 
 - 下线 `activation_state` 仓库、coordinator、epoch store、generation lease、
-  config snapshot 独立提交。
-- watch 改走"指针 + 幂等 deploy"；`assembly sync-state` 退役或改为指针表检查。
-- 存量迁移：旧 committed 世代视为全部版本键的当前值一次性写入指针表。
-- 验收：无 activation 残留引用；watch 全流程（变更 → 发布 → 指针更新 → 请求生效）无协调状态。
+  config snapshot 独立提交。✅
+- watch 改走"指针 + 幂等 deploy"（publish 同事务写指针，无独立激活步骤）；
+  `assembly activate`/`assembly sync-state` 退役。✅
+- 存量迁移：无线上数据，跳过（总监决策）。✅
+- 验收：无 activation 残留引用（grep 零命中）；watch 全流程
+  （变更 → 发布 → 指针更新 → 请求生效）无协调状态；整仓编译 0 error，
+  router 401 / runtime-host 417 / transport 254 / deployment / test-runner 全绿。✅
 
 ### M5：流水线与验证
 

@@ -4,6 +4,11 @@
 `runtime-lazy-load-deployment.md`（架构）与 `implementation-plan.md`（计划）的 M4 执行细节，
 **不改变设计语义**。与架构文档冲突以架构文档为准，冲突时上报总监。
 
+**M4 已落地（2026-08-06）**：本契约的 §1–§5 全部实现并验证（整仓编译 0 error；
+router 74 target / runtime-host 417 / transport 254 / runtime 主 crate / deployment /
+test-runner / telemetry 全绿；scripts 6 个失败为既有基线缺陷）。工作树已合入
+`integration/runtime-lazy-deploy`。
+
 已拍板决策（2026-08-06，总监确认）：
 
 - `assembly.activation` 帧族（Prepare/Prepared/Reject/Commit/Abort/Register）**完全退役**。
