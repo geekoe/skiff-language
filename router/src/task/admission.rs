@@ -193,6 +193,9 @@ impl RouterTaskAttemptAdmission {
                 assembly_identity: record.execution.assembly.assembly_identity.clone(),
                 assembly_generation: authority.assembly_generation,
                 deployment: record.execution.deployment.clone(),
+                build_id: Some(
+                    record.execution.deployment.deployment_artifact_identity.to_string(),
+                ),
             },
             invocation: RuntimeAssemblyTaskInvocationFrameHeader {
                 kind: "task".to_string(),

@@ -932,6 +932,7 @@ async fn dispatch_unary(
             ),
             assembly_generation: live.generation,
             deployment: live.deployment_ref(),
+            build_id: Some(live.deployment_ref().deployment_artifact_identity.to_string()),
             gateway_entry_identity: skiff_artifact_model::GatewayEntryIdentity::parse(
                 entrypoint.gateway_entry_identity.clone(),
             )

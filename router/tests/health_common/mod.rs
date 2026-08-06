@@ -270,6 +270,9 @@ pub fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
             package_test_dispatch: false,
             request_cancel: true,
             runtime_program: false,
+            artifact_root: None,
+            lazy_load: false,
+            loaded_build_ids: Vec::new(),
         },
     };
     encode_binary_frame(&header, &[]).expect("capabilities encodes")

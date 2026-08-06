@@ -561,6 +561,7 @@ impl WsDispatchStore {
                 assembly_identity: assembly_identity.clone(),
                 assembly_generation,
                 deployment: binding.deployment.clone(),
+                build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
                 gateway_entry_identity: binding.gateway_entry_identity.clone(),
                 ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
                     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
@@ -665,6 +666,9 @@ impl WsDispatchStore {
                 assembly_identity: record.assembly_identity.clone(),
                 assembly_generation: record.assembly_generation,
                 deployment: record.binding.deployment.clone(),
+                build_id: Some(
+                    record.binding.deployment.deployment_artifact_identity.to_string(),
+                ),
                 gateway_entry_identity: method_binding.gateway_entry_identity.clone(),
                 ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
                     protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
