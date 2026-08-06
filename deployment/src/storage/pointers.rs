@@ -1,17 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use skiff_artifact_identity::{
-    PackageArtifactPointerPath, PackageArtifactRecordPath, RuntimeAssemblyPointerPath,
-    RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
-    ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+    PackageArtifactPointerPath, PackageArtifactRecordPath, ReleasePointerPath,
+    RuntimeAssemblyPointerPath, RuntimeAssemblyRecordPath, ServiceContractPointerPath,
+    ServiceContractRecordPath, ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{
     PackageArtifactRef, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 
 use super::{
-    error::{EcosystemStorageError, StorageResult},
+    error::{io_error, EcosystemStorageError, StorageResult},
     io::{
         canonical_bytes, read_locked_bytes, strict_value, typed_from_value, CanonicalArtifactStore,
     },
@@ -21,6 +24,7 @@ const PACKAGE_POINTER_SCHEMA: &str = "skiff-package-artifact-pointer-v1";
 const CONTRACT_POINTER_SCHEMA: &str = "skiff-service-contract-pointer-v1";
 const DEPLOYMENT_POINTER_SCHEMA: &str = "skiff-service-deployment-pointer-v1";
 const ASSEMBLY_POINTER_SCHEMA: &str = "skiff-runtime-assembly-pointer-v1";
+const RELEASE_POINTER_SCHEMA: &str = "skiff-release-pointer-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +56,20 @@ pub struct RuntimeAssemblyPointer {
     pub schema_version: String,
     pub release: String,
     pub assembly: RuntimeAssemblyRef,
+    pub record_path: String,
+}
+
+/// The release pointer table entry `(profile, serviceId, version) -> buildId`.
+///
+/// The value carries the complete `ServiceDeploymentRef` (whose
+/// `deployment_artifact_identity` is the buildId consumed as the runtime
+/// loading unit) so the runtime can locate the exact deployment record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReleasePointer {
+    pub schema_version: String,
+    pub profile: String,
+    pub deployment: ServiceDeploymentRef,
     pub record_path: String,
 }
 
@@ -134,6 +152,38 @@ impl RuntimeAssemblyPointer {
             || self.record_path != RuntimeAssemblyRecordPath::new(&self.assembly)?.as_str()
         {
             return invalid(path, "assembly pointer schema or recordPath mismatch");
+        }
+        Ok(())
+    }
+}
+
+impl ReleasePointer {
+    pub fn new(profile: impl Into<String>, deployment: ServiceDeploymentRef) -> StorageResult<Self> {
+        let profile = profile.into();
+        ReleasePointerPath::new(
+            &profile,
+            &deployment.service_id,
+            &deployment.contract_version,
+        )?;
+        let record_path = ServiceDeploymentRecordPath::new(&deployment)?.to_string();
+        Ok(Self {
+            schema_version: RELEASE_POINTER_SCHEMA.to_string(),
+            profile,
+            deployment,
+            record_path,
+        })
+    }
+
+    fn validate(&self, path: &Path) -> StorageResult<()> {
+        ReleasePointerPath::new(
+            &self.profile,
+            &self.deployment.service_id,
+            &self.deployment.contract_version,
+        )?;
+        if self.schema_version != RELEASE_POINTER_SCHEMA
+            || self.record_path != ServiceDeploymentRecordPath::new(&self.deployment)?.as_str()
+        {
+            return invalid(path, "release pointer schema or recordPath mismatch");
         }
         Ok(())
     }
@@ -283,6 +333,91 @@ impl CanonicalArtifactStore {
             RuntimeAssemblyPointer::validate,
         )
     }
+
+    pub fn read_release_pointer(
+        &self,
+        profile: &str,
+        service_id: &str,
+        version: &str,
+    ) -> StorageResult<Option<ReleasePointer>> {
+        let path = ReleasePointerPath::new(profile, service_id, version)?;
+        let pointer = read_pointer(self, path.as_relative_path(), ReleasePointer::validate)?;
+        if let Some(pointer) = &pointer {
+            self.read_service_deployment(&pointer.deployment)?;
+        }
+        Ok(pointer)
+    }
+
+    /// Atomically replaces the release pointer without any expectation check.
+    /// The candidate's target deployment record must already exist.
+    pub fn write_release_pointer(&self, candidate: &ReleasePointer) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_service_deployment(&candidate.deployment)?;
+        let path = ReleasePointerPath::new(
+            &candidate.profile,
+            &candidate.deployment.service_id,
+            &candidate.deployment.contract_version,
+        )?;
+        self.with_exclusive_pointer_lock(path.as_relative_path(), |destination| {
+            self.replace_locked(destination, &canonical_bytes(candidate)?)
+        })
+    }
+
+    pub fn compare_and_swap_release_pointer(
+        &self,
+        expected: Option<&ReleasePointer>,
+        candidate: &ReleasePointer,
+    ) -> StorageResult<()> {
+        candidate.validate(self.root())?;
+        self.read_service_deployment(&candidate.deployment)?;
+        let path = ReleasePointerPath::new(
+            &candidate.profile,
+            &candidate.deployment.service_id,
+            &candidate.deployment.contract_version,
+        )?;
+        cas_pointer(
+            self,
+            path.as_relative_path(),
+            expected,
+            candidate,
+            ReleasePointer::validate,
+        )
+    }
+
+    /// Removes the release pointer under the exclusive lock. `expected` is an
+    /// optional CAS guard on the current value. Removing an absent pointer is
+    /// idempotent and returns `None`.
+    pub fn unset_release_pointer(
+        &self,
+        profile: &str,
+        service_id: &str,
+        version: &str,
+        expected: Option<&ReleasePointer>,
+    ) -> StorageResult<Option<ReleasePointer>> {
+        let path = ReleasePointerPath::new(profile, service_id, version)?;
+        self.with_exclusive_pointer_lock(path.as_relative_path(), |destination| {
+            let current = read_locked_bytes(destination)?
+                .map(|bytes| parse_pointer(destination, &bytes, ReleasePointer::validate))
+                .transpose()?;
+            if current.as_ref() != expected {
+                return Err(EcosystemStorageError::CasMismatch {
+                    path: destination.to_path_buf(),
+                    message: "current pointer does not equal expected pointer".to_string(),
+                });
+            }
+            if current.is_some() {
+                fs::remove_file(destination).map_err(|source| {
+                    io_error("remove release pointer", destination, source)
+                })?;
+                sync_directory(
+                    destination
+                        .parent()
+                        .expect("pointer destinations always have a parent"),
+                )?;
+            }
+            Ok(current)
+        })
+    }
 }
 
 fn read_pointer<T: DeserializeOwned + Serialize>(
@@ -344,4 +479,16 @@ fn invalid<T>(path: &Path, message: impl Into<String>) -> StorageResult<T> {
         path: PathBuf::from(path),
         message: message.into(),
     })
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> StorageResult<()> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error("sync pointer directory", path, source))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> StorageResult<()> {
+    Ok(())
 }

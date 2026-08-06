@@ -46,6 +46,7 @@ typed_path!(PackageArtifactPointerPath);
 typed_path!(ServiceContractPointerPath);
 typed_path!(ServiceDeploymentPointerPath);
 typed_path!(RuntimeAssemblyPointerPath);
+typed_path!(ReleasePointerPath);
 typed_path!(ProfileActivationStatePath);
 
 impl PackageArtifactRecordPath {
@@ -215,6 +216,15 @@ impl RuntimeAssemblyPointerPath {
     pub fn new(release: &str) -> Result<Self> {
         let release = safe_segment(release, "assembly release")?;
         relative(format!("pointers/runtime-assemblies/{release}.json")).map(Self)
+    }
+}
+
+impl ReleasePointerPath {
+    pub fn new(profile: &str, service_id: &str, version: &str) -> Result<Self> {
+        let profile = safe_segment(profile, "profile")?;
+        let service = coordinate_segment(service_id, "serviceId")?;
+        let version = safe_segment(version, "contractVersion")?;
+        relative(format!("pointers/releases/{profile}/{service}/{version}.json")).map(Self)
     }
 }
 

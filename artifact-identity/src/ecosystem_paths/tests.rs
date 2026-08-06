@@ -101,6 +101,34 @@ fn package_schema_records_have_independent_content_addressed_paths() {
 }
 
 #[test]
+fn release_pointer_path_is_profile_service_version_addressed() {
+    let path = ReleasePointerPath::new("dev", "example.com/echo", "1.0.0").unwrap();
+    assert_eq!(
+        path.as_str(),
+        "pointers/releases/dev/example~dcom~secho/1.0.0.json"
+    );
+    assert_eq!(
+        ReleasePointerPath::new("a.b", "echo", "1.0.0")
+            .unwrap()
+            .as_str(),
+        "pointers/releases/a.b/echo/1.0.0.json"
+    );
+    assert!(ReleasePointerPath::new("dev", "a.b/c/d", "1.0.0")
+        .unwrap()
+        .as_str()
+        .contains("/a~db~sc~sd/"));
+    assert!(ReleasePointerPath::new("../prod", "echo", "1.0.0").is_err());
+    assert!(ReleasePointerPath::new("dev", "echo", "1.0/0").is_err());
+    assert!(ReleasePointerPath::new("dev", "echo", "").is_err());
+    assert!(ReleasePointerPath::new("", "echo", "1.0.0").is_err());
+    assert!(ReleasePointerPath::new("a/b", "echo", "1.0.0").is_err());
+    assert_ne!(
+        ReleasePointerPath::new("dev", "a.b/c/d", "1.0.0").unwrap(),
+        ReleasePointerPath::new("dev", "a.b/c..d", "1.0.0").unwrap()
+    );
+}
+
+#[test]
 fn wrong_identity_domains_and_noncanonical_declared_paths_fail() {
     let package = PackageArtifactRef {
         package_id: "example.com/echo".to_string(),
