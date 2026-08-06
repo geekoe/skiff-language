@@ -14,8 +14,8 @@ mod tests {
 
     use crate::http_common;
     use crate::http_common::{
-        fixture_epoch, fixture_resolver, send_request, service_headers, CONTRACT_VERSION,
-        DEPLOYMENT_ARTIFACT_IDENTITY, DEPLOYMENT_REVISION, GATEWAY_ITEMS_IDENTITY, SERVICE_ID,
+        fixture_deployment_identity, fixture_epoch, fixture_resolver, send_request,
+        service_headers, CONTRACT_VERSION, DEPLOYMENT_REVISION, GATEWAY_ITEMS_IDENTITY, SERVICE_ID,
     };
 
     async fn start_server(
@@ -87,7 +87,12 @@ mod tests {
                 .deployment
                 .deployment_artifact_identity
                 .as_str(),
-            DEPLOYMENT_ARTIFACT_IDENTITY
+            fixture_deployment_identity()
+        );
+        assert_eq!(
+            header.routing.build_id.as_deref(),
+            Some(fixture_deployment_identity().as_str()),
+            "request.start routing buildId must be the release-resolved ref identity"
         );
         assert_eq!(
             header.routing.gateway_entry_identity.as_str(),
