@@ -24,11 +24,11 @@
 
 ```skiff
 type Thread {
-  spread agent/model.AgentThread
-  ownerUserId: string
-  pinnedAt: string?
-  agentId: string?
-  createCommandId: string
+  spread agent/model.AgentThread,
+  ownerUserId: string,
+  pinnedAt: string?,
+  agentId: string?,
+  createCommandId: string,
 }
 ```
 
@@ -36,19 +36,19 @@ type Thread {
 
 ```skiff
 type Base {
-  id: string
-  title: string?
+  id: string,
+  title: string?,
 }
 
 type Thread {
-  spread Base
-  pinnedAt: string?
+  spread Base,
+  pinnedAt: string?,
 }
 ```
 
 规则：
 
-- `spread` 后跟单个 qualified type name。
+- `spread` 后跟单个 qualified type name。字段列表与普通 record 声明一致：字段与 `spread` 条目统一按**逗号**分隔（`parse_field_block` 的既有规则），条目之间逗号必需。
 - 跨包源类型引用与其它 package symbol 引用一致：**斜杠是命名空间分隔符**，`alias/module.Symbol`
   与点形式 `alias.module.Symbol` 同义（斜杠在解析期归一化为 dependency alias + public path，不是
   字段访问语法）；同包跨 module 用 `root.<module>.<Symbol>`。`root.*` 只解析当前 source set，
