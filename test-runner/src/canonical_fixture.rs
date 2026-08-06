@@ -86,8 +86,8 @@ pub enum CanonicalFixtureError {
 }
 
 /// Shared guidance appended to user-facing `InvalidInput` diagnostics when a service test
-/// was invoked directly without the canonical service-test fixture.
+/// was invoked directly without the engine test orchestrator.
 pub(crate) const SERVICE_TEST_FIXTURE_GUIDANCE: &str =
-    "service tests must run through the canonical service-test fixture \
-     (<internals>/scripts/run-service-tests-sharded.mjs --service <service-id> --file <path>), \
-     which publishes the service package and supplies exact dependency baselines";
+    "service tests must run through the engine test orchestrator \
+     (skiff test <test-root> --artifact-root <store> --sources <manifest.json> [--shards <n>]), \
+     which publishes sources incrementally and supplies exact dependency baselines";

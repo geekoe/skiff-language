@@ -391,6 +391,24 @@ node scripts/skiff.mjs test \
   --require-tests
 ```
 
+Orchestrated service-test runs publish sources into a reusable store, print a
+full plan before executing, and can shard discovery across parallel processes:
+
+```bash
+cd skiff-language
+node scripts/skiff.mjs test ../service-tests \
+  --artifact-root ../.skiff-test-store \
+  --sources ../.skiff-test-sources.json \
+  --shards 8
+```
+
+`--sources <manifest.json>` publishes only stale sources (an existing store is
+reused incrementally via its sidecar digest; a missing or empty store triggers
+a hermetic full rebuild), `--fresh` forces a full rebuild, `--plan` prints the
+plan without publishing, compiling, or running, and `--max-cases <n>` caps
+cases per activation, passed to each shard process as
+`SKIFF_TEST_MAX_CASES_PER_ACTIVATION`.
+
 ## WebSocket Fixture Browser/WebSocket Smoke
 
 From the script package:
