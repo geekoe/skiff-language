@@ -1,10 +1,10 @@
-//! Stateless `RuntimeBootstrapProvider` (authority design §3.5/§5.5,
-//! C-session §6).
+//! Stateless `RuntimeBootstrapProvider` (M4 §1: `router.bootstrap` carries
+//! profile + artifact root + service DB only).
 //!
-//! The connection task builds `router.bootstrap` from the captured committed
-//! epoch plus the frozen Router config and writes it through the canonical
-//! transport codec. The provider holds no mutable state and does not flow
-//! back into the demux.
+//! The connection task builds `router.bootstrap` from the frozen Router
+//! config (profile, artifacts path, service DB, HTTP limits) and writes it
+//! through the canonical transport codec. The provider holds no mutable
+//! state and does not flow back into the demux.
 
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
@@ -14,10 +14,9 @@ use skiff_runtime_transport::protocol::{
 
 use crate::config::RouterConfig;
 
-use super::identity::RegisteredAssemblyTuple;
-
 #[derive(Debug, Clone)]
 pub struct RuntimeBootstrapProvider {
+    profile: String,
     artifacts_path: String,
     mongo_url: String,
     max_response_bytes: u64,
@@ -26,14 +25,16 @@ pub struct RuntimeBootstrapProvider {
 impl RuntimeBootstrapProvider {
     pub fn new(config: &RouterConfig) -> Self {
         Self {
+            profile: config.profile.clone(),
             artifacts_path: config.artifacts_path.to_string_lossy().into_owned(),
             mongo_url: config.service_db.mongo_url.clone(),
             max_response_bytes: config.http_max_response_bytes,
         }
     }
 
-    /// Build the byte-exact `router.bootstrap` frame for the captured epoch.
-    pub fn build(&self, epoch: &RegisteredAssemblyTuple) -> Result<Vec<u8>, String> {
+    /// Build the byte-exact `router.bootstrap` frame for the configured
+    /// profile.
+    pub fn build(&self) -> Result<Vec<u8>, String> {
         let header = RouterBootstrapFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "router.bootstrap".to_string(),
@@ -45,10 +46,7 @@ impl RuntimeBootstrapProvider {
                 max_response_bytes: self.max_response_bytes,
             },
             activation: RouterBootstrapActivationFrameHeader {
-                profile: epoch.profile.clone(),
-                generation: epoch.generation,
-                assembly: epoch.assembly.clone(),
-                config_snapshot: epoch.config_snapshot.clone(),
+                profile: self.profile.clone(),
             },
         };
         encode_binary_frame(&header, &[])

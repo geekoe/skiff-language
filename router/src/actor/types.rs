@@ -118,26 +118,23 @@ impl ActorRef {
     }
 }
 
-/// Captured immutable routing authority for one actor operation
-/// (assembly identity + generation).
+/// Captured immutable routing authority for one actor operation (deployment
+/// build id anchoring; M4: no assembly generation).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActorOwnerRouteAuthority {
-    pub assembly_identity: String,
-    pub assembly_generation: u64,
+    pub build_id: String,
 }
 
 impl ActorOwnerRouteAuthority {
     pub fn from_wire(authority: &ActorOwnerRouteAuthorityFrameHeader) -> Self {
         Self {
-            assembly_identity: authority.assembly_identity.clone(),
-            assembly_generation: authority.assembly_generation,
+            build_id: authority.build_id.clone(),
         }
     }
 
     pub fn to_wire(&self) -> ActorOwnerRouteAuthorityFrameHeader {
         ActorOwnerRouteAuthorityFrameHeader {
-            assembly_identity: self.assembly_identity.clone(),
-            assembly_generation: self.assembly_generation,
+            build_id: self.build_id.clone(),
         }
     }
 }

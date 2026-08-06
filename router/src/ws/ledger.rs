@@ -780,8 +780,7 @@ fn matches_expectation(
     tuple: &WebSocketGenerationLifecycleTuple,
 ) -> bool {
     expected.service_id == tuple.service_id
-        && expected.assembly_identity == tuple.assembly_identity
-        && expected.assembly_generation == tuple.assembly_generation
+        && expected.build_id == tuple.build_id
         && expected.websocket_entry_id == tuple.websocket_entry_id
         && expected.connection_id == tuple.connection_id
 }

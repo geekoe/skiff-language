@@ -21,17 +21,16 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 use skiff_runtime_transport::TransportError;
 
-use crate::bootstrap::RoutingEpoch;
-
 use super::error::HttpError;
 use super::ingress::HttpIngressBinding;
 use super::selector::{HttpRequestMetadata, TestCaseCorrelation};
 
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Builds the canonical HTTP `request.start` typed header for one ingress.
+/// Builds the canonical HTTP `request.start` typed header for one ingress
+/// (M4: the routing header carries the release-resolved build id; the
+/// assembly identity/generation tuple fields are left absent).
 pub fn build_request_start_header(
-    epoch: &RoutingEpoch,
     binding: &HttpIngressBinding,
     request_id: String,
     timeout: Duration,
@@ -39,8 +38,6 @@ pub fn build_request_start_header(
     test_correlation: Option<&TestCaseCorrelation>,
 ) -> Result<RuntimeAssemblyRequestStartFrameHeader, HttpError> {
     let (timeout_ms, expires_at) = deadline_parts(timeout);
-    let assembly_identity =
-        skiff_artifact_model::AssemblyIdentity::new(epoch.assembly_identity().to_string());
     let gateway_entry_identity = binding.gateway_entry_identity.clone();
     let method = binding
         .selector
@@ -58,10 +55,10 @@ pub fn build_request_start_header(
         },
         routing: RuntimeAssemblyRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity,
-            assembly_generation: epoch.assembly_generation(),
+            assembly_identity: None,
+            assembly_generation: None,
             deployment: binding.deployment.clone(),
-            build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
+            build_id: Some(binding.build_id.clone()),
             gateway_entry_identity,
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,

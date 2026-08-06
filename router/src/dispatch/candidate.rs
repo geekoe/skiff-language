@@ -12,11 +12,9 @@
 //! §3 step 2) and the enqueue-time lease revalidation (step 5).
 
 use std::fmt;
-use std::sync::Arc;
 
 use skiff_runtime_transport::protocol::RuntimeDispatchModeCapability;
 
-use crate::bootstrap::RoutingEpoch;
 use crate::routing::{
     CandidateDirectoryView, CandidateQuery, DispatchCapabilities, DispatchMode,
     RegisteredSessionLease,
@@ -83,15 +81,6 @@ pub fn candidate_query_from_build_id(
 /// This seam keeps session truth outside the dispatcher owner.
 pub trait CandidateViewSource: Send + Sync + fmt::Debug {
     fn view(&self) -> CandidateDirectoryView;
-}
-
-/// Captured routing epoch source (plan §3.3 step 1).
-///
-/// W-bootstrap seam: the production implementation wraps
-/// `Arc<ActiveRoutingEpochStore>` and captures the current whole epoch.
-/// `None` means no epoch published yet: admission fails closed.
-pub trait RoutingEpochSource: Send + Sync + fmt::Debug {
-    fn capture(&self) -> Option<Arc<RoutingEpoch>>;
 }
 
 /// Atomic revalidation immediately before enqueue (plan §3.3 step 5).

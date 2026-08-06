@@ -1,37 +1,30 @@
-//! `RuntimeFrameDemux` and the stateless `RegistrationFrameSink`
-//! (authority design §5.5, C-session §6, C-model-registration §5.1).
+//! `RuntimeFrameDemux` (authority design §5.5, C-session §6; M4: no
+//! activation family).
 //!
 //! The demux owner performs framing, direction, payload-presence and
 //! source-session fence checks, then dispatches over the CLOSED
 //! `RuntimeFrameFamily` registry from `skiff-runtime-transport`. A new
 //! family is a shared-model change, not a session feature. Families without
 //! an installed sink terminate the exact session (authority design §6.1);
-//! `assembly.activation:Register` is delegated to `RegistrationFrameSink`,
-//! other activation transaction variants are not installed in W-session.
+//! the `assembly.activation` family is fully retired (M4).
 
 use std::fmt;
 use std::sync::Arc;
 
-use skiff_artifact_model::AssemblyActivationControl;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_typed_binary_frame, task_submit_frame_direction, FrameDirection,
     RuntimeCapabilitiesFrameHeader, RuntimeFrameFamily, RuntimeHealthFrameHeader,
 };
 
 use super::consumer::ConsumerKind;
-use super::directory::{PublishError, RuntimeRegistrationDirectory, TransitionOutcome};
-use super::handshake::{EpochContext, HandshakeState, RegisterControl, TerminalKind};
+use super::directory::{PublishError, RuntimeRegistrationDirectory};
+use super::handshake::{HandshakeState, TerminalKind};
 use super::identity::RuntimeSessionEpoch;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DemuxEvent {
     Capabilities(RuntimeCapabilitiesFrameHeader),
     Health(RuntimeHealthFrameHeader),
-    Register(RegisterControl),
-    LegacyRegister,
     /// One raw frame of an installed lane family (plan §5.5 sink bundle).
     /// The frame already passed the closed family registry framing, direction
     /// and payload-presence checks; the lane sink owns its codec.
@@ -105,7 +98,7 @@ impl RuntimeFrameDemux {
             return DemuxOutcome::Terminal(TerminalKind::MalformedFrame);
         }
 
-        // Session and activation families require an empty payload.
+        // The Session family requires an empty payload.
         if matches!(
             family.payload_presence(),
             skiff_runtime_transport::protocol::PayloadPresenceRule::Empty
@@ -116,7 +109,6 @@ impl RuntimeFrameDemux {
 
         match family {
             RuntimeFrameFamily::Session => self.classify_session(frame_type, raw),
-            RuntimeFrameFamily::Activation => self.classify_activation(raw, sinks),
             RuntimeFrameFamily::Request => {
                 sink_or_unimplemented(sinks.request.as_ref(), family, raw)
             }
@@ -163,43 +155,14 @@ impl RuntimeFrameDemux {
                 };
                 DemuxOutcome::Handled(DemuxEvent::Health(header))
             }
-            "runtime.register" => DemuxOutcome::Handled(DemuxEvent::LegacyRegister),
             // Outbound-only frames (or unknown session frames) arriving from
-            // the Runtime are direction/protocol violations.
-            "router.bootstrap" | "runtime.registered" => {
+            // the Runtime are direction/protocol violations. The legacy
+            // `runtime.register` frame is retired (M4): its bytes fail closed
+            // as a malformed frame.
+            "router.bootstrap" | "runtime.registered" | "runtime.register" => {
                 DemuxOutcome::Terminal(TerminalKind::MalformedFrame)
             }
             _ => DemuxOutcome::Terminal(TerminalKind::MalformedFrame),
-        }
-    }
-
-    fn classify_activation(&self, raw: &[u8], sinks: &InboundSinkSet) -> DemuxOutcome {
-        let control = match decode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            raw,
-        ) {
-            Ok(control) => control,
-            Err(_) => return DemuxOutcome::Terminal(TerminalKind::MalformedFrame),
-        };
-        match control {
-            AssemblyActivationControl::Register {
-                profile,
-                generation,
-                assembly,
-                config_snapshot,
-                replica_id,
-            } => DemuxOutcome::Handled(DemuxEvent::Register(RegisterControl {
-                profile,
-                generation,
-                assembly,
-                config_snapshot,
-                replica_id,
-            })),
-            _ => sink_or_unimplemented(
-                sinks.activation_transaction.as_ref(),
-                RuntimeFrameFamily::Activation,
-                raw,
-            ),
         }
     }
 }
@@ -232,7 +195,6 @@ pub trait InboundFrameSink: Send + Sync + fmt::Debug {
 pub struct InboundSinkSet {
     pub request: Option<Arc<dyn InboundFrameSink>>,
     pub connection: Option<Arc<dyn InboundFrameSink>>,
-    pub activation_transaction: Option<Arc<dyn InboundFrameSink>>,
     pub actor: Option<Arc<dyn InboundFrameSink>>,
     pub task: Option<Arc<dyn InboundFrameSink>>,
 }
@@ -241,7 +203,6 @@ impl InboundSinkSet {
     pub fn is_empty(&self) -> bool {
         self.request.is_none()
             && self.connection.is_none()
-            && self.activation_transaction.is_none()
             && self.actor.is_none()
             && self.task.is_none()
     }
@@ -249,11 +210,6 @@ impl InboundSinkSet {
     pub fn sink_for(&self, family: RuntimeFrameFamily) -> Option<&Arc<dyn InboundFrameSink>> {
         match family {
             RuntimeFrameFamily::Session => None,
-            // E-activation: the activation-transaction sink delivers
-            // Runtime→Router Prepared/Reject ACKs to the coordinator. The
-            // frozen demux central match still routes Register internally;
-            // an absent sink keeps the Unimplemented fail-closed behavior.
-            RuntimeFrameFamily::Activation => self.activation_transaction.as_ref(),
             RuntimeFrameFamily::Request => self.request.as_ref(),
             RuntimeFrameFamily::Connection => self.connection.as_ref(),
             RuntimeFrameFamily::Actor => self.actor.as_ref(),
@@ -283,7 +239,6 @@ fn sink_family_for_frame_type(
     let candidates = [
         sinks.request.as_ref(),
         sinks.connection.as_ref(),
-        sinks.activation_transaction.as_ref(),
         sinks.actor.as_ref(),
         sinks.task.as_ref(),
     ];
@@ -300,9 +255,9 @@ fn sink_family_for_frame_type(
     matched
 }
 
-/// Stateless registration adapter (C-model-registration §5.1): decodes
-/// `assembly.activation:Register`, runs `RuntimeRegistrationTransition` and
-/// reports whether an ACK is required. It never calls `ActivationCoordinator`.
+/// Stateless registration adapter (M4: capabilities-only registration).
+/// Publishes the pending session record on capabilities bind and reports
+/// whether an ACK is required.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RegistrationFrameSink;
 
@@ -312,67 +267,30 @@ pub enum RegistrationSinkOutput {
         revision: u64,
         cancelled_old: Option<RuntimeSessionEpoch>,
     },
-    TransitionPublished {
-        revision: u64,
-    },
     Idempotent,
     Terminal(TerminalKind),
 }
 
 impl RegistrationFrameSink {
-    pub fn handle_register(
+    pub fn handle_capabilities(
         &self,
         machine: &mut HandshakeState,
         directory: &mut RuntimeRegistrationDirectory,
         session: &RuntimeSessionEpoch,
-        register: &RegisterControl,
-        context: &EpochContext,
         permits: &[ConsumerKind],
     ) -> RegistrationSinkOutput {
-        match machine.on_register(register, context) {
-            super::handshake::RegisterEvent::Validated { tuple } => {
-                match directory.publish_pending(session, tuple, permits) {
-                    Ok(published) => RegistrationSinkOutput::PendingPublished {
-                        revision: published.revision,
-                        cancelled_old: published.cancelled_old,
-                    },
-                    Err(PublishError::PermitUnavailable) => {
-                        let terminal = machine.terminal_with(TerminalKind::RegistrationRefused);
-                        RegistrationSinkOutput::Terminal(terminal)
-                    }
-                    Err(PublishError::DuplicateSession) => {
-                        let terminal = machine.terminal_with(TerminalKind::DuplicateRegister);
-                        RegistrationSinkOutput::Terminal(terminal)
-                    }
-                }
+        match directory.publish_pending(session, permits) {
+            Ok(published) => RegistrationSinkOutput::PendingPublished {
+                revision: published.revision,
+                cancelled_old: published.cancelled_old,
+            },
+            Err(PublishError::PermitUnavailable) => {
+                let terminal = machine.terminal_with(TerminalKind::RegistrationRefused);
+                RegistrationSinkOutput::Terminal(terminal)
             }
-            super::handshake::RegisterEvent::Idempotent => RegistrationSinkOutput::Idempotent,
-            super::handshake::RegisterEvent::Transition { tuple } => {
-                let current = match context.current.as_ref() {
-                    Some(current) => current,
-                    None => {
-                        let terminal = machine.terminal_with(TerminalKind::StaleRegister);
-                        return RegistrationSinkOutput::Terminal(terminal);
-                    }
-                };
-                match directory.transition(session, tuple, current, context.pending.as_ref()) {
-                    TransitionOutcome::Published { revision } => {
-                        RegistrationSinkOutput::TransitionPublished { revision }
-                    }
-                    TransitionOutcome::Idempotent => RegistrationSinkOutput::Idempotent,
-                    TransitionOutcome::NewGenerationRejected => {
-                        let terminal =
-                            machine.terminal_with(TerminalKind::NewGenerationBeforeEpochSwap);
-                        RegistrationSinkOutput::Terminal(terminal)
-                    }
-                    TransitionOutcome::StaleClosed => {
-                        let terminal = machine.terminal_with(TerminalKind::StaleRegister);
-                        RegistrationSinkOutput::Terminal(terminal)
-                    }
-                }
-            }
-            super::handshake::RegisterEvent::Terminal(kind) => {
-                RegistrationSinkOutput::Terminal(kind)
+            Err(PublishError::DuplicateSession) => {
+                let terminal = machine.terminal_with(TerminalKind::WrongOrder);
+                RegistrationSinkOutput::Terminal(terminal)
             }
         }
     }

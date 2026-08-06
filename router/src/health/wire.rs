@@ -1,10 +1,12 @@
-//! `/__router/health` wire projection (batch 12 health leaf).
+//! `/__router/health` wire projection (batch 12 health leaf; M4 shape).
 //!
 //! The base payload keeps the TS `AssemblyControlPlane` shape
-//! (`ok`/`activeAssembly`/`pendingActivation`/`capabilityConnections`/
-//! `replicas`) and adds the §10 `counters` object; `?detail=loop-risk` adds
-//! the TS-parity `loopRisk` object. Health never contains Mongo URLs,
-//! secrets, business payloads or complete query URLs.
+//! (`ok`/`activeAssembly`/`capabilityConnections`/`replicas`) and adds the
+//! §10 `counters` object; `?detail=loop-risk` adds the TS-parity `loopRisk`
+//! object. M4: `pendingActivation` is retired and `activeAssembly` is the
+//! release pointer table projection (`{ profile, releaseCount, buildIds }`).
+//! Health never contains Mongo URLs, secrets, business payloads or complete
+//! query URLs.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,7 +18,7 @@ use skiff_runtime_transport::protocol::{
 
 use crate::routing::DispatchCapabilities;
 use crate::session::directory::RuntimeRegistrationDirectory;
-use crate::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use crate::session::identity::RuntimeSessionEpoch;
 
 use super::counters::HealthCounters;
 use super::time::parse_iso_utc_millis;
@@ -25,7 +27,6 @@ use super::time::parse_iso_utc_millis;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFacts {
     pub session: RuntimeSessionEpoch,
-    pub tuple: RegisteredAssemblyTuple,
     pub registered: bool,
     pub cancelled: bool,
     pub registered_build_ids: Vec<String>,
@@ -33,7 +34,8 @@ pub struct SessionFacts {
     pub artifact_root: Option<String>,
 }
 
-/// `activeAssembly` (TS shape; `ingressCount` from the immutable epoch).
+/// `activeAssembly` (M4 pointer-table projection): the profile plus the
+/// number of published release pointers and the resolved build id set.
 /// `loadedBuildIds` / `routerArtifactRoot` are the lazy-load deployment
 /// extension (integration-contract-v2 §3/health): the union of build ids
 /// currently registered by connected capability-holders plus the router's
@@ -42,10 +44,8 @@ pub struct SessionFacts {
 #[serde(rename_all = "camelCase")]
 pub struct ActiveAssemblyProjection {
     pub profile: String,
-    pub generation: u64,
-    pub assembly_identity: String,
-    pub config_snapshot_id: String,
-    pub ingress_count: usize,
+    pub release_count: usize,
+    pub build_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loaded_build_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,15 +79,11 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// `replicas[]` (TS shape; `registeredAt` omitted, see leaf §5b).
+/// `replicas[]` (M4: no tuple fields).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplicaProjection {
     pub replica_id: String,
-    pub profile: String,
-    pub generation: u64,
-    pub assembly_identity: String,
-    pub config_snapshot_id: String,
     pub state: String,
     pub connected: bool,
     pub in_flight_count: u64,
@@ -140,11 +136,11 @@ pub struct LoopRiskRuntimeProjection {
     pub counters: RuntimeHealthCountersFrameHeader,
 }
 
-/// Builds the base health JSON (TS shape + `counters`).
+/// Builds the base health JSON (TS shape + `counters`; M4: no
+/// `pendingActivation`).
 pub fn render_base(
     ok: bool,
     active: Option<&ActiveAssemblyProjection>,
-    pending: Option<&skiff_deployment::activation_state::PendingActivation>,
     capability_connections: &[CapabilityConnectionProjection],
     replicas: &[ReplicaProjection],
     counters: &HealthCounters,
@@ -152,7 +148,6 @@ pub fn render_base(
     json!({
         "ok": ok,
         "activeAssembly": active.map(|active| to_value(active).expect("active projection serializes")),
-        "pendingActivation": pending.map(|pending| to_value(pending).expect("pending DTO serializes")),
         "capabilityConnections": capability_connections
             .iter()
             .map(|connection| to_value(connection).expect("capability projection serializes"))
@@ -189,10 +184,6 @@ pub fn project_replicas(
             };
             ReplicaProjection {
                 replica_id: fact.session.replica_id.clone(),
-                profile: fact.tuple.profile.clone(),
-                generation: fact.tuple.generation,
-                assembly_identity: fact.tuple.assembly_identity().to_string(),
-                config_snapshot_id: fact.tuple.snapshot_id().to_string(),
                 state: state.to_string(),
                 connected: !fact.cancelled && connected.contains(&fact.session),
                 in_flight_count: in_flight_by_replica
@@ -283,7 +274,6 @@ pub fn session_facts(directory: &RuntimeRegistrationDirectory) -> Vec<SessionFac
             let record = directory.record(session)?;
             Some(SessionFacts {
                 session: session.clone(),
-                tuple: record.registered_tuple.clone()?,
                 registered: record.routable,
                 cancelled: record.cancelled,
                 registered_build_ids: record.registration_facts.registered_build_ids.clone(),
@@ -297,13 +287,11 @@ pub fn session_facts(directory: &RuntimeRegistrationDirectory) -> Vec<SessionFac
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
+    use crate::session::consumer::ConsumerManifest;
 
     #[test]
     fn session_facts_excludes_records_without_a_tuple() {
-        let directory = RuntimeRegistrationDirectory::new(
-            &crate::session::consumer::ConsumerManifest::default_installed(),
-        );
+        let directory = RuntimeRegistrationDirectory::new(&ConsumerManifest::default_installed());
         let facts = session_facts(&directory);
         assert!(facts.is_empty());
     }
@@ -336,21 +324,6 @@ mod tests {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 1,
             },
-            tuple: RegisteredAssemblyTuple {
-                profile: "prod".to_string(),
-                generation: 7,
-                assembly: RuntimeAssemblyRef {
-                    assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    ),
-                },
-                config_snapshot: RuntimeConfigSnapshotRef {
-                    snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                        "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("snapshot"),
-                },
-            },
             registered: true,
             cancelled: false,
             registered_build_ids: Vec::new(),
@@ -374,21 +347,6 @@ mod tests {
             session: RuntimeSessionEpoch {
                 replica_id: "runtime-a".to_string(),
                 connection_generation: 1,
-            },
-            tuple: RegisteredAssemblyTuple {
-                profile: "prod".to_string(),
-                generation: 7,
-                assembly: RuntimeAssemblyRef {
-                    assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                        "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    ),
-                },
-                config_snapshot: RuntimeConfigSnapshotRef {
-                    snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                        "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("snapshot"),
-                },
             },
             registered: true,
             cancelled: false,

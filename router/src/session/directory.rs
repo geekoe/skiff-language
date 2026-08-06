@@ -1,4 +1,5 @@
-//! `RuntimeRegistrationDirectory` (authority design §3.2, C-session §3).
+//! `RuntimeRegistrationDirectory` (authority design §3.2, C-session §3; M4:
+//! capabilities-only registration).
 //!
 //! Invariant: one replica has exactly one current session; a cancelled
 //! session is never selected; the barrier does not delete the exact session
@@ -8,18 +9,19 @@
 //!
 //! The directory owns session truth only: it never holds sockets, health
 //! history, admission permits or active/draining routing eligibility.
-//! Operations are short and never cross `.await`.
+//! Operations are short and never cross `.await`. The registered tuple is
+//! retired (M4): the registration facts (loaded build ids / lazy-load
+//! capability / artifact root) are the only registration identity.
 
 use std::collections::{BTreeSet, HashMap};
 
 use super::consumer::{ConsumerKind, ConsumerManifest};
-use super::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use super::identity::RuntimeSessionEpoch;
 
 /// Registration facts refreshed from every `runtime.capabilities` frame
 /// (integration-contract-v2 §1/§3): the loaded build-id set and the
 /// lazy-load advertisement. Each capabilities refresh overwrites the facts;
-/// the Register frame tuple is retained but is no longer the unique
-/// registration identity.
+/// they are the unique registration identity (M4).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegistrationFacts {
     pub registered_build_ids: Vec<String>,
@@ -29,7 +31,6 @@ pub struct RegistrationFacts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
-    pub registered_tuple: Option<RegisteredAssemblyTuple>,
     pub registration_revision: u64,
     pub routable: bool,
     pub cancelled: bool,
@@ -39,9 +40,8 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
-    fn new(tuple: RegisteredAssemblyTuple, revision: u64, permits: Vec<ConsumerKind>) -> Self {
+    fn new(revision: u64, permits: Vec<ConsumerKind>) -> Self {
         Self {
-            registered_tuple: Some(tuple),
             registration_revision: revision,
             routable: false,
             cancelled: false,
@@ -93,19 +93,6 @@ pub enum CloseProgress {
     Pending { acked: usize, expected: usize },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionOutcome {
-    /// New routable revision published for the same physical session.
-    Published { revision: u64 },
-    /// Exact duplicate tuple: idempotent, revision unchanged.
-    Idempotent,
-    /// Tuple matches a pending (not yet committed) epoch: reject, no mutation.
-    NewGenerationRejected,
-    /// Tuple is stale relative to the committed epoch: the exact session is
-    /// closed.
-    StaleClosed,
-}
-
 #[derive(Debug)]
 pub struct RuntimeRegistrationDirectory {
     current_by_replica: HashMap<String, RuntimeSessionEpoch>,
@@ -126,14 +113,13 @@ impl RuntimeRegistrationDirectory {
         }
     }
 
-    /// Pending publish: the register passed epoch validation and installed-
-    /// consumer permits were acquired, but the record is not routable until
+    /// Pending publish: the capabilities bound and installed-consumer
+    /// permits were acquired, but the record is not routable until
     /// `mark_registered` (registered ACK written). Same-replica replacement
     /// marks and cancels the old epoch BEFORE the new epoch becomes current.
     pub fn publish_pending(
         &mut self,
         session: &RuntimeSessionEpoch,
-        tuple: RegisteredAssemblyTuple,
         permits: &[ConsumerKind],
     ) -> Result<PublishPending, PublishError> {
         debug_assert!(!self.fail_stop, "directory must not mutate after fail-stop");
@@ -162,7 +148,7 @@ impl RuntimeRegistrationDirectory {
         let revision = self.next_revision;
         self.sessions_by_epoch.insert(
             session.clone(),
-            SessionRecord::new(tuple, revision, permits.to_vec()),
+            SessionRecord::new(revision, permits.to_vec()),
         );
         self.current_by_replica
             .insert(session.replica_id.clone(), session.clone());
@@ -237,62 +223,56 @@ impl RuntimeRegistrationDirectory {
         self.fail_stop
     }
 
-    /// Same physical session re-registers after an activation commit.
-    /// Captures the committed epoch, validates the exact tuple, and atomically
-    /// updates `registered_tuple` + revision. `current_by_replica` still
-    /// refers to the same session.
-    pub fn transition(
-        &mut self,
-        session: &RuntimeSessionEpoch,
-        tuple: RegisteredAssemblyTuple,
-        current: &RegisteredAssemblyTuple,
-        pending: Option<&RegisteredAssemblyTuple>,
-    ) -> TransitionOutcome {
-        debug_assert!(!self.fail_stop, "directory must not mutate after fail-stop");
-        let Some(record) = self.sessions_by_epoch.get_mut(session) else {
-            return TransitionOutcome::StaleClosed;
-        };
-        if record.cancelled {
-            return TransitionOutcome::StaleClosed;
-        }
-        if record.registered_tuple.as_ref() == Some(&tuple) {
-            return TransitionOutcome::Idempotent;
-        }
-        if Some(&tuple) == Some(current) {
-            self.next_revision += 1;
-            let revision = self.next_revision;
-            let record = self
-                .sessions_by_epoch
-                .get_mut(session)
-                .expect("record exists");
-            record.registered_tuple = Some(tuple);
-            record.registration_revision = revision;
-            return TransitionOutcome::Published { revision };
-        }
-        if pending == Some(&tuple) {
-            return TransitionOutcome::NewGenerationRejected;
-        }
-        self.sessions_by_epoch
-            .get_mut(session)
-            .expect("record exists")
-            .cancelled = true;
-        TransitionOutcome::StaleClosed
-    }
-
-    /// Candidate query reads one complete revision: routable, exact tuple,
-    /// not cancelled, and still the replica's current session.
-    pub fn candidates(&self, tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
+    /// Every routable, non-cancelled, current session.
+    pub fn candidates(&self) -> Vec<RuntimeSessionEpoch> {
         let mut sessions = self
             .sessions_by_epoch
             .iter()
             .filter(|(epoch, record)| {
                 record.routable
-                    && record.registered_tuple.as_ref() == Some(tuple)
                     && !record.cancelled
                     && self
                         .current_by_replica
                         .get(&epoch.replica_id)
                         .is_some_and(|current| current == *epoch)
+            })
+            .map(|(epoch, _)| epoch.clone())
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| {
+            left.replica_id
+                .cmp(&right.replica_id)
+                .then(left.connection_generation.cmp(&right.connection_generation))
+        });
+        sessions
+    }
+
+    /// Routable candidates whose registration facts can execute one exact
+    /// deployment build id (integration-contract-v2 §1 rule 3): the build id
+    /// is in the loaded set OR the session is a lazy-load capability holder
+    /// sharing the router artifact root.
+    pub fn candidates_by_build_id(
+        &self,
+        build_id: &str,
+        router_artifact_root: Option<&str>,
+    ) -> Vec<RuntimeSessionEpoch> {
+        let mut sessions = self
+            .sessions_by_epoch
+            .iter()
+            .filter(|(epoch, record)| {
+                record.routable
+                    && !record.cancelled
+                    && self
+                        .current_by_replica
+                        .get(&epoch.replica_id)
+                        .is_some_and(|current| current == *epoch)
+                    && (record
+                        .registration_facts
+                        .registered_build_ids
+                        .iter()
+                        .any(|id| id == build_id)
+                        || (record.registration_facts.lazy_load
+                            && record.registration_facts.artifact_root.as_deref()
+                                == router_artifact_root))
             })
             .map(|(epoch, _)| epoch.clone())
             .collect::<Vec<_>>();

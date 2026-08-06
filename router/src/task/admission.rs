@@ -50,13 +50,13 @@ use crate::actor::{
     DEFAULT_OWNER_LEASE_TTL_MS,
 };
 use crate::dispatch::{
-    RequestAuthority, RequestDeadline, RequestDispatcher, RoutingEpochSource, TaskAttemptSubmit,
+    RequestAuthority, RequestDeadline, RequestDispatcher, TaskAttemptSubmit,
     TaskAttemptSubmitResult,
 };
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::supervisor::actor::ActorComponents;
 use crate::supervisor::actor_sink::ActorFrameSink;
-use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation};
+use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation, TaskExecutionImageSource};
 use crate::telemetry::{task_event, TaskTelemetrySink};
 use crate::ws::Clock;
 
@@ -66,7 +66,8 @@ use super::health::TaskControlCounters;
 
 /// Production admission seam.
 pub struct RouterTaskAttemptAdmission {
-    epoch: Arc<dyn RoutingEpochSource>,
+    /// Release pointer image source (deployment membership gate, M4).
+    image_source: Arc<dyn TaskExecutionImageSource>,
     /// Deferred dispatcher handle (assembled after the scheduler).
     dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
     control: Arc<DurableTaskControl>,
@@ -98,7 +99,7 @@ impl std::fmt::Debug for RouterTaskAttemptAdmission {
 impl RouterTaskAttemptAdmission {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        epoch: Arc<dyn RoutingEpochSource>,
+        image_source: Arc<dyn TaskExecutionImageSource>,
         dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>>,
         control: Arc<DurableTaskControl>,
         clock: Arc<dyn Clock>,
@@ -111,7 +112,7 @@ impl RouterTaskAttemptAdmission {
         actor_sink: Arc<Mutex<Option<Arc<ActorFrameSink>>>>,
     ) -> Self {
         Self {
-            epoch,
+            image_source,
             dispatcher,
             control,
             clock,
@@ -126,28 +127,19 @@ impl RouterTaskAttemptAdmission {
         }
     }
 
-    /// Captured routing authority for the frozen execution image. `None`
-    /// means the image is not admitted by the current epoch (transient: a
-    /// runtime may admit it later; D2 has no cold-activation lane).
+    /// Captured routing authority for the frozen execution image (M4). The
+    /// membership gate is release-pointer resolvability + build id match:
+    /// `None` means the deployment the image names is no longer published
+    /// (transient: the pointer may be restored; D2 has no cold-activation
+    /// lane).
     fn image_authority(&self, record: &TaskRecord) -> Option<RequestAuthority> {
-        let epoch = self.epoch.capture()?;
-        let tuple = epoch.registered_tuple();
-        if tuple.profile != record.execution.target_profile
-            || tuple.assembly != record.execution.assembly
-            || tuple.config_snapshot != record.execution.config_snapshot
-        {
-            return None;
-        }
-        if !epoch
-            .deployment_projection()
-            .contains(&record.execution.deployment)
-        {
+        let deployment = &record.execution.deployment;
+        if !self.image_source.contains_deployment(deployment) {
             return None;
         }
         Some(RequestAuthority {
-            assembly_identity: tuple.assembly.assembly_identity.as_str().to_string(),
-            assembly_generation: tuple.generation,
-            deployment: record.execution.deployment.clone(),
+            build_id: deployment.deployment_artifact_identity.to_string(),
+            deployment: deployment.clone(),
             session_epoch: RuntimeSessionEpoch {
                 replica_id: "task-attempt".to_string(),
                 connection_generation: 0,
@@ -158,7 +150,6 @@ impl RouterTaskAttemptAdmission {
     fn build_request(
         &self,
         record: &TaskRecord,
-        authority: &RequestAuthority,
     ) -> Option<RuntimeAssemblyTaskRequestStartFrameHeader> {
         let lease = record.active_lease.as_ref()?;
         let now = self.clock.now_ms();
@@ -190,8 +181,8 @@ impl RouterTaskAttemptAdmission {
             },
             routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: record.execution.assembly.assembly_identity.clone(),
-                assembly_generation: authority.assembly_generation,
+                assembly_identity: None,
+                assembly_generation: None,
                 deployment: record.execution.deployment.clone(),
                 build_id: Some(
                     record.execution.deployment.deployment_artifact_identity.to_string(),
@@ -387,14 +378,6 @@ impl RouterTaskAttemptAdmission {
                 };
             }
         }
-        let Some(epoch) = self.epoch.capture() else {
-            self.counters
-                .admissions_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            return AdmissionDecision::RejectedProvable {
-                reason: "no active routing epoch is available".to_string(),
-            };
-        };
         let Some(authority) = self.image_authority(record) else {
             self.counters
                 .admissions_rejected
@@ -422,7 +405,9 @@ impl RouterTaskAttemptAdmission {
                 reason: "actor method is absent from the current routing catalog".to_string(),
             };
         }
-        let candidates = self.actor_port.candidates(&epoch.registered_tuple());
+        let candidates = self
+            .actor_port
+            .candidates_by_build_id(&authority.build_id);
         let owner = if let Some(authority) = test_case {
             // Execute on the exact origin Runtime connection so the method
             // shares the case's in-memory effect registry; any other owner is
@@ -540,8 +525,7 @@ impl RouterTaskAttemptAdmission {
             owner_runtime_id: owner.replica_id.clone(),
             owner_connection: owner_connection.clone(),
             route_authority: ActorOwnerRouteAuthority {
-                assembly_identity: authority.assembly_identity.clone(),
-                assembly_generation: authority.assembly_generation,
+                build_id: authority.build_id.clone(),
             },
             deadline: Some(ActorMethodDeadlineFrameHeader {
                 timeout_ms: self.activation_deadline_ms,
@@ -801,8 +785,7 @@ impl RouterTaskAttemptAdmission {
             },
             invoke,
             route_authority: ActorOwnerRouteAuthorityFrameHeader {
-                assembly_identity: authority.assembly_identity.clone(),
-                assembly_generation: authority.assembly_generation,
+                build_id: authority.build_id.clone(),
             },
             activation_bootstrap: None,
         };
@@ -819,8 +802,7 @@ impl RouterTaskAttemptAdmission {
             }
         };
         let route_authority = ActorOwnerRouteAuthority {
-            assembly_identity: authority.assembly_identity.clone(),
-            assembly_generation: authority.assembly_generation,
+            build_id: authority.build_id.clone(),
         };
         self.actor
             .lease_scheduler
@@ -979,7 +961,7 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
 
 impl RouterTaskAttemptAdmission {
     async fn admit_function(&self, record: &TaskRecord) -> AdmissionDecision {
-        let Some(authority) = self.image_authority(record) else {
+        let Some(_authority) = self.image_authority(record) else {
             self.counters
                 .admissions_rejected
                 .fetch_add(1, Ordering::Relaxed);
@@ -1000,7 +982,7 @@ impl RouterTaskAttemptAdmission {
                 reason: "claimed task record has no active lease".to_string(),
             };
         };
-        let Some(header) = self.build_request(record, &authority) else {
+        let Some(header) = self.build_request(record) else {
             self.counters
                 .admissions_permanent_failure
                 .fetch_add(1, Ordering::Relaxed);

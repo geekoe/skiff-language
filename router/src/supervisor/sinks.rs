@@ -5,11 +5,6 @@
 
 use std::sync::Arc;
 
-use skiff_artifact_model::AssemblyActivationControl;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, encode_assembly_activation_frame,
-    AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::connection_protocol::{
     decode_connection_request_cancel_frame, decode_connection_request_frame,
     CONNECTION_REQUEST_MAX_PAYLOAD_BYTES,
@@ -22,53 +17,12 @@ use skiff_runtime_transport::websocket_generation_lifecycle::{
     WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
 };
 
-use crate::activation::ActivationCoordinatorHandle;
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::ws::{BrokerRuntimeSource, RuntimeRequest, RuntimeSendOutcome, WebSocketLane};
 
 use super::session_ports::{SessionHandle, WsRuntimeResponder};
-
-/// Activation transaction sink: Runtime→Router `Prepared` / `Reject` ACKs
-/// are delivered to the `ActivationCoordinator` with the exact session
-/// source. `Register` is handled by the session `RegistrationFrameSink`
-/// before this sink; other activation variants are protocol violations.
-#[derive(Debug, Clone)]
-pub struct ActivationTransactionSink {
-    coordinator: ActivationCoordinatorHandle,
-}
-
-impl ActivationTransactionSink {
-    pub fn new(coordinator: ActivationCoordinatorHandle) -> Self {
-        Self { coordinator }
-    }
-}
-
-impl InboundFrameSink for ActivationTransactionSink {
-    fn family(&self) -> RuntimeFrameFamily {
-        RuntimeFrameFamily::Activation
-    }
-
-    fn handle(&self, session: &RuntimeSessionEpoch, raw: &[u8]) -> Result<(), TerminalKind> {
-        let control = decode_assembly_activation_frame(
-            AssemblyActivationFrameDirection::RuntimeToRouter,
-            raw,
-        )
-        .map_err(|_| TerminalKind::MalformedFrame)?;
-        match control {
-            AssemblyActivationControl::Prepared { .. }
-            | AssemblyActivationControl::Reject { .. } => {
-                // Delivery failure (mailbox full / shutdown) is intentionally
-                // not a session terminal: the coordinator's ACK deadline and
-                // durable reconcile own the outcome.
-                let _ = self.coordinator.deliver_ack(session, control);
-                Ok(())
-            }
-            _ => Err(TerminalKind::MalformedFrame),
-        }
-    }
-}
 
 /// Connection-family sink: Runtime generation lifecycle controls
 /// (Acquire/Ack/Reject) go to the `RuntimeGenerationPinLedger` and Runtime
@@ -278,11 +232,4 @@ impl InboundFrameSink for ConnectionFrameSink {
         }
         Err(TerminalKind::MalformedFrame)
     }
-}
-
-// Keep the activation encode import referenced by tests through the sink
-// family (re-exported helper).
-pub fn encode_activation_control(control: &AssemblyActivationControl) -> Result<Vec<u8>, String> {
-    encode_assembly_activation_frame(AssemblyActivationFrameDirection::RouterToRuntime, control)
-        .map_err(|error| error.to_string())
 }

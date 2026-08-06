@@ -6,6 +6,9 @@
 //! after the aggregator). Per-session replica/capability/loopRisk projections
 //! are pure functions over directory facts (plan §3.3: health active/draining
 //! is a derived projection, never a second source of truth).
+//!
+//! M4: `activeAssembly` is the release pointer table projection; the
+//! coordinator/repository/epoch counters are retired.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -19,12 +22,11 @@ use crate::supervisor::RouterComponents;
 use crate::telemetry::backlog_metric_event;
 
 use super::counters::{
-    ActivationCounters, ActiveRoutingEpochCounters, ActorCounters, AdmissionCounters,
-    BarrierCounters, BlockingLoaderCounters, BootstrapCounters, BrokerCounters, CapabilityCounters,
-    ClientConnectionCounters, CoordinatorMailboxCounters, DurableTaskCounters,
-    GenerationLeaseCounters, HealthCounters, HealthObservationCounters, HttpCounters,
-    MailboxCounters, ReaderFailClosedCountersDto, RepositoryCounters, RequestPendingCounters,
-    SessionCounters, ShutdownResidueCounters, TerminalCounters, WriterQueueCounters,
+    ActorCounters, AdmissionCounters, BarrierCounters, BlockingLoaderCounters,
+    BootstrapCounters, BrokerCounters, CapabilityCounters, ClientConnectionCounters,
+    DurableTaskCounters, GenerationLeaseCounters, HealthCounters, HealthObservationCounters,
+    HttpCounters, MailboxCounters, RequestPendingCounters, SessionCounters,
+    ShutdownResidueCounters, TerminalCounters, WriterQueueCounters,
 };
 use super::time::format_iso_millis;
 use super::wire::{
@@ -84,21 +86,15 @@ impl HealthAggregator {
             .unwrap_or_default()
     }
 
-    /// Renders one health response. `pendingActivation` is the durable
-    /// repository pending (read-only; `null` when none or the read fails).
+    /// Renders one health response (M4: no durable pending read).
     pub async fn render(&self, with_loop_risk: bool) -> Value {
         let components = &self.components;
 
-        let captured_epoch = components.epoch_store.capture();
-        let epoch_store_health = components.epoch_store.health();
-        let bootstrap_health = components.assembly.health();
         let session_health = components.session.health_snapshot();
         let dispatcher_health = components.dispatcher.health();
         let index_health = components.ws_lane.index.snapshot();
         let ledger_health = components.ws_lane.ledger.snapshot();
         let broker_health = components.ws_lane.broker.snapshot();
-        let coordinator_health = components.coordinator.health();
-        let repository_health = components.assembly.repository().health();
         let http_health = self.http_health();
 
         let actor_health = ActorHealthSnapshot {
@@ -160,59 +156,47 @@ impl HealthAggregator {
             runtimes: project_loop_risk_runtimes(&facts, &observations, &connected, now_millis),
         };
 
-        let active = captured_epoch
-            .as_ref()
-            .map(|epoch| ActiveAssemblyProjection {
-                profile: epoch.profile().to_string(),
-                generation: epoch.assembly_generation(),
-                assembly_identity: epoch.assembly_identity().to_string(),
-                config_snapshot_id: epoch.config_snapshot_id().to_string(),
-                ingress_count: epoch.ingress_projection().len(),
-                loaded_build_ids: {
-                    let mut ids = facts
-                        .iter()
-                        .filter(|fact| fact.registered && !fact.cancelled)
-                        .flat_map(|fact| fact.registered_build_ids.iter().cloned())
-                        .collect::<Vec<_>>();
-                    ids.sort();
-                    ids.dedup();
-                    ids
-                },
-                router_artifact_root: Some(
-                    components.config.artifacts_path.to_string_lossy().into_owned(),
-                ),
-            });
-
-        let profile = active
-            .as_ref()
-            .map(|active| active.profile.clone())
-            .or_else(|| {
-                epoch_store_health
-                    .current
-                    .as_ref()
-                    .map(|current| current.profile.clone())
-            });
-        let pending = match profile.as_deref() {
-            Some(profile) => components
-                .assembly
-                .repository()
-                .read(profile)
-                .await
-                .ok()
-                .and_then(|state| state.pending),
-            None => None,
+        // M4 pointer-table projection: every build id currently published for
+        // the router profile, plus the registered build-id union and the
+        // router artifact root used by the candidate rule.
+        let store = components.assembly.store().clone();
+        let profile = components.assembly.profile().to_string();
+        let release: Arc<dyn crate::release::ReleaseResolver> =
+            Arc::new(crate::release::StoreReleaseResolver::new(store));
+        let published = release.all_deployments(&profile).unwrap_or_default();
+        let mut build_ids = published
+            .iter()
+            .map(|deployment| deployment.deployment_artifact_identity.to_string())
+            .collect::<Vec<_>>();
+        build_ids.sort();
+        build_ids.dedup();
+        let active = ActiveAssemblyProjection {
+            profile: profile.clone(),
+            release_count: published.len(),
+            build_ids,
+            loaded_build_ids: {
+                let mut ids = facts
+                    .iter()
+                    .filter(|fact| fact.registered && !fact.cancelled)
+                    .flat_map(|fact| fact.registered_build_ids.iter().cloned())
+                    .collect::<Vec<_>>();
+                ids.sort();
+                ids.dedup();
+                ids
+            },
+            router_artifact_root: Some(
+                components.config.artifacts_path.to_string_lossy().into_owned(),
+            ),
         };
+
         let task_backlog = components.task_control.backlog().await;
         components
             .task_telemetry
             .emit(backlog_metric_event(&task_backlog));
 
         let counters = HealthCounters {
-            active_routing_epoch: ActiveRoutingEpochCounters::from(&epoch_store_health),
-            bootstrap: BootstrapCounters {
-                reader: ReaderFailClosedCountersDto::from(&bootstrap_health.reader_fail_closed),
-            },
-            blocking_loader: BlockingLoaderCounters::from(&bootstrap_health.loader),
+            bootstrap: BootstrapCounters { profile },
+            blocking_loader: BlockingLoaderCounters::from(&components.assembly.loader().health()),
             sessions: SessionCounters::from(&session_health),
             capabilities: CapabilityCounters {
                 connections: capabilities.len(),
@@ -220,7 +204,6 @@ impl HealthAggregator {
             health: HealthObservationCounters {
                 observations: observations.len(),
                 observed_total: session_health.observed_health,
-                health_before_ack: session_health.health_before_ack,
             },
             barrier: BarrierCounters {
                 pending: session_health.barrier_pending,
@@ -241,19 +224,8 @@ impl HealthAggregator {
             generation_leases: GenerationLeaseCounters::from(&ledger_health),
             broker: BrokerCounters::from(&broker_health),
             actor: ActorCounters::from(&actor_health),
-            activation: {
-                let mut activation = ActivationCounters::from(&coordinator_health);
-                activation.repository = RepositoryCounters::from(&repository_health);
-                activation
-            },
             http: HttpCounters::from(&http_health),
-            mailboxes: MailboxCounters {
-                coordinator: CoordinatorMailboxCounters {
-                    occupancy: coordinator_health.mailbox_occupancy,
-                    capacity: coordinator_health.mailbox_capacity,
-                    saturation: coordinator_health.mailbox_saturation,
-                },
-            },
+            mailboxes: MailboxCounters::default(),
             writer_queues: WriterQueueCounters {
                 ws_slow_client_count: index_health.slow_client_count,
                 ws_observed_write_bytes_total: index_health.observed_write_bytes.values().sum(),
@@ -371,9 +343,6 @@ impl HealthAggregator {
             },
             shutdown: ShutdownResidueCounters {
                 session_fail_stop: session_health.fail_stop,
-                coordinator_shutdown: coordinator_health.shutdown,
-                repository_driver_closed: repository_health.driver.closed,
-                repository_driver_shutdown_residue: repository_health.driver.shutdown_residue,
                 dispatcher_stopped: dispatcher_health.stopped,
                 ws_fail_stop_reason: ledger_health.fail_stop_reason,
             },
@@ -381,8 +350,7 @@ impl HealthAggregator {
 
         let mut value = render_base(
             true,
-            active.as_ref(),
-            pending.as_ref(),
+            Some(&active),
             &capability_connections,
             &replicas,
             &counters,

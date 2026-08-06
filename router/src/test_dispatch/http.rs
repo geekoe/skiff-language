@@ -33,7 +33,6 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestTraceFrameHeader,
 };
 
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::http::dispatch::{
     cancel_channel, DispatchRequest, HttpDispatchError, HttpDispatchPort, TestDispatchOutcome,
 };
@@ -41,7 +40,7 @@ use crate::http::frame::{
     deadline_parts, encode_request_start_frame, new_request_id, new_span_id,
     new_test_case_capability, new_trace_id,
 };
-use crate::http::ingress::{http_surface_view_from_epoch, HttpGatewaySurfaceView};
+use crate::http::ingress::HttpGatewaySurfaceView;
 
 /// Canonical control endpoint for runtimeAssembly test dispatch
 /// (`POST /__skiff/test-dispatch`).
@@ -81,13 +80,12 @@ impl fmt::Debug for TestDispatchHttpHandler {
     }
 }
 
-/// Handler dependencies (supervisor composition injects the live epoch
-/// store, the static surface view and the artifact store for live surface
-/// rebuilds after an activation swap).
+/// Handler dependencies (supervisor composition injects the profile, the
+/// static surface view and the artifact store for pointer-table surface
+/// rebuilds; M4: no epoch).
 #[derive(Clone)]
 pub struct TestDispatchHttpHandlerOptions {
-    pub epoch: Arc<RoutingEpoch>,
-    pub epoch_store: Option<Arc<ActiveRoutingEpochStore>>,
+    pub profile: String,
     pub surfaces: Arc<HttpGatewaySurfaceView>,
     pub artifact_store: CanonicalArtifactStore,
     pub dispatcher: Arc<dyn HttpDispatchPort>,
@@ -97,8 +95,7 @@ impl fmt::Debug for TestDispatchHttpHandlerOptions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TestDispatchHttpHandlerOptions")
-            .field("epoch", &self.epoch)
-            .field("epoch_store", &self.epoch_store.is_some())
+            .field("profile", &self.profile)
             .field("surfaces", &self.surfaces)
             .field("dispatcher", &"HttpDispatchPort")
             .finish_non_exhaustive()
@@ -148,14 +145,18 @@ impl TestDispatchHttpHandler {
                 return control_json_error(classify_activation_error(&message), &message);
             }
         };
-        let epoch = self.current_epoch();
         let surfaces = match self.current_surfaces() {
             Ok(surfaces) => surfaces,
             Err(message) => {
                 return control_json_error(classify_activation_error(&message), &message);
             }
         };
-        let binding = match exact_test_dispatch_binding(&epoch, &surfaces, &decoded) {
+        let _binding = match exact_test_dispatch_binding(
+            &self.options.artifact_store,
+            &self.options.profile,
+            &surfaces,
+            &decoded,
+        ) {
             Ok(binding) => binding,
             Err(message) => {
                 return control_json_error(classify_activation_error(&message), &message);
@@ -183,26 +184,15 @@ impl TestDispatchHttpHandler {
         dispatch_outcome_response(&request_id, result)
     }
 
-    fn current_epoch(&self) -> Arc<RoutingEpoch> {
-        self.options
-            .epoch_store
-            .as_ref()
-            .and_then(|store| store.capture())
-            .unwrap_or_else(|| Arc::clone(&self.options.epoch))
-    }
-
     fn current_surfaces(&self) -> Result<Arc<HttpGatewaySurfaceView>, String> {
-        let Some(store) = &self.options.epoch_store else {
-            return Ok(Arc::clone(&self.options.surfaces));
-        };
-        let Some(current) = store.capture() else {
-            return Ok(Arc::clone(&self.options.surfaces));
-        };
-        http_surface_view_from_epoch(&self.options.artifact_store, &current)
-            .map(Arc::new)
-            .map_err(|message| {
-                format!("runtime assembly test dispatch surface load failed: {message}")
-            })
+        crate::http::ingress::http_surface_view_from_pointers(
+            &self.options.artifact_store,
+            &self.options.profile,
+        )
+        .map(Arc::new)
+        .map_err(|message| {
+            format!("runtime assembly test dispatch surface load failed: {message}")
+        })
     }
 }
 
@@ -329,30 +319,51 @@ fn validate_http_request_metadata(
 /// TS `exactTestDispatchBinding` parity against the current epoch and the
 /// live/static HTTP gateway surface view.
 fn exact_test_dispatch_binding(
-    epoch: &RoutingEpoch,
+    artifact_store: &CanonicalArtifactStore,
+    profile: &str,
     surfaces: &HttpGatewaySurfaceView,
     decoded: &DecodedTestDispatch,
 ) -> Result<GatewayIngressBinding, String> {
     let routing = &decoded.routing;
-    if routing.assembly_identity.as_str() != epoch.assembly_identity()
-        || routing.assembly_generation != epoch.assembly_generation()
-    {
+    // M4: the test dispatch routing names an exact deployment; it must be
+    // currently published by the release pointer table and carry the
+    // matching build id.
+    let release: Arc<dyn crate::release::ReleaseResolver> =
+        Arc::new(crate::release::StoreReleaseResolver::new(artifact_store.clone()));
+    let published = release
+        .resolve(profile, &routing.deployment.service_id, &routing.deployment.contract_version)
+        .map_err(|error| format!("runtime assembly test dispatch release resolve failed: {error}"))?
+        .ok_or_else(|| {
+            "runtime assembly test dispatch does not match a published release pointer".to_string()
+        })?;
+    if published != routing.deployment {
         return Err(
-            "runtime assembly test dispatch does not match the exact active assembly generation"
+            "runtime assembly test dispatch does not match the exact published deployment"
                 .to_string(),
         );
     }
-    let candidates: Vec<&GatewayIngressBinding> = epoch
-        .ingress_projection()
+    let record = artifact_store
+        .read_service_deployment(&routing.deployment)
+        .map_err(|error| {
+            format!("runtime assembly test dispatch deployment read failed: {error}")
+        })?;
+    let mut candidates = record
+        .ingress
         .iter()
         .filter(|binding| {
             binding.selector.protocol == IngressProtocol::Http
                 && binding.selector.method.as_deref() == Some(routing.ingress.method.as_str())
                 && binding.selector.path == routing.ingress.path
-                && binding.deployment == routing.deployment
-                && binding.gateway_entry_identity == routing.gateway_entry_identity
         })
-        .collect();
+        .collect::<Vec<_>>();
+    candidates.retain(|binding| {
+        record
+            .gateway_entries
+            .get(&binding.gateway_entry_key)
+            .is_some_and(|entry| {
+                entry.gateway_entry_identity == routing.gateway_entry_identity
+            })
+    });
     let Some(binding) = candidates.first() else {
         return Err(
             "runtime assembly test dispatch does not match the exact active gateway binding"
@@ -366,7 +377,7 @@ fn exact_test_dispatch_binding(
         );
     }
     let surface = surfaces
-        .get(&binding.deployment, &binding.gateway_entry_key)
+        .get(&routing.deployment, &binding.gateway_entry_key)
         .ok_or_else(|| {
             "runtime assembly test dispatch does not match the exact active gateway binding"
                 .to_string()
@@ -377,7 +388,12 @@ fn exact_test_dispatch_binding(
                 .to_string(),
         );
     }
-    Ok((*binding).clone())
+    Ok(GatewayIngressBinding {
+        selector: binding.selector.clone(),
+        deployment: routing.deployment.clone(),
+        gateway_entry_key: binding.gateway_entry_key.clone(),
+        gateway_entry_identity: routing.gateway_entry_identity.clone(),
+    })
 }
 
 /// TS `assemblyTestHttpRequestHeader` parity: canonical `request.start` with
@@ -590,13 +606,7 @@ mod tests {
         RuntimeAssemblyRef, ServiceDeploymentRef,
     };
     use skiff_deployment::fixtures::{runtime_assembly_fixture, service_deployment_fixture};
-    use skiff_deployment::projection::actor_routing::{
-        ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
-    };
-    use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 
-    use crate::artifact::ActorRoutingCatalog;
-    use crate::bootstrap::RoutingEpoch;
     use crate::http::fake::{FakeDispatchPlan, FakeHttpDispatcher};
     use crate::http::ingress::HttpGatewaySurfaceView;
 
@@ -604,7 +614,6 @@ mod tests {
 
     static TEMP_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     const PROFILE: &str = "prod";
-    const GENERATION: u64 = 7;
     const GATEWAY_KEY: &str = "echo";
     const ECHO_PATH: &str = "/echo";
 
@@ -638,21 +647,11 @@ mod tests {
         }
     }
 
-    fn snapshot_ref() -> skiff_artifact_model::RuntimeConfigSnapshotRef {
-        skiff_artifact_model::RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("snapshot id"),
-        }
-    }
-
     struct Fixture {
         _root: TestRoot,
         assembly_ref: RuntimeAssemblyRef,
         deployment: ServiceDeploymentRef,
         gateway_entry_identity: String,
-        epoch: Arc<RoutingEpoch>,
         surfaces: Arc<HttpGatewaySurfaceView>,
     }
 
@@ -693,24 +692,12 @@ mod tests {
         let assembly_ref =
             skiff_artifact_identity::runtime_assembly_ref(&assembly).expect("assembly ref");
 
-        let snapshot = RuntimeConfigSnapshot::new(PROFILE, snapshot_ref(), Vec::new())
-            .expect("snapshot fixture");
-        let projection = ActorRoutingProjection::new(
-            ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-            Vec::new(),
-        )
-        .expect("empty projection");
-        let catalog = Arc::new(ActorRoutingCatalog::from_projection(Arc::new(projection)));
-        let epoch = Arc::new(
-            RoutingEpoch::new(
-                PROFILE,
-                GENERATION,
-                Arc::new(assembly),
-                Arc::new(snapshot),
-                catalog,
-            )
-            .expect("epoch fixture"),
-        );
+        let release_pointer =
+            skiff_deployment::storage::ReleasePointer::new(PROFILE, deployment_ref.clone())
+                .expect("release pointer");
+        artifact_store
+            .write_release_pointer(&release_pointer)
+            .expect("write release pointer");
         let mut entries = BTreeMap::new();
         for (key, entry) in &deployment.gateway_entries {
             entries.insert((deployment_ref.clone(), key.clone()), entry.clone());
@@ -724,15 +711,13 @@ mod tests {
             assembly_ref,
             deployment: deployment_ref,
             gateway_entry_identity: gateway_entry.gateway_entry_identity.as_str().to_string(),
-            epoch,
             surfaces,
         }
     }
 
     fn handler_with(fixture: &Fixture, dispatcher: FakeHttpDispatcher) -> TestDispatchHttpHandler {
         TestDispatchHttpHandler::new(TestDispatchHttpHandlerOptions {
-            epoch: Arc::clone(&fixture.epoch),
-            epoch_store: None,
+            profile: PROFILE.to_string(),
             surfaces: Arc::clone(&fixture.surfaces),
             artifact_store: CanonicalArtifactStore::open(fixture._root.path())
                 .expect("artifact store open"),
@@ -746,7 +731,7 @@ mod tests {
             "routing": {
                 "kind": "runtimeAssembly",
                 "assemblyIdentity": fixture.assembly_ref.assembly_identity.clone(),
-                "assemblyGeneration": GENERATION,
+                "assemblyGeneration": 7,
                 "deployment": {
                     "serviceId": fixture.deployment.service_id.clone(),
                     "contractVersion": fixture.deployment.contract_version.clone(),
@@ -905,7 +890,8 @@ mod tests {
         let cases: Vec<serde_json::Value> = vec![
             {
                 let mut value = body(&fixture);
-                value["routing"]["assemblyGeneration"] = serde_json::json!(GENERATION + 1);
+                value["routing"]["deployment"]["deploymentArtifactIdentity"] =
+                    serde_json::json!("skiff-service-deployment-v2:sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
                 value
             },
             {
@@ -951,7 +937,7 @@ mod tests {
                 body["error"]["message"]
                     .as_str()
                     .unwrap_or_default()
-                    .contains("does not match the exact active"),
+                    .contains("does not match the exact"),
                 "case {} -> {}",
                 value,
                 body["error"]["message"]
@@ -992,7 +978,10 @@ mod tests {
         let request = &recorded[0];
         assert_eq!(request.header.mode, "unary");
         assert_eq!(request.header.caller.kind, "gateway");
-        assert_eq!(request.header.routing.assembly_generation, GENERATION);
+        assert_eq!(
+            request.header.routing.build_id.as_deref(),
+            Some(fixture.deployment.deployment_artifact_identity.as_str())
+        );
         assert_eq!(request.header.routing.ingress.path, ECHO_PATH);
         assert_eq!(request.header.http_request.method, "POST");
         assert_eq!(request.header.http_request.url, "http://127.0.0.1/echo");

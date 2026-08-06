@@ -23,7 +23,7 @@ use crate::actor::{
     ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorOwnerControlBroker,
     ActorOwnershipRegistry, ControlBrokerOptions, IdleEvictControlPort, LeaseSchedulerOptions,
 };
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
+use crate::artifact::ActorRoutingProjectionRef;
 use crate::session::consumer::{ConsumerKind, SessionConsumer};
 use crate::session::identity::RuntimeSessionEpoch;
 
@@ -44,11 +44,12 @@ pub struct ActorComponents {
     pub idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
 }
 
-/// Assembles the actor lane against one captured routing epoch and the
-/// session outbound registry.
+/// Assembles the actor lane against the bootstrap's artifact store and the
+/// session outbound registry (M4: the catalog view lazy-loads from the
+/// artifact store; there is no routing epoch).
 pub fn assemble_actor_components(
-    _epoch: Arc<RoutingEpoch>,
-    epoch_store: Arc<ActiveRoutingEpochStore>,
+    artifact_root: &std::path::Path,
+    actor_projection: ActorRoutingProjectionRef,
     session: SessionHandle,
 ) -> Result<Arc<ActorComponents>, String> {
     let registry = Arc::new(ActorOwnershipRegistry::new());
@@ -56,14 +57,17 @@ pub fn assemble_actor_components(
         ActorInvocationRelayOptions::default(),
     ));
     let control_broker = Arc::new(ActorOwnerControlBroker::new(ControlBrokerOptions::default()));
-    let catalog_view = Arc::new(ActorMethodCatalogView::new(Arc::clone(&epoch_store)));
+    let catalog_view = Arc::new(
+        ActorMethodCatalogView::new(artifact_root, actor_projection)
+            .map_err(|error| format!("open actor routing projection store: {error}"))?,
+    );
     let idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let lease_scheduler = Arc::new(ActorLeaseExpiryScheduler::new(
         Arc::clone(&registry),
         Arc::new(ActorIdleEvictControlPort::with_idle_evictions(
             session.clone(),
-            Arc::clone(&epoch_store),
+            Arc::clone(&catalog_view),
             Arc::clone(&idle_evictions),
         )),
         LeaseSchedulerOptions::default(),
@@ -138,8 +142,7 @@ impl ActivationControlPort for ActorActivationControlPort {
             operation: ActorOwnerControlOperation::ActivateInitial,
             fence,
             route_authority: ActorOwnerRouteAuthorityFrameHeader {
-                assembly_identity: request.route_authority.assembly_identity.clone(),
-                assembly_generation: request.route_authority.assembly_generation,
+                build_id: request.route_authority.build_id.clone(),
             },
             transition: None,
             bootstrap: Some(ActorActivationBootstrapFrameHeader {
@@ -170,30 +173,32 @@ impl ActivationControlPort for ActorActivationControlPort {
 }
 
 /// `IdleEvictControlPort` production adapter: builds the canonical IdleEvict
-/// control frame (fence + eviction request id + captured epoch route
-/// authority) and writes it to the exact owner runtime session.
+/// control frame (fence + eviction request id + deployment-anchored route
+/// authority) and writes it to the exact owner runtime session. The route
+/// authority build id is resolved from the actor routing catalog
+/// (M4: no epoch).
 #[derive(Debug, Clone)]
 pub struct ActorIdleEvictControlPort {
     session: SessionHandle,
-    epoch_store: Arc<ActiveRoutingEpochStore>,
+    catalog_view: Arc<ActorMethodCatalogView>,
     idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
 }
 
 impl ActorIdleEvictControlPort {
-    pub fn new(session: SessionHandle, epoch_store: Arc<ActiveRoutingEpochStore>) -> Self {
-        Self::with_idle_evictions(session, epoch_store, Arc::new(Mutex::new(HashMap::new())))
+    pub fn new(session: SessionHandle, catalog_view: Arc<ActorMethodCatalogView>) -> Self {
+        Self::with_idle_evictions(session, catalog_view, Arc::new(Mutex::new(HashMap::new())))
     }
 
     /// E-actor-rust: registers every sent idle-eviction so the actor frame
     /// sink can correlate the ACK to the exact actor key.
     pub fn with_idle_evictions(
         session: SessionHandle,
-        epoch_store: Arc<ActiveRoutingEpochStore>,
+        catalog_view: Arc<ActorMethodCatalogView>,
         idle_evictions: Arc<Mutex<HashMap<String, ActorLogicalKey>>>,
     ) -> Self {
         Self {
             session,
-            epoch_store,
+            catalog_view,
             idle_evictions,
         }
     }
@@ -207,10 +212,14 @@ impl IdleEvictControlPort for ActorIdleEvictControlPort {
         eviction_request_id: &str,
         _connection: &str,
     ) -> Result<(), String> {
-        let epoch = self
-            .epoch_store
-            .capture()
-            .ok_or_else(|| "no active routing epoch for idleEvict".to_string())?;
+        let build_id = self
+            .catalog_view
+            .deployment_build_id_for(
+                &key.service_id,
+                &fence.actor_abi_identity,
+                &fence.actor_implementation_identity,
+            )
+            .ok_or_else(|| "actor routing catalog cannot resolve the actor deployment".to_string())?;
         let fence_header = ActorOwnerControlFenceFrameHeader {
             service_id: key.service_id.clone(),
             actor_type_identity: key.actor_type_identity.clone(),
@@ -232,10 +241,7 @@ impl IdleEvictControlPort for ActorIdleEvictControlPort {
             request_id: format!("control:idle-evict-{eviction_request_id}"),
             operation: ActorOwnerControlOperation::IdleEvict,
             fence: fence_header,
-            route_authority: ActorOwnerRouteAuthorityFrameHeader {
-                assembly_identity: epoch.assembly_identity().to_string(),
-                assembly_generation: epoch.assembly_generation(),
-            },
+            route_authority: ActorOwnerRouteAuthorityFrameHeader { build_id },
             transition: None,
             bootstrap: None,
             deadline: None,

@@ -1,7 +1,6 @@
 //! Skiff Router Rust migration (PR 0b): frozen Router config parser and the
 //! final listener skeleton assembled from the C-net mechanism.
 
-pub mod activation;
 pub mod actor;
 pub mod artifact;
 pub mod bootstrap;
@@ -19,23 +18,14 @@ pub mod telemetry;
 pub mod test_dispatch;
 pub mod ws;
 
-pub use activation::{
-    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorHealth,
-    ActivationCoordinatorOptions, ActivationCoordinatorPorts, ActivationHttpHandler,
-    ActivationParticipantBinding, ActivationPhase, ActivationRevalidateOutcome, BlockingLoaderPort,
-    CandidateEpochRefs, CoordinatorError, EnqueueResult, PublishCommittedEpochPort,
-    RecoveryTransaction, RuntimeCandidateQueryPort, SessionEnqueuePort,
-    ACTIVATION_REQUEST_BODY_CAP, ASSEMBLY_ACTIVATION_CONTROL_PATH,
-};
 pub use actor::{
     ActorActivationRequestBroker, ActorHealthSnapshot, ActorInvocationRelay,
     ActorLeaseExpiryScheduler, ActorMethodCatalogView, ActorOwnerControlBroker,
     ActorOwnershipRegistry,
 };
 pub use bootstrap::{
-    ActiveRoutingEpochStore, BlockingLoader, BootstrapReadOutcome, BootstrapRunner,
-    BootstrapStrictLoader, CommittedActivationBootstrapReader, RouterBootstrapAssembly,
-    RoutingEpoch, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
+    BlockingLoader, BootstrapAssemblyError, RouterBootstrapAssembly,
+    ACTOR_ROUTING_PROJECTION_RECORD_PATH,
 };
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
@@ -48,8 +38,8 @@ pub use dispatch::{
     DispatchedFrame, DispatcherHealthSnapshot, FrameOutcome, LeaseRevalidate,
     NoopTaskAttemptTerminalSink, PendingHealth, PendingTerminal, Permit, PermitLedger,
     RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome, Reservation,
-    RevalidateOutcome, RoutingEpochSource, RuntimeAdmissionPool, RuntimeDispatcherOptions,
-    RuntimePeer, RuntimeResponseFrame, SessionAbortControl, SubmitRejectReason, SubmitResult,
+    RevalidateOutcome, RuntimeAdmissionPool, RuntimeDispatcherOptions, RuntimePeer,
+    RuntimeResponseFrame, SessionAbortControl, SubmitRejectReason, SubmitResult,
     TaskAttemptSubmit, TaskAttemptSubmitResult, TaskAttemptTerminalOutcome,
     TaskAttemptTerminalSink, TaskHealth, TerminalHealth, TerminalSource, TimeoutCheck,
     WireTimeoutCheck,
@@ -62,11 +52,11 @@ pub use health::{
     LoopRiskRuntimeProjection, ReplicaProjection, SessionFacts,
 };
 pub use http::{
-    CancelSignal, CancelWatch, DispatchRequest, EpochHttpIngressResolver, HttpAdapterKind,
-    HttpDispatchError, HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth,
-    HttpGatewayServer, HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView,
-    HttpIngressBinding, HttpIngressResolver, HttpStreamError, HttpStreamErrorSource,
-    HttpStreamSink, TestDispatchOutcome, UnaryHttpResponse,
+    CancelSignal, CancelWatch, DispatchRequest, HttpAdapterKind, HttpDispatchError,
+    HttpDispatchMode, HttpDispatchPort, HttpError, HttpGatewayHealth, HttpGatewayServer,
+    HttpGatewayServerOptions, HttpGatewaySurface, HttpGatewaySurfaceView, HttpIngressBinding,
+    HttpIngressResolver, HttpStreamError, HttpStreamErrorSource, HttpStreamSink,
+    StoreHttpIngressResolver, TestDispatchOutcome, UnaryHttpResponse,
 };
 pub use listener::{
     run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,

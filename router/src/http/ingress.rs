@@ -23,7 +23,6 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
-use crate::bootstrap::RoutingEpoch;
 use crate::release::ReleaseResolver;
 
 use super::error::HttpError;
@@ -141,10 +140,10 @@ pub struct HttpIngressBinding {
 
 /// Service-scoped ingress resolution port.
 pub trait HttpIngressResolver: Send + Sync {
-    /// Resolves the exact HTTP binding for a captured whole epoch.
+    /// Resolves the exact HTTP binding for one service/version selector
+    /// (M4: release pointer table + deployment record; no epoch).
     fn resolve(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         selector: &ServiceDeploymentSelector,
         method: &str,
         path: &str,
@@ -154,78 +153,76 @@ pub trait HttpIngressResolver: Send + Sync {
     /// (service-managed CORS). Failures mean automatic CORS handling.
     fn has_explicit_options_ingress(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         selector: &ServiceDeploymentSelector,
         path: &str,
     ) -> bool;
 
     /// Whether any HTTP ingress binding exists for this service/path
     /// (method-agnostic), used by automatic CORS preflight handling.
-    fn has_ingress_path(
-        &self,
-        epoch: &Arc<RoutingEpoch>,
-        selector: &ServiceDeploymentSelector,
-        path: &str,
-    ) -> bool;
+    fn has_ingress_path(&self, selector: &ServiceDeploymentSelector, path: &str) -> bool;
 }
 
 /// Real resolver over the release pointer table and deployment records.
 ///
-/// The epoch contributes only its profile coordinate and the frame metadata;
-/// ingress surface reconstruction happens from the release-resolved
-/// deployment record. Without an artifact store the resolver fails closed for
-/// every request.
+/// The profile is fixed at construction (router config profile); ingress
+/// surface reconstruction happens from the release-resolved deployment
+/// record. Without an artifact store the resolver fails closed for every
+/// request.
 #[derive(Clone)]
-pub struct EpochHttpIngressResolver {
+pub struct StoreHttpIngressResolver {
+    profile: String,
     release: Option<Arc<dyn ReleaseResolver>>,
     artifact_store: Option<CanonicalArtifactStore>,
 }
 
-impl fmt::Debug for EpochHttpIngressResolver {
+impl fmt::Debug for StoreHttpIngressResolver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("EpochHttpIngressResolver")
+            .debug_struct("StoreHttpIngressResolver")
+            .field("profile", &self.profile)
             .field("artifact_store", &self.artifact_store.is_some())
             .finish_non_exhaustive()
     }
 }
 
-impl EpochHttpIngressResolver {
+impl StoreHttpIngressResolver {
     /// Builds a resolver without an artifact store: every request fails
     /// closed (release resolution is unavailable).
-    pub fn new(_surfaces: Arc<HttpGatewaySurfaceView>) -> Self {
+    pub fn new(_surfaces: Arc<HttpGatewaySurfaceView>, profile: impl Into<String>) -> Self {
         Self {
+            profile: profile.into(),
             release: None,
             artifact_store: None,
         }
     }
 
-    /// Builds a resolver over a live artifact store; the epoch's profile is
-    /// used to resolve the release pointer for each request.
+    /// Builds a resolver over a live artifact store; the profile is used to
+    /// resolve the release pointer for each request.
     pub fn new_with_live_artifact_store(
         _surfaces: Arc<HttpGatewaySurfaceView>,
         artifact_store: CanonicalArtifactStore,
+        profile: impl Into<String>,
     ) -> Self {
         let release = Arc::new(crate::release::StoreReleaseResolver::new(
             artifact_store.clone(),
         ));
         Self {
+            profile: profile.into(),
             release: Some(release),
             artifact_store: Some(artifact_store),
         }
     }
 }
 
-impl HttpIngressResolver for EpochHttpIngressResolver {
+impl HttpIngressResolver for StoreHttpIngressResolver {
     fn resolve(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         selector: &ServiceDeploymentSelector,
         method: &str,
         path: &str,
     ) -> Result<HttpIngressBinding, HttpError> {
         let method = method.trim().to_ascii_uppercase();
-        let deployment = self.resolve_deployment(epoch, selector)?;
+        let deployment = self.resolve_deployment(selector)?;
         let record = self.deployment_record(&deployment)?;
         let mut matched = record.ingress.iter().filter(|binding| {
             binding.selector.protocol == IngressProtocol::Http
@@ -280,20 +277,14 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
 
     fn has_explicit_options_ingress(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         selector: &ServiceDeploymentSelector,
         path: &str,
     ) -> bool {
-        self.resolve(epoch, selector, "OPTIONS", path).is_ok()
+        self.resolve(selector, "OPTIONS", path).is_ok()
     }
 
-    fn has_ingress_path(
-        &self,
-        epoch: &Arc<RoutingEpoch>,
-        selector: &ServiceDeploymentSelector,
-        path: &str,
-    ) -> bool {
-        let Ok(deployment) = self.resolve_deployment(epoch, selector) else {
+    fn has_ingress_path(&self, selector: &ServiceDeploymentSelector, path: &str) -> bool {
+        let Ok(deployment) = self.resolve_deployment(selector) else {
             return false;
         };
         let Ok(record) = self.deployment_record(&deployment) else {
@@ -306,17 +297,16 @@ impl HttpIngressResolver for EpochHttpIngressResolver {
     }
 }
 
-impl EpochHttpIngressResolver {
+impl StoreHttpIngressResolver {
     fn resolve_deployment(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         selector: &ServiceDeploymentSelector,
     ) -> Result<ServiceDeploymentRef, HttpError> {
         let release = self.release.as_ref().ok_or_else(|| {
             HttpError::internal("HTTP ingress resolver has no release resolver configured")
         })?;
         match release.resolve(
-            epoch.profile(),
+            &self.profile,
             &selector.service_id,
             &selector.contract_version,
         ) {
@@ -351,17 +341,17 @@ impl EpochHttpIngressResolver {
     }
 }
 
-/// Builds the HTTP surface view from one epoch's resolved deployment
-/// records (E-activation §8 live-surface rebuild after an activation swap;
-/// also consumed by the test-dispatch control handler).
-pub(crate) fn http_surface_view_from_epoch(
+/// Builds the HTTP surface view from the deployment records referenced by
+/// the release pointer table (M4: pointer-table scan).
+pub(crate) fn http_surface_view_from_pointers(
     artifact_store: &CanonicalArtifactStore,
-    epoch: &RoutingEpoch,
+    profile: &str,
 ) -> Result<HttpGatewaySurfaceView, String> {
+    let release = crate::release::StoreReleaseResolver::new(artifact_store.clone());
     let mut entries = BTreeMap::new();
-    for deployment in epoch.deployment_projection() {
+    for deployment in release.all_deployments(profile).map_err(|error| error.to_string())? {
         let record = artifact_store
-            .read_service_deployment(deployment)
+            .read_service_deployment(&deployment)
             .map_err(|error| {
                 format!(
                     "read deployment record {} for HTTP surface: {error}",

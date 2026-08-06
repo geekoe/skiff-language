@@ -99,9 +99,9 @@ pub(crate) async fn run_session_task(
     let mut bootstrap_wait: Option<oneshot::Receiver<()>> = None;
     let mut ack_wait: Option<oneshot::Receiver<()>> = None;
 
-    // Issue `router.bootstrap` when a committed epoch is available. Without
-    // one the connection stays in Accepted and fails at the bootstrap
-    // deadline (fail-closed; the bootstrap lane supplies the epoch source).
+    // Issue `router.bootstrap` (M4: built from the frozen config; no epoch
+    // tuple). Without it the connection stays in Accepted and fails at the
+    // bootstrap deadline (fail-closed).
     if let Some(bootstrap) = layer.bootstrap_bytes() {
         let (written_tx, written_rx) = oneshot::channel();
         match outbound.try_send(OutboundFrameId::Bootstrap, bootstrap, Some(written_tx)) {
@@ -119,8 +119,7 @@ pub(crate) async fn run_session_task(
         let deadline = match machine.phase() {
             HandshakePhase::Accepted => Some(phase_started_at + layer.timing.bootstrap),
             HandshakePhase::BootstrapSent => Some(phase_started_at + layer.timing.capabilities),
-            HandshakePhase::CapabilitiesBound => Some(phase_started_at + layer.timing.register),
-            HandshakePhase::RegisterValidated => {
+            HandshakePhase::CapabilitiesBound => {
                 ack_started_at.map(|started| started + layer.timing.ack_write)
             }
             HandshakePhase::Registered | HandshakePhase::Closed => None,
@@ -233,7 +232,7 @@ pub(crate) async fn run_session_task(
             _ = sleep_until(deadline.unwrap_or_else(|| Instant::now() + layer.timing.ack_write)),
                 if deadline.is_some() =>
             {
-                if machine.phase() == HandshakePhase::RegisterValidated {
+                if machine.phase() == HandshakePhase::CapabilitiesBound {
                     debug(format!(
                         "ack deadline expired ({}ms)",
                         layer.timing.ack_write.as_millis()
@@ -243,8 +242,7 @@ pub(crate) async fn run_session_task(
                     let kind = match machine.phase() {
                         HandshakePhase::Accepted => TimeoutKind::Bootstrap,
                         HandshakePhase::BootstrapSent => TimeoutKind::Capabilities,
-                        HandshakePhase::CapabilitiesBound => TimeoutKind::Register,
-                        _ => TimeoutKind::Register,
+                        _ => TimeoutKind::Bootstrap,
                     };
                     debug(format!("handshake deadline expired: {kind:?}"));
                     machine.on_timeout(kind);
@@ -311,6 +309,37 @@ fn process_event(
                     }),
                 );
                 layer.record_registration_facts(&session, registration_facts(&header));
+                // M4: capabilities are the registration. Publish the pending
+                // record and write the `runtime.registered` ACK immediately;
+                // the session becomes routable once the ACK is written.
+                let permits = layer.manifest_kinds();
+                let output = layer.registration_sink().handle_capabilities(
+                    machine,
+                    &mut layer.directory_lock(),
+                    &session,
+                    &permits,
+                );
+                match output {
+                    super::demux::RegistrationSinkOutput::PendingPublished {
+                        cancelled_old,
+                        ..
+                    } => {
+                        if let Some(old) = cancelled_old {
+                            layer.request_close(&old, SessionCloseReason::Replaced);
+                        }
+                        layer.sync_registration_facts(&session);
+                        start_ack_write(
+                            layer,
+                            machine,
+                            &session,
+                            ack_started_at,
+                            ack_wait,
+                            outbound,
+                        );
+                    }
+                    super::demux::RegistrationSinkOutput::Idempotent => {}
+                    super::demux::RegistrationSinkOutput::Terminal(_) => {}
+                }
                 *bound_session = Some(session);
                 *phase_started_at = Instant::now();
             }
@@ -323,55 +352,14 @@ fn process_event(
             }
             CapabilitiesEvent::Terminal(_) => {}
         },
-        DemuxEvent::Register(register) => {
-            let Some(session) = bound_session.clone() else {
-                machine.terminal_with(TerminalKind::WrongOrder);
-                return;
-            };
-            let context = layer.epoch_context();
-            let permits = layer.manifest_kinds();
-            let output = layer.registration_sink().handle_register(
-                machine,
-                &mut layer.directory_lock(),
-                &session,
-                &register,
-                &context,
-                &permits,
-            );
-            match output {
-                super::demux::RegistrationSinkOutput::PendingPublished {
-                    cancelled_old, ..
-                } => {
-                    if let Some(old) = cancelled_old {
-                        layer.request_close(&old, SessionCloseReason::Replaced);
-                    }
-                    layer.sync_registration_facts(&session);
-                    start_ack_write(layer, machine, &session, ack_started_at, ack_wait, outbound);
-                }
-                super::demux::RegistrationSinkOutput::TransitionPublished { .. } => {
-                    layer.sync_registration_facts(&session);
-                    start_ack_write(layer, machine, &session, ack_started_at, ack_wait, outbound);
-                }
-                super::demux::RegistrationSinkOutput::Idempotent => {}
-                super::demux::RegistrationSinkOutput::Terminal(_) => {}
-            }
-        }
         DemuxEvent::Health(header) => match machine.on_health(&header.runtime_id) {
             HealthEvent::Observed => {
                 if let Some(session) = bound_session {
                     layer.health().record_observation(session, header);
                 }
             }
-            HealthEvent::DroppedBeforeAck => {
-                if let Some(session) = bound_session {
-                    layer.health().drop_before_ack(session);
-                }
-            }
             HealthEvent::Terminal(_) => {}
         },
-        DemuxEvent::LegacyRegister => {
-            machine.on_legacy_register();
-        }
         DemuxEvent::Sink { family, raw } => {
             let debug = |message: String| {
                 if std::env::var("SKIFF_ROUTER_SESSION_DEBUG").is_ok() {

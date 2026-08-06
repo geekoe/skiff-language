@@ -11,9 +11,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use skiff_runtime_transport::assembly_activation::{
-    encode_assembly_activation_frame, AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::connection_protocol::{
     encode_connection_response_frame, ConnectionResponseFrameHeader,
 };
@@ -26,10 +23,8 @@ use skiff_runtime_transport::websocket_generation_lifecycle::{
     WebSocketGenerationLifecycleDirection,
 };
 
-use crate::activation::{ActivationParticipantBinding, EnqueueResult, SessionEnqueuePort};
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{
-    CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
+    CandidateViewSource, LeaseRevalidate, RevalidateOutcome,
 };
 use crate::dispatch::{
     DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, TaskAttemptSubmit,
@@ -150,25 +145,6 @@ impl CandidateViewSource for SessionCandidateViewSource {
     }
 }
 
-/// Plan §3.3 step 1: captures the current whole epoch from the single
-/// authority store. `None` means no committed epoch: admission fails closed.
-#[derive(Debug, Clone)]
-pub struct StoreRoutingEpochSource {
-    store: Arc<ActiveRoutingEpochStore>,
-}
-
-impl StoreRoutingEpochSource {
-    pub fn new(store: Arc<ActiveRoutingEpochStore>) -> Self {
-        Self { store }
-    }
-}
-
-impl RoutingEpochSource for StoreRoutingEpochSource {
-    fn capture(&self) -> Option<Arc<RoutingEpoch>> {
-        self.store.capture()
-    }
-}
-
 /// Plan §3.3 step 5: atomic revalidation against the directory record before
 /// enqueue (session epoch / registration revision / exact tuple /
 /// cancellation).
@@ -186,20 +162,17 @@ impl DirectoryLeaseRevalidate {
 impl LeaseRevalidate for DirectoryLeaseRevalidate {
     fn revalidate(&self, _request_id: &str, lease: &RegisteredSessionLease) -> RevalidateOutcome {
         let Some(layer) = self.session.layer() else {
-            return RevalidateOutcome::TupleMismatch;
+            return RevalidateOutcome::StaleRevision;
         };
         let directory = layer.directory_lock();
         let Some(record) = directory.record(&lease.session_epoch) else {
-            return RevalidateOutcome::TupleMismatch;
+            return RevalidateOutcome::StaleRevision;
         };
         if record.cancelled {
             return RevalidateOutcome::Cancelled;
         }
         if record.registration_revision != lease.registration_revision {
             return RevalidateOutcome::StaleRevision;
-        }
-        if record.registered_tuple.as_ref() != Some(&lease.exact_registered_tuple) {
-            return RevalidateOutcome::TupleMismatch;
         }
         RevalidateOutcome::Ok
     }
@@ -287,70 +260,6 @@ fn write_session_frame(
         .layer()
         .ok_or_else(|| "session layer is not wired yet".to_string())?;
     layer.write_session_frame(session, bytes)
-}
-
-/// C-activation §8 `SessionEnqueuePort`: non-blocking prepare/commit/abort
-/// writer per exact session; queue-full / missing writer maps to `QueueFull`
-/// (the coordinator durably aborts and aborts the exact session).
-#[derive(Debug, Clone)]
-pub struct ActivationSessionEnqueuePort {
-    session: SessionHandle,
-}
-
-impl ActivationSessionEnqueuePort {
-    pub fn new(session: SessionHandle) -> Self {
-        Self { session }
-    }
-}
-
-impl SessionEnqueuePort for ActivationSessionEnqueuePort {
-    fn enqueue_prepare(
-        &self,
-        binding: &ActivationParticipantBinding,
-        control: &skiff_artifact_model::AssemblyActivationControl,
-    ) -> EnqueueResult {
-        enqueue_activation(&self.session, binding, control)
-    }
-
-    fn enqueue_commit(
-        &self,
-        binding: &ActivationParticipantBinding,
-        control: &skiff_artifact_model::AssemblyActivationControl,
-    ) -> EnqueueResult {
-        enqueue_activation(&self.session, binding, control)
-    }
-
-    fn enqueue_abort(
-        &self,
-        binding: &ActivationParticipantBinding,
-        control: &skiff_artifact_model::AssemblyActivationControl,
-    ) -> EnqueueResult {
-        enqueue_activation(&self.session, binding, control)
-    }
-
-    fn abort_session(&self, session: &RuntimeSessionEpoch) {
-        if let Some(layer) = self.session.layer() {
-            layer.request_close(session, SessionCloseReason::Disconnect);
-        }
-    }
-}
-
-fn enqueue_activation(
-    handle: &SessionHandle,
-    binding: &ActivationParticipantBinding,
-    control: &skiff_artifact_model::AssemblyActivationControl,
-) -> EnqueueResult {
-    let bytes = match encode_assembly_activation_frame(
-        AssemblyActivationFrameDirection::RouterToRuntime,
-        control,
-    ) {
-        Ok(bytes) => bytes,
-        Err(_) => return EnqueueResult::QueueFull,
-    };
-    match write_session_frame(handle, &binding.session_epoch, bytes) {
-        Ok(()) => EnqueueResult::Ok,
-        Err(_) => EnqueueResult::QueueFull,
-    }
 }
 
 /// C-ws §3.3 outbound lifecycle control writer over the session registry.

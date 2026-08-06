@@ -15,7 +15,6 @@ use skiff_artifact_model::validate_activation_profile;
 use strict_yaml::JsonValue;
 
 pub const ROUTER_CONFIG_REDACTED_VALUE: &str = "[REDACTED]";
-pub const DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 20_000;
 pub const DEFAULT_HTTP_PORT: u16 = 4000;
 pub const DEFAULT_RUNTIME_PORT: u16 = 4001;
@@ -34,7 +33,6 @@ pub const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS: u64 = 1000;
 const JS_SAFE_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
 
 const TOP_LEVEL_KEYS: &[&str] = &[
-    "activation",
     "artifactsPath",
     "devReload",
     "fileBackend",
@@ -54,7 +52,6 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "telemetry",
     "websocket",
 ];
-const ACTIVATION_KEYS: &[&str] = &["prepareTimeoutMs"];
 const HTTP_KEYS: &[&str] = &["port", "maxRequestBytes", "maxResponseBytes"];
 const RUNTIME_KEYS: &[&str] = &["port", "path", "maxConcurrency"];
 const WEBSOCKET_KEYS: &[&str] = &["path"];
@@ -86,7 +83,6 @@ const REWRITE_FIELDS: &[&str] = &["host", "path", "service", "version"];
 /// `doc/implementation/router-rust-migration-c-config-leaf.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouterConfig {
-    pub activation_prepare_timeout_ms: u64,
     pub artifacts_path: PathBuf,
     pub dev_reload: Option<bool>,
     pub host: String,
@@ -238,7 +234,6 @@ fn parse_router_config(
     let runtime = get(&root, "runtime");
     let websocket = get(&root, "websocket");
 
-    let activation_prepare_timeout_ms = read_activation_prepare_timeout(get(&root, "activation"))?;
     let host = read_string(get(&root, "host"), "host", "127.0.0.1")?;
     let http_max_request_bytes = read_required_positive_integer(
         http.and_then(|http| http.get("maxRequestBytes")),
@@ -290,7 +285,6 @@ fn parse_router_config(
     let telemetry = read_telemetry_config(get(&root, "telemetry"))?;
 
     Ok(RouterConfig {
-        activation_prepare_timeout_ms,
         artifacts_path,
         dev_reload,
         host,
@@ -570,35 +564,6 @@ fn read_rewrite_rules(
         });
     }
     Ok(parsed)
-}
-
-fn read_activation_prepare_timeout(value: Option<&JsonValue>) -> Result<u64, RouterConfigError> {
-    let Some(value) = value else {
-        return Ok(DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS);
-    };
-    if value.is_null() {
-        return Ok(DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS);
-    }
-    if value.as_object().is_none() {
-        return Err(error(
-            "router config activation.prepareTimeoutMs must be a positive integer",
-        ));
-    }
-    reject_unknown_keys(Some(value), ACTIVATION_KEYS, "activation")?;
-    let Some(timeout) = absent_or(value.get("prepareTimeoutMs")) else {
-        return Ok(DEFAULT_ACTIVATION_PREPARE_TIMEOUT_MS);
-    };
-    let Some(number) = timeout.as_number() else {
-        return Err(error(
-            "router config activation.prepareTimeoutMs must be a positive integer",
-        ));
-    };
-    if !is_js_safe_positive_integer(number) {
-        return Err(error(
-            "router config activation.prepareTimeoutMs must be a positive integer",
-        ));
-    }
-    Ok(number as u64)
 }
 
 fn read_required_profile(

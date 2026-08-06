@@ -1,4 +1,5 @@
-//! Production Router composition (W-composition; plan §3.2/§5.5/§7).
+//! Production Router composition (W-composition; plan §3.2/§5.5/§7; M4: no
+//! activation coordinator, no routing epoch).
 //!
 //! [`RouterSupervisor`] is the only lifecycle owner: config, component
 //! construction, listener/task join and shutdown. [`RouterComponents`] is the
@@ -19,26 +20,17 @@ use std::time::Duration;
 
 use skiff_task_control::scheduler::{RetryBackoffPolicy, Scheduler, SchedulerConfig};
 use skiff_task_control::store::TaskStore;
-use skiff_task_control::{MemoryTaskStore, MongoTaskStore, MongoTaskStoreOptions};
+use skiff_task_control::{MongoTaskStore, MongoTaskStoreOptions};
 
-use crate::activation::{
-    ActivationCoordinator, ActivationCoordinatorHandle, ActivationCoordinatorOptions,
-    ActivationCoordinatorPorts, ActivationHttpHandler, ActivationStateRepository,
-    BlockingLoaderCandidatePort, EpochStorePublishPort, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, NoopHealthSink, RoutingCandidateQueryPortAdapter,
-    SystemClock,
-};
-use crate::bootstrap::{
-    ActiveRoutingEpochStore, BootstrapAssemblyError, RouterBootstrapAssembly, RoutingEpoch,
-};
+use crate::bootstrap::{BootstrapAssemblyError, RouterBootstrapAssembly};
 use crate::config::RouterConfig;
 use crate::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use crate::health::HealthAggregator;
 use crate::http::dispatch::HttpDispatchPort;
-use crate::http::ingress::{EpochHttpIngressResolver, HttpGatewaySurfaceView};
+use crate::http::ingress::{HttpGatewaySurfaceView, StoreHttpIngressResolver};
 use crate::http::server::{
-    start_http_gateway_with_epoch_store, GatewayUpgradeHandler, GatewayUpgradeOptions,
-    HttpGatewayServer, HttpGatewayServerOptions,
+    start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,
+    HttpGatewayServerOptions,
 };
 use crate::listener::{
     start_runtime_control_listener_with_control_and_health_and_test_dispatch, ClientWsContext,
@@ -60,12 +52,11 @@ use self::actor::{assemble_actor_components, ActorComponents, ActorSessionOwnerC
 use self::actor_sink::ActorFrameSink;
 use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
-    ActivationSessionEnqueuePort, DirectoryLeaseRevalidate, DispatcherSessionConsumer,
-    LayerSessionAbort, PendingHttpHandle, SessionCandidateViewSource, SessionHandle,
-    SessionRuntimePeer, SessionRuntimeViolationSink, StoreRoutingEpochSource,
+    DirectoryLeaseRevalidate, DispatcherSessionConsumer, LayerSessionAbort, PendingHttpHandle,
+    SessionCandidateViewSource, SessionHandle, SessionRuntimePeer, SessionRuntimeViolationSink,
     WsRuntimeGenerationPeer, WsRuntimeSessionClose,
 };
-use self::sinks::{ActivationTransactionSink, ConnectionFrameSink};
+use self::sinks::ConnectionFrameSink;
 use self::ws::{
     load_ws_surface_view, LayerWsSessionWriter, ProductionWsConnectSelector, WsConnectSelector,
     WsDispatchStore, WsGatewaySurfaceView, WsInboundDispatch, WsLaneHandle, WsLaneSessionConsumer,
@@ -73,7 +64,7 @@ use self::ws::{
 };
 
 use crate::task::{
-    DurableTaskControl, DurableTaskFrameSink, EpochTaskExecutionImageSource,
+    DurableTaskControl, DurableTaskFrameSink, ReleaseTaskExecutionImageSource,
     RouterTaskAttemptAdmission, RouterTaskSchedulerObservation, RouterTaskSubmitParentResolver,
     TaskControlCounters,
 };
@@ -86,8 +77,6 @@ use crate::telemetry::{
 /// bootstrap state is shut down before the error is returned.
 #[derive(Debug, thiserror::Error)]
 pub enum SupervisorError {
-    #[error("activation state repository connect failed: {0}")]
-    Repository(String),
     #[error("bootstrap assembly failed: {0}")]
     Bootstrap(#[from] BootstrapAssemblyError),
     #[error("HTTP surface load failed: {0}")]
@@ -100,8 +89,6 @@ pub enum SupervisorError {
     Dispatcher(String),
     #[error("session layer assembly failed: {0}")]
     Session(#[from] SessionLayerError),
-    #[error("activation recovery start failed: {0}")]
-    Recovery(String),
 }
 
 /// Stable component manifest (plan §3.2/§5.5). Holds every production owner
@@ -109,19 +96,15 @@ pub enum SupervisorError {
 pub struct RouterComponents {
     pub config: RouterConfig,
     pub assembly: Arc<RouterBootstrapAssembly>,
-    pub epoch: Arc<RoutingEpoch>,
-    pub epoch_store: Arc<ActiveRoutingEpochStore>,
     pub session: Arc<SessionLayer>,
     pub dispatcher: Arc<RequestDispatcher>,
     pub pending_http: Arc<PendingHttpRouter>,
     pub ws_lane: Arc<WebSocketLane>,
-    pub coordinator: ActivationCoordinatorHandle,
     pub actor: Arc<ActorComponents>,
     pub http_dispatcher: Arc<DispatcherHttpPort>,
     pub surface_view: Arc<HttpGatewaySurfaceView>,
     pub request_sink: Arc<RequestFrameSink>,
     pub connection_sink: Arc<ConnectionFrameSink>,
-    pub activation_sink: Arc<ActivationTransactionSink>,
     pub ws_surface: Arc<WsGatewaySurfaceView>,
     pub ws_store: Arc<WsDispatchStore>,
     pub ws_selector: Arc<dyn WsConnectSelector>,
@@ -144,7 +127,6 @@ impl std::fmt::Debug for RouterComponents {
         formatter
             .debug_struct("RouterComponents")
             .field("config", &self.config)
-            .field("epoch_store", &self.epoch_store)
             .field("session", &self.session)
             .field("dispatcher", &self.dispatcher)
             .field("task_control", &self.task_control)
@@ -173,19 +155,9 @@ impl RouterComponents {
 }
 
 impl RouterComponents {
-    /// Production entry: connects the Mongo activation repository and runs
-    /// the full bootstrap + component assembly.
+    /// Production entry: runs the full bootstrap + component assembly.
+    /// M4: no Mongo activation repository; the durable task store remains.
     pub async fn assemble(config: &RouterConfig) -> Result<Arc<Self>, SupervisorError> {
-        let profile = config.profile.clone();
-        let repository = Arc::new(
-            MongoActivationStateRepository::connect(
-                &config.service_db.mongo_url,
-                MongoActivationStateRepositoryOptions::default(),
-                Arc::new(SystemClock),
-            )
-            .await
-            .map_err(|error| SupervisorError::Repository(error.to_string()))?,
-        ) as Arc<dyn crate::activation::ActivationStateRepository>;
         let task_store = Arc::new(
             MongoTaskStore::connect(
                 &config.service_db.mongo_url,
@@ -198,39 +170,21 @@ impl RouterComponents {
             .ensure_indexes()
             .await
             .map_err(|error| SupervisorError::TaskStore(error.to_string()))?;
-        Self::assemble_with_task_store(config, &profile, repository, task_store).await
-    }
-
-    /// Assembly with an injected repository (tests use the memory fake).
-    pub async fn assemble_with(
-        config: &RouterConfig,
-        profile: &str,
-        repository: Arc<dyn ActivationStateRepository>,
-    ) -> Result<Arc<Self>, SupervisorError> {
-        Self::assemble_with_task_store(
-            config,
-            profile,
-            repository,
-            Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>,
-        )
-        .await
+        Self::assemble_with_task_store(config, task_store).await
     }
 
     /// Assembly with an explicitly injected task store (production Mongo,
     /// tests memory / scripted fakes).
     pub async fn assemble_with_task_store(
         config: &RouterConfig,
-        profile: &str,
-        repository: Arc<dyn ActivationStateRepository>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Arc<Self>, SupervisorError> {
-        let assembly =
-            Arc::new(RouterBootstrapAssembly::assemble_with(config, profile, repository).await?);
+        let assembly = Arc::new(RouterBootstrapAssembly::assemble(config).await?);
         match Self::assemble_components(config, Arc::clone(&assembly), task_store).await {
             Ok(components) => Ok(components),
             Err(error) => {
-                // Fail closed: drain the blocking loader and close the
-                // repository before returning; no listener was started.
+                // Fail closed: drain the blocking loader before returning; no
+                // listener was started.
                 assembly.shutdown().await;
                 Err(error)
             }
@@ -242,21 +196,20 @@ impl RouterComponents {
         assembly: Arc<RouterBootstrapAssembly>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Arc<Self>, SupervisorError> {
-        let epoch = assembly.epoch().clone();
-        let epoch_store = assembly.epoch_store();
+        // M4: surfaces are pointer-table projections; there is no epoch.
         let surface_view = Arc::new(
-            self::http::load_http_surface_view(&config.artifacts_path, &epoch)
+            self::http::load_http_surface_view(&config.artifacts_path, &assembly.profile())
                 .map_err(SupervisorError::Surface)?,
         );
-        let ws_surface = load_ws_surface_view(&config.artifacts_path, &epoch)
+        let ws_surface = load_ws_surface_view(&config.artifacts_path, assembly.profile())
             .map_err(SupervisorError::Surface)?;
         let ws_live_artifact_store =
             skiff_deployment::storage::CanonicalArtifactStore::open(&config.artifacts_path)
                 .map_err(|error| SupervisorError::Surface(error.to_string()))?;
         let session_handle = SessionHandle::new();
         let actor = assemble_actor_components(
-            Arc::clone(&epoch),
-            Arc::clone(&epoch_store),
+            &config.artifacts_path,
+            assembly.actor_projection(),
             session_handle.clone(),
         )
         .map_err(SupervisorError::Actor)?;
@@ -303,7 +256,12 @@ impl RouterComponents {
         let scheduler = Arc::new(Scheduler::with_observer(
             Arc::clone(&task_store),
             Arc::new(RouterTaskAttemptAdmission::new(
-                Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
+                Arc::new(ReleaseTaskExecutionImageSource::new(
+                    assembly.profile().to_string(),
+                    Arc::new(crate::release::StoreReleaseResolver::new(
+                        assembly.store().clone(),
+                    )),
+                )) as Arc<dyn crate::task::TaskExecutionImageSource>,
                 Arc::clone(&deferred_task_dispatcher),
                 Arc::clone(&task_control),
                 Arc::clone(&ws_clock),
@@ -336,8 +294,10 @@ impl RouterComponents {
             RequestDispatcher::new(
                 RuntimeDispatcherOptions::new(
                     usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
-                    Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
-                    Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
+                    Arc::new(SessionCandidateViewSource::new(
+                        session_handle.clone(),
+                        Some(config.artifacts_path.to_string_lossy().into_owned()),
+                    )),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
                     Arc::new(SessionRuntimePeer::new(session_handle.clone())),
                     Arc::new(LayerSessionAbort::new(session_handle.clone())),
@@ -355,8 +315,10 @@ impl RouterComponents {
 
         let ws_lane_handle = WsLaneHandle::new();
         let production_selector = Arc::new(ProductionWsConnectSelector::new(
-            Arc::clone(&epoch_store),
-            Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
+            Arc::new(SessionCandidateViewSource::new(
+                session_handle.clone(),
+                Some(config.artifacts_path.to_string_lossy().into_owned()),
+            )),
             usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
         ));
         let ws_pool = production_selector.pool();
@@ -385,47 +347,17 @@ impl RouterComponents {
         );
         ws_lane_handle.set(Arc::clone(&ws_lane));
 
-        let coordinator_ports = ActivationCoordinatorPorts {
-            repository: assembly.repository(),
-            loader: Arc::new(BlockingLoaderCandidatePort::new(
-                assembly.loader(),
-                assembly.strict_loader(),
-                assembly.actor_projection(),
-            )),
-            candidates: Arc::new(RoutingCandidateQueryPortAdapter::new(
-                Arc::clone(&epoch_store),
-                Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
-            )),
-            sessions: Arc::new(ActivationSessionEnqueuePort::new(session_handle.clone())),
-            publish: Arc::new(EpochStorePublishPort::new(Arc::clone(&epoch_store))),
-            health: Arc::new(NoopHealthSink),
-        };
-        let coordinator = ActivationCoordinator::spawn(
-            coordinator_ports,
-            ActivationCoordinatorOptions {
-                mailbox_capacity: 64,
-                ack_deadline: Duration::from_millis(config.activation_prepare_timeout_ms),
-                // The runtime rejects an explicit activation serviceDb
-                // ("use connection bootstrap"); the DB transport binding is
-                // already carried by `router.bootstrap` (TS parity).
-                service_db_mongo_url: None,
-            },
-        );
-
         let pending_http_handle = PendingHttpHandle::new();
         let session = Arc::new(
             SessionLayer::with_options(
                 config.clone(),
                 SessionLayerOptions {
-                    committed_epoch: None,
-                    pending_epoch: None,
                     manifest: ConsumerManifest::installed([
                         ConsumerKind::HealthLedger,
                         ConsumerKind::RequestDispatcher,
                         ConsumerKind::RuntimeGenerationPinLedger,
                         ConsumerKind::WebSocketRequestBroker,
                         ConsumerKind::ActorSessionOwner,
-                        ConsumerKind::ActivationCoordinator,
                     ]),
                     consumers: {
                         let consumers: Vec<
@@ -443,7 +375,6 @@ impl RouterComponents {
                                 Arc::clone(&ws_lane.broker) as Arc<dyn SessionConsumer>,
                             )) as Arc<dyn SessionConsumer>,
                             Arc::clone(&actor_session_owner) as Arc<dyn SessionConsumer>,
-                            Arc::new(coordinator.clone()) as Arc<dyn SessionConsumer>,
                         ];
                         consumers
                     },
@@ -454,19 +385,7 @@ impl RouterComponents {
             )
             .map_err(SupervisorError::Session)?,
         );
-        session.attach_epoch_store(Arc::clone(&epoch_store));
         session_handle.set(Arc::clone(&session));
-        session.set_registration_observer(Arc::new(coordinator.clone()));
-
-        // Plan §4.2: a durable pending observed at startup becomes a recovery
-        // transaction after the committed epoch is published. The listener
-        // starts normally; expected replica registrations rebind through the
-        // registration observer above.
-        if assembly.pending_recovery().is_some() {
-            coordinator
-                .start_recovery(assembly.profile().to_string())
-                .map_err(|error| SupervisorError::Recovery(error.to_string()))?;
-        }
 
         let pending_http = Arc::new(PendingHttpRouter::new());
         pending_http_handle.set(Arc::clone(&pending_http));
@@ -479,11 +398,10 @@ impl RouterComponents {
             Arc::clone(&ws_lane),
             session_handle.clone(),
         ));
-        let activation_sink = Arc::new(ActivationTransactionSink::new(coordinator.clone()));
         let actor_sink = Arc::new(ActorFrameSink::new(
             Arc::clone(&actor),
             session_handle.clone(),
-            Arc::clone(&epoch_store),
+            assembly.store().clone(),
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
             Arc::clone(&task_control) as Arc<dyn crate::task::ActorAttemptTerminalSink>,
@@ -494,7 +412,12 @@ impl RouterComponents {
         let task_sink = Arc::new(DurableTaskFrameSink::new(
             Arc::clone(&task_store),
             Arc::clone(&scheduler),
-            Arc::new(EpochTaskExecutionImageSource::new(Arc::clone(&epoch_store))),
+            Arc::new(ReleaseTaskExecutionImageSource::new(
+                assembly.profile().to_string(),
+                Arc::new(crate::release::StoreReleaseResolver::new(
+                    assembly.store().clone(),
+                )) as Arc<dyn crate::release::ReleaseResolver>,
+            )),
             Arc::new(RouterTaskSubmitParentResolver::new(
                 Arc::clone(&dispatcher),
                 Arc::clone(&actor),
@@ -512,9 +435,6 @@ impl RouterComponents {
             ),
             connection: Some(
                 Arc::clone(&connection_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
-            ),
-            activation_transaction: Some(
-                Arc::clone(&activation_sink) as Arc<dyn crate::session::demux::InboundFrameSink>
             ),
             actor: Some(Arc::clone(&actor_sink) as Arc<dyn crate::session::demux::InboundFrameSink>),
             task: Some(task_sink as Arc<dyn crate::session::demux::InboundFrameSink>),
@@ -540,10 +460,10 @@ impl RouterComponents {
         let client_ws = ClientWsContext::new(
             Arc::clone(&ws_surface),
             Some(ws_live_artifact_store),
+            assembly.profile().to_string(),
             Arc::clone(&ws_lane),
             Arc::clone(&ws_store),
             Arc::clone(&ws_selector),
-            Arc::clone(&epoch_store),
             Arc::clone(&dispatcher),
             config.websocket_path.clone(),
             config.request_timeout_ms,
@@ -561,19 +481,15 @@ impl RouterComponents {
         Ok(Arc::new(Self {
             config: config.clone(),
             assembly: Arc::clone(&assembly),
-            epoch,
-            epoch_store,
             session,
             dispatcher,
             pending_http,
             ws_lane,
-            coordinator,
             actor,
             http_dispatcher,
             surface_view,
             request_sink,
             connection_sink,
-            activation_sink,
             ws_surface,
             ws_store,
             ws_selector,
@@ -672,28 +588,16 @@ impl RouterSupervisor {
         Ok(Self { components })
     }
 
-    pub async fn assemble_with(
-        config: &RouterConfig,
-        profile: &str,
-        repository: Arc<dyn ActivationStateRepository>,
-    ) -> Result<Self, SupervisorError> {
-        let components = RouterComponents::assemble_with(config, profile, repository).await?;
-        Ok(Self { components })
-    }
-
     /// Assembly with an explicitly injected task store (production Mongo,
-    /// tests memory / scripted fakes). Mirrors [`Self::assemble_with`] so
-    /// E2E probes can isolate the durable task store on a shared Mongo
-    /// endpoint without changing the default assembly path.
+    /// tests memory / scripted fakes). Mirrors [`Self::assemble`] so E2E
+    /// probes can isolate the durable task store on a shared Mongo endpoint
+    /// without changing the default assembly path.
     pub async fn assemble_with_task_store(
         config: &RouterConfig,
-        profile: &str,
-        repository: Arc<dyn ActivationStateRepository>,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Self, SupervisorError> {
         let components =
-            RouterComponents::assemble_with_task_store(config, profile, repository, task_store)
-                .await?;
+            RouterComponents::assemble_with_task_store(config, task_store).await?;
         Ok(Self { components })
     }
 
@@ -732,14 +636,13 @@ impl RouterSupervisor {
             &components.config.artifacts_path,
         )
         .map_err(|error| ListenerError::Http(error.to_string()))?;
-        let resolver = Arc::new(EpochHttpIngressResolver::new_with_live_artifact_store(
+        let resolver = Arc::new(StoreHttpIngressResolver::new_with_live_artifact_store(
             Arc::clone(&components.surface_view),
             artifact_store.clone(),
+            components.assembly.profile().to_string(),
         ));
-        let public_http = start_http_gateway_with_epoch_store(
+        let public_http = start_http_gateway(
             http_options,
-            Arc::clone(&components.epoch),
-            Some(Arc::clone(&components.epoch_store)),
             resolver,
             Arc::clone(&components.http_dispatcher) as Arc<dyn HttpDispatchPort>,
         )
@@ -758,18 +661,9 @@ impl RouterSupervisor {
                     .unwrap_or_default()
             }
         }));
-        let activation_deadline =
-            Duration::from_millis(components.config.activation_prepare_timeout_ms)
-                .saturating_mul(2)
-                .max(Duration::from_secs(30));
-        let activation_http = Arc::new(ActivationHttpHandler::with_deadline(
-            components.coordinator.clone(),
-            activation_deadline,
-        ));
         let test_dispatch = Arc::new(TestDispatchHttpHandler::new(
             TestDispatchHttpHandlerOptions {
-                epoch: Arc::clone(&components.epoch),
-                epoch_store: Some(Arc::clone(&components.epoch_store)),
+                profile: components.assembly.profile().to_string(),
                 surfaces: Arc::clone(&components.surface_view),
                 artifact_store,
                 dispatcher: Arc::clone(&components.http_dispatcher) as Arc<dyn HttpDispatchPort>,
@@ -780,7 +674,6 @@ impl RouterSupervisor {
                 &components.config,
                 options,
                 Arc::clone(&components.session),
-                Some(activation_http),
                 Some(health),
                 Some(test_dispatch),
             )
@@ -793,8 +686,8 @@ impl RouterSupervisor {
         })
     }
 
-    /// Shuts down the bootstrap assembly (loader drain + repository close)
-    /// after the listeners/sessions have shut down.
+    /// Shuts down the bootstrap assembly (loader drain) after the
+    /// listeners/sessions have shut down.
     pub async fn shutdown(&self) {
         self.components.shutdown_task_control().await;
         self.components.assembly.shutdown().await;

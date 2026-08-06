@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
+use skiff_deployment::projection::actor_routing::ActorRoutingRef;
 use skiff_runtime_transport::actor_method::{
     decode_actor_method_frame, encode_actor_method_frame, ActorMethodCancelFrameHeader,
     ActorMethodCancelReason, ActorMethodErrorFramePayload, ActorMethodFrame,
@@ -36,12 +37,12 @@ use crate::actor::{
     ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, CatalogQuery, GetOrCreateOutcome,
     InvocationError, OwnerReleaseReason, OwnerSettleKind, DEFAULT_OWNER_LEASE_TTL_MS,
 };
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::actor::ActorComponents;
 use crate::supervisor::ws::WsSessionWriter;
+use skiff_deployment::storage::CanonicalArtifactStore;
 use crate::task::{
     ActorAttemptTerminal, ActorAttemptTerminalSink, TaskAttemptInvocationCorrelation,
 };
@@ -57,7 +58,8 @@ use super::session_ports::SessionHandle;
 pub struct ActorFrameSink {
     components: Arc<ActorComponents>,
     session: SessionHandle,
-    epoch_store: Arc<ActiveRoutingEpochStore>,
+    /// Deployment record reads for package-slot owner resolution (M4).
+    artifact_store: CanonicalArtifactStore,
     writer: Arc<dyn WsSessionWriter>,
     clock: Arc<dyn Clock>,
     task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
@@ -77,7 +79,7 @@ impl ActorFrameSink {
     pub fn new(
         components: Arc<ActorComponents>,
         session: SessionHandle,
-        epoch_store: Arc<ActiveRoutingEpochStore>,
+        artifact_store: CanonicalArtifactStore,
         writer: Arc<dyn WsSessionWriter>,
         clock: Arc<dyn Clock>,
         task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
@@ -85,7 +87,7 @@ impl ActorFrameSink {
         Self {
             components,
             session,
-            epoch_store,
+            artifact_store,
             writer,
             clock,
             task_attempt_terminal,
@@ -171,15 +173,19 @@ impl ActorFrameSink {
             .ok_or(TerminalKind::UnimplementedFamily)
     }
 
-    fn route_authority(&self) -> Result<ActorOwnerRouteAuthority, TerminalKind> {
-        let epoch = self
-            .epoch_store
-            .capture()
+    /// Deployment-anchored route authority for one actor method invocation
+    /// (M4: resolved from the actor routing catalog; no epoch).
+    fn route_authority(&self, query: &CatalogQuery) -> Result<ActorOwnerRouteAuthority, TerminalKind> {
+        let build_id = self
+            .components
+            .catalog_view
+            .deployment_build_id_for(
+                &query.service_id,
+                &query.actor_abi_identity,
+                &query.actor_implementation_identity,
+            )
             .ok_or(TerminalKind::UnimplementedFamily)?;
-        Ok(ActorOwnerRouteAuthority {
-            assembly_identity: epoch.assembly_identity().to_string(),
-            assembly_generation: epoch.assembly_generation(),
-        })
+        Ok(ActorOwnerRouteAuthority { build_id })
     }
 
     fn error_frame(
@@ -211,16 +217,7 @@ impl ActorFrameSink {
         let (header, payload) =
             decode_typed_binary_frame::<ActorGetOrCreateRequestFrameHeader>(raw)
                 .map_err(|_| TerminalKind::MalformedFrame)?;
-        let Some(epoch) = self.epoch_store.capture() else {
-            let bytes = self.error_frame(
-                "actor.getOrCreate.error",
-                &header.rpc_id,
-                "OwnerUnavailable",
-                "no active routing epoch is available to select an Actor owner",
-            )?;
-            return self.write(session, bytes);
-        };
-        let actor_key = match self.actor_owner_service_id(&epoch, &header) {
+        let actor_key = match self.actor_owner_service_id(&header) {
             Ok(service_id) => {
                 let mut key = ActorLogicalKey::from_wire(&header.actor_key);
                 key.service_id = service_id;
@@ -242,6 +239,15 @@ impl ActorFrameSink {
         // The wire `runtimeId` is the caller, not an owner preference; using
         // the first caller as owner would make concurrent creates
         // nondeterministic and diverge from the TS two-replica full chain.
+        let actor_build_id = self
+            .components
+            .catalog_view
+            .deployment_build_id_for(
+                &actor_key.service_id,
+                &ActorAbiIdentity::new(header.actor_abi_identity.clone()),
+                &ActorImplementationIdentity::new(header.actor_implementation_identity.clone()),
+            )
+            .ok_or(TerminalKind::UnimplementedFamily)?;
         let owner = {
             let Some(layer) = self.session.layer() else {
                 let bytes = self.error_frame(
@@ -252,7 +258,7 @@ impl ActorFrameSink {
                 )?;
                 return self.write(session, bytes);
             };
-            let candidates = layer.candidates(&epoch.registered_tuple());
+            let candidates = layer.candidates_by_build_id(&actor_build_id);
             let Some(owner) = pick_owner_candidate(&candidates, &actor_key.actor_id_hash) else {
                 let bytes = self.error_frame(
                     "actor.getOrCreate.error",
@@ -266,8 +272,7 @@ impl ActorFrameSink {
         };
         let owner_connection = Self::session_token(&owner);
         let route_authority = ActorOwnerRouteAuthority {
-            assembly_identity: header.activation_identity.assembly_identity.clone(),
-            assembly_generation: header.activation_identity.generation,
+            build_id: actor_build_id,
         };
         let request = ActorGetOrCreateRequest {
             rpc_id: header.rpc_id.clone(),
@@ -338,30 +343,42 @@ impl ActorFrameSink {
     /// Resolves the service id an actor's logical key must use: the actor's
     /// own declaration owner service, not the caller's service. Same-service
     /// actors keep the wire caller id; package-owned actors are normalized to
-    /// the deployment service that owns the declaration owner's code slot.
-    /// The A0/A3 catalog and ownership registry are keyed by that owning
-    /// service id, so a cross-package caller key would miss the catalog and
-    /// leave method invocations silently undeliverable.
+    /// the deployment service that owns the declaration owner's package slot
+    /// (M4: the owning deployment record's package bindings; no assembly).
     fn actor_owner_service_id(
         &self,
-        epoch: &Arc<RoutingEpoch>,
         header: &ActorGetOrCreateRequestFrameHeader,
     ) -> Result<String, &'static str> {
         match &header.declaration_owner.unit {
             ActorOwnerUnitFrameHeader::Service => Ok(header.actor_key.service_id.clone()),
             ActorOwnerUnitFrameHeader::Package(slot) => {
-                let build_id = epoch
-                    .assembly()
-                    .package_link_plan
-                    .code_slots
-                    .get(*slot as usize)
-                    .map(|slot| &slot.package.package_build_id)
+                let actor = ActorRoutingRef {
+                    service_id: header.actor_key.service_id.clone(),
+                    actor_abi_identity: ActorAbiIdentity::new(
+                        header.actor_abi_identity.clone(),
+                    ),
+                };
+                let catalog = self
+                    .components
+                    .catalog_view
+                    .catalog_snapshot()
                     .ok_or("ActorOwnerServiceUnresolved")?;
-                epoch
-                    .actor_catalog()
+                let owning = catalog
+                    .methods_for_actor(&actor)
+                    .next()
+                    .ok_or("ActorOwnerServiceUnresolved")?;
+                let record = self
+                    .artifact_store
+                    .read_service_deployment(&owning.deployment)
+                    .map_err(|_| "ActorOwnerServiceUnresolved")?;
+                let binding = record
+                    .package_bindings
+                    .get(*slot as usize)
+                    .ok_or("ActorOwnerServiceUnresolved")?;
+                catalog
                     .entries()
                     .iter()
-                    .find(|entry| &entry.package.package_build_id == build_id)
+                    .find(|entry| &entry.package == &binding.package)
                     .map(|entry| entry.deployment.service_id.clone())
                     .ok_or("ActorOwnerServiceUnresolved")
             }
@@ -656,7 +673,7 @@ impl ActorFrameSink {
                     caller_runtime_id: session.replica_id.clone(),
                     owner_fence: fence.clone(),
                     owner_connection: owner_connection.clone(),
-                    route_authority: self.route_authority()?,
+                    route_authority: self.route_authority(&query)?,
                     correlation: header.cancellation_correlation.clone(),
                     deadline: Some(header.deadline.clone()),
                     test_case_capability: header.test_case_capability.clone(),
@@ -677,8 +694,7 @@ impl ActorFrameSink {
                                 },
                             );
                         let route = ActorOwnerRouteAuthorityFrameHeader {
-                            assembly_identity: input.route_authority.assembly_identity,
-                            assembly_generation: input.route_authority.assembly_generation,
+                            build_id: input.route_authority.build_id,
                         };
                         let owner_invoke = ActorOwnerInvokeFrameHeader {
                             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),

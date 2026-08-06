@@ -21,7 +21,6 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::timeout;
 
-use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
 use crate::routing::DispatchCapabilities;
 
@@ -33,9 +32,8 @@ use super::consumer::{
 };
 use super::demux::{InboundSinkSet, RegistrationFrameSink, RuntimeFrameDemux};
 use super::directory::{RegistrationFacts, RuntimeRegistrationDirectory};
-use super::handshake::EpochContext;
 use super::health::RuntimeHealthLedger;
-use super::identity::{RegisteredAssemblyTuple, RuntimeConnectionEpoch, RuntimeSessionEpoch};
+use super::identity::{RuntimeConnectionEpoch, RuntimeSessionEpoch};
 use super::observer::RegistrationObserver;
 use super::pre_auth::PreAuthPool;
 use super::task::{run_session_task, RuntimeSocket};
@@ -46,7 +44,6 @@ use super::task::{run_session_task, RuntimeSocket};
 pub struct SessionTiming {
     pub bootstrap: Duration,
     pub capabilities: Duration,
-    pub register: Duration,
     pub ack_write: Duration,
     pub close_barrier: Duration,
     pub shutdown_total: Duration,
@@ -62,7 +59,6 @@ impl Default for SessionTiming {
             // Registered sessions never consult these deadlines again.
             bootstrap: Duration::from_secs(30),
             capabilities: Duration::from_secs(30),
-            register: Duration::from_secs(30),
             ack_write: Duration::from_secs(5),
             close_barrier: Duration::from_secs(20),
             shutdown_total: Duration::from_secs(20),
@@ -70,12 +66,9 @@ impl Default for SessionTiming {
     }
 }
 
-/// Injectable layer options (tests use the corpus committed epoch and fake
-/// consumer manifests).
+/// Injectable layer options (tests use fake consumer manifests).
 #[derive(Debug)]
 pub struct SessionLayerOptions {
-    pub committed_epoch: Option<RegisteredAssemblyTuple>,
-    pub pending_epoch: Option<RegisteredAssemblyTuple>,
     pub manifest: ConsumerManifest,
     pub consumers: Vec<Arc<dyn SessionConsumer>>,
     pub timing: SessionTiming,
@@ -87,8 +80,6 @@ pub struct SessionLayerOptions {
 impl Default for SessionLayerOptions {
     fn default() -> Self {
         Self {
-            committed_epoch: None,
-            pending_epoch: None,
             manifest: ConsumerManifest::default_installed(),
             consumers: vec![Arc::new(RuntimeHealthLedger::new())],
             timing: SessionTiming::default(),
@@ -160,9 +151,6 @@ pub struct SessionRegistrationFacts {
 #[derive(Debug)]
 pub struct SessionLayer {
     bootstrap_provider: RuntimeBootstrapProvider,
-    committed_epoch: Option<RegisteredAssemblyTuple>,
-    epoch_store: Mutex<Option<Arc<ActiveRoutingEpochStore>>>,
-    pending_epoch: Option<RegisteredAssemblyTuple>,
     manifest: ConsumerManifest,
     directory: Mutex<RuntimeRegistrationDirectory>,
     pre_auth: Mutex<PreAuthPool>,
@@ -173,6 +161,7 @@ pub struct SessionLayer {
     pub(crate) timing: SessionTiming,
     pub(crate) budgets: SessionBudgets,
     pub(crate) writer_delay: Option<Duration>,
+    router_artifact_root: Option<String>,
     next_connection_id: AtomicU64,
     next_generation: AtomicU64,
     shutdown_tx: watch::Sender<()>,
@@ -187,9 +176,8 @@ pub struct SessionLayer {
 }
 
 impl SessionLayer {
-    /// Production assembly: no committed epoch yet (fail-closed at the
-    /// bootstrap deadline until the bootstrap lane supplies the epoch
-    /// source), default timing/budgets and the health-ledger consumer.
+    /// Production assembly: default timing/budgets and the health-ledger
+    /// consumer.
     pub fn new(config: RouterConfig) -> Self {
         Self::with_options(config, SessionLayerOptions::default())
             .expect("default session layer options are valid")
@@ -247,9 +235,6 @@ impl SessionLayer {
 
         Ok(Self {
             bootstrap_provider,
-            committed_epoch: options.committed_epoch,
-            epoch_store: Mutex::new(None),
-            pending_epoch: options.pending_epoch,
             manifest: options.manifest,
             directory: Mutex::new(directory),
             pre_auth: Mutex::new(pre_auth),
@@ -260,6 +245,7 @@ impl SessionLayer {
             timing: options.timing,
             budgets: options.budgets,
             writer_delay: options.writer_delay,
+            router_artifact_root: Some(config.artifacts_path.to_string_lossy().into_owned()),
             next_connection_id: AtomicU64::new(0),
             next_generation: AtomicU64::new(0),
             shutdown_tx,
@@ -274,9 +260,8 @@ impl SessionLayer {
         })
     }
 
-    /// Installs the registration observer (plan §4.2 cold recovery seam).
-    /// Additive: an absent observer is a no-op and the session state machine
-    /// never depends on the callback.
+    /// Installs the registration observer. Additive: an absent observer is a
+    /// no-op and the session state machine never depends on the callback.
     pub fn set_registration_observer(&self, observer: Arc<dyn RegistrationObserver>) {
         *self
             .registration_observer
@@ -298,41 +283,10 @@ impl SessionLayer {
         }
     }
 
-    /// The current committed tuple: from the epoch store when wired, else the
-    /// static test seam. This is the W-bootstrap seam; session state-machine
-    /// logic is unchanged.
-    fn current_tuple(&self) -> Option<RegisteredAssemblyTuple> {
-        if let Some(store) = self
-            .epoch_store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-        {
-            return store.capture().map(|epoch| epoch.registered_tuple());
-        }
-        self.committed_epoch.clone()
-    }
-
-    /// W-bootstrap seam: attach the single-authority epoch store. Subsequent
-    /// bootstrap bytes and register-validation contexts capture the current
-    /// epoch from the store; no session state-machine logic is touched.
-    pub fn attach_epoch_store(&self, store: Arc<ActiveRoutingEpochStore>) {
-        *self
-            .epoch_store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(store);
-    }
-
+    /// The byte-exact `router.bootstrap` frame built from the frozen Router
+    /// config (profile + artifact root + service DB; M4: no epoch tuple).
     pub fn bootstrap_bytes(&self) -> Option<Vec<u8>> {
-        let epoch = self.current_tuple()?;
-        self.bootstrap_provider.build(&epoch).ok()
-    }
-
-    pub fn epoch_context(&self) -> EpochContext {
-        EpochContext {
-            current: self.current_tuple(),
-            pending: self.pending_epoch.clone(),
-        }
+        self.bootstrap_provider.build().ok()
     }
 
     pub fn manifest_kinds(&self) -> Vec<ConsumerKind> {
@@ -698,7 +652,6 @@ impl SessionLayer {
             barrier_pending: directory.barrier_pending_count(),
             consumer_permits_held: directory.permits_held(),
             observed_health: self.health.observed_total(),
-            health_before_ack: self.health.dropped_before_ack_total(),
             fail_stop: self.fail_stop_reason(),
             live_session_tasks: self
                 .handles
@@ -708,8 +661,11 @@ impl SessionLayer {
         }
     }
 
-    pub fn candidates(&self, tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
-        self.directory_lock().candidates(tuple)
+    pub fn candidates_by_build_id(&self, build_id: &str) -> Vec<RuntimeSessionEpoch> {
+        self.directory_lock().candidates_by_build_id(
+            build_id,
+            self.router_artifact_root.as_deref(),
+        )
     }
 }
 
@@ -724,7 +680,6 @@ pub struct SessionHealthSnapshot {
     pub barrier_pending: usize,
     pub consumer_permits_held: usize,
     pub observed_health: u64,
-    pub health_before_ack: u64,
     pub fail_stop: Option<String>,
     pub live_session_tasks: usize,
 }

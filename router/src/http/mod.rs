@@ -30,7 +30,7 @@ pub use dispatch::{
 };
 pub use error::HttpError;
 pub use ingress::{
-    EpochHttpIngressResolver, HttpAdapterKind, HttpDispatchMode, HttpGatewaySurface,
+    StoreHttpIngressResolver, HttpAdapterKind, HttpDispatchMode, HttpGatewaySurface,
     HttpGatewaySurfaceView, HttpIngressBinding, HttpIngressResolver,
 };
 pub use server::{

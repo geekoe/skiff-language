@@ -6,14 +6,15 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use crate::session::identity::RuntimeSessionEpoch;
 use crate::supervisor::session_ports::SessionHandle;
 use crate::supervisor::ws::WsSessionWriter;
 
 pub trait TaskActorOwnerPort: Send + Sync + fmt::Debug {
-    /// Routable runtime candidates for one captured tuple (sorted, current,
-    /// non-cancelled — same projection the ordinary actor lane uses).
-    fn candidates(&self, tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch>;
+    /// Routable runtime candidates for one deployment build id (sorted,
+    /// current, non-cancelled — same projection the ordinary actor lane
+    /// uses; M4: build-id keyed).
+    fn candidates_by_build_id(&self, build_id: &str) -> Vec<RuntimeSessionEpoch>;
 
     /// Current registered session for one runtime replica.
     fn current_session_by_replica(&self, replica_id: &str) -> Option<RuntimeSessionEpoch>;
@@ -35,11 +36,11 @@ impl SessionTaskActorOwnerPort {
 }
 
 impl TaskActorOwnerPort for SessionTaskActorOwnerPort {
-    fn candidates(&self, tuple: &RegisteredAssemblyTuple) -> Vec<RuntimeSessionEpoch> {
+    fn candidates_by_build_id(&self, build_id: &str) -> Vec<RuntimeSessionEpoch> {
         let Some(layer) = self.session.layer() else {
             return Vec::new();
         };
-        layer.candidates(tuple)
+        layer.candidates_by_build_id(build_id)
     }
 
     fn current_session_by_replica(&self, replica_id: &str) -> Option<RuntimeSessionEpoch> {

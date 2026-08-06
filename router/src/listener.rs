@@ -40,9 +40,6 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, Role};
 use tokio_tungstenite::WebSocketStream;
 
-use crate::activation::http::ActivationHttpHandler;
-use crate::activation::ASSEMBLY_ACTIVATION_CONTROL_PATH;
-use crate::bootstrap::ActiveRoutingEpochStore;
 use crate::config::RouterConfig;
 use crate::health::HealthAggregator;
 use crate::http::selector::{
@@ -57,7 +54,6 @@ use crate::supervisor::ws::{
 };
 use crate::test_dispatch::{TestDispatchHttpHandler, TEST_DISPATCH_CONTROL_PATH};
 use crate::ws::{AttachMeta, BusinessKey, ClientTerminal, PeerWriter, WebSocketLane};
-use skiff_artifact_model::AssemblyIdentity;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
 use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
@@ -202,7 +198,6 @@ enum ListenerKind {
     RuntimeControl {
         runtime_path: String,
         session_layer: Arc<SessionLayer>,
-        activation_http: Option<Arc<ActivationHttpHandler>>,
         health: Option<Arc<HealthAggregator>>,
         test_dispatch: Option<Arc<TestDispatchHttpHandler>>,
     },
@@ -224,58 +219,24 @@ pub async fn start_runtime_control_listener(
     options: &ListenerStartOptions,
     session_layer: Arc<SessionLayer>,
 ) -> Result<ListenerHandle, ListenerError> {
-    start_runtime_control_listener_with_control(config, options, session_layer, None).await
-}
-
-/// Starts the shared runtime/control listener with the activation control
-/// HTTP handler (E-activation: `POST /__skiff/activate-assembly`). The
-/// handler is optional so the legacy listener seam (and tests that call the
-/// 3-argument form) keep the previous empty-response behavior byte for byte.
-pub async fn start_runtime_control_listener_with_control(
-    config: &RouterConfig,
-    options: &ListenerStartOptions,
-    session_layer: Arc<SessionLayer>,
-    activation_http: Option<Arc<ActivationHttpHandler>>,
-) -> Result<ListenerHandle, ListenerError> {
-    start_runtime_control_listener_with_control_and_health(
-        config,
-        options,
-        session_layer,
-        activation_http,
-        None,
-    )
-    .await
-}
-
-/// Starts the shared runtime/control listener with the activation control
-/// HTTP handler and the health projection aggregator (batch 12: the only
-/// production wiring of `/__router/health`).
-pub async fn start_runtime_control_listener_with_control_and_health(
-    config: &RouterConfig,
-    options: &ListenerStartOptions,
-    session_layer: Arc<SessionLayer>,
-    activation_http: Option<Arc<ActivationHttpHandler>>,
-    health: Option<Arc<HealthAggregator>>,
-) -> Result<ListenerHandle, ListenerError> {
     start_runtime_control_listener_with_control_and_health_and_test_dispatch(
         config,
         options,
         session_layer,
-        activation_http,
-        health,
+        None,
         None,
     )
     .await
 }
 
-/// Starts the shared runtime/control listener with the activation control
-/// HTTP handler, the health projection aggregator and the test-dispatch
-/// control handler (plan §7 E-http: `POST /__skiff/test-dispatch`).
+/// Starts the shared runtime/control listener with the health projection
+/// aggregator and the test-dispatch control handler (plan §7 E-http:
+/// `POST /__skiff/test-dispatch`). M4: the activation control handler is
+/// retired.
 pub async fn start_runtime_control_listener_with_control_and_health_and_test_dispatch(
     config: &RouterConfig,
     options: &ListenerStartOptions,
     session_layer: Arc<SessionLayer>,
-    activation_http: Option<Arc<ActivationHttpHandler>>,
     health: Option<Arc<HealthAggregator>>,
     test_dispatch: Option<Arc<TestDispatchHttpHandler>>,
 ) -> Result<ListenerHandle, ListenerError> {
@@ -302,7 +263,6 @@ pub async fn start_runtime_control_listener_with_control_and_health_and_test_dis
             ListenerKind::RuntimeControl {
                 runtime_path: config.runtime_path.clone(),
                 session_layer: Arc::clone(&session_layer),
-                activation_http,
                 health,
                 test_dispatch,
             },
@@ -493,7 +453,6 @@ async fn handle_request(
         ListenerKind::RuntimeControl {
             runtime_path,
             session_layer,
-            activation_http,
             health,
             test_dispatch,
         } => {
@@ -510,11 +469,6 @@ async fn handle_request(
                     return handle_health_request(Arc::clone(health), request).await;
                 }
                 return Ok(empty_response(StatusCode::OK));
-            }
-            if request.uri().path() == ASSEMBLY_ACTIVATION_CONTROL_PATH {
-                if let Some(handler) = activation_http {
-                    return handler.handle(request).await;
-                }
             }
             if request.uri().path() == TEST_DISPATCH_CONTROL_PATH {
                 if let Some(handler) = test_dispatch {
@@ -699,15 +653,15 @@ impl WsTaskRegistry {
 #[derive(Debug, Clone)]
 pub struct ClientWsContext {
     pub surface: Arc<WsGatewaySurfaceView>,
-    /// Live artifact store used to rebuild the WS surface from the current
-    /// routing epoch on every connect admission (activation swap visibility;
+    /// Live artifact store used to rebuild the WS surface from the release
+    /// pointer table on every connect admission (pointer update visibility;
     /// mirrors the HTTP live-surface resolver). `None` keeps the static
     /// startup surface (test seams).
     pub live_artifact_store: Option<CanonicalArtifactStore>,
+    pub profile: String,
     pub lane: Arc<WebSocketLane>,
     pub store: Arc<WsDispatchStore>,
     pub selector: Arc<dyn WsConnectSelector>,
-    pub epoch_store: Arc<ActiveRoutingEpochStore>,
     pub dispatcher: Arc<crate::dispatch::RequestDispatcher>,
     pub path: String,
     pub connect_timeout_ms: u64,
@@ -719,10 +673,10 @@ impl ClientWsContext {
     pub fn new(
         surface: Arc<WsGatewaySurfaceView>,
         live_artifact_store: Option<CanonicalArtifactStore>,
+        profile: String,
         lane: Arc<WebSocketLane>,
         store: Arc<WsDispatchStore>,
         selector: Arc<dyn WsConnectSelector>,
-        epoch_store: Arc<ActiveRoutingEpochStore>,
         dispatcher: Arc<crate::dispatch::RequestDispatcher>,
         path: String,
         connect_timeout_ms: u64,
@@ -730,10 +684,10 @@ impl ClientWsContext {
         Arc::new(Self {
             surface,
             live_artifact_store,
+            profile,
             lane,
             store,
             selector,
-            epoch_store,
             dispatcher,
             path,
             connect_timeout_ms,
@@ -780,14 +734,13 @@ impl GatewayUpgradeHandler for ClientWsContext {
         if target.path != self.path {
             return Ok(empty_response(StatusCode::NOT_FOUND));
         }
-        let Some(epoch) = self.epoch_store.capture() else {
-            return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
-        };
         let surface = match &self.live_artifact_store {
-            Some(store) => match crate::supervisor::ws::ws_surface_view_from_store(store, &epoch) {
-                Ok(surface) => surface,
-                Err(_) => return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE)),
-            },
+            Some(store) => {
+                match crate::supervisor::ws::ws_surface_view_from_store(store, &self.profile) {
+                    Ok(surface) => surface,
+                    Err(_) => return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE)),
+                }
+            }
             None => Arc::clone(&self.surface),
         };
         let Some(binding) = surface.resolve(&selector.service_id, &target.path).cloned() else {
@@ -799,8 +752,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             // `requiresRuntimePin == false` parity gap documented in the leaf).
             return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
         }
-        let assembly_identity = AssemblyIdentity::new(epoch.assembly_identity().to_string());
-        let assembly_generation = epoch.assembly_generation();
+        let build_id = binding.deployment.deployment_artifact_identity.to_string();
         let connection_id = self.new_connection_id();
         if let Err(_) = self.lane.reserve(&connection_id) {
             return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
@@ -820,8 +772,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
         let tuple = WebSocketGenerationLifecycleTuple {
             router_session_id: format!("{}#{}", runtime.replica_id, runtime.connection_generation),
             service_id: binding.service_id.clone(),
-            assembly_identity: assembly_identity.clone(),
-            assembly_generation,
+            build_id: build_id.clone(),
             websocket_entry_id: binding.websocket_entry_id.clone(),
             connection_id: connection_id.clone(),
         };
@@ -834,8 +785,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             &connection_id,
             &binding,
             &runtime,
-            &assembly_identity,
-            assembly_generation,
+            &build_id,
             &metadata,
             self.connect_timeout_ms,
         ) {
@@ -911,8 +861,7 @@ impl GatewayUpgradeHandler for ClientWsContext {
             runtime: runtime.clone(),
             binding: binding.clone(),
             business_identity: business_identity.clone(),
-            assembly_identity,
-            assembly_generation,
+            build_id,
         });
         let upgrade = hyper::upgrade::on(&mut request);
         let context = self.clone();

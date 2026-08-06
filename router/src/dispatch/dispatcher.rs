@@ -12,14 +12,13 @@ use std::sync::{Arc, Mutex};
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
-use crate::bootstrap::RoutingEpoch;
 use crate::routing::{DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
 use crate::session::identity::RuntimeSessionEpoch;
 
 use super::admission::{Permit, PermitLedger, RuntimeAdmissionPool, SelectedLease};
 use super::candidate::{
     candidate_query_from_build_id, candidate_query_from_request, dispatch_mode_from_wire,
-    CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
+    CandidateViewSource, LeaseRevalidate, RevalidateOutcome,
 };
 use super::frame::{
     RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TaskAttemptTerminalOutcome,
@@ -35,7 +34,6 @@ use super::types::{DispatchSubmit, RequestDeadline, TaskAttemptSubmit};
 #[derive(Debug)]
 pub struct RuntimeDispatcherOptions {
     pub max_concurrency: usize,
-    pub epoch_source: Arc<dyn RoutingEpochSource>,
     pub candidate_view: Arc<dyn CandidateViewSource>,
     pub revalidate: Arc<dyn LeaseRevalidate>,
     pub peer: Arc<dyn RuntimePeer>,
@@ -47,7 +45,6 @@ pub struct RuntimeDispatcherOptions {
 impl RuntimeDispatcherOptions {
     pub fn new(
         max_concurrency: usize,
-        epoch_source: Arc<dyn RoutingEpochSource>,
         candidate_view: Arc<dyn CandidateViewSource>,
         revalidate: Arc<dyn LeaseRevalidate>,
         peer: Arc<dyn RuntimePeer>,
@@ -58,7 +55,6 @@ impl RuntimeDispatcherOptions {
         }
         Ok(Self {
             max_concurrency,
-            epoch_source,
             candidate_view,
             revalidate,
             peer,
@@ -98,14 +94,13 @@ enum StreamPhase {
 
 /// One dispatcher-owned pending (plan §3.3 step 6).
 ///
-/// Invariant: every pending holds the captured routing epoch, the exact
-/// registered session lease and one admission permit; terminal removes the
-/// pending and releases the permit exactly once.
+/// Invariant: every pending holds the exact registered session lease and one
+/// admission permit; terminal removes the pending and releases the permit
+/// exactly once.
 #[derive(Debug)]
 struct Pending {
     kind: PendingKind,
     session_epoch: RuntimeSessionEpoch,
-    epoch: Arc<RoutingEpoch>,
     lease: RegisteredSessionLease,
     permit: Permit,
     stream_phase: Option<StreamPhase>,
@@ -211,13 +206,8 @@ impl RequestDispatcher {
                 reason: SubmitRejectReason::InvalidMode,
             };
         }
-        let Some(epoch) = self.options.epoch_source.capture() else {
-            inner.pool.record_no_candidate();
-            return SubmitResult::Rejected {
-                request_id,
-                reason: SubmitRejectReason::NoCandidate,
-            };
-        };
+        // M4: the admission gate is the resolved release/build id carried by
+        // the request routing header; there is no epoch capture.
         let Some(query) = candidate_query_from_request(&request) else {
             inner.pool.record_no_candidate();
             return SubmitResult::Rejected {
@@ -278,10 +268,10 @@ impl RequestDispatcher {
                 };
             };
             inner.pool.record_reselect();
-            return self.enqueue_locked(&mut inner, request, reselected, epoch);
+            return self.enqueue_locked(&mut inner, request, reselected);
         }
 
-        self.enqueue_locked(&mut inner, request, selected, epoch)
+        self.enqueue_locked(&mut inner, request, selected)
     }
 
     fn enqueue_locked(
@@ -289,7 +279,6 @@ impl RequestDispatcher {
         inner: &mut DispatcherInner,
         request: DispatchSubmit,
         selected: SelectedLease,
-        epoch: Arc<RoutingEpoch>,
     ) -> SubmitResult {
         let request_id = request.request_id().to_string();
         let session_epoch = selected.lease.session_epoch.clone();
@@ -326,7 +315,6 @@ impl RequestDispatcher {
             Pending {
                 kind,
                 session_epoch: session_epoch.clone(),
-                epoch,
                 lease: selected.lease,
                 permit,
                 stream_phase: (kind == PendingKind::Stream).then_some(StreamPhase::WaitingStart),
@@ -697,14 +685,8 @@ impl RequestDispatcher {
                 reason: SubmitRejectReason::InvalidMode,
             };
         }
-        let Some(epoch) = self.options.epoch_source.capture() else {
-            inner.pool.record_no_candidate();
-            inner.task_attempt_rejected += 1;
-            return TaskAttemptSubmitResult::Rejected {
-                request_id,
-                reason: SubmitRejectReason::NoCandidate,
-            };
-        };
+        // M4: the attempt admission gate is the release-resolved build id
+        // carried by the attempt routing header; there is no epoch capture.
         let Some(query) = candidate_query_from_build_id(
             DispatchMode::Unary,
             attempt.header.routing.build_id.as_deref(),
@@ -789,10 +771,10 @@ impl RequestDispatcher {
                 };
             };
             inner.pool.record_reselect();
-            return self.enqueue_task_attempt_locked(&mut inner, attempt, reselected, epoch);
+            return self.enqueue_task_attempt_locked(&mut inner, attempt, reselected);
         }
 
-        self.enqueue_task_attempt_locked(&mut inner, attempt, selected, epoch)
+        self.enqueue_task_attempt_locked(&mut inner, attempt, selected)
     }
 
     fn enqueue_task_attempt_locked(
@@ -800,7 +782,6 @@ impl RequestDispatcher {
         inner: &mut DispatcherInner,
         attempt: TaskAttemptSubmit,
         selected: SelectedLease,
-        epoch: Arc<RoutingEpoch>,
     ) -> TaskAttemptSubmitResult {
         let request_id = attempt.request_id().to_string();
         let session_epoch = selected.lease.session_epoch.clone();
@@ -834,7 +815,6 @@ impl RequestDispatcher {
             Pending {
                 kind: PendingKind::TaskAttempt,
                 session_epoch: session_epoch.clone(),
-                epoch,
                 lease: selected.lease,
                 permit,
                 stream_phase: None,
@@ -958,15 +938,6 @@ impl RequestDispatcher {
 
     pub fn pending_count(&self) -> usize {
         self.lock().pending.len()
-    }
-
-    /// Captured epoch held by one pending (integration seam; pending invariant
-    /// §3.3 step 6).
-    pub fn pending_epoch(&self, request_id: &str) -> Option<Arc<RoutingEpoch>> {
-        self.lock()
-            .pending
-            .get(request_id)
-            .map(|pending| pending.epoch.clone())
     }
 
     /// Opaque test case capability retained by one active request pending on

@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use skiff_artifact_model::GatewayProtocolSurface;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
@@ -28,7 +27,6 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 use tokio::sync::mpsc;
 
-use crate::bootstrap::RoutingEpoch;
 use crate::dispatch::{
     DispatchSubmit, DispatchedFrame, PendingTerminal, RequestDispatcher, RequestOutcome,
     RuntimeResponseFrame, SubmitRejectReason, SubmitResult, TerminalSource,
@@ -433,29 +431,11 @@ impl DispatchedFrame {
 /// request resolves its surface through the exact service selector binding.
 pub fn load_http_surface_view(
     artifact_root: &Path,
-    epoch: &RoutingEpoch,
+    profile: &str,
 ) -> Result<HttpGatewaySurfaceView, String> {
     let store = CanonicalArtifactStore::open(artifact_root)
         .map_err(|error| format!("open artifact store for HTTP surface: {error}"))?;
-    let mut entries = BTreeMap::new();
-    for deployment in epoch.deployment_projection() {
-        let record = store.read_service_deployment(deployment).map_err(|error| {
-            format!(
-                "read deployment record {} for HTTP surface: {error}",
-                deployment.service_id
-            )
-        })?;
-        for (key, entry) in &record.gateway_entries {
-            if !matches!(
-                entry.protocol_surface.protocol,
-                GatewayProtocolSurface::Http(_)
-            ) {
-                continue;
-            }
-            entries.insert((deployment.clone(), key.clone()), entry.clone());
-        }
-    }
-    HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)
+    crate::http::ingress::http_surface_view_from_pointers(&store, profile)
 }
 
 /// Production `HttpDispatchPort` over `RequestDispatcher` (C-dispatch §7.2).

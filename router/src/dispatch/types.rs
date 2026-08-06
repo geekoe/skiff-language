@@ -68,13 +68,13 @@ impl From<&RuntimeAssemblyRequestDeadlineFrameHeader> for RequestDeadline {
     }
 }
 
-/// Exact routing authority of a request parent (C-dispatch §5.1):
-/// assembly identity, assembly generation, deployment coordinates and the
-/// exact runtime connection/session that owns the parent pending.
+/// Exact routing authority of a request parent (C-dispatch §5.1): the
+/// deployment build id, the deployment coordinates and the exact runtime
+/// connection/session that owns the parent pending (M4: no assembly
+/// identity/generation).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RequestAuthority {
-    pub assembly_identity: String,
-    pub assembly_generation: u64,
+    pub build_id: String,
     pub deployment: ServiceDeploymentRef,
     pub session_epoch: RuntimeSessionEpoch,
 }
@@ -85,8 +85,11 @@ impl RequestAuthority {
         session_epoch: &RuntimeSessionEpoch,
     ) -> Self {
         Self {
-            assembly_identity: header.routing.assembly_identity.as_str().to_string(),
-            assembly_generation: header.routing.assembly_generation,
+            build_id: header
+                .routing
+                .build_id
+                .clone()
+                .unwrap_or_else(|| header.routing.deployment.deployment_artifact_identity.to_string()),
             deployment: header.routing.deployment.clone(),
             session_epoch: session_epoch.clone(),
         }
@@ -128,8 +131,18 @@ impl TaskAttemptSubmit {
 
     pub fn authority(&self, session_epoch: &RuntimeSessionEpoch) -> RequestAuthority {
         RequestAuthority {
-            assembly_identity: self.header.routing.assembly_identity.as_str().to_string(),
-            assembly_generation: self.header.routing.assembly_generation,
+            build_id: self
+                .header
+                .routing
+                .build_id
+                .clone()
+                .unwrap_or_else(|| {
+                    self.header
+                        .routing
+                        .deployment
+                        .deployment_artifact_identity
+                        .to_string()
+                }),
             deployment: self.header.routing.deployment.clone(),
             session_epoch: session_epoch.clone(),
         }

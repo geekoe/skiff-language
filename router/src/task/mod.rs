@@ -35,7 +35,7 @@ pub use observation::RouterTaskSchedulerObservation;
 pub use parent::{
     NoopTaskSubmitParentResolver, RouterTaskSubmitParentResolver, TaskSubmitParentResolver,
 };
-pub use sink::{DurableTaskFrameSink, EpochTaskExecutionImageSource, TaskExecutionImageSource};
+pub use sink::{DurableTaskFrameSink, ReleaseTaskExecutionImageSource, TaskExecutionImageSource};
 
 /// Formats epoch millis as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC) for the ordinary
 /// request deadline wire.

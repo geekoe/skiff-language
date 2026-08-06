@@ -19,8 +19,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use skiff_artifact_identity::websocket_entry_id;
 use skiff_artifact_model::{
-    AssemblyIdentity, GatewayEntryIdentity, GatewayProtocolSurface, IngressProtocol,
-    ServiceDeploymentRef, WebSocketEntryId,
+    GatewayEntryIdentity, GatewayProtocolSurface, IngressProtocol, ServiceDeploymentRef,
+    WebSocketEntryId,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::protocol::{encode_binary_frame, RUNTIME_FRAME_SCHEMA_VERSION};
@@ -40,7 +40,6 @@ use skiff_runtime_transport::runtime_assembly_request::{
 };
 use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 
-use crate::bootstrap::{ActiveRoutingEpochStore, RoutingEpoch};
 use crate::dispatch::{Reservation, RuntimeAdmissionPool};
 use crate::routing::{CandidateQuery, DispatchMode, RuntimeCandidateQuery};
 use crate::session::consumer::{ConsumerKind, SessionConsumer};
@@ -112,27 +111,32 @@ impl WsGatewaySurfaceView {
 }
 
 /// Loads the WS surface from the deployment records referenced by the
-/// captured epoch (deployment crate consumed read-only).
+/// release pointer table (M4: pointer-table scan).
 pub fn load_ws_surface_view(
     artifact_root: &Path,
-    epoch: &RoutingEpoch,
+    profile: &str,
 ) -> Result<Arc<WsGatewaySurfaceView>, String> {
     let store = CanonicalArtifactStore::open(artifact_root)
         .map_err(|error| format!("open artifact store for WS surface: {error}"))?;
-    ws_surface_view_from_store(&store, epoch)
+    ws_surface_view_from_store(&store, profile)
 }
 
-/// Builds the WS surface view from one epoch's resolved deployment records
-/// (live-surface rebuild after an activation swap; the connect admission
-/// resolves against the current epoch so a stale deployment revision never
-/// survives a generation switch).
+/// Builds the WS surface view from the deployment records referenced by the
+/// release pointer table (M4: every connect admission resolves against the
+/// current pointer table so a stale deployment revision never survives a
+/// pointer update).
 pub fn ws_surface_view_from_store(
     store: &CanonicalArtifactStore,
-    epoch: &RoutingEpoch,
+    profile: &str,
 ) -> Result<Arc<WsGatewaySurfaceView>, String> {
+    let release: Arc<dyn crate::release::ReleaseResolver> =
+        Arc::new(crate::release::StoreReleaseResolver::new(store.clone()));
     let mut by_service_path = BTreeMap::new();
-    for deployment in epoch.deployment_projection() {
-        let record = store.read_service_deployment(deployment).map_err(|error| {
+    for deployment in release
+        .all_deployments(profile)
+        .map_err(|error| format!("scan release pointers for WS surface: {error}"))?
+    {
+        let record = store.read_service_deployment(&deployment).map_err(|error| {
             format!(
                 "read deployment record {} for WS surface: {error}",
                 deployment.service_id
@@ -257,7 +261,6 @@ pub trait WsConnectSelector: Send + Sync + fmt::Debug {
 
 #[derive(Debug)]
 pub struct ProductionWsConnectSelector {
-    epoch_store: Arc<ActiveRoutingEpochStore>,
     view: Arc<dyn crate::dispatch::CandidateViewSource>,
     pool: RuntimeAdmissionPool,
     reservations: Mutex<HashMap<String, Reservation>>,
@@ -265,12 +268,10 @@ pub struct ProductionWsConnectSelector {
 
 impl ProductionWsConnectSelector {
     pub fn new(
-        epoch_store: Arc<ActiveRoutingEpochStore>,
         view: Arc<dyn crate::dispatch::CandidateViewSource>,
         max_concurrency: usize,
     ) -> Self {
         Self {
-            epoch_store,
             view,
             pool: RuntimeAdmissionPool::new(max_concurrency),
             reservations: Mutex::new(HashMap::new()),
@@ -288,10 +289,8 @@ impl WsConnectSelector for ProductionWsConnectSelector {
         connection_id: &str,
         binding: &WsBinding,
     ) -> Result<RuntimeSessionEpoch, String> {
-        let _epoch = self
-            .epoch_store
-            .capture()
-            .ok_or_else(|| "no active routing epoch for websocket connect".to_string())?;
+        // M4: the gate is the candidate projection over the binding's build
+        // id; there is no routing epoch.
         let view = self.view.view();
         let query = CandidateQuery {
             mode: DispatchMode::Unary,
@@ -360,8 +359,8 @@ pub struct WsConnectionRecord {
     pub runtime: RuntimeSessionEpoch,
     pub binding: WsBinding,
     pub business_identity: Option<String>,
-    pub assembly_identity: AssemblyIdentity,
-    pub assembly_generation: u64,
+    /// Deployment build id the connection is pinned to (M4).
+    pub build_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -385,16 +384,15 @@ struct InboundPending {
 struct PendingAdmission {
     runtime: RuntimeSessionEpoch,
     service_id: String,
-    assembly_identity: AssemblyIdentity,
-    assembly_generation: u64,
+    build_id: String,
     websocket_entry_id: String,
     connection_id: String,
 }
 
 impl PendingAdmission {
     /// TS `isPendingWebSocketAcquireSender` parity: the sender owns the
-    /// pending admission when the assembly/entry/connection tuple matches
-    /// the in-flight websocketConnect request.
+    /// pending admission when the build-id/entry/connection tuple matches
+    /// the in-flight websocketConnect request (M4: buildId keying).
     fn matches(
         &self,
         runtime: &RuntimeSessionEpoch,
@@ -402,8 +400,7 @@ impl PendingAdmission {
     ) -> bool {
         self.runtime == *runtime
             && self.service_id == tuple.service_id
-            && self.assembly_identity == tuple.assembly_identity
-            && self.assembly_generation == tuple.assembly_generation
+            && self.build_id == tuple.build_id
             && self.websocket_entry_id == tuple.websocket_entry_id
             && self.connection_id == tuple.connection_id
     }
@@ -537,8 +534,7 @@ impl WsDispatchStore {
         connection_id: &str,
         binding: &WsBinding,
         runtime: &RuntimeSessionEpoch,
-        assembly_identity: &AssemblyIdentity,
-        assembly_generation: u64,
+        build_id: &str,
         metadata: &WsConnectMetadata,
         timeout_ms: u64,
     ) -> Result<(String, tokio::sync::watch::Receiver<Option<ConnectOutcome>>), String> {
@@ -556,8 +552,8 @@ impl WsDispatchStore {
             },
             routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: assembly_identity.clone(),
-                assembly_generation,
+                assembly_identity: None,
+                assembly_generation: None,
                 deployment: binding.deployment.clone(),
                 build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
                 gateway_entry_identity: binding.gateway_entry_identity.clone(),
@@ -600,8 +596,7 @@ impl WsDispatchStore {
                 PendingAdmission {
                     runtime: runtime.clone(),
                     service_id: binding.service_id.clone(),
-                    assembly_identity: assembly_identity.clone(),
-                    assembly_generation,
+                    build_id: build_id.to_string(),
                     websocket_entry_id: binding.websocket_entry_id.clone(),
                     connection_id: connection_id.to_string(),
                 },
@@ -661,8 +656,8 @@ impl WsDispatchStore {
             },
             routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: record.assembly_identity.clone(),
-                assembly_generation: record.assembly_generation,
+                assembly_identity: None,
+                assembly_generation: None,
                 deployment: record.binding.deployment.clone(),
                 build_id: Some(
                     record.binding.deployment.deployment_artifact_identity.to_string(),

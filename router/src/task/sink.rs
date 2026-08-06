@@ -43,7 +43,7 @@ use super::control::DurableTaskControl;
 use super::health::TaskControlCounters;
 use super::parent::TaskSubmitParentResolver;
 use super::project_runtime_expected_type_plan;
-use crate::bootstrap::ActiveRoutingEpochStore;
+use crate::release::ReleaseResolver;
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
@@ -55,62 +55,119 @@ const DEFAULT_TASK_STATUS_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Projects an authenticated `task.submit.request` into the frozen execution
 /// image authority facts (authoritative design "Execution Image And Target
-/// Pinning"): profile / package version / assembly / config snapshot /
-/// deployment are taken from the committed routing epoch, never from the
-/// Runtime's self-reported names.
+/// Pinning"; M4): the deployment is resolved from the release pointer table
+/// `(profile, serviceId, version)`, never from the Runtime's self-reported
+/// names.
 pub trait TaskExecutionImageSource: Send + Sync + fmt::Debug {
     fn resolve(&self, header: &TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef>;
 
-    /// True when the owner scope is a service of the current routing epoch
+    /// True when the owner scope resolves through the release pointer table
     /// (status/cancel authority pre-check; the wire carries no caller
     /// service identity in D1, so an unknown owner is a stable expired
     /// projection).
     fn contains_service(&self, service_id: &str) -> bool;
+
+    /// True when the exact deployment is currently published by the release
+    /// pointer table (attempt admission membership gate, M4).
+    fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef)
+        -> bool;
 }
 
-/// Production image source backed by the committed routing epoch.
-#[derive(Debug, Clone)]
-pub struct EpochTaskExecutionImageSource {
-    epoch_store: Arc<ActiveRoutingEpochStore>,
+/// Production image source backed by the release pointer table.
+pub struct ReleaseTaskExecutionImageSource {
+    profile: String,
+    release: Arc<dyn ReleaseResolver>,
 }
 
-impl EpochTaskExecutionImageSource {
-    pub fn new(epoch_store: Arc<ActiveRoutingEpochStore>) -> Self {
-        Self { epoch_store }
+impl std::fmt::Debug for ReleaseTaskExecutionImageSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReleaseTaskExecutionImageSource")
+            .field("profile", &self.profile)
+            .finish_non_exhaustive()
     }
 }
 
-impl TaskExecutionImageSource for EpochTaskExecutionImageSource {
-    fn resolve(&self, header: &TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef> {
-        let epoch = self.epoch_store.capture()?;
-        if epoch.assembly_identity() != header.activation_identity.assembly_identity.as_str()
-            || epoch.assembly_generation() != header.activation_identity.generation
-        {
-            return None;
-        }
-        let deployment = epoch.deployment_projection().iter().find(|deployment| {
-            deployment.service_id == header.service_id
-                && deployment.contract_version == header.service_version
-                && deployment.deployment_revision.as_str()
-                    == header.activation_identity.deployment_revision
-        })?;
-        let tuple = epoch.registered_tuple();
+impl ReleaseTaskExecutionImageSource {
+    pub fn new(profile: String, release: Arc<dyn ReleaseResolver>) -> Self {
+        Self { profile, release }
+    }
+
+    /// Resolves the deployment for one service/version and derives the
+    /// frozen execution image facts. `assembly` / `config_snapshot` are
+    /// epoch-era vestiges retained by the frozen task-control record schema
+    /// (M5 removes them); they no longer gate admission.
+    fn resolve_deployment(
+        &self,
+        service_id: &str,
+        version: &str,
+    ) -> Option<TaskExecutionImageRef> {
+        let deployment = self
+            .release
+            .resolve(&self.profile, service_id, version)
+            .ok()
+            .flatten()?;
+        let identity = deployment.deployment_artifact_identity.as_str();
+        let snapshot_id = skiff_artifact_model::RuntimeConfigSnapshotId::parse(format!(
+            "skiff-runtime-config-snapshot-v1:{}",
+            &identity_hash(identity)[..32]
+        ))
+        .ok()?;
         Some(TaskExecutionImageRef {
-            target_profile: tuple.profile.clone(),
-            package_version: header.service_version.clone(),
-            assembly: tuple.assembly.clone(),
-            config_snapshot: tuple.config_snapshot.clone(),
-            deployment: deployment.clone(),
+            target_profile: self.profile.clone(),
+            package_version: version.to_string(),
+            assembly: skiff_artifact_model::RuntimeAssemblyRef {
+                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(identity),
+            },
+            config_snapshot: skiff_artifact_model::RuntimeConfigSnapshotRef {
+                snapshot_id,
+            },
+            deployment,
         })
+    }
+}
+
+/// Deterministic 64-hex digest over one build id (vestige derivation only).
+fn identity_hash(value: &str) -> String {
+    let mut hash = [0u8; 32];
+    for (index, byte) in value.bytes().enumerate() {
+        hash[index % 32] ^= byte;
+    }
+    hash.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+impl TaskExecutionImageSource for ReleaseTaskExecutionImageSource {
+    fn resolve(&self, header: &TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef> {
+        self.resolve_deployment(&header.service_id, &header.service_version)
     }
 
     fn contains_service(&self, service_id: &str) -> bool {
-        self.epoch_store.capture().is_some_and(|epoch| {
-            epoch
-                .deployment_projection()
-                .iter()
-                .any(|deployment| deployment.service_id == service_id)
-        })
+        self.release
+            .all_deployments(&self.profile)
+            .ok()
+            .is_some_and(|deployments| {
+                deployments
+                    .iter()
+                    .any(|deployment| deployment.service_id == service_id)
+            })
+    }
+
+    fn contains_deployment(
+        &self,
+        deployment: &skiff_artifact_model::ServiceDeploymentRef,
+    ) -> bool {
+        self.release
+            .resolve(
+                &self.profile,
+                &deployment.service_id,
+                &deployment.contract_version,
+            )
+            .ok()
+            .flatten()
+            .as_ref()
+            == Some(deployment)
     }
 }
 

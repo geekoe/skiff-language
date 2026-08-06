@@ -3,8 +3,8 @@
 //!
 //! The ledger only keeps current observations and counters; it never holds
 //! permits, sockets or eligibility. Health frames are observations only after
-//! the registered ACK is written; earlier frames are dropped and counted as
-//! `health_before_ack`.
+//! the registered ACK is written (M4: health before the ACK is a WrongOrder
+//! terminal, so no dropped-before-ack counter exists).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +19,6 @@ use super::identity::RuntimeSessionEpoch;
 pub struct RuntimeHealthLedger {
     observations: Mutex<HashMap<RuntimeSessionEpoch, RuntimeHealthFrameHeader>>,
     observed_total: AtomicU64,
-    dropped_before_ack_total: AtomicU64,
 }
 
 impl RuntimeHealthLedger {
@@ -41,19 +40,8 @@ impl RuntimeHealthLedger {
         self.observed_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Drop a health frame that arrived before the ACK; counted, never an
-    /// observation.
-    pub fn drop_before_ack(&self, _session: &RuntimeSessionEpoch) {
-        self.dropped_before_ack_total
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn observed_total(&self) -> u64 {
         self.observed_total.load(Ordering::Relaxed)
-    }
-
-    pub fn dropped_before_ack_total(&self) -> u64 {
-        self.dropped_before_ack_total.load(Ordering::Relaxed)
     }
 
     pub fn current_observations(&self) -> usize {

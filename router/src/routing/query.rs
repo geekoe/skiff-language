@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use skiff_runtime_transport::protocol::RuntimeDispatchModeCapability;
 
 use crate::session::directory::RuntimeRegistrationDirectory;
-use crate::session::identity::{RegisteredAssemblyTuple, RuntimeSessionEpoch};
+use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::layer::SessionRegistrationFacts;
 
 /// Dispatch mode of an ordinary request (C-routing-query §2.1/§3 rule 5).
@@ -68,7 +68,6 @@ impl DispatchCapabilities {
 pub struct CandidateSession {
     pub session_epoch: RuntimeSessionEpoch,
     pub registered: bool,
-    pub registered_tuple: Option<RegisteredAssemblyTuple>,
     pub registration_revision: u64,
     pub cancelled: bool,
     pub capabilities: DispatchCapabilities,
@@ -118,12 +117,12 @@ pub struct SessionCancellation {
 }
 
 /// Exact candidate lease (C-routing-query §2.2). Empty results are the
-/// fail-closed signal for the admission layer.
+/// fail-closed signal for the admission layer. The registered tuple is
+/// retired (M4): the lease carries the build-id registration facts only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredSessionLease {
     pub session_epoch: RuntimeSessionEpoch,
     pub registration_revision: u64,
-    pub exact_registered_tuple: RegisteredAssemblyTuple,
     pub cancellation: SessionCancellation,
     pub capabilities: DispatchCapabilities,
     pub registered_build_ids: Vec<String>,
@@ -173,43 +172,6 @@ impl RuntimeCandidateQuery {
         (leases, counters)
     }
 
-    /// Empty-epoch activation projection (dev/bootstrap first activation).
-    ///
-    /// A captured epoch with no deployments still has exact registered
-    /// sessions as activation participants: managed dev watch seeds a
-    /// canonical empty generation 0 and then commits the first real assembly
-    /// through the ordinary CAS transition
-    /// (`doc/architecture/managed-dev-watch.md`). Projection rules are the
-    /// exact-tuple activation rules: an empty epoch has no build ids, so the
-    /// build-id rule is replaced by the exact registered tuple (the epoch's
-    /// deployment projection is empty and the capability rule is skipped by
-    /// the caller's `require_capability` choice).
-    pub fn query_empty_epoch(
-        &self,
-        epoch: &crate::bootstrap::RoutingEpoch,
-        view: &CandidateDirectoryView,
-        mode: DispatchMode,
-    ) -> Vec<RegisteredSessionLease> {
-        self.query_empty_epoch_with_counters(epoch, view, mode).0
-    }
-
-    /// Counter-bearing empty-epoch projection (same shape as
-    /// [`RuntimeCandidateQuery::query_with_counters`]).
-    pub fn query_empty_epoch_with_counters(
-        &self,
-        epoch: &crate::bootstrap::RoutingEpoch,
-        view: &CandidateDirectoryView,
-        mode: DispatchMode,
-    ) -> (Vec<RegisteredSessionLease>, RoutingQueryCounters) {
-        let mut counters = RoutingQueryCounters {
-            queries: 1,
-            ..RoutingQueryCounters::default()
-        };
-        let expected_tuple = epoch.registered_tuple();
-        let leases = Self::project_sessions_exact_tuple(&expected_tuple, view, mode, &mut counters, false);
-        (leases, counters)
-    }
-
     /// Project one dispatch mode across a coherent view.
     ///
     /// One current session per replica (directory invariant); defensively
@@ -237,46 +199,6 @@ impl RuntimeCandidateQuery {
                 counters.candidates_returned += 1;
                 leases.push(lease);
             }
-        }
-        leases
-    }
-
-    /// Empty-epoch activation projection over a coherent view (exact-tuple
-    /// rule in place of the build-id rule).
-    fn project_sessions_exact_tuple(
-        expected_tuple: &RegisteredAssemblyTuple,
-        view: &CandidateDirectoryView,
-        mode: DispatchMode,
-        counters: &mut RoutingQueryCounters,
-        require_capability: bool,
-    ) -> Vec<RegisteredSessionLease> {
-        let mut leases = Vec::new();
-        let mut seen = HashSet::new();
-        for session in &view.sessions {
-            if !seen.insert(session.session_epoch.clone()) {
-                continue;
-            }
-            if !session.registered {
-                continue;
-            }
-            if session.registered_tuple.as_ref() != Some(expected_tuple) {
-                counters.excluded_build_id += 1;
-                continue;
-            }
-            if view.revision.is_some_and(|revision| session.registration_revision != revision) {
-                counters.excluded_stale_revision += 1;
-                continue;
-            }
-            if session.cancelled {
-                counters.excluded_cancelled += 1;
-                continue;
-            }
-            if require_capability && !session.capabilities.supports(mode) {
-                counters.excluded_capability += 1;
-                continue;
-            }
-            counters.candidates_returned += 1;
-            leases.push(build_lease(session));
         }
         leases
     }
@@ -317,7 +239,6 @@ impl RuntimeCandidateQuery {
                 Some(CandidateSession {
                     session_epoch: session.clone(),
                     registered: record.routable,
-                    registered_tuple: record.registered_tuple.clone(),
                     registration_revision: record.registration_revision,
                     cancelled: record.cancelled,
                     capabilities: facts.dispatch,
@@ -349,10 +270,6 @@ fn build_lease(session: &CandidateSession) -> RegisteredSessionLease {
     RegisteredSessionLease {
         session_epoch: session.session_epoch.clone(),
         registration_revision: session.registration_revision,
-        exact_registered_tuple: session
-            .registered_tuple
-            .clone()
-            .expect("exact tuple checked before lease construction"),
         cancellation: SessionCancellation { cancelled: false },
         capabilities: session.capabilities,
         registered_build_ids: session.registered_build_ids.clone(),

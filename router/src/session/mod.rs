@@ -24,12 +24,9 @@ pub use consumer::{
     ConsumerKind, ConsumerManifest, FailStop, RuntimeSessionClosed, SessionConsumer,
 };
 pub use demux::{InboundFrameSink, InboundSinkSet};
-pub use directory::{RuntimeRegistrationDirectory, TransitionOutcome};
+pub use directory::RuntimeRegistrationDirectory;
 pub use handshake::{HandshakePhase, HandshakeState, TerminalKind};
-pub use identity::{
-    CommittedEpoch, RegisteredAssemblyTuple, RoutableRevision, RuntimeConnectionEpoch,
-    RuntimeSessionEpoch,
-};
+pub use identity::{RuntimeConnectionEpoch, RuntimeSessionEpoch};
 pub use layer::{
     SessionFrameWriter, SessionHealthSnapshot, SessionLayer, SessionLayerError,
     SessionLayerOptions, SessionTiming,
