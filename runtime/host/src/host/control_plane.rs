@@ -113,10 +113,16 @@ impl RuntimeHost {
         // Capability advertisement is derived from the loaded deployment set
         // (M2 lazy-load registry): HTTP and WebSocket gateway surfaces
         // advertise exactly the dispatch modes they project, plus the artifact
-        // root and loaded buildId set for lazy-load routing. An empty loaded
-        // set means no dispatch capability and nothing loaded yet (fail closed).
-        let surfaces = self.assembly_admission.loaded_gateway_surfaces();
-        let dispatch_modes = dispatch_modes_from_gateway_entries(surfaces.iter());
+        // root and loaded buildId set for lazy-load routing.
+        //
+        // M5 fix: a lazy-load holder can execute ANY engine-supported dispatch
+        // mode even when nothing is loaded yet (cold start), so the advertised
+        // modes are the engine superset — the router's capability gate would
+        // otherwise exclude every cold-start runtime and every request would
+        // fail with no eligible runtime (the deployment's own surface decides
+        // the request shape after lazy loading).
+        let _ = self.assembly_admission.loaded_gateway_surfaces();
+        let dispatch_modes = engine_dispatch_modes();
         let loaded_build_ids = self.assembly_admission.loaded_build_ids();
         let artifact_root = self.bootstrap_artifact_root();
         let header = RuntimeCapabilitiesFrameHeader {
@@ -227,32 +233,11 @@ fn apply_request_trace_fields(event: &mut TelemetryEvent, request: &RequestEnvel
 /// WebSocket connect surfaces contribute unary (the connect handshake is a
 /// unary dispatch), and WebSocket JSON-RPC surfaces contribute their
 /// `dispatch_mode`. Order is fixed: `[unary, serverStream]`.
-fn dispatch_modes_from_gateway_entries<'a>(
-    entries: impl IntoIterator<Item = &'a GatewayEntryProtocolSurface>,
-) -> Vec<RuntimeDispatchModeCapability> {
-    let mut unary = false;
-    let mut server_stream = false;
-    for surface in entries {
-        match &surface.protocol {
-            GatewayProtocolSurface::Http(http) => match http.dispatch_mode {
-                GatewayDispatchMode::Unary => unary = true,
-                GatewayDispatchMode::ServerStream => server_stream = true,
-            },
-            GatewayProtocolSurface::WebSocketConnect(_) => unary = true,
-            GatewayProtocolSurface::WebSocketJsonRpc(rpc) => match rpc.dispatch_mode {
-                GatewayDispatchMode::Unary => unary = true,
-                GatewayDispatchMode::ServerStream => server_stream = true,
-            },
-        }
-    }
-    let mut modes = Vec::new();
-    if unary {
-        modes.push(RuntimeDispatchModeCapability::Unary);
-    }
-    if server_stream {
-        modes.push(RuntimeDispatchModeCapability::ServerStream);
-    }
-    modes
+fn engine_dispatch_modes() -> Vec<RuntimeDispatchModeCapability> {
+    vec![
+        RuntimeDispatchModeCapability::Unary,
+        RuntimeDispatchModeCapability::ServerStream,
+    ]
 }
 
 #[cfg(test)]
@@ -266,178 +251,11 @@ mod tests {
         GatewayWebSocketShapeVersion,
     };
 
-    fn http_surface(mode: GatewayDispatchMode) -> GatewayEntryProtocolSurface {
-        GatewayEntryProtocolSurface {
-            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
-                adapter_kind: GatewayAdapterKind::TypedJson,
-                dispatch_mode: mode,
-                external_sources: Vec::new(),
-                request_body_schema: None,
-                response_schema: None,
-                stream_item_schema: None,
-            }),
-            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
-        }
-    }
 
-    fn websocket_surface() -> GatewayEntryProtocolSurface {
-        GatewayEntryProtocolSurface {
-            protocol: GatewayProtocolSurface::WebSocketConnect(
-                GatewayWebSocketConnectProtocolSurface {
-                    connect_request_shape: GatewayWebSocketShapeVersion::V1,
-                    connect_result_shape: GatewayWebSocketShapeVersion::V1,
-                    connection_policy_shape: GatewayWebSocketShapeVersion::V1,
-                    external_sources: Vec::new(),
-                    downlink_frames: Vec::new(),
-                    rpc_profiles: Vec::new(),
-                },
-            ),
-            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
-        }
-    }
 
-    fn websocket_json_rpc_surface(mode: GatewayDispatchMode) -> GatewayEntryProtocolSurface {
-        GatewayEntryProtocolSurface {
-            protocol: GatewayProtocolSurface::WebSocketJsonRpc(
-                GatewayWebSocketJsonRpcProtocolSurface {
-                    profile: GatewayWebSocketRpcProfile::JsonRpc2_0Text,
-                    dispatch_mode: mode,
-                    external_sources: Vec::new(),
-                    params_schema: GatewayExternalSchema::Null,
-                    result_schema: GatewayExternalSchema::Null,
-                },
-            ),
-            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
-        }
-    }
 
     #[test]
-    fn dispatch_modes_are_empty_without_gateway_surfaces() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(std::iter::empty()),
-            Vec::new()
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_unary_for_websocket_connect_surface() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries([websocket_surface()].iter()),
-            vec![RuntimeDispatchModeCapability::Unary]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_unary_for_websocket_json_rpc_surface() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [websocket_json_rpc_surface(GatewayDispatchMode::Unary)].iter()
-            ),
-            vec![RuntimeDispatchModeCapability::Unary]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_server_stream_for_websocket_json_rpc_surface() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [websocket_json_rpc_surface(
-                    GatewayDispatchMode::ServerStream
-                )]
-                .iter()
-            ),
-            vec![RuntimeDispatchModeCapability::ServerStream]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_unary_surface() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries([http_surface(GatewayDispatchMode::Unary)].iter()),
-            vec![RuntimeDispatchModeCapability::Unary]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_server_stream_surface() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [http_surface(GatewayDispatchMode::ServerStream)].iter()
-            ),
-            vec![RuntimeDispatchModeCapability::ServerStream]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_both_in_fixed_order() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [
-                    http_surface(GatewayDispatchMode::ServerStream),
-                    websocket_surface(),
-                    http_surface(GatewayDispatchMode::Unary),
-                ]
-                .iter()
-            ),
-            vec![
-                RuntimeDispatchModeCapability::Unary,
-                RuntimeDispatchModeCapability::ServerStream,
-            ]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_http_only_deployment() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [
-                    http_surface(GatewayDispatchMode::Unary),
-                    http_surface(GatewayDispatchMode::ServerStream),
-                ]
-                .iter()
-            ),
-            vec![
-                RuntimeDispatchModeCapability::Unary,
-                RuntimeDispatchModeCapability::ServerStream,
-            ]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_websocket_only_deployment() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [
-                    websocket_surface(),
-                    websocket_json_rpc_surface(GatewayDispatchMode::Unary),
-                ]
-                .iter()
-            ),
-            vec![RuntimeDispatchModeCapability::Unary]
-        );
-    }
-
-    #[test]
-    fn dispatch_modes_advertise_mixed_http_and_websocket_deployment() {
-        assert_eq!(
-            dispatch_modes_from_gateway_entries(
-                [
-                    websocket_surface(),
-                    http_surface(GatewayDispatchMode::ServerStream),
-                    websocket_json_rpc_surface(GatewayDispatchMode::Unary),
-                    http_surface(GatewayDispatchMode::Unary),
-                ]
-                .iter()
-            ),
-            vec![
-                RuntimeDispatchModeCapability::Unary,
-                RuntimeDispatchModeCapability::ServerStream,
-            ]
-        );
-    }
-
-    #[test]
-    fn capabilities_frame_stays_empty_without_admitted_assembly() {
+    fn capabilities_frame_advertises_engine_modes_without_admitted_assembly() {
         let host = RuntimeHost::new(RuntimeConfig {
             db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
             router_url: "ws://127.0.0.1:4001/runtime".to_string(),
@@ -460,7 +278,13 @@ mod tests {
         >(&bytes)
         .expect("decode capabilities frame");
         assert_eq!(header.runtime_id, "runtime-no-admit");
-        assert!(header.capabilities.dispatch_modes.is_empty());
+        assert_eq!(
+            header.capabilities.dispatch_modes,
+            engine_dispatch_modes(),
+            "cold-start lazy-load holder advertises every engine-supported mode"
+        );
+        assert!(header.capabilities.lazy_load);
+        assert!(header.capabilities.loaded_build_ids.is_empty());
         assert!(header.capabilities.request_cancel);
     }
 }
