@@ -30,101 +30,99 @@ pub(crate) fn materialize_snapshot_config(
     candidate: &AssemblyLinkedCandidate,
     snapshot: &RuntimeConfigSnapshot,
 ) -> anyhow::Result<BTreeMap<ServiceDeploymentRef, ActivationConfigViews>> {
-    let snapshot_deployments = snapshot
-        .deployments()
-        .iter()
-        .map(|deployment| (deployment.deployment().clone(), deployment))
-        .collect::<BTreeMap<_, _>>();
-    let candidate_deployments = candidate
-        .activations()
-        .map(|(deployment, _)| deployment.clone())
-        .collect::<BTreeSet<_>>();
-    if snapshot_deployments
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        != candidate_deployments
-    {
-        anyhow::bail!(
-            "RuntimeConfigSnapshot deployments do not exactly match RuntimeAssembly activations"
-        );
-    }
-
-    let image = candidate.execution_image();
     let mut materialized = BTreeMap::new();
-    for (deployment, activation) in candidate.activations() {
-        let partition = snapshot_deployments
-            .get(deployment)
-            .expect("exact deployment set was checked above");
-        let closure = activation_package_closure(candidate, deployment)?;
-        let package_values = partition
-            .packages()
-            .iter()
-            .map(|package| (package.package_build_id().clone(), package))
-            .collect::<BTreeMap<_, _>>();
-        if package_values.keys().cloned().collect::<BTreeSet<_>>() != closure {
-            anyhow::bail!(
-                "RuntimeConfigSnapshot deployment {:?} packages do not exactly match its Package closure",
-                deployment
-            );
-        }
-
-        let mut package_views = Vec::with_capacity(image.execution_packages().len());
-        for (slot, package) in image.execution_packages().iter().enumerate() {
-            if package.code_slot().index() != slot {
-                anyhow::bail!(
-                    "active execution image package slot mismatch: expected {slot}, got {}",
-                    package.code_slot().index()
-                );
-            }
-            let Some(config) = package_values.get(package.package_build_id()) else {
-                package_views.push(RuntimeConfigView::empty());
-                continue;
-            };
-            let shape = skiff_artifact_model::config_shape_from_package_requirements(
-                &package.artifact().runtime_requirements.config,
-            )
-            .with_context(|| {
-                format!(
-                    "Package {} has invalid config requirements",
-                    package.package_build_id()
-                )
-            })?;
-            package_views.push(
-                RuntimeConfigView::from_resolved_config(config.config_value(), shape).with_context(
-                    || {
-                    format!(
-                        "RuntimeConfigSnapshot deployment {:?} does not satisfy Package {} config requirements",
-                        deployment,
-                        package.package_build_id()
-                    )
-                    },
-                )?,
-            );
-        }
-        let implementation_slot = image
-            .code_by_build(activation.implementation_package_build_id())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "activation {:?} implementation Package is not in the execution image",
-                    deployment
-                )
-            })?
-            .code_slot()
-            .index();
-        let service = package_views
-            .get(implementation_slot)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("implementation Package config slot is missing"))?;
-        materialized.insert(
-            deployment.clone(),
-            ActivationConfigViews {
-                service,
-                packages: package_views,
-            },
-        );
+    for (deployment, _) in candidate.activations() {
+        let views = materialize_deployment_config(candidate, snapshot, deployment)?;
+        materialized.insert(deployment.clone(), views);
     }
     Ok(materialized)
+}
+
+/// Materializes the config projection for exactly one deployment partition of
+/// the bootstrap config snapshot.
+///
+/// The snapshot is read on demand per deployment instead of requiring an exact
+/// snapshot/assembly deployment set match. A deployment (or package) partition
+/// that is absent from the snapshot materializes as empty views; the migration
+/// to config baked into deployment records is out of scope for this stage.
+pub(crate) fn materialize_deployment_config(
+    candidate: &AssemblyLinkedCandidate,
+    snapshot: &RuntimeConfigSnapshot,
+    deployment: &ServiceDeploymentRef,
+) -> anyhow::Result<ActivationConfigViews> {
+    let activation = candidate
+        .activation(deployment)
+        .ok_or_else(|| anyhow::anyhow!("config projection targets an unknown activation"))?;
+    let partition = snapshot
+        .deployments()
+        .iter()
+        .find(|partition| partition.deployment() == deployment);
+    let package_values = partition
+        .map(|partition| {
+            partition
+                .packages()
+                .iter()
+                .map(|package| (package.package_build_id().clone(), package))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    let image = candidate.execution_image();
+    let closure = activation_package_closure(candidate, deployment)?;
+    let mut package_views = Vec::with_capacity(image.execution_packages().len());
+    for (slot, package) in image.execution_packages().iter().enumerate() {
+        if package.code_slot().index() != slot {
+            anyhow::bail!(
+                "active execution image package slot mismatch: expected {slot}, got {}",
+                package.code_slot().index()
+            );
+        }
+        let Some(config) = package_values.get(package.package_build_id()) else {
+            package_views.push(RuntimeConfigView::empty());
+            continue;
+        };
+        if !closure.contains(package.package_build_id()) {
+            anyhow::bail!(
+                "RuntimeConfigSnapshot deployment {deployment:?} packages do not exactly match its Package closure"
+            );
+        }
+        let shape = skiff_artifact_model::config_shape_from_package_requirements(
+            &package.artifact().runtime_requirements.config,
+        )
+        .with_context(|| {
+            format!(
+                "Package {} has invalid config requirements",
+                package.package_build_id()
+            )
+        })?;
+        package_views.push(
+            RuntimeConfigView::from_resolved_config(config.config_value(), shape).with_context(
+                || {
+                format!(
+                    "RuntimeConfigSnapshot deployment {deployment:?} does not satisfy Package {} config requirements",
+                    package.package_build_id()
+                )
+                },
+            )?,
+        );
+    }
+    let implementation_slot = image
+        .code_by_build(activation.implementation_package_build_id())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "activation {deployment:?} implementation Package is not in the execution image"
+            )
+        })?
+        .code_slot()
+        .index();
+    let service = package_views
+        .get(implementation_slot)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("implementation Package config slot is missing"))?;
+    Ok(ActivationConfigViews {
+        service,
+        packages: package_views,
+    })
 }
 
 pub(crate) fn validate_snapshot_profile(

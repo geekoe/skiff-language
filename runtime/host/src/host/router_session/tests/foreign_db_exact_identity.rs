@@ -648,6 +648,7 @@ fn test_case_header(
             assembly_identity: route.assembly_identity().clone(),
             assembly_generation: route.generation(),
             deployment: route.deployment().clone(),
+            build_id: None,
             gateway_entry_identity: route.gateway_entry_identity().clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,

@@ -68,6 +68,15 @@ pub struct RuntimeCapabilitiesFrameHeaderMetadata {
     pub request_cancel: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub runtime_program: bool,
+    /// Absolute artifact root this runtime lazily loads deployment build ids from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_root: Option<String>,
+    /// True when the runtime can lazy-load unregistered deployment build ids on demand.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lazy_load: bool,
+    /// All currently loaded deployment build ids (empty = nothing loaded yet).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loaded_build_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

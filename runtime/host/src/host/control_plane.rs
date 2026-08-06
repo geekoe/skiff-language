@@ -118,23 +118,15 @@ impl RuntimeHost {
         &self,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<()> {
-        // Capability advertisement is derived from the already-admitted whole
-        // assembly (router.bootstrap performs `recover_durable_committed`
-        // before capabilities are queued): HTTP and WebSocket gateway
-        // surfaces advertise exactly the dispatch modes they project. No
-        // admitted assembly means no dispatch capability (fail closed).
-        let dispatch_modes = match self
-            .active_runtime_assembly()
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?
-        {
-            Some(active) => dispatch_modes_from_gateway_entries(
-                active
-                    .candidate()
-                    .gateway_entries()
-                    .map(|(_, entry)| entry.protocol_surface()),
-            ),
-            None => Vec::new(),
-        };
+        // Capability advertisement is derived from the loaded deployment set
+        // (M2 lazy-load registry): HTTP and WebSocket gateway surfaces
+        // advertise exactly the dispatch modes they project, plus the artifact
+        // root and loaded buildId set for lazy-load routing. An empty loaded
+        // set means no dispatch capability and nothing loaded yet (fail closed).
+        let surfaces = self.assembly_admission.loaded_gateway_surfaces();
+        let dispatch_modes = dispatch_modes_from_gateway_entries(surfaces.iter());
+        let loaded_build_ids = self.assembly_admission.loaded_build_ids();
+        let artifact_root = self.bootstrap_artifact_root();
         let header = RuntimeCapabilitiesFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "runtime.capabilities".to_string(),
@@ -143,6 +135,9 @@ impl RuntimeHost {
                 dispatch_modes,
                 package_test_dispatch: false,
                 request_cancel: true,
+                artifact_root,
+                lazy_load: true,
+                loaded_build_ids,
                 ..RuntimeCapabilitiesFrameHeaderMetadata::default()
             },
         };

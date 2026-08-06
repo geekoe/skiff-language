@@ -18,6 +18,7 @@ use crate::loader::config_snapshot::snapshot_for_assembly as config_snapshot_for
 use super::super::*;
 
 mod db_index_provisioning;
+mod lazy_load;
 
 struct CountingResolver {
     assembly: Arc<RuntimeAssembly>,
@@ -942,7 +943,7 @@ async fn committed_recovery_nonempty_generation_survives_restart_with_exact_regi
 }
 
 #[tokio::test]
-async fn config_snapshot_requires_exact_deployment_and_package_partitions_before_activation() {
+async fn config_snapshot_materializes_on_demand_per_deployment_partition() {
     let fixture = FullChainFixture::new();
     let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
 
@@ -1020,13 +1021,17 @@ async fn config_snapshot_requires_exact_deployment_and_package_partitions_before
     )
     .unwrap();
 
+    // M2 on-demand materialization: a missing deployment partition, a missing
+    // package partition and an extra package partition all admit; views are
+    // materialized per deployment with empty fallbacks instead of requiring an
+    // exact snapshot/assembly partition match.
     for (reference, snapshot) in [
         (missing_deployment_ref, missing_deployment),
         (missing_package_ref, missing_package),
         (extra_package_ref, extra_package),
     ] {
         let controller = AssemblyAdmissionController::default();
-        let error = controller
+        let active = controller
             .recover_committed(
                 "fixture",
                 1,
@@ -1037,12 +1042,13 @@ async fn config_snapshot_requires_exact_deployment_and_package_partitions_before
                 None,
             )
             .await
-            .expect_err("non-exact config snapshot must fail before activation");
-        assert!(
-            format!("{error:#}").contains("do not exactly match"),
-            "unexpected error: {error:#}"
-        );
-        assert!(controller.active().unwrap().is_none());
+            .expect("on-demand config snapshot must admit");
+        assert!(controller.active().unwrap().is_some());
+        let views = active
+            .contexts()
+            .config_views(&fixture.consumer_deployment_ref)
+            .expect("consumer config views");
+        assert!(views.packages().len() >= 1);
     }
 }
 

@@ -29,7 +29,7 @@ use url::Url;
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
     error::{Result, RuntimeError},
-    host::RuntimeHost,
+    host::{router_session::ConnectionBootstrap, RuntimeHost},
     loader::assembly_admission::ActiveAssemblyRoute,
 };
 
@@ -69,7 +69,7 @@ impl RuntimeHost {
         router_session_id: &str,
         header: RuntimeAssemblyRequestStartFrameWireHeader,
         body: Vec<u8>,
-        http_response_max_bytes: usize,
+        bootstrap: &ConnectionBootstrap,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let request_id = match &header {
@@ -82,26 +82,38 @@ impl RuntimeHost {
             }
             RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
+        // A request whose build id was not loaded yet may trigger the lazy-load
+        // path; refresh the router's capability view when that happens.
+        let build_id = wire_routing_build_id(&header);
+        let was_loaded = build_id
+            .as_deref()
+            .is_some_and(|build_id| self.assembly_admission.is_loaded(build_id));
         let result = match header {
             RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
-                .http_gateway_request_from_wire(header, body)
+                .http_gateway_request_from_wire(header, body, bootstrap)
+                .await
                 .map(AdmittedRuntimeAssemblyRequest::Http),
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
-                .websocket_connect_request_from_wire(header, body)
+                .websocket_connect_request_from_wire(header, body, bootstrap)
+                .await
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
                 .websocket_jsonrpc_request_from_wire(router_session_id, header, body)
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
             RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => self
-                .task_request_from_wire(header, body)
+                .task_request_from_wire(header, body, bootstrap)
+                .await
                 .map(AdmittedRuntimeAssemblyRequest::Task),
         };
+        if !was_loaded {
+            let _ = self.queue_runtime_capabilities(sender.clone());
+        }
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
                 self.task_request_on_active_assembly_route(
                     router_session_id.to_string(),
                     request,
-                    http_response_max_bytes,
+                    bootstrap.max_response_bytes,
                     sender,
                 )
                 .await
@@ -110,7 +122,7 @@ impl RuntimeHost {
                 self.task_websocket_connect_on_active_assembly_route(
                     router_session_id.to_string(),
                     request,
-                    http_response_max_bytes,
+                    bootstrap.max_response_bytes,
                     sender,
                 )
                 .await
@@ -119,7 +131,7 @@ impl RuntimeHost {
                 self.task_websocket_jsonrpc_on_pinned_route(
                     router_session_id.to_string(),
                     request,
-                    http_response_max_bytes,
+                    bootstrap.max_response_bytes,
                     sender,
                 )
                 .await
@@ -128,7 +140,7 @@ impl RuntimeHost {
                 self.task_direct_request_on_active_assembly(
                     router_session_id.to_string(),
                     request,
-                    http_response_max_bytes,
+                    bootstrap.max_response_bytes,
                     sender,
                 )
                 .await
@@ -153,10 +165,31 @@ impl RuntimeHost {
         }
     }
 
-    fn websocket_connect_request_from_wire(
+    /// Resolves the canonical ingress route through the loaded deployment
+    /// registry, lazy-loading the deployment under its per-buildId critical
+    /// section when it is not loaded yet.
+    pub(crate) async fn resolve_active_assembly_request_route(
+        &self,
+        key: &ServiceIngressKey,
+        bootstrap: &ConnectionBootstrap,
+    ) -> Result<ActiveAssemblyRoute> {
+        self.assembly_admission
+            .route_or_lazy_load(
+                key,
+                &bootstrap.resolver,
+                &bootstrap.config_snapshot_store,
+                Some(&bootstrap.service_db),
+                bootstrap.activation.profile.as_str(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Decode(error.to_string()))
+    }
+
+    async fn websocket_connect_request_from_wire(
         &self,
         header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
         body: Vec<u8>,
+        bootstrap: &ConnectionBootstrap,
     ) -> Result<AdmittedWebSocketConnectRequest> {
         validate_websocket_connect_header(&header, &body)?;
         let selector = websocket_connect_ingress_selector(&header);
@@ -164,7 +197,7 @@ impl RuntimeHost {
             deployment: header.routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let route = self.lookup_active_assembly_request_route(&key)?;
+        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
         validate_websocket_connect_route(&header, &selector, &route)?;
         if route.entry().optional_handler().is_none()
             && !route
@@ -185,10 +218,11 @@ impl RuntimeHost {
         })
     }
 
-    fn http_gateway_request_from_wire(
+    async fn http_gateway_request_from_wire(
         &self,
         mut header: RuntimeAssemblyRequestStartFrameHeader,
         body: Vec<u8>,
+        bootstrap: &ConnectionBootstrap,
     ) -> Result<AdmittedHttpGatewayRequest> {
         validate_http_header(&header)?;
         let selector = ingress_selector(&header);
@@ -196,7 +230,7 @@ impl RuntimeHost {
             deployment: header.routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let route = self.lookup_active_assembly_request_route(&key)?;
+        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
         validate_route(&header, &selector, &route)?;
         header.deadline = effective_deadline(&header)?;
         if header
@@ -214,81 +248,49 @@ impl RuntimeHost {
         })
     }
 
-    fn websocket_jsonrpc_request_from_wire(
-        &self,
-        router_session_id: &str,
-        mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
-        params: Vec<u8>,
-    ) -> Result<AdmittedWebSocketJsonRpcRequest> {
-        validate_websocket_jsonrpc_header(&header, &params)?;
-        let routing = &header.routing;
-        let ingress = &routing.ingress;
-        let request = &header.websocket_json_rpc;
-        let profile = match request.profile {
-            RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text => {
-                GatewayWebSocketRpcProfile::JsonRpc2_0Text
-            }
-        };
-        let resolved = self
-            .websocket_generations
-            .websocket_jsonrpc_execution_route(
-                router_session_id,
-                &request.connection_id,
-                &routing.assembly_identity,
-                routing.assembly_generation,
-                &request.websocket_entry_id,
-                &ingress.path,
-                &ingress.method,
-                &routing.gateway_entry_identity,
-                profile,
-            )?;
-        validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
-        header.deadline =
-            effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
-        Ok(AdmittedWebSocketJsonRpcRequest {
-            resolved,
-            header,
-            params,
-        })
-    }
 
-    fn task_request_from_wire(
+    async fn task_request_from_wire(
         &self,
         mut header: RuntimeAssemblyTaskRequestStartFrameHeader,
         payload: Vec<u8>,
+        bootstrap: &ConnectionBootstrap,
     ) -> Result<AdmittedTaskRequest> {
         validate_task_header(&header, &payload)?;
-        let active = self
-            .active_runtime_assembly()
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?
-            .ok_or_else(|| RuntimeError::Unsupported("no active runtime assembly".to_string()))?;
-        if active.identity() != &header.routing.assembly_identity
-            || active.generation() != header.routing.assembly_generation
-        {
-            return Err(RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task routing does not match the exact active assembly generation"
-                    .to_string(),
-            });
+        let deployment = &header.routing.deployment;
+        if let Some(build_id) = &header.routing.build_id {
+            if build_id != deployment.deployment_artifact_identity.as_str() {
+                return Err(RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: "task routing buildId does not match its exact deployment".to_string(),
+                });
+            }
         }
+        let active = self
+            .assembly_admission
+            .deployment_image_or_lazy_load(
+                deployment,
+                &bootstrap.resolver,
+                &bootstrap.config_snapshot_store,
+                Some(&bootstrap.service_db),
+                bootstrap.activation.profile.as_str(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
         let linked_activation = active
-            .activation(&header.routing.deployment)
+            .activation(deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
-                message: "task routing deployment is not active in the pinned assembly".to_string(),
+                message: "task routing deployment is not loaded".to_string(),
             })?;
         let activation = active
             .contexts()
-            .activation_for_deployment(&header.routing.deployment)
+            .activation_for_deployment(deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
                 message: "task routing deployment has no admitted activation".to_string(),
             })?;
-        let activation_identity = activation.identity();
-        if activation_identity.assembly_identity != header.routing.assembly_identity
-            || activation_identity.assembly_generation != header.routing.assembly_generation
-            || activation_identity.deployment != header.routing.deployment
-            || linked_activation.deployment_ref() != &header.routing.deployment
+        if activation.identity().deployment != *deployment
+            || linked_activation.deployment_ref() != deployment
             || activation.implementation_package_build_id()
                 != linked_activation.implementation_package_build_id()
         {
@@ -322,7 +324,7 @@ impl RuntimeHost {
             })?;
         let config_views = active
             .contexts()
-            .config_views(&header.routing.deployment)
+            .config_views(deployment)
             .ok_or_else(|| RuntimeError::Protocol {
                 target: header.invocation.target.clone(),
                 message: "task activation has no scoped config views".to_string(),
@@ -360,6 +362,44 @@ impl RuntimeHost {
         })
     }
 
+    fn websocket_jsonrpc_request_from_wire(
+        &self,
+        router_session_id: &str,
+        mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+        params: Vec<u8>,
+    ) -> Result<AdmittedWebSocketJsonRpcRequest> {
+        validate_websocket_jsonrpc_header(&header, &params)?;
+        let routing = &header.routing;
+        let ingress = &routing.ingress;
+        let request = &header.websocket_json_rpc;
+        let profile = match request.profile {
+            RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text => {
+                GatewayWebSocketRpcProfile::JsonRpc2_0Text
+            }
+        };
+        let resolved = self
+            .websocket_generations
+            .websocket_jsonrpc_execution_route(
+                router_session_id,
+                &request.connection_id,
+                &routing.assembly_identity,
+                routing.assembly_generation,
+                routing.build_id.as_deref(),
+                &request.websocket_entry_id,
+                &ingress.path,
+                &ingress.method,
+                &routing.gateway_entry_identity,
+                profile,
+            )?;
+        validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
+        header.deadline =
+            effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
+        Ok(AdmittedWebSocketJsonRpcRequest {
+            resolved,
+            header,
+            params,
+        })
+    }
     #[cfg(test)]
     pub(crate) fn runtime_assembly_request_deadline_from_wire_for_test(
         &self,
@@ -396,6 +436,22 @@ fn gateway_ingress_pin(
         deployment: deployment.clone(),
         gateway_entry_identity: gateway_entry_identity.clone(),
     }
+}
+
+/// Exact buildId a request resolves against: the deployment artifact identity
+/// is the loading unit; a frame-provided buildId must equal it.
+fn wire_routing_build_id(header: &RuntimeAssemblyRequestStartFrameWireHeader) -> Option<String> {
+    let deployment = match header {
+        RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => &header.routing.deployment,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+            &header.routing.deployment
+        }
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
+            &header.routing.deployment
+        }
+        RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => &header.routing.deployment,
+    };
+    Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
 fn http_gateway_request_from_admitted_wire(
@@ -634,8 +690,7 @@ fn validate_websocket_jsonrpc_execution_route(
     let target = &resolved.target;
     let routing = &header.routing;
     let ingress = &routing.ingress;
-    if route.assembly_identity() != &routing.assembly_identity
-        || route.generation() != routing.assembly_generation
+    if routing_build_id_mismatch(routing.build_id.as_deref(), route)
         || route.deployment() != &routing.deployment
         || route.selector().path != ingress.path
         || route.selector().method.as_deref() != Some(ingress.method.as_str())
@@ -681,13 +736,10 @@ fn validate_websocket_connect_route(
     if !matches!(
         route.protocol_surface().protocol,
         GatewayProtocolSurface::WebSocketConnect(_)
-    ) || route.assembly_identity() != &routing.assembly_identity
-        || route.generation() != routing.assembly_generation
+    ) || routing_build_id_mismatch(routing.build_id.as_deref(), route)
         || route.deployment() != &routing.deployment
         || route.selector() != selector
         || route.gateway_entry_identity() != &routing.gateway_entry_identity
-        || activation_identity.assembly_identity != routing.assembly_identity
-        || activation_identity.assembly_generation != routing.assembly_generation
         || &activation_identity.deployment != route.entry().owner()
         || route.gateway_entry_identity() != &header.websocket_connect.gateway_entry_identity
         || !route.activation().websocket_entry_matches(
@@ -733,13 +785,10 @@ fn validate_route(
                 GatewayDispatchMode::ServerStream
             )
     );
-    if route.assembly_identity() != &routing.assembly_identity
-        || route.generation() != routing.assembly_generation
+    if routing_build_id_mismatch(routing.build_id.as_deref(), route)
         || route.deployment() != &routing.deployment
         || route.selector() != selector
         || route.gateway_entry_identity() != &routing.gateway_entry_identity
-        || activation_identity.assembly_identity != routing.assembly_identity
-        || activation_identity.assembly_generation != routing.assembly_generation
         || &activation_identity.deployment != route.entry().owner()
         || header.mode != expected_mode
         || !adapter_mode_is_valid
@@ -751,6 +800,16 @@ fn validate_route(
         });
     }
     Ok(())
+}
+
+/// M2 routing authority: when the request carries an exact buildId it must
+/// match the route's deployment artifact identity. Routers without buildId
+/// support fall back to the exact deployment ref match performed by the
+/// ingress key; assembly identity/generation are no longer consumed.
+fn routing_build_id_mismatch(frame_build_id: Option<&str>, route: &ActiveAssemblyRoute) -> bool {
+    frame_build_id.is_some_and(|build_id| {
+        build_id != route.deployment().deployment_artifact_identity.as_str()
+    })
 }
 
 fn effective_deadline(

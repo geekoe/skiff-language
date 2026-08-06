@@ -279,10 +279,18 @@ impl Machine {
                         conn.phase = Phase::CapabilitiesBound;
                     }
                 }
-                Phase::CapabilitiesBound | Phase::RegisterValidated | Phase::Registered => {
+                Phase::CapabilitiesBound | Phase::RegisterValidated => {
                     if snapshot.1.as_deref() == Some(runtime_id.as_str()) {
                         self.terminal(conn_id, Terminal::WrongOrder);
                     } else {
+                        self.terminal(conn_id, Terminal::IdentityChange);
+                    }
+                }
+                Phase::Registered => {
+                    // A same-replica capabilities refresh after registration
+                    // is the runtime's artifact-root / loaded-buildId
+                    // advertisement refresh; it is allowed and idempotent.
+                    if snapshot.1.as_deref() != Some(runtime_id.as_str()) {
                         self.terminal(conn_id, Terminal::IdentityChange);
                     }
                 }

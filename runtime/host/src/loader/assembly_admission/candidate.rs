@@ -13,37 +13,6 @@ impl AssemblyAdmissionController {
         self.begin_exact_candidate(generation, identity)
     }
 
-    pub(super) fn begin_online_transition(
-        &self,
-        transition: &AssemblyTransition,
-    ) -> anyhow::Result<()> {
-        if transition.candidate_generation == 0 {
-            anyhow::bail!("assembly candidate generation must be greater than zero");
-        }
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
-        if let Some(candidate) = &state.candidate {
-            anyhow::bail!(
-                "assembly admission generation {} is already building",
-                candidate.generation
-            );
-        }
-        if state.preparing.is_some() {
-            anyhow::bail!("an assembly activation is already preparing");
-        }
-        state.next_generation = state.next_generation.max(transition.candidate_generation);
-        state.candidate = Some(AssemblyCandidateHealth {
-            generation: transition.candidate_generation,
-            identity: transition.assembly.assembly_identity.clone(),
-            stage: AssemblyCandidateStage::Load,
-            started_at: OffsetDateTime::now_utc(),
-        });
-        state.preparing = Some(transition.clone());
-        Ok(())
-    }
-
     pub(super) fn begin_recovery_candidate(
         &self,
         generation: u64,

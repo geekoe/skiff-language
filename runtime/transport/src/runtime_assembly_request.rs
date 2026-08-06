@@ -14,7 +14,8 @@ mod strict_json;
 
 use lexical::{
     deserialize_assembly_identity, deserialize_dispatch_mode, deserialize_gateway_caller_kind,
-    deserialize_gateway_entry_identity, deserialize_optional_test_case_capability,
+    deserialize_gateway_entry_identity, deserialize_optional_build_id,
+    deserialize_optional_test_case_capability,
     deserialize_optional_test_case_parent_request_id,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
     deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
@@ -196,6 +197,12 @@ pub struct RuntimeAssemblyTaskRequestRoutingFrameHeader {
     pub assembly_generation: u64,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_build_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +295,12 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
     pub assembly_generation: u64,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_build_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyRequestIngressFrameHeader,
@@ -304,6 +317,12 @@ pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
     pub assembly_generation: u64,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_build_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader,
@@ -320,6 +339,12 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
     pub assembly_generation: u64,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_build_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
     pub ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader,

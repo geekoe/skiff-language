@@ -33,14 +33,16 @@ use crate::capability_context::DbProviderSource;
 use crate::host::RuntimeHost;
 
 mod candidate;
+mod loaded_deployments;
 mod provisioning;
 mod recovery;
+
+use loaded_deployments::LoadedDeploymentRegistry;
 
 /// Host-owned immutable assembly published after the complete candidate passes admission.
 #[derive(Debug)]
 pub(crate) struct ActiveAssembly {
     generation: u64,
-    config_snapshot: RuntimeConfigSnapshotRef,
     admitted_at: OffsetDateTime,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
@@ -67,7 +69,6 @@ struct AssemblyTransition {
 #[derive(Debug)]
 struct StagedAssembly {
     transition: AssemblyTransition,
-    prepared: PreparedAssembly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,10 +368,6 @@ impl ActiveAssembly {
         self.generation
     }
 
-    pub(crate) fn config_snapshot(&self) -> &RuntimeConfigSnapshotRef {
-        &self.config_snapshot
-    }
-
     pub(crate) fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
         &self.candidate
     }
@@ -460,6 +457,10 @@ pub(crate) struct AssemblyAdmissionController {
     db_provider: DbProviderSource,
     reload: Mutex<()>,
     state: RwLock<AssemblyAdmissionState>,
+    /// Append-only set of deployments loaded under their buildId (M2 lazy-load
+    /// registry). This is the routing authority: every request locates its
+    /// deployment here, never through the whole-assembly active pointer.
+    loaded: Arc<LoadedDeploymentRegistry>,
 }
 
 impl Default for AssemblyAdmissionController {
@@ -478,6 +479,7 @@ impl AssemblyAdmissionController {
             db_provider,
             reload: Mutex::new(()),
             state: RwLock::new(AssemblyAdmissionState::default()),
+            loaded: Arc::new(LoadedDeploymentRegistry::default()),
         }
     }
 
@@ -643,13 +645,196 @@ impl AssemblyAdmissionController {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn route(
         &self,
         key: &ServiceIngressKey,
     ) -> anyhow::Result<Option<ActiveAssemblyRoute>> {
-        let Some(active) = self.active()? else {
+        let build_id = key.deployment.deployment_artifact_identity.as_str();
+        let Some(active) = self.loaded.lookup(build_id) else {
             return Ok(None);
         };
+        self.route_from_active(active, key)
+    }
+
+    /// Ordered snapshot of every loaded buildId (capability advertisement).
+    pub(crate) fn loaded_build_ids(&self) -> Vec<String> {
+        self.loaded.loaded_build_ids()
+    }
+
+    /// Whether one exact buildId is already in the loaded registry.
+    pub(crate) fn is_loaded(&self, build_id: &str) -> bool {
+        self.loaded.lookup(build_id).is_some()
+    }
+
+    /// Gateway surfaces of every loaded deployment (dispatch-mode capability).
+    pub(crate) fn loaded_gateway_surfaces(
+        &self,
+    ) -> Vec<skiff_artifact_model::GatewayEntryProtocolSurface> {
+        let mut surfaces = Vec::new();
+        for build_id in self.loaded_build_ids() {
+            let Some(active) = self.loaded.lookup(&build_id) else {
+                continue;
+            };
+            surfaces.extend(
+                active
+                    .candidate()
+                    .gateway_entries()
+                    .map(|(_, entry)| entry.protocol_surface().clone()),
+            );
+        }
+        surfaces
+    }
+
+    /// Resolves a route from the loaded registry, lazy-loading the deployment
+    /// under its per-buildId critical section when it is not loaded yet.
+    ///
+    /// Load failures (missing record, unreachable directory, invalid content)
+    /// fast-fail every waiting request; nothing is registered on failure.
+    pub(crate) async fn route_or_lazy_load<R, C>(
+        &self,
+        key: &ServiceIngressKey,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        service_db: Option<&AssemblyActivationServiceDb>,
+        profile: &str,
+    ) -> anyhow::Result<ActiveAssemblyRoute>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
+        let active = self
+            .deployment_image_or_lazy_load(
+                &key.deployment,
+                resolver,
+                config_snapshot_resolver,
+                service_db,
+                profile,
+            )
+            .await?;
+        self.route_from_active(active, key)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "loaded deployment {} has no admitted ingress matching {key:?}",
+                key.deployment.deployment_artifact_identity
+            )
+        })
+    }
+
+    /// Resolves the loaded image for one exact deployment, lazy-loading it
+    /// under its per-buildId critical section when absent.
+    pub(crate) async fn deployment_image_or_lazy_load<R, C>(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        service_db: Option<&AssemblyActivationServiceDb>,
+        profile: &str,
+    ) -> anyhow::Result<Arc<ActiveAssembly>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
+        let build_id = deployment.deployment_artifact_identity.as_str();
+        self.loaded
+            .load_or_wait(build_id, || {
+                self.load_lazy_deployment(
+                    deployment,
+                    resolver,
+                    config_snapshot_resolver,
+                    service_db,
+                    profile,
+                )
+            })
+            .await
+    }
+
+    async fn load_lazy_deployment<R, C>(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        resolver: &R,
+        config_snapshot_resolver: &C,
+        service_db: Option<&AssemblyActivationServiceDb>,
+        profile: &str,
+    ) -> anyhow::Result<Arc<ActiveAssembly>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+        C: skiff_runtime_config_snapshot::RuntimeConfigSnapshotResolver + Sync + ?Sized,
+    {
+        let reference = deployment;
+        info!(
+            event = "runtime.deployment_lazy_load_started",
+            build_id = %reference.deployment_artifact_identity,
+            deployment = %format_args!("{reference:?}")
+        );
+        let hydrated =
+            skiff_runtime_loader::DeploymentAssemblyLoader::new(resolver).load_ref(reference)?;
+        let candidate = link_runtime_assembly(hydrated)
+            .map_err(|error| error.context("lazy-load deployment link failed"))?;
+        validate_candidate(&candidate)?;
+        let candidate = Arc::new(candidate);
+        let config_snapshot_ref = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?
+            .committed
+            .as_ref()
+            .map(|committed| committed.config_snapshot.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "lazy-load deployment {reference:?} requires a bootstrapped config snapshot"
+                )
+            })?;
+        let config_snapshot = config_snapshot_resolver
+            .resolve(&config_snapshot_ref)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "RuntimeConfigSnapshot {} resolution failed during lazy load",
+                    config_snapshot_ref.snapshot_id
+                )
+            })?;
+        if *config_snapshot.snapshot_ref() != config_snapshot_ref {
+            anyhow::bail!(
+                "RuntimeConfigSnapshot {} rejected: resolved content does not match the requested opaque id",
+                config_snapshot_ref.snapshot_id
+            );
+        }
+        if let Err(error) =
+            super::config_snapshot::validate_snapshot_profile(&config_snapshot, profile)
+        {
+            anyhow::bail!("lazy-load deployment {reference:?} rejected: {error}");
+        }
+        let contexts = ActiveAssemblyContextSet::from_candidate(
+            &candidate,
+            0,
+            &self.runtime_replica_id,
+            &self.db_provider,
+            service_db,
+            Some(profile),
+            Some(&config_snapshot),
+        )
+        .await
+        .map_err(|error| {
+            error.context("lazy-load deployment activation context construction failed")
+        })?;
+        let active = Arc::new(ActiveAssembly {
+            generation: 0,
+            admitted_at: OffsetDateTime::now_utc(),
+            candidate,
+            contexts: Arc::new(contexts),
+        });
+        info!(
+            event = "runtime.deployment_lazy_loaded",
+            build_id = %reference.deployment_artifact_identity,
+            deployment = %format_args!("{reference:?}")
+        );
+        Ok(active)
+    }
+
+    fn route_from_active(
+        &self,
+        active: Arc<ActiveAssembly>,
+        key: &ServiceIngressKey,
+    ) -> anyhow::Result<Option<ActiveAssemblyRoute>> {
         let Some(entry) = active.ingress(key).cloned() else {
             return Ok(None);
         };
@@ -823,7 +1008,6 @@ impl AssemblyAdmissionController {
         let admitted_at = OffsetDateTime::now_utc();
         let active = Arc::new(ActiveAssembly {
             generation,
-            config_snapshot: prepared.config_snapshot,
             admitted_at,
             candidate: prepared.candidate,
             contexts: prepared.contexts,
@@ -846,6 +1030,12 @@ impl AssemblyAdmissionController {
             observed_at: admitted_at,
             error: None,
         });
+        for (deployment, _) in active.candidate().activations() {
+            self.loaded.register(
+                deployment.deployment_artifact_identity.as_str(),
+                Arc::clone(&active),
+            );
+        }
         Ok(active)
     }
 }
@@ -949,13 +1139,14 @@ impl RuntimeHost {
         self.assembly_admission.active()
     }
 
-    #[allow(dead_code)] // Control-plane health consumes this without owning admission state.
+    #[cfg(test)]
     pub(crate) fn runtime_assembly_admission_health(
         &self,
     ) -> anyhow::Result<AssemblyAdmissionHealth> {
         self.assembly_admission.health()
     }
 
+    #[cfg(test)]
     pub(crate) fn active_runtime_assembly_route(
         &self,
         key: &ServiceIngressKey,
@@ -1065,7 +1256,6 @@ fn publish_committed_locked(
     }
     let active = Arc::new(ActiveAssembly {
         generation: prepared.generation,
-        config_snapshot: prepared.config_snapshot,
         admitted_at,
         candidate: prepared.candidate,
         contexts: prepared.contexts,

@@ -344,9 +344,16 @@ pub(crate) async fn reloaded_gateway_host(
         .admit(Arc::clone(&fixture.assembly), &resolver)
         .await
         .expect("gateway generation two should admit");
+    // M2 loaded set is append-only per buildId: re-admitting the same
+    // deployment keeps the first loaded image (content-addressed identity).
     let current = host
         .lookup_active_assembly_request_route(&key)
         .expect("generation two route");
+    assert_eq!(
+        pinned.generation(),
+        current.generation(),
+        "same buildId must resolve to the same loaded image"
+    );
     (host, pinned, current)
 }
 

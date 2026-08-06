@@ -51,7 +51,24 @@ impl AssemblyAdmissionController {
             )
             .await
             .map_err(|(_, error)| error)?;
-        self.publish_recovered_committed(prepared, committed)
+        let active = self.publish_recovered_committed(prepared, committed)?;
+        self.register_active_deployments(&active)?;
+        Ok(active)
+    }
+
+    /// Registers every deployment of a materialized assembly into the loaded
+    /// registry under its deployment artifact identity (buildId).
+    pub(crate) fn register_active_deployments(
+        &self,
+        active: &Arc<ActiveAssembly>,
+    ) -> anyhow::Result<()> {
+        for (deployment, _) in active.candidate().activations() {
+            self.loaded.register(
+                deployment.deployment_artifact_identity.as_str(),
+                Arc::clone(active),
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn discard_transient_for_reconnect(&self) -> anyhow::Result<()> {

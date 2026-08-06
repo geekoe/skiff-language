@@ -106,7 +106,7 @@ fn prepare_control(
 }
 
 #[tokio::test]
-async fn whole_candidate_db_provisioning_completes_before_prepared_ack() {
+async fn prepare_ack_does_not_trigger_db_provisioning() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
@@ -142,31 +142,29 @@ async fn whole_candidate_db_provisioning_completes_before_prepared_ack() {
             ..
         }
     ));
-    let provisioned = provider.provisioned.lock().unwrap();
-    assert_eq!(provisioned.len(), 1);
-    assert_eq!(provisioned[0].len(), 1);
-    assert_eq!(provisioned[0][0].environment, "fixture");
-    assert_eq!(
-        provisioned[0][0].service_id,
-        fixture.assembly.roots[0].service_id
+    // M2: Prepare is wire compatibility only and must not load, materialize or
+    // provision anything.
+    assert!(
+        provider.provisioned.lock().unwrap().is_empty(),
+        "Prepare must not trigger DB provisioning"
     );
-    assert_eq!(
-        provider.built.lock().unwrap().as_slice(),
-        provisioned[0].as_slice()
+    assert!(
+        provider.built.lock().unwrap().is_empty(),
+        "Prepare must not build capability sources"
     );
     assert!(
         controller.active().unwrap().is_none(),
-        "prepare must stage only; commit remains the publication point"
+        "prepare must not publish any active assembly"
     );
 }
 
 #[tokio::test]
-async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_generation() {
+async fn prepare_ack_preserves_committed_generation_and_abort_is_idempotent() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
         config_snapshot_for_assembly("fixture", &fixture.assembly, &fixture.resolver);
-    let provider = BlockingProvisionProvider::default();
+    let provider = AdmissionGateDbProvider::default();
     let controller = AssemblyAdmissionController::new(
         "runtime-index-cancel",
         DbProviderSource::new(provider.clone()),
@@ -183,11 +181,8 @@ async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_gener
         )
         .await
         .expect("baseline committed generation should recover");
-    provider.blocking.store(true, Ordering::Release);
+    let provisioned_before = provider.provisioned.lock().unwrap().len();
 
-    let cancellation = CancellationSource::new();
-    let cancellation_token = cancellation.token();
-    let service_db = mapping_service_db();
     let prepare_control = prepare_control(
         "index-cancel",
         1,
@@ -196,38 +191,29 @@ async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_gener
         config_snapshot.clone(),
         "runtime-index-cancel",
     );
-    let prepare = controller.apply_cancellable_activation_control(
-        prepare_control.clone(),
-        &fixture.resolver,
-        &config_resolver,
-        Some(&service_db),
-        &cancellation_token,
-    );
-    tokio::pin!(prepare);
-    tokio::select! {
-        () = provider.started.notified() => {}
-        result = &mut prepare => panic!("blocking provision completed before cancellation: {result:?}"),
-    }
-
-    cancellation.cancel();
-    let reply = tokio::time::timeout(Duration::from_millis(100), &mut prepare)
+    let reply = controller
+        .apply_activation_control(
+            prepare_control.clone(),
+            &fixture.resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
         .await
-        .expect("cancelled prepare must finish within 100ms")
-        .expect("cancelled prepare must cleanly complete");
-    assert!(
-        reply.is_none(),
-        "cancelled prepare must not emit Prepared or Reject"
-    );
-    tokio::time::timeout(Duration::from_millis(100), provider.dropped.notified())
-        .await
-        .expect("cancellation must drop the pending provider future");
+        .expect("prepare control should return a reply")
+        .expect("prepare control should return a terminal reply");
+    assert!(matches!(reply, AssemblyActivationControl::Prepared { .. }));
 
+    // M2: Prepare must not disturb the committed generation or provision.
     let health = controller.health().expect("admission health");
     assert!(health.candidate.is_none());
-    assert!(health.last_outcome.is_none());
     let current = controller.active().unwrap().unwrap();
     assert!(Arc::ptr_eq(&active, &current));
     assert_eq!(current.generation(), 1);
+    assert_eq!(
+        provider.provisioned.lock().unwrap().len(),
+        provisioned_before,
+        "Prepare must not trigger additional DB provisioning"
+    );
 
     let abort = match prepare_control {
         AssemblyActivationControl::Prepare {
@@ -258,12 +244,13 @@ async fn cancelled_prepare_drops_pending_provision_and_preserves_committed_gener
             Some(&mapping_service_db()),
         )
         .await
-        .expect("durable abort after prepare cancellation must be idempotent")
+        .expect("abort without pending materialization must be idempotent")
         .is_none());
+    assert!(Arc::ptr_eq(&active, &controller.active().unwrap().unwrap()));
 }
 
 #[tokio::test]
-async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_active() {
+async fn commit_records_tuple_without_provisioning_and_preserves_loaded_deployments() {
     let fixture = CollectionIdentityFixture::new(BTreeMap::new(), None);
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
     let (config_snapshot, config_resolver) =
@@ -287,46 +274,83 @@ async fn index_reconciliation_failures_reject_prepare_and_keep_old_generation_ac
         .expect("initial committed generation should recover");
     let active = controller.active().unwrap().unwrap();
     assert_eq!(active.generation(), 1);
+    let provisioned_before = provider.provisioned.lock().unwrap().len();
 
-    for (case, failure) in [
-        ("unique-duplicate", "unique index duplicate data"),
-        ("managed-mismatch", "managed index definition mismatch"),
-        ("stale-managed", "stale managed index"),
-    ] {
-        provider.fail_with(failure);
-        let build_count = provider.built.lock().unwrap().len();
-        let reply = controller
-            .apply_activation_control(
-                prepare_control(
-                    case,
-                    1,
-                    2,
-                    reference.clone(),
-                    config_snapshot.clone(),
-                    "runtime-index-reject",
-                ),
-                &fixture.resolver,
-                &config_resolver,
-                Some(&mapping_service_db()),
-            )
-            .await
-            .expect("provisioning failure should produce a reject reply")
-            .expect("prepare must return reject");
-        assert!(matches!(
+    // Any accidental materialization during Commit would hit the injected
+    // provisioning failure and fail the reply; the M2 Commit must not load.
+    provider.fail_with("unique index duplicate data");
+    let commit = match prepare_control(
+        "index-commit",
+        1,
+        2,
+        reference.clone(),
+        config_snapshot.clone(),
+        "runtime-index-reject",
+    ) {
+        AssemblyActivationControl::Prepare {
+            profile,
+            activation_id,
+            expected_generation,
+            candidate_generation,
+            assembly,
+            config_snapshot,
+            replica_id,
+            ..
+        } => AssemblyActivationControl::Commit {
+            profile,
+            activation_id,
+            expected_generation,
+            candidate_generation,
+            assembly,
+            config_snapshot,
+            replica_id,
+            service_db: None,
+        },
+        _ => unreachable!(),
+    };
+    let reply = controller
+        .apply_activation_control(
+            commit,
+            &fixture.resolver,
+            &config_resolver,
+            Some(&mapping_service_db()),
+        )
+        .await
+        .expect("commit control should return a reply")
+        .expect("commit control should return a terminal reply");
+    assert!(
+        matches!(
             reply,
-            AssemblyActivationControl::Reject {
-                reason: AssemblyActivationRejectReason::Admission,
+            AssemblyActivationControl::Register {
+                generation: 2,
                 ..
             }
-        ));
-        assert_eq!(
-            provider.built.lock().unwrap().len(),
-            build_count,
-            "capability sources must not build after provisioning fails"
-        );
-        assert!(Arc::ptr_eq(&active, &controller.active().unwrap().unwrap()));
-        assert_eq!(controller.active().unwrap().unwrap().generation(), 1);
-    }
+        ),
+        "unexpected commit reply: {reply:?}"
+    );
+    assert_eq!(
+        provider.provisioned.lock().unwrap().len(),
+        provisioned_before,
+        "Commit must not trigger additional DB provisioning"
+    );
+    // Committed metadata tracks the tuple; loaded deployments stay untouched.
+    assert!(matches!(
+        controller.registration().unwrap(),
+        Some(AssemblyActivationControl::Register { generation: 2, .. })
+    ));
+    assert!(Arc::ptr_eq(&active, &controller.active().unwrap().unwrap()));
+    assert_eq!(controller.active().unwrap().unwrap().generation(), 1);
+    let deployment_build_id = fixture
+        .assembly
+        .resolved_deployments
+        .first()
+        .expect("fixture deployment")
+        .deployment_artifact_identity
+        .as_str();
+    assert!(
+        controller.is_loaded(deployment_build_id),
+        "recovered deployment must stay in the loaded registry"
+    );
 }
 
 #[tokio::test]

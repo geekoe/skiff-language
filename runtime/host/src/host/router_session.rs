@@ -512,12 +512,12 @@ impl Drop for ConnectedRouterSessionGuard {
 }
 
 #[derive(Clone)]
-struct ConnectionBootstrap {
-    resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
-    config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
-    service_db: skiff_artifact_model::AssemblyActivationServiceDb,
-    activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
-    max_response_bytes: usize,
+pub(crate) struct ConnectionBootstrap {
+    pub(crate) resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+    pub(crate) config_snapshot_store: skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore,
+    pub(crate) service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+    pub(crate) activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
+    pub(crate) max_response_bytes: usize,
 }
 
 #[cfg(test)]
@@ -834,6 +834,9 @@ async fn dispatch_router_binary_frame_inner(
                 ));
             }
             let installed = decode_connection_bootstrap(typed, &payload)?;
+            host.set_bootstrap_artifact_root(
+                installed.resolver.store().root().display().to_string(),
+            );
             host.recover_durable_committed(
                 &installed.activation.profile,
                 installed.activation.generation,
@@ -926,7 +929,7 @@ async fn dispatch_router_binary_frame_inner(
                 router_session_id,
                 header,
                 payload,
-                bootstrap.max_response_bytes,
+                bootstrap,
                 sender.clone(),
             )
             .await;

@@ -377,6 +377,9 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             package_test_dispatch: true,
             request_cancel: true,
             runtime_program: true,
+            artifact_root: Some("/tmp/skiff-artifacts".to_string()),
+            lazy_load: true,
+            loaded_build_ids: vec!["skiff-deployment-artifact-v4:sha256:abc".to_string()],
         },
         gateway_entry_identities: vec![
             "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -426,6 +429,9 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             package_test_dispatch: true,
             request_cancel: true,
             runtime_program: true,
+            artifact_root: Some("/tmp/skiff-artifacts".to_string()),
+            lazy_load: true,
+            loaded_build_ids: vec!["skiff-deployment-artifact-v4:sha256:abc".to_string()],
         })
     );
     assert_eq!(
