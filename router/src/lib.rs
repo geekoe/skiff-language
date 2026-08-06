@@ -73,9 +73,8 @@ pub use listener::{
     ListenerStartOptions, RouterListeners, WsTaskRegistry,
 };
 pub use routing::{
-    CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
-    DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
-    RuntimeCandidateQuery, SessionCancellation,
+    CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
+    RegisteredSessionLease, RoutingQueryCounters, RuntimeCandidateQuery, SessionCancellation,
 };
 pub use release::{ReleaseResolver, StoreReleaseResolver};
 pub use session::{

@@ -13,13 +13,13 @@ use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use crate::bootstrap::RoutingEpoch;
-use crate::routing::{CandidateQuery, DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
+use crate::routing::{DispatchMode, RegisteredSessionLease, RuntimeCandidateQuery};
 use crate::session::identity::RuntimeSessionEpoch;
 
 use super::admission::{Permit, PermitLedger, RuntimeAdmissionPool, SelectedLease};
 use super::candidate::{
-    candidate_query_from_request, dispatch_mode_from_wire, CandidateViewSource, LeaseRevalidate,
-    RevalidateOutcome, RoutingEpochSource,
+    candidate_query_from_build_id, candidate_query_from_request, dispatch_mode_from_wire,
+    CandidateViewSource, LeaseRevalidate, RevalidateOutcome, RoutingEpochSource,
 };
 use super::frame::{
     RuntimePeer, RuntimeResponseFrame, SessionAbortControl, TaskAttemptTerminalOutcome,
@@ -218,23 +218,21 @@ impl RequestDispatcher {
                 reason: SubmitRejectReason::NoCandidate,
             };
         };
-        let query = candidate_query_from_request(&request);
+        let Some(query) = candidate_query_from_request(&request) else {
+            inner.pool.record_no_candidate();
+            return SubmitResult::Rejected {
+                request_id,
+                reason: SubmitRejectReason::NoCandidate,
+            };
+        };
         let view = self.options.candidate_view.view();
-        let leases = match RuntimeCandidateQuery.query(&epoch, &view, &query) {
-            Ok(leases) => leases,
-            Err(_) => {
-                inner.pool.record_no_candidate();
-                return SubmitResult::Rejected {
-                    request_id,
-                    reason: SubmitRejectReason::NoCandidate,
-                };
-            }
-        }
-        .into_iter()
-        .filter(|lease| {
-            !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
-        })
-        .collect::<Vec<_>>();
+        let leases = RuntimeCandidateQuery
+            .query(&view, &query)
+            .into_iter()
+            .filter(|lease| {
+                !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
+            })
+            .collect::<Vec<_>>();
         if leases.is_empty() {
             inner.pool.record_no_candidate();
             return SubmitResult::Rejected {
@@ -707,27 +705,25 @@ impl RequestDispatcher {
                 reason: SubmitRejectReason::NoCandidate,
             };
         };
-        let query = CandidateQuery {
-            mode: DispatchMode::Unary,
-            deployment: attempt.header.routing.deployment.clone(),
+        let Some(query) = candidate_query_from_build_id(
+            DispatchMode::Unary,
+            attempt.header.routing.build_id.as_deref(),
+        ) else {
+            inner.pool.record_no_candidate();
+            inner.task_attempt_rejected += 1;
+            return TaskAttemptSubmitResult::Rejected {
+                request_id,
+                reason: SubmitRejectReason::NoCandidate,
+            };
         };
         let view = self.options.candidate_view.view();
-        let mut leases = match RuntimeCandidateQuery.query(&epoch, &view, &query) {
-            Ok(leases) => leases,
-            Err(_) => {
-                inner.pool.record_no_candidate();
-                inner.task_attempt_rejected += 1;
-                return TaskAttemptSubmitResult::Rejected {
-                    request_id,
-                    reason: SubmitRejectReason::NoCandidate,
-                };
-            }
-        }
-        .into_iter()
-        .filter(|lease| {
-            !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
-        })
-        .collect::<Vec<_>>();
+        let mut leases = RuntimeCandidateQuery
+            .query(&view, &query)
+            .into_iter()
+            .filter(|lease| {
+                !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
+            })
+            .collect::<Vec<_>>();
         // Test-case attempts (F2a) must execute on the exact origin Runtime
         // connection; any other placement is a fail-closed rejection.
         let prefer_session = attempt.prefer_session.clone();

@@ -385,18 +385,27 @@ mod tests {
                 tuple: tuple(),
                 registered: true,
                 cancelled: false,
+                registered_build_ids: Vec::new(),
+                lazy_load: false,
+                artifact_root: None,
             },
             SessionFacts {
                 session: session("runtime-b"),
                 tuple: tuple(),
                 registered: false,
                 cancelled: true,
+                registered_build_ids: Vec::new(),
+                lazy_load: false,
+                artifact_root: None,
             },
             SessionFacts {
                 session: session("runtime-c"),
                 tuple: tuple(),
                 registered: false,
                 cancelled: false,
+                registered_build_ids: Vec::new(),
+                lazy_load: false,
+                artifact_root: None,
             },
         ];
         let observations = HashMap::from([
@@ -444,6 +453,9 @@ mod tests {
             tuple: tuple(),
             registered: true,
             cancelled: false,
+            registered_build_ids: Vec::new(),
+            lazy_load: false,
+            artifact_root: None,
         }];
         let connected = HashSet::from([session("runtime-a")]);
         let runtimes = project_loop_risk_runtimes(
@@ -497,6 +509,9 @@ mod tests {
             tuple: tuple(),
             registered: true,
             cancelled: false,
+            registered_build_ids: Vec::new(),
+            lazy_load: false,
+            artifact_root: None,
         }];
         let value = serde_json::to_value(project_replicas(
             &facts,

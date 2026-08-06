@@ -14,7 +14,6 @@
 pub mod query;
 
 pub use query::{
-    CandidateDirectoryView, CandidateQuery, CandidateQueryError, CandidateSession,
-    DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
-    RuntimeCandidateQuery, SessionCancellation,
+    CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
+    RegisteredSessionLease, RoutingQueryCounters, RuntimeCandidateQuery, SessionCancellation,
 };

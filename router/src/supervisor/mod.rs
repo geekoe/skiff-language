@@ -337,7 +337,7 @@ impl RouterComponents {
                 RuntimeDispatcherOptions::new(
                     usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
                     Arc::new(StoreRoutingEpochSource::new(Arc::clone(&epoch_store))),
-                    Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+                    Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
                     Arc::new(SessionRuntimePeer::new(session_handle.clone())),
                     Arc::new(LayerSessionAbort::new(session_handle.clone())),
@@ -356,7 +356,7 @@ impl RouterComponents {
         let ws_lane_handle = WsLaneHandle::new();
         let production_selector = Arc::new(ProductionWsConnectSelector::new(
             Arc::clone(&epoch_store),
-            Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+            Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
             usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
         ));
         let ws_pool = production_selector.pool();
@@ -394,7 +394,7 @@ impl RouterComponents {
             )),
             candidates: Arc::new(RoutingCandidateQueryPortAdapter::new(
                 Arc::clone(&epoch_store),
-                Arc::new(SessionCandidateViewSource::new(session_handle.clone())),
+                Arc::new(SessionCandidateViewSource::new(session_handle.clone(), Some(config.artifacts_path.to_string_lossy().into_owned()))),
             )),
             sessions: Arc::new(ActivationSessionEnqueuePort::new(session_handle.clone())),
             publish: Arc::new(EpochStorePublishPort::new(Arc::clone(&epoch_store))),

@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
-  "scenario": "build-id-not-loaded-excluded",
+  "scenario": "build-id-loaded-with-missing-capability-excluded",
+  "routerArtifactRoot": "/shared/artifacts",
   "epoch": {
     "profile": "prod",
     "generation": 42,
@@ -14,7 +15,7 @@
     }
   },
   "query": {
-    "mode": "unary",
+    "mode": "serverStream",
     "buildId": "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   },
   "sessions": [
@@ -29,24 +30,22 @@
       "tuple": {
         "profile": "prod",
         "generation": 42,
-        "assembly": "skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
       "capabilities": [
-        "unary",
-        "serverStream"
+        "unary"
       ],
       "loadedBuildIds": [
-        "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       ],
-      "lazyLoad": false,
-      "artifactRoot": null
+      "lazyLoad": true,
+      "artifactRoot": "/shared/artifacts"
     }
   ],
   "expect": {
     "candidates": [],
-    "note": "registered session without the queried buildId in loadedBuildIds is excluded (the exact-tuple rule is retired; the session's registered tuple is retained for revalidation but does not gate the projection)"
-  },
-  "routerArtifactRoot": null
+    "note": "buildId eligibility is satisfied, but the missing serverStream capability excludes the session"
+  }
 }

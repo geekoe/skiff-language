@@ -91,7 +91,7 @@ mod tests {
             let query = build_query(&fixture);
             let query_port = RuntimeCandidateQuery;
             let (leases, counters) = query_port
-                .query_with_counters(&epoch, &view, &query)
+                .query_with_counters(&view, &query)
                 .unwrap_or_else(|error| panic!("{name} must project: {error}"));
 
             assert_eq!(
@@ -141,7 +141,7 @@ mod tests {
         let view = build_view(&fixture);
         let query = build_query(&fixture);
         let leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &query)
+            .query(&view, &query)
             .expect("heartbeat-stale session must still project");
         assert_eq!(leases.len(), 1);
     }
@@ -160,7 +160,7 @@ mod tests {
         let view = build_view(&fixture);
         let query = build_query(&fixture);
         let leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &query)
+            .query(&view, &query)
             .expect("captured epoch must project");
         assert_eq!(candidate_ids(&fixture, &leases), vec!["s1"]);
         assert_eq!(leases[0].exact_registered_tuple, epoch.registered_tuple());
@@ -179,7 +179,7 @@ mod tests {
 
         query.mode = DispatchMode::ServerStream;
         let leases = RuntimeCandidateQuery
-            .query(&epoch, &view, &query)
+            .query(&view, &query)
             .expect("serverStream query must project");
         assert_eq!(leases.len(), 1);
         assert!(

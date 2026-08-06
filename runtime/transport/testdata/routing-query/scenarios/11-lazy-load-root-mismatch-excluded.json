@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
-  "scenario": "build-id-not-loaded-excluded",
+  "scenario": "lazy-load-root-mismatch-excluded",
+  "routerArtifactRoot": "/shared/artifacts",
   "epoch": {
     "profile": "prod",
     "generation": 42,
@@ -29,7 +30,7 @@
       "tuple": {
         "profile": "prod",
         "generation": 42,
-        "assembly": "skiff-runtime-assembly-v3:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "cancelled": false,
@@ -37,16 +38,13 @@
         "unary",
         "serverStream"
       ],
-      "loadedBuildIds": [
-        "skiff-deployment-artifact-v4:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      ],
-      "lazyLoad": false,
-      "artifactRoot": null
+      "loadedBuildIds": [],
+      "lazyLoad": true,
+      "artifactRoot": "/elsewhere/artifacts"
     }
   ],
   "expect": {
     "candidates": [],
-    "note": "registered session without the queried buildId in loadedBuildIds is excluded (the exact-tuple rule is retired; the session's registered tuple is retained for revalidation but does not gate the projection)"
-  },
-  "routerArtifactRoot": null
+    "note": "lazyLoad with a different artifact root and the buildId not loaded excludes the session"
+  }
 }
