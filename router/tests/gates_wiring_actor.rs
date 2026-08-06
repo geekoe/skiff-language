@@ -130,7 +130,6 @@ fn sink() -> (ActorFrameSink, Arc<FakeWsSessionWriter>) {
     let sink = ActorFrameSink::new(
         components,
         session,
-        store,
         writer.clone(),
         Arc::new(SystemClock),
         Arc::new(skiff_router::task::NoopActorAttemptTerminalSink),

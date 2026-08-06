@@ -117,7 +117,11 @@ impl ReleaseTaskExecutionImageSource {
             target_profile: self.profile.clone(),
             package_version: version.to_string(),
             assembly: skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(identity),
+                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(format!(
+                    "{}:{}",
+                    skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
+                    identity_hash(identity)
+                )),
             },
             config_snapshot: skiff_artifact_model::RuntimeConfigSnapshotRef {
                 snapshot_id,

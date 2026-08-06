@@ -42,7 +42,6 @@ use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::actor::ActorComponents;
 use crate::supervisor::ws::WsSessionWriter;
-use skiff_deployment::storage::CanonicalArtifactStore;
 use crate::task::{
     ActorAttemptTerminal, ActorAttemptTerminalSink, TaskAttemptInvocationCorrelation,
 };
@@ -58,8 +57,6 @@ use super::session_ports::SessionHandle;
 pub struct ActorFrameSink {
     components: Arc<ActorComponents>,
     session: SessionHandle,
-    /// Deployment record reads for package-slot owner resolution (M4).
-    artifact_store: CanonicalArtifactStore,
     writer: Arc<dyn WsSessionWriter>,
     clock: Arc<dyn Clock>,
     task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
@@ -79,7 +76,6 @@ impl ActorFrameSink {
     pub fn new(
         components: Arc<ActorComponents>,
         session: SessionHandle,
-        artifact_store: CanonicalArtifactStore,
         writer: Arc<dyn WsSessionWriter>,
         clock: Arc<dyn Clock>,
         task_attempt_terminal: Arc<dyn ActorAttemptTerminalSink>,
@@ -87,7 +83,6 @@ impl ActorFrameSink {
         Self {
             components,
             session,
-            artifact_store,
             writer,
             clock,
             task_attempt_terminal,
@@ -343,15 +338,24 @@ impl ActorFrameSink {
     /// Resolves the service id an actor's logical key must use: the actor's
     /// own declaration owner service, not the caller's service. Same-service
     /// actors keep the wire caller id; package-owned actors are normalized to
-    /// the deployment service that owns the declaration owner's package slot
-    /// (M4: the owning deployment record's package bindings; no assembly).
+    /// the deployment service that owns the declaration owner's package (M4:
+    /// the actor routing catalog; no assembly).
+    ///
+    /// The wire package slot is the runtime's assembly code-slot index; the
+    /// deployment record's `packageBindings` is a per-binding table with a
+    /// different, revision-varying order, so the slot is not interpretable
+    /// against it. The catalog pins the actor's declaration package and its
+    /// owning deployment directly: the caller's own deployment entry is
+    /// preferred (the caller's request already runs in that deployment's
+    /// service database), with a cross-package fallback to the first catalog
+    /// entry for the actor's ABI.
     fn actor_owner_service_id(
         &self,
         header: &ActorGetOrCreateRequestFrameHeader,
     ) -> Result<String, &'static str> {
         match &header.declaration_owner.unit {
             ActorOwnerUnitFrameHeader::Service => Ok(header.actor_key.service_id.clone()),
-            ActorOwnerUnitFrameHeader::Package(slot) => {
+            ActorOwnerUnitFrameHeader::Package(_slot) => {
                 let actor = ActorRoutingRef {
                     service_id: header.actor_key.service_id.clone(),
                     actor_abi_identity: ActorAbiIdentity::new(
@@ -366,21 +370,14 @@ impl ActorFrameSink {
                 let owning = catalog
                     .methods_for_actor(&actor)
                     .next()
+                    .or_else(|| {
+                        catalog
+                            .entries()
+                            .iter()
+                            .find(|entry| entry.actor.actor_abi_identity == actor.actor_abi_identity)
+                    })
                     .ok_or("ActorOwnerServiceUnresolved")?;
-                let record = self
-                    .artifact_store
-                    .read_service_deployment(&owning.deployment)
-                    .map_err(|_| "ActorOwnerServiceUnresolved")?;
-                let binding = record
-                    .package_bindings
-                    .get(*slot as usize)
-                    .ok_or("ActorOwnerServiceUnresolved")?;
-                catalog
-                    .entries()
-                    .iter()
-                    .find(|entry| &entry.package == &binding.package)
-                    .map(|entry| entry.deployment.service_id.clone())
-                    .ok_or("ActorOwnerServiceUnresolved")
+                Ok(owning.deployment.service_id.clone())
             }
         }
     }

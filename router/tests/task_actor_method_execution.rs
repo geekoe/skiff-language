@@ -476,8 +476,6 @@ fn rig() -> Rig {
     let sink = Arc::new(ActorFrameSink::new(
         Arc::clone(&actor),
         session_handle,
-        skiff_deployment::storage::CanonicalArtifactStore::open(catalog_root.path())
-            .expect("open artifact store"),
         Arc::new(FakeWriter::default()) as Arc<dyn WsSessionWriter>,
         Arc::clone(&clock) as Arc<dyn Clock>,
         Arc::clone(&control) as Arc<dyn skiff_router::task::ActorAttemptTerminalSink>,

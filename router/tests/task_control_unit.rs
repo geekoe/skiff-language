@@ -164,8 +164,6 @@ fn actor_lane_stub() -> (
     let sink = Arc::new(ActorFrameSink::new(
         Arc::clone(&components),
         session,
-        skiff_deployment::storage::CanonicalArtifactStore::open(&root)
-            .expect("artifact store open"),
         Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
         Arc::new(TestClock::default()),
         Arc::new(NoopActorAttemptTerminalSink),

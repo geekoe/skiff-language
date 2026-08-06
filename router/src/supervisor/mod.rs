@@ -401,7 +401,6 @@ impl RouterComponents {
         let actor_sink = Arc::new(ActorFrameSink::new(
             Arc::clone(&actor),
             session_handle.clone(),
-            assembly.store().clone(),
             Arc::clone(&session_writer),
             Arc::new(WsSystemClock),
             Arc::clone(&task_control) as Arc<dyn crate::task::ActorAttemptTerminalSink>,
