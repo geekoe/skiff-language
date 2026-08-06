@@ -173,6 +173,44 @@ The canonical command path is `skiff service dev registry`. The retired
 The exact registry, fingerprint, retry, and CAS contract is defined in
 [`managed-dev-watch.md`](../doc/architecture/managed-dev-watch.md).
 
+## Deploy Pipeline CLI
+
+`skiff deploy`, `skiff verify`, and `skiff rollback` drive the release pointer
+table `(profile, serviceId, version) -> buildId`:
+
+```bash
+node scripts/skiff.mjs deploy <service> <version> --root <dir> --artifact-root <dir> --profile <name> [--control-url <url>] [--skip-verify] [--verify-timeout-ms <ms>]
+node scripts/skiff.mjs verify <service> <version> --artifact-root <dir> --profile <name> [--control-url <url>]
+node scripts/skiff.mjs rollback <service> <version> [--to <build-id>] --artifact-root <dir> --profile <name>
+```
+
+`deploy` publishes `<root>` through `package publish`, which writes the
+release pointer in the same transaction, records the pointer observed before
+the deploy, then waits for `/__router/health` `activeAssembly.buildIds` to
+project the new buildId (default 30s; `--verify-timeout-ms` overrides,
+`--skip-verify` skips the wait) and fails closed on timeout. Re-deploying the
+same content is idempotent and keeps the same buildId. The pre-deploy pointer
+is stored in a rollback record at
+`<artifact-root>/pointers/rollback/<profile>/<service~enc>/<version>.json`
+(schema `skiff-deploy-rollback-v1`, containing the previous pointer, the
+deployed buildId, and the timestamp). Each deploy overwrites the record, so
+rollback returns to the state before the last deploy.
+
+`verify` fails closed unless the release pointer is set, its exact deployment
+record exists under `records/service-deployments/`, and the router health
+projection is reachable for the profile; it prints the resolved buildId and
+health status.
+
+`rollback` writes the pointer back to the recorded pre-deploy buildId (or to
+`--to <build-id>` explicitly) as a compare-and-swap against the current
+pointer. The target buildId must have a deployment record (fail-closed), the
+rollback record must exist when `--to` is omitted, and any concurrent pointer
+change aborts the write.
+
+`--control-url` defaults to `http://127.0.0.1:4001` (`SKIFF_DEV_CONTROL_URL`
+overrides). All three commands accept `--json` for machine-readable receipts
+and exit non-zero on any failure.
+
 ## Language Instance CLI
 
 When developing the Skiff language repository itself, use an instance selected

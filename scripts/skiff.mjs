@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { runAuthoringObjectCommand } from './lib/package-service-authoring.mjs';
+import { runDeployCommand } from './lib/deploy-command.mjs';
 import { runDevRegistryCommand } from './lib/package-service-dev-registry.mjs';
 import { runReleaseCommand } from './lib/release-command.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
@@ -63,6 +64,9 @@ const usage = `usage:
   skiff release set --artifact-root <dir> --profile <name> --service <id> --version <v> --build-id <id> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release unset --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release get --artifact-root <dir> --profile <name> --service <id> --version <v> [--json]
+  skiff deploy <service> <version> --root <dir> --artifact-root <dir> --profile <name> [--control-url <url>] [--skip-verify] [--verify-timeout-ms <ms>] [--json]
+  skiff verify <service> <version> --artifact-root <dir> --profile <name> [--control-url <url>] [--json]
+  skiff rollback <service> <version> [--to <build-id>] --artifact-root <dir> --profile <name> [--json]
   skiff stack build --configDir <dir> [--profile debug|release]
   skiff stack init --configDir <dir>
   skiff stack deploy --configDir <dir>
@@ -114,6 +118,11 @@ async function main(args) {
       return;
     case 'release':
       await runReleaseCommand(args, { skiffRoot });
+      return;
+    case 'deploy':
+    case 'verify':
+    case 'rollback':
+      await runDeployCommand([command, ...args], { skiffRoot });
       return;
     case 'stack':
       await stackCommand(args);
