@@ -519,7 +519,7 @@ async function authorAgineStack({
 }
 
 function isUnpublishedExactDependency(error) {
-  return /has no published (?:PackageArtifact|ServiceContract) pointer/.test(
+  return /has no published (?:provider )?(?:PackageArtifact|ServiceContract) pointer/.test(
     errorMessage(error),
   );
 }

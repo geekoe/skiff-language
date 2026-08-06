@@ -859,7 +859,7 @@ async fn dispatch_router_binary_frame_inner(
                 bytes,
             )
             .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(reply) = host
+            let applied = host
                 .apply_bootstrapped_assembly_activation_control(
                     control,
                     &bootstrap.resolver,
@@ -867,8 +867,13 @@ async fn dispatch_router_binary_frame_inner(
                     Some(&bootstrap.service_db),
                 )
                 .await
-                .map_err(|error| RuntimeError::Decode(error.to_string()))?
-            {
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            // The dispatch surface derives from the active assembly, which an
+            // activation commit may replace (e.g. a runtime that connected
+            // under the seeded empty assembly then loads a real one); refresh
+            // the router's view so admission can route to this session.
+            host.queue_runtime_capabilities(sender.clone())?;
+            if let Some(reply) = applied {
                 super::RuntimeHost::queue_assembly_activation(sender.clone(), &reply)?;
             }
         }

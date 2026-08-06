@@ -114,7 +114,7 @@ impl RuntimeHost {
         self.queue_connection_registration(sender)
     }
 
-    fn queue_runtime_capabilities(
+    pub(crate) fn queue_runtime_capabilities(
         &self,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<()> {

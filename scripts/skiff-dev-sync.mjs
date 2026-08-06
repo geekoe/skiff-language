@@ -462,7 +462,9 @@ async function buildDependencyOrdered(entries, build) {
 }
 
 function isUnpublishedExactDependency(error) {
-  return /has no published (?:PackageArtifact|ServiceContract) pointer/.test(formatError(error));
+  return /has no published (?:provider )?(?:PackageArtifact|ServiceContract) pointer/.test(
+    formatError(error),
+  );
 }
 
 export async function readDevRegistry(path = defaultRegistryPath, options = {}) {

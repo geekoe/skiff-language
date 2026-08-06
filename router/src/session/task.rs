@@ -324,6 +324,25 @@ fn process_event(
                 *bound_session = Some(session);
                 *phase_started_at = Instant::now();
             }
+            CapabilitiesEvent::Refreshed => {
+                let Some(session) = bound_session.clone() else {
+                    machine.terminal_with(TerminalKind::WrongOrder);
+                    return;
+                };
+                layer.record_dispatch_capabilities(
+                    &session,
+                    DispatchCapabilities {
+                        unary: header
+                            .capabilities
+                            .dispatch_modes
+                            .iter()
+                            .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
+                        server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
+                            matches!(mode, RuntimeDispatchModeCapability::ServerStream)
+                        }),
+                    },
+                );
+            }
             CapabilitiesEvent::Terminal(_) => {}
         },
         DemuxEvent::Register(register) => {

@@ -108,6 +108,10 @@ pub struct EpochContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitiesEvent {
     Bound,
+    /// The same replica re-advertises its dispatch surface after the session
+    /// is bound (e.g. a runtime that connected under an empty assembly and
+    /// later loads a real one). Capabilities are re-recorded, never rebound.
+    Refreshed,
     Terminal(TerminalKind),
 }
 
@@ -241,13 +245,13 @@ impl HandshakeState {
             HandshakePhase::CapabilitiesBound
             | HandshakePhase::RegisterValidated
             | HandshakePhase::Registered => {
-                let terminal = if self.replica.as_deref() == Some(runtime_id) {
-                    TerminalKind::WrongOrder
+                if self.replica.as_deref() == Some(runtime_id) {
+                    CapabilitiesEvent::Refreshed
                 } else {
-                    TerminalKind::IdentityChange
-                };
-                self.set_terminal(terminal);
-                CapabilitiesEvent::Terminal(terminal)
+                    let terminal = TerminalKind::IdentityChange;
+                    self.set_terminal(terminal);
+                    CapabilitiesEvent::Terminal(terminal)
+                }
             }
             HandshakePhase::Closed => {
                 let terminal = TerminalKind::WrongOrder;
