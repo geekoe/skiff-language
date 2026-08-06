@@ -1,5 +1,6 @@
 pub mod abi_identity;
 pub mod actor_declaration;
+pub mod service_db;
 pub use abi_identity::{
     AbiAliasId, AbiCallableId, AbiConstId, AbiContractRevision, AbiDeclarationAnchor,
     AbiDeclarationKind, AbiIdentityFacts, AbiInstanceId, AbiInterfaceId,
@@ -7,6 +8,7 @@ pub use abi_identity::{
     DescriptorHash, ExternalDeclarationAnchor, PublishedDeclarationId, SchemaRevision, StdSymbolId,
     TypeNameability,
 };
+pub use service_db::AssemblyActivationServiceDb;
 pub use actor_declaration::{
     ActorAbiIdentity, ActorAbiInput, ActorCreateImplementationIr, ActorCreateSignatureIr,
     ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, ActorImplementationIdentity,
@@ -16,8 +18,7 @@ mod activation_lexical;
 pub mod boundary;
 pub mod builtin_receiver_ops;
 pub mod compile_identity;
-pub mod compile_requirements;
-pub mod config;
+pub mod compile_requirements;pub mod config;
 pub mod contract_types;
 pub mod deployment;
 pub mod ecosystem_authoring;
