@@ -8,6 +8,7 @@ import { runAttachedCommand } from './lib/command-execution.mjs';
 import { runAuthoringObjectCommand } from './lib/package-service-authoring.mjs';
 import { runAssemblyStateSyncCommand } from './lib/assembly-state-sync.mjs';
 import { runDevRegistryCommand } from './lib/package-service-dev-registry.mjs';
+import { runReleaseCommand } from './lib/release-command.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
 import {
   runInIsolatedTestRuntime,
@@ -63,6 +64,9 @@ const usage = `usage:
   skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff assembly activate --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... --config-snapshot '<exact RuntimeConfigSnapshotRef JSON>' --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
   skiff assembly sync-state --artifact-root <dir> --profile <name> --activation-url <url> --mongo-url <url> [--json]
+  skiff release set --artifact-root <dir> --profile <name> --service <id> --version <v> --build-id <id> [--expected '<exact ReleasePointer JSON>'] [--json]
+  skiff release unset --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]
+  skiff release get --artifact-root <dir> --profile <name> --service <id> --version <v> [--json]
   skiff stack build --configDir <dir> [--profile debug|release]
   skiff stack init --configDir <dir>
   skiff stack deploy --configDir <dir>
@@ -115,6 +119,9 @@ async function main(args) {
         return;
       }
       await runAuthoringObjectCommand(command, args, { skiffRoot });
+      return;
+    case 'release':
+      await runReleaseCommand(args, { skiffRoot });
       return;
     case 'stack':
       await stackCommand(args);

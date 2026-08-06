@@ -14,8 +14,8 @@ use std::{
 use serde_json::{json, Map, Value};
 use skiff_artifact_identity::{
     package_artifact_ref, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    PackageArtifactPointerPath, RuntimeAssemblyPointerPath, ServiceContractPointerPath,
-    ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+    PackageArtifactPointerPath, ReleasePointerPath, RuntimeAssemblyPointerPath,
+    ServiceContractPointerPath, ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{
     ContractRequirement, PackageArtifact, PackageArtifactRef, ServiceAuthoringKind,
@@ -32,7 +32,7 @@ use skiff_compiler_source::source_graph::PublicationSourceGraph;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly,
     storage::{
-        CanonicalArtifactStore, EcosystemStorageError, PackageArtifactPointer,
+        CanonicalArtifactStore, EcosystemStorageError, PackageArtifactPointer, ReleasePointer,
         RuntimeAssemblyPointer, ServiceContractPointer, ServiceDeploymentPointer,
     },
 };
@@ -80,7 +80,7 @@ pub fn build_authoring_object(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
-    _profile: &str,
+    profile: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     match object {
@@ -93,6 +93,7 @@ pub fn build_authoring_object(
                 root,
                 &manifest,
                 &store,
+                profile,
                 publish_pointer,
             )
         }),
@@ -115,6 +116,7 @@ fn build_package_after_platform_context_guard(
     root: &Path,
     manifest: &PackageManifest,
     store: &CanonicalArtifactStore,
+    profile: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     reject_legacy_service_authoring(root)?;
@@ -238,6 +240,26 @@ fn build_package_after_platform_context_guard(
                 json!({
                     "pointer": deployment_candidate,
                     "pointerPath": ServiceDeploymentPointerPath::new(
+                        &deployment_ref.service_id,
+                        &deployment_ref.contract_version,
+                    )?.as_str(),
+                }),
+            );
+
+            let release_candidate = ReleasePointer::new(profile, deployment_ref.clone())?;
+            let expected_release = store.read_release_pointer(
+                profile,
+                &deployment_ref.service_id,
+                &deployment_ref.contract_version,
+            )?;
+            store
+                .compare_and_swap_release_pointer(expected_release.as_ref(), &release_candidate)?;
+            output.insert(
+                "releasePointerReceipt".to_string(),
+                json!({
+                    "pointer": release_candidate,
+                    "pointerPath": ReleasePointerPath::new(
+                        profile,
                         &deployment_ref.service_id,
                         &deployment_ref.contract_version,
                     )?.as_str(),

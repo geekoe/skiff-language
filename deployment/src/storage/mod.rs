@@ -17,7 +17,7 @@ pub use activation::{
     PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
 };
 pub use pointers::{
-    PackageArtifactPointer, RuntimeAssemblyPointer, ServiceContractPointer,
+    PackageArtifactPointer, ReleasePointer, RuntimeAssemblyPointer, ServiceContractPointer,
     ServiceDeploymentPointer,
 };
 

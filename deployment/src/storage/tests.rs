@@ -8,18 +8,19 @@ use std::{
 use serde_json::json;
 use skiff_artifact_identity::{
     assign_file_ir_identity, assign_package_artifact_identities,
-    assign_service_contract_identities, contract_operation_id, package_artifact_ref,
-    package_schema_index_identity, runtime_assembly_ref, service_contract_ref,
-    service_deployment_ref, PackageArtifactRecordPath, ProfileActivationStatePath,
+    assign_service_contract_identities, assign_service_deployment_identity, contract_operation_id,
+    package_artifact_ref, package_schema_index_identity, runtime_assembly_ref,
+    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
+    ProfileActivationStatePath, ReleasePointerPath,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, RuntimeConfigSnapshotId,
-    RuntimeConfigSnapshotRef, ServiceContract, ServiceProtocolIdentity,
+    ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit,
+    PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContract, ServiceProtocolIdentity,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
@@ -516,6 +517,137 @@ fn activation_storage_coordinate_collision_pair_has_independent_records_and_cas(
             )
             .unwrap(),
         Some(adjacent_dots_pointer)
+    );
+}
+
+#[test]
+fn release_pointer_round_trip_atomic_overwrite_cas_and_unset() {
+    let (_temp, store) = test_store();
+    let first = service_deployment_fixture().expect("deployment");
+    let mut second = first.clone();
+    second.deployment_revision = DeploymentRevision::new("revision-2");
+    assign_service_deployment_identity(&mut second).expect("deployment identities");
+    assert_ne!(
+        first.deployment_artifact_identity, second.deployment_artifact_identity,
+        "different revisions must produce different buildIds"
+    );
+    store.write_service_deployment(&first).unwrap();
+    store.write_service_deployment(&second).unwrap();
+
+    let first_ref = service_deployment_ref(&first);
+    let second_ref = service_deployment_ref(&second);
+    let first_pointer = ReleasePointer::new("dev", first_ref).unwrap();
+    let second_pointer = ReleasePointer::new("dev", second_ref).unwrap();
+    let pointer_path = ReleasePointerPath::new("dev", "example.echo", "1.0.0").unwrap();
+    let host_path = store.root().join(pointer_path.as_relative_path().as_path());
+
+    store.write_release_pointer(&first_pointer).unwrap();
+    assert_eq!(
+        store
+            .read_release_pointer("dev", "example.echo", "1.0.0")
+            .unwrap(),
+        Some(first_pointer.clone())
+    );
+    assert!(store
+        .compare_and_swap_release_pointer(None, &first_pointer)
+        .is_err());
+    store
+        .compare_and_swap_release_pointer(Some(&first_pointer), &first_pointer)
+        .unwrap();
+
+    store.write_release_pointer(&second_pointer).unwrap();
+    assert_eq!(
+        store
+            .read_release_pointer("dev", "example.echo", "1.0.0")
+            .unwrap(),
+        Some(second_pointer.clone())
+    );
+    assert_eq!(
+        store
+            .read_service_deployment(&first_pointer.deployment)
+            .unwrap()
+            .deployment_artifact_identity,
+        first.deployment_artifact_identity,
+        "the overwritten buildId record must remain readable"
+    );
+    assert!(store
+        .compare_and_swap_release_pointer(Some(&first_pointer), &first_pointer)
+        .is_err());
+
+    let original = fs::read(&host_path).unwrap();
+    let mut tampered = original.clone();
+    tampered.push(b'\n');
+    fs::write(&host_path, tampered).unwrap();
+    assert!(store
+        .read_release_pointer("dev", "example.echo", "1.0.0")
+        .is_err());
+    fs::write(&host_path, &original).unwrap();
+
+    let missing_ref = skiff_artifact_model::ServiceDeploymentRef {
+        service_id: "example.echo".to_string(),
+        contract_version: "1.0.0".to_string(),
+        deployment_revision: DeploymentRevision::new("revision-9"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+            "skiff-deployment-artifact-v4:sha256:{}",
+            "f".repeat(64)
+        )),
+    };
+    let missing_pointer = ReleasePointer::new("dev", missing_ref).unwrap();
+    assert!(store.write_release_pointer(&missing_pointer).is_err());
+    assert!(store
+        .compare_and_swap_release_pointer(None, &missing_pointer)
+        .is_err());
+
+    let prod_pointer = ReleasePointer::new("prod", first_pointer.deployment.clone()).unwrap();
+    store.write_release_pointer(&prod_pointer).unwrap();
+    assert_eq!(
+        store
+            .read_release_pointer("prod", "example.echo", "1.0.0")
+            .unwrap(),
+        Some(prod_pointer.clone())
+    );
+    assert_eq!(
+        store
+            .unset_release_pointer("prod", "example.echo", "1.0.0", None)
+            .unwrap(),
+        Some(prod_pointer.clone()),
+        "unset without expectation must remove an existing pointer"
+    );
+    assert_eq!(
+        store
+            .unset_release_pointer("prod", "example.echo", "1.0.0", None)
+            .unwrap(),
+        None
+    );
+
+    assert_eq!(
+        store
+            .read_release_pointer("dev", "example.echo", "1.0.0")
+            .unwrap(),
+        Some(second_pointer.clone())
+    );
+    assert!(store
+        .unset_release_pointer("dev", "example.echo", "1.0.0", Some(&first_pointer))
+        .is_err());
+    assert_eq!(
+        store
+            .unset_release_pointer("dev", "example.echo", "1.0.0", Some(&second_pointer))
+            .unwrap(),
+        Some(second_pointer)
+    );
+    assert_eq!(
+        store
+            .read_release_pointer("dev", "example.echo", "1.0.0")
+            .unwrap(),
+        None
+    );
+    assert!(!host_path.exists());
+    assert_eq!(
+        store
+            .unset_release_pointer("dev", "example.echo", "1.0.0", None)
+            .unwrap(),
+        None,
+        "unsetting an absent pointer must be idempotent"
     );
 }
 
