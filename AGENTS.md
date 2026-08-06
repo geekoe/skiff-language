@@ -72,6 +72,51 @@ cargo check --manifest-path runtime/Cargo.toml
 cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 ```
 
+## 激活状态与 artifact store 恢复
+
+Router 的 committed assembly 状态持久化在 Mongo `skiff-router.activation_state`
+（`_id: <profile>` 单文档；`state.committed.generation` 是普通 JSON 整数，不是
+`{high, low, unsigned}` map）。Router bootstrap 必须读到该文档：缺失会 fail-closed
+（`FailClosedMissing`），格式非法同样起不来；production 代码不会自动初始化它。
+
+`skiff stack init --configDir <dir>` 是正式的初始化/复位入口：构建空 assembly + 空
+config snapshot + std seed 写入 artifact root，并把状态文档重置为 `generation 0`
+（本地模式建议先 `instance down` 再执行，之后 `instance up`，watch 会全量重建并
+激活 gen 1）。
+
+激活死锁场景：committed assembly 引用的 artifact 记录（尤其 std 的 build id）从
+dev-home store 删除后，runtime 无法 admit 当前 committed 世代，会一直重连失败，新
+assembly 激活表现为 HTTP 504（"no exact candidate sessions"）。恢复步骤：
+
+```bash
+node scripts/skiff.mjs instance down --runtime build/runtime-stack
+node scripts/skiff.mjs stack init --configDir .stack
+node scripts/skiff.mjs instance up --runtime build/runtime-stack
+```
+
+epoch 与仓库状态脱节（`/__router/health` 的 `activeRoutingEpoch` 与
+`activation.repository.committedGeneration` 不一致，例如 router 已在 gen N 而 Mongo
+停在 gen 0）时，watch 的激活会持续 CAS 失败（"committed generation X does not match
+request expected generation Y"）并无限重建。此时把手写状态文档同步成 epoch 当前值
+（gen + assembly + config snapshot 都从 health 取），再 `instance restart router` 让
+bootstrap 读回一致状态即可。不要用 `deleteMany` 或把 generation 写成 map。
+
+## watch dev-sync 依赖发布顺序
+
+`skiff dev sync` 的 `buildDependencyOrdered` 通过 `isUnpublishedExactDependency` 把
+"依赖尚未发布"的失败延后重试；该正则同时匹配 `has no published PackageArtifact
+pointer`、`has no published provider PackageArtifact pointer` 和 ServiceContract 变体
+（provider 一词可选）。空 store 从零重建时仍建议按依赖顺序手动发布兜底：
+
+```bash
+node scripts/skiff.mjs package publish <root> --artifact-root <dir> --profile dev --json
+```
+
+- 先 packages（llm-api、llm-providers、agent、skiff-packages/*），再 service：
+  codex-relay → aihub → api → registry（service 依赖要求对方有已发布的 provider
+  PackageArtifact，记录在 `records/package-artifacts/<projected-id>/<version>/<buildId>/package.json`）。
+- 发布后 watch 的下一轮重试会自行完成剩余同步与激活（package publish 幂等）。
+
 ## 测试入口
 
 仓库测试按被测对象分成两个一等域，不按实现测试设施的宿主语言分组：
