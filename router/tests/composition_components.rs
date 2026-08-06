@@ -308,6 +308,7 @@ fn request_start_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestS
             assembly_identity: assembly_identity(),
             assembly_generation: 7,
             deployment: deployment(),
+            build_id: None,
             gateway_entry_identity: GatewayEntryIdentity::parse(
                 "skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             )

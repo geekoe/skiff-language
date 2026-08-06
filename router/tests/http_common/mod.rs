@@ -5,20 +5,25 @@
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentGatewayEntry, GatewayAdapterKind,
+    AssemblyIdentity, CanonicalPackageLinkPlan, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind,
     GatewayAdapterPlan, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
     GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
     GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
-    RuntimeAssembly, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+    PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, RuntimeAssembly,
+    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
+use skiff_artifact_identity::assign_service_deployment_identity;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
+use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_router::artifact::ActorRoutingCatalog;
 use skiff_router::bootstrap::RoutingEpoch;
 use skiff_router::http::{EpochHttpIngressResolver, HttpGatewaySurfaceView, HttpIngressResolver};
@@ -27,8 +32,6 @@ use skiff_runtime_config_snapshot::RuntimeConfigSnapshot;
 pub const SERVICE_ID: &str = "example.com/service-1";
 pub const CONTRACT_VERSION: &str = "1.0.0";
 pub const DEPLOYMENT_REVISION: &str = "deployment-1";
-pub const DEPLOYMENT_ARTIFACT_IDENTITY: &str =
-    "skiff-deployment-artifact-v4:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 pub const ASSEMBLY_IDENTITY: &str =
     "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 pub const CONFIG_SNAPSHOT_ID: &str =
@@ -40,17 +43,123 @@ pub const GATEWAY_EVENTS_IDENTITY: &str =
 pub const GATEWAY_ITEMS_OPTIONS_IDENTITY: &str =
     "skiff-gateway-entry-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
+/// The canonical fixture deployment record (content-addressed identity).
+fn fixture_service_deployment() -> ServiceDeployment {
+    let mut deployment = ServiceDeployment {
+        schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+        contract: ServiceContractRef {
+            service_id: SERVICE_ID.to_string(),
+            contract_version: CONTRACT_VERSION.to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("protocol"),
+        },
+        deployment_revision: DeploymentRevision::new(DEPLOYMENT_REVISION.to_string()),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new("placeholder"),
+        implementation: PackageArtifactRef {
+            package_id: SERVICE_ID.to_string(),
+            package_version: "0.1.0".to_string(),
+            package_build_id: PackageBuildId::new("build"),
+            package_local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+        },
+        operation_bindings: Vec::new(),
+        package_bindings: Vec::new(),
+        service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::from([
+            (
+                GatewayEntryKey::parse("items").expect("key"),
+                surface_entry(
+                    GatewayDispatchMode::Unary,
+                    GatewayAdapterKind::TypedJson,
+                    GATEWAY_ITEMS_IDENTITY,
+                ),
+            ),
+            (
+                GatewayEntryKey::parse("events").expect("key"),
+                surface_entry(
+                    GatewayDispatchMode::ServerStream,
+                    GatewayAdapterKind::RawHttp,
+                    GATEWAY_EVENTS_IDENTITY,
+                ),
+            ),
+            (
+                GatewayEntryKey::parse("items-options").expect("key"),
+                surface_entry(
+                    GatewayDispatchMode::Unary,
+                    GatewayAdapterKind::TypedJson,
+                    GATEWAY_ITEMS_OPTIONS_IDENTITY,
+                ),
+            ),
+        ]),
+        ingress: vec![
+            DeploymentIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("POST".to_string()),
+                    path: "/items".to_string(),
+                },
+                gateway_entry_key: GatewayEntryKey::parse("items").expect("key"),
+            },
+            DeploymentIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("GET".to_string()),
+                    path: "/events".to_string(),
+                },
+                gateway_entry_key: GatewayEntryKey::parse("events").expect("key"),
+            },
+            DeploymentIngressBinding {
+                selector: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("OPTIONS".to_string()),
+                    path: "/items".to_string(),
+                },
+                gateway_entry_key: GatewayEntryKey::parse("items-options").expect("key"),
+            },
+        ],
+        diagnostic_text: DeploymentDiagnosticText {
+            display_name: "http-gateway-fixture".to_string(),
+            notes: BTreeMap::new(),
+        },
+    };
+    assign_service_deployment_identity(&mut deployment).expect("assign deployment identity");
+    deployment
+}
+
 pub fn fixture_deployment() -> ServiceDeploymentRef {
-    ServiceDeploymentRef {
-        service_id: SERVICE_ID.to_string(),
-        contract_version: CONTRACT_VERSION.to_string(),
-        deployment_revision: skiff_artifact_model::DeploymentRevision::new(
-            DEPLOYMENT_REVISION.to_string(),
-        ),
-        deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
-            DEPLOYMENT_ARTIFACT_IDENTITY.to_string(),
-        ),
-    }
+    skiff_artifact_identity::service_deployment_ref(&fixture_service_deployment())
+}
+
+pub fn fixture_deployment_identity() -> String {
+    fixture_deployment()
+        .deployment_artifact_identity
+        .as_str()
+        .to_string()
+}
+
+/// Process-wide canonical store holding the fixture deployment record and
+/// its release pointer (profile `prod`).
+fn fixture_store() -> Arc<CanonicalArtifactStore> {
+    static STORE: OnceLock<Arc<CanonicalArtifactStore>> = OnceLock::new();
+    Arc::clone(STORE.get_or_init(|| {
+        let path = std::env::temp_dir().join(format!(
+            "skiff-http-gateway-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let store = CanonicalArtifactStore::create(&path).expect("create fixture artifact store");
+        let deployment = fixture_service_deployment();
+        store
+            .write_service_deployment(&deployment)
+            .expect("write fixture deployment record");
+        let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+        let pointer = ReleasePointer::new("prod", reference).expect("fixture release pointer");
+        store
+            .write_release_pointer(&pointer)
+            .expect("write fixture release pointer");
+        Arc::new(store)
+    }))
 }
 
 pub fn fixture_epoch() -> Arc<RoutingEpoch> {
@@ -189,10 +298,13 @@ pub fn fixture_resolver() -> Arc<dyn HttpIngressResolver> {
             ),
         ),
     ]);
-    Arc::new(EpochHttpIngressResolver::new(Arc::new(
-        HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)
-            .expect("surface view fixture"),
-    )))
+    Arc::new(EpochHttpIngressResolver::new_with_live_artifact_store(
+        Arc::new(
+            HttpGatewaySurfaceView::from_deployment_gateway_entries(&entries)
+                .expect("surface view fixture"),
+        ),
+        (*fixture_store()).clone(),
+    ))
 }
 
 #[derive(Debug, Clone)]

@@ -61,6 +61,7 @@ pub fn build_request_start_header(
             assembly_identity,
             assembly_generation: epoch.assembly_generation(),
             deployment: binding.deployment.clone(),
+            build_id: Some(binding.build_id.clone()),
             gateway_entry_identity,
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,

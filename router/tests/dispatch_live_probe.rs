@@ -775,6 +775,7 @@ fn dispatch_request(
             assembly_identity: epoch.assembly().assembly_identity.clone(),
             assembly_generation: epoch.assembly_generation(),
             deployment: binding.deployment.clone(),
+            build_id: None,
             gateway_entry_identity: binding.gateway_entry_identity.clone(),
             ingress: RuntimeAssemblyRequestIngressFrameHeader {
                 protocol: RuntimeAssemblyRequestIngressProtocol::Http,

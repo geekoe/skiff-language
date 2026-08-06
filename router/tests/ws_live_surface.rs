@@ -452,7 +452,18 @@ mod tests {
         store
             .write_service_deployment(&relay)
             .expect("write relay deployment");
-        drop(store);
+        let aihub_pointer =
+            skiff_deployment::storage::ReleasePointer::new("surface-dup", aihub_ref.clone())
+                .expect("aihub release pointer");
+        let relay_pointer =
+            skiff_deployment::storage::ReleasePointer::new("surface-dup", relay_ref.clone())
+                .expect("relay release pointer");
+        store
+            .write_release_pointer(&aihub_pointer)
+            .expect("write aihub release pointer");
+        store
+            .write_release_pointer(&relay_pointer)
+            .expect("write relay release pointer");
 
         let epoch = epoch_with_models_deployments(
             "surface-dup",
@@ -488,7 +499,11 @@ mod tests {
             "relay surface exists"
         );
 
-        let resolver = skiff_router::http::EpochHttpIngressResolver::new(Arc::new(http));
+        let resolver =
+            skiff_router::http::EpochHttpIngressResolver::new_with_live_artifact_store(
+                Arc::new(http),
+                store.clone(),
+            );
         let aihub_selector = skiff_router::http::selector::ServiceDeploymentSelector {
             service_id: AIHUB_SERVICE.to_string(),
             contract_version: CONTRACT_VERSION.to_string(),

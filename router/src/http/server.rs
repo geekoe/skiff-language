@@ -484,7 +484,10 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             )
             .await;
         }
-        if !has_http_ingress_path(&context.current_epoch(), &selector, &target.path) {
+        if !context
+            .resolver
+            .has_ingress_path(&context.current_epoch(), &selector, &target.path)
+        {
             context.counters.bump(&context.counters.ingress_misses);
             context.counters.bump(&context.counters.platform_errors);
             cancel_on_drop.defuse();
@@ -805,19 +808,6 @@ fn cors_headers_for(origin: Option<&str>, service_manages_cors: bool) -> Vec<(St
     } else {
         origin.map(cors::automatic_cors_headers).unwrap_or_default()
     }
-}
-
-fn has_http_ingress_path(
-    epoch: &RoutingEpoch,
-    selector: &super::selector::ServiceDeploymentSelector,
-    path: &str,
-) -> bool {
-    epoch.ingress_projection().iter().any(|binding| {
-        binding.selector.protocol == skiff_artifact_model::IngressProtocol::Http
-            && binding.selector.path == path
-            && binding.deployment.service_id == selector.service_id
-            && binding.deployment.contract_version == selector.contract_version
-    })
 }
 
 fn preflight_response(

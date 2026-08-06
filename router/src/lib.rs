@@ -10,6 +10,7 @@ pub mod dispatch;
 pub mod health;
 pub mod http;
 pub mod listener;
+pub mod release;
 pub mod routing;
 pub mod session;
 pub mod supervisor;
@@ -76,6 +77,7 @@ pub use routing::{
     DispatchCapabilities, DispatchMode, RegisteredSessionLease, RoutingQueryCounters,
     RuntimeCandidateQuery, SessionCancellation,
 };
+pub use release::{ReleaseResolver, StoreReleaseResolver};
 pub use session::{
     ConsumerKind, ConsumerManifest, RegistrationObserver, RuntimeRegistrationDirectory,
     RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,

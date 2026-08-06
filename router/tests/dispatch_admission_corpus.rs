@@ -531,6 +531,7 @@ impl Harness {
                     assembly_identity: AssemblyIdentity::new(epoch.assembly_identity.clone()),
                     assembly_generation: epoch.generation,
                     deployment,
+                    build_id: None,
                     gateway_entry_identity: GatewayEntryIdentity::parse(
                         "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                     )
