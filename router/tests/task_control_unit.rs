@@ -92,6 +92,17 @@ struct FakeWriter {
     frames: Mutex<Vec<Vec<u8>>>,
 }
 
+/// Fixed wall clock for the idempotent-submit test (canonical record
+/// equality requires identical `store.now()` across two submits).
+#[derive(Debug)]
+struct FixedTaskClock(i64);
+
+impl skiff_task_control::clock::TaskClock for FixedTaskClock {
+    fn now_millis(&self) -> i64 {
+        self.0
+    }
+}
+
 impl WsSessionWriter for FakeWriter {
     fn write(&self, _runtime: &RuntimeSessionEpoch, bytes: Vec<u8>) -> Result<(), String> {
         self.frames.lock().expect("writer frames").push(bytes);
@@ -685,12 +696,24 @@ fn sink_rig() -> (
     Arc<FakeWriter>,
     Arc<TaskControlCounters>,
 ) {
-    let store = Arc::new(MemoryTaskStore::new());
+    sink_rig_with_clock(Arc::new(skiff_task_control::SystemClock))
+}
+
+fn sink_rig_with_clock(
+    clock: Arc<dyn skiff_task_control::clock::TaskClock>,
+) -> (
+    Arc<MemoryTaskStore>,
+    Arc<Scheduler>,
+    Arc<DurableTaskFrameSink>,
+    Arc<FakeWriter>,
+    Arc<TaskControlCounters>,
+) {
+    let store = Arc::new(MemoryTaskStore::with_clock(Arc::clone(&clock)));
     let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
     let scheduler = Arc::new(Scheduler::new(
         store_dyn.clone(),
         Arc::new(NoopAdmission),
-        Arc::new(skiff_task_control::SystemClock),
+        clock,
         SchedulerConfig::default(),
         RetryBackoffPolicy::default(),
     ));
@@ -971,7 +994,12 @@ async fn submit_invalid_timing_and_quota_are_definite_rejections() {
 
 #[tokio::test]
 async fn submit_same_task_id_is_idempotent() {
-    let (store, _scheduler, sink, writer, _counters) = sink_rig();
+    // Fixed clock: `created_at`/`due_at` derive from `store.now()`, so two
+    // submits must land on the exact same timestamp to produce an identical
+    // canonical record (the store's idempotent-create path).
+    let (store, _scheduler, sink, writer, _counters) = sink_rig_with_clock(Arc::new(
+        FixedTaskClock(1_700_000_000_000),
+    ));
     let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
     let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
     let session = RuntimeSessionEpoch {
