@@ -1,10 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use skiff_artifact_model::{
-    validate_activation_generation, validate_activation_profile,
-    validate_runtime_assembly_identity, validate_runtime_config_snapshot_id, AssemblyIdentity,
-    RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-};
+use skiff_artifact_model::validate_activation_profile;
 
 use crate::{
     protocol::{
@@ -18,34 +14,6 @@ pub const ROUTER_BOOTSTRAP_FRAME_TYPE: &str = "router.bootstrap";
 pub const RUNTIME_CAPABILITIES_FRAME_TYPE: &str = "runtime.capabilities";
 pub const RUNTIME_REGISTERED_FRAME_TYPE: &str = "runtime.registered";
 pub const RUNTIME_HEALTH_FRAME_TYPE: &str = "runtime.health";
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeRegisterFrameHeader {
-    pub schema_version: String,
-    #[serde(rename = "type")]
-    pub envelope_type: String,
-    pub runtime_id: String,
-    pub service_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    pub build_id: String,
-    pub revision_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
-    pub service_protocol_identity: String,
-    pub targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code_revision_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub gateway_entry_identities: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<RuntimeCapabilitiesFrameHeaderMetadata>,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,9 +101,6 @@ pub struct RouterBootstrapHttpFrameHeader {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouterBootstrapActivationFrameHeader {
     pub profile: String,
-    pub generation: u64,
-    pub assembly: RuntimeAssemblyRef,
-    pub config_snapshot: RuntimeConfigSnapshotRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,9 +154,6 @@ pub fn decode_router_bootstrap_frame_header(
             "invalid router.bootstrap frame header: activation.profile {error}"
         ))
     })?;
-    validate_activation_generation(header.activation.generation, "activation.generation").map_err(
-        |error| TransportError::decode(format!("invalid router.bootstrap frame header: {error}")),
-    )?;
     Ok(header)
 }
 
@@ -205,64 +167,14 @@ fn is_normalized_absolute_artifacts_path(value: &str) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-/// Captured activation tuple used to construct the `router.bootstrap` frame
-/// (§3.3/§3.5, C-model-bootstrap-wire §2.3). W-bootstrap later maps the
-/// durable `RoutingEpoch` onto this wire-facing view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedBootstrapEpoch {
-    pub profile: String,
-    pub generation: u64,
-    pub assembly: RuntimeAssemblyRef,
-    pub config_snapshot: RuntimeConfigSnapshotRef,
-}
-
-impl CapturedBootstrapEpoch {
-    /// Strict constructor: every wire-visible field is validated the same way
-    /// the typed bootstrap header Deserialize path validates it.
-    pub fn new(
-        profile: impl Into<String>,
-        generation: u64,
-        assembly_identity: impl Into<String>,
-        config_snapshot_id: impl Into<String>,
-    ) -> Result<Self, String> {
-        let profile = profile.into();
-        validate_activation_profile(&profile)?;
-        validate_activation_generation(generation, "generation")?;
-        let assembly_identity = assembly_identity.into();
-        validate_runtime_assembly_identity(&assembly_identity)?;
-        let config_snapshot_id = config_snapshot_id.into();
-        validate_runtime_config_snapshot_id(&config_snapshot_id)?;
-        Ok(Self {
-            profile,
-            generation,
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: AssemblyIdentity::new(assembly_identity),
-            },
-            config_snapshot: RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id)
-                    .map_err(|error| error.to_string())?,
-            },
-        })
-    }
-
-    pub fn to_activation_header(&self) -> RouterBootstrapActivationFrameHeader {
-        RouterBootstrapActivationFrameHeader {
-            profile: self.profile.clone(),
-            generation: self.generation,
-            assembly: self.assembly.clone(),
-            config_snapshot: self.config_snapshot.clone(),
-        }
-    }
-}
-
-/// Captured router config + activation tuple from which a stateless provider
+/// Captured router config + profile from which a stateless provider
 /// constructs the one-shot `router.bootstrap` frame (plan §5.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouterBootstrapSource {
     pub artifacts_path: String,
     pub service_db: RouterBootstrapServiceDbFrameHeader,
     pub http: RouterBootstrapHttpFrameHeader,
-    pub activation: CapturedBootstrapEpoch,
+    pub profile: String,
 }
 
 impl RouterBootstrapSource {
@@ -275,7 +187,9 @@ impl RouterBootstrapSource {
             artifacts_path: self.artifacts_path.clone(),
             service_db: self.service_db.clone(),
             http: self.http.clone(),
-            activation: self.activation.to_activation_header(),
+            activation: RouterBootstrapActivationFrameHeader {
+                profile: self.profile.clone(),
+            },
         };
         let value = serde_json::to_value(&header).map_err(|error| {
             TransportError::decode(format!(
@@ -447,57 +361,6 @@ fn validate_empty_session_frame(
         )));
     }
     Ok(())
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeRegisterEnvelope {
-    #[serde(rename = "type")]
-    pub envelope_type: &'static str,
-    pub runtime_id: String,
-    pub service_id: String,
-    // Stable published version this runtime serves. The router indexes
-    // (service_id, version) -> current build_id from on-disk pointer records and
-    // uses version as the cross-service addressing key; this field lets the live
-    // registry confirm which version a registered build belongs to.
-    pub version: String,
-    pub build_id: String,
-    // Compatibility fields required by the current TypeScript router.
-    pub revision_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
-    pub service_protocol_identity: String,
-    pub contract_identity: String,
-    pub targets: Vec<String>,
-    pub runtime_version: String,
-    pub code_revision_id: String,
-    pub implementation_identity: String,
-    pub artifact_identity: String,
-    pub capabilities: RuntimeCapabilitiesFrameHeaderMetadata,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub gateway_entry_identities: Vec<String>,
-}
-
-impl From<RuntimeRegisterEnvelope> for RuntimeRegisterFrameHeader {
-    fn from(envelope: RuntimeRegisterEnvelope) -> Self {
-        Self {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: envelope.envelope_type.to_string(),
-            runtime_id: envelope.runtime_id,
-            service_id: envelope.service_id,
-            version: Some(envelope.version),
-            build_id: envelope.build_id,
-            revision_id: envelope.revision_id,
-            activation_identity: envelope.activation_identity,
-            service_protocol_identity: envelope.service_protocol_identity,
-            targets: envelope.targets,
-            runtime_version: Some(envelope.runtime_version),
-            code_revision_id: Some(envelope.code_revision_id),
-            artifact_identity: Some(envelope.artifact_identity),
-            gateway_entry_identities: envelope.gateway_entry_identities,
-            capabilities: Some(envelope.capabilities),
-        }
-    }
 }
 
 #[cfg(test)]

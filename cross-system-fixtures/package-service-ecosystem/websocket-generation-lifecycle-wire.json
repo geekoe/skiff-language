@@ -12,10 +12,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     },
@@ -32,10 +31,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     },
@@ -52,10 +50,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "code": "generation-unavailable",
         "reason": "assembly generation is not admitted"
@@ -73,10 +70,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     },
@@ -93,10 +89,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     },
@@ -113,10 +108,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "code": "not-acquired",
         "reason": "connection pin does not exist for this exact tuple"
@@ -134,10 +128,9 @@
         "tuple": {
           "routerSessionId": "skiff-router-session-v1:opaque:router-1",
           "serviceId": "example.com/chat",
-          "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "assemblyGeneration": 7,
           "websocketEntryId": "skiff-websocket-entry-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "connectionId": "connection-1"
+          "connectionId": "connection-1",
+          "buildId": "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     }
@@ -231,25 +224,25 @@
       "value": "Example.com/chat"
     },
     {
-      "name": "assembly identity uppercase mutation",
+      "name": "build id whitespace mutation",
       "baseIndex": 0,
       "direction": "runtimeToRouter",
-      "setPath": "tuple.assemblyIdentity",
-      "value": "skiff-runtime-assembly-v3:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      "setPath": "tuple.buildId",
+      "value": "skiff-service-deployment-v2:sha256: aaaa"
     },
     {
-      "name": "negative assembly generation",
+      "name": "build id empty mutation",
       "baseIndex": 0,
       "direction": "runtimeToRouter",
-      "setPath": "tuple.assemblyGeneration",
-      "value": -1
+      "setPath": "tuple.buildId",
+      "value": ""
     },
     {
-      "name": "unsafe assembly generation",
+      "name": "build id empty mutation",
       "baseIndex": 0,
       "direction": "runtimeToRouter",
-      "setPath": "tuple.assemblyGeneration",
-      "value": 9007199254740992
+      "setPath": "tuple.buildId",
+      "value": ""
     },
     {
       "name": "websocket entry identity mutation",

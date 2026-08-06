@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "wrong-order-health-before-capabilities",
+  "scenario": "wrong-order-capabilities-before-bootstrap",
   "mainConnection": "c1",
   "preAuthLimit": 2,
   "events": [
@@ -10,14 +10,9 @@
       "connectionGeneration": 1
     },
     {
-      "kind": "write",
-      "connection": "c1",
-      "frame": "bootstrap.prod.42"
-    },
-    {
       "kind": "read",
       "connection": "c1",
-      "frame": "health.empty"
+      "frame": "capabilities.runtime-a"
     }
   ],
   "expect": {

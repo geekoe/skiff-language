@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "wrong-order-health-before-capabilities",
+  "scenario": "bootstrap-timeout",
   "mainConnection": "c1",
   "preAuthLimit": 2,
   "events": [
@@ -10,19 +10,14 @@
       "connectionGeneration": 1
     },
     {
-      "kind": "write",
+      "kind": "timeout",
       "connection": "c1",
-      "frame": "bootstrap.prod.42"
-    },
-    {
-      "kind": "read",
-      "connection": "c1",
-      "frame": "health.empty"
+      "timeoutKind": "bootstrap"
     }
   ],
   "expect": {
     "outcomes": {
-      "c1": "WrongOrder"
+      "c1": "BootstrapTimeout"
     },
     "refusedCount": 0,
     "preAuthCount": 0,

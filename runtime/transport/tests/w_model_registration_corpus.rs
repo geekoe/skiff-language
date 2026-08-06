@@ -1,11 +1,10 @@
 //! W-model-registration corpus gate.
 //!
-//! Consumes the frozen C-model-registration corpus
+//! Consumes the frozen M4 registration-handshake corpus
 //! (`testdata/registration-handshake/`) through the W-model frame codecs and
 //! proves the target handshake bytes roundtrip exactly:
-//! `encode(decode(frameHex)) == frameHex`. The corpus itself is owned by the
-//! contracts-session pack; this file adds the production-codec consumer gate
-//! required by W-model-registration / M-registration (plan §5.3).
+//! `encode(decode(frameHex)) == frameHex`. Registration is capabilities-only:
+//! there is no Register frame and no epoch tuple on the wire.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,55 +12,21 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde_json::Value;
-use skiff_artifact_model::AssemblyActivationControl;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, encode_assembly_activation_frame,
-    AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_router_bootstrap_frame, decode_runtime_capabilities_frame, decode_runtime_health_frame,
-    decode_runtime_registered_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_router_bootstrap_frame, encode_runtime_capabilities_frame, encode_runtime_health_frame,
-    encode_runtime_registered_frame, RuntimeRegisterFrameHeader, ROUTER_BOOTSTRAP_FRAME_TYPE,
+    decode_runtime_registered_frame, encode_router_bootstrap_frame,
+    encode_runtime_capabilities_frame, encode_runtime_health_frame,
+    encode_runtime_registered_frame, ROUTER_BOOTSTRAP_FRAME_TYPE,
     RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 
-const REQUIRED_FRAMES: [&str; 12] = [
+const REQUIRED_FRAMES: [&str; 6] = [
     "bootstrap.prod.42",
     "capabilities.runtime-a",
     "capabilities.runtime-b",
-    "register.prod.42.a",
-    "register.prod.42.b",
-    "register.prod.41.a",
-    "register.prod.42.other-assembly",
-    "register.prod.43.a",
     "registered.runtime-a",
     "registered.runtime-b",
     "health.empty",
-    "legacy.runtime.register",
-];
-
-const REQUIRED_SCENARIOS: [&str; 20] = [
-    "accept-sequence",
-    "wrong-order-health-before-capabilities",
-    "wrong-order-register-before-capabilities",
-    "legacy-register-rejected",
-    "identity-change-register-replica",
-    "identity-change-capabilities-replica",
-    "duplicate-register-pre-ack",
-    "stale-register-old-generation",
-    "tuple-mismatch-assembly",
-    "new-generation-before-epoch-swap",
-    "ack-loss",
-    "health-before-ack-no-observation",
-    "pre-auth-limit",
-    "bootstrap-timeout",
-    "capabilities-timeout",
-    "register-timeout",
-    "disconnect-mid-handshake",
-    "re-register-exact-idempotent",
-    "re-register-stale-after-ack",
-    "capabilities-refresh-same-replica",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -137,6 +102,13 @@ mod tests {
                     let header = decode_router_bootstrap_frame(&bytes)
                         .unwrap_or_else(|error| panic!("{name} bootstrap decode: {error}"));
                     assert_eq!(header.envelope_type, ROUTER_BOOTSTRAP_FRAME_TYPE);
+                    assert_eq!(
+                        header.activation.profile,
+                        entry.header["activation"]["profile"]
+                            .as_str()
+                            .expect("profile"),
+                        "{name} profile must match fixture header"
+                    );
                     let reencoded = encode_router_bootstrap_frame(&header)
                         .unwrap_or_else(|error| panic!("{name} bootstrap encode: {error}"));
                     assert_hex_roundtrip(name, &bytes, &reencoded);
@@ -154,34 +126,6 @@ mod tests {
                     );
                     let reencoded = encode_runtime_capabilities_frame(&header)
                         .unwrap_or_else(|error| panic!("{name} capabilities encode: {error}"));
-                    assert_hex_roundtrip(name, &bytes, &reencoded);
-                }
-                "AssemblyRegister" => {
-                    assert_eq!(entry.direction, "RuntimeToRouter");
-                    assert!(entry.frame_type.starts_with("assembly.activation"));
-                    let control = decode_assembly_activation_frame(
-                        AssemblyActivationFrameDirection::RuntimeToRouter,
-                        &bytes,
-                    )
-                    .unwrap_or_else(|error| panic!("{name} register decode: {error}"));
-                    assert!(
-                        matches!(control, AssemblyActivationControl::Register { .. }),
-                        "{name} must decode as Register"
-                    );
-                    let value = serde_json::to_value(&control).expect("register must serialize");
-                    assert_eq!(
-                        value["replicaId"], entry.header["control"]["replicaId"],
-                        "{name} replicaId must match fixture header"
-                    );
-                    assert_eq!(
-                        value["generation"], entry.header["control"]["generation"],
-                        "{name} generation must match fixture header"
-                    );
-                    let reencoded = encode_assembly_activation_frame(
-                        AssemblyActivationFrameDirection::RuntimeToRouter,
-                        &control,
-                    )
-                    .unwrap_or_else(|error| panic!("{name} register encode: {error}"));
                     assert_hex_roundtrip(name, &bytes, &reencoded);
                 }
                 "Registered" => {
@@ -210,21 +154,6 @@ mod tests {
                     );
                     let reencoded = encode_runtime_health_frame(&header)
                         .unwrap_or_else(|error| panic!("{name} health encode: {error}"));
-                    assert_hex_roundtrip(name, &bytes, &reencoded);
-                }
-                "LegacyRegister" => {
-                    // Explicitly NOT a target handshake frame: the contracts-session
-                    // pack freezes it as a strict terminal (`LegacyRegisterRejected`)
-                    // until H-registration-cut deletes inbound legacy registration.
-                    // The generic typed codec still roundtrips the frozen bytes.
-                    assert_eq!(entry.direction, "RuntimeToRouter");
-                    assert_eq!(entry.frame_type, "runtime.register");
-                    let (header, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-                        decode_typed_binary_frame(&bytes)
-                            .unwrap_or_else(|error| panic!("{name} legacy decode: {error}"));
-                    assert!(payload.is_empty(), "{name} legacy payload must be empty");
-                    let reencoded = encode_binary_frame(&header, &payload)
-                        .expect("legacy register must encode");
                     assert_hex_roundtrip(name, &bytes, &reencoded);
                 }
                 other => panic!("{name} has unknown decodeAs {other}"),
@@ -263,19 +192,21 @@ mod tests {
                 }
             }
             assert!(
-                value["epoch"]["profile"].is_string()
-                    && value["epoch"]["generation"].is_u64()
-                    && value["epoch"]["assembly"]["assemblyIdentity"].is_string()
-                    && value["epoch"]["configSnapshot"]["snapshotId"].is_string(),
-                "{name} must declare the frozen epoch tuple"
+                value["preAuthLimit"].is_u64(),
+                "{name} must declare the pre-auth limit"
             );
         }
-        for required in REQUIRED_SCENARIOS {
-            assert!(
-                found.iter().any(|name| name == required),
-                "corpus must contain required scenario {required}"
-            );
-        }
-        assert_eq!(found.len(), REQUIRED_SCENARIOS.len());
+        assert!(
+            found.iter().any(|name| name == "accept-sequence"),
+            "corpus must contain the accept-sequence scenario"
+        );
+        assert!(
+            found.iter().any(|name| name == "capabilities-refresh-same-replica"),
+            "corpus must contain the capabilities-refresh scenario"
+        );
+        assert!(
+            found.iter().any(|name| name == "ack-loss"),
+            "corpus must contain the ack-loss scenario"
+        );
     }
 }

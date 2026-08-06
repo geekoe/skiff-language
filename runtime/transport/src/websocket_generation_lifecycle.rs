@@ -1,7 +1,4 @@
 use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{
-    validate_activation_generation, validate_runtime_assembly_identity, AssemblyIdentity,
-};
 
 use crate::{
     protocol::{decode_binary_frame_parts, encode_binary_frame, RUNTIME_FRAME_SCHEMA_VERSION},
@@ -45,8 +42,9 @@ pub enum WebSocketGenerationLifecycleRejectionCode {
 pub struct WebSocketGenerationLifecycleTuple {
     pub router_session_id: String,
     pub service_id: String,
-    pub assembly_identity: AssemblyIdentity,
-    pub assembly_generation: u64,
+    /// Deployment build id the connection is pinned to (M4: deployment
+    /// anchoring replaces the assembly generation keying).
+    pub build_id: String,
     pub websocket_entry_id: String,
     pub connection_id: String,
 }
@@ -323,10 +321,7 @@ fn validate_tuple(tuple: &WebSocketGenerationLifecycleTuple) -> Result<(), Binar
         "tuple.routerSessionId",
     )?;
     validate_service_id(&tuple.service_id)?;
-    validate_runtime_assembly_identity(tuple.assembly_identity.as_str())
-        .map_err(TransportError::decode)?;
-    validate_activation_generation(tuple.assembly_generation, "tuple.assemblyGeneration")
-        .map_err(TransportError::decode)?;
+    validate_build_id(&tuple.build_id)?;
     validate_sha256_identity(
         &tuple.websocket_entry_id,
         "skiff-websocket-entry-v1:sha256:",
@@ -340,6 +335,20 @@ fn validate_tuple(tuple: &WebSocketGenerationLifecycleTuple) -> Result<(), Binar
     {
         return Err(TransportError::decode(
             "websocket generation lifecycle tuple.connectionId is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_build_id(value: &str) -> Result<(), BinaryFrameError> {
+    if value.is_empty()
+        || value.len() > 512
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'~' | b'-'))
+    {
+        return Err(TransportError::decode(
+            "websocket generation lifecycle tuple.buildId is invalid",
         ));
     }
     Ok(())

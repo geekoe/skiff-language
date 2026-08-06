@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "accept-sequence",
+  "scenario": "capabilities-refresh-same-replica",
   "mainConnection": "c1",
   "preAuthLimit": 2,
   "events": [
@@ -23,6 +23,11 @@
       "kind": "write",
       "connection": "c1",
       "frame": "registered.runtime-a"
+    },
+    {
+      "kind": "read",
+      "connection": "c1",
+      "frame": "capabilities.runtime-a"
     },
     {
       "kind": "read",

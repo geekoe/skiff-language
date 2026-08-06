@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "accept-sequence",
+  "scenario": "identity-change-capabilities-replica",
   "mainConnection": "c1",
   "preAuthLimit": 2,
   "events": [
@@ -20,27 +20,20 @@
       "frame": "capabilities.runtime-a"
     },
     {
-      "kind": "write",
-      "connection": "c1",
-      "frame": "registered.runtime-a"
-    },
-    {
       "kind": "read",
       "connection": "c1",
-      "frame": "health.empty"
+      "frame": "capabilities.runtime-b"
     }
   ],
   "expect": {
     "outcomes": {
-      "c1": "Registered"
+      "c1": "IdentityChange"
     },
     "refusedCount": 0,
     "preAuthCount": 0,
-    "registeredSessions": [
-      "runtime-a"
-    ],
-    "observedHealth": 1,
-    "routableRegistered": true,
+    "registeredSessions": [],
+    "observedHealth": 0,
+    "routableRegistered": false,
     "failStop": false
   }
 }

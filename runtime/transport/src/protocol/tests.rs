@@ -13,21 +13,19 @@ use crate::protocol::{
     ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
     RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
     RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+    RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
     RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
-    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
-    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, TaskSubmitRequestFrameHeader,
-    TelemetryBatchEnvelope, TelemetryProtocol, TelemetryTopic, TelemetryVisibility,
-    ValidatedResponseErrorFrame, RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
+    RuntimeTraceContextFrameHeader, TaskSubmitRequestFrameHeader, TelemetryBatchEnvelope,
+    TelemetryProtocol, TelemetryTopic, TelemetryVisibility, ValidatedResponseErrorFrame,
+    RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_request_contract::ServiceErrorEnvelope;
 
 const SERVICE_PROTOCOL_A: &str =
     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const SERVICE_REVISION: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RouterBootstrapCorpus {
@@ -76,7 +74,6 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
                 assert!(!header.service_db.mongo_url.is_empty());
                 assert_eq!(header.http.max_response_bytes, 67_108_864);
                 assert_eq!(header.activation.profile, "prod");
-                assert_eq!(header.activation.generation, 7);
             }
             "reject" => assert!(
                 result.is_err(),
@@ -347,124 +344,18 @@ fn decode_actor_task_request(value: Value) -> Result<(), serde_json::Error> {
 }
 
 #[test]
-fn runtime_register_frame_header_round_trips_empty_payload() {
-    let envelope = RuntimeRegisterEnvelope {
-        envelope_type: "runtime.register",
-        runtime_id: "runtime-1".to_string(),
-        service_id: "example.com/service-a".to_string(),
-        version: "v1".to_string(),
-        build_id:
-            "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                .to_string(),
-        revision_id: SERVICE_REVISION.to_string(),
-        activation_identity: Some("skiff-runtime-activation-v1:opaque:activation-fixture".to_string()),
-        service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
-        contract_identity: SERVICE_PROTOCOL_A.to_string(),
-        targets: vec![
-            "service.test.Api.alpha".to_string(),
-            "service.test.Api.beta".to_string(),
-        ],
-        runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-        code_revision_id: SERVICE_REVISION.to_string(),
-        implementation_identity:
-            "skiff-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                .to_string(),
-        artifact_identity:
-            "skiff-service-assembly-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                .to_string(),
-        capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
-            dispatch_modes: vec![RuntimeDispatchModeCapability::Unary],
-            package_test_dispatch: true,
-            request_cancel: true,
-            runtime_program: true,
-            artifact_root: Some("/tmp/skiff-artifacts".to_string()),
-            lazy_load: true,
-            loaded_build_ids: vec!["skiff-deployment-artifact-v4:sha256:abc".to_string()],
-        },
-        gateway_entry_identities: vec![
-            "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .to_string(),
-        ],
-    };
-    let header = RuntimeRegisterFrameHeader::from(envelope);
-
-    let frame = encode_binary_frame(&header, &[]).expect("runtime.register frame encodes");
-    let (decoded, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-        decode_typed_binary_frame(&frame).expect("runtime.register frame decodes");
-
-    assert_eq!(decoded, header);
-    assert!(payload.is_empty());
-    assert_eq!(decoded.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-    assert_eq!(decoded.envelope_type, "runtime.register");
-    assert_eq!(decoded.runtime_id, "runtime-1");
-    assert_eq!(decoded.service_id, "example.com/service-a");
-    assert_eq!(
-        decoded.build_id,
-        "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    );
-    assert_eq!(
-        decoded.activation_identity.as_deref(),
-        Some("skiff-runtime-activation-v1:opaque:activation-fixture")
-    );
-    assert_eq!(decoded.service_protocol_identity, SERVICE_PROTOCOL_A);
-    let encoded = serde_json::to_value(&decoded).expect("register header should serialize");
-    assert!(encoded.get("protocolVersion").is_none());
-    assert_eq!(
-        decoded.artifact_identity.as_deref(),
-        Some(
-            "skiff-service-assembly-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-        )
-    );
-    assert_eq!(
-        decoded.targets,
-        vec![
-            "service.test.Api.alpha".to_string(),
-            "service.test.Api.beta".to_string()
-        ]
-    );
-    assert_eq!(
-        decoded.capabilities,
-        Some(RuntimeCapabilitiesFrameHeaderMetadata {
-            dispatch_modes: vec![RuntimeDispatchModeCapability::Unary],
-            package_test_dispatch: true,
-            request_cancel: true,
-            runtime_program: true,
-            artifact_root: Some("/tmp/skiff-artifacts".to_string()),
-            lazy_load: true,
-            loaded_build_ids: vec!["skiff-deployment-artifact-v4:sha256:abc".to_string()],
-        })
-    );
-    assert_eq!(
-        decoded.gateway_entry_identities,
-        vec![
-            "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .to_string()
-        ]
-    );
-}
-
-#[test]
-fn runtime_register_frame_header_rejects_legacy_protocol_version() {
-    let error = serde_json::from_value::<RuntimeRegisterFrameHeader>(json!({
+fn runtime_register_frame_is_retired_with_m4() {
+    // Registration is capabilities-only after M4: the legacy `runtime.register`
+    // frame has no transport type and its bytes must fail strict session
+    // decode (the session demux treats it as a malformed frame).
+    let value = json!({
         "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
         "type": "runtime.register",
-        "runtimeId": "runtime-1",
-        "serviceId": "example.com/service-a",
-        "version": "v1",
-        "buildId": "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "revisionId": SERVICE_REVISION,
-        "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
-        "targets": ["service.test.Api.alpha"],
-        "protocolVersion": "skiff-protocol-v1"
-    }))
-    .expect_err("legacy protocolVersion must be rejected");
-
-    assert!(
-        error
-            .to_string()
-            .contains("unknown field `protocolVersion`"),
-        "unexpected error: {error}"
-    );
+        "runtimeId": "runtime-1"
+    });
+    let frame = encode_binary_frame(&value, &[]).expect("raw frame must encode");
+    let decoded = decode_binary_frame(&frame).expect("raw frame must decode");
+    assert_eq!(decoded.header["type"], "runtime.register");
 }
 
 #[test]

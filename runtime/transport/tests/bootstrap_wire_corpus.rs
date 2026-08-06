@@ -184,16 +184,7 @@ mod tests {
             match (case.valid, result) {
                 (true, Ok(header)) => {
                     assert_eq!(header.envelope_type, "router.bootstrap");
-                    assert_eq!(
-                    header.activation.assembly.assembly_identity.as_str(),
-                    "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                );
-                    assert_eq!(
-                        header.activation.config_snapshot.snapshot_id.as_str(),
-                        "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    );
                     assert_eq!(header.activation.profile, "prod");
-                    assert_eq!(header.activation.generation, 7);
 
                     // Canonical bootstrap frames must encode/decode with an empty
                     // payload and survive a typed roundtrip unchanged.

@@ -12,14 +12,7 @@
           "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
+          "profile": "prod"
         },
         "http": {
           "maxResponseBytes": 67108864
@@ -257,6 +250,31 @@
         },
         "http": {
           "maxResponseBytes": 67108864
+        }
+      }
+    },
+    {
+      "name": "legacy-activation-tuple-rejected",
+      "outcome": "reject",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v4",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
+        },
+        "activation": {
+          "profile": "prod",
+          "generation": 7,
+          "assembly": {
+            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "configSnapshot": {
+            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
         }
       }
     }

@@ -129,7 +129,9 @@
     {
       "id": "wrong-type",
       "json": {
-        "snapshotId": ["skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+        "snapshotId": [
+          "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
       },
       "valid": false,
       "expectErrorContains": "invalid type"
@@ -139,6 +141,44 @@
     {
       "id": "canonical",
       "valid": true,
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v4",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
+        },
+        "activation": {
+          "profile": "prod"
+        }
+      }
+    },
+    {
+      "id": "invalid-profile",
+      "valid": false,
+      "expectErrorContains": "invalid router.bootstrap frame header: activation.profile",
+      "json": {
+        "schemaVersion": "skiff-runtime-frame-v4",
+        "type": "router.bootstrap",
+        "artifactsPath": "/opt/skiff/artifacts",
+        "serviceDb": {
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
+        },
+        "http": {
+          "maxResponseBytes": 67108864
+        },
+        "activation": {
+          "profile": "prod env"
+        }
+      }
+    },
+    {
+      "id": "legacy-activation-tuple-rejected",
+      "valid": false,
+      "expectErrorContains": "typed decode failed",
       "json": {
         "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
@@ -162,110 +202,6 @@
       }
     },
     {
-      "id": "invalid-assembly-identity",
-      "valid": false,
-      "expectErrorContains": "assemblyIdentity must use",
-      "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
-        "type": "router.bootstrap",
-        "artifactsPath": "/opt/skiff/artifacts",
-        "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
-        },
-        "http": {
-          "maxResponseBytes": 67108864
-        },
-        "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "not-an-assembly-identity"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
-        }
-      }
-    },
-    {
-      "id": "invalid-config-snapshot-id",
-      "valid": false,
-      "expectErrorContains": "must use skiff-runtime-config-snapshot-v1:<32 lowercase hex>",
-      "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
-        "type": "router.bootstrap",
-        "artifactsPath": "/opt/skiff/artifacts",
-        "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
-        },
-        "http": {
-          "maxResponseBytes": 67108864
-        },
-        "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "broken"
-          }
-        }
-      }
-    },
-    {
-      "id": "invalid-profile",
-      "valid": false,
-      "expectErrorContains": "profile must be 1-200 ASCII",
-      "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
-        "type": "router.bootstrap",
-        "artifactsPath": "/opt/skiff/artifacts",
-        "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
-        },
-        "http": {
-          "maxResponseBytes": 67108864
-        },
-        "activation": {
-          "profile": "prod env",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
-        }
-      }
-    },
-    {
-      "id": "overflow-generation",
-      "valid": false,
-      "expectErrorContains": "generation must be between 0 and",
-      "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
-        "type": "router.bootstrap",
-        "artifactsPath": "/opt/skiff/artifacts",
-        "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
-        },
-        "http": {
-          "maxResponseBytes": 67108864
-        },
-        "activation": {
-          "profile": "prod",
-          "generation": 9007199254740992,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
-        }
-      }
-    },
-    {
       "id": "wrong-type",
       "valid": false,
       "expectErrorContains": "type must be router.bootstrap",
@@ -274,20 +210,13 @@
         "type": "router.capabilities",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "http": {
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
+          "profile": "prod"
         }
       }
     },
@@ -300,60 +229,46 @@
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "http": {
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
+          "profile": "prod"
         }
       }
     },
     {
       "id": "unknown-activation-field",
       "valid": false,
-      "expectErrorContains": "unknown field",
+      "expectErrorContains": "typed decode failed",
       "json": {
         "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "http": {
           "maxResponseBytes": 67108864
         },
         "activation": {
           "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "activationId": "unexpected"
+          "pending": true
         }
       }
     },
     {
       "id": "missing-activation",
       "valid": false,
-      "expectErrorContains": "missing field",
+      "expectErrorContains": "typed decode failed",
       "json": {
         "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "http": {
           "maxResponseBytes": 67108864
@@ -363,28 +278,21 @@
     {
       "id": "extra-top-level-field",
       "valid": false,
-      "expectErrorContains": "unknown field",
+      "expectErrorContains": "typed decode failed",
       "json": {
         "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
-          "mongoUrl": "mongodb://mongo.internal:27017/skiff"
+          "mongoUrl": "mongodb://mongo.internal:27017/skiff?replicaSet=rs0"
         },
         "http": {
           "maxResponseBytes": 67108864
         },
         "activation": {
-          "profile": "prod",
-          "generation": 7,
-          "assembly": {
-            "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          },
-          "configSnapshot": {
-            "snapshotId": "skiff-runtime-config-snapshot-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          }
+          "profile": "prod"
         },
-        "registryEndpoint": "https://registry.internal"
+        "generation": 7
       }
     }
   ],

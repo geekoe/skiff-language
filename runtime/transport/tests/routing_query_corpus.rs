@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-const REQUIRED_SCENARIOS: [&str; 12] = [
+const REQUIRED_SCENARIOS: [&str; 11] = [
     "exact-single-candidate",
     "multiple-replicas-exact",
     "cancelled-excluded",
@@ -19,7 +19,6 @@ const REQUIRED_SCENARIOS: [&str; 12] = [
     "build-id-registered-wins-over-root-mismatch",
     "capability-server-stream-missing-excluded",
     "heartbeat-freshness-ignored",
-    "epoch-capture-is-whole-lease",
     "lazy-load-exact-root-candidate",
     "lazy-load-root-mismatch-excluded",
     "build-id-loaded-with-missing-capability-excluded",
@@ -67,12 +66,6 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
             "heartbeat-freshness-ignored",
             include_str!(
                 "../testdata/routing-query/scenarios/08-heartbeat-freshness-ignored.json"
-            ),
-        ),
-        (
-            "epoch-capture-is-whole-lease",
-            include_str!(
-                "../testdata/routing-query/scenarios/09-epoch-capture-is-whole-lease.json"
             ),
         ),
         (
@@ -129,16 +122,6 @@ struct Query {
     build_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Tuple {
-    profile: String,
-    generation: u64,
-    assembly: String,
-    #[serde(rename = "configSnapshot")]
-    config_snapshot: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Session {
@@ -147,7 +130,6 @@ struct Session {
     session_epoch: SessionEpoch,
     revision: u64,
     registered: bool,
-    tuple: Option<Tuple>,
     cancelled: bool,
     capabilities: Vec<String>,
     #[serde(rename = "heartbeatFresh", default = "default_true")]
@@ -183,9 +165,6 @@ struct Scenario {
     #[serde(rename = "directoryRevision")]
     directory_revision: u64,
     #[serde(default)]
-    #[serde(rename = "directoryCurrentEpochGeneration")]
-    directory_current_epoch_generation: Option<u64>,
-    #[serde(default)]
     #[serde(rename = "routerArtifactRoot")]
     router_artifact_root: Option<String>,
     epoch: Epoch,
@@ -204,15 +183,6 @@ struct Expect {
     candidates: Vec<String>,
     #[serde(default)]
     note: String,
-}
-
-fn epoch_tuple(epoch: &Epoch) -> Tuple {
-    Tuple {
-        profile: epoch.profile.clone(),
-        generation: epoch.generation,
-        assembly: epoch.assembly_identity.clone(),
-        config_snapshot: epoch.config_snapshot_id.clone(),
-    }
 }
 
 /// Frozen projection (integration-contract-v2 §1): registered → one complete
@@ -269,12 +239,16 @@ fn routing_query_scenarios_match_frozen_projection() {
             "{name} deployment coordinates"
         );
         assert!(!scenario.expect.note.is_empty(), "{name} note");
-        if let Some(directory_generation) = scenario.directory_current_epoch_generation {
-            assert_ne!(
-                directory_generation, scenario.epoch.generation,
-                "{name} captured epoch must differ from directory current"
-            );
-        }
+        assert!(
+            scenario.epoch.generation >= 1,
+            "{name} captured epoch generation must be positive"
+        );
+        assert!(
+            !scenario.epoch.profile.is_empty()
+                && !scenario.epoch.assembly_identity.is_empty()
+                && !scenario.epoch.config_snapshot_id.is_empty(),
+            "{name} captured epoch tuple coordinates"
+        );
         assert!(
             REQUIRED_SCENARIOS.contains(&name),
             "{name} must be a required scenario"

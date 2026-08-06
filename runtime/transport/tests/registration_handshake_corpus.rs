@@ -1,64 +1,43 @@
-//! Byte-exact handshake sequence corpus verifier for C-model-registration
-//! (`doc/implementation/router-rust-migration-c-model-registration-contract.md`).
+//! Byte-exact handshake sequence corpus verifier for the M4 registration
+//! handshake (capabilities-only registration; `assembly.activation:Register`
+//! and the epoch tuple are retired).
 //!
 //! This is a TEST-ONLY reference model. It is not production code, is not
 //! imported by any production crate, and must not be treated as the
 //! W-session implementation. W-session must implement the frozen semantics
-//! (owner/invariant in the contract doc) and consume the same fixtures.
+//! (owner/invariant in the M4 contract) and consume the same fixtures.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::Value;
-use skiff_artifact_model::AssemblyActivationControl;
-use skiff_runtime_transport::{
-    assembly_activation::{
-        decode_assembly_activation_frame, encode_assembly_activation_frame,
-        AssemblyActivationFrameDirection,
-    },
-    protocol::{
-        decode_binary_frame, decode_router_bootstrap_frame_header, decode_typed_binary_frame,
-        encode_binary_frame, RouterBootstrapFrameHeader, RuntimeCapabilitiesFrameHeader,
-        RuntimeHealthFrameHeader, RuntimeRegisterFrameHeader, RuntimeRegisteredFrameHeader,
-    },
+use skiff_runtime_transport::protocol::{
+    decode_binary_frame, decode_router_bootstrap_frame_header, decode_typed_binary_frame,
+    encode_binary_frame, RouterBootstrapFrameHeader, RuntimeCapabilitiesFrameHeader,
+    RuntimeHealthFrameHeader, RuntimeRegisteredFrameHeader,
 };
 
-const REQUIRED_SCENARIOS: [&str; 19] = [
+const REQUIRED_SCENARIOS: [&str; 10] = [
     "accept-sequence",
     "wrong-order-health-before-capabilities",
-    "wrong-order-register-before-capabilities",
-    "legacy-register-rejected",
-    "identity-change-register-replica",
+    "wrong-order-capabilities-before-bootstrap",
     "identity-change-capabilities-replica",
-    "duplicate-register-pre-ack",
-    "stale-register-old-generation",
-    "tuple-mismatch-assembly",
-    "new-generation-before-epoch-swap",
     "ack-loss",
-    "health-before-ack-no-observation",
     "pre-auth-limit",
     "bootstrap-timeout",
     "capabilities-timeout",
-    "register-timeout",
     "disconnect-mid-handshake",
-    "re-register-exact-idempotent",
-    "re-register-stale-after-ack",
+    "capabilities-refresh-same-replica",
 ];
 
-const REQUIRED_FRAMES: [&str; 12] = [
+const REQUIRED_FRAMES: [&str; 6] = [
     "bootstrap.prod.42",
     "capabilities.runtime-a",
     "capabilities.runtime-b",
-    "register.prod.42.a",
-    "register.prod.42.b",
-    "register.prod.41.a",
-    "register.prod.42.other-assembly",
-    "register.prod.43.a",
     "registered.runtime-a",
     "registered.runtime-b",
     "health.empty",
-    "legacy.runtime.register",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,37 +60,22 @@ struct Catalog {
     frames: BTreeMap<String, FrameEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Tuple {
-    profile: String,
-    generation: u64,
-    assembly: String,
-    config_snapshot: String,
-}
-
 #[derive(Debug, Clone)]
 enum SemanticFrame {
     Bootstrap,
     Capabilities { runtime_id: String },
-    Register { tuple: Tuple, replica_id: String },
     Registered { runtime_id: String },
     Health { runtime_id: String },
-    LegacyRegister,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Terminal {
     WrongOrder,
     IdentityChange,
-    DuplicateRegister,
-    StaleRegister,
-    NewGenerationBeforeEpochSwap,
-    LegacyRegisterRejected,
     BootstrapWriteFail,
     AckLoss,
     BootstrapTimeout,
     CapabilitiesTimeout,
-    RegisterTimeout,
     Disconnect,
     PreAuthLimitRejected,
 }
@@ -121,7 +85,6 @@ enum Phase {
     Accepted,
     BootstrapSent,
     CapabilitiesBound,
-    RegisterValidated,
     Registered,
     Closed,
 }
@@ -131,9 +94,7 @@ struct Conn {
     phase: Phase,
     terminal: Option<Terminal>,
     replica: Option<String>,
-    tuple: Option<Tuple>,
-    revision: u64,
-    health_before_ack: u64,
+    health_observed: u64,
 }
 
 impl Conn {
@@ -142,37 +103,29 @@ impl Conn {
             phase: Phase::Accepted,
             terminal: None,
             replica: None,
-            tuple: None,
-            revision: 0,
-            health_before_ack: 0,
+            health_observed: 0,
         }
     }
 }
 
 struct Machine {
-    current: Tuple,
-    pending: Option<Tuple>,
     pre_auth_limit: usize,
     pre_auth: Vec<String>,
     conns: HashMap<String, Conn>,
     refused: HashMap<String, u64>,
     registered_replicas: Vec<String>,
     observed_health: u64,
-    health_before_ack_total: u64,
 }
 
 impl Machine {
-    fn new(current: Tuple, pending: Option<Tuple>, pre_auth_limit: usize) -> Self {
+    fn new(pre_auth_limit: usize) -> Self {
         Self {
-            current,
-            pending,
             pre_auth_limit,
             pre_auth: Vec::new(),
             conns: HashMap::new(),
             refused: HashMap::new(),
             registered_replicas: Vec::new(),
             observed_health: 0,
-            health_before_ack_total: 0,
         }
     }
 
@@ -181,12 +134,7 @@ impl Machine {
         assert!(conn.terminal.is_none(), "connection already terminal");
         conn.terminal = Some(terminal);
         conn.phase = Phase::Closed;
-        conn.revision = 0;
-        conn.tuple = None;
-        if let Some(replica) = conn.replica.clone() {
-            self.registered_replicas
-                .retain(|existing| existing != &replica);
-        }
+        conn.replica = None;
         self.pre_auth.retain(|id| id != conn_id);
     }
 
@@ -224,8 +172,8 @@ impl Machine {
                     (conn.phase, conn.replica.clone())
                 };
                 assert!(
-                    phase == Phase::RegisterValidated,
-                    "registered ACK requires RegisterValidated"
+                    phase == Phase::CapabilitiesBound,
+                    "registered ACK requires CapabilitiesBound"
                 );
                 assert_eq!(
                     replica.as_deref(),
@@ -250,7 +198,7 @@ impl Machine {
             }
             SemanticFrame::Registered { .. } => {
                 let conn = self.conns.get(conn_id).expect("connection exists");
-                assert_eq!(conn.phase, Phase::RegisterValidated);
+                assert_eq!(conn.phase, Phase::CapabilitiesBound);
                 self.terminal(conn_id, Terminal::AckLoss);
             }
             _ => panic!("unexpected outbound frame kind"),
@@ -261,69 +209,23 @@ impl Machine {
         let snapshot = {
             let conn = self.conns.get(conn_id).expect("connection exists");
             assert!(conn.terminal.is_none(), "read after terminal");
-            (conn.phase, conn.replica.clone(), conn.tuple.clone())
+            (conn.phase, conn.replica.clone())
         };
         match frame {
             SemanticFrame::Capabilities { runtime_id } => match snapshot.0 {
                 Phase::Accepted => self.terminal(conn_id, Terminal::WrongOrder),
                 Phase::BootstrapSent => {
-                    if let Some(bound) = snapshot.1 {
-                        if bound == *runtime_id {
-                            self.terminal(conn_id, Terminal::WrongOrder);
-                        } else {
-                            self.terminal(conn_id, Terminal::IdentityChange);
-                        }
-                    } else {
-                        let conn = self.conns.get_mut(conn_id).unwrap();
-                        conn.replica = Some(runtime_id.clone());
-                        conn.phase = Phase::CapabilitiesBound;
-                    }
+                    let conn = self.conns.get_mut(conn_id).unwrap();
+                    conn.replica = Some(runtime_id.clone());
+                    conn.phase = Phase::CapabilitiesBound;
                 }
-                Phase::CapabilitiesBound | Phase::RegisterValidated => {
+                Phase::CapabilitiesBound | Phase::Registered => {
                     if snapshot.1.as_deref() == Some(runtime_id.as_str()) {
-                        self.terminal(conn_id, Terminal::WrongOrder);
+                        // A same-replica capabilities refresh is the runtime's
+                        // artifact-root / loaded-buildId advertisement refresh;
+                        // it is allowed and idempotent.
                     } else {
                         self.terminal(conn_id, Terminal::IdentityChange);
-                    }
-                }
-                Phase::Registered => {
-                    // A same-replica capabilities refresh after registration
-                    // is the runtime's artifact-root / loaded-buildId
-                    // advertisement refresh; it is allowed and idempotent.
-                    if snapshot.1.as_deref() != Some(runtime_id.as_str()) {
-                        self.terminal(conn_id, Terminal::IdentityChange);
-                    }
-                }
-                Phase::Closed => unreachable!("closed handled above"),
-            },
-            SemanticFrame::Register { tuple, replica_id } => match snapshot.0 {
-                Phase::Accepted | Phase::BootstrapSent => {
-                    self.terminal(conn_id, Terminal::WrongOrder);
-                }
-                Phase::CapabilitiesBound => {
-                    if snapshot.1.as_deref() != Some(replica_id.as_str()) {
-                        self.terminal(conn_id, Terminal::IdentityChange);
-                    } else if *tuple == self.current {
-                        let conn = self.conns.get_mut(conn_id).unwrap();
-                        conn.revision += 1;
-                        conn.tuple = Some(tuple.clone());
-                        conn.phase = Phase::RegisterValidated;
-                    } else if self.pending.as_ref() == Some(tuple) {
-                        self.terminal(conn_id, Terminal::NewGenerationBeforeEpochSwap);
-                    } else {
-                        self.terminal(conn_id, Terminal::StaleRegister);
-                    }
-                }
-                Phase::RegisterValidated => self.terminal(conn_id, Terminal::DuplicateRegister),
-                Phase::Registered => {
-                    if snapshot.2.as_ref() == Some(tuple) {
-                        // Exact duplicate re-register is idempotent (§3.2).
-                    } else if *tuple == self.current {
-                        self.terminal(conn_id, Terminal::StaleRegister);
-                    } else if self.pending.as_ref() == Some(tuple) {
-                        self.terminal(conn_id, Terminal::NewGenerationBeforeEpochSwap);
-                    } else {
-                        self.terminal(conn_id, Terminal::StaleRegister);
                     }
                 }
                 Phase::Closed => unreachable!("closed handled above"),
@@ -333,23 +235,13 @@ impl Machine {
                     if snapshot.1.as_deref() != Some(runtime_id.as_str()) {
                         self.terminal(conn_id, Terminal::IdentityChange);
                     } else {
-                        self.observed_health += 1;
-                    }
-                }
-                Phase::RegisterValidated => {
-                    if snapshot.1.as_deref() != Some(runtime_id.as_str()) {
-                        self.terminal(conn_id, Terminal::IdentityChange);
-                    } else {
                         let conn = self.conns.get_mut(conn_id).unwrap();
-                        conn.health_before_ack += 1;
-                        self.health_before_ack_total += 1;
+                        conn.health_observed += 1;
+                        self.observed_health += 1;
                     }
                 }
                 _ => self.terminal(conn_id, Terminal::WrongOrder),
             },
-            SemanticFrame::LegacyRegister => {
-                self.terminal(conn_id, Terminal::LegacyRegisterRejected);
-            }
             SemanticFrame::Bootstrap | SemanticFrame::Registered { .. } => {
                 panic!("router-to-runtime frames are outbound only")
             }
@@ -361,7 +253,6 @@ impl Machine {
         let terminal = match (kind, phase) {
             ("bootstrap", Phase::Accepted) => Terminal::BootstrapTimeout,
             ("capabilities", Phase::BootstrapSent) => Terminal::CapabilitiesTimeout,
-            ("register", Phase::CapabilitiesBound) => Terminal::RegisterTimeout,
             _ => panic!("timeout {kind} in invalid phase {phase:?}"),
         };
         self.terminal(conn_id, terminal);
@@ -388,59 +279,6 @@ impl Machine {
             "connection was never refused"
         );
         format!("{:?}", Terminal::PreAuthLimitRejected)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AssemblyValue {
-    assembly_identity: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotValue {
-    snapshot_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EpochValue {
-    profile: String,
-    generation: u64,
-    assembly: AssemblyValue,
-    #[serde(rename = "configSnapshot")]
-    config_snapshot: SnapshotValue,
-    pending: Option<PendingValue>,
-}
-
-impl EpochValue {
-    fn tuple(&self) -> Tuple {
-        Tuple {
-            profile: self.profile.clone(),
-            generation: self.generation,
-            assembly: self.assembly.assembly_identity.clone(),
-            config_snapshot: self.config_snapshot.snapshot_id.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct PendingValue {
-    profile: String,
-    generation: u64,
-    assembly: AssemblyValue,
-    #[serde(rename = "configSnapshot")]
-    config_snapshot: SnapshotValue,
-}
-
-impl PendingValue {
-    fn tuple(&self) -> Tuple {
-        Tuple {
-            profile: self.profile.clone(),
-            generation: self.generation,
-            assembly: self.assembly.assembly_identity.clone(),
-            config_snapshot: self.config_snapshot.snapshot_id.clone(),
-        }
     }
 }
 
@@ -487,13 +325,8 @@ struct ExpectValue {
     registered_sessions: Vec<String>,
     #[serde(rename = "observedHealth")]
     observed_health: u64,
-    #[serde(rename = "healthBeforeAck")]
-    health_before_ack: u64,
     #[serde(rename = "routableRegistered")]
     routable_registered: bool,
-    #[serde(rename = "publishedPending")]
-    published_pending: bool,
-    revision: u64,
     #[serde(rename = "failStop")]
     fail_stop: bool,
 }
@@ -505,7 +338,6 @@ struct ScenarioFile {
     scenario: String,
     #[serde(rename = "mainConnection")]
     main_connection: String,
-    epoch: EpochValue,
     #[serde(rename = "preAuthLimit")]
     pre_auth_limit: usize,
     events: Vec<EventValue>,
@@ -548,37 +380,6 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
                 runtime_id: typed.runtime_id,
             }
         }
-        "AssemblyRegister" => {
-            let control = decode_assembly_activation_frame(
-                AssemblyActivationFrameDirection::RuntimeToRouter,
-                &bytes,
-            )
-            .expect("register decodes");
-            let reencoded = encode_assembly_activation_frame(
-                AssemblyActivationFrameDirection::RuntimeToRouter,
-                &control,
-            )
-            .expect("register re-encodes");
-            assert_eq!(reencoded, bytes, "register frame must be byte-exact");
-            match control {
-                AssemblyActivationControl::Register {
-                    profile,
-                    generation,
-                    assembly,
-                    config_snapshot,
-                    replica_id,
-                } => SemanticFrame::Register {
-                    tuple: Tuple {
-                        profile,
-                        generation,
-                        assembly: assembly.assembly_identity.as_str().to_string(),
-                        config_snapshot: config_snapshot.snapshot_id.as_str().to_string(),
-                    },
-                    replica_id,
-                },
-                other => panic!("expected register control, got {other:?}"),
-            }
-        }
         "Registered" => {
             let (typed, payload): (RuntimeRegisteredFrameHeader, Vec<u8>) =
                 decode_typed_binary_frame(&bytes).expect("registered decodes");
@@ -598,15 +399,6 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
             SemanticFrame::Health {
                 runtime_id: typed.runtime_id,
             }
-        }
-        "LegacyRegister" => {
-            let (typed, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&bytes).expect("legacy register decodes");
-            assert!(payload.is_empty(), "legacy register payload must be empty");
-            let reencoded = encode_binary_frame(&typed, &[]).expect("legacy register re-encodes");
-            assert_eq!(reencoded, bytes, "legacy register frame must be byte-exact");
-            let _ = typed.runtime_id;
-            SemanticFrame::LegacyRegister
         }
         other => panic!("unknown decodeAs {other}"),
     }
@@ -661,10 +453,8 @@ fn frame_catalog_is_byte_exact_and_complete() {
         let expected_frame_type = match entry.decode_as.as_str() {
             "RouterBootstrap" => "router.bootstrap",
             "Capabilities" => "runtime.capabilities",
-            "AssemblyRegister" => "assembly.activation:Register",
             "Registered" => "runtime.registered",
             "Health" => "runtime.health",
-            "LegacyRegister" => "runtime.register",
             other => panic!("unknown decodeAs {other}"),
         };
         assert_eq!(
@@ -672,17 +462,15 @@ fn frame_catalog_is_byte_exact_and_complete() {
             "{name}: frameType must match decodeAs"
         );
         match &semantic {
-            SemanticFrame::Bootstrap => assert_eq!(entry.direction, "RouterToRuntime"),
-            SemanticFrame::Registered { .. } => assert_eq!(entry.direction, "RouterToRuntime"),
+            SemanticFrame::Bootstrap | SemanticFrame::Registered { .. } => {
+                assert_eq!(entry.direction, "RouterToRuntime")
+            }
             _ => assert_eq!(entry.direction, "RuntimeToRouter"),
         }
         assert!(
             !entry.frame_hex.is_empty() && entry.frame_hex.len() % 2 == 0,
             "{name}: frameHex must be even-length hex"
         );
-        // Every catalog frame is used by at least one scenario; the scenario
-        // set below exercises the required handshake and terminal families.
-        let _ = name;
     }
 }
 
@@ -708,11 +496,7 @@ fn handshake_sequences_match_frozen_semantics() {
 
     for scenario in &scenarios {
         assert_eq!(scenario.schema_version, 1);
-        let mut machine = Machine::new(
-            scenario.epoch.tuple(),
-            scenario.epoch.pending.as_ref().map(PendingValue::tuple),
-            scenario.pre_auth_limit,
-        );
+        let mut machine = Machine::new(scenario.pre_auth_limit);
         for event in &scenario.events {
             match event {
                 EventValue::Accept {
@@ -789,11 +573,6 @@ fn handshake_sequences_match_frozen_semantics() {
             "scenario {}: observedHealth",
             scenario.scenario
         );
-        assert_eq!(
-            machine.health_before_ack_total, expect.health_before_ack,
-            "scenario {}: healthBeforeAck",
-            scenario.scenario
-        );
 
         let main = machine
             .conns
@@ -803,17 +582,6 @@ fn handshake_sequences_match_frozen_semantics() {
             main.phase == Phase::Registered,
             expect.routable_registered,
             "scenario {}: routableRegistered",
-            scenario.scenario
-        );
-        assert_eq!(
-            main.phase == Phase::RegisterValidated,
-            expect.published_pending,
-            "scenario {}: publishedPending",
-            scenario.scenario
-        );
-        assert_eq!(
-            main.revision, expect.revision,
-            "scenario {}: revision",
             scenario.scenario
         );
         assert!(

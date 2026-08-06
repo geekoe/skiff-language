@@ -26,12 +26,6 @@
       },
       "revision": 1,
       "registered": true,
-      "tuple": {
-        "profile": "prod",
-        "generation": 42,
-        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      },
       "cancelled": false,
       "capabilities": [
         "unary",
@@ -51,12 +45,6 @@
       },
       "revision": 1,
       "registered": true,
-      "tuple": {
-        "profile": "prod",
-        "generation": 42,
-        "assembly": "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "configSnapshot": "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      },
       "cancelled": false,
       "capabilities": [
         "unary",

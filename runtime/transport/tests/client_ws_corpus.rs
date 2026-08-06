@@ -83,11 +83,7 @@ fn tuple() -> WebSocketGenerationLifecycleTuple {
     WebSocketGenerationLifecycleTuple {
         router_session_id: "skiff-router-session-v1:opaque:router-1".to_string(),
         service_id: "example.com/chat".to_string(),
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            "a".repeat(64)
-        )),
-        assembly_generation: 7,
+        build_id: format!("skiff-service-deployment-v2:sha256:{}", "a".repeat(64)),
         websocket_entry_id: format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64)),
         connection_id: "connection-1".to_string(),
     }

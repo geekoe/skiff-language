@@ -325,16 +325,6 @@
       "removePath": "routing.kind"
     },
     {
-      "name": "routing missing assembly identity",
-      "baseIndex": 0,
-      "removePath": "routing.assemblyIdentity"
-    },
-    {
-      "name": "routing missing assembly generation",
-      "baseIndex": 0,
-      "removePath": "routing.assemblyGeneration"
-    },
-    {
       "name": "routing missing gateway identity",
       "baseIndex": 0,
       "removePath": "routing.gatewayEntryIdentity"
@@ -369,12 +359,6 @@
       "value": "skiff-runtime-assembly-v2:sha256:aaaa"
     },
     {
-      "name": "assembly identity null",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyIdentity",
-      "value": null
-    },
-    {
       "name": "assembly generation negative",
       "baseIndex": 0,
       "setPath": "routing.assemblyGeneration",
@@ -391,12 +375,6 @@
       "baseIndex": 0,
       "setPath": "routing.assemblyGeneration",
       "value": "7"
-    },
-    {
-      "name": "assembly generation null",
-      "baseIndex": 0,
-      "setPath": "routing.assemblyGeneration",
-      "value": null
     },
     {
       "name": "gateway identity legacy prefix",

@@ -95,8 +95,7 @@ fn fence() -> ActorOwnerControlFenceFrameHeader {
 
 fn route_authority() -> ActorOwnerRouteAuthorityFrameHeader {
     ActorOwnerRouteAuthorityFrameHeader {
-        assembly_identity: format!("skiff-runtime-assembly-v3:sha256:{}", "c".repeat(64)),
-        assembly_generation: 3,
+        build_id: format!("skiff-service-deployment-v2:sha256:{}", "c".repeat(64)),
     }
 }
 

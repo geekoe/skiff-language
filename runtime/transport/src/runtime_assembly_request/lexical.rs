@@ -1,8 +1,7 @@
 use serde::{de, Deserialize, Deserializer};
 use skiff_artifact_model::{
-    deserialize_activation_generation, validate_activation_generation,
-    validate_runtime_assembly_identity, AssemblyIdentity, GatewayEntryIdentity,
-    ServiceDeploymentRef,
+    validate_activation_generation, validate_runtime_assembly_identity, AssemblyIdentity,
+    GatewayEntryIdentity, ServiceDeploymentRef,
 };
 
 use crate::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
@@ -271,27 +270,45 @@ where
     )
 }
 
-pub(super) fn deserialize_assembly_identity<'de, D>(
+/// Optional frozen assembly identity (M4): the router no longer fills the
+/// field; a missing/null value decodes to `None` and an absent identity is
+/// tolerated (the runtime never pins on it). A present value is still
+/// validated strictly so old byte-exact corpora keep decoding.
+pub(super) fn deserialize_optional_assembly_identity<'de, D>(
     deserializer: D,
-) -> Result<AssemblyIdentity, D::Error>
+) -> Result<Option<AssemblyIdentity>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = String::deserialize(deserializer)?;
-    validate_runtime_assembly_identity(&value).map_err(de::Error::custom)?;
-    Ok(AssemblyIdentity::new(value))
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(value) => {
+            validate_runtime_assembly_identity(&value).map_err(de::Error::custom)?;
+            Ok(Some(AssemblyIdentity::new(value)))
+        }
+    }
 }
 
-pub(super) fn deserialize_safe_activation_generation<'de, D>(
+/// Optional frozen assembly generation (M4): the router no longer fills the
+/// field; a missing/null value decodes to `None` and an absent generation is
+/// tolerated. A present value is still validated strictly so old byte-exact
+/// corpora keep decoding.
+pub(super) fn deserialize_optional_safe_activation_generation<'de, D>(
     deserializer: D,
-) -> Result<u64, D::Error>
+) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = deserialize_activation_generation(deserializer)?;
-    validate_activation_generation(value, "routing.assemblyGeneration")
-        .map_err(de::Error::custom)?;
-    Ok(value)
+    let value = Option::<u64>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(value) => {
+            validate_activation_generation(value, "routing.assemblyGeneration")
+                .map_err(de::Error::custom)?;
+            Ok(Some(value))
+        }
+    }
 }
 
 pub(super) fn deserialize_gateway_entry_identity<'de, D>(

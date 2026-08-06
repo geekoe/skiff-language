@@ -48,13 +48,12 @@ pub use session::{
     decode_runtime_capabilities_frame, decode_runtime_health_frame,
     decode_runtime_registered_frame, encode_router_bootstrap_frame,
     encode_runtime_capabilities_frame, encode_runtime_health_frame,
-    encode_runtime_registered_frame, CapturedBootstrapEpoch, RouterBootstrapActivationFrameHeader,
+    encode_runtime_registered_frame, RouterBootstrapActivationFrameHeader,
     RouterBootstrapFrameHeader, RouterBootstrapHttpFrameHeader,
     RouterBootstrapServiceDbFrameHeader, RouterBootstrapSource, RuntimeBootstrapProvider,
     RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
     RuntimeDispatchModeCapability, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
-    RuntimeRegisterEnvelope, RuntimeRegisterFrameHeader, RuntimeRegisteredFrameHeader,
-    StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
+    RuntimeRegisteredFrameHeader, StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
     RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 pub use task::{
@@ -94,17 +93,15 @@ pub(crate) use actor::validate_test_case_authority;
 pub enum RuntimeFrameFamily {
     Session,
     Request,
-    Activation,
     Connection,
     Actor,
     Task,
 }
 
 impl RuntimeFrameFamily {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Session,
         Self::Request,
-        Self::Activation,
         Self::Connection,
         Self::Actor,
         Self::Task,
@@ -114,7 +111,6 @@ impl RuntimeFrameFamily {
         match self {
             Self::Session => FrameDirection::Either,
             Self::Request => FrameDirection::Either,
-            Self::Activation => FrameDirection::Either,
             Self::Connection => FrameDirection::Either,
             Self::Actor => FrameDirection::Either,
             // The task family is mixed-direction: `task.submit.request` is
@@ -128,7 +124,7 @@ impl RuntimeFrameFamily {
 
     pub const fn payload_presence(self) -> PayloadPresenceRule {
         match self {
-            Self::Session | Self::Activation => PayloadPresenceRule::Empty,
+            Self::Session => PayloadPresenceRule::Empty,
             Self::Request | Self::Connection | Self::Actor => PayloadPresenceRule::Optional,
             Self::Task => PayloadPresenceRule::Required,
         }
@@ -138,7 +134,6 @@ impl RuntimeFrameFamily {
         match self {
             Self::Session => "runtime.",
             Self::Request => "request.",
-            Self::Activation => "assembly.activation",
             Self::Connection => "connection.",
             Self::Actor => "actor.",
             Self::Task => "task.",
@@ -167,7 +162,7 @@ pub struct RuntimeFrameFamilyRule {
     pub payload_presence: PayloadPresenceRule,
 }
 
-pub const RUNTIME_FRAME_FAMILY_RULES: [RuntimeFrameFamilyRule; 6] = [
+pub const RUNTIME_FRAME_FAMILY_RULES: [RuntimeFrameFamilyRule; 5] = [
     RuntimeFrameFamilyRule {
         family: RuntimeFrameFamily::Session,
         direction: RuntimeFrameFamily::Session.direction(),
@@ -177,11 +172,6 @@ pub const RUNTIME_FRAME_FAMILY_RULES: [RuntimeFrameFamilyRule; 6] = [
         family: RuntimeFrameFamily::Request,
         direction: RuntimeFrameFamily::Request.direction(),
         payload_presence: RuntimeFrameFamily::Request.payload_presence(),
-    },
-    RuntimeFrameFamilyRule {
-        family: RuntimeFrameFamily::Activation,
-        direction: RuntimeFrameFamily::Activation.direction(),
-        payload_presence: RuntimeFrameFamily::Activation.payload_presence(),
     },
     RuntimeFrameFamilyRule {
         family: RuntimeFrameFamily::Connection,
@@ -236,15 +226,9 @@ impl RuntimeFrameSinkRegistration {
 pub struct RuntimeFrameSinks {
     pub session: Box<dyn RuntimeFrameSink>,
     pub request: Box<dyn RuntimeFrameSink>,
-    pub activation: AssemblyActivationFrameSinks,
     pub connection: Box<dyn RuntimeFrameSink>,
     pub actor: Box<dyn RuntimeFrameSink>,
     pub task: Box<dyn RuntimeFrameSink>,
-}
-
-pub struct AssemblyActivationFrameSinks {
-    pub registration: Box<dyn RuntimeFrameSink>,
-    pub transaction: Box<dyn RuntimeFrameSink>,
 }
 
 #[cfg(test)]

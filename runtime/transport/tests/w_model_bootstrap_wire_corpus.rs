@@ -11,14 +11,11 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde_json::Value;
-use skiff_artifact_model::{
-    AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
-};
+use skiff_artifact_model::{RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
 use skiff_runtime_transport::protocol::{
     decode_router_bootstrap_frame, decode_router_bootstrap_frame_header, encode_binary_frame,
-    encode_router_bootstrap_frame, CapturedBootstrapEpoch, RouterBootstrapFrameHeader,
-    RouterBootstrapSource, RuntimeBootstrapProvider, StatelessRuntimeBootstrapProvider,
-    ROUTER_BOOTSTRAP_FRAME_TYPE,
+    encode_router_bootstrap_frame, RouterBootstrapFrameHeader, RouterBootstrapSource,
+    RuntimeBootstrapProvider, StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
 };
 
 #[derive(Deserialize)]
@@ -252,12 +249,7 @@ mod tests {
             artifacts_path: header.artifacts_path.clone(),
             service_db: header.service_db.clone(),
             http: header.http.clone(),
-            activation: CapturedBootstrapEpoch {
-                profile: header.activation.profile.clone(),
-                generation: header.activation.generation,
-                assembly: header.activation.assembly.clone(),
-                config_snapshot: header.activation.config_snapshot.clone(),
-            },
+            profile: header.activation.profile.clone(),
         };
         let provider = StatelessRuntimeBootstrapProvider;
         let constructed = provider
@@ -270,23 +262,9 @@ mod tests {
             constructed
         );
 
-        // The strict constructor rejects invalid wire tuples.
-        let assembly = format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64));
-        let snapshot = format!("skiff-runtime-config-snapshot-v1:{}", "b".repeat(32));
-        let valid = CapturedBootstrapEpoch::new("prod", 42, assembly.clone(), snapshot.clone())
-            .expect("valid captured epoch");
-        assert_eq!(
-            valid.assembly,
-            RuntimeAssemblyRef {
-                assembly_identity: AssemblyIdentity::new(assembly.clone()),
-            }
-        );
-        assert_eq!(
-            valid.config_snapshot,
-            RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(snapshot.clone()).expect("snapshot id"),
-            }
-        );
-        assert!(CapturedBootstrapEpoch::new("prod", 42, "broken", snapshot).is_err());
+        // The strict decoder rejects an invalid profile.
+        let mut invalid = source;
+        invalid.profile = "prod env".to_string();
+        assert!(provider.bootstrap_frame(&invalid).is_err());
     }
 }

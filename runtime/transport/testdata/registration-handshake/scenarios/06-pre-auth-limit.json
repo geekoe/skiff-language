@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "scenario": "accept-sequence",
+  "scenario": "pre-auth-limit",
   "mainConnection": "c1",
-  "preAuthLimit": 2,
+  "preAuthLimit": 1,
   "events": [
     {
       "kind": "accept",
@@ -15,6 +15,11 @@
       "frame": "bootstrap.prod.42"
     },
     {
+      "kind": "accept",
+      "connection": "c2",
+      "connectionGeneration": 1
+    },
+    {
       "kind": "read",
       "connection": "c1",
       "frame": "capabilities.runtime-a"
@@ -23,23 +28,19 @@
       "kind": "write",
       "connection": "c1",
       "frame": "registered.runtime-a"
-    },
-    {
-      "kind": "read",
-      "connection": "c1",
-      "frame": "health.empty"
     }
   ],
   "expect": {
     "outcomes": {
-      "c1": "Registered"
+      "c1": "Registered",
+      "c2": "PreAuthLimitRejected"
     },
-    "refusedCount": 0,
+    "refusedCount": 1,
     "preAuthCount": 0,
     "registeredSessions": [
       "runtime-a"
     ],
-    "observedHealth": 1,
+    "observedHealth": 0,
     "routableRegistered": true,
     "failStop": false
   }

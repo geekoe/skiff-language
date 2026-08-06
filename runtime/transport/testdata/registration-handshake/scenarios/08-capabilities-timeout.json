@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scenario": "accept-sequence",
+  "scenario": "capabilities-timeout",
   "mainConnection": "c1",
   "preAuthLimit": 2,
   "events": [
@@ -15,32 +15,20 @@
       "frame": "bootstrap.prod.42"
     },
     {
-      "kind": "read",
+      "kind": "timeout",
       "connection": "c1",
-      "frame": "capabilities.runtime-a"
-    },
-    {
-      "kind": "write",
-      "connection": "c1",
-      "frame": "registered.runtime-a"
-    },
-    {
-      "kind": "read",
-      "connection": "c1",
-      "frame": "health.empty"
+      "timeoutKind": "capabilities"
     }
   ],
   "expect": {
     "outcomes": {
-      "c1": "Registered"
+      "c1": "CapabilitiesTimeout"
     },
     "refusedCount": 0,
     "preAuthCount": 0,
-    "registeredSessions": [
-      "runtime-a"
-    ],
-    "observedHealth": 1,
-    "routableRegistered": true,
+    "registeredSessions": [],
+    "observedHealth": 0,
+    "routableRegistered": false,
     "failStop": false
   }
 }

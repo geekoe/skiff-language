@@ -1,9 +1,6 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{
-    validate_activation_generation, validate_runtime_assembly_identity, ActorAbiIdentity,
-    ActorImplementationIdentity,
-};
+use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
 
 use crate::{
     actor_method::{
@@ -34,8 +31,9 @@ pub struct ActorOwnerFenceFrameHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActorOwnerRouteAuthorityFrameHeader {
-    pub assembly_identity: String,
-    pub assembly_generation: u64,
+    /// Deployment build id anchoring the routed actor instance (M4: no
+    /// assembly generation; the deployment record is the authority).
+    pub build_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -559,16 +557,15 @@ fn validate_activation_deadline(
 fn validate_route_authority(
     authority: &ActorOwnerRouteAuthorityFrameHeader,
 ) -> Result<(), BinaryFrameError> {
-    validate_runtime_assembly_identity(&authority.assembly_identity)
-        .map_err(|error| TransportError::decode(format!("routeAuthority: {error}")))?;
-    validate_activation_generation(
-        authority.assembly_generation,
-        "routeAuthority.assemblyGeneration",
-    )
-    .map_err(|error| TransportError::decode(format!("routeAuthority: {error}")))?;
-    if authority.assembly_generation == 0 {
+    let value = &authority.build_id;
+    if value.is_empty()
+        || value.len() > 512
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'~' | b'-'))
+    {
         return Err(TransportError::decode(
-            "routeAuthority.assemblyGeneration must be positive",
+            "routeAuthority.buildId must be a canonical build id",
         ));
     }
     Ok(())

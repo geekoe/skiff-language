@@ -5,38 +5,17 @@
 //! corpus tests (`runtime/transport/tests/w_model_*_corpus.rs` and the
 //! contracts-session/contracts-bootstrap tests).
 
-use skiff_artifact_model::{AssemblyIdentity, RuntimeAssemblyRef, RuntimeConfigSnapshotRef};
-
 use crate::protocol::{
     decode_router_bootstrap_frame, decode_runtime_capabilities_frame, decode_runtime_health_frame,
     decode_runtime_registered_frame, encode_router_bootstrap_frame,
     encode_runtime_capabilities_frame, encode_runtime_health_frame,
-    encode_runtime_registered_frame, CapturedBootstrapEpoch, RouterBootstrapFrameHeader,
+    encode_runtime_registered_frame, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader, RouterBootstrapSource,
     RuntimeBootstrapProvider, RuntimeCapabilitiesFrameHeader,
     RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability,
     RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeRegisteredFrameHeader,
     StatelessRuntimeBootstrapProvider, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-
-fn assembly_ref(byte: char) -> RuntimeAssemblyRef {
-    RuntimeAssemblyRef {
-        assembly_identity: AssemblyIdentity::new(format!(
-            "skiff-runtime-assembly-v3:sha256:{}",
-            byte.to_string().repeat(64)
-        )),
-    }
-}
-
-fn config_snapshot_ref(byte: char) -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(format!(
-            "skiff-runtime-config-snapshot-v1:{}",
-            byte.to_string().repeat(32)
-        ))
-        .unwrap(),
-    }
-}
 
 fn bootstrap_header() -> RouterBootstrapFrameHeader {
     RouterBootstrapFrameHeader {
@@ -51,9 +30,6 @@ fn bootstrap_header() -> RouterBootstrapFrameHeader {
         },
         activation: crate::protocol::RouterBootstrapActivationFrameHeader {
             profile: "prod".to_string(),
-            generation: 42,
-            assembly: assembly_ref('a'),
-            config_snapshot: config_snapshot_ref('b'),
         },
     }
 }
@@ -174,30 +150,26 @@ fn wrong_type_and_schema_version_are_rejected() {
 }
 
 #[test]
-fn captured_bootstrap_epoch_strictly_validates_wire_fields() {
-    let assembly = format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64));
-    let snapshot = format!("skiff-runtime-config-snapshot-v1:{}", "b".repeat(32));
-    let epoch = CapturedBootstrapEpoch::new("prod", 42, assembly.clone(), snapshot.clone())
-        .expect("valid captured epoch must construct");
-    assert_eq!(epoch.profile, "prod");
-    assert_eq!(epoch.generation, 42);
-    assert_eq!(epoch.assembly, assembly_ref('a'));
-    assert_eq!(epoch.config_snapshot, config_snapshot_ref('b'));
+fn bootstrap_profile_is_strictly_validated() {
+    let source = RouterBootstrapSource {
+        artifacts_path: "/opt/skiff/artifacts".to_string(),
+        service_db: RouterBootstrapServiceDbFrameHeader {
+            mongo_url: "mongodb://127.0.0.1:27017/?replicaSet=rs0".to_string(),
+        },
+        http: RouterBootstrapHttpFrameHeader {
+            max_response_bytes: 8_388_608,
+        },
+        profile: "prod".to_string(),
+    };
+    assert!(StatelessRuntimeBootstrapProvider
+        .bootstrap_frame(&source)
+        .is_ok());
 
-    assert!(
-        CapturedBootstrapEpoch::new("prod env", 42, assembly.clone(), snapshot.clone()).is_err()
-    );
-    assert!(CapturedBootstrapEpoch::new(
-        "prod",
-        9_007_199_254_740_992,
-        assembly.clone(),
-        snapshot.clone()
-    )
-    .is_err());
-    assert!(
-        CapturedBootstrapEpoch::new("prod", 42, "broken".to_string(), snapshot.clone()).is_err()
-    );
-    assert!(CapturedBootstrapEpoch::new("prod", 42, assembly, "broken".to_string()).is_err());
+    let mut invalid = source.clone();
+    invalid.profile = "prod env".to_string();
+    assert!(StatelessRuntimeBootstrapProvider
+        .bootstrap_frame(&invalid)
+        .is_err());
 }
 
 #[test]
@@ -210,13 +182,7 @@ fn stateless_provider_builds_bootstrap_header_from_captured_source() {
         http: RouterBootstrapHttpFrameHeader {
             max_response_bytes: 8_388_608,
         },
-        activation: CapturedBootstrapEpoch::new(
-            "prod",
-            42,
-            format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64)),
-            format!("skiff-runtime-config-snapshot-v1:{}", "b".repeat(32)),
-        )
-        .expect("valid captured epoch"),
+        profile: "prod".to_string(),
     };
 
     let provider = StatelessRuntimeBootstrapProvider;
@@ -226,10 +192,7 @@ fn stateless_provider_builds_bootstrap_header_from_captured_source() {
     let frame = encode_router_bootstrap_frame(&header).expect("bootstrap frame must encode");
     let decoded = decode_router_bootstrap_frame(&frame).expect("bootstrap frame must decode");
     assert_eq!(decoded, header);
-    assert_eq!(decoded.activation.generation, 42);
     assert_eq!(decoded.activation.profile, "prod");
-    assert_eq!(decoded.activation.assembly, assembly_ref('a'));
-    assert_eq!(decoded.activation.config_snapshot, config_snapshot_ref('b'));
 }
 
 #[test]
@@ -242,13 +205,7 @@ fn invalid_router_bootstrap_source_is_rejected_by_provider() {
         http: RouterBootstrapHttpFrameHeader {
             max_response_bytes: 8_388_608,
         },
-        activation: CapturedBootstrapEpoch::new(
-            "prod",
-            42,
-            format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64)),
-            format!("skiff-runtime-config-snapshot-v1:{}", "b".repeat(32)),
-        )
-        .expect("valid captured epoch"),
+        profile: "prod".to_string(),
     };
     let error = StatelessRuntimeBootstrapProvider
         .bootstrap_frame(&source)

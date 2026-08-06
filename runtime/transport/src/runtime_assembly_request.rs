@@ -13,20 +13,19 @@ mod metadata;
 mod strict_json;
 
 use lexical::{
-    deserialize_assembly_identity, deserialize_dispatch_mode, deserialize_gateway_caller_kind,
-    deserialize_gateway_entry_identity, deserialize_optional_build_id,
-    deserialize_optional_test_case_capability,
+    deserialize_dispatch_mode, deserialize_gateway_caller_kind, deserialize_gateway_entry_identity,
+    deserialize_optional_assembly_identity, deserialize_optional_build_id,
+    deserialize_optional_safe_activation_generation, deserialize_optional_test_case_capability,
     deserialize_optional_test_case_parent_request_id,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
     deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
     deserialize_runtime_assembly_websocket_jsonrpc_connection_id,
     deserialize_runtime_assembly_websocket_jsonrpc_method,
     deserialize_runtime_assembly_websocket_jsonrpc_request_id,
-    deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
-    deserialize_service_caller_kind, deserialize_service_deployment_ref,
-    deserialize_task_invocation_kind, deserialize_task_target, deserialize_task_target_kind,
-    deserialize_task_unary_dispatch_mode, deserialize_unary_dispatch_mode,
-    deserialize_websocket_jsonrpc_unary_dispatch_mode,
+    deserialize_runtime_frame_schema_version, deserialize_service_caller_kind,
+    deserialize_service_deployment_ref, deserialize_task_invocation_kind, deserialize_task_target,
+    deserialize_task_target_kind, deserialize_task_unary_dispatch_mode,
+    deserialize_unary_dispatch_mode, deserialize_websocket_jsonrpc_unary_dispatch_mode,
 };
 use metadata::deserialize_present_option;
 pub use metadata::*;
@@ -191,10 +190,20 @@ pub struct RuntimeAssemblyTaskRequestCallerFrameHeader {
 pub struct RuntimeAssemblyTaskRequestRoutingFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
     pub kind: String,
-    #[serde(deserialize_with = "deserialize_assembly_identity")]
-    pub assembly_identity: AssemblyIdentity,
-    #[serde(deserialize_with = "deserialize_safe_activation_generation")]
-    pub assembly_generation: u64,
+    /// Frozen optional field (M4): routers no longer fill the assembly
+    /// identity; runtimes tolerate an absent value and never pin on it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_assembly_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_identity: Option<AssemblyIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_activation_generation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_generation: Option<u64>,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
     #[serde(
@@ -289,10 +298,18 @@ pub struct RuntimeAssemblyRequestCallerFrameHeader {
 pub struct RuntimeAssemblyRequestRoutingFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
     pub kind: String,
-    #[serde(deserialize_with = "deserialize_assembly_identity")]
-    pub assembly_identity: AssemblyIdentity,
-    #[serde(deserialize_with = "deserialize_safe_activation_generation")]
-    pub assembly_generation: u64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_assembly_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_identity: Option<AssemblyIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_activation_generation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_generation: Option<u64>,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
     #[serde(
@@ -311,10 +328,18 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
 pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
     pub kind: String,
-    #[serde(deserialize_with = "deserialize_assembly_identity")]
-    pub assembly_identity: AssemblyIdentity,
-    #[serde(deserialize_with = "deserialize_safe_activation_generation")]
-    pub assembly_generation: u64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_assembly_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_identity: Option<AssemblyIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_activation_generation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_generation: Option<u64>,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
     #[serde(
@@ -333,10 +358,18 @@ pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
 pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
     pub kind: String,
-    #[serde(deserialize_with = "deserialize_assembly_identity")]
-    pub assembly_identity: AssemblyIdentity,
-    #[serde(deserialize_with = "deserialize_safe_activation_generation")]
-    pub assembly_generation: u64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_assembly_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_identity: Option<AssemblyIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_activation_generation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_generation: Option<u64>,
     #[serde(deserialize_with = "deserialize_service_deployment_ref")]
     pub deployment: ServiceDeploymentRef,
     #[serde(
