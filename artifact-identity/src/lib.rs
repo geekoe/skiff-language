@@ -50,7 +50,7 @@ pub use deployment::{
 pub use ecosystem_paths::{
     PackageArtifactPointerPath, PackageArtifactRecordPath, PackageFileIrRecordPath,
     PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
-    ProfileActivationStatePath, ReleasePointerPath, RuntimeAssemblyPointerPath,
+    ReleasePointerPath, RuntimeAssemblyPointerPath,
     RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
     ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };

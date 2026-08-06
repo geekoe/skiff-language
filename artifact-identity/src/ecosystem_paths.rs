@@ -47,7 +47,6 @@ typed_path!(ServiceContractPointerPath);
 typed_path!(ServiceDeploymentPointerPath);
 typed_path!(RuntimeAssemblyPointerPath);
 typed_path!(ReleasePointerPath);
-typed_path!(ProfileActivationStatePath);
 
 impl PackageArtifactRecordPath {
     pub fn new(reference: &PackageArtifactRef) -> Result<Self> {
@@ -228,13 +227,6 @@ impl ReleasePointerPath {
             "pointers/releases/{profile}/{service}/{version}.json"
         ))
         .map(Self)
-    }
-}
-
-impl ProfileActivationStatePath {
-    pub fn new(profile: &str) -> Result<Self> {
-        let profile = safe_segment(profile, "profile")?;
-        relative(format!("profiles/{profile}/activation.json")).map(Self)
     }
 }
 

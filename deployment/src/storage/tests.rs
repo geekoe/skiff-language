@@ -10,8 +10,7 @@ use skiff_artifact_identity::{
     assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, assign_service_deployment_identity, contract_operation_id,
     package_artifact_ref, package_schema_index_identity, runtime_assembly_ref,
-    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
-    ProfileActivationStatePath, ReleasePointerPath,
+    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath, ReleasePointerPath,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
@@ -20,14 +19,12 @@ use skiff_artifact_model::{
     ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit,
     PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContract, ServiceProtocolIdentity,
+    ServiceContract, ServiceProtocolIdentity,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
-use crate::fixtures::{
-    empty_runtime_assembly_fixture, runtime_assembly_fixture, service_deployment_fixture,
-};
+use crate::fixtures::{empty_runtime_assembly_fixture, service_deployment_fixture};
 
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -59,16 +56,6 @@ fn test_store() -> (TestRoot, CanonicalArtifactStore) {
     let temp = TestRoot::new();
     let store = CanonicalArtifactStore::create(temp.path()).expect("artifact store");
     (temp, store)
-}
-
-fn config_snapshot_ref(hex: char) -> RuntimeConfigSnapshotRef {
-    RuntimeConfigSnapshotRef {
-        snapshot_id: RuntimeConfigSnapshotId::parse(format!(
-            "skiff-runtime-config-snapshot-v1:{}",
-            hex.to_string().repeat(32)
-        ))
-        .unwrap(),
-    }
 }
 
 fn package_fixture() -> PackageArtifact {
@@ -450,7 +437,7 @@ fn four_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas()
 }
 
 #[test]
-fn activation_storage_coordinate_collision_pair_has_independent_records_and_cas() {
+fn coordinate_collision_pair_has_independent_records_and_cas() {
     let (_temp, store) = test_store();
     let mut slash = package_fixture();
     slash.package_id = "a.b/c/d".to_string();
@@ -750,217 +737,3 @@ fn file_and_resource_records_validate_exact_identity_path_and_content() {
     );
 }
 
-#[test]
-fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
-    let (_temp, store) = test_store();
-    let committed_assembly = empty_runtime_assembly_fixture().unwrap();
-    let candidate_assembly = runtime_assembly_fixture().unwrap();
-    store.write_runtime_assembly(&committed_assembly).unwrap();
-    store.write_runtime_assembly(&candidate_assembly).unwrap();
-    let committed_ref = runtime_assembly_ref(&committed_assembly).unwrap();
-    let candidate_ref = runtime_assembly_ref(&candidate_assembly).unwrap();
-
-    let committed_config = config_snapshot_ref('a');
-    let candidate_config = config_snapshot_ref('b');
-    let initial =
-        ProfileActivationState::initial("test", 7, committed_ref.clone(), committed_config.clone());
-    store.initialize_profile_activation(&initial).unwrap();
-    let committed_bytes = skiff_canonical_json::canonical_json_bytes(&initial.committed).unwrap();
-    let state_path = ProfileActivationStatePath::new("test").unwrap();
-    let state_host_path = store.root().join(state_path.as_relative_path().as_path());
-    fs::write(
-        state_host_path.with_file_name(".activation.json.tmp-crash"),
-        b"{",
-    )
-    .unwrap();
-    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
-
-    assert!(store
-        .prepare_profile_activation(
-            "test",
-            "rollback",
-            7,
-            7,
-            candidate_ref.clone(),
-            candidate_config.clone(),
-            vec!["replica-a".to_string()],
-        )
-        .is_err());
-    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
-    assert!(store
-        .prepare_profile_activation(
-            "test",
-            "wrong-assembly-domain",
-            7,
-            8,
-            skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                    "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-            },
-            candidate_config.clone(),
-            vec!["replica-a".to_string()],
-        )
-        .is_err());
-    assert_eq!(store.read_profile_activation("test").unwrap(), initial);
-
-    let prepared = store
-        .prepare_profile_activation(
-            "test",
-            "activation-8",
-            7,
-            8,
-            candidate_ref.clone(),
-            candidate_config.clone(),
-            vec!["replica-b".to_string(), "replica-a".to_string()],
-        )
-        .unwrap();
-    assert_eq!(prepared.committed, initial.committed);
-    assert_eq!(
-        prepared.pending.as_ref().unwrap().participant_replica_ids,
-        ["replica-a", "replica-b"]
-    );
-    assert!(store
-        .prepare_profile_activation(
-            "test",
-            "stale",
-            6,
-            7,
-            candidate_ref.clone(),
-            candidate_config.clone(),
-            vec!["replica-a".to_string()],
-        )
-        .is_err());
-    assert!(store
-        .commit_profile_activation(
-            "test",
-            "activation-8",
-            7,
-            8,
-            &candidate_ref,
-            &candidate_config,
-            &["replica-a".to_string(), "replica-b".to_string()],
-            &["replica-a".to_string()],
-        )
-        .is_err());
-    assert!(store
-        .commit_profile_activation(
-            "test",
-            "activation-8",
-            7,
-            8,
-            &candidate_ref,
-            &config_snapshot_ref('c'),
-            &["replica-a".to_string(), "replica-b".to_string()],
-            &["replica-a".to_string(), "replica-b".to_string()],
-        )
-        .is_err());
-
-    assert_eq!(
-        prepared
-            .recovery_action(&["replica-a".to_string()], &["replica-a".to_string()])
-            .unwrap(),
-        ActivationRecoveryAction::AbortPending {
-            activation_id: "activation-8".to_string()
-        }
-    );
-    assert_eq!(
-        prepared
-            .recovery_action(
-                &["replica-a".to_string(), "replica-b".to_string()],
-                &["replica-a".to_string(), "replica-b".to_string()]
-            )
-            .unwrap(),
-        ActivationRecoveryAction::CommitPending
-    );
-    assert_eq!(
-        prepared
-            .recovery_action(
-                &["replica-a".to_string(), "replica-b".to_string()],
-                &["replica-a".to_string()]
-            )
-            .unwrap(),
-        ActivationRecoveryAction::ReplayPrepare {
-            replica_ids: vec!["replica-b".to_string()]
-        }
-    );
-
-    let aborted = store
-        .abort_profile_activation("test", "activation-8", 7)
-        .unwrap();
-    assert!(aborted.pending.is_none());
-    assert_eq!(
-        skiff_canonical_json::canonical_json_bytes(&aborted.committed).unwrap(),
-        committed_bytes
-    );
-
-    store
-        .prepare_profile_activation(
-            "test",
-            "activation-8b",
-            7,
-            8,
-            candidate_ref.clone(),
-            candidate_config.clone(),
-            vec!["replica-a".to_string(), "replica-b".to_string()],
-        )
-        .unwrap();
-    let committed = store
-        .commit_profile_activation(
-            "test",
-            "activation-8b",
-            7,
-            8,
-            &candidate_ref,
-            &candidate_config,
-            &["replica-b".to_string(), "replica-a".to_string()],
-            &["replica-b".to_string(), "replica-a".to_string()],
-        )
-        .unwrap();
-    assert_eq!(committed.committed.generation, 8);
-    assert!(committed.pending.is_none());
-    assert_eq!(
-        committed.recovery_action(&[], &[]).unwrap(),
-        ActivationRecoveryAction::StableCommitted
-    );
-    assert_eq!(
-        store
-            .commit_profile_activation(
-                "test",
-                "activation-8b",
-                7,
-                8,
-                &candidate_ref,
-                &candidate_config,
-                &[],
-                &[],
-            )
-            .unwrap(),
-        committed,
-        "post-commit notification replay must be idempotent"
-    );
-    assert!(store
-        .commit_profile_activation(
-            "test",
-            "activation-8b",
-            6,
-            8,
-            &candidate_ref,
-            &candidate_config,
-            &[],
-            &[],
-        )
-        .is_err());
-    assert!(store
-        .commit_profile_activation(
-            "test",
-            "",
-            7,
-            8,
-            &candidate_ref,
-            &candidate_config,
-            &[],
-            &[],
-        )
-        .is_err());
-}

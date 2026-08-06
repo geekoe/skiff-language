@@ -9,13 +9,8 @@ pub use io::CanonicalArtifactStore;
 pub use package_copy_admission::{PackageArtifactAdmissionCache, ValidatedPackageCopyRecords};
 pub use records::ResolvedPackageSchema;
 
-mod activation;
 mod pointers;
 
-pub use activation::{
-    ActivationRecoveryAction, CommittedActivation, PendingActivation, ProfileActivationState,
-    PROFILE_ACTIVATION_STATE_SCHEMA_VERSION,
-};
 pub use pointers::{
     PackageArtifactPointer, ReleasePointer, RuntimeAssemblyPointer, ServiceContractPointer,
     ServiceDeploymentPointer,
