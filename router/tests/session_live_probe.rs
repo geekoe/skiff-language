@@ -3,16 +3,17 @@
 //! Driven by `scripts/check-router-session-live.mjs`: the harness compiles a
 //! real package/assembly artifact, starts an isolated temporary Mongo replica
 //! set, leases router + relay ports and builds both explicit Rust binaries.
-//! This ignored test then seeds the committed activation state, spawns the
-//! real `skiff-router` binary, and spawns the real `runtime` binary whose
-//! WebSocket connection is observed through a test-only relay (real Router
-//! binary <-> relay <-> real Runtime process). The relay records every binary
-//! frame in both directions so the probe can assert the frozen §3.5
-//! roundtrip: `router.bootstrap` -> `runtime.capabilities` ->
-//! `assembly.activation:Register` -> `runtime.registered` ACK ->
-//! `runtime.health`, then same-replica reconnect, replacement, pre-auth
-//! limit/timeout, ingress saturation, and shutdown with zero residue.
-//! Unary/HTTP/WS business is deliberately not claimed.
+//! This ignored test spawns the real `skiff-router` binary, and spawns the
+//! real `runtime` binary whose WebSocket connection is observed through a
+//! test-only relay (real Router binary <-> relay <-> real Runtime process).
+//! The relay records every binary frame in both directions so the probe can
+//! assert the M4 capabilities-only handshake roundtrip: `router.bootstrap` ->
+//! `runtime.capabilities` -> `runtime.registered` ACK -> `runtime.health`,
+//! then same-replica reconnect, replacement, pre-auth limit/timeout, ingress
+//! saturation, and shutdown with zero residue. The router holds no committed
+//! activation state (M4: release pointer table only) and registration is
+//! capabilities-only with no `assembly.activation` frame. Unary/HTTP/WS
+//! business is deliberately not claimed.
 
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -24,26 +25,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use skiff_artifact_model::{
-    AssemblyActivationControl, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::activation_state::ProfileActivationState;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
-use skiff_router::activation::{
-    ActivationStateRepository, MongoActivationStateRepository,
-    MongoActivationStateRepositoryOptions, SystemClock,
-};
 use skiff_router::bootstrap::ACTOR_ROUTING_PROJECTION_RECORD_PATH;
-use skiff_runtime_transport::assembly_activation::{
-    decode_assembly_activation_frame, encode_assembly_activation_frame,
-    AssemblyActivationFrameDirection,
-};
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_router_bootstrap_frame, decode_typed_binary_frame,
-    encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeHealthCountersFrameHeader,
+    encode_binary_frame, RuntimeCapabilitiesFrameHeader,
+    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeHealthCountersFrameHeader,
     RuntimeHealthFrameHeader, RuntimeRegisteredFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::net::TcpListener;
@@ -58,22 +48,17 @@ const LIVE_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONCURRENCY: u64 = 4;
 
-const HANDSHAKE_SEQUENCE: [&str; 5] = [
+const HANDSHAKE_SEQUENCE: [&str; 4] = [
     "router.bootstrap",
     "runtime.capabilities",
-    "assembly.activation",
     "runtime.registered",
     "runtime.health",
 ];
 
 struct LiveProfile {
     mongo_url: String,
-    database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
-    config_snapshot_id: String,
-    generation: u64,
     http_port: u16,
     runtime_port: u16,
     relay_port: u16,
@@ -98,40 +83,16 @@ impl LiveProfile {
         let relay_port = required("SKIFF_ROUTER_SESSION_LIVE_RELAY_PORT")
             .parse()
             .expect("relay port");
-        let generation = required("SKIFF_ROUTER_SESSION_LIVE_GENERATION")
-            .parse()
-            .expect("generation");
         Self {
             mongo_url: required("SKIFF_ROUTER_SESSION_LIVE_MONGO_URL"),
-            database: required("SKIFF_ROUTER_SESSION_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_SESSION_LIVE_ARTIFACT_ROOT")),
             profile: required("SKIFF_ROUTER_SESSION_LIVE_PROFILE"),
-            assembly_identity: required("SKIFF_ROUTER_SESSION_LIVE_ASSEMBLY_IDENTITY"),
-            config_snapshot_id: required("SKIFF_ROUTER_SESSION_LIVE_CONFIG_SNAPSHOT_ID"),
-            generation,
             http_port,
             runtime_port,
             relay_port,
             runtime_bin: PathBuf::from(required("SKIFF_ROUTER_SESSION_LIVE_RUNTIME_BIN")),
             runtime_home: PathBuf::from(required("SKIFF_ROUTER_SESSION_LIVE_RUNTIME_HOME")),
             temp_dir: PathBuf::from(required("SKIFF_ROUTER_SESSION_LIVE_TEMP_DIR")),
-        }
-    }
-
-    fn assembly_ref(&self) -> RuntimeAssemblyRef {
-        RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
-        }
-    }
-
-    fn snapshot_ref(&self) -> RuntimeConfigSnapshotRef {
-        RuntimeConfigSnapshotRef {
-            snapshot_id: skiff_artifact_model::RuntimeConfigSnapshotId::parse(
-                &self.config_snapshot_id,
-            )
-            .expect("config snapshot id"),
         }
     }
 
@@ -150,18 +111,6 @@ impl LiveProfile {
     }
 }
 
-async fn connect_repository(live: &LiveProfile) -> Arc<dyn ActivationStateRepository> {
-    let options = MongoActivationStateRepositoryOptions {
-        database: live.database.clone(),
-        ..Default::default()
-    };
-    Arc::new(
-        MongoActivationStateRepository::connect(&live.mongo_url, options, Arc::new(SystemClock))
-            .await
-            .expect("connect temporary Mongo repository"),
-    )
-}
-
 fn seed_runtime_home(live: &LiveProfile) {
     std::fs::create_dir_all(&live.runtime_home).expect("create runtime home");
     std::fs::write(
@@ -169,19 +118,6 @@ fn seed_runtime_home(live: &LiveProfile) {
         format!("{REPLICA_ID}\n"),
     )
     .expect("seed runtime-id");
-}
-
-async fn seed_committed(live: &LiveProfile, repository: &Arc<dyn ActivationStateRepository>) {
-    let state = ProfileActivationState::initial(
-        &live.profile,
-        live.generation,
-        live.assembly_ref(),
-        live.snapshot_ref(),
-    );
-    repository
-        .initialize(&state)
-        .await
-        .expect("seed committed activation state");
 }
 
 fn write_router_config(live: &LiveProfile) -> PathBuf {
@@ -335,26 +271,19 @@ fn materialize_projection(live: &LiveProfile) {
 // Frame construction / decoding (canonical transport codec, no private copy).
 // ---------------------------------------------------------------------------
 
-fn capabilities_frame(replica_id: &str) -> Vec<u8> {
+fn capabilities_frame(live: &LiveProfile, replica_id: &str) -> Vec<u8> {
     let header = RuntimeCapabilitiesFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "runtime.capabilities".to_string(),
         runtime_id: replica_id.to_string(),
-        capabilities: Default::default(),
+        capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+            artifact_root: Some(live.artifact_root.to_string_lossy().into_owned()),
+            lazy_load: true,
+            loaded_build_ids: Vec::new(),
+            ..Default::default()
+        },
     };
     encode_binary_frame(&header, &[]).expect("encode capabilities frame")
-}
-
-fn register_frame(live: &LiveProfile, replica_id: &str) -> Vec<u8> {
-    let control = AssemblyActivationControl::Register {
-        profile: live.profile.clone(),
-        generation: live.generation,
-        assembly: live.assembly_ref(),
-        config_snapshot: live.snapshot_ref(),
-        replica_id: replica_id.to_string(),
-    };
-    encode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, &control)
-        .expect("encode register frame")
 }
 
 fn health_frame(replica_id: &str) -> Vec<u8> {
@@ -692,15 +621,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                     decode_router_bootstrap_frame(bytes).expect("decode router.bootstrap frame");
                 assert_eq!(header.envelope_type, "router.bootstrap");
                 assert_eq!(header.activation.profile, live.profile);
-                assert_eq!(header.activation.generation, live.generation);
-                assert_eq!(
-                    header.activation.assembly.assembly_identity.as_str(),
-                    live.assembly_identity
-                );
-                assert_eq!(
-                    header.activation.config_snapshot.snapshot_id.to_string(),
-                    live.config_snapshot_id
-                );
                 assert_eq!(header.service_db.mongo_url, live.mongo_url);
             }
             "runtime.capabilities" => {
@@ -709,10 +629,10 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
                     decode_typed_binary_frame::<RuntimeCapabilitiesFrameHeader>(bytes)
                         .expect("decode capabilities frame");
                 assert_eq!(header.runtime_id, REPLICA_ID);
-            }
-            "assembly.activation" => {
-                assert_eq!(*direction, Direction::ToRouter);
-                assert_register_control(live, bytes);
+                assert!(
+                    header.capabilities.lazy_load,
+                    "real Runtime must register capabilities-only with lazy-load enabled"
+                );
             }
             "runtime.registered" => {
                 assert_eq!(*direction, Direction::ToRuntime);
@@ -728,31 +648,6 @@ fn assert_handshake(live: &LiveProfile, records: &[RelayRecord]) {
             }
             other => panic!("unexpected handshake frame {other}"),
         }
-    }
-}
-
-fn assert_register_control(live: &LiveProfile, bytes: &[u8]) {
-    let control =
-        decode_assembly_activation_frame(AssemblyActivationFrameDirection::RuntimeToRouter, bytes)
-            .expect("decode register frame");
-    match control {
-        AssemblyActivationControl::Register {
-            profile,
-            generation,
-            assembly,
-            config_snapshot,
-            replica_id,
-        } => {
-            assert_eq!(profile, live.profile);
-            assert_eq!(generation, live.generation);
-            assert_eq!(assembly.assembly_identity.as_str(), live.assembly_identity);
-            assert_eq!(
-                config_snapshot.snapshot_id.to_string(),
-                live.config_snapshot_id
-            );
-            assert_eq!(replica_id, REPLICA_ID);
-        }
-        other => panic!("expected Register control, got {other:?}"),
     }
 }
 
@@ -857,9 +752,7 @@ async fn complete_direct_handshake(live: &LiveProfile, socket: &mut PeerSocket, 
     let bootstrap = recv_bootstrap(socket).await;
     let header = decode_router_bootstrap_frame(&bootstrap).expect("decode bootstrap frame");
     assert_eq!(header.activation.profile, live.profile);
-    assert_eq!(header.activation.generation, live.generation);
-    send_binary(socket, capabilities_frame(replica_id)).await;
-    send_binary(socket, register_frame(live, replica_id)).await;
+    send_binary(socket, capabilities_frame(live, replica_id)).await;
     let ack = recv_binary(socket).await;
     assert_eq!(frame_type(&ack), "runtime.registered");
     let (ack_header, _) = decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(&ack)
@@ -960,10 +853,6 @@ mod tests {
         seed_runtime_home(&live);
         materialize_projection(&live);
 
-        let repository = connect_repository(&live).await;
-        repository.ensure_indexes().await.expect("ensure indexes");
-        seed_committed(&live, &repository).await;
-
         let config_path = write_router_config(&live);
         let mut router = task_router(&config_path);
         wait_for_listeners(&live, &mut router);
@@ -1038,7 +927,6 @@ mod tests {
         relay_task.abort();
         let _ = std::fs::remove_file(&config_path);
         let _ = std::fs::remove_file(&runtime_config_path);
-        repository.close().await.expect("close repository");
         eprintln!("router-live:session probe: PASS");
     }
 }
