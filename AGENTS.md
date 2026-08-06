@@ -97,9 +97,21 @@ node scripts/skiff.mjs instance up --runtime build/runtime-stack
 epoch 与仓库状态脱节（`/__router/health` 的 `activeRoutingEpoch` 与
 `activation.repository.committedGeneration` 不一致，例如 router 已在 gen N 而 Mongo
 停在 gen 0）时，watch 的激活会持续 CAS 失败（"committed generation X does not match
-request expected generation Y"）并无限重建。此时把手写状态文档同步成 epoch 当前值
-（gen + assembly + config snapshot 都从 health 取），再 `instance restart router` 让
-bootstrap 读回一致状态即可。不要用 `deleteMany` 或把 generation 写成 map。
+request expected generation Y"）并无限重建。恢复入口：
+
+```bash
+node scripts/skiff.mjs assembly sync-state \
+  --artifact-root <artifacts dir> \
+  --profile <profile> \
+  --activation-url http://127.0.0.1:4001/__skiff/activate-assembly \
+  --mongo-url <serviceDb.mongoUrl>
+```
+
+该命令从 `/__router/health` 读 activeAssembly（gen + assembly + config snapshot），把
+`skiff-router.activation_state` 状态文档重写为 commit 该 assembly（`pending: null`,
+`revision: 0`），再 `instance restart router` 让 bootstrap 读回一致状态即可。
+`--mongo-url` 缺省时读 `SKIFF_ACTIVATION_STATE_MONGO_URL`。不要用 `deleteMany` 或把
+generation 写成 map。
 
 ## watch dev-sync 依赖发布顺序
 
