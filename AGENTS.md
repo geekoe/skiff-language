@@ -21,101 +21,56 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 - 文件已经很长或模式重复时，先考虑职责边界和抽象是否需要调整。
 - 新增公共语义时，同时更新对应 `doc/reference/` 或 `doc/architecture/` 文档。
 - 不要提交本地状态、构建产物、secret 配置、package store、runtime home、截图或浏览器 profile。
-- 被忽略的本地覆盖文件包括 `.stack/`、`.skiff-package-store/`、`skiff.local.yml`、`router/router.yml`、`runtime/runtime.yml`、`target/`、`node_modules/` 和 `build/`。
+- 被忽略的本地覆盖文件包括 `.stack/`、`.skiff-dev/`、`.skiff-package-store/`、`skiff.local.yml`、`router/router.yml`、`runtime/runtime.yml`、`target/`、`node_modules/` 和 `build/`。
 
-## 本地语言实例
+## 本地开发（每进程独立运行目录）
 
-开发 compiler、runtime 或 router 时，本地 instance 由 `.stack/` 配置目录
-（configDir）和 runtime-stack 产物目录驱动：
+开发 compiler、runtime 或 router 时，进程由各自的 run dir 管理；`instance` 与
+`stack build` 编排已移除（见 `doc/implementation/dev-without-stack.md`）：
 
 ```bash
-node scripts/skiff.mjs stack build --configDir .stack --profile debug
-node scripts/skiff.mjs instance up --runtime build/runtime-stack
-node scripts/skiff.mjs instance status --runtime build/runtime-stack
+node scripts/skiff.mjs build router runtime compiler   # 共享 cargo 缓存 + build/bin 快照
+node scripts/skiff.mjs router start --dir .skiff-dev/router
+node scripts/skiff.mjs runtime start --dir .skiff-dev/runtime
 node scripts/skiff.mjs watch --runtime build/runtime-stack --config .stack/watch
+node scripts/skiff.mjs router status --dir .skiff-dev/router
 ```
 
-默认端口由 `.stack/router.yml`（4000/4001）与 `.stack/telemetry.yml`（4002）定义：
+- run dir（如 `.skiff-dev/<component>/`）放 `<component>.yml`（组件配置，可含可选
+  `runDir` 字段）、进程自写的 `<component>.pid`（O_EXCL 独占，双启动 fail-closed，
+  见 `runtime/transport/src/pid_lock.rs`）、`<component>.out.log/.err.log`。
+- `skiff <component> <start|stop|restart|status|logs> --dir <dir>` 管理进程；
+  `process.yml`（可选）可钉住 `binary:` 与 `env:`。
+- 二进制：`cargo build` 走共享缓存（`~/.skiff-cargo-target`）；`skiff build` 把最终
+  二进制拷贝到本 checkout 的 `build/bin/`——谁构建谁拥有，跨 worktree 不互相覆盖，
+  重启永远不会加载别人的二进制。
+- launchd（可选）只做开机拉起（RunAtLoad），日常由开发 agent 手动管理。
+- 端口：4000（service HTTP）、4001（router control/runtime WS）、4002（telemetry
+  消费端独立仓库 `skiff-telemetry` 自管，复用本端口）。
+- 无 `telemetry.endpoint` 时，router / runtime 默认把事件落文件
+  `<devHome>/logs/telemetry/<producerId>.jsonl`（JSONL，首行 `fileHeader`，按大小 /
+  保留数轮转）；`telemetry.endpoint` 非空时走 WS 到消费端。
+- Mongo 默认复用本机 `27017`。worktree 并行时用**独立 mongod 实例**（业务库名按
+  service id 派生，profile 与 mongoUrl 路径都不参与，同实例必共享；router 状态库名
+  来自 mongoUrl 路径段，独立实例最干净）。
 
-- 4000：service HTTP。
-- 4001：router control/runtime WebSocket。
-- 4002：telemetry（消费端独立仓库 `skiff-telemetry` 自管，复用本端口）。
-
-无 `telemetry.endpoint` 时，router / runtime 默认把事件落文件
-`<devHome>/logs/telemetry/<producerId>.jsonl`（JSONL，首行 `fileHeader`，按大小 /
-保留数轮转）；`telemetry.endpoint` 非空时走 WS 到消费端。
-
-MongoDB 是本机共享开发基础设施，默认 `27017`；`.stack/build.yml` 的
-`process.mongo` 默认 `disabled`，复用该端点。其他 worktree 复制 `.stack/` 后修改
-三个 YAML 中的端口即可并行运行。
-
-结束后关闭：
-
-```bash
-node scripts/skiff.mjs instance down --runtime build/runtime-stack
-```
-
-如果改动 runtime、artifact identity、artifact schema、native signature、runtime protocol 或 artifact 加载语义，先 `stack build --profile debug` 重新生成产物与 instance.yml，再 `instance up` 启动：
-
-```bash
-node scripts/skiff.mjs stack build --configDir .stack --profile debug
-node scripts/skiff.mjs instance up --runtime build/runtime-stack
-```
-
-instance 只维护进程，不构建、不生成配置；watch 只做编译/激活/热更。
-`build.yml` 的 `process.watch: managed` 会让 instance spec 把 `skiff watch` 作为受监管
-进程写入 `instance.yml`（与 `process.mongo` 同模式）：`instance
-supervise`（例如由 LaunchAgent 拉起）会启动它并在退出时自动重启，日志落在 dev-home
-`logs/watch.out.log`/`watch.err.log`。默认 `disabled`，需要独立拉起时仍可手动执行
-`skiff watch --runtime build/runtime-stack --config .stack/watch`。
-
-纯编译和单元验证不需要启动 instance：
+纯编译和单元验证不需要起进程：
 
 ```bash
 cargo check --manifest-path runtime/Cargo.toml
 cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 ```
 
-## 激活状态与 artifact store 恢复
+## 路由与激活（M4 懒加载）
 
-Router 的 committed assembly 状态持久化在 Mongo `skiff-router.activation_state`
-（`_id: <profile>` 单文档；`state.committed.generation` 是普通 JSON 整数，不是
-`{high, low, unsigned}` map）。Router bootstrap 必须读到该文档：缺失会 fail-closed
-（`FailClosedMissing`），格式非法同样起不来；production 代码不会自动初始化它。
+Router 不读写 Mongo 激活状态：路由 = release pointer table（artifact root 文件系统，
+`pointers/releases/<profile>/...`）+ runtime session 注册（按 build id 分发；懒加载
+session 依其广告的 `artifact_root` 与 router 的规范化 artifactsPath 匹配成为候选）。
+`/__router/health` 的 `activeAssembly` 只是 pointer table 投影。
 
-`skiff stack init --configDir <dir>` 是正式的初始化/复位入口：构建空 assembly + 空
-config snapshot + std seed 写入 artifact root，并把状态文档重置为 `generation 0`
-（本地模式建议先 `instance down` 再执行，之后 `instance up`，watch 会全量重建并
-激活 gen 1）。
-
-激活死锁场景：committed assembly 引用的 artifact 记录（尤其 std 的 build id）从
-dev-home store 删除后，runtime 无法 admit 当前 committed 世代，会一直重连失败，新
-assembly 激活表现为 HTTP 504（"no exact candidate sessions"）。恢复步骤：
-
-```bash
-node scripts/skiff.mjs instance down --runtime build/runtime-stack
-node scripts/skiff.mjs stack init --configDir .stack
-node scripts/skiff.mjs instance up --runtime build/runtime-stack
-```
-
-epoch 与仓库状态脱节（`/__router/health` 的 `activeRoutingEpoch` 与
-`activation.repository.committedGeneration` 不一致，例如 router 已在 gen N 而 Mongo
-停在 gen 0）时，watch 的激活会持续 CAS 失败（"committed generation X does not match
-request expected generation Y"）并无限重建。恢复入口：
-
-```bash
-node scripts/skiff.mjs assembly sync-state \
-  --artifact-root <artifacts dir> \
-  --profile <profile> \
-  --activation-url http://127.0.0.1:4001/__skiff/activate-assembly \
-  --mongo-url <serviceDb.mongoUrl>
-```
-
-该命令从 `/__router/health` 读 activeAssembly（gen + assembly + config snapshot），把
-`skiff-router.activation_state` 状态文档重写为 commit 该 assembly（`pending: null`,
-`revision: 0`），再 `instance restart router` 让 bootstrap 读回一致状态即可。
-`--mongo-url` 缺省时读 `SKIFF_ACTIVATION_STATE_MONGO_URL`。不要用 `deleteMany` 或把
-generation 写成 map。
+`skiff stack init --configDir <dir>` 保留为 legacy 初始化入口（空 pointer table +
+std seed + bootstrap service 记录，本地复位用）；`skiff test` 的隔离运行时用
+`skiff-package-service-smoke-fixture --seed-committed` 做同样的 seed，不需要它。
 
 ## watch dev-sync 依赖发布顺序
 
