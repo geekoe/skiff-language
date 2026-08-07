@@ -1361,6 +1361,37 @@ async fn admission_rejected_provable_when_image_not_admitted() {
 }
 
 #[tokio::test]
+async fn admission_settles_platform_failed_when_stale_image_exceeds_attempt_ceiling() {
+    let rig = control_rig();
+    let now = rig.store.now().await.expect("now");
+    let mut image = corpus_image();
+    // A deployment that stays unpublished across the whole backoff horizon is
+    // effectively dead: past the attempt-generation ceiling the admission
+    // seam must settle platform-failed instead of releasing for another
+    // backoff cycle (the router used to retry forever at the 30s cap).
+    let mut deployment = image.deployment.clone();
+    deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
+        "f".repeat(64)
+    ));
+    image.deployment = deployment;
+    rig.store
+        .create(record(TASK_ID, image, now, TaskState::Scheduled))
+        .await
+        .expect("create");
+    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+    // Must stay above the admission seam's stale-image ceiling
+    // (STALE_IMAGE_TERMINATE_ATTEMPT_GENERATION in task/admission.rs).
+    claimed.attempt_generation = 600;
+    let decision = rig.admission.admit(&claimed).await;
+    assert!(matches!(
+        decision,
+        AdmissionDecision::PermanentFailure { .. }
+    ));
+    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
+}
+
+#[tokio::test]
 async fn admission_rejected_provable_when_no_runtime_candidate() {
     let rig = control_rig();
     let now = rig.store.now().await.expect("now");

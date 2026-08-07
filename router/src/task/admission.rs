@@ -64,6 +64,12 @@ use super::actor_target::{snapshot_actor_key, store_declaration_owner_to_frame};
 use super::control::DurableTaskControl;
 use super::health::TaskControlCounters;
 
+/// Attempt-generation ceiling for a stale frozen execution image. Backoff
+/// caps at 30s per attempt, so the default threshold (~500 attempts) lets an
+/// unpublished deployment survive several hours of release-pointer churn
+/// before the task settles `platform-failed` instead of retrying forever.
+const STALE_IMAGE_TERMINATE_ATTEMPT_GENERATION: u64 = 500;
+
 /// Production admission seam.
 pub struct RouterTaskAttemptAdmission {
     /// Release pointer image source (deployment membership gate, M4).
@@ -145,6 +151,38 @@ impl RouterTaskAttemptAdmission {
                 connection_generation: 0,
             },
         })
+    }
+
+    /// Admission decision when the frozen execution image is not admitted by
+    /// any runtime. A missing deployment is reversible (the release pointer
+    /// may be restored), so early attempts release the claim for platform
+    /// backoff; a deployment that stays unpublished across the whole backoff
+    /// horizon is effectively dead — the task would otherwise retry forever
+    /// at the platform cap — so once the attempt generation passes the
+    /// threshold the task settles `platform-failed` instead.
+    fn stale_image_decision(&self, record: &TaskRecord) -> AdmissionDecision {
+        self.emit_artifact_event(
+            record,
+            "task.artifact.unavailable",
+            "frozen execution image is not admitted by any runtime",
+        );
+        if record.attempt_generation >= STALE_IMAGE_TERMINATE_ATTEMPT_GENERATION {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return AdmissionDecision::PermanentFailure {
+                reason: format!(
+                    "frozen execution image was never re-admitted after {} attempts",
+                    record.attempt_generation
+                ),
+            };
+        }
+        self.counters
+            .admissions_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionDecision::RejectedProvable {
+            reason: "frozen execution image is not admitted by any runtime".to_string(),
+        }
     }
 
     fn build_request(
@@ -379,17 +417,7 @@ impl RouterTaskAttemptAdmission {
             }
         }
         let Some(authority) = self.image_authority(record) else {
-            self.counters
-                .admissions_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            self.emit_artifact_event(
-                record,
-                "task.artifact.unavailable",
-                "frozen execution image is not admitted by any runtime",
-            );
-            return AdmissionDecision::RejectedProvable {
-                reason: "frozen execution image is not admitted by any runtime".to_string(),
-            };
+            return self.stale_image_decision(record);
         };
         let query = CatalogQuery::new(
             key.service_id.clone(),
@@ -962,17 +990,7 @@ impl AttemptAdmission for RouterTaskAttemptAdmission {
 impl RouterTaskAttemptAdmission {
     async fn admit_function(&self, record: &TaskRecord) -> AdmissionDecision {
         let Some(_authority) = self.image_authority(record) else {
-            self.counters
-                .admissions_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            self.emit_artifact_event(
-                record,
-                "task.artifact.unavailable",
-                "frozen execution image is not admitted by any runtime",
-            );
-            return AdmissionDecision::RejectedProvable {
-                reason: "frozen execution image is not admitted by any runtime".to_string(),
-            };
+            return self.stale_image_decision(record);
         };
         let Some(lease) = record.active_lease.as_ref() else {
             self.counters
