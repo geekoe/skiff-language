@@ -177,7 +177,6 @@ Skiff service 会被编译成服务产物并加载到运行环境。更新服务
 - `compiler/`、`syntax/`、`artifact-model/`、`artifact-identity/`：compiler 和 artifact identity。
 - `runtime/`：Rust runtime crates 和 host process。
 - `router/`：TypeScript service router 和 runtime control plane。
-- `telemetry/`：TypeScript telemetry process。
 - `scripts/`：CLI 和本地 instance 工具。
 - `std/`、`prelude/`：Skiff 标准库源码。
 - `test-runner/`：Skiff package 和 service 测试基础设施。

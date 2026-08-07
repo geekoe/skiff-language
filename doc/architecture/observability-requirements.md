@@ -36,7 +36,8 @@
 
 ### 3.1 平台级（Skiff 基础设施 owner）
 
-面向 router / runtime / service-db / telemetry 自身的运营者，回答：
+面向 router / runtime / service-db 的运营者，以及 telemetry 消费端（独立仓库
+`skiff-telemetry`）自身的运营者，回答：
 “平台是否健康、负载是否异常、请求是否被平台环节拖慢”。
 
 ### 3.2 Service owner 级（agine / aihub / codex-relay 等）
@@ -51,19 +52,33 @@
 - service call 延迟：平台看总量与分位数，owner 看自己发起的调用明细；
 - DB 操作延迟：平台看每集合 / 每服务的总量与分位数，owner 看自己请求内的操作。
 
+### 3.4 生产 / 消费职责划分
+
+- 生产端（skiff 仓库：router / runtime）负责事件发射、基础脱敏 / 限长 / 采样、
+  bounded buffering，以及默认文件落盘（无 `telemetry.endpoint` 时 JSONL 写
+  `<devHome>/logs/telemetry/<producerId>.jsonl`）。
+- 消费端（独立仓库 `skiff-telemetry`，闭源）负责接收、存储、聚合、查询、告警、
+  dashboard 与权限，通过 WS 与文件双输入面对接生产端。
+- 协议只管生产：事件自描述，形态识别（日志 / span / 指标 / 状态）归消费端；
+  span 配对、指标聚合、状态派生都是消费端职责。
+
 ## 4. 需求明细
 
 ### 4.1 telemetry 管道必须“真的在工作”
 
-- telemetry 注册 / 批量上报 / Mongo 落库必须可验证：`/health` 暴露
-  `insertedEvents`、`acceptedBatches`、`rejectedMessages`、drop 计数。
+- telemetry 消费端（独立仓库）的注册 / 批量上报 / Mongo 落库必须可验证：
+  `/health` 暴露 `insertedEvents`、`acceptedBatches`、`rejectedMessages`、drop
+  计数。
 - 生产端（router / runtime）与 telemetry server 断开、批量失败、队列 drop 必须
   产生 warn 事件，并在健康端点可见。
 - **空遥测本身就是信号**：连续 N 分钟（默认 5）没有任何事件时产生 warn，
-  避免“管道静默失效但看起来正常”。
+  避免“管道静默失效但看起来正常”（空窗检测与告警属消费端职责）。
 - 遥测只依赖平台自带 producer；服务代码不直接写 telemetry server。
 
 ### 4.2 指标（metrics）
+
+本节是发射条款：生产端负责发射计数与延迟事件；速率、分位数等聚合计算与查询
+由消费端（独立仓库）承担。
 
 #### 4.2.1 task-control scheduler（本次热循环的直接指标）
 
@@ -79,7 +94,8 @@
 - `scheduler.last_cycle_duration_ms`
 - `tasks.backlog` 按 state 的计数与变化速率（已有累计值，需要速率视角）
 
-要求：累计计数与速率都可见；速率由平台侧计算或在健康端点提供采样窗口。
+要求：生产端发射累计计数与相关事件；速率 / 分位数等聚合计算与查询由消费端
+（独立仓库）承担。
 
 #### 4.2.2 service-db
 
@@ -122,7 +138,8 @@
   （> 阈值）挂到当前 span。
 - 服务可向 span 附加业务属性（chatId、runId、messageSeq），属性必须可脱敏、
   限长。
-- 本地 query API（`/traces`）可按 traceId、serviceId、时间范围查询。
+- 本地 query API（`/traces`）可按 traceId、serviceId、时间范围查询
+  （消费端能力）。
 
 ### 4.4 日志（logs）
 
@@ -139,7 +156,8 @@
 - `/__router/health` 对关键计数提供**速率**视角（cycles/s、DB ops/s、
   HTTP rps），而不是只有累计值；
 - scheduler 健康段：cycle 速率、wake 速率、batch 饱和次数、最近 cycle 耗时；
-- 阈值告警（warn 级别 telemetry + health 字段）：
+- 阈值告警（warn 级别 telemetry + health 字段；告警引擎为消费端职责，生产端
+  只提供事件与健康字段）：
   - scheduler cycles/s 持续 > 20；
   - DB 写 p95 > 50ms（或 canary 写 > 50ms）；
   - 全库操作率 > 阈值；
@@ -151,8 +169,9 @@
 
 - 平台级指标 / 日志只对平台 operator 可见；service owner 只能查询自己
   serviceId 范围内的 logs / traces / metrics，以及与自己相关的 service call
-  明细。
-- telemetry 数据有保留 / TTL 策略；本地 dev 至少保留 24h，release 按容量配置。
+  明细（权限过滤为消费端职责）。
+- telemetry 数据有保留 / TTL 策略（消费端策略，独立仓库实现）；本地 dev 至少
+  保留 24h，release 按容量配置。
 
 ## 5. 验收标准
 
@@ -160,7 +179,7 @@
 
 - 在热循环复现时，`/__router/health` 的 `scheduler.cycles/s` 与
   `scheduler.batch_saturated` 明显异常，即使 backlog 为 0；
-- telemetry `/metrics`（或等价查询）能看到 service-db 写 p95 升高与
+- 消费端 telemetry `/metrics`（或等价查询）能看到 service-db 写 p95 升高与
   `skiff-router.tasks` 操作率异常；
 - service owner 能通过 trace 看到一次 `/chat/send` 的完整阶段耗时；
 - `std.log` 可以出现在导出 service 方法中并被 `/logs` 查询到；

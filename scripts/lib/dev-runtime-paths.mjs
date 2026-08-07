@@ -44,7 +44,6 @@ export function devRuntimePaths({ devHome, env = process.env, platform = process
     runtimeBinary: join(runtimeBinDir, runtimeBinaryName(platform)),
     routerBinary: join(runtimeBinDir, routerBinaryName(platform)),
     routerConfig: join(resolvedDevHome, 'router.yml'),
-    telemetryConfig: join(resolvedDevHome, 'telemetry.yml'),
     watchConfig: join(resolvedDevHome, 'watch.json'),
   };
 }

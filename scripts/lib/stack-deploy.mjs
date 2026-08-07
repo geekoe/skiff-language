@@ -6,10 +6,10 @@ import { loadStackConfig, requireRemoteStackConfig } from './stack-config.mjs';
 import { createStackShell } from './stack-shell.mjs';
 
 const BUILD_MANIFEST_SCHEMA = 'skiff-runtime-stack-build-v1';
-const COPIED_CONFIG_FILES = ['router.yml', 'runtime.yml', 'telemetry.yml'];
+const COPIED_CONFIG_FILES = ['router.yml', 'runtime.yml'];
 const BINARY_UNITS = ['router', 'runtime', 'compiler'];
 const REQUIRED_BINARY_UNITS = ['router', 'runtime'];
-const PM2_APP_ORDER = ['telemetry', 'router', 'runtime'];
+const PM2_APP_ORDER = ['router', 'runtime'];
 
 export async function deployStack({
   configDir,
@@ -36,7 +36,7 @@ export async function deployStack({
 
   await shell.remoteRun(
     host,
-    `mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,telemetry,scripts,runtime-home}`,
+    `mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,scripts,runtime-home}`,
   );
 
   for (const file of COPIED_CONFIG_FILES) {
@@ -52,18 +52,6 @@ export async function deployStack({
     const target = path.posix.join(remoteSkiff, 'bin', binaryUnitName(unit));
     await shell.rsync(source, `${host}:${target}`);
     await shell.remoteRun(host, `chmod +x ${target}`);
-  }
-
-  if (hasTsUnit(manifest, 'telemetry')) {
-    await shell.rsync(
-      path.join(skiffRoot, 'telemetry') + path.sep,
-      `${host}:${remoteSkiff}/telemetry/`,
-      ['--exclude', 'node_modules', '--exclude', 'dist', '--exclude', 'telemetry.yml'],
-    );
-    await shell.remoteRun(
-      host,
-      `cd ${remoteSkiff}/telemetry && PATH=${nodeBin}:$PATH pnpm install --prod=false --ignore-scripts`,
-    );
   }
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'skiff-stack-deploy-'));
@@ -95,12 +83,6 @@ export async function deployStack({
     configDir,
     config: COPIED_CONFIG_FILES.map((file) => `${remoteSkiff}/config/${file}`),
     binaries: binaryUnits.map((unit) => path.posix.join(remoteSkiff, 'bin', binaryUnitName(unit))),
-    telemetry: hasTsUnit(manifest, 'telemetry')
-      ? {
-          source: path.join(skiffRoot, 'telemetry'),
-          remote: `${remoteSkiff}/telemetry`,
-        }
-      : null,
     ecosystem: `${remoteSkiff}/ecosystem.config.cjs`,
     pm2Apps: PM2_APP_ORDER.map(pm2AppName),
     buildManifest: path.join(stack.paths.buildRoot, 'manifest.json'),
@@ -133,21 +115,6 @@ module.exports = {
       restart_delay: 2000,
       env: {
         RUST_LOG: 'info',
-      },
-    },
-    {
-      name: 'skiff-telemetry',
-      cwd: '${remoteSkiff}/telemetry',
-      script: 'src/main.ts',
-      interpreter: NODE_BIN + '/node',
-      interpreter_args: '--import tsx',
-      args: '--config ${remoteSkiff}/config/telemetry.yml',
-      watch: false,
-      autorestart: true,
-      max_restarts: 5,
-      restart_delay: 2000,
-      env: {
-        NODE_ENV: 'production',
       },
     },
     {
@@ -191,10 +158,6 @@ function hasBinaryArtifact(manifest, unit) {
   );
 }
 
-function hasTsUnit(manifest, unit) {
-  return manifest.units?.[unit] !== undefined;
-}
-
 function binaryUnitName(unit) {
   switch (unit) {
     case 'router':
@@ -212,8 +175,6 @@ function pm2AppName(component) {
   switch (component) {
     case 'router':
       return 'skiff-router';
-    case 'telemetry':
-      return 'skiff-telemetry';
     case 'runtime':
       return 'skiff-runtime';
     default:

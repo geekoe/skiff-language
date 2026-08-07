@@ -45,7 +45,7 @@ test('loadStackConfig parses and validates the full fixture configDir', async (t
   assert.equal(stack.router.profile, 'prod');
   assert.equal(stack.config.remote.host, 'root@skiff.hanzhe.com');
   assert.equal(stack.config.verify.healthPath, '/__router/health');
-  assert.deepEqual(stack.build.units, ['runtime', 'router', 'telemetry']);
+  assert.deepEqual(stack.build.units, ['runtime', 'router']);
   assert.equal(stack.paths.buildRoot, join(skiffRoot, 'build', 'runtime-stack'));
   assert.equal(stack.paths.cargoTargetDir, join(skiffRoot, 'build', 'cargo-target'));
 });
@@ -117,10 +117,10 @@ test('loadStackConfig fails closed on unparseable YAML and missing files', async
     /router\.yml YAML parse error/,
   );
 
-  const missing = await writeStackConfigDir(t, { drop: ['telemetry.yml'] });
+  const missing = await writeStackConfigDir(t, { drop: ['runtime.yml'] });
   await assert.rejects(
     loadStackConfig(missing, { skiffRoot }),
-    /telemetry\.yml is required at/,
+    /runtime\.yml is required at/,
   );
 });
 
@@ -255,7 +255,6 @@ async function writeStackConfigDir(t, {
     'config.yml': config,
     'router.yml': router,
     'runtime.yml': 'router: ws://127.0.0.1:4001/runtime\nruntime-home: /srv/skiff/runtime-home\n',
-    'telemetry.yml': 'telemetry:\n  host: 127.0.0.1\n  port: 4002\n',
   };
   for (const file of drop) {
     delete files[file];

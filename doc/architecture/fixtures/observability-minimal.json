@@ -1,7 +1,6 @@
 {
   "defaults": {
     "protocol": "skiff-telemetry-v1",
-    "topics": ["log", "trace", "metric", "health", "debug"],
     "queueMaxEvents": 10000,
     "batchMaxEvents": 200,
     "batchMaxBytes": 262144,
@@ -16,7 +15,6 @@
       "telemetry": {
         "endpoint": "ws://127.0.0.1:4002/telemetry",
         "protocol": "skiff-telemetry-v1",
-        "topics": ["log", "trace", "metric", "health", "debug"],
         "queueMaxEvents": 10000,
         "batchMaxEvents": 200,
         "batchMaxBytes": 262144,
@@ -29,8 +27,7 @@
       "protocol": "skiff-telemetry-v1",
       "producerId": "runtime-fixture-1:proc:018f5e6e",
       "source": "runtime",
-      "runtimeId": "runtime-fixture-1",
-      "topics": ["log", "trace", "metric", "health", "debug"]
+      "runtimeId": "runtime-fixture-1"
     },
     "batch": {
       "type": "telemetry.batch",
@@ -38,7 +35,6 @@
       "seq": 1,
       "events": [
         {
-          "topic": "log",
           "ts": "2026-05-06T12:00:00.000Z",
           "source": "runtime",
           "visibility": "operational",
@@ -58,7 +54,6 @@
           }
         },
         {
-          "topic": "trace",
           "ts": "2026-05-06T12:00:00.125Z",
           "source": "runtime",
           "visibility": "operational",
@@ -72,22 +67,17 @@
           "durationMs": 125
         },
         {
-          "topic": "health",
           "ts": "2026-05-06T12:00:01.000Z",
           "source": "runtime",
           "visibility": "operational",
           "runtimeId": "runtime-fixture-1",
           "name": "telemetry.queue",
           "dropped": {
-            "debug": 0,
-            "log": 0,
-            "trace": 0,
-            "metric": 0,
-            "health": 0
+            "dropped": 0,
+            "queueLock": 0
           }
         },
         {
-          "topic": "trace",
           "ts": "2026-05-06T12:00:01.125Z",
           "source": "runtime",
           "visibility": "restricted",
@@ -118,24 +108,6 @@
         "artifactRoot": "/var/lib/skiff/artifacts",
         "telemetry": {
           "protocol": "skiff-telemetry-v1",
-          "topics": ["log"],
-          "queueMaxEvents": 10000,
-          "batchMaxEvents": 200,
-          "batchMaxBytes": 262144,
-          "flushIntervalMs": 1000,
-          "enabled": true
-        }
-      }
-    },
-    {
-      "name": "telemetry-control-unknown-topic",
-      "payload": {
-        "type": "router.control",
-        "artifactRoot": "/var/lib/skiff/artifacts",
-        "telemetry": {
-          "endpoint": "ws://127.0.0.1:4002/telemetry",
-          "protocol": "skiff-telemetry-v1",
-          "topics": ["log", "audit"],
           "queueMaxEvents": 10000,
           "batchMaxEvents": 200,
           "batchMaxBytes": 262144,
@@ -152,7 +124,6 @@
         "seq": 2,
         "events": [
           {
-            "topic": "log",
             "ts": "2026-05-06T12:00:02.000Z",
             "source": "runtime",
             "visibility": "operational",
@@ -169,7 +140,6 @@
         "seq": 3,
         "events": [
           {
-            "topic": "log",
             "ts": "2026-05-06T12:00:03.000Z",
             "source": "runtime",
             "visibility": "operational",
@@ -188,7 +158,6 @@
         "seq": 4,
         "events": [
           {
-            "topic": "log",
             "ts": "2026-05-06T12:00:04.000Z",
             "source": "runtime",
             "level": "error",
@@ -205,7 +174,6 @@
         "seq": 5,
         "events": [
           {
-            "topic": "log",
             "ts": "2026-05-06T12:00:05.000Z",
             "source": "runtime",
             "visibility": "private",
@@ -223,7 +191,6 @@
         "seq": 6,
         "events": [
           {
-            "topic": "trace",
             "ts": "2026-05-06T12:00:06.000Z",
             "source": "runtime",
             "visibility": "restricted",
@@ -241,7 +208,6 @@
         "seq": 7,
         "events": [
           {
-            "topic": "trace",
             "ts": "2026-05-06T12:00:07.000Z",
             "source": "runtime",
             "visibility": "restricted",
@@ -259,7 +225,6 @@
         "seq": 8,
         "events": [
           {
-            "topic": "health",
             "ts": "2026-05-06T12:00:08.000Z",
             "source": "runtime",
             "visibility": "operational",
@@ -277,7 +242,6 @@
         "seq": 9,
         "events": [
           {
-            "topic": "trace",
             "ts": "2026-05-06T12:00:09.000Z",
             "source": "runtime",
             "visibility": "operational",

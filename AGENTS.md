@@ -1,6 +1,6 @@
 # Skiff Language
 
-Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言实现、runtime、router、telemetry、CLI 脚本、标准库源码和 canonical 文档。
+Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言实现、runtime、router、CLI 脚本、标准库源码和 canonical 文档。telemetry 消费端（server / 查询 / 聚合 / 告警 / dashboard / 权限）已迁至独立仓库 `/Users/geek/workspace/skiff-telemetry`。
 
 本语言尚未发布，不需要兼容历史格式。修改实现时优先让语义和文档收敛到当前正确模型，不要为旧 artifact、旧配置或旧 CLI 形态新增兼容层，除非已有测试明确要求当前行为。
 
@@ -12,7 +12,7 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 - CLI 入口：`scripts/skiff.mjs`。
 - Rust workspace：仓库根 `Cargo.toml`；`router/` 是 Rust workspace crate
   `skiff-router`。
-- TypeScript packages：`telemetry/`、`scripts/`、`vscode/`。
+- TypeScript packages：`scripts/`、`vscode/`（telemetry 消费端 TS 包已随独立仓库迁出）。
 - Skiff 标准库源码：`std/` 和 `prelude/`。
 
 ## 开发约定
@@ -25,7 +25,7 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 
 ## 本地语言实例
 
-开发 compiler、runtime、router 或 telemetry 时，本地 instance 由 `.stack/` 配置目录
+开发 compiler、runtime 或 router 时，本地 instance 由 `.stack/` 配置目录
 （configDir）和 runtime-stack 产物目录驱动：
 
 ```bash
@@ -39,7 +39,11 @@ node scripts/skiff.mjs watch --runtime build/runtime-stack --config .stack/watch
 
 - 4000：service HTTP。
 - 4001：router control/runtime WebSocket。
-- 4002：telemetry。
+- 4002：telemetry（消费端独立仓库 `skiff-telemetry` 自管，复用本端口）。
+
+无 `telemetry.endpoint` 时，router / runtime 默认把事件落文件
+`<devHome>/logs/telemetry/<producerId>.jsonl`（JSONL，首行 `fileHeader`，按大小 /
+保留数轮转）；`telemetry.endpoint` 非空时走 WS 到消费端。
 
 MongoDB 是本机共享开发基础设施，默认 `27017`；`.stack/build.yml` 的
 `process.mongo` 默认 `disabled`，复用该端点。其他 worktree 复制 `.stack/` 后修改
@@ -60,7 +64,7 @@ node scripts/skiff.mjs instance up --runtime build/runtime-stack
 
 instance 只维护进程，不构建、不生成配置；watch 只做编译/激活/热更。
 `build.yml` 的 `process.watch: managed` 会让 instance spec 把 `skiff watch` 作为受监管
-进程写入 `instance.yml`（与 `process.mongo`/`process.telemetry` 同模式）：`instance
+进程写入 `instance.yml`（与 `process.mongo` 同模式）：`instance
 supervise`（例如由 LaunchAgent 拉起）会启动它并在退出时自动重启，日志落在 dev-home
 `logs/watch.out.log`/`watch.err.log`。默认 `disabled`，需要独立拉起时仍可手动执行
 `skiff watch --runtime build/runtime-stack --config .stack/watch`。
@@ -137,7 +141,7 @@ node scripts/skiff.mjs package publish <root> --artifact-root <dir> --profile de
    test-runner 编译测试，并在同一套件内复用一个真实 runtime 进程执行，不为每个 fixture
    单独启动 runtime。
 2. `implementation-tests` 测试 Skiff 实现，按 `foundation`、`compiler`、`runtime`、
-   `test-runner`、`router`、`telemetry` 和 `tooling` 被测组件展开；`router` 即
+   `test-runner`、`router` 和 `tooling` 被测组件展开；`router` 即
    Rust workspace crate `skiff-router`，没有 TypeScript Router 测试入口。
 
 仓库根的权威组合入口是：
@@ -210,12 +214,9 @@ node scripts/verify.mjs --only compiler
 node scripts/verify.mjs --only runtime
 node scripts/verify.mjs --only test-runner
 node scripts/verify.mjs --only router
-node scripts/verify.mjs --only telemetry
 node scripts/verify.mjs --only tooling
 node scripts/verify.mjs --only type-check
 node scripts/verify.mjs --only checks
-pnpm --filter @skiff/telemetry type-check
-pnpm --filter @skiff/telemetry test
 pnpm --dir scripts type-check
 ```
 

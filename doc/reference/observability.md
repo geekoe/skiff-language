@@ -1,8 +1,8 @@
 # Skiff Observability Reference
 
-本文负责：Skiff observability 的产品语义，包括 event source、topic、trace / request / span、`std.log`、归属、查询和交付承诺。
+本文负责：Skiff observability 的产品语义，包括 event source、事件模型（事件自描述，形态识别归消费端）、trace / request / span、`std.log`、归属、查询和交付承诺。
 
-本文不负责：telemetry 存储后端 schema、fixture 文件、OpenTelemetry 映射、告警规则、采样算法、queue / timer 可靠调度语义、业务审计或计费事件。
+本文不负责：telemetry 存储后端 schema、fixture 文件、OpenTelemetry 映射、告警规则、采样算法、queue / timer 可靠调度语义、业务审计或计费事件。消费端（存储、聚合、告警、dashboard、权限）在独立仓库 `skiff-telemetry` 实现，不在本仓库。
 
 ## 定位
 
@@ -32,34 +32,32 @@ Observability 只承载可丢失的运行观测数据。它不能承载业务正
 
 ## Event Sources
 
-runtime、router、gateway、telemetry service 和测试设施都可以是 event source，但职责不同。
+runtime、router、gateway 和测试设施都可以是 event source，但职责不同；telemetry 消费端（独立仓库）只负责接收与消费，不产生事件。
 
-runtime 负责从 `std.log`、request frame、span 生命周期、runtime error、health counters 等位置产生事件，自动补充当前 execution context，做基础脱敏、限长、采样和 bounded buffering，并按 router control plane 下发的 telemetry endpoint 导出事件。
+runtime 负责从 `std.log`、request frame、span 生命周期、runtime error、health counters 等位置产生事件，自动补充当前 execution context，做基础脱敏、限长、采样和 bounded buffering，并按 router control plane 下发的 telemetry 配置导出事件：`telemetry.endpoint` 非空走 WS exporter，缺省落文件 sink（见「File Sink」）。
 
 router / gateway 是自身运行事件源，也负责转发或下发 telemetry 配置，但不直接承担 telemetry 存储和查询。
 
-`skiff-telemetry` 负责接收、校验、二次脱敏、采样、聚合、写存储，并支撑查询、告警和 UI。
+`skiff-telemetry`（独立仓库，闭源）负责接收、校验、二次脱敏、采样、聚合、写存储，并支撑查询、告警和 UI。它通过 WS 与文件双输入面对接生产端：WS 批量事件与 JSONL 文件行共享同一事件 schema；事件自描述，形态识别（日志 / span / 指标 / 状态）由它承担，不 import 开源内部实现。
 
-如果 router 没有下发 telemetry 配置，runtime 可以只维护本地 drop / health counters，不外发事件。telemetry 不可用不能改变业务返回值。
+`telemetry.enabled: false` 时生产端 no-op；telemetry 不可用不能改变业务返回值。
 
-## Topics
+## Event Model
 
-topic 是平台路由、采样和保留策略维度，不是业务分类机制。
-
-固定 topic 是 `log`、`trace`、`metric`、`health` 和 `debug`，分别覆盖日志、调用链、指标、运行健康和开发 / profiling 诊断。
+协议只管生产：事件自描述，协议中没有 topic 维度。形态识别（日志 / span / 指标 / 状态）是消费端职责，生产端只填写字段（`level`、`name`、`message`、`attrs`、`durationMs`、span 关联等），不声明事件形态。
 
 规则：
 
-- 业务代码不能自定义 topic。
-- topic 不表达权限、归属、target、错误类型或业务上下文。
-- `audit` 不是 telemetry topic，因为审计需要可靠送达。
-- durable queue 也不是 telemetry topic；telemetry queue 是 lossy 观测通道。
+- 事件不按 topic 分类；`audit` 不走 telemetry，因为审计需要可靠送达。
+- durable queue 也不是 telemetry；telemetry queue 是 lossy 观测通道。
+- 事件字段固定，业务代码不能扩展字段（协议拒绝未知字段）。
+- 事件 schema 见共享协议 fixture（`../architecture/fixtures/observability-minimal.json`），生产端（router / runtime）测试与消费端仓库复用。
 
 ## Event Shape
 
 观测事件需要能表达这些维度：
 
-- topic 和 timestamp。
+- timestamp 与自描述事件字段。
 - event source。
 - service 归属：service id、revision id、build id、activation identity。
 - runtime 归属：runtime id、provider / host 相关摘要。
@@ -77,7 +75,18 @@ runtime error 可以携带当前service的完整诊断帧。帧应引用当前 b
 私有错误字段；caller只能得到当前request的新异常栈和一帧包含service/operation/errorId等安全字段的
 remote-boundary诊断。
 
-本文不复制 fixture schema。共享协议 fixture 留在 `../architecture/fixtures/observability-minimal.json`，由 router、runtime 和 telemetry 测试复用。
+本文不复制 fixture schema。共享协议 fixture 留在 `../architecture/fixtures/observability-minimal.json`，由 router、runtime 测试与消费端仓库复用。
+
+## File Sink（默认落点）
+
+无 `telemetry.endpoint` 时，生产端默认写文件而非外发：
+
+- 每批事件 flush 写 **JSONL**：每行一个事件，与 WS batch 内事件同 schema（camelCase 字段一致），消费端可直接复用同一套解析。
+- 文件首行 header：`{"type":"fileHeader","protocol":"skiff-telemetry-v1","producerId":"...","source":"...","createdAt":"..."}`；轮转后新文件重写 header。
+- 默认路径 `<devHome>/logs/telemetry/<producerId>.jsonl`（router / runtime 各自 producer，天然按进程分文件）；`telemetry.filePath` 可覆盖。
+- 轮转：按大小（默认 64MB）与保留数（默认 8），参数可配置。
+- flush 节奏复用 batch 参数（`batchMaxEvents` / `batchMaxBytes` / `flushIntervalMs`）。
+- 与 WS 的差异：无 register 交互、无连接 / 重连；文件写入失败即告警（写回自身错误事件或 stderr）。文件是消费端（独立仓库）的第二输入面（tail / 解析）。
 
 ## Trace, Request And Span
 
@@ -96,7 +105,7 @@ remote-boundary诊断。
 语义：
 
 - `std.log.*` 是 runtime telemetry intrinsic。
-- 它只产生 `log` topic 的 best-effort 事件。
+- 它产生 best-effort 日志事件（`message` / `level` 形态由消费端识别，不声明 topic）。
 - runtime 自动补充 request frame、trace、span、service、runtime 和 target context。
 - attrs 应是可脱敏、可限长的结构化数据。
 - telemetry 不可用、队列满或发送失败不能影响业务返回值。
@@ -107,7 +116,7 @@ remote-boundary诊断。
 
 ## Ownership
 
-归属由事件字段表达，不由 topic 表达。
+归属由事件字段表达；事件模型没有 topic 维度。
 
 因果归属包括 trace id、request id、span id、parent span id 和 client request id。运行归属包括 source、runtime id、provider id / revision、build id 和 activation identity。service / 权限归属包括 service id、revision id、stable target id、actor ref 摘要和可选 tenant id。
 
@@ -120,7 +129,6 @@ remote-boundary诊断。
 常用查询维度：
 
 - time range。
-- topic。
 - trace id、request id、span id。
 - service id。
 - revision id、build id、activation identity。
@@ -166,10 +174,10 @@ DB、actor、queue、timer 和 runtime request 都应产生观测事件，但观
 ## 当前不支持
 
 - telemetry 承载可靠业务事件。
-- 自定义 topic。
+- 自定义事件字段（协议拒绝未知字段；形态识别归消费端，不在协议层表达）。
 - audit / billing / outbox 走 lossy telemetry。
 - 业务代码直接连接 telemetry storage。
-- 通过 topic 表达权限、租户、actor 或 target。
+- 通过事件字段表达权限、租户、actor 或 target（过滤由消费端按 `visibility` / `serviceId` 承担）。
 - 把 client request id 当作内部 request id。
 - 把 request id 当作长时间业务 run id。
 - 在 telemetry 中保存源码全文、完整 prompt、secret 或完整外部 raw payload。

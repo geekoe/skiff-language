@@ -284,24 +284,6 @@ function taskBuilders({
         'scripts/run-router-process-smoke.mjs',
       ]),
     ],
-    'telemetry-type-check': async () => [
-      packageTask(
-        root,
-        'telemetry:type-check',
-        'telemetry',
-        'telemetry',
-        ['run', 'type-check'],
-      ),
-    ],
-    'telemetry-tests': async () => [
-      packageTask(
-        root,
-        'implementation:telemetry',
-        'implementation:telemetry',
-        'telemetry',
-        ['test'],
-      ),
-    ],
     'scripts-syntax': async () => checkerTasks(root, 'scripts-syntax', {
       kind: 'scripts',
     }),

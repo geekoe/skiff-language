@@ -8,7 +8,6 @@ export const STACK_CONFIG_FILES = [
   'config.yml',
   'router.yml',
   'runtime.yml',
-  'telemetry.yml',
 ];
 
 export const PROFILE_TOKEN_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
@@ -19,7 +18,6 @@ export const KNOWN_BUILD_UNITS = new Set([
   'compiler',
   'runtime',
   'router',
-  'telemetry',
 ]);
 
 export function assertProfileToken(profile, label) {
@@ -136,7 +134,6 @@ export async function loadStackConfig(configDir, {
   const config = parsed['config.yml'] === undefined ? null : validateStackConfig(parsed['config.yml']);
   const router = parsed['router.yml'] === undefined ? null : validateRouterConfig(parsed['router.yml']);
   const runtime = parsed['runtime.yml'] === undefined ? null : parsed['runtime.yml'];
-  const telemetry = parsed['telemetry.yml'] === undefined ? null : parsed['telemetry.yml'];
 
   if (config !== null && router !== null) {
     if (config.profile !== router.profile) {
@@ -152,7 +149,6 @@ export async function loadStackConfig(configDir, {
     config,
     router,
     runtime,
-    telemetry,
     paths: build === null ? null : {
       buildRoot: resolveStackPath(build.buildRoot, skiffRoot, 'build.yml buildRoot'),
       cargoTargetDir: resolveStackPath(

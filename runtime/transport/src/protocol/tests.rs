@@ -827,21 +827,8 @@ fn telemetry_shared_fixture_requires_visibility_and_restricted_correlation() {
         "../../../../doc/architecture/fixtures/observability-minimal.json"
     ))
     .expect("observability fixture should parse");
-    // The shared fixture still carries the legacy per-event `topic` field for
-    // the TS telemetry tests; the de-topic transport protocol rejects unknown
-    // fields, so strip it before decoding.
-    let mut batch_value = fixture["valid"]["batch"].clone();
-    for event in batch_value["events"]
-        .as_array_mut()
-        .expect("batch events must be an array")
-    {
-        event
-            .as_object_mut()
-            .expect("batch event must be an object")
-            .remove("topic");
-    }
-    let batch: TelemetryBatchEnvelope =
-        serde_json::from_value(batch_value).expect("shared telemetry batch must decode");
+    let batch: TelemetryBatchEnvelope = serde_json::from_value(fixture["valid"]["batch"].clone())
+        .expect("shared telemetry batch must decode");
     assert_eq!(batch.events.len(), 4);
     assert!(batch.events[..3]
         .iter()

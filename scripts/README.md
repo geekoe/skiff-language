@@ -29,7 +29,6 @@ independently of the LaunchAgent's inherited limit.
   runtime-home/
   router.yml
   runtime.yml
-  telemetry.yml
 ```
 
 From a service directory, `skiff service dev sync` and `skiff service dev watch`
@@ -66,11 +65,12 @@ node scripts/skiff.mjs instance doctor .stack/config.yml
 launchctl print gui/$(id -u)/run.skiff.instance.stable
 ```
 
-Local dev service DB and telemetry storage default to `mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false`.
+Local dev service DB storage defaults to `mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false`.
 Port `27017` is the shared local MongoDB replica set for Skiff dev; other
 worktree instances leave MongoDB disabled and reuse that endpoint.
-`router.yml` forwards that URL to the Runtime as `serviceDb.mongoUrl`;
-`telemetry.yml` uses the same MongoDB endpoint with database `skiff`.
+`router.yml` forwards that URL to the Runtime as `serviceDb.mongoUrl`.
+Telemetry consumption (server on `4002`, `skiff_telemetry` database) lives in
+the standalone `skiff-telemetry` repository.
 
 The default local router config includes same-port rewrite rules on
 `127.0.0.1:4000`. They map request `Host` values, plus an optional exact
@@ -223,13 +223,13 @@ node scripts/skiff.mjs instance status --runtime build/runtime-stack
 node scripts/skiff.mjs instance down --runtime build/runtime-stack
 ```
 
-The configDir is the source of truth for `router.yml` / `runtime.yml` /
-`telemetry.yml`; the debug build copies them into `build/runtime-stack` and
-generates `instance.yml` there. `.stack/` is ignored local state and unrelated
-to project `skiff.yml` / package store resolution. The default local config
-uses ports `4000` for service HTTP, `4001` for router control/runtime, and
-`4002` for telemetry. `requestTimeoutMs` lives in `.stack/router.yml` and is
-required:
+The configDir is the source of truth for `router.yml` / `runtime.yml`; the
+debug build copies them into `build/runtime-stack` and generates `instance.yml`
+there. `.stack/` is ignored local state and unrelated to project `skiff.yml` /
+package store resolution. The default local config uses ports `4000` for
+service HTTP and `4001` for router control/runtime; the telemetry consumer
+server listens on `4002` (managed by the standalone `skiff-telemetry`
+repository). `requestTimeoutMs` lives in `.stack/router.yml` and is required:
 
 ```yaml
 runtime:
@@ -289,7 +289,7 @@ node deploy-runtime-stack.mjs \
   --http-max-response-bytes 8388608
 ```
 
-`deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router, runtime, and telemetry process, then writes config, installs router/telemetry dependencies, and reloads the selected components. It does not deploy the compiler. The legacy `--runtime-binary` flag is still accepted, but the build manifest is preferred. Telemetry is a separate Node process that listens on `127.0.0.1:4002`, receives runtime telemetry at `ws://127.0.0.1:4002/telemetry`, and persists events to Mongo. The deploy script writes telemetry settings to `${remoteSkiff}/config/telemetry.yml`.
+`deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router and runtime processes, then writes config, installs dependencies, and reloads the selected components. It does not deploy the compiler. Telemetry consumption is owned by the standalone `skiff-telemetry` repository and is not deployed from this repository.
 
 Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables. The generated Router config owns the absolute shared `artifactsPath` (`${remoteSkiff}/artifacts`) and the required `serviceDb.mongoUrl`; Runtime receives both through its Router bootstrap and neither value is written to `runtime.yml`.
 The same generator writes `runtime.maxConcurrency: 128` explicitly into the
@@ -305,20 +305,11 @@ Telemetry deployment options:
 
 ```bash
 node deploy-runtime-stack.mjs \
-  --telemetry-mongo-url 'mongodb://127.0.0.1:27017' \
-  --telemetry-db skiff_telemetry
-
-node deploy-runtime-stack.mjs \
-  --telemetry-memory true
-
-node deploy-runtime-stack.mjs \
   --service-db-mongo-url 'mongodb://127.0.0.1:27017'
 
 node deploy-runtime-stack.mjs \
   --service-db-encryption-keyring-file /run/secrets/skiff-service-db-keyring.json
 ```
-
-Useful environment overrides are `SKIFF_TELEMETRY_MONGO_URL` or `MONGO_URL`, `SKIFF_TELEMETRY_DB`, `SKIFF_TELEMETRY_PORT`, `SKIFF_TELEMETRY_CONFIG`, and `SKIFF_TELEMETRY_ENDPOINT`. Set `--telemetry-memory true` or `SKIFF_TELEMETRY_IN_MEMORY=true` when deploying to a host without MongoDB; the generated `telemetry.yml` will contain `memory: true` and omit the `mongo:` block.
 
 Set `--service-db-mongo-url`, `SKIFF_SERVICE_DB_MONGO_URL`, or `SERVICE_DB_MONGO_URL` to provide the required Router `serviceDb.mongoUrl` in `${remoteSkiff}/config/router.yml`. Deployment fails closed when it is missing. Router sends it together with the exact shared `artifactsPath` to Runtime during connection bootstrap.
 

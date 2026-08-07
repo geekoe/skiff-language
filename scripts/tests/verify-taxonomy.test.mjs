@@ -27,7 +27,6 @@ test('ordinary selectors expose the two test domains and implementation subjects
     'runtime',
     'test-runner',
     'router',
-    'telemetry',
     'tooling',
   ]) {
     assert.ok(PUBLIC_SELECTORS.includes(selector), selector);
@@ -47,11 +46,9 @@ test('ordinary selectors expose the two test domains and implementation subjects
   ]);
   assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions['implementation-tests'], [
     ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-    'telemetry',
     'tooling',
   ]);
   assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions['type-check'], [
-    'telemetry-type-check',
     'scripts-syntax',
     'vscode-type-check',
   ]);
@@ -106,7 +103,6 @@ test('implementation tests expand by subject without static or live tasks', asyn
     'implementation:test-runner:rust',
     'router:contracts',
     'router-rust:process-smoke',
-    'implementation:telemetry',
     'implementation:tooling:dev-sync-fixture',
     'implementation:tooling:vscode-grammar',
   ]) {
@@ -147,7 +143,6 @@ test('implementation tests expand by subject without static or live tasks', asyn
 test('each focused implementation subject is independently usable', async () => {
   for (const selector of [
     ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-    'telemetry',
     'tooling',
   ]) {
     const plan = await buildVerifyPlan({ root, selectors: [selector] });
@@ -230,7 +225,6 @@ test('registry transition keeps a single router subject owner with no dual owner
   );
   assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions['implementation-tests'], [
     ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-    'telemetry',
     'tooling',
   ]);
 });

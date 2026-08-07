@@ -17,7 +17,7 @@ test('local instance spec derives processes, ports, and shared facts from config
   const fixture = await buildFixture(t);
   const stack = await loadStackConfig(fixture.configDir, {
     skiffRoot,
-    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml', 'telemetry.yml'],
+    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml'],
   });
   const manifest = {
     profile: 'debug',
@@ -47,7 +47,7 @@ test('local instance spec supervises watch when process.watch is managed', async
   const fixture = await buildFixture(t, { watch: true });
   const stack = await loadStackConfig(fixture.configDir, {
     skiffRoot,
-    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml', 'telemetry.yml'],
+    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml'],
   });
   const manifest = {
     profile: 'debug',
@@ -78,7 +78,7 @@ test('generateLocalInstanceSpec writes instance.yml and devHome directories', as
   const fixture = await buildFixture(t);
   const stack = await loadStackConfig(fixture.configDir, {
     skiffRoot,
-    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml', 'telemetry.yml'],
+    files: ['build.yml', 'config.yml', 'router.yml', 'runtime.yml'],
   });
   const manifestPath = join(stack.paths.buildRoot, 'manifest.json');
   await writeFile(manifestPath, JSON.stringify({

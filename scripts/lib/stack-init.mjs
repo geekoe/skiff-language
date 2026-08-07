@@ -74,7 +74,7 @@ export async function initStack({
 
     await shell.remoteRun(
       host,
-      `mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,telemetry,scripts,runtime-home}`,
+      `mkdir -p ${remoteSkiff}/{artifacts,bin,config,logs,scripts,runtime-home}`,
     );
     await shell.rsync(
       `${artifactRoot}${path.sep}`,

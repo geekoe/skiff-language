@@ -28,6 +28,5 @@ console.log(JSON.stringify({
     config: true,
     router: true,
     runtime: true,
-    telemetry: true,
   },
 }, null, 2));

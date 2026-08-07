@@ -136,8 +136,6 @@ async function unitSpec(unitName) {
         outputName: 'skiff-router',
         inputs: ['router', 'artifact-identity', 'artifact-model'],
       });
-    case 'telemetry':
-      return tsUnit(unitName, 'telemetry');
     default:
       throw new Error(`unknown build unit ${unitName}`);
   }
@@ -339,21 +337,20 @@ async function selectedBuildUnits(rawOnly) {
 async function expandBuildSelector(rawOnly) {
   switch (rawOnly) {
     case 'all':
-      return ['artifact-model', 'artifact-identity', 'compiler', 'runtime', 'router', 'telemetry'];
+      return ['artifact-model', 'artifact-identity', 'compiler', 'runtime', 'router'];
     case 'rs':
       return ['artifact-model', 'artifact-identity', 'compiler', 'runtime'];
     case 'ts':
-      return ['router', 'telemetry'];
+      return ['router'];
     case 'artifact-model':
     case 'artifact-identity':
     case 'compiler':
     case 'runtime':
     case 'router':
-    case 'telemetry':
       return [rawOnly];
     default:
       throw new Error(
-        `invalid --only ${rawOnly}; expected all, rs, ts, artifact-model, artifact-identity, compiler, runtime, router, or telemetry`,
+        `invalid --only ${rawOnly}; expected all, rs, ts, artifact-model, artifact-identity, compiler, runtime, or router`,
       );
   }
 }

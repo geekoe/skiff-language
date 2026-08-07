@@ -5,4 +5,3 @@ cargoTargetDir: build/cargo-target
 units:
   - runtime
   - router
-  - telemetry

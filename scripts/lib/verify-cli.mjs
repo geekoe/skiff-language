@@ -118,13 +118,12 @@ implementation subjects:
   runtime                      runtime crate tests
   test-runner                  test-runner crate tests
   router                       router tests
-  telemetry                    telemetry tests
   tooling                      scripts and VS Code tooling tests
 
 quality and focused selectors:
   verify                       tests plus every non-live quality/check gate
   rust-quality                 workspace rustfmt + Rust file/function line gates
-  type-check                   telemetry, scripts, and VS Code static checks
+  type-check                   scripts and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
   scripts-syntax  scripts-dev-sync  focused tooling tasks

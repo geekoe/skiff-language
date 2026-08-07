@@ -28,7 +28,6 @@ const selectorGraph = {
     'implementation-tests',
     ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
     'router-rust-process-smoke',
-    'telemetry',
     'tooling',
     'scripts',
     'vscode',
@@ -44,7 +43,6 @@ const selectorGraph = {
     tests: ['skiff-tests', 'implementation-tests'],
     'implementation-tests': [
       ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
-      'telemetry',
       'tooling',
     ],
     ...rustSubjectExpansions,
@@ -64,12 +62,10 @@ const selectorGraph = {
       routerSubject.leafSelector,
       'router-rust-process-smoke',
     ],
-    telemetry: ['telemetry-tests'],
     tooling: ['scripts', 'vscode'],
     scripts: ['scripts-tests', 'scripts-dev-sync'],
     vscode: ['vscode-grammar'],
     'type-check': [
-      'telemetry-type-check',
       'scripts-syntax',
       'vscode-type-check',
     ],

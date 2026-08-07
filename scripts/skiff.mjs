@@ -32,7 +32,7 @@ import {
   defaultProjectPackageDir,
   readProjectPackageDirs,
 } from './lib/project-config.mjs';
-import { renderRouterConfig, renderRuntimeConfig, renderTelemetryConfig } from './lib/runtime-stack-config.mjs';
+import { renderRouterConfig, renderRuntimeConfig } from './lib/runtime-stack-config.mjs';
 import { buildStack } from './lib/stack-build.mjs';
 import { parseStackConfigDirArg } from './lib/stack-config.mjs';
 
@@ -50,7 +50,7 @@ const usage = `usage:
   skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
-  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
+  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
   skiff service dev registry list [--config <path>]
@@ -535,15 +535,6 @@ async function devInit(rawArgs) {
     process.env.SKIFF_SERVICE_DB_MONGO_URL ??
     process.env.SERVICE_DB_MONGO_URL ??
     defaultLocalMongoUrl;
-  const telemetryMongoUrl =
-    args.options.telemetryMongoUrl ??
-    process.env.SKIFF_TELEMETRY_MONGO_URL ??
-    process.env.MONGO_URL ??
-    defaultLocalMongoUrl;
-  const telemetryDb =
-    args.options.telemetryDb ??
-    process.env.SKIFF_TELEMETRY_DB ??
-    'skiff_telemetry';
   const force = args.flags.has('--force');
   const httpMaxRequestBytes = readRequiredPositiveSafeInteger(
     args.options.httpMaxRequestBytes,
@@ -567,10 +558,6 @@ async function devInit(rawArgs) {
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'runtime.yml'), runtimeDevConfig({
     runtimeHome,
-  }), force));
-  writes.push(await writeDevInitFile(join(devHome, 'telemetry.yml'), telemetryDevConfig({
-    telemetryDb,
-    telemetryMongoUrl,
   }), force));
 
   if (!args.flags.has('--no-bin')) {
@@ -790,8 +777,6 @@ function parseDevInitArgs(rawArgs) {
       '--http-max-request-bytes',
       '--http-max-response-bytes',
       '--service-db-mongo-url',
-      '--telemetry-db',
-      '--telemetry-mongo-url',
     ]),
   });
   if (args.positionals.length !== 0) {
@@ -944,19 +929,6 @@ function runtimeDevConfig(options) {
   return renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: options.runtimeHome,
-  });
-}
-
-function telemetryDevConfig(options) {
-  return renderTelemetryConfig({
-    host: '127.0.0.1',
-    port: 4002,
-    path: '/telemetry',
-    emitMemory: false,
-    mongo: {
-      url: options.telemetryMongoUrl,
-      database: options.telemetryDb,
-    },
   });
 }
 

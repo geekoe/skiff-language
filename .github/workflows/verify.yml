@@ -49,7 +49,6 @@ jobs:
 
       - name: Install package dependencies
         run: |
-          pnpm --dir telemetry install --frozen-lockfile
           pnpm --dir scripts install --frozen-lockfile
           pnpm --dir vscode install --frozen-lockfile
 

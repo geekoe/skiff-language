@@ -186,36 +186,6 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function renderTelemetryConfig({
-  host,
-  port,
-  path,
-  memory,
-  emitMemory,
-  mongo,
-}) {
-  const lines = [
-    'telemetry:',
-    `  host: ${host}`,
-    `  port: ${port}`,
-    `  path: ${path}`,
-  ];
-  if (emitMemory) {
-    lines.push('', `memory: ${memory ? 'true' : 'false'}`);
-  }
-  if (mongo !== undefined) {
-    lines.push(
-      '',
-      'mongo:',
-      `  url: ${quoteYamlString(mongo.url)}`,
-      `  database: ${quoteYamlString(mongo.database)}`,
-      ...(mongo.ttlDays ? [`  ttlDays: ${mongo.ttlDays}`] : []),
-    );
-  }
-  lines.push('');
-  return lines.join('\n');
-}
-
 export function quoteYamlString(value) {
   return JSON.stringify(String(value));
 }

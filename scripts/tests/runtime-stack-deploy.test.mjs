@@ -8,7 +8,7 @@ import { deployStack, renderEcosystemConfig } from '../lib/stack-deploy.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
 
-test('deploy copies the three YAML files verbatim from configDir', async (t) => {
+test('deploy copies the two YAML files verbatim from configDir', async (t) => {
   const { configDir, buildRoot, shell, calls } = await deployFixture(t);
   const result = await deployStack({ configDir, skiffRoot, shell });
 
@@ -17,8 +17,8 @@ test('deploy copies the three YAML files verbatim from configDir', async (t) => 
     && call.destination.startsWith('deploy.test:/srv/skiff/config/')
     && call.destination.endsWith('.yml')
   ));
-  assert.equal(configRsyncs.length, 3);
-  for (const file of ['router.yml', 'runtime.yml', 'telemetry.yml']) {
+  assert.equal(configRsyncs.length, 2);
+  for (const file of ['router.yml', 'runtime.yml']) {
     const call = calls.find((entry) => (
       entry.op === 'rsync'
       && entry.destination === `deploy.test:/srv/skiff/config/${file}`
@@ -28,10 +28,10 @@ test('deploy copies the three YAML files verbatim from configDir', async (t) => 
     assert.equal(copied, await readFile(join(configDir, file), 'utf8'));
     assert.ok(!copied.includes('deploy.test'), `${file} must be copied verbatim`);
   }
-  assert.equal(result.config.length, 3);
+  assert.equal(result.config.length, 2);
 });
 
-test('deploy uploads manifest binaries, installs telemetry, and PM2 deletes before startOrReload', async (t) => {
+test('deploy uploads manifest binaries and PM2 deletes before startOrReload', async (t) => {
   const { configDir, shell, calls, buildRoot } = await deployFixture(t);
   await deployStack({ configDir, skiffRoot, shell });
 
@@ -53,20 +53,15 @@ test('deploy uploads manifest binaries, installs telemetry, and PM2 deletes befo
     assert.ok(chmod, `missing chmod for ${target}`);
   }
 
-  assert.ok(calls.some((call) => (
-    call.op === 'ssh'
-    && call.command === 'cd /srv/skiff/telemetry && PATH=/opt/node/bin:$PATH pnpm install --prod=false --ignore-scripts'
-  )), 'telemetry dependencies must be installed');
-
   const deletes = calls
     .filter((call) => call.op === 'ssh' && call.command.includes('pm2 delete'))
     .map((call) => call.command);
   const reloads = calls
     .filter((call) => call.op === 'ssh' && call.command.includes('startOrReload'))
     .map((call) => call.command);
-  assert.equal(deletes.length, 3);
-  assert.equal(reloads.length, 3);
-  for (const app of ['skiff-router', 'skiff-runtime', 'skiff-telemetry']) {
+  assert.equal(deletes.length, 2);
+  assert.equal(reloads.length, 2);
+  for (const app of ['skiff-router', 'skiff-runtime']) {
     const deleteIndex = calls.findIndex((call) => (
       call.op === 'ssh' && call.command.includes(`pm2 delete ${app} || true`)
     ));
@@ -124,9 +119,8 @@ test('ecosystem template targets the copied config files and node bin', () => {
   });
   assert.match(text, /script: '\/srv\/skiff\/bin\/skiff-router'/);
   assert.match(text, /args: '\/srv\/skiff\/config\/router\.yml'/);
-  assert.match(text, /args: '--config \/srv\/skiff\/config\/telemetry\.yml'/);
-  assert.match(text, /interpreter: NODE_BIN \+ '\/node'/);
-  assert.doesNotMatch(text, /mongoUrl|httpMaxRequestBytes|prepareTimeoutMs/);
+  assert.equal((text.match(/interpreter: 'none'/g) ?? []).length, 2);
+  assert.doesNotMatch(text, /mongoUrl|httpMaxRequestBytes|prepareTimeoutMs|telemetry/);
 });
 
 async function deployFixture(t, {
@@ -171,10 +165,6 @@ async function deployFixture(t, {
     join(configDir, 'runtime.yml'),
     'router: ws://127.0.0.1:4001/runtime\nruntime-home: /srv/skiff/runtime-home\n',
   );
-  await writeFile(
-    join(configDir, 'telemetry.yml'),
-    'telemetry:\n  host: 127.0.0.1\n  port: 4002\n  path: /telemetry\n',
-  );
 
   for (const name of ['skiff-router', 'skiff-runtime', 'skiff-compiler']) {
     await writeFile(join(buildRoot, 'bin', name), `fake-${name}\n`);
@@ -187,12 +177,6 @@ async function deployFixture(t, {
       router: binaryUnit(join(buildRoot, 'bin', 'skiff-router')),
       runtime: binaryUnit(join(buildRoot, 'bin', 'skiff-runtime')),
       compiler: binaryUnit(join(buildRoot, 'bin', 'skiff-compiler')),
-      telemetry: {
-        kind: 'ts',
-        commit: 'test-commit',
-        sourceKey: 'test-telemetry',
-        artifacts: [],
-      },
     },
   }, null, 2));
 

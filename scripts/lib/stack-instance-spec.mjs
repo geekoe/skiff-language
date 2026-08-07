@@ -21,7 +21,7 @@ export async function generateLocalInstanceSpec({ stack, skiffRoot }) {
   }
   const spec = localInstanceSpecFrom({ stack, skiffRoot, manifest });
   await ensureDevHomeDirs(spec.devHome);
-  for (const file of ['router.yml', 'runtime.yml', 'telemetry.yml']) {
+  for (const file of ['router.yml', 'runtime.yml']) {
     await copyFile(
       join(stack.configDir, file),
       join(stack.paths.buildRoot, file),
