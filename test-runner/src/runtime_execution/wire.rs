@@ -350,7 +350,7 @@ fn decode_active_projection(value: &Value) -> Result<ActiveAssemblyProjection, S
     let active = exact_object(
         value,
         &["profile", "releaseCount", "buildIds"],
-        &[],
+        &["loadedBuildIds", "routerArtifactRoot"],
         context,
     )?;
     let build_ids = array(

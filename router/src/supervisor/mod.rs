@@ -307,7 +307,7 @@ impl RouterComponents {
                     usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
                     Arc::new(SessionCandidateViewSource::new(
                         session_handle.clone(),
-                        Some(config.artifacts_path.to_string_lossy().into_owned()),
+                        Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
                     )),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
                     Arc::new(SessionRuntimePeer::new(session_handle.clone())),
@@ -328,7 +328,7 @@ impl RouterComponents {
         let production_selector = Arc::new(ProductionWsConnectSelector::new(
             Arc::new(SessionCandidateViewSource::new(
                 session_handle.clone(),
-                Some(config.artifacts_path.to_string_lossy().into_owned()),
+                Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
             )),
             usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
         ));

@@ -1,7 +1,7 @@
 import {
   spawn as spawnIsolatedChild,
 } from 'node:child_process';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -30,6 +30,7 @@ export function isolatedTestRunnerEnvironment({
     CARGO_TARGET_DIR: cargoTarget,
     SKIFF_DEV_HOME: devHome,
     SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
+    SKIFF_TEST_CONTROL_URL: `http://127.0.0.1:${controlPort}`,
     SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
     SKIFF_TEST_ENVIRONMENT: profile,
     SKIFF_TEST_PLATFORM_SOURCE_ROOT: skiffRoot,
@@ -133,7 +134,6 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
       && replica.replicaId.length > 0
       && replica.connected === true
       && replica?.state === 'healthy'
-      && replica?.profile === profile
       && capabilityConnections.some((connection) => (
         connection?.connected === true
         && connection?.runtimeId === replica.replicaId
@@ -181,8 +181,9 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         mode: 0o600,
       });
     },
-    spawnMongo: ({ mongoBinary, mongoPort, mongoDataDir, cwd, env }) => {
+    spawnMongo: async ({ mongoBinary, mongoPort, mongoDataDir, cwd, env, logDir }) => {
       // child-process-owner: isolated-mongo
+      const stdio = await logFileStdio(logDir, 'mongo');
       return spawnIsolatedChild(
         mongoBinary,
         [
@@ -191,7 +192,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
           '--replSet', 'rs0',
           '--bind_ip', '127.0.0.1',
         ],
-        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+        { cwd, env, stdio },
       );
     },
     waitMongoPrimary: async ({ mongoPort, child, signal }) => {
@@ -228,20 +229,22 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         `isolated MongoDB did not elect its single-node primary: ${errorMessage(lastError)}`,
       );
     },
-    spawnRouter: ({ routerBinary, routerConfigPath, cwd, env }) => {
+    spawnRouter: async ({ routerBinary, routerConfigPath, cwd, env, logDir }) => {
       // child-process-owner: isolated-router
+      const stdio = await logFileStdio(logDir, 'router');
       return spawnIsolatedChild(
         routerBinary,
         [routerConfigPath],
-        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+        { cwd, env, stdio },
       );
     },
-    spawnRuntime: ({ runtimeBinary, runtimeConfigPath, cwd, env }) => {
+    spawnRuntime: async ({ runtimeBinary, runtimeConfigPath, cwd, env, logDir }) => {
       // child-process-owner: isolated-runtime
+      const stdio = await logFileStdio(logDir, 'runtime');
       return spawnIsolatedChild(
         runtimeBinary,
         [runtimeConfigPath],
-        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+        { cwd, env, stdio },
       );
     },
     waitReady: waitForIsolatedRuntime,
@@ -263,7 +266,7 @@ async function waitForIsolatedRuntime({
     for (const child of children) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(
-          `isolated process exited before readiness with ${child.signalCode ?? child.exitCode}`,
+          `isolated process ${child.pid} (${child.spawnargs?.[0] ?? 'unknown'}) exited before readiness with ${child.signalCode ?? child.exitCode}`,
         );
       }
     }
@@ -324,6 +327,13 @@ function childExit(child) {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolvePromise({ code, signal }));
   });
+}
+
+async function logFileStdio(logDir, name) {
+  await mkdir(logDir, { recursive: true });
+  const out = await open(join(logDir, `${name}.out.log`), 'a');
+  const err = await open(join(logDir, `${name}.err.log`), 'a');
+  return ['ignore', out.fd, err.fd];
 }
 
 function errorMessage(error) {

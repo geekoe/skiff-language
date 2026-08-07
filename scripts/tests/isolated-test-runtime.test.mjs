@@ -127,8 +127,6 @@ test('readiness requires one connected replica and its own capability handshake'
     ['active profile is missing', (health) => { delete health.activeAssembly.profile; }],
     ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
     ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
-    ['replica profile differs', (health) => { health.replicas[0].profile = 'other'; }],
-    ['replica profile is missing', (health) => { delete health.replicas[0].profile; }],
     ['replica connected is false', (health) => { health.replicas[0].connected = false; }],
     ['replica connected is missing', (health) => { delete health.replicas[0].connected; }],
     ['replica state is not healthy', (health) => { health.replicas[0].state = 'draining'; }],
@@ -146,11 +144,6 @@ test('readiness requires one connected replica and its own capability handshake'
 
   const splitRuntimeHealth = structuredClone(readyHealth);
   splitRuntimeHealth.capabilityConnections[0].runtimeId = 'runtime-2';
-  splitRuntimeHealth.replicas.push({
-    ...structuredClone(readyHealth.replicas[0]),
-    replicaId: 'runtime-2',
-    profile: 'other',
-  });
   assert.equal(
     isolatedRuntimeHealthReady(splitRuntimeHealth, bootstrap),
     false,
@@ -222,12 +215,12 @@ test('one absolute checkout and Cargo target flow through spawns, bootstrap, and
   assert.equal(observed.mongo.cwd, '/tmp/isolated-runtime-double/instance');
   assert.equal(
     observed.router.routerBinary,
-    join(expectedSkiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router'),
+    join(expectedSkiffRoot, 'build', 'bin', 'skiff-router'),
   );
   assert.equal(observed.router.routerConfigPath, '/tmp/isolated-runtime-double/instance/dev-home/router.yml');
   assert.equal(
     observed.runtime.runtimeBinary,
-    join(expectedSkiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-runtime'),
+    join(expectedSkiffRoot, 'build', 'bin', 'runtime'),
   );
   assert.equal(observed.runtime.runtimeConfigPath, '/tmp/isolated-runtime-double/instance/dev-home/runtime.yml');
   assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);

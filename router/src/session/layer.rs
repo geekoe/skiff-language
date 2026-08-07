@@ -245,7 +245,7 @@ impl SessionLayer {
             timing: options.timing,
             budgets: options.budgets,
             writer_delay: options.writer_delay,
-            router_artifact_root: Some(config.artifacts_path.to_string_lossy().into_owned()),
+            router_artifact_root: Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
             next_connection_id: AtomicU64::new(0),
             next_generation: AtomicU64::new(0),
             shutdown_tx,

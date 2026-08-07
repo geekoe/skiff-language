@@ -153,8 +153,8 @@ async function startIsolatedTestRuntime({
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
     const mongoPort = portLease.ports[3];
-    const routerBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router');
-    const runtimeBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-runtime');
+    const routerBinary = join(skiffRoot, 'build', 'bin', 'skiff-router');
+    const runtimeBinary = join(skiffRoot, 'build', 'bin', 'runtime');
     await ensureRuntimeBinaries({ routerBinary, runtimeBinary });
     await ops.initializeInstance({
       profile,
@@ -181,6 +181,7 @@ async function startIsolatedTestRuntime({
         mongoDataDir: join(devHome, 'mongo-data'),
         cwd: instanceRoot,
         env: isolatedEnv,
+        logDir: join(devHome, 'logs'),
       }));
     children.push(mongoChild);
     await stageCall('Mongo primary election', () =>
@@ -204,6 +205,7 @@ async function startIsolatedTestRuntime({
         routerConfigPath: join(devHome, 'router.yml'),
         cwd: instanceRoot,
         env: isolatedEnv,
+        logDir: join(devHome, 'logs'),
       }));
     children.push(routerChild);
     const runtimeChild = await stageCall('Runtime spawn', () =>
@@ -212,6 +214,7 @@ async function startIsolatedTestRuntime({
         runtimeConfigPath: join(devHome, 'runtime.yml'),
         cwd: instanceRoot,
         env: isolatedEnv,
+        logDir: join(devHome, 'logs'),
       }));
     children.push(runtimeChild);
     await stageCall('Router/Runtime readiness', () => ops.waitReady({
@@ -315,7 +318,7 @@ async function ensureRuntimeStackDebugBinaries({ routerBinary, runtimeBinary }) 
   }
   if (missing.length > 0) {
     throw new Error(
-      `runtime-stack debug binaries missing (${missing.join(', ')}); run "skiff build router runtime" first`,
+      `debug binaries missing (${missing.join(', ')}); run "skiff build router runtime" first`,
     );
   }
 }

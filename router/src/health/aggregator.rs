@@ -183,9 +183,9 @@ impl HealthAggregator {
                 ids.dedup();
                 ids
             },
-            router_artifact_root: Some(
-                components.config.artifacts_path.to_string_lossy().into_owned(),
-            ),
+            router_artifact_root: Some(crate::config::canonicalize_artifact_root(
+                &components.config.artifacts_path,
+            )),
         };
 
         let task_backlog = components.task_control.backlog().await;

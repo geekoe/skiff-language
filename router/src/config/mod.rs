@@ -1117,3 +1117,14 @@ mod tests {
         path
     }
 }
+
+/// Canonicalize an artifacts path for identity comparison (the runtime
+/// advertises its canonicalized artifact root; the lazy-load candidate rule
+/// compares byte-for-byte). Falls back to the literal path when the directory
+/// does not exist yet.
+pub fn canonicalize_artifact_root(path: &std::path::Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
