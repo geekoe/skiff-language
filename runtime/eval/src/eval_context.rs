@@ -28,7 +28,10 @@ use super::{
         },
         RuntimeExecutionProjection,
     },
-    capabilities::{ExecutionControl, RuntimeNativeConfigCapabilityContext},
+    capabilities::{
+        ExecutionControl, RuntimeNativeConfigCapabilityContext,
+        RuntimeNativeTelemetryCapabilityContext,
+    },
     env::{Env, Flow},
     exceptions::{
         catch_err, catch_identity_matches, catch_ok, request_exception_for_catch,
@@ -1794,6 +1797,8 @@ impl<'a> EvalContext<'a> {
         }
         let config_context =
             RuntimeNativeConfigCapabilityContext::new(self.context.config_context());
+        let telemetry_context =
+            RuntimeNativeTelemetryCapabilityContext::new(self.context.telemetry_context());
         let config_type_arg_plan = resolve_config_builtin_type_arg_plan(
             self.projection.type_view(),
             self.addr,
@@ -1805,6 +1810,7 @@ impl<'a> EvalContext<'a> {
         let value = NativeDispatch::new()
             .dispatch_builtin(
                 &config_context,
+                &telemetry_context,
                 self.addr,
                 op,
                 config_type_arg_plan,

@@ -964,6 +964,55 @@ pub(crate) fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable
     }
 }
 
+pub(crate) fn telemetry_emit_root_builtin_call_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: LinkedExecutableBody {
+            blocks: vec![crate::eval::program::BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }, StmtRefIr { statement: 1 }],
+            }],
+            statements: vec![
+                LinkedStmtIr::Expr {
+                    value: ExprRefIr { expression: 4 },
+                },
+                LinkedStmtIr::Return { value: None },
+            ],
+            expressions: vec![
+                expression(literal_string_expr("info")),
+                expression(literal_string_expr("root telemetry builtin")),
+                expression(literal_string_expr("runtime-test")),
+                LinkedExprIr::MapLiteral {
+                    entries: BTreeMap::from([("source".to_string(), ExprRefIr { expression: 2 })]),
+                },
+                LinkedExprIr::Call {
+                    call: CallIr {
+                        target: LinkedCallTarget::Builtin {
+                            op: "root.telemetry.emit".to_string(),
+                        },
+                        site: test_instruction_site(),
+                        args: vec![
+                            ExprRefIr { expression: 0 },
+                            ExprRefIr { expression: 1 },
+                            ExprRefIr { expression: 3 },
+                        ],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                        actor_metadata: None,
+                    },
+                },
+            ],
+        },
+    }
+}
+
 pub(crate) fn resource_text_native_executable(path: &str) -> LinkedExecutable {
     resource_native_executable(
         "text",

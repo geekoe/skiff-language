@@ -1,6 +1,7 @@
 use super::{
     builtin::BuiltinDispatch, bytes::BytesNativeDispatch, config::ConfigNativeDispatch, core,
-    external::ExternalNativeDispatch, invocation::RuntimeNativeInvocation, PreparedNativeCall,
+    external::ExternalNativeDispatch, invocation::RuntimeNativeInvocation,
+    telemetry::TelemetryNativeDispatch, PreparedNativeCall,
 };
 use crate::error::{Result, RuntimeError};
 use crate::{
@@ -25,6 +26,7 @@ impl NativeDispatch {
     pub fn dispatch_builtin(
         &self,
         config_context: &impl NativeConfigCapability,
+        telemetry_context: &impl NativeTelemetryCapability,
         current_addr: &ExecutableAddr,
         op: &str,
         config_type_arg_plan: Option<RuntimeTypePlan>,
@@ -49,6 +51,9 @@ impl NativeDispatch {
                 // Builtin dispatch can run without caller context, so keep its legacy
                 // direct path. RuntimeProgram native calls go through dispatch_native_call.
                 BytesNativeDispatch::dispatch(target, args, heap)
+            }
+            target if TelemetryNativeDispatch::matches(target) => {
+                TelemetryNativeDispatch::dispatch_builtin(telemetry_context, target, args, heap)
             }
             target if ExternalNativeDispatch::is_registered(target) => {
                 ExternalNativeDispatch::dispatch(target, args, heap)

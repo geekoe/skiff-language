@@ -827,6 +827,21 @@ async fn runtime_program_telemetry_native_uses_registered_signature_dispatch() {
 }
 
 #[tokio::test]
+async fn runtime_program_telemetry_root_builtin_dispatches_through_builtin_dispatch() {
+    let program = Arc::new(program_with_executable(
+        telemetry_emit_root_builtin_call_executable(),
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("root.telemetry.emit should dispatch through RuntimeProgram builtin dispatch");
+
+    assert_eq!(value, Value::Null);
+}
+
+#[tokio::test]
 async fn runtime_program_resource_text_reads_service_resource() {
     let mut program = program_with_executable(resource_text_native_executable("prompts/system.md"));
     program.service_resources = resource_table("prompts/system.md", b"service text");
