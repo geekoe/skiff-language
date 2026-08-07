@@ -3,9 +3,10 @@
 //! M4: the per-connection generation pin is keyed by buildId, not the
 //! retired assembly generation).
 //!
-//! Mirrors the canonical `WebSocketGenerationLifecycleRouter` semantics:
-//! expect/acquire/release pending/cached acquire/session attachment/release
-//! timeout/runtime disconnect/flush. Not production code.
+//! Reference model of the retired ws generation lifecycle semantics
+//! (expect/acquire/release pending/cached acquire/session attachment/release
+//! timeout/runtime disconnect/flush; the on-wire lifecycle protocol was
+//! removed in W8b). Not production code.
 
 use std::collections::HashMap;
 

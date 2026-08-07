@@ -4,7 +4,7 @@
 //! (`testdata/client-ws/`) through the production W-model frame codecs and the
 //! production JSON-RPC 2.0 text profile classifier, and proves:
 //! `encode(decode(frameHex)) == frameHex` for every frozen frame, the frozen
-//! direction/payload rules, lifecycle response exact-echo, and the numeric id
+//! direction/payload rules, and the numeric id
 //! lexeme validation/canonicalization corpus. The corpus is owned by the
 //! contracts-ws pack; this file adds the production-codec consumer gate
 //! required by W-model-connection / M-connection (plan §5.3).
@@ -22,14 +22,8 @@ use skiff_runtime_transport::connection_protocol::{
     encode_connection_response_frame, JsonRpcPlatformErrorKind, OpaquePeerId, ProfileAction,
     WebSocketRpcProfile,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    assert_websocket_generation_lifecycle_response_matches,
-    decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
-    WebSocketGenerationLifecycleOperation,
-};
 
-const REQUIRED_FRAMES: [&str; 17] = [
+const REQUIRED_FRAMES: [&str; 11] = [
     "connection.request.object",
     "connection.request.array",
     "connection.request.no-deadline",
@@ -41,12 +35,6 @@ const REQUIRED_FRAMES: [&str; 17] = [
     "connection.response.transport-unavailable",
     "connection.response.protocol-error",
     "connection.response.resource-limit",
-    "lifecycle.acquire",
-    "lifecycle.release",
-    "lifecycle.ack.acquire",
-    "lifecycle.ack.release",
-    "lifecycle.reject.acquire",
-    "lifecycle.reject.release",
 ];
 
 const REQUIRED_SCENARIOS: [&str; 23] = [
@@ -145,48 +133,12 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn lifecycle_direction(value: &str) -> WebSocketGenerationLifecycleDirection {
-    match value {
-        "RouterToRuntime" => WebSocketGenerationLifecycleDirection::RouterToRuntime,
-        "RuntimeToRouter" => WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-        other => panic!("unknown lifecycle direction {other}"),
-    }
-}
-
-fn lifecycle_parts(
-    control: &WebSocketGenerationLifecycleControl,
-) -> (&'static str, Option<WebSocketGenerationLifecycleOperation>) {
-    match control {
-        WebSocketGenerationLifecycleControl::Acquire { .. } => ("acquire", None),
-        WebSocketGenerationLifecycleControl::Release { .. } => ("release", None),
-        WebSocketGenerationLifecycleControl::Ack { operation, .. } => ("ack", Some(*operation)),
-        WebSocketGenerationLifecycleControl::Reject { operation, .. } => {
-            ("reject", Some(*operation))
-        }
-    }
-}
-
-fn expected_lifecycle_direction(
-    action: &str,
-    operation: Option<WebSocketGenerationLifecycleOperation>,
-) -> &'static str {
-    match action {
-        "acquire" => "RuntimeToRouter",
-        "release" => "RouterToRuntime",
-        "ack" | "reject" => match operation.expect("operation required") {
-            WebSocketGenerationLifecycleOperation::Acquire => "RouterToRuntime",
-            WebSocketGenerationLifecycleOperation::Release => "RuntimeToRouter",
-        },
-        other => panic!("unknown lifecycle action {other}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn connection_and_lifecycle_frames_roundtrip_byte_exact_through_w_model_codecs() {
+    fn connection_frames_roundtrip_byte_exact_through_w_model_codecs() {
         let catalog = catalog();
         assert_eq!(catalog.schema_version, 1);
         assert_eq!(catalog.corpus, "client-ws-frames-v1");
@@ -197,8 +149,6 @@ mod tests {
             );
         }
 
-        let mut lifecycle_requests = Vec::new();
-        let mut lifecycle_responses = Vec::new();
         for (name, entry) in &catalog.frames {
             let bytes = hex_to_bytes(&entry.frame_hex);
             match entry.decode_as.as_str() {
@@ -249,53 +199,8 @@ mod tests {
                         .unwrap_or_else(|error| panic!("{name} response encode: {error}"));
                     assert_eq!(reencoded, bytes, "{name} must roundtrip byte-exact");
                 }
-                "Lifecycle" => {
-                    assert_eq!(entry.frame_type, "websocket.generation.lifecycle");
-                    let control = decode_websocket_generation_lifecycle_frame(
-                        lifecycle_direction(&entry.direction),
-                        &bytes,
-                    )
-                    .unwrap_or_else(|error| panic!("{name} lifecycle decode: {error}"));
-                    let (action, operation) = lifecycle_parts(&control);
-                    assert_eq!(
-                        entry.direction,
-                        expected_lifecycle_direction(action, operation),
-                        "{name} direction"
-                    );
-                    assert_eq!(
-                        serde_json::to_value(&control).expect("control serializes"),
-                        entry.header,
-                        "{name} control JSON must match fixture"
-                    );
-                    let reencoded = encode_websocket_generation_lifecycle_frame(
-                        lifecycle_direction(&entry.direction),
-                        &control,
-                    )
-                    .unwrap_or_else(|error| panic!("{name} lifecycle encode: {error}"));
-                    assert_eq!(reencoded, bytes, "{name} must roundtrip byte-exact");
-                    match action {
-                        "acquire" | "release" => lifecycle_requests.push(control),
-                        "ack" | "reject" => lifecycle_responses.push(control),
-                        other => panic!("{name} unknown lifecycle action {other}"),
-                    }
-                }
                 other => panic!("{name} has unknown decodeAs {other}"),
             }
-        }
-        assert_eq!(lifecycle_requests.len(), 2);
-        assert_eq!(lifecycle_responses.len(), 4);
-        for response in &lifecycle_responses {
-            let matched = lifecycle_requests
-                .iter()
-                .filter(|request| {
-                    assert_websocket_generation_lifecycle_response_matches(request, response)
-                        .is_ok()
-                })
-                .count();
-            assert_eq!(
-                matched, 1,
-                "lifecycle response must exact-echo exactly one frozen request"
-            );
         }
     }
 

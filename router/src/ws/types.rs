@@ -17,7 +17,6 @@ use crate::session::identity::RuntimeSessionEpoch;
 
 pub const CONNECTION_LIMIT_DEFAULT: usize = 5000;
 pub const SLOW_CLIENT_BUDGET_BYTES_DEFAULT: u64 = 16 * 1024 * 1024;
-pub const RELEASE_TIMEOUT_MS_DEFAULT: u64 = 5000;
 pub const OUTBOUND_GLOBAL_CAPACITY_DEFAULT: usize = 4096;
 pub const OUTBOUND_PER_GENERATION_CAPACITY_DEFAULT: usize = 128;
 pub const INBOUND_GLOBAL_CAPACITY_DEFAULT: usize = 4096;
@@ -309,17 +308,11 @@ pub struct WsHealthSnapshot {
     pub finalizer_count: u64,
     pub finalizer_failures: Vec<String>,
     pub slow_client_count: u64,
-    pub pins_acquired: usize,
-    pub pins_pending_release: usize,
-    pub release_acks: u64,
-    pub release_failures: Vec<String>,
-    pub runtime_closed: Vec<RuntimeSessionEpoch>,
     pub generation_count: usize,
     pub outbound_pending: usize,
     pub inbound_pending: usize,
     pub tombstones: usize,
     pub timer_count: usize,
-    pub fail_stop_reason: Option<String>,
 }
 
 /// Construct the typed generation identity; validates the connection token

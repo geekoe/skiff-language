@@ -19,10 +19,6 @@ use skiff_runtime_transport::{
         RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
         RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader,
     },
-    websocket_generation_lifecycle::{
-        WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleOperation,
-        WebSocketGenerationLifecycleSender, WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
-    },
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{
@@ -34,7 +30,6 @@ use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
 use super::runtime_assembly_request::fixture;
 
-const ROUTER_SESSION: &str = "skiff-router-session-v1:opaque:test-session";
 const OTHER_ROUTER_SESSION: &str = "skiff-router-session-v1:opaque:other-session";
 const CONNECTION_ID: &str = "host-websocket-jsonrpc-connection";
 
@@ -209,7 +204,7 @@ async fn websocket_jsonrpc_host_uses_header_identity_not_peer_params() {
 }
 
 #[tokio::test]
-async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
+async fn websocket_jsonrpc_host_rejects_mismatched_route_before_eval() {
     let fixture::ReloadedWebSocketGatewayHost {
         host,
         physical_a,
@@ -219,11 +214,6 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
     } = pinned_host().await;
     let status = &methods_a["status.get"];
     let base = jsonrpc_header(&physical_a, status, "host-jsonrpc-reject-base", None, None);
-
-    let mut wrong_connection = base.clone();
-    wrong_connection.request_id = "host-jsonrpc-reject-connection".to_string();
-    wrong_connection.websocket_json_rpc.connection_id = "missing-connection".to_string();
-    assert_wire_rejection(&host, wrong_connection).await;
 
     let mut wrong_identity = base.clone();
     wrong_identity.request_id = "host-jsonrpc-reject-assembly".to_string();
@@ -272,19 +262,6 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
         .gateway_entry_identity = record_identity;
     assert_wire_rejection(&host, wrong_method_identity).await;
 
-    let wrong_session = with_request_id(&base, "host-jsonrpc-reject-session");
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let bootstrap = super::super::test_connection_bootstrap("jsonrpc-dispatch").unwrap();
-    host.spawn_runtime_assembly_request(
-        OTHER_ROUTER_SESSION,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(wrong_session),
-        br#"{"value":"must-not-run"}"#.to_vec(),
-        &bootstrap,
-        sender,
-    )
-    .await;
-    assert_ordinary_rejection(&mut receiver).await;
-
     let mut wrong_profile =
         serde_json::to_value(with_request_id(&base, "host-jsonrpc-reject-profile")).unwrap();
     wrong_profile["websocketJsonRpc"]["profile"] = Value::String("jsonrpc-1.0".to_string());
@@ -298,6 +275,101 @@ async fn websocket_jsonrpc_host_rejects_wrong_pinned_tuple_before_eval() {
         "wrong profile rejection: {error}"
     );
     assert!(receiver.try_recv().is_err());
+
+    assert_host_drained(&host).await;
+}
+
+#[tokio::test]
+async fn websocket_jsonrpc_host_resolves_each_request_without_connection_pin() {
+    let fixture::ReloadedWebSocketGatewayHost {
+        host,
+        physical_a,
+        methods_a,
+        physical_b,
+        method_b,
+        ..
+    } = pinned_host().await;
+    let status = &methods_a["status.get"];
+    let base = jsonrpc_header(&physical_a, status, "host-jsonrpc-unpinned-base", None, None);
+
+    // connection_id no longer gates admission: it is only echoed for
+    // receipt/event association, so a foreign connection id still executes.
+    let mut foreign_connection = base.clone();
+    foreign_connection.request_id = "host-jsonrpc-unpinned-connection".to_string();
+    foreign_connection.websocket_json_rpc.connection_id = "missing-connection".to_string();
+    let frame = encode_binary_frame(
+        &foreign_connection,
+        br#"{"value":"runs-anyway"}"#,
+    )
+    .unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &frame, &sender).await.unwrap();
+    let RouterWriterMessage::Binary(frame) = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("WebSocket JSON-RPC Host response timeout")
+        .expect("WebSocket JSON-RPC Host response channel")
+    else {
+        panic!("WebSocket JSON-RPC response must use binary wire")
+    };
+    let (response, _) = decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame)
+        .expect("typed WebSocket JSON-RPC response.end");
+    assert_eq!(
+        response.websocket_json_rpc.outcome,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+    );
+
+    // The router_session_id also no longer gates admission: per-request
+    // resolution only consults the routing.buildId deployment.
+    let foreign_session = with_request_id(&base, "host-jsonrpc-unpinned-session");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let bootstrap = super::super::test_connection_bootstrap("jsonrpc-dispatch").unwrap();
+    host.spawn_runtime_assembly_request(
+        OTHER_ROUTER_SESSION,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(foreign_session),
+        br#"{"value":"runs-anyway"}"#.to_vec(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    let RouterWriterMessage::Binary(frame) = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("WebSocket JSON-RPC Host response timeout")
+        .expect("WebSocket JSON-RPC Host response channel")
+    else {
+        panic!("WebSocket JSON-RPC response must use binary wire")
+    };
+    let (response, _) = decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame)
+        .expect("typed WebSocket JSON-RPC response.end");
+    assert_eq!(
+        response.websocket_json_rpc.outcome,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+    );
+
+    // A request routed to the second build executes against that build: the
+    // connection is bound to the version, not to any single build.
+    let switched = jsonrpc_header(
+        &physical_b,
+        &method_b,
+        "host-jsonrpc-unpinned-build-b",
+        None,
+        None,
+    );
+    let frame = encode_binary_frame(&switched, br#"{"value":"build-b"}"#).unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    dispatch(&host, &frame, &sender).await.unwrap();
+    let RouterWriterMessage::Binary(frame) = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("WebSocket JSON-RPC Host response timeout")
+        .expect("WebSocket JSON-RPC Host response channel")
+    else {
+        panic!("WebSocket JSON-RPC response must use binary wire")
+    };
+    let (response, _) = decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame)
+        .expect("typed WebSocket JSON-RPC response.end");
+    assert_eq!(
+        response.websocket_json_rpc.outcome,
+        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+    );
 
     assert_host_drained(&host).await;
 }
@@ -346,7 +418,7 @@ async fn websocket_jsonrpc_host_cancel_is_silent_and_late_completion_cannot_writ
 }
 
 #[tokio::test]
-async fn websocket_jsonrpc_host_send_failure_and_session_close_leave_no_leases() {
+async fn websocket_jsonrpc_host_send_failure_leaves_no_leases() {
     let fixture::ReloadedWebSocketGatewayHost {
         host,
         physical_a,
@@ -367,17 +439,13 @@ async fn websocket_jsonrpc_host_send_failure_and_session_close_leave_no_leases()
 
     drop(receiver);
     drop(sender);
-    host.websocket_generations
-        .disconnect(ROUTER_SESSION)
-        .expect("captured Router session disconnect");
     wait_for_active_requests(&host, 0).await;
 
-    assert_eq!(host.websocket_generations.pin_count().unwrap(), 0);
     assert_host_drained(&host).await;
 }
 
 #[test]
-fn websocket_jsonrpc_host_dispatch_source_has_no_current_assembly_lookup() {
+fn websocket_jsonrpc_host_dispatch_resolves_route_per_request() {
     let wire = include_str!("../../request_entry/assembly_wire.rs");
     let start = wire
         .find("fn websocket_jsonrpc_request_from_wire(")
@@ -387,17 +455,20 @@ fn websocket_jsonrpc_host_dispatch_source_has_no_current_assembly_lookup() {
         .map(|offset| start + offset)
         .expect("wire admission terminator");
     let admission = &wire[start..end];
-    assert!(admission.contains(".websocket_jsonrpc_execution_route("));
-    for forbidden in [
-        "lookup_active_assembly",
-        "assembly_admission",
-        "active_runtime_assembly_route",
+    for required in [
+        "resolve_active_assembly_request_route(",
+        ".websocket_jsonrpc_method_route(",
+        ".websocket_jsonrpc_target(",
     ] {
         assert!(
-            !admission.contains(forbidden),
-            "pinned JSON-RPC admission must not query current assembly: {forbidden}"
+            admission.contains(required),
+            "per-request JSON-RPC admission must resolve and join the current route: {required}"
         );
     }
+    assert!(
+        !admission.contains(".websocket_jsonrpc_execution_route("),
+        "JSON-RPC admission must not consult a generation pin registry"
+    );
 
     let dispatch = include_str!("../../request_entry/websocket_jsonrpc.rs");
     assert!(dispatch.contains("execute_runtime_websocket_jsonrpc("));
@@ -428,48 +499,7 @@ fn websocket_jsonrpc_host_dispatch_source_has_no_current_assembly_lookup() {
 }
 
 async fn pinned_host() -> fixture::ReloadedWebSocketGatewayHost {
-    let loaded = fixture::reloaded_websocket_gateway_host().await;
-    loaded
-        .host
-        .websocket_generations
-        .connect(ROUTER_SESSION)
-        .unwrap();
-    let websocket_entry_id = websocket_entry_id(&loaded.physical_a);
-    let acquire = loaded
-        .host
-        .websocket_generations
-        .begin_acquire(
-            ROUTER_SESSION,
-            loaded.physical_a.clone(),
-            websocket_entry_id.as_str().to_string(),
-            CONNECTION_ID.to_string(),
-        )
-        .unwrap();
-    loaded
-        .host
-        .websocket_generations
-        .handle_acquire_response(&acquire_ack(&acquire))
-        .unwrap();
-    loaded
-}
-
-fn acquire_ack(
-    acquire: &WebSocketGenerationLifecycleControl,
-) -> WebSocketGenerationLifecycleControl {
-    let WebSocketGenerationLifecycleControl::Acquire {
-        request_id, tuple, ..
-    } = acquire
-    else {
-        panic!("expected acquire")
-    };
-    WebSocketGenerationLifecycleControl::Ack {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        frame_type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE.to_string(),
-        operation: WebSocketGenerationLifecycleOperation::Acquire,
-        request_id: request_id.clone(),
-        sender: WebSocketGenerationLifecycleSender::Router,
-        tuple: tuple.clone(),
-    }
+    fixture::reloaded_websocket_gateway_host().await
 }
 
 fn websocket_entry_id(route: &ActiveAssemblyRoute) -> WebSocketEntryId {

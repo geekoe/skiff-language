@@ -227,10 +227,6 @@ async fn aborting_real_connected_session_runs_raii_teardown() {
         .test_http_entries
         .self_ingress_for_request(SESSION, "root:abort-raii")
         .is_none());
-    host.websocket_generations
-        .connect(SESSION)
-        .expect("aborted session generation must be disconnected by RAII");
-    host.websocket_generations.disconnect(SESSION).unwrap();
     drop(root);
 }
 

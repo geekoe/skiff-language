@@ -3,10 +3,10 @@
 //! finalization barrier (C-client-lifecycle §3/§4, authority design §3.7).
 //!
 //! Every external terminal (peer close, business replacement, slow-client
-//! overflow, Runtime disconnect, shutdown, protocol close, release timeout)
+//! overflow, Runtime disconnect, shutdown, protocol close, connect timeout)
 //! enters the same finalizer: mark closing + deindex → broker detach +
-//! tombstones → ledger release → writer close/drain → barrier removes the old
-//! generation record. The old finalizer never touches a replacement record.
+//! tombstones → writer close/drain → barrier removes the old generation
+//! record. The old finalizer never touches a replacement record.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -17,8 +17,6 @@ use tokio::task::JoinHandle;
 
 use crate::session::identity::RuntimeSessionEpoch;
 
-use super::ledger::PendingReleaseHandle;
-use super::ledger::{ReleaseOutcome, ReleaseResolution};
 use super::types::{
     BrokerConnectionGeneration, BusinessKey, ClientTerminal, Clock, OwnerToken, PeerWriter,
     SystemClock, WebSocketLifecycleClose, CLOSE_HIGH_WATER_CAPACITY, CLOSE_POLICY_REJECTED,
@@ -91,14 +89,9 @@ pub trait BrokerGenerationPort: Send + Sync + fmt::Debug {
     ) -> Result<(), String>;
 }
 
-/// Ledger release port (finalizer step 4).
-pub trait LedgerReleasePort: Send + Sync + fmt::Debug {
-    fn release_connection(
-        &self,
-        connection_id: &str,
-        socket_open: bool,
-    ) -> Result<ReleaseOutcome, String>;
-}
+/// Ledger release port is retired: client ws connections are stateless and
+/// the broker connection registry is the sole accounting authority. The
+/// finalizer only detaches the broker generation.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
@@ -128,12 +121,10 @@ struct FinalizerRecord {
     writer: Option<Arc<dyn PeerWriter>>,
 }
 
-/// Finalizer started synchronously: broker detach + ledger release initiation
-/// are inline steps; only the release wait, writer close/drain and record
-/// removal run in the barrier task.
+/// Finalizer started synchronously: broker detach is an inline step; only
+/// the writer close/drain and record removal run in the barrier task.
 struct StartedFinalizer {
     record: FinalizerRecord,
-    release: Option<PendingReleaseHandle>,
     immediate_failures: Vec<String>,
 }
 
@@ -158,29 +149,25 @@ struct IndexInner {
 pub struct ClientConnectionIndex {
     inner: Mutex<IndexInner>,
     broker: Arc<dyn BrokerGenerationPort>,
-    ledger: Arc<dyn LedgerReleasePort>,
     options: ClientConnectionIndexOptions,
 }
 
 impl ClientConnectionIndex {
     pub fn new(
         broker: Arc<dyn BrokerGenerationPort>,
-        ledger: Arc<dyn LedgerReleasePort>,
         options: ClientConnectionIndexOptions,
     ) -> Arc<Self> {
-        Self::with_clock(broker, ledger, options, Arc::new(SystemClock))
+        Self::with_clock(broker, options, Arc::new(SystemClock))
     }
 
     pub fn with_clock(
         broker: Arc<dyn BrokerGenerationPort>,
-        ledger: Arc<dyn LedgerReleasePort>,
         options: ClientConnectionIndexOptions,
         _clock: Arc<dyn Clock>,
     ) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(IndexInner::default()),
             broker,
-            ledger,
             options,
         })
     }
@@ -570,7 +557,7 @@ impl ClientConnectionIndex {
 
     fn start_finalizer(&self, record: FinalizerRecord) -> StartedFinalizer {
         let mut immediate_failures = Vec::new();
-        let release = if let Some(generation) = &record.generation {
+        if let Some(generation) = &record.generation {
             if let Err(error) = self.broker.close_generation(
                 &record.connection_id,
                 generation,
@@ -578,24 +565,9 @@ impl ClientConnectionIndex {
             ) {
                 immediate_failures.push(error);
             }
-            let socket_open = record.terminal != ClientTerminal::RuntimeDisconnect;
-            match self
-                .ledger
-                .release_connection(&record.connection_id, socket_open)
-            {
-                Ok(ReleaseOutcome::Pending(handle)) => Some(handle),
-                Ok(ReleaseOutcome::Resolved) => None,
-                Err(error) => {
-                    immediate_failures.push(error);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        }
         StartedFinalizer {
             record,
-            release,
             immediate_failures,
         }
     }
@@ -606,12 +578,7 @@ impl ClientConnectionIndex {
     ) -> JoinHandle<Result<(), Vec<String>>> {
         let index = self.clone();
         tokio::spawn(async move {
-            let mut failures = started.immediate_failures;
-            if let Some(handle) = started.release {
-                if let ReleaseResolution::Failed { reason } = handle.wait().await {
-                    failures.push(reason);
-                }
-            }
+            let failures = started.immediate_failures;
             if let Some(writer) = &started.record.writer {
                 close_writer(
                     writer,

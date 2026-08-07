@@ -38,7 +38,6 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
     RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 
 use crate::dispatch::{Reservation, RuntimeAdmissionPool};
 use crate::routing::{CandidateQuery, DispatchMode, RuntimeCandidateQuery};
@@ -46,7 +45,7 @@ use crate::session::consumer::{ConsumerKind, SessionConsumer};
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::ws::{
     DispatchInbound, InboundDispatchAction, InboundDispatchResult, InboundExecutionToken,
-    MethodCatalog, PendingAdmissionSender, WebSocketLane,
+    MethodCatalog, WebSocketLane,
 };
 
 use super::session_ports::SessionHandle;
@@ -366,7 +365,6 @@ pub struct WsConnectionRecord {
 #[derive(Debug, Clone)]
 struct ConnectPending {
     runtime: RuntimeSessionEpoch,
-    connection_id: String,
     response: tokio::sync::watch::Sender<Option<ConnectOutcome>>,
 }
 
@@ -377,40 +375,14 @@ struct InboundPending {
     reservation: Reservation,
 }
 
-/// In-flight connect admission (TS parity: the Runtime sends the generation
-/// `Acquire` while the websocketConnect dispatch is still pending, before
-/// `response.end` settles and the pinned connection table is populated).
-#[derive(Debug, Clone)]
-struct PendingAdmission {
-    runtime: RuntimeSessionEpoch,
-    service_id: String,
-    build_id: String,
-    websocket_entry_id: String,
-    connection_id: String,
-}
-
-impl PendingAdmission {
-    /// TS `isPendingWebSocketAcquireSender` parity: the sender owns the
-    /// pending admission when the build-id/entry/connection tuple matches
-    /// the in-flight websocketConnect request (M4: buildId keying).
-    fn matches(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        tuple: &WebSocketGenerationLifecycleTuple,
-    ) -> bool {
-        self.runtime == *runtime
-            && self.service_id == tuple.service_id
-            && self.build_id == tuple.build_id
-            && self.websocket_entry_id == tuple.websocket_entry_id
-            && self.connection_id == tuple.connection_id
-    }
-}
+/// In-flight connect admission bookkeeping is retired together with the
+/// runtime generation lifecycle: client ws connections are stateless and the
+/// broker connection registry is the only accounting authority.
 
 #[derive(Debug, Default)]
 struct WsDispatchInner {
     connections: HashMap<String, WsConnectionRecord>,
     connects: HashMap<String, ConnectPending>,
-    pending_admissions: HashMap<String, PendingAdmission>,
     inbound: HashMap<String, InboundPending>,
 }
 
@@ -534,7 +506,7 @@ impl WsDispatchStore {
         connection_id: &str,
         binding: &WsBinding,
         runtime: &RuntimeSessionEpoch,
-        build_id: &str,
+        _build_id: &str,
         metadata: &WsConnectMetadata,
         timeout_ms: u64,
     ) -> Result<(String, tokio::sync::watch::Receiver<Option<ConnectOutcome>>), String> {
@@ -591,21 +563,10 @@ impl WsDispatchStore {
         self.writer.write(runtime, bytes)?;
         {
             let mut inner = self.lock();
-            inner.pending_admissions.insert(
-                connection_id.to_string(),
-                PendingAdmission {
-                    runtime: runtime.clone(),
-                    service_id: binding.service_id.clone(),
-                    build_id: build_id.to_string(),
-                    websocket_entry_id: binding.websocket_entry_id.clone(),
-                    connection_id: connection_id.to_string(),
-                },
-            );
             inner.connects.insert(
                 request_id.clone(),
                 ConnectPending {
                     runtime: runtime.clone(),
-                    connection_id: connection_id.to_string(),
                     response: tx,
                 },
             );
@@ -617,7 +578,6 @@ impl WsDispatchStore {
     pub fn connect_response(&self, request_id: &str, outcome: ConnectOutcome) {
         let mut inner = self.lock();
         if let Some(pending) = inner.connects.remove(request_id) {
-            inner.pending_admissions.remove(&pending.connection_id);
             let _ = pending.response.send(Some(outcome));
         }
     }
@@ -761,9 +721,6 @@ impl WsDispatchStore {
         inner
             .connections
             .retain(|_, record| &record.runtime != runtime);
-        inner
-            .pending_admissions
-            .retain(|_, pending| &pending.runtime != runtime);
         let connects = inner
             .connects
             .iter()
@@ -772,7 +729,6 @@ impl WsDispatchStore {
             .collect::<Vec<_>>();
         for request_id in connects {
             if let Some(pending) = inner.connects.remove(&request_id) {
-                inner.pending_admissions.remove(&pending.connection_id);
                 let _ = pending.response.send(Some(ConnectOutcome::Unavailable {
                     reason: "runtime disconnected".to_string(),
                 }));
@@ -799,24 +755,6 @@ impl WsDispatchStore {
 
     pub fn pending_connect_count(&self) -> usize {
         self.lock().connects.len()
-    }
-
-    pub fn pending_admission_count(&self) -> usize {
-        self.lock().pending_admissions.len()
-    }
-
-    /// Answers whether the runtime owns an in-flight websocketConnect
-    /// admission matching the acquire tuple (TS parity; called by the
-    /// production `PendingAdmissionSender`).
-    pub fn is_pending_admission_sender(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        tuple: &WebSocketGenerationLifecycleTuple,
-    ) -> bool {
-        self.lock()
-            .pending_admissions
-            .get(&tuple.connection_id)
-            .is_some_and(|pending| pending.matches(runtime, tuple))
     }
 
     pub fn pending_inbound_count(&self) -> usize {
@@ -848,34 +786,6 @@ impl WsMethodCatalog {
 impl MethodCatalog for WsMethodCatalog {
     fn accepts(&self, method: &str) -> bool {
         self.surface.method_union().contains(method)
-    }
-}
-
-/// Production `PendingAdmissionSender`: the pinned connection table answers
-/// whether the Runtime sender owns the pending WebSocket connect admission.
-#[derive(Debug, Clone)]
-pub struct WsPendingAdmissionSender {
-    store: Arc<WsDispatchStore>,
-}
-
-impl WsPendingAdmissionSender {
-    pub fn new(store: Arc<WsDispatchStore>) -> Self {
-        Self { store }
-    }
-}
-
-impl PendingAdmissionSender for WsPendingAdmissionSender {
-    fn is_pending_acquire_sender(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        tuple: &WebSocketGenerationLifecycleTuple,
-    ) -> bool {
-        // The Runtime acquire arrives while the websocketConnect dispatch is
-        // still pending (before `response.end` populates the pinned
-        // connection table); the in-flight admission answers it. The pinned
-        // table remains the fallback for post-settle lookups.
-        self.store.is_pending_admission_sender(runtime, tuple)
-            || self.store.connection_runtime(&tuple.connection_id).as_ref() == Some(runtime)
     }
 }
 

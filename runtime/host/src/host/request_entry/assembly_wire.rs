@@ -10,8 +10,8 @@ use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget}
 use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_request::{
     BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
-    RuntimeAssemblyTaskTarget, RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest,
-    RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
+    RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget, RuntimeGatewayIngressPin,
+    RuntimeHttpGatewayRequest, RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -45,8 +45,18 @@ pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) request: RuntimeWebSocketConnectIngress,
 }
 
+/// Per-request WebSocket JSON-RPC resolution: the physical WebSocket route is
+/// resolved from the current assembly state (lazy-loading its deployment on
+/// demand), and the method capability route plus execution target derive from
+/// that exact physical route. No connection-scoped pin is retained.
+#[derive(Debug)]
+pub(super) struct ResolvedWebSocketJsonRpcExecution {
+    pub(super) target: RuntimeAssemblyWebSocketJsonRpcTarget,
+    pub(super) method_route: ActiveAssemblyRoute,
+}
+
 pub(super) struct AdmittedWebSocketJsonRpcRequest {
-    pub(super) resolved: crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+    pub(super) resolved: ResolvedWebSocketJsonRpcExecution,
     pub(super) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
     pub(super) params: Vec<u8>,
 }
@@ -98,7 +108,8 @@ impl RuntimeHost {
                 .await
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
-                .websocket_jsonrpc_request_from_wire(router_session_id, header, body)
+                .websocket_jsonrpc_request_from_wire(header, body, bootstrap)
+                .await
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
             RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => self
                 .task_request_from_wire(header, body, bootstrap)
@@ -128,7 +139,7 @@ impl RuntimeHost {
                 .await
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(request)) => {
-                self.task_websocket_jsonrpc_on_pinned_route(
+                self.task_websocket_jsonrpc_on_resolved_route(
                     router_session_id.to_string(),
                     request,
                     bootstrap.max_response_bytes,
@@ -362,11 +373,11 @@ impl RuntimeHost {
         })
     }
 
-    fn websocket_jsonrpc_request_from_wire(
+    async fn websocket_jsonrpc_request_from_wire(
         &self,
-        router_session_id: &str,
         mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
         params: Vec<u8>,
+        bootstrap: &ConnectionBootstrap,
     ) -> Result<AdmittedWebSocketJsonRpcRequest> {
         validate_websocket_jsonrpc_header(&header, &params)?;
         let routing = &header.routing;
@@ -377,18 +388,44 @@ impl RuntimeHost {
                 GatewayWebSocketRpcProfile::JsonRpc2_0Text
             }
         };
-        let resolved = self
-            .websocket_generations
-            .websocket_jsonrpc_execution_route(
-                router_session_id,
-                &request.connection_id,
-                routing.build_id.as_deref(),
-                &request.websocket_entry_id,
+        // The physical WebSocket route is the same admission unit as the
+        // connect path: protocol WebSocket, path-only selector. The JSON-RPC
+        // method capability route then joins on the physical entry, so every
+        // request resolves against the routing.buildId deployment exactly like
+        // HTTP admission (bind version, not build: a build switch mid-connection
+        // applies from the next request).
+        let selector = IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            method: None,
+            path: ingress.path.clone(),
+        };
+        let key = ServiceIngressKey {
+            deployment: routing.deployment.clone(),
+            selector: selector.clone(),
+        };
+        let physical_route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        let method_route = physical_route
+            .websocket_jsonrpc_method_route(
                 &ingress.path,
                 &ingress.method,
                 &routing.gateway_entry_identity,
                 profile,
-            )?;
+                &request.websocket_entry_id,
+            )
+            .map_err(|error| RuntimeError::Protocol {
+                target: request.connection_id.clone(),
+                message: error.to_string(),
+            })?;
+        let target = method_route
+            .websocket_jsonrpc_target(&physical_route)
+            .map_err(|error| RuntimeError::Protocol {
+                target: request.connection_id.clone(),
+                message: error.to_string(),
+            })?;
+        let resolved = ResolvedWebSocketJsonRpcExecution {
+            target,
+            method_route,
+        };
         validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
         header.deadline =
             effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
@@ -675,7 +712,7 @@ fn validate_task_header(
 
 fn validate_websocket_jsonrpc_execution_route(
     header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
-    resolved: &crate::host::websocket_generation::ResolvedWebSocketJsonRpcExecution,
+    resolved: &ResolvedWebSocketJsonRpcExecution,
 ) -> Result<()> {
     let route = &resolved.method_route;
     let target = &resolved.target;

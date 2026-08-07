@@ -1,8 +1,8 @@
 //! W-WebSocket corpus verifier: the production `WebSocketLane`
-//! (`ClientConnectionIndex` + `RuntimeGenerationPinLedger` +
-//! `WebSocketRequestBroker`) driven through the C-ws fake seams, asserting
-//! the same observable results as the frozen reference machine
-//! (`runtime/transport/tests/client_ws_corpus.rs`, 23 scenarios).
+//! (`ClientConnectionIndex` + `WebSocketRequestBroker`) driven through the
+//! C-ws fake seams, asserting the same observable results as the frozen
+//! reference machine (`runtime/transport/tests/client_ws_corpus.rs`, 23
+//! scenarios).
 
 mod ws_harness;
 
@@ -16,19 +16,13 @@ use skiff_router::ws::{
     OverflowPolicy, PeerWriter, WebSocketLane, WebSocketLaneOptions,
 };
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
-use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleOperation,
-    WebSocketGenerationLifecycleSender,
-};
 
 use ws_harness::{
-    acquire_control, pin_tuple, runtime_session, FakeDispatchInbound, FakeMethodCatalog,
-    FakePeerWriter, FakeRuntimePeer, FakeRuntimeResponder, FakeRuntimeSessionClose,
+    runtime_session, FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter, FakeRuntimeResponder,
     FakeRuntimeViolationSink,
 };
 
-const REQUIRED_SCENARIOS: [&str; 23] = [
+const REQUIRED_SCENARIOS: [&str; 22] = [
     "01-accept-and-rpc-roundtrip",
     "02-peer-close-terminal",
     "03-business-replacement-close-oldest",
@@ -47,7 +41,6 @@ const REQUIRED_SCENARIOS: [&str; 23] = [
     "16-four-way-peer-close-then-shutdown",
     "17-four-way-shutdown-then-peer-close",
     "18-four-way-runtime-disconnect-then-shutdown",
-    "19-release-timeout-terminal",
     "20-inbound-deadline-terminal",
     "21-broker-outbound-capacity-resource-limit",
     "22-duplicate-peer-request-id",
@@ -74,7 +67,6 @@ fn scenario_files() -> Vec<(&'static str, &'static str)> {
         ("16-four-way-peer-close-then-shutdown", include_str!("../../runtime/transport/testdata/client-ws/scenarios/16-four-way-peer-close-then-shutdown.json")),
         ("17-four-way-shutdown-then-peer-close", include_str!("../../runtime/transport/testdata/client-ws/scenarios/17-four-way-shutdown-then-peer-close.json")),
         ("18-four-way-runtime-disconnect-then-shutdown", include_str!("../../runtime/transport/testdata/client-ws/scenarios/18-four-way-runtime-disconnect-then-shutdown.json")),
-        ("19-release-timeout-terminal", include_str!("../../runtime/transport/testdata/client-ws/scenarios/19-release-timeout-terminal.json")),
         ("20-inbound-deadline-terminal", include_str!("../../runtime/transport/testdata/client-ws/scenarios/20-inbound-deadline-terminal.json")),
         ("21-broker-outbound-capacity-resource-limit", include_str!("../../runtime/transport/testdata/client-ws/scenarios/21-broker-outbound-capacity-resource-limit.json")),
         ("22-duplicate-peer-request-id", include_str!("../../runtime/transport/testdata/client-ws/scenarios/22-duplicate-peer-request-id.json")),
@@ -128,14 +120,6 @@ enum EventValue {
         #[serde(rename = "socketGeneration")]
         socket_generation: String,
         runtime: String,
-    },
-    AcquirePin {
-        connection: String,
-        runtime: String,
-    },
-    ReleasePin {
-        connection: String,
-        mode: String,
     },
     PeerClose {
         connection: String,
@@ -216,18 +200,8 @@ struct ExpectValue {
     inbound_pending: usize,
     #[serde(default)]
     tombstones: usize,
-    #[serde(rename = "pinsAcquired", default)]
-    pins_acquired: usize,
-    #[serde(rename = "pinsPendingRelease", default)]
-    pins_pending_release: usize,
-    #[serde(rename = "releaseAcks", default)]
-    release_acks: u64,
     #[serde(rename = "finalizerCount", default)]
     finalizer_count: u64,
-    #[serde(rename = "runtimeClosed", default)]
-    runtime_closed: bool,
-    #[serde(rename = "failStop", default)]
-    fail_stop: bool,
     #[serde(rename = "openConnections", default)]
     open_connections: Vec<String>,
 }
@@ -250,14 +224,10 @@ struct Driver {
     runtime_by_connection: HashMap<String, String>,
     owner_token_by_connection: HashMap<String, u64>,
     generation_by_connection: HashMap<String, String>,
-    expected_pins: std::collections::HashSet<String>,
-    acquire_sequence: u64,
 }
 
 impl Driver {
     fn new(limits: &LimitsValue) -> Self {
-        let runtime_peer = Arc::new(FakeRuntimePeer::new());
-        let runtime_close = Arc::new(FakeRuntimeSessionClose::new());
         let responder = Arc::new(FakeRuntimeResponder::new());
         let dispatch = Arc::new(FakeDispatchInbound::new());
         let options = WebSocketLaneOptions {
@@ -275,9 +245,6 @@ impl Driver {
         };
         let lane = WebSocketLane::new(
             options,
-            runtime_peer,
-            runtime_close,
-            Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
             Arc::new(FakeMethodCatalog::new()),
             Arc::new(skiff_router::ws::NoopNotificationObserver),
             Arc::new(FakeRuntimeViolationSink::new()),
@@ -291,8 +258,6 @@ impl Driver {
             runtime_by_connection: HashMap::new(),
             owner_token_by_connection: HashMap::new(),
             generation_by_connection: HashMap::new(),
-            expected_pins: std::collections::HashSet::new(),
-            acquire_sequence: 0,
         }
     }
 
@@ -369,70 +334,6 @@ impl Driver {
                 self.generation_by_connection
                     .insert(connection.clone(), socket_generation.clone());
             }
-            EventValue::AcquirePin {
-                connection,
-                runtime,
-            } => {
-                let tuple = pin_tuple(connection, runtime);
-                if self.expected_pins.insert(connection.clone()) {
-                    self.lane
-                        .ledger
-                        .expect_connection(tuple.clone())
-                        .expect("expect");
-                }
-                self.acquire_sequence += 1;
-                let decision = self.lane.ledger.handle_acquire(
-                    &runtime_session(runtime),
-                    &acquire_control(&format!("acquire-{}", self.acquire_sequence), &tuple),
-                );
-                assert!(
-                    matches!(decision, skiff_router::ws::AcquireDecision::Ack(_)),
-                    "acquire must ack for {connection}"
-                );
-            }
-            EventValue::ReleasePin { connection, mode } => match mode.as_str() {
-                "initiate" => {
-                    let _ = self
-                        .lane
-                        .ledger
-                        .release_connection(connection, true)
-                        .expect("release initiate");
-                }
-                "ack" => {
-                    let request_id = self
-                        .lane
-                        .ledger
-                        .pending_release_request_id(connection)
-                        .expect("pending release request id");
-                    let runtime_display = self
-                        .runtime_by_connection
-                        .get(connection)
-                        .cloned()
-                        .unwrap_or_else(|| "r1".to_string());
-                    let tuple = pin_tuple(connection, &runtime_display);
-                    let ack = WebSocketGenerationLifecycleControl::Ack {
-                        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                        frame_type: "websocket.generation.lifecycle".to_string(),
-                        operation: WebSocketGenerationLifecycleOperation::Release,
-                        request_id,
-                        sender: WebSocketGenerationLifecycleSender::Runtime,
-                        tuple,
-                    };
-                    self.lane
-                        .ledger
-                        .handle_release_response(&runtime_session(&runtime_display), &ack)
-                        .expect("release ack");
-                }
-                "timeout" => {
-                    let request_id = self
-                        .lane
-                        .ledger
-                        .pending_release_request_id(connection)
-                        .expect("pending release request id");
-                    let _ = self.lane.ledger.fire_release_timeout(&request_id);
-                }
-                other => panic!("unknown release mode {other}"),
-            },
             EventValue::PeerClose { connection } => {
                 let _ = self.lane.handle_peer_disconnect(connection);
             }
@@ -623,7 +524,6 @@ mod tests {
             wait_for_finalizers(&driver.lane).await;
 
             let index_snap = driver.lane.index.snapshot();
-            let ledger_snap = driver.lane.ledger.snapshot();
             let broker_snap = driver.lane.broker.snapshot();
             let health = driver.lane.snapshot();
 
@@ -663,37 +563,12 @@ mod tests {
                 "scenario {name}: tombstones"
             );
             assert_eq!(
-                health.pins_acquired, scenario.expect.pins_acquired,
-                "scenario {name}: pinsAcquired"
-            );
-            assert_eq!(
-                health.pins_pending_release, scenario.expect.pins_pending_release,
-                "scenario {name}: pinsPendingRelease"
-            );
-            assert_eq!(
-                health.release_acks, scenario.expect.release_acks,
-                "scenario {name}: releaseAcks"
-            );
-            assert_eq!(
                 health.finalizer_count, scenario.expect.finalizer_count,
                 "scenario {name}: finalizerCount"
             );
             assert_eq!(
-                !health.runtime_closed.is_empty(),
-                scenario.expect.runtime_closed,
-                "scenario {name}: runtimeClosed"
-            );
-            assert!(
-                !scenario.expect.fail_stop && health.fail_stop_reason.is_none(),
-                "scenario {name}: failStop must be false for the frozen corpus"
-            );
-            assert_eq!(
                 index_snap.finalizer_pending, 0,
                 "scenario {name}: finalizer residue"
-            );
-            assert_eq!(
-                ledger_snap.pins_pending_release, scenario.expect.pins_pending_release,
-                "scenario {name}: ledger pending release"
             );
             assert_eq!(
                 broker_snap.outbound_pending, health.outbound_pending,

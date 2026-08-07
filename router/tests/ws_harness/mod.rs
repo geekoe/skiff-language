@@ -1,6 +1,6 @@
 //! Shared fake seams for W-WebSocket tests (C-ws §5.7, C-client-lifecycle
-//! §6.7): fake writer/socket, fake runtime sender/responder/session close,
-//! fake dispatcher, fake method catalog and fake violation sink.
+//! §6.7): fake writer/socket, fake runtime responder/session close, fake
+//! dispatcher, fake method catalog and fake violation sink.
 
 #![allow(dead_code)]
 
@@ -10,12 +10,7 @@ use std::sync::{Arc, Mutex};
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::ws::{
     BrokerRuntimeResponse, BrokerRuntimeSource, DispatchInbound, InboundDispatchAction,
-    MethodCatalog, PeerWriter, RuntimeGenerationPeer, RuntimeResponder, RuntimeSessionClose,
-    RuntimeViolationSink,
-};
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleSender,
-    WebSocketGenerationLifecycleTuple,
+    MethodCatalog, PeerWriter, RuntimeResponder, RuntimeViolationSink,
 };
 
 #[derive(Debug, Default)]
@@ -92,78 +87,6 @@ impl PeerWriter for FakePeerWriter {
 
     fn terminate(&self) {
         self.inner.lock().unwrap().terminated = true;
-    }
-}
-
-#[derive(Debug, Default)]
-struct FakeRuntimePeerInner {
-    controls: Vec<(RuntimeSessionEpoch, WebSocketGenerationLifecycleControl)>,
-    fail_next: bool,
-}
-
-/// Ledger `RuntimeGenerationPeer` double.
-#[derive(Debug, Clone, Default)]
-pub struct FakeRuntimePeer {
-    inner: Arc<Mutex<FakeRuntimePeerInner>>,
-}
-
-impl FakeRuntimePeer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn controls(&self) -> Vec<(RuntimeSessionEpoch, WebSocketGenerationLifecycleControl)> {
-        self.inner.lock().unwrap().controls.clone()
-    }
-
-    pub fn fail_next_send(&self) {
-        self.inner.lock().unwrap().fail_next = true;
-    }
-}
-
-impl RuntimeGenerationPeer for FakeRuntimePeer {
-    fn send_control(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        control: &WebSocketGenerationLifecycleControl,
-    ) -> Result<(), String> {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.fail_next {
-            inner.fail_next = false;
-            return Err("injected runtime peer failure".to_string());
-        }
-        inner.controls.push((runtime.clone(), control.clone()));
-        Ok(())
-    }
-}
-
-#[derive(Debug, Default)]
-struct FakeRuntimeCloseInner {
-    closes: Vec<(RuntimeSessionEpoch, u16, String)>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct FakeRuntimeSessionClose {
-    inner: Arc<Mutex<FakeRuntimeCloseInner>>,
-}
-
-impl FakeRuntimeSessionClose {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn closes(&self) -> Vec<(RuntimeSessionEpoch, u16, String)> {
-        self.inner.lock().unwrap().closes.clone()
-    }
-}
-
-impl RuntimeSessionClose for FakeRuntimeSessionClose {
-    fn close_session(&self, runtime: &RuntimeSessionEpoch, code: u16, reason: &str) {
-        self.inner
-            .lock()
-            .unwrap()
-            .closes
-            .push((runtime.clone(), code, reason.to_string()));
     }
 }
 
@@ -295,28 +218,5 @@ pub fn runtime_session(display: &str) -> RuntimeSessionEpoch {
     RuntimeSessionEpoch {
         replica_id: display.to_string(),
         connection_generation: 1,
-    }
-}
-
-pub fn pin_tuple(connection: &str, runtime_display: &str) -> WebSocketGenerationLifecycleTuple {
-    WebSocketGenerationLifecycleTuple {
-        router_session_id: format!("session-{runtime_display}"),
-        service_id: "example.com/chat".to_string(),
-        build_id: format!("skiff-service-deployment-v2:sha256:{}", "a".repeat(64)),
-        websocket_entry_id: format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64)),
-        connection_id: connection.to_string(),
-    }
-}
-
-pub fn acquire_control(
-    request_id: &str,
-    tuple: &WebSocketGenerationLifecycleTuple,
-) -> WebSocketGenerationLifecycleControl {
-    WebSocketGenerationLifecycleControl::Acquire {
-        schema_version: skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        frame_type: "websocket.generation.lifecycle".to_string(),
-        request_id: request_id.to_string(),
-        sender: WebSocketGenerationLifecycleSender::Runtime,
-        tuple: tuple.clone(),
     }
 }

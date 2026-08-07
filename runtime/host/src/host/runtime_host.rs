@@ -28,7 +28,6 @@ use super::{
         RuntimeTelemetryConfig, TelemetryConfig, TelemetryExporterHandle, TelemetryFileSink,
         TelemetryFileSinkHandle, TelemetryProducer,
     },
-    websocket_generation::WebSocketGenerationRegistry,
     OutboundRequestRegistry,
 };
 use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
@@ -74,7 +73,6 @@ pub struct RuntimeHost {
     pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
-    pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(super) telemetry_file_sink: Arc<Mutex<Option<TelemetryFileSinkHandle>>>,
@@ -202,7 +200,6 @@ impl RuntimeHost {
             artifact_root: Arc::new(StdMutex::new(None)),
             blob_store: Arc::new(StdMutex::new(None)),
             request_supervisor: Arc::new(RequestSupervisor::new()),
-            websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             telemetry_file_sink: Arc::new(Mutex::new(None)),

@@ -80,7 +80,6 @@ mod foreign_db_exact_identity;
 mod h_registration_cut;
 mod h_task_parent_cut;
 mod runtime_assembly_request;
-mod websocket_generation_lifecycle;
 mod websocket_jsonrpc_dispatch;
 
 #[derive(Clone)]

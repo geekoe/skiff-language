@@ -19,11 +19,10 @@ fn session(replica: &str, generation: u64) -> RuntimeSessionEpoch {
     }
 }
 
-const FULL_SET: [ConsumerKind; 6] = [
+const FULL_SET: [ConsumerKind; 5] = [
     ConsumerKind::AdmissionPool,
     ConsumerKind::HealthLedger,
     ConsumerKind::RequestDispatcher,
-    ConsumerKind::RuntimeGenerationPinLedger,
     ConsumerKind::WebSocketRequestBroker,
     ConsumerKind::ActorSessionOwner,
 ];

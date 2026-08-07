@@ -71,7 +71,6 @@ fn manifest() -> ConsumerManifest {
     ConsumerManifest::installed([
         ConsumerKind::HealthLedger,
         ConsumerKind::RequestDispatcher,
-        ConsumerKind::RuntimeGenerationPinLedger,
         ConsumerKind::WebSocketRequestBroker,
     ])
 }
@@ -89,7 +88,6 @@ fn registered_directory() -> (RuntimeRegistrationDirectory, RuntimeSessionEpoch)
             &[
                 ConsumerKind::HealthLedger,
                 ConsumerKind::RequestDispatcher,
-                ConsumerKind::RuntimeGenerationPinLedger,
                 ConsumerKind::WebSocketRequestBroker,
             ],
         )
@@ -303,7 +301,6 @@ mod tests {
                 &[
                     ConsumerKind::HealthLedger,
                     ConsumerKind::RequestDispatcher,
-                    ConsumerKind::RuntimeGenerationPinLedger,
                     ConsumerKind::WebSocketRequestBroker,
                 ],
             )
@@ -571,7 +568,6 @@ mod tests {
         let consumers: Vec<Arc<dyn skiff_router::session::SessionConsumer>> = vec![
             Arc::new(skiff_router::session::health::RuntimeHealthLedger::new()),
             Arc::new(GenericConsumer(ConsumerKind::RequestDispatcher)),
-            Arc::new(GenericConsumer(ConsumerKind::RuntimeGenerationPinLedger)),
             Arc::new(GenericConsumer(ConsumerKind::WebSocketRequestBroker)),
         ];
         let layer = Arc::new(
@@ -717,7 +713,6 @@ mod tests {
                 &[
                     ConsumerKind::HealthLedger,
                     ConsumerKind::RequestDispatcher,
-                    ConsumerKind::RuntimeGenerationPinLedger,
                     ConsumerKind::WebSocketRequestBroker,
                 ],
             )

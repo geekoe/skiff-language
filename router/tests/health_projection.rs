@@ -19,7 +19,8 @@ use skiff_router::health::{
     SessionFacts,
 };
 use skiff_router::session::identity::RuntimeSessionEpoch;
-use skiff_router::ws::{BrokerHealthSnapshot, IndexHealthSnapshot, LedgerHealthSnapshot};
+use skiff_router::health::counters::GenerationLeaseCounters;
+use skiff_router::ws::{BrokerHealthSnapshot, IndexHealthSnapshot};
 use skiff_runtime_transport::protocol::{
     RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
 };
@@ -93,7 +94,7 @@ mod tests {
                 slow_client_count: 0,
                 observed_write_bytes: HashMap::new(),
             },
-            &LedgerHealthSnapshot::default(),
+            &GenerationLeaseCounters::default(),
             &BrokerHealthSnapshot::default(),
         )
     }
@@ -103,7 +104,7 @@ mod tests {
         actor: &ActorHealthSnapshot,
         tasks: &skiff_router::health::counters::DurableTaskCounters,
         index: &IndexHealthSnapshot,
-        ledger: &LedgerHealthSnapshot,
+        generation_leases: &GenerationLeaseCounters,
         broker: &BrokerHealthSnapshot,
     ) -> HealthCounters {
         HealthCounters {
@@ -152,9 +153,7 @@ mod tests {
             client_connections: skiff_router::health::counters::ClientConnectionCounters::from(
                 index,
             ),
-            generation_leases: skiff_router::health::counters::GenerationLeaseCounters::from(
-                ledger,
-            ),
+            generation_leases: generation_leases.clone(),
             broker: skiff_router::health::counters::BrokerCounters::from(broker),
             actor: skiff_router::health::counters::ActorCounters::from(actor),
             http: skiff_router::health::counters::HttpCounters::default(),
@@ -275,9 +274,9 @@ mod tests {
                     observed_write_bytes: HashMap::new(),
                 }
             },
-            &LedgerHealthSnapshot {
+            &GenerationLeaseCounters {
                 pins_acquired: 2,
-                ..LedgerHealthSnapshot::default()
+                ..GenerationLeaseCounters::default()
             },
             &BrokerHealthSnapshot {
                 outbound_pending: 1,

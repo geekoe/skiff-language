@@ -5,11 +5,11 @@
 //!
 //! The Router side of the client WebSocket wire (C-model-connection §3/§4)
 //! receives `connection.request` / `connection.request.cancel` and sends
-//! `connection.response`; for `websocket.generation.lifecycle` it receives
-//! `Acquire` and sends Ack/Reject for acquire, sends `Release` and receives
-//! Ack/Reject for release. Router also owns peer lexical classification
-//! (`WebSocketRpcProfile`), so the numeric id corpus is consumed through the
-//! production classifier.
+//! `connection.response`. The `websocket.generation.lifecycle` family is
+//! retired: client ws connections are stateless and the router connection
+//! registry is the only accounting authority. Router also owns peer lexical
+//! classification (`WebSocketRpcProfile`), so the numeric id corpus is
+//! consumed through the production classifier.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -23,14 +23,7 @@ use skiff_runtime_transport::connection_protocol::{
     encode_connection_request_cancel_frame, encode_connection_request_frame,
     encode_connection_response_frame, JsonRpcPlatformErrorKind, OpaquePeerId, ProfileAction,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    assert_websocket_generation_lifecycle_response_matches,
-    decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
-    WebSocketGenerationLifecycleOperation,
-};
-
-const REQUIRED_FRAMES: [&str; 17] = [
+const REQUIRED_FRAMES: [&str; 11] = [
     "connection.request.object",
     "connection.request.array",
     "connection.request.no-deadline",
@@ -42,12 +35,6 @@ const REQUIRED_FRAMES: [&str; 17] = [
     "connection.response.transport-unavailable",
     "connection.response.protocol-error",
     "connection.response.resource-limit",
-    "lifecycle.acquire",
-    "lifecycle.release",
-    "lifecycle.ack.acquire",
-    "lifecycle.ack.release",
-    "lifecycle.reject.acquire",
-    "lifecycle.reject.release",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,14 +99,6 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn lifecycle_direction(value: &str) -> WebSocketGenerationLifecycleDirection {
-    match value {
-        "RouterToRuntime" => WebSocketGenerationLifecycleDirection::RouterToRuntime,
-        "RuntimeToRouter" => WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-        other => panic!("unknown lifecycle direction {other}"),
-    }
-}
-
 fn roundtrip_connection_request(name: &str, bytes: &[u8]) {
     let (header, payload) = decode_connection_request_frame(bytes)
         .unwrap_or_else(|error| panic!("{name} request decode: {error}"));
@@ -144,19 +123,6 @@ fn roundtrip_connection_response(name: &str, bytes: &[u8]) {
     assert_eq!(reencoded, bytes, "{name} must roundtrip byte-exact");
 }
 
-fn roundtrip_lifecycle(
-    name: &str,
-    direction: WebSocketGenerationLifecycleDirection,
-    bytes: &[u8],
-) -> WebSocketGenerationLifecycleControl {
-    let control = decode_websocket_generation_lifecycle_frame(direction, bytes)
-        .unwrap_or_else(|error| panic!("{name} lifecycle decode: {error}"));
-    let reencoded = encode_websocket_generation_lifecycle_frame(direction, &control)
-        .unwrap_or_else(|error| panic!("{name} lifecycle encode: {error}"));
-    assert_eq!(reencoded, bytes, "{name} must roundtrip byte-exact");
-    control
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,8 +139,6 @@ mod tests {
             );
         }
 
-        let mut acquire = None;
-        let mut release = None;
         for (name, entry) in &catalog.frames {
             let bytes = hex_to_bytes(&entry.frame_hex);
             match entry.decode_as.as_str() {
@@ -190,80 +154,8 @@ mod tests {
                     assert_eq!(entry.direction, "RouterToRuntime");
                     roundtrip_connection_response(name, &bytes);
                 }
-                "Lifecycle" => {
-                    let direction = lifecycle_direction(&entry.direction);
-                    let control = roundtrip_lifecycle(name, direction, &bytes);
-                    match &control {
-                        WebSocketGenerationLifecycleControl::Acquire { .. } => {
-                            assert_eq!(entry.direction, "RuntimeToRouter");
-                            acquire = Some(control);
-                        }
-                        WebSocketGenerationLifecycleControl::Release { .. } => {
-                            assert_eq!(entry.direction, "RouterToRuntime");
-                            release = Some(control);
-                        }
-                        WebSocketGenerationLifecycleControl::Ack { operation, .. } => {
-                            assert_eq!(
-                                entry.direction,
-                                match operation {
-                                    WebSocketGenerationLifecycleOperation::Acquire => {
-                                        "RouterToRuntime"
-                                    }
-                                    WebSocketGenerationLifecycleOperation::Release => {
-                                        "RuntimeToRouter"
-                                    }
-                                }
-                            );
-                        }
-                        WebSocketGenerationLifecycleControl::Reject { operation, .. } => {
-                            assert_eq!(
-                                entry.direction,
-                                match operation {
-                                    WebSocketGenerationLifecycleOperation::Acquire => {
-                                        "RouterToRuntime"
-                                    }
-                                    WebSocketGenerationLifecycleOperation::Release => {
-                                        "RuntimeToRouter"
-                                    }
-                                }
-                            );
-                        }
-                    }
-                }
                 other => panic!("{name} has unknown decodeAs {other}"),
             }
-        }
-
-        for (request, response_name) in [
-            (
-                acquire.as_ref().expect("acquire frame"),
-                "lifecycle.ack.acquire",
-            ),
-            (
-                acquire.as_ref().expect("acquire frame"),
-                "lifecycle.reject.acquire",
-            ),
-            (
-                release.as_ref().expect("release frame"),
-                "lifecycle.ack.release",
-            ),
-            (
-                release.as_ref().expect("release frame"),
-                "lifecycle.reject.release",
-            ),
-        ] {
-            let response = &catalog.frames[response_name];
-            let response_bytes = hex_to_bytes(&response.frame_hex);
-            let response_control = decode_websocket_generation_lifecycle_frame(
-                lifecycle_direction(&response.direction),
-                &response_bytes,
-            )
-            .expect("lifecycle response decodes");
-            assert!(
-                assert_websocket_generation_lifecycle_response_matches(request, &response_control)
-                    .is_ok(),
-                "lifecycle response must exact-echo its request"
-            );
         }
     }
 

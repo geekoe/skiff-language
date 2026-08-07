@@ -179,7 +179,6 @@ mod tests {
             vec![
                 skiff_router::session::ConsumerKind::HealthLedger,
                 skiff_router::session::ConsumerKind::RequestDispatcher,
-                skiff_router::session::ConsumerKind::RuntimeGenerationPinLedger,
                 skiff_router::session::ConsumerKind::WebSocketRequestBroker,
                 skiff_router::session::ConsumerKind::ActorSessionOwner,
             ]

@@ -16,8 +16,7 @@ use crate::actor::{
 use crate::bootstrap::BlockingLoaderHealth;
 use crate::dispatch::DispatcherHealthSnapshot;
 use crate::session::layer::SessionHealthSnapshot;
-use crate::session::RuntimeSessionEpoch;
-use crate::ws::{BrokerHealthSnapshot, IndexHealthSnapshot, LedgerHealthSnapshot};
+use crate::ws::{BrokerHealthSnapshot, IndexHealthSnapshot};
 
 /// Complete §10 counters object (`counters`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -149,8 +148,10 @@ pub struct ClientConnectionCounters {
     pub slow_client_count: u64,
 }
 
-/// `counters.generationLeases` (owner: `RuntimeGenerationPinLedger`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `counters.generationLeases` (owner: retired `RuntimeGenerationPinLedger`;
+/// kept zeroed for wire-shape stability — the broker connection registry is
+/// the router-side accounting authority).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationLeaseCounters {
     pub pins_acquired: usize,
@@ -424,19 +425,6 @@ impl From<&IndexHealthSnapshot> for ClientConnectionCounters {
     }
 }
 
-impl From<&LedgerHealthSnapshot> for GenerationLeaseCounters {
-    fn from(health: &LedgerHealthSnapshot) -> Self {
-        Self {
-            pins_acquired: health.pins_acquired,
-            pins_pending_release: health.pins_pending_release,
-            cached_acquire_count: health.cached_acquire_count,
-            release_acks: health.release_acks,
-            release_failures: health.release_failures.clone(),
-            runtime_closed: health.runtime_closed.iter().map(session_label).collect(),
-        }
-    }
-}
-
 impl From<&BrokerHealthSnapshot> for BrokerCounters {
     fn from(health: &BrokerHealthSnapshot) -> Self {
         Self {
@@ -574,8 +562,4 @@ impl From<&crate::http::HttpGatewayHealth> for HttpCounters {
             platform_errors: health.platform_errors,
         }
     }
-}
-
-fn session_label(session: &RuntimeSessionEpoch) -> String {
-    format!("{}#{}", session.replica_id, session.connection_generation)
 }

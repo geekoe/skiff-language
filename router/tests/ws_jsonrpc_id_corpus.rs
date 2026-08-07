@@ -17,8 +17,8 @@ use skiff_runtime_transport::connection_protocol::{
 };
 
 use ws_harness::{
-    FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter, FakeRuntimePeer, FakeRuntimeResponder,
-    FakeRuntimeSessionClose, FakeRuntimeViolationSink,
+    FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter, FakeRuntimeResponder,
+    FakeRuntimeViolationSink,
 };
 
 const ID_CORPUS: &str = include_str!("../../runtime/transport/testdata/client-ws/jsonrpc-ids.json");
@@ -68,9 +68,6 @@ fn lane() -> (
             },
             ..Default::default()
         },
-        Arc::new(FakeRuntimePeer::new()),
-        Arc::new(FakeRuntimeSessionClose::new()),
-        Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
         Arc::new(FakeMethodCatalog::new()),
         Arc::new(skiff_router::ws::NoopNotificationObserver),
         violations.clone(),

@@ -15,7 +15,6 @@ mod request_supervisor;
 pub(crate) mod router_session;
 mod runtime_host;
 pub mod telemetry;
-mod websocket_generation;
 
 mod request_trace;
 

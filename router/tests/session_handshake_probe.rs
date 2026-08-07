@@ -26,10 +26,7 @@ use skiff_router::supervisor::sinks::ConnectionFrameSink;
 use skiff_router::ws::types::{
     EmptyMethodCatalog, InboundDispatchAction, NoopNotificationObserver, NoopRuntimeViolationSink,
 };
-use skiff_router::ws::{
-    AllowAnyPendingAdmission, DispatchInbound, RuntimeGenerationPeer, RuntimeSessionClose,
-    WebSocketLane, WebSocketLaneOptions,
-};
+use skiff_router::ws::{DispatchInbound, WebSocketLane, WebSocketLaneOptions};
 use skiff_runtime_transport::protocol::{
     ConnectionSendFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION, encode_binary_frame,
 };
@@ -199,32 +196,6 @@ fn connection_send_frame(connection_id: &str, both_targets: bool) -> Vec<u8> {
 
 mod noop_ws_ports {
     use super::*;
-
-    #[derive(Debug)]
-    pub struct NoopRuntimeGenerationPeer;
-
-    impl RuntimeGenerationPeer for NoopRuntimeGenerationPeer {
-        fn send_control(
-            &self,
-            _runtime: &skiff_router::session::RuntimeSessionEpoch,
-            _control: &skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleControl,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct NoopRuntimeSessionClose;
-
-    impl RuntimeSessionClose for NoopRuntimeSessionClose {
-        fn close_session(
-            &self,
-            _runtime: &skiff_router::session::RuntimeSessionEpoch,
-            _code: u16,
-            _reason: &str,
-        ) {
-        }
-    }
 
     #[derive(Debug)]
     pub struct NoopDispatchInbound;
@@ -562,9 +533,6 @@ mod tests {
         let (listeners, layer) = start(test_config(4), None, None).await;
         let lane = WebSocketLane::new(
             WebSocketLaneOptions::default(),
-            Arc::new(noop_ws_ports::NoopRuntimeGenerationPeer),
-            Arc::new(noop_ws_ports::NoopRuntimeSessionClose),
-            Arc::new(AllowAnyPendingAdmission),
             Arc::new(EmptyMethodCatalog),
             Arc::new(NoopNotificationObserver),
             Arc::new(NoopRuntimeViolationSink),

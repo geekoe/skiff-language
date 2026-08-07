@@ -1,7 +1,7 @@
-//! Direct sequence tests for the W-WebSocket owners: ledger
-//! (`RuntimeGenerationPinLedger`), broker (`WebSocketRequestBroker`) and the
-//! index/lane finalizer (four-way races, captured writer fence, slow-client
-//! budget, release timeout, protocol/binary closes, shutdown drain).
+//! Direct sequence tests for the W-WebSocket owners: broker
+//! (`WebSocketRequestBroker`) and the index/lane finalizer (four-way races,
+//! captured writer fence, slow-client budget, protocol/binary closes,
+//! shutdown drain).
 
 mod ws_harness;
 
@@ -14,15 +14,9 @@ use skiff_router::ws::{
     WebSocketLaneOptions, WebSocketRequestBroker, WebSocketRequestBrokerOptions,
 };
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
-use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleOperation,
-    WebSocketGenerationLifecycleSender,
-};
 
 use ws_harness::{
-    acquire_control, pin_tuple, runtime_session, FakeDispatchInbound, FakeMethodCatalog,
-    FakePeerWriter, FakeRuntimePeer, FakeRuntimeResponder, FakeRuntimeSessionClose,
+    runtime_session, FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter, FakeRuntimeResponder,
     FakeRuntimeViolationSink,
 };
 
@@ -42,9 +36,6 @@ fn lane() -> Arc<WebSocketLane> {
             },
             ..Default::default()
         },
-        Arc::new(FakeRuntimePeer::new()),
-        Arc::new(FakeRuntimeSessionClose::new()),
-        Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
         Arc::new(FakeMethodCatalog::new()),
         Arc::new(skiff_router::ws::NoopNotificationObserver),
         Arc::new(FakeRuntimeViolationSink::new()),
@@ -180,7 +171,7 @@ fn broker_attach(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_router::ws::{AcquireDecision, RuntimeRequestOutcome, WriteBudget};
+    use skiff_router::ws::{RuntimeRequestOutcome, WriteBudget};
 
     #[test]
     fn broker_outbound_roundtrip_settles_exact_runtime_source() {
@@ -465,269 +456,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Ledger sequence tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn ledger_exact_acquire_ack_and_cached_dedupe_keep_single_pin() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &tuple),
-            ),
-            AcquireDecision::Ack(_)
-        ));
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 1);
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &tuple),
-            ),
-            AcquireDecision::Ack(_)
-        ));
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 1);
-        let mut conflict = tuple.clone();
-        conflict.build_id = format!("skiff-service-deployment-v2:sha256:{}", "b".repeat(64));
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &conflict),
-            ),
-            AcquireDecision::Reject(WebSocketGenerationLifecycleControl::Reject { code, .. })
-                if code == skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::RequestConflict
-        ));
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 1);
-    }
-
-    #[test]
-    fn ledger_acquire_rejection_codes_are_exact() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &tuple),
-            ),
-            AcquireDecision::Reject(WebSocketGenerationLifecycleControl::Reject { code, .. })
-                if code == skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::NotAcquired
-        ));
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let mut mismatch = tuple.clone();
-        mismatch.build_id = format!("skiff-service-deployment-v2:sha256:{}", "b".repeat(64));
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &mismatch),
-            ),
-            AcquireDecision::Reject(WebSocketGenerationLifecycleControl::Reject { code, .. })
-                if code == skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::TupleMismatch
-        ));
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &tuple),
-            ),
-            AcquireDecision::Ack(_)
-        ));
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r2"),
-                &acquire_control("acquire-2", &tuple),
-            ),
-            AcquireDecision::Reject(WebSocketGenerationLifecycleControl::Reject { code, .. })
-                if code == skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::SenderMismatch
-        ));
-        let other = pin_tuple("c2", "r1");
-        let mut other = other.clone();
-        other.router_session_id = "session-other".to_string();
-        lane.ledger
-            .expect_connection(other.clone())
-            .expect("expect");
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-3", &other),
-            ),
-            AcquireDecision::Reject(WebSocketGenerationLifecycleControl::Reject { code, .. })
-                if code == skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::SenderMismatch
-        ));
-        assert!(lane.ledger.expect_connection(tuple.clone()).is_err());
-        assert!(lane.ledger.fail_stop_reason().is_some());
-    }
-
-    #[test]
-    fn ledger_release_pending_dedupe_ack_and_reject_paths() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let first = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        let second = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        assert_eq!(first, second, "release dedupe must share the pending");
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 1);
-        let ack = WebSocketGenerationLifecycleControl::Ack {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            operation: WebSocketGenerationLifecycleOperation::Release,
-            request_id: first,
-            sender: WebSocketGenerationLifecycleSender::Runtime,
-            tuple: tuple.clone(),
-        };
-        lane.ledger
-            .handle_release_response(&runtime_session("r1"), &ack)
-            .expect("ack");
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 0);
-        assert_eq!(lane.ledger.snapshot().release_acks, 1);
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 0);
-
-        let tuple = pin_tuple("c2", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-2", &tuple),
-        );
-        let request_id = match lane.ledger.release_connection("c2", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        let reject = WebSocketGenerationLifecycleControl::Reject {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            operation: WebSocketGenerationLifecycleOperation::Release,
-            request_id,
-            sender: WebSocketGenerationLifecycleSender::Runtime,
-            tuple: tuple.clone(),
-            code: skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleRejectionCode::GenerationUnavailable,
-            reason: "generation gone".to_string(),
-        };
-        lane.ledger
-            .handle_release_response(&runtime_session("r1"), &reject)
-            .expect("reject handled");
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 0);
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 0);
-        assert_eq!(lane.ledger.snapshot().release_failures.len(), 1);
-        assert_eq!(lane.ledger.snapshot().runtime_closed.len(), 1);
-    }
-
-    #[test]
-    fn ledger_release_timeout_never_retains_pin() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let request_id = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        assert!(lane.ledger.fire_release_timeout(&request_id).is_some());
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 0);
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 0);
-        assert_eq!(lane.ledger.snapshot().release_failures.len(), 1);
-        assert_eq!(lane.ledger.snapshot().runtime_closed.len(), 1);
-    }
-
-    #[test]
-    fn ledger_disconnect_clears_cached_acquires_and_pending() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let _request_id = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        lane.ledger.runtime_disconnected(&runtime_session("r1"));
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 0);
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 0);
-        assert_eq!(lane.ledger.snapshot().cached_acquire_count, 0);
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        assert!(matches!(
-            lane.ledger.handle_acquire(
-                &runtime_session("r1"),
-                &acquire_control("acquire-1", &tuple),
-            ),
-            AcquireDecision::Ack(_)
-        ));
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 1);
-    }
-
-    #[test]
-    fn ledger_send_failure_does_not_silently_retain_the_pin() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let fake_peer = Arc::new(FakeRuntimePeer::new());
-        let _ = fake_peer;
-        let _request_id = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 1);
-        assert_eq!(lane.ledger.snapshot().release_failures.len(), 0);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ledger_flush_aggregates_release_failures() {
-        let lane = lane();
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let request_id = match lane.ledger.release_connection("c1", true).expect("release") {
-            skiff_router::ws::ReleaseOutcome::Pending(handle) => handle.request_id,
-            _ => panic!("pending release expected"),
-        };
-        assert!(lane.ledger.fire_release_timeout(&request_id).is_some());
-        let result = lane.ledger.flush().await;
-        assert!(result.is_err(), "flush must surface the release failure");
-        assert_eq!(lane.ledger.snapshot().pins_pending_release, 0);
-        assert_eq!(lane.ledger.snapshot().pins_acquired, 0);
-    }
-
-    // -----------------------------------------------------------------------
     // Index / lane finalizer tests
     // -----------------------------------------------------------------------
 
@@ -815,68 +543,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn lane_release_timeout_completes_client_terminal_and_closes_runtime() {
-        let lane = lane();
-        attach_connection(&lane, "c1", "g1", "r1");
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
-        let _ = lane.handle_peer_disconnect("c1");
-        let request_id = lane
-            .ledger
-            .pending_release_request_id("c1")
-            .expect("pending release");
-        assert!(lane.ledger.fire_release_timeout(&request_id).is_some());
-        wait_for_finalizers(&lane).await;
-        assert_eq!(
-            lane.index.connection_terminal("c1").as_deref(),
-            Some("PeerClose")
-        );
-        assert_eq!(lane.snapshot().pins_acquired, 0);
-        assert_eq!(lane.snapshot().pins_pending_release, 0);
-        assert!(!lane.snapshot().runtime_closed.is_empty());
-        assert_eq!(lane.snapshot().finalizer_failures.len(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn lane_shutdown_drains_finalizers_and_uses_1001() {
         let lane = lane();
-        attach_connection(&lane, "c1", "g1", "r1");
-        let tuple = pin_tuple("c1", "r1");
-        lane.ledger
-            .expect_connection(tuple.clone())
-            .expect("expect");
-        let _ = lane.ledger.handle_acquire(
-            &runtime_session("r1"),
-            &acquire_control("acquire-1", &tuple),
-        );
+        let fake = attach_connection_with_writer(&lane, "c1", "g1", "r1");
         let _ = lane.shutdown();
-        let request_id = lane
-            .ledger
-            .pending_release_request_id("c1")
-            .expect("pending release");
-        let ack = WebSocketGenerationLifecycleControl::Ack {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            operation: WebSocketGenerationLifecycleOperation::Release,
-            request_id,
-            sender: WebSocketGenerationLifecycleSender::Runtime,
-            tuple,
-        };
-        lane.ledger
-            .handle_release_response(&runtime_session("r1"), &ack)
-            .expect("ack");
         wait_for_finalizers(&lane).await;
         assert_eq!(
             lane.index.connection_terminal("c1").as_deref(),
             Some("Shutdown")
         );
-        assert_eq!(lane.snapshot().release_acks, 1);
+        assert_eq!(fake.close().map(|(code, _)| code), Some(1001));
         assert_eq!(lane.snapshot().connection_count, 0);
     }
 

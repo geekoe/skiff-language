@@ -56,7 +56,6 @@ use crate::test_dispatch::{TestDispatchHttpHandler, TEST_DISPATCH_CONTROL_PATH};
 use crate::ws::{AttachMeta, BusinessKey, ClientTerminal, PeerWriter, WebSocketLane};
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::connection_protocol::WebSocketRpcProfile;
-use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 
 /// Public listener connection cap. The frozen Router config has no public
 /// connection-limit field; this placeholder keeps the C-net Semaphore
@@ -764,22 +763,6 @@ impl GatewayUpgradeHandler for ClientWsContext {
                 return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }
         };
-        // Admission expectation. `router_session_id` is the router-side
-        // session token; parity with the Runtime-minted
-        // `skiff-router-session-v1:opaque:<uuid>` router session id is a
-        // documented E-ws lane item (see leaf; fake-runtime tests use a
-        // self-consistent tuple).
-        let tuple = WebSocketGenerationLifecycleTuple {
-            router_session_id: format!("{}#{}", runtime.replica_id, runtime.connection_generation),
-            service_id: binding.service_id.clone(),
-            build_id: build_id.clone(),
-            websocket_entry_id: binding.websocket_entry_id.clone(),
-            connection_id: connection_id.clone(),
-        };
-        if let Err(_) = self.lane.ledger.expect_connection(tuple) {
-            self.fail_reservation(&connection_id);
-            return Ok(empty_response(StatusCode::INTERNAL_SERVER_ERROR));
-        }
         let metadata = build_ws_connect_metadata(&target, request.headers());
         let (connect_request_id, mut connect_wait) = match self.store.connect_begin(
             &connection_id,

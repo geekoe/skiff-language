@@ -1,29 +1,60 @@
 {
   "schemaVersion": 1,
   "scenario": "21-broker-outbound-capacity-resource-limit",
-  "limits": { "connectionLimit": 4, "slowClientBudgetBytes": 1024, "perGenerationCapacity": 2 },
+  "limits": {
+    "connectionLimit": 4,
+    "slowClientBudgetBytes": 1024,
+    "perGenerationCapacity": 2
+  },
   "events": [
-    { "kind": "acceptConnection", "connection": "c1" },
-    { "kind": "attach", "connection": "c1", "socketGeneration": "g1", "runtime": "r1" },
-    { "kind": "runtimeRequest", "connection": "c1", "requestId": "req-1" },
-    { "kind": "runtimeRequest", "connection": "c1", "requestId": "req-2" },
-    { "kind": "runtimeRequest", "connection": "c1", "requestId": "req-3" },
-    { "kind": "peerResponse", "connection": "c1", "peerId": "g1:0" },
-    { "kind": "peerResponse", "connection": "c1", "peerId": "g1:1" }
+    {
+      "kind": "acceptConnection",
+      "connection": "c1"
+    },
+    {
+      "kind": "attach",
+      "connection": "c1",
+      "socketGeneration": "g1",
+      "runtime": "r1"
+    },
+    {
+      "kind": "runtimeRequest",
+      "connection": "c1",
+      "requestId": "req-1"
+    },
+    {
+      "kind": "runtimeRequest",
+      "connection": "c1",
+      "requestId": "req-2"
+    },
+    {
+      "kind": "runtimeRequest",
+      "connection": "c1",
+      "requestId": "req-3"
+    },
+    {
+      "kind": "peerResponse",
+      "connection": "c1",
+      "peerId": "g1:0"
+    },
+    {
+      "kind": "peerResponse",
+      "connection": "c1",
+      "peerId": "g1:1"
+    }
   ],
   "expect": {
-    "terminals": { "c1": "None" },
+    "terminals": {
+      "c1": "None"
+    },
     "connectionCount": 1,
     "generationCount": 1,
     "outboundPending": 0,
     "inboundPending": 0,
     "tombstones": 2,
-    "pinsAcquired": 0,
-    "pinsPendingRelease": 0,
-    "releaseAcks": 0,
     "finalizerCount": 0,
-    "runtimeClosed": false,
-    "failStop": false,
-    "openConnections": ["c1"]
+    "openConnections": [
+      "c1"
+    ]
   }
 }

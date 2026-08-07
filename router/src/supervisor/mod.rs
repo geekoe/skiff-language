@@ -54,13 +54,12 @@ use self::http::{DispatcherHttpPort, PendingHttpRouter, RequestFrameSink};
 use self::session_ports::{
     DirectoryLeaseRevalidate, DispatcherSessionConsumer, LayerSessionAbort, PendingHttpHandle,
     SessionCandidateViewSource, SessionHandle, SessionRuntimePeer, SessionRuntimeViolationSink,
-    WsRuntimeGenerationPeer, WsRuntimeSessionClose,
 };
 use self::sinks::ConnectionFrameSink;
 use self::ws::{
     load_ws_surface_view, LayerWsSessionWriter, ProductionWsConnectSelector, WsConnectSelector,
     WsDispatchStore, WsGatewaySurfaceView, WsInboundDispatch, WsLaneHandle, WsLaneSessionConsumer,
-    WsMethodCatalog, WsPendingAdmissionSender, WsSessionWriter,
+    WsMethodCatalog, WsSessionWriter,
 };
 
 use crate::task::{
@@ -349,9 +348,6 @@ impl RouterComponents {
                 },
                 ..Default::default()
             },
-            Arc::new(WsRuntimeGenerationPeer::new(session_handle.clone())),
-            Arc::new(WsRuntimeSessionClose::new(session_handle.clone())),
-            Arc::new(WsPendingAdmissionSender::new(Arc::clone(&ws_store))),
             Arc::new(WsMethodCatalog::new(Arc::clone(&ws_surface))),
             Arc::new(NoopNotificationObserver),
             Arc::new(SessionRuntimeViolationSink::new(session_handle.clone())),
@@ -367,7 +363,6 @@ impl RouterComponents {
                     manifest: ConsumerManifest::installed([
                         ConsumerKind::HealthLedger,
                         ConsumerKind::RequestDispatcher,
-                        ConsumerKind::RuntimeGenerationPinLedger,
                         ConsumerKind::WebSocketRequestBroker,
                         ConsumerKind::ActorSessionOwner,
                     ]),
@@ -380,7 +375,6 @@ impl RouterComponents {
                                 Arc::clone(&dispatcher),
                                 pending_http_handle.clone(),
                             )),
-                            Arc::clone(&ws_lane.ledger) as Arc<dyn SessionConsumer>,
                             Arc::new(WsLaneSessionConsumer::new(
                                 Arc::clone(&ws_lane),
                                 Arc::clone(&ws_store),

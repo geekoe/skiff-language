@@ -39,8 +39,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, Role};
 use tokio_tungstenite::WebSocketStream;
 
 use ws_harness::{
-    FakeDispatchInbound, FakeMethodCatalog, FakeRuntimePeer, FakeRuntimeResponder,
-    FakeRuntimeSessionClose, FakeRuntimeViolationSink,
+    FakeDispatchInbound, FakeMethodCatalog, FakeRuntimeResponder, FakeRuntimeViolationSink,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -162,9 +161,6 @@ impl ProbeServer {
                 },
                 ..Default::default()
             },
-            Arc::new(FakeRuntimePeer::new()),
-            Arc::new(FakeRuntimeSessionClose::new()),
-            Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
             Arc::new(FakeMethodCatalog::new()),
             Arc::new(skiff_router::ws::NoopNotificationObserver),
             Arc::new(FakeRuntimeViolationSink::new()),

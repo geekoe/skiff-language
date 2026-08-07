@@ -9,9 +9,6 @@ use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEventSink,
     ResponseStreamEvent, RouterWriterMessage,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleDirection,
-};
 use skiff_runtime_transport::{
     response_mapper::{
         runtime_assembly_websocket_connect_response_into_frame, OrdinaryResponseEvent,
@@ -256,31 +253,7 @@ impl RuntimeHost {
         } = request;
         let request_id = header.request_id.clone();
         if route.entry().optional_handler().is_none() {
-            let connection_id = header.websocket_connect.connection_id.clone();
-            let websocket_entry_id = header
-                .websocket_connect
-                .websocket_entry_id
-                .as_str()
-                .to_string();
-            let receipt = match self.queue_websocket_generation_acquire(
-                &route,
-                &router_session_id,
-                &websocket_entry_id,
-                &connection_id,
-                &sender,
-            ) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    self.send_http_gateway_admission_error(&request_id, error, &sender);
-                    return;
-                }
-            };
-            let host = self.clone();
             tokio::spawn(async move {
-                if let Err(error) = receipt.wait().await {
-                    host.send_http_gateway_admission_error(&request_id, error, &sender);
-                    return;
-                }
                 match websocket_connect_result_into_message(
                     request_id,
                     RuntimeWebSocketConnectResult::Accept {
@@ -333,12 +306,6 @@ impl RuntimeHost {
         let deadline = runtime_deadline(&execution_budget, timeout_ms);
         let host = self.clone();
         tokio::spawn(async move {
-            let connection_id = header.websocket_connect.connection_id.clone();
-            let websocket_entry_id = header
-                .websocket_connect
-                .websocket_entry_id
-                .as_str()
-                .to_string();
             let execution = request_runner::execute_runtime_websocket_connect(
                 request_runner::RuntimeWebSocketConnectExecutionInput {
                     target,
@@ -381,37 +348,6 @@ impl RuntimeHost {
             };
             match result {
                 Ok(result) => {
-                    if matches!(result, RuntimeWebSocketConnectResult::Accept { .. }) {
-                        let receipt = match host.queue_websocket_generation_acquire(
-                            &route,
-                            &router_session_id,
-                            &websocket_entry_id,
-                            &connection_id,
-                            &sender,
-                        ) {
-                            Ok(receipt) => receipt,
-                            Err(error) => {
-                                host.finish_websocket_connect_error(
-                                    &supervised_request,
-                                    request_id,
-                                    RequestError::Decode(error.to_string()),
-                                    &sender,
-                                )
-                                .await;
-                                return;
-                            }
-                        };
-                        if let Err(error) = receipt.wait().await {
-                            host.finish_websocket_connect_error(
-                                &supervised_request,
-                                request_id,
-                                RequestError::Decode(error.to_string()),
-                                &sender,
-                            )
-                            .await;
-                            return;
-                        }
-                    }
                     if !host
                         .request_supervisor
                         .complete_success(
@@ -954,58 +890,6 @@ impl RuntimeHost {
         context.span_id = Some(header.trace.span_id.clone());
         context.parent_span_id = header.trace.parent_span_id.clone();
         context
-    }
-
-    fn queue_websocket_generation_acquire(
-        &self,
-        route: &ActiveAssemblyRoute,
-        router_session_id: &str,
-        websocket_entry_id: &str,
-        connection_id: &str,
-        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) -> Result<super::super::websocket_generation::WebSocketGenerationAcquireReceipt> {
-        let (request, receipt) = self.websocket_generations.begin_acquire_with_receipt(
-            router_session_id,
-            route.clone(),
-            websocket_entry_id.to_string(),
-            connection_id.to_string(),
-        )?;
-        let frame = match encode_websocket_generation_lifecycle_frame(
-            WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-            &request,
-        ) {
-            Ok(frame) => frame,
-            Err(error) => {
-                self.websocket_generations.rollback_acquire(&request)?;
-                return Err(RuntimeError::Decode(error.to_string()));
-            }
-        };
-        if sender.send(RouterWriterMessage::Binary(frame)).is_err() {
-            self.websocket_generations.rollback_acquire(&request)?;
-            return Err(RuntimeError::Decode(
-                "failed to queue WebSocket generation acquire".to_string(),
-            ));
-        }
-        Ok(receipt)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn queue_websocket_generation_acquire_for_test(
-        &self,
-        route: &ActiveAssemblyRoute,
-        router_session_id: &str,
-        websocket_entry_id: &str,
-        connection_id: &str,
-        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) -> Result<()> {
-        self.queue_websocket_generation_acquire(
-            route,
-            router_session_id,
-            websocket_entry_id,
-            connection_id,
-            sender,
-        )
-        .map(|_| ())
     }
 }
 

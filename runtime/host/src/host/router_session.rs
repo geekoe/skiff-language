@@ -32,7 +32,6 @@ use skiff_runtime_transport::{
     },
     request_mapper::request_cancel_from_frame_header,
     runtime_assembly_request::decode_runtime_assembly_request_start_frame,
-    websocket_generation_lifecycle::WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -142,9 +141,7 @@ where
         None
     };
 
-    host.websocket_generations.connect(&router_session_id)?;
     if let Err(error) = host.open_actor_instance_session(&router_session_id) {
-        let _ = host.websocket_generations.disconnect(&router_session_id);
         return Err(RuntimeError::Decode(error.to_string()));
     }
     let mut session_guard =
@@ -292,7 +289,14 @@ where
             })?;
         }
         Message::Pong(_) => {}
-        Message::Close(_) => {
+        Message::Close(close) => {
+            if let Some(frame) = close {
+                warn!(
+                    event = "runtime.router_close_frame",
+                    close_code = %frame.code,
+                    close_reason = %frame.reason,
+                );
+            }
             ws.flush().await.map_err(|error| {
                 RuntimeError::Decode(format!("failed to flush Router close reply: {error}"))
             })?;
@@ -395,15 +399,9 @@ impl ConnectedRouterSessionGuard {
         // later teardown step can expose a stale parent/test authority window.
         self.host
             .discard_actor_instances_for_session(&self.router_session_id);
-        let test_disconnect_result = self
-            .host
+        self.host
             .test_http_entries
-            .disconnect_session(&self.router_session_id);
-        let disconnect_result = self
-            .host
-            .websocket_generations
-            .disconnect(&self.router_session_id);
-        test_disconnect_result.and(disconnect_result)
+            .disconnect_session(&self.router_session_id)
     }
 }
 
@@ -719,10 +717,6 @@ async fn dispatch_router_binary_frame_inner(
             host.queue_connection_registration(sender.clone())?;
             handshake.mark_registration_queued();
             *bootstrap = Some(installed);
-        }
-        WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE => {
-            host.websocket_generations
-                .dispatch_router_control(router_session_id, bytes, sender)?;
         }
         "runtime.registered" => {
             let (header, payload) =

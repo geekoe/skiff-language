@@ -93,7 +93,6 @@ impl HealthAggregator {
         let session_health = components.session.health_snapshot();
         let dispatcher_health = components.dispatcher.health();
         let index_health = components.ws_lane.index.snapshot();
-        let ledger_health = components.ws_lane.ledger.snapshot();
         let broker_health = components.ws_lane.broker.snapshot();
         let http_health = self.http_health();
 
@@ -221,7 +220,9 @@ impl HealthAggregator {
             },
             terminal: TerminalCounters::from(&dispatcher_health),
             client_connections: ClientConnectionCounters::from(&index_health),
-            generation_leases: GenerationLeaseCounters::from(&ledger_health),
+            // Generation-lease counters are retired with the runtime
+            // generation lifecycle; the wire shape stays zeroed.
+            generation_leases: GenerationLeaseCounters::default(),
             broker: BrokerCounters::from(&broker_health),
             actor: ActorCounters::from(&actor_health),
             http: HttpCounters::from(&http_health),
@@ -344,7 +345,7 @@ impl HealthAggregator {
             shutdown: ShutdownResidueCounters {
                 session_fail_stop: session_health.fail_stop,
                 dispatcher_stopped: dispatcher_health.stopped,
-                ws_fail_stop_reason: ledger_health.fail_stop_reason,
+                ws_fail_stop_reason: None,
             },
         };
 

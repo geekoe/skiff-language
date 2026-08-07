@@ -1,6 +1,6 @@
-//! Byte-exact client WS corpus verifier for C-model-connection + C-client-lifecycle + C-ws
+//! Byte-exact client WS corpus verifier for C-model-connection + C-ws
 //! (`doc/implementation/router-rust-migration-c-model-connection-contract.md`,
-//! `...-c-client-lifecycle-contract.md`, `...-c-ws-contract.md`).
+//! `...-c-ws-contract.md`).
 //!
 //! This is a TEST-ONLY reference model. It is not production code, is not
 //! imported by any production crate, and must not be treated as the
@@ -24,16 +24,9 @@ use skiff_runtime_transport::{
         WebSocketRpcProfile,
     },
     protocol::{RuntimeDeadlineFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION},
-    websocket_generation_lifecycle::{
-        assert_websocket_generation_lifecycle_response_matches,
-        decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
-        WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
-        WebSocketGenerationLifecycleOperation, WebSocketGenerationLifecycleRejectionCode,
-        WebSocketGenerationLifecycleSender, WebSocketGenerationLifecycleTuple,
-    },
 };
 
-const REQUIRED_FRAMES: [&str; 17] = [
+const REQUIRED_FRAMES: [&str; 11] = [
     "connection.request.object",
     "connection.request.array",
     "connection.request.no-deadline",
@@ -45,12 +38,6 @@ const REQUIRED_FRAMES: [&str; 17] = [
     "connection.response.transport-unavailable",
     "connection.response.protocol-error",
     "connection.response.resource-limit",
-    "lifecycle.acquire",
-    "lifecycle.release",
-    "lifecycle.ack.acquire",
-    "lifecycle.ack.release",
-    "lifecycle.reject.acquire",
-    "lifecycle.reject.release",
 ];
 
 const REQUIRED_SCENARIOS: [&str; 23] = [
@@ -78,16 +65,6 @@ const REQUIRED_SCENARIOS: [&str; 23] = [
     "22-duplicate-peer-request-id",
     "23-runtime-cancel-outbound",
 ];
-
-fn tuple() -> WebSocketGenerationLifecycleTuple {
-    WebSocketGenerationLifecycleTuple {
-        router_session_id: "skiff-router-session-v1:opaque:router-1".to_string(),
-        service_id: "example.com/chat".to_string(),
-        build_id: format!("skiff-service-deployment-v2:sha256:{}", "a".repeat(64)),
-        websocket_entry_id: format!("skiff-websocket-entry-v1:sha256:{}", "b".repeat(64)),
-        connection_id: "connection-1".to_string(),
-    }
-}
 
 fn request_header(deadline: bool) -> ConnectionRequestFrameHeader {
     ConnectionRequestFrameHeader {
@@ -126,92 +103,6 @@ fn response_header(outcome: ConnectionResponseOutcome) -> ConnectionResponseFram
         request_id: "conn-req-1".to_string(),
         outcome,
         remote: None,
-    }
-}
-
-fn lifecycle_control(
-    action: &str,
-    operation: WebSocketGenerationLifecycleOperation,
-    code: Option<WebSocketGenerationLifecycleRejectionCode>,
-) -> WebSocketGenerationLifecycleControl {
-    let tuple = tuple();
-    match action {
-        "acquire" => WebSocketGenerationLifecycleControl::Acquire {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            request_id: "skiff-websocket-lifecycle-request-v1:opaque:acquire-1".to_string(),
-            sender: WebSocketGenerationLifecycleSender::Runtime,
-            tuple,
-        },
-        "release" => WebSocketGenerationLifecycleControl::Release {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            request_id: "skiff-websocket-lifecycle-request-v1:opaque:release-1".to_string(),
-            sender: WebSocketGenerationLifecycleSender::Router,
-            tuple,
-        },
-        "ack" => WebSocketGenerationLifecycleControl::Ack {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            operation,
-            request_id: request_id_for(operation),
-            sender: sender_for(operation),
-            tuple,
-        },
-        "reject" => WebSocketGenerationLifecycleControl::Reject {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            frame_type: "websocket.generation.lifecycle".to_string(),
-            operation,
-            request_id: request_id_for(operation),
-            sender: sender_for(operation),
-            tuple,
-            code: code.unwrap_or(WebSocketGenerationLifecycleRejectionCode::TupleMismatch),
-            reason: "tuple does not match the frozen expectation".to_string(),
-        },
-        other => panic!("unknown lifecycle action {other}"),
-    }
-}
-
-fn request_id_for(operation: WebSocketGenerationLifecycleOperation) -> String {
-    match operation {
-        WebSocketGenerationLifecycleOperation::Acquire => {
-            "skiff-websocket-lifecycle-request-v1:opaque:acquire-1".to_string()
-        }
-        WebSocketGenerationLifecycleOperation::Release => {
-            "skiff-websocket-lifecycle-request-v1:opaque:release-1".to_string()
-        }
-    }
-}
-
-fn sender_for(
-    operation: WebSocketGenerationLifecycleOperation,
-) -> WebSocketGenerationLifecycleSender {
-    match operation {
-        WebSocketGenerationLifecycleOperation::Acquire => {
-            WebSocketGenerationLifecycleSender::Router
-        }
-        WebSocketGenerationLifecycleOperation::Release => {
-            WebSocketGenerationLifecycleSender::Runtime
-        }
-    }
-}
-
-fn direction_for(
-    action: &str,
-    operation: Option<WebSocketGenerationLifecycleOperation>,
-) -> WebSocketGenerationLifecycleDirection {
-    match action {
-        "acquire" => WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-        "release" => WebSocketGenerationLifecycleDirection::RouterToRuntime,
-        "ack" | "reject" => match operation.expect("operation required") {
-            WebSocketGenerationLifecycleOperation::Acquire => {
-                WebSocketGenerationLifecycleDirection::RouterToRuntime
-            }
-            WebSocketGenerationLifecycleOperation::Release => {
-                WebSocketGenerationLifecycleDirection::RuntimeToRouter
-            }
-        },
-        other => panic!("unknown lifecycle action {other}"),
     }
 }
 
@@ -260,10 +151,6 @@ enum CatalogFrame {
     ConnectionRequest,
     ConnectionCancel,
     ConnectionResponse,
-    Lifecycle {
-        action: String,
-        operation: Option<WebSocketGenerationLifecycleOperation>,
-    },
 }
 
 fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
@@ -310,37 +197,6 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
             let _ = (header.outcome, payload);
             CatalogFrame::ConnectionResponse
         }
-        "Lifecycle" => {
-            let direction = match entry.direction.as_str() {
-                "RouterToRuntime" => WebSocketGenerationLifecycleDirection::RouterToRuntime,
-                "RuntimeToRouter" => WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-                other => panic!("unknown lifecycle direction {other}"),
-            };
-            let control = decode_websocket_generation_lifecycle_frame(direction, &bytes)
-                .expect("lifecycle decodes");
-            let reencoded = encode_websocket_generation_lifecycle_frame(direction, &control)
-                .expect("lifecycle re-encodes");
-            assert_eq!(reencoded, bytes, "lifecycle must be byte-exact");
-            assert_eq!(
-                serde_json::to_value(&control).unwrap(),
-                entry.header,
-                "lifecycle header JSON must match"
-            );
-            let (action, operation) = match &control {
-                WebSocketGenerationLifecycleControl::Acquire { .. } => ("acquire", None),
-                WebSocketGenerationLifecycleControl::Release { .. } => ("release", None),
-                WebSocketGenerationLifecycleControl::Ack { operation, .. } => {
-                    ("ack", Some(*operation))
-                }
-                WebSocketGenerationLifecycleControl::Reject { operation, .. } => {
-                    ("reject", Some(*operation))
-                }
-            };
-            CatalogFrame::Lifecycle {
-                action: action.to_string(),
-                operation,
-            }
-        }
         other => panic!("unknown decodeAs {other}"),
     }
 }
@@ -362,7 +218,6 @@ fn frame_catalog_is_byte_exact_and_complete() {
             CatalogFrame::ConnectionRequest => "connection.request",
             CatalogFrame::ConnectionCancel => "connection.request.cancel",
             CatalogFrame::ConnectionResponse => "connection.response",
-            CatalogFrame::Lifecycle { .. } => "websocket.generation.lifecycle",
         };
         assert_eq!(
             entry.frame_type, expected_frame_type,
@@ -375,62 +230,12 @@ fn frame_catalog_is_byte_exact_and_complete() {
             CatalogFrame::ConnectionResponse => {
                 assert_eq!(entry.direction, "RouterToRuntime");
             }
-            CatalogFrame::Lifecycle { action, operation } => {
-                assert_eq!(
-                    entry.direction,
-                    match direction_for(action, *operation) {
-                        WebSocketGenerationLifecycleDirection::RouterToRuntime => "RouterToRuntime",
-                        WebSocketGenerationLifecycleDirection::RuntimeToRouter => {
-                            "RuntimeToRouter"
-                        }
-                    }
-                );
-            }
         }
         assert!(
             !entry.frame_hex.is_empty() && entry.frame_hex.len() % 2 == 0,
             "{name}: frameHex must be even-length hex"
         );
     }
-}
-
-#[test]
-fn lifecycle_responses_must_echo_exact_request() {
-    let acquire = lifecycle_control(
-        "acquire",
-        WebSocketGenerationLifecycleOperation::Acquire,
-        None,
-    );
-    let ack = lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Acquire, None);
-    let reject = lifecycle_control(
-        "reject",
-        WebSocketGenerationLifecycleOperation::Acquire,
-        None,
-    );
-    assert!(
-        assert_websocket_generation_lifecycle_response_matches(&acquire, &ack).is_ok(),
-        "acquire ack must echo the exact request"
-    );
-    assert!(
-        assert_websocket_generation_lifecycle_response_matches(&acquire, &reject).is_ok(),
-        "acquire reject must echo the exact request"
-    );
-
-    let release = lifecycle_control(
-        "release",
-        WebSocketGenerationLifecycleOperation::Release,
-        None,
-    );
-    let ack = lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Release, None);
-    assert!(
-        assert_websocket_generation_lifecycle_response_matches(&release, &ack).is_ok(),
-        "release ack must echo the exact request"
-    );
-    // Cross-operation responses must not match.
-    assert!(
-        assert_websocket_generation_lifecycle_response_matches(&acquire, &ack).is_err(),
-        "release ack must not satisfy an acquire request"
-    );
 }
 
 #[test]
@@ -2026,103 +1831,6 @@ fn generate_frame_catalog_document() -> Value {
             serde_json::to_value(&header).unwrap(),
         );
     }
-
-    let acquire = lifecycle_control(
-        "acquire",
-        WebSocketGenerationLifecycleOperation::Acquire,
-        None,
-    );
-    add(
-        "lifecycle.acquire",
-        "RuntimeToRouter",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(direction_for("acquire", None), &acquire)
-            .unwrap(),
-        serde_json::to_value(&acquire).unwrap(),
-    );
-    let release = lifecycle_control(
-        "release",
-        WebSocketGenerationLifecycleOperation::Release,
-        None,
-    );
-    add(
-        "lifecycle.release",
-        "RouterToRuntime",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(direction_for("release", None), &release)
-            .unwrap(),
-        serde_json::to_value(&release).unwrap(),
-    );
-    let ack_acquire =
-        lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Acquire, None);
-    add(
-        "lifecycle.ack.acquire",
-        "RouterToRuntime",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for("ack", Some(WebSocketGenerationLifecycleOperation::Acquire)),
-            &ack_acquire,
-        )
-        .unwrap(),
-        serde_json::to_value(&ack_acquire).unwrap(),
-    );
-    let ack_release =
-        lifecycle_control("ack", WebSocketGenerationLifecycleOperation::Release, None);
-    add(
-        "lifecycle.ack.release",
-        "RuntimeToRouter",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for("ack", Some(WebSocketGenerationLifecycleOperation::Release)),
-            &ack_release,
-        )
-        .unwrap(),
-        serde_json::to_value(&ack_release).unwrap(),
-    );
-    let reject_acquire = lifecycle_control(
-        "reject",
-        WebSocketGenerationLifecycleOperation::Acquire,
-        Some(WebSocketGenerationLifecycleRejectionCode::TupleMismatch),
-    );
-    add(
-        "lifecycle.reject.acquire",
-        "RouterToRuntime",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for(
-                "reject",
-                Some(WebSocketGenerationLifecycleOperation::Acquire),
-            ),
-            &reject_acquire,
-        )
-        .unwrap(),
-        serde_json::to_value(&reject_acquire).unwrap(),
-    );
-    let reject_release = lifecycle_control(
-        "reject",
-        WebSocketGenerationLifecycleOperation::Release,
-        Some(WebSocketGenerationLifecycleRejectionCode::NotAcquired),
-    );
-    add(
-        "lifecycle.reject.release",
-        "RuntimeToRouter",
-        "Lifecycle",
-        "websocket.generation.lifecycle",
-        encode_websocket_generation_lifecycle_frame(
-            direction_for(
-                "reject",
-                Some(WebSocketGenerationLifecycleOperation::Release),
-            ),
-            &reject_release,
-        )
-        .unwrap(),
-        serde_json::to_value(&reject_release).unwrap(),
-    );
 
     json!({
         "schemaVersion": 1,

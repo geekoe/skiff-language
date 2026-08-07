@@ -18,24 +18,22 @@ use skiff_router::session::SessionConsumer;
 use skiff_router::supervisor::ws::{
     ConnectOutcome, WsBinding, WsConnectionRecord, WsDispatchStore, WsGatewaySurfaceView,
     WsInboundDispatch, WsLaneHandle, WsLaneSessionConsumer, WsMethodBinding, WsMethodCatalog,
-    WsPendingAdmissionSender, WsSessionWriter,
+    WsSessionWriter,
 };
 use skiff_router::ws::{
     AttachMeta, DispatchInbound, InboundDispatchAction, InboundExecutionToken, MethodCatalog,
-    OverflowPolicy, PeerWriter, PendingAdmissionSender, WebSocketLane, WebSocketLaneOptions,
-    WebSocketRequestBrokerOptions,
+    OverflowPolicy, PeerWriter, WebSocketLane, WebSocketLaneOptions, WebSocketRequestBrokerOptions,
 };
 use skiff_runtime_transport::connection_protocol::{OpaquePeerId, WebSocketRpcProfile};
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestNameValueFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::WebSocketGenerationLifecycleTuple;
 use tokio::sync::watch;
 
 use ws_harness::{
-    runtime_session, FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter, FakeRuntimePeer,
-    FakeRuntimeSessionClose, FakeRuntimeViolationSink,
+    runtime_session, FakeDispatchInbound, FakeMethodCatalog, FakePeerWriter,
+    FakeRuntimeViolationSink,
 };
 
 mod dispatch_harness;
@@ -135,9 +133,6 @@ fn lane() -> Arc<WebSocketLane> {
             },
             ..Default::default()
         },
-        Arc::new(FakeRuntimePeer::new()),
-        Arc::new(FakeRuntimeSessionClose::new()),
-        Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
         Arc::new(FakeMethodCatalog::new()),
         Arc::new(skiff_router::ws::NoopNotificationObserver),
         Arc::new(FakeRuntimeViolationSink::new()),
@@ -159,9 +154,6 @@ fn lane_with_dispatch(dispatch: Arc<dyn DispatchInbound>) -> Arc<WebSocketLane> 
             },
             ..Default::default()
         },
-        Arc::new(FakeRuntimePeer::new()),
-        Arc::new(FakeRuntimeSessionClose::new()),
-        Arc::new(skiff_router::ws::AllowAnyPendingAdmission),
         Arc::new(FakeMethodCatalog::new()),
         Arc::new(skiff_router::ws::NoopNotificationObserver),
         Arc::new(FakeRuntimeViolationSink::new()),
@@ -458,26 +450,6 @@ mod tests {
             "{}",
             writes.last().unwrap()
         );
-    }
-
-    #[tokio::test]
-    async fn pending_admission_sender_matches_pinned_runtime() {
-        let runtime = runtime_session("runtime-a");
-        let other = runtime_session("runtime-b");
-        let ws_lane = lane();
-        let writer = Arc::new(FakeWsSessionWriter::default());
-        let store = store_with(&ws_lane, &writer);
-        store.register_connection(record("wsconn-1", &runtime));
-        let sender = WsPendingAdmissionSender::new(Arc::clone(&store));
-        let tuple = WebSocketGenerationLifecycleTuple {
-            router_session_id: "session".to_string(),
-            service_id: "example.com/chat".to_string(),
-            build_id: build_id(),
-            websocket_entry_id: websocket_entry(),
-            connection_id: "wsconn-1".to_string(),
-        };
-        assert!(sender.is_pending_acquire_sender(&runtime, &tuple));
-        assert!(!sender.is_pending_acquire_sender(&other, &tuple));
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
-//! `WebSocketLane`: WS-chain composition owner. It wires the three reducers
-//! (`ClientConnectionIndex`, `RuntimeGenerationPinLedger`,
-//! `WebSocketRequestBroker`) through typed ports and routes peer close /
-//! protocol-close / inbound-terminal outcomes into the connection finalizer.
+//! `WebSocketLane`: WS-chain composition owner. It wires the two reducers
+//! (`ClientConnectionIndex`, `WebSocketRequestBroker`) through typed ports
+//! and routes peer close / protocol-close / inbound-terminal outcomes into
+//! the connection finalizer.
 
 use std::sync::Arc;
 
@@ -16,11 +16,7 @@ use super::broker::{
 };
 use super::index::{
     AdmissionOutcome, AttachMeta, BrokerGenerationPort, ClientConnectionIndex,
-    ClientConnectionIndexOptions, IndexHealthSnapshot, LedgerReleasePort, OverflowPolicy,
-};
-use super::ledger::{
-    LedgerHealthSnapshot, LedgerOptions, PendingAdmissionSender, ReleaseOutcome,
-    RuntimeGenerationPeer, RuntimeGenerationPinLedger, RuntimeSessionClose,
+    ClientConnectionIndexOptions, IndexHealthSnapshot, OverflowPolicy,
 };
 use super::types::{
     BrokerConnectionGeneration, BrokerRuntimeSource, BusinessKey, ClientTerminal, Clock,
@@ -32,7 +28,6 @@ use super::types::{
 #[derive(Debug, Clone, Default)]
 pub struct WebSocketLaneOptions {
     pub index: ClientConnectionIndexOptions,
-    pub ledger: LedgerOptions,
     pub broker: WebSocketRequestBrokerOptions,
 }
 
@@ -62,27 +57,11 @@ impl BrokerGenerationPort for BrokerGenerationAdapter {
     }
 }
 
-#[derive(Debug)]
-pub struct LedgerReleaseAdapter {
-    ledger: Arc<RuntimeGenerationPinLedger>,
-}
-
-impl LedgerReleasePort for LedgerReleaseAdapter {
-    fn release_connection(
-        &self,
-        connection_id: &str,
-        socket_open: bool,
-    ) -> Result<ReleaseOutcome, String> {
-        self.ledger.release_connection(connection_id, socket_open)
-    }
-}
-
 /// WS-chain composition (fake-seam consumer for corpus/probe; production
 /// wiring lands the same ports).
 #[derive(Debug)]
 pub struct WebSocketLane {
     pub index: Arc<ClientConnectionIndex>,
-    pub ledger: Arc<RuntimeGenerationPinLedger>,
     pub broker: Arc<WebSocketRequestBroker>,
 }
 
@@ -90,9 +69,6 @@ impl WebSocketLane {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         options: WebSocketLaneOptions,
-        runtime_peer: Arc<dyn RuntimeGenerationPeer>,
-        runtime_close: Arc<dyn RuntimeSessionClose>,
-        admission: Arc<dyn PendingAdmissionSender>,
         methods: Arc<dyn MethodCatalog>,
         notifications: Arc<dyn NotificationObserver>,
         violations: Arc<dyn RuntimeViolationSink>,
@@ -100,9 +76,6 @@ impl WebSocketLane {
     ) -> Arc<Self> {
         Self::with_clock(
             options,
-            runtime_peer,
-            runtime_close,
-            admission,
             methods,
             notifications,
             violations,
@@ -114,22 +87,12 @@ impl WebSocketLane {
     #[allow(clippy::too_many_arguments)]
     pub fn with_clock(
         options: WebSocketLaneOptions,
-        runtime_peer: Arc<dyn RuntimeGenerationPeer>,
-        runtime_close: Arc<dyn RuntimeSessionClose>,
-        admission: Arc<dyn PendingAdmissionSender>,
         methods: Arc<dyn MethodCatalog>,
         notifications: Arc<dyn NotificationObserver>,
         violations: Arc<dyn RuntimeViolationSink>,
         dispatch: Arc<dyn DispatchInbound>,
         clock: Arc<dyn Clock>,
     ) -> Arc<Self> {
-        let ledger = Arc::new(RuntimeGenerationPinLedger::with_clock(
-            runtime_peer,
-            runtime_close,
-            admission,
-            options.ledger,
-            clock.clone(),
-        ));
         let broker = Arc::new(WebSocketRequestBroker::with_clock(
             methods,
             notifications,
@@ -142,17 +105,10 @@ impl WebSocketLane {
             Arc::new(BrokerGenerationAdapter {
                 broker: broker.clone(),
             }),
-            Arc::new(LedgerReleaseAdapter {
-                ledger: ledger.clone(),
-            }),
             options.index,
             clock,
         );
-        Arc::new(Self {
-            index,
-            ledger,
-            broker,
-        })
+        Arc::new(Self { index, broker })
     }
 
     pub fn reserve(&self, id: &str) -> Result<(), String> {
@@ -193,13 +149,12 @@ impl WebSocketLane {
         self.index.finish(id, terminal, close)
     }
 
-    /// Runtime disconnect drives all three owners in finalizer order
-    /// (C-ws §3.3, C-client-lifecycle §6.5).
+    /// Runtime disconnect drives the broker and index finalizers
+    /// (C-client-lifecycle §6.5).
     pub fn runtime_disconnected(
         self: &Arc<Self>,
         runtime: &RuntimeSessionEpoch,
     ) -> Vec<JoinHandle<Result<(), Vec<String>>>> {
-        self.ledger.runtime_disconnected(runtime);
         self.broker.runtime_disconnected_sender(runtime);
         self.index.runtime_disconnected(runtime)
     }
@@ -344,7 +299,6 @@ impl WebSocketLane {
 
     pub fn snapshot(&self) -> WsHealthSnapshot {
         let index: IndexHealthSnapshot = self.index.snapshot();
-        let ledger: LedgerHealthSnapshot = self.ledger.snapshot();
         let broker: BrokerHealthSnapshot = self.broker.snapshot();
         WsHealthSnapshot {
             connection_count: index.connection_count,
@@ -353,17 +307,11 @@ impl WebSocketLane {
             finalizer_count: index.finalizer_count,
             finalizer_failures: index.finalizer_failures,
             slow_client_count: index.slow_client_count,
-            pins_acquired: ledger.pins_acquired,
-            pins_pending_release: ledger.pins_pending_release,
-            release_acks: ledger.release_acks,
-            release_failures: ledger.release_failures,
-            runtime_closed: ledger.runtime_closed,
             generation_count: broker.generation_count,
             outbound_pending: broker.outbound_pending,
             inbound_pending: broker.inbound_pending,
             tombstones: broker.outbound_tombstones + broker.inbound_tombstones,
             timer_count: broker.timer_count,
-            fail_stop_reason: ledger.fail_stop_reason,
         }
     }
 }

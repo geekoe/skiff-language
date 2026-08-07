@@ -23,17 +23,15 @@ pub enum ConsumerKind {
     AdmissionPool,
     HealthLedger,
     RequestDispatcher,
-    RuntimeGenerationPinLedger,
     WebSocketRequestBroker,
     ActorSessionOwner,
 }
 
 impl ConsumerKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::AdmissionPool,
         Self::HealthLedger,
         Self::RequestDispatcher,
-        Self::RuntimeGenerationPinLedger,
         Self::WebSocketRequestBroker,
         Self::ActorSessionOwner,
     ];

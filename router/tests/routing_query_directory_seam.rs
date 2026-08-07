@@ -16,11 +16,10 @@ use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::session::layer::SessionRegistrationFacts;
 use skiff_router::session::ConsumerKind;
 
-const FULL_SET: [ConsumerKind; 6] = [
+const FULL_SET: [ConsumerKind; 5] = [
     ConsumerKind::AdmissionPool,
     ConsumerKind::HealthLedger,
     ConsumerKind::RequestDispatcher,
-    ConsumerKind::RuntimeGenerationPinLedger,
     ConsumerKind::WebSocketRequestBroker,
     ConsumerKind::ActorSessionOwner,
 ];

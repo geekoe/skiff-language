@@ -18,10 +18,6 @@ use skiff_runtime_transport::protocol::{
     encode_binary_frame, encode_request_cancel_frame, RequestCancelFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleControl,
-    WebSocketGenerationLifecycleDirection,
-};
 
 use crate::dispatch::{
     CandidateViewSource, LeaseRevalidate, RevalidateOutcome,
@@ -36,8 +32,8 @@ use crate::session::consumer::{ConsumerKind, SessionConsumer};
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::layer::{SessionCloseReason, SessionLayer};
 use crate::ws::{
-    BrokerRuntimeResponse, DispatchInbound, InboundDispatchAction, RuntimeGenerationPeer,
-    RuntimeResponder, RuntimeSessionClose, RuntimeViolationSink,
+    BrokerRuntimeResponse, DispatchInbound, InboundDispatchAction, RuntimeResponder,
+    RuntimeViolationSink,
 };
 
 use super::http::{HttpDispatchEvent, PendingHttpRouter};
@@ -260,53 +256,6 @@ fn write_session_frame(
         .layer()
         .ok_or_else(|| "session layer is not wired yet".to_string())?;
     layer.write_session_frame(session, bytes)
-}
-
-/// C-ws §3.3 outbound lifecycle control writer over the session registry.
-#[derive(Debug, Clone)]
-pub struct WsRuntimeGenerationPeer {
-    session: SessionHandle,
-}
-
-impl WsRuntimeGenerationPeer {
-    pub fn new(session: SessionHandle) -> Self {
-        Self { session }
-    }
-}
-
-impl RuntimeGenerationPeer for WsRuntimeGenerationPeer {
-    fn send_control(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        control: &WebSocketGenerationLifecycleControl,
-    ) -> Result<(), String> {
-        let bytes = encode_websocket_generation_lifecycle_frame(
-            WebSocketGenerationLifecycleDirection::RouterToRuntime,
-            control,
-        )
-        .map_err(|error| format!("websocket lifecycle encode failed: {error}"))?;
-        write_session_frame(&self.session, runtime, bytes)
-    }
-}
-
-/// C-ws §3.3 exact-session close (1008 protocol-unavailable etc.).
-#[derive(Debug, Clone)]
-pub struct WsRuntimeSessionClose {
-    session: SessionHandle,
-}
-
-impl WsRuntimeSessionClose {
-    pub fn new(session: SessionHandle) -> Self {
-        Self { session }
-    }
-}
-
-impl RuntimeSessionClose for WsRuntimeSessionClose {
-    fn close_session(&self, runtime: &RuntimeSessionEpoch, _code: u16, _reason: &str) {
-        if let Some(layer) = self.session.layer() {
-            layer.request_close(runtime, SessionCloseReason::Disconnect);
-        }
-    }
 }
 
 /// C-model-connection §3.3 outbound `connection.response` writer. One

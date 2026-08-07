@@ -114,7 +114,7 @@ export function localInstanceSpecFrom({ stack, skiffRoot, manifest }) {
     mongoDbPath,
     compilerBinary: binary('compiler', 'skiff-compiler'),
     keyringFile,
-    env: { RUST_LOG: 'info' },
+    env: { RUST_LOG: 'info', SKIFF_ROUTER_SESSION_DEBUG: '1' },
     processes,
   };
 }

@@ -12,10 +12,6 @@ use skiff_runtime_transport::connection_protocol::{
 use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, ConnectionSendFrameHeader, RuntimeFrameFamily,
 };
-use skiff_runtime_transport::websocket_generation_lifecycle::{
-    decode_websocket_generation_lifecycle_frame, encode_websocket_generation_lifecycle_frame,
-    WebSocketGenerationLifecycleControl, WebSocketGenerationLifecycleDirection,
-};
 
 use crate::session::demux::InboundFrameSink;
 use crate::session::identity::RuntimeSessionEpoch;
@@ -24,10 +20,12 @@ use crate::ws::{BrokerRuntimeSource, RuntimeRequest, RuntimeSendOutcome, WebSock
 
 use super::session_ports::{SessionHandle, WsRuntimeResponder};
 
-/// Connection-family sink: Runtime generation lifecycle controls
-/// (Acquire/Ack/Reject) go to the `RuntimeGenerationPinLedger` and Runtime
-/// outbound RPCs (`connection.request` / `connection.request.cancel`) go to
-/// the `WebSocketRequestBroker`.
+/// Connection-family sink: Runtime outbound RPCs (`connection.request` /
+/// `connection.request.cancel` / `connection.send`) go to the
+/// `WebSocketRequestBroker`. The generation lifecycle family
+/// (`websocket.generation.lifecycle`) is retired: client ws connections are
+/// stateless and the router connection registry is the only accounting
+/// authority.
 #[derive(Debug, Clone)]
 pub struct ConnectionFrameSink {
     lane: Arc<WebSocketLane>,
@@ -37,54 +35,6 @@ pub struct ConnectionFrameSink {
 impl ConnectionFrameSink {
     pub fn new(lane: Arc<WebSocketLane>, session: SessionHandle) -> Self {
         Self { lane, session }
-    }
-
-    fn write_lifecycle_control(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        control: &WebSocketGenerationLifecycleControl,
-    ) -> Result<(), TerminalKind> {
-        let bytes = encode_websocket_generation_lifecycle_frame(
-            WebSocketGenerationLifecycleDirection::RouterToRuntime,
-            control,
-        )
-        .map_err(|_| TerminalKind::MalformedFrame)?;
-        let layer = self
-            .session
-            .layer()
-            .ok_or(TerminalKind::UnimplementedFamily)?;
-        layer
-            .write_session_frame(runtime, bytes)
-            .map_err(|_| TerminalKind::MalformedFrame)
-    }
-
-    fn handle_lifecycle(
-        &self,
-        runtime: &RuntimeSessionEpoch,
-        control: &WebSocketGenerationLifecycleControl,
-    ) -> Result<(), TerminalKind> {
-        match control {
-            WebSocketGenerationLifecycleControl::Acquire { .. } => {
-                let decision = self.lane.ledger.handle_acquire(runtime, control);
-                match decision {
-                    crate::ws::AcquireDecision::Ack(ack) => {
-                        self.write_lifecycle_control(runtime, &ack)
-                    }
-                    crate::ws::AcquireDecision::Reject(reject) => {
-                        self.write_lifecycle_control(runtime, &reject)
-                    }
-                }
-            }
-            WebSocketGenerationLifecycleControl::Ack { .. }
-            | WebSocketGenerationLifecycleControl::Reject { .. } => self
-                .lane
-                .ledger
-                .handle_release_response(runtime, control)
-                .map_err(|_| TerminalKind::MalformedFrame),
-            WebSocketGenerationLifecycleControl::Release { .. } => {
-                Err(TerminalKind::MalformedFrame)
-            }
-        }
     }
 
     fn handle_request(
@@ -207,20 +157,11 @@ impl InboundFrameSink for ConnectionFrameSink {
     fn accepts_frame_type(&self, frame_type: &str) -> bool {
         matches!(
             frame_type,
-            "websocket.generation.lifecycle"
-                | "connection.request"
-                | "connection.request.cancel"
-                | "connection.send"
+            "connection.request" | "connection.request.cancel" | "connection.send"
         )
     }
 
     fn handle(&self, runtime: &RuntimeSessionEpoch, raw: &[u8]) -> Result<(), TerminalKind> {
-        if let Ok(control) = decode_websocket_generation_lifecycle_frame(
-            WebSocketGenerationLifecycleDirection::RuntimeToRouter,
-            raw,
-        ) {
-            return self.handle_lifecycle(runtime, &control);
-        }
         if let Ok((header, payload)) = decode_connection_request_frame(raw) {
             return self.handle_request(runtime, &header, payload);
         }

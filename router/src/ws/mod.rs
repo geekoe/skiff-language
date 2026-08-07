@@ -1,9 +1,12 @@
 //! W-WebSocket lane (Router Rust migration batch 7):
 //! `ClientConnectionIndex` + `ClientSocketGeneration` finalizer,
-//! `RuntimeGenerationPinLedger`, `WebSocketRequestBroker` and the frozen
-//! JSON-RPC 2.0 text profile adapter (authority design §3.2/§3.7/§3.8,
-//! §5.4 W-WebSocket, §7 E-ws; C-client-lifecycle / C-ws /
-//! C-model-connection contracts).
+//! `WebSocketRequestBroker` and the frozen JSON-RPC 2.0 text profile adapter
+//! (authority design §3.2/§3.7/§3.8, §5.4 W-WebSocket, §7 E-ws;
+//! C-client-lifecycle / C-ws / C-model-connection contracts).
+//!
+//! Client WS connections are stateless and bind no runtime/build: the router
+//! connection registry (broker) is the sole connection accounting / capacity
+//! authority; connection attach/close accounting happens router-side.
 //!
 //! This module owns no ordinary dispatcher pending and never re-implements
 //! transport codecs; the frozen `skiff-runtime-transport` classifier and
@@ -12,7 +15,6 @@
 pub mod broker;
 pub mod index;
 pub mod lane;
-pub mod ledger;
 pub mod profile;
 pub mod types;
 
@@ -23,17 +25,9 @@ pub use broker::{
 };
 pub use index::{
     AdmissionOutcome, AttachMeta, BrokerGenerationPort, ClientConnectionIndex,
-    ClientConnectionIndexOptions, IndexHealthSnapshot, LedgerReleasePort, OverflowPolicy,
-    WriteBudget,
+    ClientConnectionIndexOptions, IndexHealthSnapshot, OverflowPolicy, WriteBudget,
 };
-pub use lane::{
-    BrokerGenerationAdapter, LedgerReleaseAdapter, WebSocketLane, WebSocketLaneOptions,
-};
-pub use ledger::{
-    AcquireDecision, AllowAnyPendingAdmission, LedgerHealthSnapshot, LedgerOptions,
-    PendingAdmissionSender, PendingReleaseHandle, ReleaseOutcome, ReleaseResolution,
-    RuntimeGenerationPeer, RuntimeGenerationPinLedger, RuntimeSessionClose,
-};
+pub use lane::{BrokerGenerationAdapter, WebSocketLane, WebSocketLaneOptions};
 pub use profile::{JsonRpc20TextProfile, PeerResponseTerminal, PlatformErrorKind, ProfileLimits};
 pub use types::{
     BrokerConnectionGeneration, BrokerRuntimeResponse, BrokerRuntimeSource, BusinessKey,
