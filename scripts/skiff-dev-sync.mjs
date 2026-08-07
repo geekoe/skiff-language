@@ -219,6 +219,23 @@ export async function runDevWatch(options, dependencies = {}) {
           state: retained,
         };
       }
+      if (isPermanentBuildError(error)) {
+        // Authoring/parse failures cannot resolve without source changes.
+        // Stop the retry loop (CPU + log spam) and wait for the next
+        // fingerprint change to wake a fresh attempt.
+        retryAt = Number.POSITIVE_INFINITY;
+        await writeBuildStatusFile({
+          path: buildStatusPath,
+          state: 'failed',
+          updatedAt: new Date(now()).toISOString(),
+          nextRetryAt: null,
+          error: summarizeBuildError(error),
+          attempt,
+          permanent: true,
+        });
+        reportPermanentBuildFailure();
+        continue;
+      }
       attempt += 1;
       retryAt = now() + retryDelayMs;
       retryDelayMs = Math.min(retryDelayMs * 2, 30000);
@@ -233,6 +250,18 @@ export async function runDevWatch(options, dependencies = {}) {
     }
   }
 }
+
+function reportPermanentBuildFailure() {
+  if (reportedPermanentBuildFailure === false) {
+    return;
+  }
+  reportedPermanentBuildFailure = false;
+  console.error(
+    '[dev-sync] permanent build failure (parse/authoring error); retrying after the next source change',
+  );
+}
+
+let reportedPermanentBuildFailure = true;
 
 async function devWatchObservation({
   registryPath,
@@ -469,6 +498,16 @@ async function buildDependencyOrdered(entries, build) {
 
 function isUnpublishedExactDependency(error) {
   return /has no published (?:provider )?(?:PackageArtifact|ServiceContract) pointer/.test(
+    formatError(error),
+  );
+}
+
+/// Authoring/parse failures are permanent for the current source tree: the
+/// compiler cannot fix them by retrying, so the watch stops retrying and
+/// waits for the next source change (dependency-ordering failures are
+/// transient and keep the backoff retry path).
+function isPermanentBuildError(error) {
+  return /failed to parse|unexpected character|unexpected token|syntax error/i.test(
     formatError(error),
   );
 }
