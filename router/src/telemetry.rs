@@ -27,18 +27,22 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use skiff_runtime_transport::protocol::{
     TelemetryBatchEnvelope, TelemetryEvent, TelemetryLevel, TelemetryProtocol,
-    TelemetryRegisterEnvelope, TelemetrySource, TelemetryTopic, TelemetryVisibility,
+    TelemetryRegisterEnvelope, TelemetrySource, TelemetryVisibility,
 };
 
 use crate::config::RouterConfig;
 
 pub const TELEMETRY_REGISTER_TYPE: &str = "telemetry.register";
 pub const TELEMETRY_BATCH_TYPE: &str = "telemetry.batch";
+pub const TELEMETRY_FILE_HEADER_TYPE: &str = "fileHeader";
+pub const TELEMETRY_FILE_PROTOCOL: &str = "skiff-telemetry-v1";
 const DEFAULT_QUEUE_MAX_EVENTS: usize = 10_000;
 const DEFAULT_BATCH_MAX_EVENTS: usize = 200;
 const DEFAULT_BATCH_MAX_BYTES: usize = 262_144;
 const DEFAULT_STRING_MAX_CHARS: usize = 2048;
 const DEFAULT_EVENT_MAX_BYTES: usize = 16 * 1024;
+const DEFAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_FILE_MAX_FILES: usize = 8;
 const EXPORTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const EXPORTER_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -63,24 +67,30 @@ struct RouterTelemetryConfig {
     producer_id: String,
     source: TelemetrySource,
     protocol: TelemetryProtocol,
-    topics: Vec<TelemetryTopic>,
     queue_max_events: usize,
     batch_max_events: usize,
     batch_max_bytes: usize,
     flush_interval_ms: u64,
     string_max_chars: usize,
     event_max_bytes: usize,
+    file_root: std::path::PathBuf,
+    file_path: Option<std::path::PathBuf>,
+    file_max_bytes: u64,
+    file_max_files: usize,
 }
 
 impl RouterTelemetryConfig {
     fn from_router(config: &RouterConfig, telemetry: &crate::config::TelemetryConfig) -> Self {
         let profile = config.profile.as_str();
-        let topics = parse_topics(&telemetry.topics);
+        let file_root = config
+            .artifacts_path
+            .parent()
+            .map(|parent| parent.join("logs").join("telemetry"))
+            .unwrap_or_else(|| std::path::PathBuf::from("logs").join("telemetry"));
         Self {
             producer_id: format!("router:{profile}"),
             source: TelemetrySource::Router,
             protocol: TelemetryProtocol::SkiffTelemetryV1,
-            topics,
             queue_max_events: usize::try_from(telemetry.queue_max_events)
                 .unwrap_or(DEFAULT_QUEUE_MAX_EVENTS),
             batch_max_events: usize::try_from(telemetry.batch_max_events)
@@ -90,52 +100,42 @@ impl RouterTelemetryConfig {
             flush_interval_ms: telemetry.flush_interval_ms.max(1),
             string_max_chars: DEFAULT_STRING_MAX_CHARS,
             event_max_bytes: DEFAULT_EVENT_MAX_BYTES,
+            file_root,
+            file_path: telemetry.file_path.clone(),
+            file_max_bytes: telemetry
+                .file_max_bytes
+                .unwrap_or(DEFAULT_FILE_MAX_BYTES),
+            file_max_files: usize::try_from(telemetry.file_max_files.unwrap_or(
+                DEFAULT_FILE_MAX_FILES as u64,
+            ))
+            .unwrap_or(DEFAULT_FILE_MAX_FILES),
         }
     }
-}
-
-fn parse_topics(raw: &[String]) -> Vec<TelemetryTopic> {
-    let mut topics = Vec::new();
-    for topic in raw {
-        let parsed = match topic.as_str() {
-            "log" => TelemetryTopic::Log,
-            "trace" => TelemetryTopic::Trace,
-            "metric" => TelemetryTopic::Metric,
-            "health" => TelemetryTopic::Health,
-            "debug" => TelemetryTopic::Debug,
-            _ => continue,
-        };
-        if !topics.contains(&parsed) {
-            topics.push(parsed);
-        }
-    }
-    topics
 }
 
 #[derive(Debug, Default)]
 struct TelemetryDropCounters {
-    counters: Mutex<Map<String, Value>>,
+    dropped: AtomicU64,
+    queue_lock: AtomicU64,
 }
 
 impl TelemetryDropCounters {
-    fn record(&self, topic: &TelemetryTopic) {
-        let key = match topic {
-            TelemetryTopic::Log => "log",
-            TelemetryTopic::Trace => "trace",
-            TelemetryTopic::Metric => "metric",
-            TelemetryTopic::Health => "health",
-            TelemetryTopic::Debug => "debug",
-        };
-        let mut counters = self.counters.lock().expect("drop counters lock");
-        let current = counters
-            .get(key)
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        counters.insert(key.to_string(), json!(current + 1));
+    fn record_dropped(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Snapshots and resets; returns an empty map when nothing was dropped so
+    /// the `telemetry.dropped` event is only injected when it carries data.
     fn take(&self) -> Map<String, Value> {
-        std::mem::take(&mut *self.counters.lock().expect("drop counters lock"))
+        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        let queue_lock = self.queue_lock.swap(0, Ordering::Relaxed);
+        if dropped == 0 && queue_lock == 0 {
+            return Map::new();
+        }
+        Map::from_iter([
+            ("dropped".to_string(), json!(dropped)),
+            ("queueLock".to_string(), json!(queue_lock)),
+        ])
     }
 }
 
@@ -154,7 +154,7 @@ pub struct RouterTelemetryProducer {
 impl RouterTelemetryProducer {
     pub fn new(config: &RouterConfig) -> Option<Self> {
         let telemetry = config.telemetry.as_ref()?;
-        if !telemetry.enabled || telemetry.endpoint.trim().is_empty() {
+        if !telemetry.enabled {
             return None;
         }
         Some(Self {
@@ -178,29 +178,25 @@ impl RouterTelemetryProducer {
             producer_id: config.producer_id.clone(),
             source: config.source.clone(),
             runtime_id: None,
-            topics: config.topics.clone(),
         }
     }
 
     pub fn emit(&self, event: TelemetryEvent) -> bool {
         let config = &self.config;
-        if !config.topics.contains(&event.topic) {
-            self.dropped.record(&event.topic);
-            return false;
-        }
         let event = redact_event(event, config.string_max_chars, config.event_max_bytes);
         let enqueued = {
             let mut events = self.events.lock().expect("telemetry queue lock");
             if events.len() >= config.queue_max_events {
                 if let Some(dropped) = events.pop_front() {
-                    self.dropped.record(&dropped.topic);
+                    let _ = dropped;
+                    self.dropped.record_dropped();
                 }
             }
             if events.len() < config.queue_max_events {
                 events.push_back(event);
                 true
             } else {
-                self.dropped.record(&event.topic);
+                self.dropped.record_dropped();
                 false
             }
         };
@@ -221,7 +217,7 @@ impl RouterTelemetryProducer {
         if !dropped.is_empty() {
             events.insert(
                 0,
-                router_telemetry_event(TelemetryTopic::Log, TelemetryLevel::Warn, |event| {
+                router_telemetry_event(TelemetryLevel::Warn, |event| {
                     event.name = Some("telemetry.dropped".to_string());
                     event.attrs = Some(dropped);
                 }),
@@ -285,6 +281,176 @@ impl RouterTelemetryExporterHandle {
         let _ = self.shutdown_tx.send(true);
         let _ = timeout(EXPORTER_SHUTDOWN_FLUSH_TIMEOUT, self.task).await;
     }
+}
+
+/// File sink (default when `telemetry.endpoint` is absent/empty): writes one
+/// `TelemetryEvent` per JSONL line (no batch wrapper), with a file header
+/// rewritten on every new file (including post-rotation). Semantics mirror the
+/// runtime host file sink; write failures warn on stderr and are skipped.
+#[derive(Debug, Clone)]
+pub struct RouterTelemetryFileSink {
+    producer: RouterTelemetryProducer,
+}
+
+impl RouterTelemetryFileSink {
+    pub fn new(producer: RouterTelemetryProducer) -> Self {
+        Self { producer }
+    }
+
+    pub fn producer(&self) -> &RouterTelemetryProducer {
+        &self.producer
+    }
+
+    /// Synchronously flushes the pending queue to the JSONL file. Exposed for
+    /// tests and the shutdown flush; the background loop uses the same core.
+    pub fn drain_once_to_file(&self) -> Result<(), String> {
+        flush_pending_to_file(&self.producer)
+    }
+
+    pub fn start(self) -> RouterTelemetryFileSinkHandle {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(file_sink_loop(self.producer, shutdown_rx));
+        RouterTelemetryFileSinkHandle { shutdown_tx, task }
+    }
+}
+
+#[derive(Debug)]
+pub struct RouterTelemetryFileSinkHandle {
+    shutdown_tx: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+impl RouterTelemetryFileSinkHandle {
+    pub async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(true);
+        let _ = timeout(EXPORTER_SHUTDOWN_FLUSH_TIMEOUT, self.task).await;
+    }
+}
+
+async fn file_sink_loop(
+    producer: RouterTelemetryProducer,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(
+        producer.config_snapshot().flush_interval_ms.max(1),
+    ));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                let _ = flush_pending_to_file(&producer);
+                break;
+            }
+            _ = interval.tick() => {
+                if let Err(error) = flush_pending_to_file(&producer) {
+                    eprintln!("[router-telemetry] file sink flush failed: {error}");
+                }
+            }
+            _ = producer.notified() => {
+                if producer.queue_len() >= producer.config_snapshot().batch_max_events {
+                    if let Err(error) = flush_pending_to_file(&producer) {
+                        eprintln!("[router-telemetry] file sink flush failed: {error}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn flush_pending_to_file(producer: &RouterTelemetryProducer) -> Result<(), String> {
+    let events: Vec<TelemetryEvent> = producer
+        .drain_batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .collect();
+    for event in events {
+        write_event_to_file(producer, &event)?;
+    }
+    Ok(())
+}
+
+fn write_event_to_file(
+    producer: &RouterTelemetryProducer,
+    event: &TelemetryEvent,
+) -> Result<(), String> {
+    let config = producer.config_snapshot();
+    let path = file_sink_path(config);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create telemetry dir {}: {error}", parent.display()))?;
+    }
+    if file_needs_rotation(&path, config.file_max_bytes) {
+        rotate_files(&path, config.file_max_files)?;
+        write_file_header(&path, config)?;
+    } else if !path.exists() {
+        write_file_header(&path, config)?;
+    }
+    let line = serde_json::to_string(event).map_err(|error| error.to_string())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("open telemetry file {}: {error}", path.display()))?;
+    std::io::Write::write_all(&mut file, line.as_bytes())
+        .and_then(|_| std::io::Write::write_all(&mut file, b"\n"))
+        .map_err(|error| format!("write telemetry file {}: {error}", path.display()))
+}
+
+fn file_sink_path(config: &RouterTelemetryConfig) -> std::path::PathBuf {
+    match &config.file_path {
+        Some(path) if path.is_absolute() => path.clone(),
+        Some(path) => config.file_root.join(path),
+        None => config.file_root.join(format!("{}.jsonl", config.producer_id)),
+    }
+}
+
+fn file_needs_rotation(path: &std::path::Path, max_bytes: u64) -> bool {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len() >= max_bytes)
+        .unwrap_or(false)
+}
+
+/// Rotates `<name>.jsonl` -> `<name>.jsonl.1` and shifts older files up
+/// (`.1` -> `.2`, ...), overwriting the oldest rotated file so at most
+/// `max_files` rotated files are retained.
+fn rotate_files(path: &std::path::Path, max_files: usize) -> Result<(), String> {
+    for index in (1..max_files).rev() {
+        let source = rotated_path(path, index);
+        if source.exists() {
+            std::fs::rename(&source, rotated_path(path, index + 1))
+                .map_err(|error| format!("rotate telemetry file {}: {error}", source.display()))?;
+        }
+    }
+    std::fs::rename(path, rotated_path(path, 1))
+        .map_err(|error| format!("rotate telemetry file {}: {error}", path.display()))
+}
+
+fn rotated_path(path: &std::path::Path, index: usize) -> std::path::PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "telemetry.jsonl".to_string());
+    path.with_file_name(format!("{file_name}.{index}"))
+}
+
+fn write_file_header(path: &std::path::Path, config: &RouterTelemetryConfig) -> Result<(), String> {
+    let header = json!({
+        "type": TELEMETRY_FILE_HEADER_TYPE,
+        "protocol": TELEMETRY_FILE_PROTOCOL,
+        "producerId": config.producer_id,
+        "source": config.source,
+        "createdAt": telemetry_timestamp_now(),
+    });
+    let line = serde_json::to_string(&header).map_err(|error| error.to_string())?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("open telemetry file {}: {error}", path.display()))?;
+    std::io::Write::write_all(&mut file, line.as_bytes())
+        .and_then(|_| std::io::Write::write_all(&mut file, b"\n"))
+        .map_err(|error| format!("write telemetry file {}: {error}", path.display()))
 }
 
 async fn exporter_loop(
@@ -402,14 +568,12 @@ where
         .map_err(|error| error.to_string())
 }
 
-/// Base router task event with Log topic and Router source.
+/// Base router task event with Router source.
 pub fn router_telemetry_event(
-    topic: TelemetryTopic,
     level: TelemetryLevel,
     configure: impl FnOnce(&mut TelemetryEvent),
 ) -> TelemetryEvent {
     let mut event = TelemetryEvent {
-        topic,
         ts: telemetry_timestamp_now(),
         source: TelemetrySource::Router,
         visibility: TelemetryVisibility::Operational,
@@ -447,7 +611,7 @@ pub fn task_event(
     task_id: Option<&str>,
     attrs: Map<String, Value>,
 ) -> TelemetryEvent {
-    let mut event = router_telemetry_event(TelemetryTopic::Log, level, |event| {
+    let mut event = router_telemetry_event(level, |event| {
         event.name = Some(name.to_string());
     });
     let mut attrs = attrs;
@@ -496,11 +660,10 @@ pub fn backlog_metric_event(
     if let Some(observed_at) = observation.observed_at {
         attrs.insert("observedAtMs".to_string(), json!(observed_at.millis()));
     }
-    let mut event = router_telemetry_event(TelemetryTopic::Metric, TelemetryLevel::Info, |event| {
+    router_telemetry_event(TelemetryLevel::Info, |event| {
         event.name = Some("task.backlog".to_string());
         event.attrs = Some(attrs);
-    });
-    event
+    })
 }
 
 pub fn telemetry_timestamp_now() -> String {

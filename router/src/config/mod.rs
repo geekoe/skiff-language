@@ -22,7 +22,6 @@ pub const DEFAULT_RUNTIME_PATH: &str = "/runtime";
 pub const DEFAULT_WEBSOCKET_PATH: &str = "/ws";
 pub const DEFAULT_MANIFEST: &str = "fixtures/hello/manifest.json";
 pub const TELEMETRY_PROTOCOL: &str = "skiff-telemetry-v1";
-pub const TELEMETRY_TOPICS: [&str; 5] = ["log", "trace", "metric", "health", "debug"];
 pub const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS: u64 = 10_000;
 pub const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS: u64 = 200;
 pub const DEFAULT_TELEMETRY_BATCH_MAX_BYTES: u64 = 262_144;
@@ -60,11 +59,13 @@ const TELEMETRY_KEYS: &[&str] = &[
     "enabled",
     "endpoint",
     "protocol",
-    "topics",
     "queueMaxEvents",
     "batchMaxEvents",
     "batchMaxBytes",
     "flushIntervalMs",
+    "filePath",
+    "fileMaxBytes",
+    "fileMaxFiles",
 ];
 const FILE_BACKEND_KEYS: &[&str] = &["local", "oss"];
 const FILE_BACKEND_LOCAL_KEYS: &[&str] = &["root"];
@@ -143,11 +144,15 @@ pub struct TelemetryConfig {
     pub enabled: bool,
     pub endpoint: String,
     pub protocol: String,
-    pub topics: Vec<String>,
     pub queue_max_events: u64,
     pub batch_max_events: u64,
     pub batch_max_bytes: u64,
     pub flush_interval_ms: u64,
+    /// Optional JSONL sink file override: absolute paths are used directly,
+    /// relative paths resolve against `<artifacts_path.parent()>/logs/telemetry`.
+    pub file_path: Option<PathBuf>,
+    pub file_max_bytes: Option<u64>,
+    pub file_max_files: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,12 +420,10 @@ fn read_telemetry_config(
     };
     let endpoint = read_string(Some(endpoint_value), "telemetry.endpoint", "")?;
     let protocol = read_telemetry_protocol(value.get("protocol"))?;
-    let topics = read_telemetry_topics(value.get("topics"))?;
     Ok(Some(TelemetryConfig {
         enabled: true,
         endpoint,
         protocol,
-        topics,
         queue_max_events: read_positive_integer(
             value.get("queueMaxEvents"),
             "telemetry.queueMaxEvents",
@@ -441,6 +444,16 @@ fn read_telemetry_config(
             "telemetry.flushIntervalMs",
             DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS,
         )?,
+        file_path: read_optional_non_empty_string(value.get("filePath"), "telemetry.filePath")?
+            .map(PathBuf::from),
+        file_max_bytes: read_optional_positive_integer(
+            value.get("fileMaxBytes"),
+            "telemetry.fileMaxBytes",
+        )?,
+        file_max_files: read_optional_positive_integer(
+            value.get("fileMaxFiles"),
+            "telemetry.fileMaxFiles",
+        )?,
     }))
 }
 
@@ -454,53 +467,6 @@ fn read_telemetry_protocol(value: Option<&JsonValue>) -> Result<String, RouterCo
             "router config telemetry.protocol must be {TELEMETRY_PROTOCOL}"
         ))),
     }
-}
-
-fn read_telemetry_topics(value: Option<&JsonValue>) -> Result<Vec<String>, RouterConfigError> {
-    let Some(value) = value else {
-        return Ok(TELEMETRY_TOPICS
-            .iter()
-            .map(|topic| topic.to_string())
-            .collect());
-    };
-    if value.is_null() {
-        return Ok(TELEMETRY_TOPICS
-            .iter()
-            .map(|topic| topic.to_string())
-            .collect());
-    }
-    let Some(items) = value.as_array() else {
-        return Err(error(
-            "router config telemetry.topics must be a non-empty array",
-        ));
-    };
-    if items.is_empty() {
-        return Err(error(
-            "router config telemetry.topics must be a non-empty array",
-        ));
-    }
-    let mut topics = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let Some(topic) = item.as_str() else {
-            return Err(error(format!(
-                "router config telemetry.topics[{index}] must be one of {}",
-                TELEMETRY_TOPICS.join(", ")
-            )));
-        };
-        if !TELEMETRY_TOPICS.contains(&topic) {
-            return Err(error(format!(
-                "router config telemetry.topics[{index}] must be one of {}",
-                TELEMETRY_TOPICS.join(", ")
-            )));
-        }
-        if topics.contains(&topic.to_string()) {
-            return Err(error(
-                "router config telemetry.topics must not contain duplicates",
-            ));
-        }
-        topics.push(topic.to_string());
-    }
-    Ok(topics)
 }
 
 fn read_rewrite_rules(
@@ -707,6 +673,16 @@ fn read_positive_integer(
     match value {
         None | Some(JsonValue::Null) => Ok(fallback),
         _ => read_required_positive_integer(value, name),
+    }
+}
+
+fn read_optional_positive_integer(
+    value: Option<&JsonValue>,
+    name: &str,
+) -> Result<Option<u64>, RouterConfigError> {
+    match value {
+        None | Some(JsonValue::Null) => Ok(None),
+        _ => read_required_positive_integer(value, name).map(Some),
     }
 }
 

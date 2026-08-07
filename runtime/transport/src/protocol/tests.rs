@@ -19,7 +19,7 @@ use crate::protocol::{
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
     RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
     RuntimeTraceContextFrameHeader, TaskSubmitRequestFrameHeader, TelemetryBatchEnvelope,
-    TelemetryProtocol, TelemetryTopic, TelemetryVisibility, ValidatedResponseErrorFrame,
+    TelemetryProtocol, TelemetryVisibility, ValidatedResponseErrorFrame,
     RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_request_contract::ServiceErrorEnvelope;
@@ -814,16 +814,6 @@ fn router_control_envelope_deserializes_telemetry_fixture() {
     let telemetry = value.telemetry.expect("telemetry config should be present");
     assert_eq!(telemetry.endpoint, "ws://127.0.0.1:4002/telemetry");
     assert_eq!(telemetry.protocol, TelemetryProtocol::SkiffTelemetryV1);
-    assert_eq!(
-        telemetry.topics,
-        vec![
-            TelemetryTopic::Log,
-            TelemetryTopic::Trace,
-            TelemetryTopic::Metric,
-            TelemetryTopic::Health,
-            TelemetryTopic::Debug
-        ]
-    );
     assert_eq!(telemetry.queue_max_events, 10_000);
     assert_eq!(telemetry.batch_max_events, 200);
     assert_eq!(telemetry.batch_max_bytes, 262_144);
@@ -837,8 +827,21 @@ fn telemetry_shared_fixture_requires_visibility_and_restricted_correlation() {
         "../../../../doc/architecture/fixtures/observability-minimal.json"
     ))
     .expect("observability fixture should parse");
-    let batch: TelemetryBatchEnvelope = serde_json::from_value(fixture["valid"]["batch"].clone())
-        .expect("shared telemetry batch must decode");
+    // The shared fixture still carries the legacy per-event `topic` field for
+    // the TS telemetry tests; the de-topic transport protocol rejects unknown
+    // fields, so strip it before decoding.
+    let mut batch_value = fixture["valid"]["batch"].clone();
+    for event in batch_value["events"]
+        .as_array_mut()
+        .expect("batch events must be an array")
+    {
+        event
+            .as_object_mut()
+            .expect("batch event must be an object")
+            .remove("topic");
+    }
+    let batch: TelemetryBatchEnvelope =
+        serde_json::from_value(batch_value).expect("shared telemetry batch must decode");
     assert_eq!(batch.events.len(), 4);
     assert!(batch.events[..3]
         .iter()

@@ -16,7 +16,7 @@ pub use control::{
     RouterControlEnvelope, RouterControlFrameHeader, RouterControlPackageConfig,
     RouterControlServiceConfig, RouterControlServiceDb, TelemetryBatchEnvelope,
     TelemetryControlConfig, TelemetryEvent, TelemetryLevel, TelemetryProtocol,
-    TelemetryRegisterEnvelope, TelemetrySource, TelemetryTopic, TelemetryVisibility, TypedEnvelope,
+    TelemetryRegisterEnvelope, TelemetrySource, TelemetryVisibility, TypedEnvelope,
 };
 pub use frame::{
     decode_binary_frame, decode_binary_frame_parts, decode_typed_binary_frame, encode_binary_frame,

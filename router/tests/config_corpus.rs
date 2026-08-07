@@ -13,7 +13,6 @@ use serde_json::Value;
 
 use skiff_router::config::{
     load_router_config, redact_router_config, RouterConfig, ROUTER_CONFIG_REDACTED_VALUE,
-    TELEMETRY_TOPICS,
 };
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/router-config");
@@ -194,7 +193,6 @@ mod tests {
                 assert!(telemetry.enabled);
                 assert_eq!(telemetry.endpoint, "ws://127.0.0.1:4002/telemetry");
                 assert_eq!(telemetry.protocol, "skiff-telemetry-v1");
-                assert_eq!(telemetry.topics, TELEMETRY_TOPICS.to_vec());
                 assert_eq!(telemetry.queue_max_events, 10_000);
                 assert_eq!(telemetry.batch_max_events, 200);
                 assert_eq!(telemetry.batch_max_bytes, 262_144);
@@ -261,7 +259,6 @@ mod tests {
                 assert!(telemetry.enabled);
                 assert_eq!(telemetry.endpoint, "ws://127.0.0.1:4002/telemetry");
                 assert_eq!(telemetry.protocol, "skiff-telemetry-v1");
-                assert_eq!(telemetry.topics, TELEMETRY_TOPICS.to_vec());
                 assert_eq!(telemetry.queue_max_events, 5);
                 assert_eq!(telemetry.batch_max_events, 3);
                 assert_eq!(telemetry.batch_max_bytes, 1024);

@@ -38,27 +38,11 @@ pub enum TelemetryProtocol {
 pub struct TelemetryControlConfig {
     pub endpoint: String,
     pub protocol: TelemetryProtocol,
-    pub topics: Vec<TelemetryTopic>,
     pub queue_max_events: u32,
     pub batch_max_events: u32,
     pub batch_max_bytes: u32,
     pub flush_interval_ms: u32,
     pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum TelemetryTopic {
-    #[serde(rename = "log")]
-    Log,
-    #[serde(rename = "trace")]
-    Trace,
-    #[serde(rename = "metric")]
-    Metric,
-    #[serde(rename = "health")]
-    Health,
-    #[serde(rename = "debug")]
-    Debug,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -138,13 +122,11 @@ pub struct TelemetryRegisterEnvelope {
     pub source: TelemetrySource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
-    pub topics: Vec<TelemetryTopic>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryEvent {
-    pub topic: TelemetryTopic,
     pub ts: String,
     pub source: TelemetrySource,
     pub visibility: TelemetryVisibility,
@@ -199,7 +181,6 @@ pub struct TelemetryEvent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawTelemetryEvent {
-    topic: TelemetryTopic,
     ts: String,
     source: TelemetrySource,
     visibility: TelemetryVisibility,
@@ -256,7 +237,6 @@ impl TryFrom<RawTelemetryEvent> for TelemetryEvent {
             }
         }
         Ok(Self {
-            topic: raw.topic,
             ts: raw.ts,
             source: raw.source,
             visibility: raw.visibility,

@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use skiff_runtime_host::host::telemetry::RuntimeTelemetryConfig;
 use url::Url;
 
 pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -67,7 +68,7 @@ pub struct RuntimeFileConfig {
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
-    pub telemetry_endpoint: Option<String>,
+    pub telemetry: Option<RuntimeTelemetryConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,7 +90,14 @@ struct RawRuntimeFileConfig {
 struct RawRuntimeTelemetryConfig {
     #[serde(default)]
     enabled: Option<bool>,
-    endpoint: String,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    file_max_bytes: Option<u64>,
+    #[serde(default)]
+    file_max_files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,22 +151,34 @@ impl RuntimeFileConfig {
             )?,
             http_response_max_bytes: runtime_http_response_max_bytes_from_value(&value)?,
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
-            telemetry_endpoint: runtime_telemetry_endpoint(raw.telemetry)?,
+            telemetry: runtime_telemetry(raw.telemetry)?,
         })
     }
 }
 
-fn runtime_telemetry_endpoint(telemetry: Option<RawRuntimeTelemetryConfig>) -> anyhow::Result<Option<String>> {
+/// Parses the telemetry block into the host producer config.
+///
+/// `enabled: false` (or absent telemetry block) disables telemetry entirely
+/// (`None`); otherwise a config is returned with `endpoint: Some(non-empty)`
+/// for the WS exporter or `endpoint: None` for the default JSONL file sink.
+/// The `filePath` override is passed through unresolved: absolute paths are
+/// used directly, relative paths resolve against the default
+/// `<runtime_home.parent()>/logs/telemetry` root in the host.
+fn runtime_telemetry(
+    telemetry: Option<RawRuntimeTelemetryConfig>,
+) -> anyhow::Result<Option<RuntimeTelemetryConfig>> {
     let Some(telemetry) = telemetry else {
         return Ok(None);
     };
     if telemetry.enabled == Some(false) {
         return Ok(None);
     }
-    if telemetry.endpoint.trim().is_empty() {
-        anyhow::bail!("runtime config telemetry.endpoint must not be empty when telemetry is enabled");
-    }
-    Ok(Some(telemetry.endpoint))
+    Ok(Some(RuntimeTelemetryConfig {
+        endpoint: telemetry.endpoint.filter(|endpoint| !endpoint.trim().is_empty()),
+        file_path: telemetry.file_path.map(PathBuf::from),
+        file_max_bytes: telemetry.file_max_bytes,
+        file_max_files: telemetry.file_max_files,
+    }))
 }
 
 fn runtime_service_db_encryption_keyring_file(

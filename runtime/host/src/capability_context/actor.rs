@@ -24,7 +24,7 @@ use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
     ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskCancelResponseFrameHeader,
     TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader, TaskSubmitRejectionCode,
-    TaskSubmitResponseFrameHeader, TelemetryLevel, TelemetrySource, TelemetryTopic,
+    TaskSubmitResponseFrameHeader, TelemetryLevel, TelemetrySource,
 };
 
 const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
@@ -588,11 +588,7 @@ impl<'a> RequestClientContext<'a> {
         let Some(telemetry) = self.telemetry.as_ref() else {
             return;
         };
-        let mut event = telemetry_event(
-            TelemetryTopic::Log,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.name = Some(name.to_string());
         event.level = Some(level);
         event.service_id = Some(self.service_id.to_string());

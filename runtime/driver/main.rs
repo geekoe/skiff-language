@@ -70,7 +70,7 @@ async fn run() -> anyhow::Result<()> {
         runtime_home: file_config.runtime_home,
         http_response_max_bytes: file_config.http_response_max_bytes,
         http_egress_proxy: file_config.http_egress_proxy,
-        telemetry_endpoint: file_config.telemetry_endpoint,
+        telemetry: file_config.telemetry,
     })
     .await?;
 

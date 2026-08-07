@@ -70,7 +70,8 @@ use crate::task::{
 };
 use crate::telemetry::{
     NoopTaskTelemetrySink, RouterTelemetryExporter, RouterTelemetryExporterHandle,
-    RouterTelemetryProducer, TaskTelemetrySink,
+    RouterTelemetryFileSink, RouterTelemetryFileSinkHandle, RouterTelemetryProducer,
+    TaskTelemetrySink,
 };
 
 /// Fail-closed supervisor assembly errors; no listener is started and owned
@@ -118,6 +119,9 @@ pub struct RouterComponents {
     pub task_telemetry: Arc<dyn TaskTelemetrySink>,
     /// Optional telemetry exporter task; shut down with the control plane.
     pub telemetry_exporter: Mutex<Option<RouterTelemetryExporterHandle>>,
+    /// Optional telemetry file sink task (default when endpoint is empty);
+    /// shut down with the control plane.
+    pub telemetry_file_sink: Mutex<Option<RouterTelemetryFileSinkHandle>>,
     /// Task worker joins; aborted on supervisor shutdown.
     pub task_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -149,6 +153,14 @@ impl RouterComponents {
             .take()
         {
             exporter.shutdown().await;
+        }
+        if let Some(file_sink) = self
+            .telemetry_file_sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            file_sink.shutdown().await;
         }
         let _ = self.task_store.close().await;
     }
@@ -227,9 +239,9 @@ impl RouterComponents {
             Mutex<Option<Arc<crate::supervisor::actor_sink::ActorFrameSink>>>,
         > = Arc::new(Mutex::new(None));
         let task_counters = Arc::new(TaskControlCounters::default());
-        let task_telemetry: Arc<dyn TaskTelemetrySink> = match RouterTelemetryProducer::new(config)
-        {
-            Some(producer) => Arc::new(producer),
+        let telemetry_producer = RouterTelemetryProducer::new(config);
+        let task_telemetry: Arc<dyn TaskTelemetrySink> = match &telemetry_producer {
+            Some(producer) => Arc::new(producer.clone()),
             None => Arc::new(NoopTaskTelemetrySink),
         };
         let task_clock: Arc<dyn skiff_task_control::TaskClock> =
@@ -468,15 +480,29 @@ impl RouterComponents {
             config.request_timeout_ms,
         );
 
-        let telemetry_exporter = config
-            .telemetry
-            .as_ref()
-            .filter(|telemetry| telemetry.enabled && !telemetry.endpoint.trim().is_empty())
-            .and_then(|telemetry| {
-                RouterTelemetryProducer::new(config).map(|producer| {
-                    RouterTelemetryExporter::new(telemetry.endpoint.clone(), producer).start()
-                })
-            });
+        // Telemetry three-state: disabled -> no-op sink (producer is None);
+        // endpoint non-empty -> WS exporter; endpoint absent/empty -> file sink.
+        let (telemetry_exporter, telemetry_file_sink) = match telemetry_producer {
+            Some(producer) => {
+                let endpoint = config
+                    .telemetry
+                    .as_ref()
+                    .map(|telemetry| telemetry.endpoint.trim().to_string())
+                    .unwrap_or_default();
+                if endpoint.is_empty() {
+                    (
+                        None,
+                        Some(RouterTelemetryFileSink::new(producer).start()),
+                    )
+                } else {
+                    (
+                        Some(RouterTelemetryExporter::new(endpoint, producer).start()),
+                        None,
+                    )
+                }
+            }
+            None => (None, None),
+        };
         Ok(Arc::new(Self {
             config: config.clone(),
             assembly: Arc::clone(&assembly),
@@ -498,6 +524,7 @@ impl RouterComponents {
             task_store,
             task_telemetry,
             telemetry_exporter: Mutex::new(telemetry_exporter),
+            telemetry_file_sink: Mutex::new(telemetry_file_sink),
             task_tasks,
         }))
     }

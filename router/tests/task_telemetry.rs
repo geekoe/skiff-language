@@ -18,7 +18,8 @@ use skiff_router::task::{
     TaskControlCounters, TaskExecutionImageSource,
 };
 use skiff_router::telemetry::{
-    backlog_metric_event, task_event, RouterTelemetryProducer, TaskTelemetrySink,
+    backlog_metric_event, task_event, RouterTelemetryFileSink, RouterTelemetryProducer,
+    TaskTelemetrySink,
 };
 use skiff_runtime_transport::protocol::{
     encode_task_cancel_request_frame, encode_task_submit_request_frame,
@@ -452,11 +453,13 @@ fn producer_batches_and_backlog_metric_shape() {
         enabled: true,
         endpoint: "ws://127.0.0.1:9/telemetry".to_string(),
         protocol: "skiff-telemetry-v1".to_string(),
-        topics: vec!["log".to_string(), "metric".to_string()],
         queue_max_events: 100,
         batch_max_events: 64,
         batch_max_bytes: 262_144,
         flush_interval_ms: 1_000,
+        file_path: None,
+        file_max_bytes: None,
+        file_max_files: None,
     });
     let producer = RouterTelemetryProducer::new(&config).expect("producer");
     let event = task_event(
@@ -507,4 +510,182 @@ fn noop_sink_accepts_any_event() {
         Some(TASK_ID),
         Default::default(),
     )));
+}
+
+// ---------------------------------------------------------------------------
+// File sink (default when telemetry.endpoint is empty)
+// ---------------------------------------------------------------------------
+
+static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn temp_telemetry_dir(label: &str) -> std::path::PathBuf {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "skiff-router-telemetry-{label}-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp telemetry dir");
+    dir
+}
+
+fn remove_temp_telemetry_dir(dir: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn read_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(path).expect("read telemetry jsonl");
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("jsonl line must parse"))
+        .collect()
+}
+
+fn telemetry_config(
+    endpoint: &str,
+    file_path: Option<std::path::PathBuf>,
+    file_max_bytes: Option<u64>,
+    file_max_files: Option<u64>,
+) -> skiff_router::config::TelemetryConfig {
+    skiff_router::config::TelemetryConfig {
+        enabled: true,
+        endpoint: endpoint.to_string(),
+        protocol: "skiff-telemetry-v1".to_string(),
+        queue_max_events: 100,
+        batch_max_events: 64,
+        batch_max_bytes: 262_144,
+        flush_interval_ms: 1_000,
+        file_path,
+        file_max_bytes,
+        file_max_files,
+    }
+}
+
+fn sample_event() -> TelemetryEvent {
+    task_event(
+        "task.submit.accepted",
+        TelemetryLevel::Info,
+        Some(TASK_ID),
+        Default::default(),
+    )
+}
+
+fn assert_file_header(line: &serde_json::Value) {
+    let object = line.as_object().expect("header must be an object");
+    assert_eq!(object["type"], serde_json::json!("fileHeader"));
+    assert_eq!(object["protocol"], serde_json::json!("skiff-telemetry-v1"));
+    assert_eq!(object["producerId"], serde_json::json!("router:dev"));
+    assert_eq!(object["source"], serde_json::json!("router"));
+    assert!(object["createdAt"].as_str().is_some());
+}
+
+#[test]
+fn file_sink_default_path_writes_header_then_one_event_per_line() {
+    let temp = temp_telemetry_dir("default-path");
+    let artifacts = temp.join("artifacts");
+    let mut config = health_common::config(&artifacts);
+    config.telemetry = Some(telemetry_config("", None, None, None));
+    let producer = RouterTelemetryProducer::new(&config).expect("producer");
+    let sink = RouterTelemetryFileSink::new(producer);
+    assert!(sink.producer().emit(sample_event()));
+    assert!(sink.producer().emit(sample_event()));
+    sink.drain_once_to_file().expect("flush to file");
+
+    // Default path: <artifacts_path.parent()>/logs/telemetry/<producer_id>.jsonl
+    let path = temp.join("logs/telemetry/router:dev.jsonl");
+    assert!(path.exists(), "default JSONL path missing: {}", path.display());
+    let lines = read_jsonl(&path);
+    assert_eq!(lines.len(), 3, "header + two events, no batch wrapper");
+    assert_file_header(&lines[0]);
+    for line in &lines[1..] {
+        let object = line.as_object().expect("event must be an object");
+        assert!(object.get("envelope_type").is_none(), "no batch envelope");
+        assert!(object.get("producerId").is_none(), "no batch envelope");
+        assert!(object.get("seq").is_none(), "no batch envelope");
+        assert_eq!(object["name"], serde_json::json!("task.submit.accepted"));
+        assert_eq!(object["attrs"]["taskId"], serde_json::json!(TASK_ID));
+    }
+    remove_temp_telemetry_dir(&temp);
+}
+
+#[test]
+fn file_sink_file_path_override_absolute() {
+    let temp = temp_telemetry_dir("override");
+    let artifacts = temp.join("artifacts");
+    let override_path = temp.join("override").join("custom.jsonl");
+    let mut config = health_common::config(&artifacts);
+    config.telemetry = Some(telemetry_config(
+        "",
+        Some(override_path.clone()),
+        None,
+        None,
+    ));
+    let producer = RouterTelemetryProducer::new(&config).expect("producer");
+    let sink = RouterTelemetryFileSink::new(producer);
+    assert!(sink.producer().emit(sample_event()));
+    sink.drain_once_to_file().expect("flush to file");
+
+    assert!(override_path.exists(), "override path missing");
+    let default_path = temp.join("logs/telemetry/router:dev.jsonl");
+    assert!(
+        !default_path.exists(),
+        "override must replace the default path"
+    );
+    let lines = read_jsonl(&override_path);
+    assert_eq!(lines.len(), 2);
+    assert_file_header(&lines[0]);
+    remove_temp_telemetry_dir(&temp);
+}
+
+#[test]
+fn file_sink_file_path_override_relative_to_default_root() {
+    let temp = temp_telemetry_dir("relative");
+    let artifacts = temp.join("artifacts");
+    let mut config = health_common::config(&artifacts);
+    config.telemetry = Some(telemetry_config(
+        "",
+        Some(std::path::PathBuf::from("nested/rel.jsonl")),
+        None,
+        None,
+    ));
+    let producer = RouterTelemetryProducer::new(&config).expect("producer");
+    let sink = RouterTelemetryFileSink::new(producer);
+    assert!(sink.producer().emit(sample_event()));
+    sink.drain_once_to_file().expect("flush to file");
+
+    let path = temp.join("logs/telemetry/nested/rel.jsonl");
+    assert!(path.exists(), "relative override under default root missing");
+    let lines = read_jsonl(&path);
+    assert_eq!(lines.len(), 2);
+    assert_file_header(&lines[0]);
+    remove_temp_telemetry_dir(&temp);
+}
+
+#[test]
+fn file_sink_rotates_by_size_and_retains_max_files_with_header_rewrite() {
+    let temp = temp_telemetry_dir("rotation");
+    let artifacts = temp.join("artifacts");
+    let mut config = health_common::config(&artifacts);
+    config.telemetry = Some(telemetry_config("", None, Some(128), Some(2)));
+    let producer = RouterTelemetryProducer::new(&config).expect("producer");
+    let sink = RouterTelemetryFileSink::new(producer);
+    for _ in 0..3 {
+        assert!(sink.producer().emit(sample_event()));
+        sink.drain_once_to_file().expect("flush to file");
+    }
+
+    let path = temp.join("logs/telemetry/router:dev.jsonl");
+    let rotated_1 = temp.join("logs/telemetry/router:dev.jsonl.1");
+    let rotated_2 = temp.join("logs/telemetry/router:dev.jsonl.2");
+    let rotated_3 = temp.join("logs/telemetry/router:dev.jsonl.3");
+    assert!(path.exists());
+    assert!(rotated_1.exists(), "first rotation missing");
+    assert!(rotated_2.exists(), "second rotation must shift .1 -> .2");
+    assert!(
+        !rotated_3.exists(),
+        "max_files=2 must drop rotations beyond .2"
+    );
+    // Current file (and every rotated file) starts with a rewritten header.
+    assert_file_header(&read_jsonl(&path)[0]);
+    assert_file_header(&read_jsonl(&rotated_1)[0]);
+    assert_file_header(&read_jsonl(&rotated_2)[0]);
+    remove_temp_telemetry_dir(&temp);
 }

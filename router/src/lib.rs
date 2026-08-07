@@ -74,8 +74,9 @@ pub use session::{
 pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
 pub use telemetry::{
     router_telemetry_event, task_event, telemetry_timestamp_now, NoopTaskTelemetrySink,
-    RouterTelemetryExporter, RouterTelemetryExporterHandle, RouterTelemetryProducer,
-    TaskTelemetrySink, EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
+    RouterTelemetryExporter, RouterTelemetryExporterHandle, RouterTelemetryFileSink,
+    RouterTelemetryFileSinkHandle, RouterTelemetryProducer, TaskTelemetrySink,
+    EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
 };
 pub use test_dispatch::{
     TestDispatchHttpHandler, TestDispatchHttpHandlerOptions, TestDispatchHttpResponse,

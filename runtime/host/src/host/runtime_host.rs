@@ -24,7 +24,10 @@ use super::{
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
-    telemetry::{TelemetryConfig, TelemetryExporterHandle, TelemetryProducer},
+    telemetry::{
+        RuntimeTelemetryConfig, TelemetryConfig, TelemetryExporterHandle, TelemetryFileSink,
+        TelemetryFileSinkHandle, TelemetryProducer,
+    },
     websocket_generation::WebSocketGenerationRegistry,
     OutboundRequestRegistry,
 };
@@ -55,7 +58,7 @@ pub struct RuntimeProductionConfig {
     pub runtime_home: PathBuf,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
-    pub telemetry_endpoint: Option<String>,
+    pub telemetry: Option<RuntimeTelemetryConfig>,
 }
 
 #[derive(Clone)]
@@ -74,6 +77,7 @@ pub struct RuntimeHost {
     pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
+    pub(super) telemetry_file_sink: Arc<Mutex<Option<TelemetryFileSinkHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
@@ -94,17 +98,28 @@ impl RuntimeHost {
             None,
             config.http_response_max_bytes,
             config.http_egress_proxy,
+            config.telemetry.clone(),
         )?;
-        if let Some(endpoint) = config.telemetry_endpoint {
-            if !endpoint.trim().is_empty() {
-                let exporter = super::telemetry::TelemetryExporter::new(
-                    endpoint,
-                    host.telemetry.clone(),
-                )
-                .start();
-                let mut slot = host.telemetry_exporter.lock().await;
-                *slot = Some(exporter);
-            }
+        match config.telemetry.as_ref() {
+            // enabled:false / absent -> no producer sink.
+            None => {}
+            Some(telemetry) => match telemetry.endpoint.as_deref() {
+                Some(endpoint) if !endpoint.trim().is_empty() => {
+                    let exporter = super::telemetry::TelemetryExporter::new(
+                        endpoint.to_string(),
+                        host.telemetry.clone(),
+                    )
+                    .start();
+                    let mut slot = host.telemetry_exporter.lock().await;
+                    *slot = Some(exporter);
+                }
+                // endpoint missing/empty -> default JSONL file sink.
+                _ => {
+                    let sink = TelemetryFileSink::new(host.telemetry.clone()).start();
+                    let mut slot = host.telemetry_file_sink.lock().await;
+                    *slot = Some(sink);
+                }
+            },
         }
         Ok(host)
     }
@@ -118,6 +133,7 @@ impl RuntimeHost {
             Some(config.profile.as_str()),
             config.http_response_max_bytes,
             config.http_egress_proxy,
+            None,
         )
     }
 
@@ -129,6 +145,7 @@ impl RuntimeHost {
         trusted_profile: Option<&str>,
         http_response_max_bytes: usize,
         http_egress_proxy: Option<String>,
+        telemetry: Option<RuntimeTelemetryConfig>,
     ) -> anyhow::Result<Self> {
         let http_runtime_options = runtime_http_options_from_config(http_egress_proxy)?;
         let frozen_profile = OnceLock::new();
@@ -147,9 +164,27 @@ impl RuntimeHost {
                 .take(8)
                 .collect::<String>()
         );
+        let file_root = runtime_home
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("logs")
+            .join("telemetry");
+        let (telemetry_file_path, telemetry_file_max_bytes, telemetry_file_max_files) =
+            match &telemetry {
+                Some(telemetry) => (
+                    telemetry.file_path.clone(),
+                    telemetry.file_max_bytes,
+                    telemetry.file_max_files,
+                ),
+                None => (None, None, None),
+            };
         let telemetry = TelemetryProducer::new(TelemetryConfig::for_runtime(
             producer_id,
             base_runtime_id.clone(),
+            file_root,
+            telemetry_file_path,
+            telemetry_file_max_bytes,
+            telemetry_file_max_files,
         ));
         let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
@@ -170,6 +205,7 @@ impl RuntimeHost {
             websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
+            telemetry_file_sink: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
             connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
@@ -277,6 +313,10 @@ impl RuntimeHost {
 
     pub async fn shutdown_telemetry(&self) {
         self.stop_telemetry_exporter().await;
+        if let Some(sink) = self.telemetry_file_sink.lock().await.take() {
+            sink.shutdown(super::telemetry::EXPORTER_SHUTDOWN_FLUSH_TIMEOUT)
+                .await;
+        }
     }
 
     pub fn blob_store(&self) -> Option<Arc<dyn BlobStore>> {

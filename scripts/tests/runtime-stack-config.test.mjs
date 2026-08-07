@@ -152,8 +152,12 @@ test('router config validates request timeout, booleans, and telemetry endpoint'
     () => renderRouterConfig({ ...routerConfig, releaseMode: 1 }),
     /router releaseMode must be a boolean/,
   );
+  for (const telemetryEndpoint of [undefined, '', '   ']) {
+    const rendered = renderRouterConfig({ ...routerConfig, telemetryEndpoint });
+    assert.doesNotMatch(rendered, /^telemetry:/m);
+  }
   assert.throws(
-    () => renderRouterConfig({ ...routerConfig, telemetryEndpoint: '   ' }),
+    () => renderRouterConfig({ ...routerConfig, telemetryEndpoint: 42 }),
     /router telemetry\.endpoint must be a non-empty string/,
   );
 });

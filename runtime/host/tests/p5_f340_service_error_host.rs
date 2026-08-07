@@ -24,8 +24,8 @@ use skiff_runtime_request::RequestError;
 use skiff_runtime_transport::{
     protocol::{
         decode_response_error_frame, encode_binary_frame, ResponseErrorFrameHeader,
-        RuntimeErrorFramePayload, TelemetryEvent, TelemetrySource, TelemetryTopic,
-        TelemetryVisibility, ValidatedResponseErrorFrame,
+        RuntimeErrorFramePayload, TelemetryEvent, TelemetrySource, TelemetryVisibility,
+        ValidatedResponseErrorFrame,
     },
     response_mapper::{response_event_into_frame, OrdinaryResponseEvent},
 };
@@ -126,11 +126,7 @@ mod tests {
 
     #[test]
     fn operational_fixed_event_uses_top_level_correlation_and_safe_error_shape() {
-        let mut ordinary = telemetry_event(
-            TelemetryTopic::Trace,
-            "2026-07-26T00:00:00.000Z",
-            TelemetrySource::Runtime,
-        );
+        let mut ordinary = telemetry_event("2026-07-26T00:00:00.000Z", TelemetrySource::Runtime);
         assert_eq!(ordinary.visibility, TelemetryVisibility::Operational);
         assert_eq!(ordinary.error_id, None);
 

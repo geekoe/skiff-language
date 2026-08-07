@@ -16,7 +16,7 @@ use skiff_runtime_transport::{
     protocol::{
         encode_binary_frame, RuntimeCapabilitiesFrameHeader,
         RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability, TelemetryEvent,
-        TelemetrySource, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
+        TelemetrySource, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 use tokio::sync::mpsc;
@@ -188,11 +188,7 @@ impl RuntimeHost {
                     .is_some_and(|config| config.enabled),
             ),
         );
-        let mut event = telemetry_event(
-            TelemetryTopic::Trace,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.runtime_id = Some(self.base_runtime_id.clone());
         event.name = Some("runtime.control.reload".to_string());
         event.attrs = Some(attrs);
@@ -203,11 +199,7 @@ impl RuntimeHost {
         let Some(response_error) = response_error_from_runtime_error(error) else {
             return;
         };
-        let mut event = telemetry_event(
-            TelemetryTopic::Trace,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.runtime_id = Some(self.base_runtime_id.clone());
         event.request_id = Some(request.request_id.clone());
         event.target = Some(request.target.clone());

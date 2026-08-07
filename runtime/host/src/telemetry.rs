@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use skiff_runtime_model::service_error::ErrorCorrelation;
 use skiff_runtime_transport::protocol::{
-    TelemetryEvent, TelemetrySource, TelemetryTopic, TelemetryVisibility,
+    TelemetryEvent, TelemetrySource, TelemetryVisibility,
 };
 
 pub trait TelemetryEmitter: std::fmt::Debug + Send + Sync {
@@ -89,11 +89,7 @@ impl RequestTelemetryContext {
         attrs: Option<Map<String, Value>>,
         correlation: Option<&ErrorCorrelation>,
     ) {
-        let mut event = telemetry_event(
-            TelemetryTopic::Trace,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.service_id = self.service_id.clone();
         event.revision_id = self.revision_id.clone();
         event.build_id = self.build_id.clone();
@@ -115,13 +111,8 @@ impl RequestTelemetryContext {
     }
 }
 
-pub fn telemetry_event(
-    topic: TelemetryTopic,
-    ts: impl Into<String>,
-    source: TelemetrySource,
-) -> TelemetryEvent {
+pub fn telemetry_event(ts: impl Into<String>, source: TelemetrySource) -> TelemetryEvent {
     TelemetryEvent {
-        topic,
         ts: ts.into(),
         source,
         visibility: TelemetryVisibility::Operational,

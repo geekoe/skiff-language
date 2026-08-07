@@ -13,7 +13,7 @@ use crate::{
     telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext},
 };
 use skiff_runtime_transport::protocol::{
-    TelemetryEvent, TelemetryLevel, TelemetrySource, TelemetryTopic, TelemetryVisibility,
+    TelemetryEvent, TelemetryLevel, TelemetrySource, TelemetryVisibility,
 };
 
 #[derive(Clone)]
@@ -32,46 +32,7 @@ impl TelemetryCapabilityContext {
                 "unsupported telemetry target {target}"
             )));
         }
-        if matches!(
-            args.first(),
-            Some(Value::String(_)) | Some(Value::Null) | None
-        ) {
-            return self.emit_log_args(target, args);
-        }
-        let input = args
-            .first()
-            .and_then(Value::as_object)
-            .ok_or_else(|| RuntimeError::Decode(format!("{target} payload must be an object")))?;
-        let topic = input
-            .get("topic")
-            .map(decode_telemetry_topic)
-            .transpose()?
-            .unwrap_or(TelemetryTopic::Log);
-        let source = input
-            .get("source")
-            .map(decode_telemetry_source)
-            .transpose()?
-            .unwrap_or(TelemetrySource::Runtime);
-        let mut event = telemetry_event(topic, telemetry_timestamp_now(), source);
-        self.apply_request_context(&mut event);
-        event.level = input.get("level").map(decode_telemetry_level).transpose()?;
-        event.name = optional_string(input, "name", target)?;
-        event.message = optional_string(input, "message", target)?;
-        event.target = optional_string(input, "target", target)?.or(event.target);
-        event.attrs = optional_object(input, "attrs", target)?;
-        event.error = optional_object(input, "error", target)?;
-        event.duration_ms = input
-            .get("durationMs")
-            .or_else(|| input.get("duration_ms"))
-            .map(|value| {
-                value.as_f64().ok_or_else(|| {
-                    RuntimeError::Decode(format!("{target} durationMs must be a number"))
-                })
-            })
-            .transpose()?;
-
-        self.emit(event);
-        Ok(Value::Null)
+        self.emit_log_args(target, args)
     }
 
     /// Projects the eval-owned typed diagnostic into the host's restricted lane.
@@ -85,11 +46,7 @@ impl TelemetryCapabilityContext {
         let Some(request) = self.request.as_ref() else {
             return false;
         };
-        let mut event = telemetry_event(
-            TelemetryTopic::Trace,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.visibility = TelemetryVisibility::Restricted;
         event.service_id = Some(diagnostic.owner.provider_service_id.clone());
         event.activation_identity = Some(diagnostic.owner.provider_activation_id.clone());
@@ -159,11 +116,7 @@ impl TelemetryCapabilityContext {
             }
         };
 
-        let mut event = telemetry_event(
-            TelemetryTopic::Log,
-            telemetry_timestamp_now(),
-            TelemetrySource::Runtime,
-        );
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         self.apply_request_context(&mut event);
         event.level = Some(level);
         event.message = Some(message.to_string());
@@ -260,33 +213,6 @@ fn synthetic_site_reason(reason: SyntheticInstructionSiteReason) -> &'static str
     }
 }
 
-fn decode_telemetry_topic(value: &Value) -> Result<TelemetryTopic> {
-    match value.as_str() {
-        Some("log") => Ok(TelemetryTopic::Log),
-        Some("trace") => Ok(TelemetryTopic::Trace),
-        Some("metric") => Ok(TelemetryTopic::Metric),
-        Some("health") => Ok(TelemetryTopic::Health),
-        Some("debug") => Ok(TelemetryTopic::Debug),
-        _ => Err(RuntimeError::Decode(
-            "std.telemetry.emit topic must be one of log, trace, metric, health, debug".to_string(),
-        )),
-    }
-}
-
-fn decode_telemetry_source(value: &Value) -> Result<TelemetrySource> {
-    match value.as_str() {
-        Some("gateway") => Ok(TelemetrySource::Gateway),
-        Some("router") => Ok(TelemetrySource::Router),
-        Some("runtime") => Ok(TelemetrySource::Runtime),
-        Some("provider") => Ok(TelemetrySource::Provider),
-        Some("test") => Ok(TelemetrySource::Test),
-        _ => Err(RuntimeError::Decode(
-            "std.telemetry.emit source must be one of gateway, router, runtime, provider, test"
-                .to_string(),
-        )),
-    }
-}
-
 fn decode_telemetry_level(value: &Value) -> Result<TelemetryLevel> {
     match value.as_str() {
         Some("debug") => Ok(TelemetryLevel::Debug),
@@ -296,34 +222,6 @@ fn decode_telemetry_level(value: &Value) -> Result<TelemetryLevel> {
         _ => Err(RuntimeError::Decode(
             "std.telemetry.emit level must be one of debug, info, warn, error".to_string(),
         )),
-    }
-}
-
-fn optional_string(input: &Map<String, Value>, key: &str, target: &str) -> Result<Option<String>> {
-    match input.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(RuntimeError::Decode(format!(
-            "{target} {key} must be a string"
-        ))),
-    }
-}
-
-fn optional_object(
-    input: &Map<String, Value>,
-    key: &str,
-    target: &str,
-) -> Result<Option<Map<String, Value>>> {
-    match input.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(_)) => materialize_json(input.get(key).cloned().unwrap_or(Value::Null))?
-            .as_object()
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| RuntimeError::Decode(format!("{target} {key} must be an object"))),
-        Some(_) => Err(RuntimeError::Decode(format!(
-            "{target} {key} must be an object"
-        ))),
     }
 }
 

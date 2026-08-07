@@ -67,10 +67,7 @@ export function renderRouterConfig({
   if (releaseMode !== undefined && typeof releaseMode !== 'boolean') {
     throw new Error('router releaseMode must be a boolean');
   }
-  if (
-    telemetryEndpoint !== undefined
-    && (typeof telemetryEndpoint !== 'string' || telemetryEndpoint.trim().length === 0)
-  ) {
+  if (telemetryEndpoint !== undefined && typeof telemetryEndpoint !== 'string') {
     throw new Error('router telemetry.endpoint must be a non-empty string');
   }
   validateRewrite(rewrite);
@@ -101,7 +98,10 @@ export function renderRouterConfig({
     'serviceDb:',
     `  mongoUrl: ${quoteYamlString(serviceDbMongoUrl)}`,
   );
-  if (telemetryEndpoint !== undefined) {
+  if (
+    typeof telemetryEndpoint === 'string'
+    && telemetryEndpoint.trim().length > 0
+  ) {
     lines.push(
       '',
       'telemetry:',

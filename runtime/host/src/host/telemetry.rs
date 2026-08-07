@@ -2,6 +2,9 @@
 
 use std::{
     collections::VecDeque,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, RwLock,
@@ -21,7 +24,7 @@ use tracing::{debug, warn};
 
 use skiff_runtime_transport::protocol::{
     TelemetryBatchEnvelope, TelemetryControlConfig, TelemetryEvent, TelemetryLevel,
-    TelemetryProtocol, TelemetryRegisterEnvelope, TelemetrySource, TelemetryTopic,
+    TelemetryProtocol, TelemetryRegisterEnvelope, TelemetrySource,
 };
 
 use crate::telemetry::{telemetry_event, telemetry_timestamp_now, TelemetryEmitter};
@@ -34,6 +37,10 @@ pub const DEFAULT_BATCH_MAX_BYTES: usize = 262_144;
 pub const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
 pub const DEFAULT_STRING_MAX_CHARS: usize = 2048;
 pub const DEFAULT_EVENT_MAX_BYTES: usize = 16 * 1024;
+pub const DEFAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_FILE_MAX_FILES: usize = 8;
+pub const TELEMETRY_FILE_HEADER_TYPE: &str = "fileHeader";
+pub const TELEMETRY_FILE_PROTOCOL: &str = "skiff-telemetry-v1";
 const EXPORTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const EXPORTER_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -43,13 +50,16 @@ pub struct TelemetryConfig {
     pub source: TelemetrySource,
     pub runtime_id: Option<String>,
     pub protocol: TelemetryProtocol,
-    pub topics: Vec<TelemetryTopic>,
     pub queue_max_events: usize,
     pub batch_max_events: usize,
     pub batch_max_bytes: usize,
     pub flush_interval_ms: u64,
     pub string_max_chars: usize,
     pub event_max_bytes: usize,
+    pub file_root: PathBuf,
+    pub file_path: Option<PathBuf>,
+    pub file_max_bytes: u64,
+    pub file_max_files: usize,
 }
 
 impl TelemetryConfig {
@@ -64,29 +74,45 @@ impl TelemetryConfig {
             source,
             runtime_id,
             protocol: control.protocol.clone(),
-            topics: control.topics.clone(),
             queue_max_events: control.queue_max_events as usize,
             batch_max_events: control.batch_max_events as usize,
             batch_max_bytes: control.batch_max_bytes as usize,
             flush_interval_ms: control.flush_interval_ms as u64,
             string_max_chars: DEFAULT_STRING_MAX_CHARS,
             event_max_bytes: DEFAULT_EVENT_MAX_BYTES,
+            file_root: PathBuf::from("."),
+            file_path: None,
+            file_max_bytes: DEFAULT_FILE_MAX_BYTES,
+            file_max_files: DEFAULT_FILE_MAX_FILES,
         }
     }
 
-    pub fn for_runtime(producer_id: impl Into<String>, runtime_id: impl Into<String>) -> Self {
+    /// `file_root` is the default JSONL directory (`<runtime_home.parent()>/logs/telemetry`);
+    /// `file_path` overrides the sink file: absolute paths are used directly, relative paths
+    /// resolve against `file_root`. `None` selects `<file_root>/<producer_id>.jsonl`.
+    pub fn for_runtime(
+        producer_id: impl Into<String>,
+        runtime_id: impl Into<String>,
+        file_root: PathBuf,
+        file_path: Option<PathBuf>,
+        file_max_bytes: Option<u64>,
+        file_max_files: Option<usize>,
+    ) -> Self {
         Self {
             producer_id: producer_id.into(),
             source: TelemetrySource::Runtime,
             runtime_id: Some(runtime_id.into()),
             protocol: TelemetryProtocol::SkiffTelemetryV1,
-            topics: default_topics(),
             queue_max_events: DEFAULT_QUEUE_MAX_EVENTS,
             batch_max_events: DEFAULT_BATCH_MAX_EVENTS,
             batch_max_bytes: DEFAULT_BATCH_MAX_BYTES,
             flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,
             string_max_chars: DEFAULT_STRING_MAX_CHARS,
             event_max_bytes: DEFAULT_EVENT_MAX_BYTES,
+            file_root,
+            file_path,
+            file_max_bytes: file_max_bytes.unwrap_or(DEFAULT_FILE_MAX_BYTES),
+            file_max_files: file_max_files.unwrap_or(DEFAULT_FILE_MAX_FILES),
         }
     }
 
@@ -96,54 +122,50 @@ impl TelemetryConfig {
             source: TelemetrySource::Test,
             runtime_id: Some("runtime-test-1".to_string()),
             protocol: TelemetryProtocol::SkiffTelemetryV1,
-            topics: default_topics(),
             queue_max_events: 100,
             batch_max_events: 200,
             batch_max_bytes: 262_144,
             flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,
             string_max_chars: DEFAULT_STRING_MAX_CHARS,
             event_max_bytes: DEFAULT_EVENT_MAX_BYTES,
+            file_root: PathBuf::from("."),
+            file_path: None,
+            file_max_bytes: DEFAULT_FILE_MAX_BYTES,
+            file_max_files: DEFAULT_FILE_MAX_FILES,
         }
     }
 }
 
-fn default_topics() -> Vec<TelemetryTopic> {
-    vec![
-        TelemetryTopic::Log,
-        TelemetryTopic::Trace,
-        TelemetryTopic::Metric,
-        TelemetryTopic::Health,
-        TelemetryTopic::Debug,
-    ]
+/// Runtime telemetry producer configuration (driver-parsed, host-consumed).
+///
+/// `None` (or `enabled: false` in the driver config) disables telemetry
+/// entirely (no producer sink). `endpoint: Some(non-empty)` selects the WS
+/// exporter; `endpoint: None` (missing/empty) selects the default JSONL file
+/// sink. `file_path` overrides the sink file: absolute paths are used
+/// directly, relative paths resolve against the default
+/// `<runtime_home.parent()>/logs/telemetry` root in the host.
+#[derive(Debug, Clone)]
+pub struct RuntimeTelemetryConfig {
+    pub endpoint: Option<String>,
+    pub file_path: Option<PathBuf>,
+    pub file_max_bytes: Option<u64>,
+    pub file_max_files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TelemetryDropCounters {
-    pub log: u64,
-    pub trace: u64,
-    pub metric: u64,
-    pub health: u64,
-    pub debug: u64,
+    pub dropped: u64,
     pub queue_lock: u64,
 }
 
 impl TelemetryDropCounters {
     pub fn has_any(&self) -> bool {
-        self.log > 0
-            || self.trace > 0
-            || self.metric > 0
-            || self.health > 0
-            || self.debug > 0
-            || self.queue_lock > 0
+        self.dropped > 0 || self.queue_lock > 0
     }
 
     pub fn to_dropped_map(&self) -> Map<String, Value> {
         Map::from_iter([
-            ("debug".to_string(), json!(self.debug)),
-            ("log".to_string(), json!(self.log)),
-            ("trace".to_string(), json!(self.trace)),
-            ("metric".to_string(), json!(self.metric)),
-            ("health".to_string(), json!(self.health)),
+            ("dropped".to_string(), json!(self.dropped)),
             ("queueLock".to_string(), json!(self.queue_lock)),
         ])
     }
@@ -151,56 +173,34 @@ impl TelemetryDropCounters {
 
 #[derive(Debug)]
 struct TelemetryDropCounterAtomics {
-    log: AtomicU64,
-    trace: AtomicU64,
-    metric: AtomicU64,
-    health: AtomicU64,
-    debug: AtomicU64,
+    dropped: AtomicU64,
     queue_lock: AtomicU64,
 }
 
 impl TelemetryDropCounterAtomics {
     fn new() -> Self {
         Self {
-            log: AtomicU64::new(0),
-            trace: AtomicU64::new(0),
-            metric: AtomicU64::new(0),
-            health: AtomicU64::new(0),
-            debug: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
             queue_lock: AtomicU64::new(0),
         }
     }
 
     fn snapshot(&self) -> TelemetryDropCounters {
         TelemetryDropCounters {
-            log: self.log.load(Ordering::Relaxed),
-            trace: self.trace.load(Ordering::Relaxed),
-            metric: self.metric.load(Ordering::Relaxed),
-            health: self.health.load(Ordering::Relaxed),
-            debug: self.debug.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
             queue_lock: self.queue_lock.load(Ordering::Relaxed),
         }
     }
 
     fn take_snapshot(&self) -> TelemetryDropCounters {
         TelemetryDropCounters {
-            log: self.log.swap(0, Ordering::Relaxed),
-            trace: self.trace.swap(0, Ordering::Relaxed),
-            metric: self.metric.swap(0, Ordering::Relaxed),
-            health: self.health.swap(0, Ordering::Relaxed),
-            debug: self.debug.swap(0, Ordering::Relaxed),
+            dropped: self.dropped.swap(0, Ordering::Relaxed),
             queue_lock: self.queue_lock.swap(0, Ordering::Relaxed),
         }
     }
 
-    fn increment_topic(&self, topic: &TelemetryTopic) {
-        match topic {
-            TelemetryTopic::Log => self.log.fetch_add(1, Ordering::Relaxed),
-            TelemetryTopic::Trace => self.trace.fetch_add(1, Ordering::Relaxed),
-            TelemetryTopic::Metric => self.metric.fetch_add(1, Ordering::Relaxed),
-            TelemetryTopic::Health => self.health.fetch_add(1, Ordering::Relaxed),
-            TelemetryTopic::Debug => self.debug.fetch_add(1, Ordering::Relaxed),
-        };
+    fn increment_dropped(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     fn increment_queue_lock(&self) {
@@ -230,20 +230,20 @@ impl TelemetryQueue {
 
     pub fn enqueue(&self, event: TelemetryEvent) -> bool {
         let Ok(mut events) = self.events.try_lock() else {
-            self.counters.increment_topic(&event.topic);
+            self.counters.increment_dropped();
             self.counters.increment_queue_lock();
             return false;
         };
 
         let max_events = self.max_events.load(Ordering::Relaxed);
         if max_events == 0 {
-            self.counters.increment_topic(&event.topic);
+            self.counters.increment_dropped();
             return false;
         }
 
         while events.len() > max_events {
-            if let Some(dropped) = events.pop_front() {
-                self.counters.increment_topic(&dropped.topic);
+            if events.pop_front().is_some() {
+                self.counters.increment_dropped();
             }
         }
 
@@ -259,12 +259,12 @@ impl TelemetryQueue {
             .min_by_key(|(_, queued)| event_priority(queued))
             .filter(|(_, queued)| event_priority(queued) < incoming_priority)
         {
-            let dropped = events.remove(index).expect("indexed event exists");
-            self.counters.increment_topic(&dropped.topic);
+            events.remove(index).expect("indexed event exists");
+            self.counters.increment_dropped();
             events.push_back(event);
             true
         } else {
-            self.counters.increment_topic(&event.topic);
+            self.counters.increment_dropped();
             false
         }
     }
@@ -289,8 +289,8 @@ impl TelemetryQueue {
         self.counters.take_snapshot()
     }
 
-    pub fn record_drop(&self, topic: &TelemetryTopic) {
-        self.counters.increment_topic(topic);
+    pub fn record_drop(&self) {
+        self.counters.increment_dropped();
     }
 }
 
@@ -318,7 +318,6 @@ impl TelemetryProducer {
             return;
         };
         config.protocol = control.protocol.clone();
-        config.topics = control.topics.clone();
         config.queue_max_events = control.queue_max_events as usize;
         config.batch_max_events = control.batch_max_events as usize;
         config.batch_max_bytes = control.batch_max_bytes as usize;
@@ -342,16 +341,11 @@ impl TelemetryProducer {
             producer_id: config.producer_id,
             source: config.source,
             runtime_id: config.runtime_id,
-            topics: config.topics,
         }
     }
 
     pub fn emit(&self, event: TelemetryEvent) -> bool {
         let config = self.config_snapshot();
-        if !config.topics.contains(&event.topic) {
-            self.queue.record_drop(&event.topic);
-            return false;
-        }
         let event = redact_event(event, config.string_max_chars, config.event_max_bytes);
         let enqueued = self.queue.enqueue(event);
         if enqueued {
@@ -363,19 +357,13 @@ impl TelemetryProducer {
     pub fn drain_batches(&self) -> Vec<TelemetryBatchEnvelope> {
         let config = self.config_snapshot();
         let mut events = self.queue.drain(config.batch_max_events);
-        if config.topics.contains(&TelemetryTopic::Health) {
-            let dropped = self.queue.take_drop_counters();
-            if dropped.has_any() {
-                let mut event = telemetry_event(
-                    TelemetryTopic::Health,
-                    telemetry_timestamp_now(),
-                    config.source.clone(),
-                );
-                event.runtime_id = config.runtime_id.clone();
-                event.name = Some("telemetry.queue".to_string());
-                event.dropped = Some(dropped.to_dropped_map());
-                events.push(event);
-            }
+        let dropped = self.queue.take_drop_counters();
+        if dropped.has_any() {
+            let mut event = telemetry_event(telemetry_timestamp_now(), config.source.clone());
+            event.runtime_id = config.runtime_id.clone();
+            event.name = Some("telemetry.queue".to_string());
+            event.dropped = Some(dropped.to_dropped_map());
+            events.push(event);
         }
         let mut next_seq = self.next_seq.lock().expect("telemetry seq lock poisoned");
         build_batches(
@@ -466,6 +454,166 @@ impl TelemetryExporterHandle {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct TelemetryFileSink {
+    producer: TelemetryProducer,
+}
+
+impl TelemetryFileSink {
+    pub fn new(producer: TelemetryProducer) -> Self {
+        Self { producer }
+    }
+
+    /// Synchronously flushes the pending queue to the JSONL file. Exposed for
+    /// tests and the shutdown flush; the background loop uses the same core.
+    pub fn drain_once_to_file(&self) -> Result<(), String> {
+        flush_pending_to_file(&self.producer)
+    }
+
+    pub fn start(self) -> TelemetryFileSinkHandle {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(file_sink_loop(self.producer, shutdown_rx));
+        TelemetryFileSinkHandle { shutdown_tx, task }
+    }
+}
+
+#[derive(Debug)]
+pub struct TelemetryFileSinkHandle {
+    shutdown_tx: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+impl TelemetryFileSinkHandle {
+    pub async fn shutdown(self, wait: Duration) {
+        let _ = self.shutdown_tx.send(true);
+        let mut task = self.task;
+        tokio::select! {
+            _ = &mut task => {}
+            _ = sleep(wait) => {
+                task.abort();
+            }
+        }
+    }
+}
+
+async fn file_sink_loop(producer: TelemetryProducer, mut shutdown: watch::Receiver<bool>) {
+    let mut interval = tokio::time::interval(Duration::from_millis(
+        producer.config_snapshot().flush_interval_ms.max(1),
+    ));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                let _ = flush_pending_to_file(&producer);
+                break;
+            }
+            _ = interval.tick() => {
+                if let Err(error) = flush_pending_to_file(&producer) {
+                    eprintln!("telemetry file sink flush failed: {error}");
+                }
+            }
+            _ = producer.notified() => {
+                if producer.queue_len() >= producer.config_snapshot().batch_max_events {
+                    if let Err(error) = flush_pending_to_file(&producer) {
+                        eprintln!("telemetry file sink flush failed: {error}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn flush_pending_to_file(producer: &TelemetryProducer) -> Result<(), String> {
+    let events: Vec<TelemetryEvent> = producer
+        .drain_batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .collect();
+    for event in events {
+        write_event_to_file(producer, &event)?;
+    }
+    Ok(())
+}
+
+fn write_event_to_file(producer: &TelemetryProducer, event: &TelemetryEvent) -> Result<(), String> {
+    let config = producer.config_snapshot();
+    let path = file_sink_path(&config);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create telemetry dir {}: {error}", parent.display()))?;
+    }
+    if file_needs_rotation(&path, config.file_max_bytes) {
+        rotate_files(&path, config.file_max_files)?;
+        write_file_header(&path, &config)?;
+    } else if !path.exists() {
+        write_file_header(&path, &config)?;
+    }
+    let line = serde_json::to_string(event).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("open telemetry file {}: {error}", path.display()))?;
+    writeln!(file, "{line}")
+        .map_err(|error| format!("write telemetry file {}: {error}", path.display()))
+}
+
+fn file_sink_path(config: &TelemetryConfig) -> PathBuf {
+    match &config.file_path {
+        Some(path) if path.is_absolute() => path.clone(),
+        Some(path) => config.file_root.join(path),
+        None => config.file_root.join(format!("{}.jsonl", config.producer_id)),
+    }
+}
+
+fn file_needs_rotation(path: &Path, max_bytes: u64) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.len() >= max_bytes)
+        .unwrap_or(false)
+}
+
+/// Rotates `<name>.jsonl` -> `<name>.jsonl.1` and shifts older files up
+/// (`.1` -> `.2`, ...), overwriting the oldest rotated file so at most
+/// `max_files` rotated files are retained.
+fn rotate_files(path: &Path, max_files: usize) -> Result<(), String> {
+    for index in (1..max_files).rev() {
+        let source = rotated_path(path, index);
+        if source.exists() {
+            fs::rename(&source, rotated_path(path, index + 1))
+                .map_err(|error| format!("rotate telemetry file {}: {error}", source.display()))?;
+        }
+    }
+    fs::rename(path, rotated_path(path, 1))
+        .map_err(|error| format!("rotate telemetry file {}: {error}", path.display()))
+}
+
+fn rotated_path(path: &Path, index: usize) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "telemetry.jsonl".to_string());
+    path.with_file_name(format!("{file_name}.{index}"))
+}
+
+fn write_file_header(path: &Path, config: &TelemetryConfig) -> Result<(), String> {
+    let header = json!({
+        "type": TELEMETRY_FILE_HEADER_TYPE,
+        "protocol": TELEMETRY_FILE_PROTOCOL,
+        "producerId": config.producer_id,
+        "source": config.source,
+        "createdAt": telemetry_timestamp_now(),
+    });
+    let line = serde_json::to_string(&header).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("open telemetry file {}: {error}", path.display()))?;
+    writeln!(file, "{line}")
+        .map_err(|error| format!("write telemetry file {}: {error}", path.display()))
 }
 
 async fn exporter_loop(
@@ -714,14 +862,11 @@ pub fn redact_event(
 }
 
 fn event_priority(event: &TelemetryEvent) -> u8 {
-    match (&event.topic, &event.level) {
-        (TelemetryTopic::Debug, _) => 0,
-        (TelemetryTopic::Metric, _) => 1,
-        (TelemetryTopic::Log, Some(TelemetryLevel::Debug | TelemetryLevel::Info)) => 1,
-        (TelemetryTopic::Log, Some(TelemetryLevel::Warn | TelemetryLevel::Error)) => 3,
-        (TelemetryTopic::Trace, _) => 3,
-        (TelemetryTopic::Health, _) => 2,
-        (TelemetryTopic::Log, None) => 1,
+    match event.level {
+        Some(TelemetryLevel::Debug) => 0,
+        Some(TelemetryLevel::Info) => 1,
+        Some(TelemetryLevel::Warn | TelemetryLevel::Error) => 3,
+        None => 1,
     }
 }
 

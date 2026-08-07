@@ -11,7 +11,6 @@ telemetry:
   enabled: true
   endpoint: ws://127.0.0.1:4002/telemetry
   protocol: skiff-telemetry-v1
-  topics: [log, trace, metric, health, debug]
   queueMaxEvents: 5
   batchMaxEvents: 3
   batchMaxBytes: 1024
