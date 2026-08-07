@@ -191,7 +191,7 @@ function normalizeBuildProcess(value, label) {
   if (value === undefined) {
     return {
       mongo: 'disabled',
-      telemetry: 'managed',
+      telemetry: 'disabled',
       watch: 'disabled',
       mongoBinary: 'mongod',
       mongoDbPath: undefined,
@@ -205,8 +205,8 @@ function normalizeBuildProcess(value, label) {
     ? 'disabled'
     : readOptionalManagedFlag(value.mongo, `${label} process.mongo`);
   const telemetry = value.telemetry === undefined
-    ? 'managed'
-    : readOptionalManagedFlag(value.telemetry, `${label} process.telemetry`);
+    ? 'disabled'
+    : readOptionalTelemetryFlag(value.telemetry, `${label} process.telemetry`);
   const watch = value.watch === undefined
     ? 'disabled'
     : readOptionalManagedFlag(value.watch, `${label} process.watch`);
@@ -225,6 +225,15 @@ function normalizeBuildProcess(value, label) {
 function readOptionalManagedFlag(value, label) {
   if (value !== 'managed' && value !== 'disabled') {
     throw new Error(`${label} must be "managed" or "disabled"`);
+  }
+  return value;
+}
+
+function readOptionalTelemetryFlag(value, label) {
+  if (value !== 'disabled') {
+    throw new Error(
+      `${label} must be "disabled"; the telemetry process is managed by the standalone skiff-telemetry repo, "managed" is no longer supported`,
+    );
   }
   return value;
 }

@@ -41,6 +41,7 @@ const DEFAULT_BATCH_MAX_EVENTS: usize = 200;
 const DEFAULT_BATCH_MAX_BYTES: usize = 262_144;
 const DEFAULT_STRING_MAX_CHARS: usize = 2048;
 const DEFAULT_EVENT_MAX_BYTES: usize = 16 * 1024;
+const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
 const DEFAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_FILE_MAX_FILES: usize = 8;
 const EXPORTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -80,7 +81,10 @@ struct RouterTelemetryConfig {
 }
 
 impl RouterTelemetryConfig {
-    fn from_router(config: &RouterConfig, telemetry: &crate::config::TelemetryConfig) -> Self {
+    fn from_router(
+        config: &RouterConfig,
+        telemetry: Option<&crate::config::TelemetryConfig>,
+    ) -> Self {
         let profile = config.profile.as_str();
         let file_root = config
             .artifacts_path
@@ -91,23 +95,39 @@ impl RouterTelemetryConfig {
             producer_id: format!("router:{profile}"),
             source: TelemetrySource::Router,
             protocol: TelemetryProtocol::SkiffTelemetryV1,
-            queue_max_events: usize::try_from(telemetry.queue_max_events)
-                .unwrap_or(DEFAULT_QUEUE_MAX_EVENTS),
-            batch_max_events: usize::try_from(telemetry.batch_max_events)
-                .unwrap_or(DEFAULT_BATCH_MAX_EVENTS),
-            batch_max_bytes: usize::try_from(telemetry.batch_max_bytes)
-                .unwrap_or(DEFAULT_BATCH_MAX_BYTES),
-            flush_interval_ms: telemetry.flush_interval_ms.max(1),
+            queue_max_events: usize::try_from(
+                telemetry
+                    .map(|t| t.queue_max_events)
+                    .unwrap_or(DEFAULT_QUEUE_MAX_EVENTS as u64),
+            )
+            .unwrap_or(DEFAULT_QUEUE_MAX_EVENTS),
+            batch_max_events: usize::try_from(
+                telemetry
+                    .map(|t| t.batch_max_events)
+                    .unwrap_or(DEFAULT_BATCH_MAX_EVENTS as u64),
+            )
+            .unwrap_or(DEFAULT_BATCH_MAX_EVENTS),
+            batch_max_bytes: usize::try_from(
+                telemetry
+                    .map(|t| t.batch_max_bytes)
+                    .unwrap_or(DEFAULT_BATCH_MAX_BYTES as u64),
+            )
+            .unwrap_or(DEFAULT_BATCH_MAX_BYTES),
+            flush_interval_ms: telemetry
+                .map(|t| t.flush_interval_ms)
+                .unwrap_or(DEFAULT_FLUSH_INTERVAL_MS),
             string_max_chars: DEFAULT_STRING_MAX_CHARS,
             event_max_bytes: DEFAULT_EVENT_MAX_BYTES,
             file_root,
-            file_path: telemetry.file_path.clone(),
+            file_path: telemetry.and_then(|t| t.file_path.clone()),
             file_max_bytes: telemetry
-                .file_max_bytes
+                .and_then(|t| t.file_max_bytes)
                 .unwrap_or(DEFAULT_FILE_MAX_BYTES),
-            file_max_files: usize::try_from(telemetry.file_max_files.unwrap_or(
-                DEFAULT_FILE_MAX_FILES as u64,
-            ))
+            file_max_files: usize::try_from(
+                telemetry
+                    .and_then(|t| t.file_max_files)
+                    .unwrap_or(DEFAULT_FILE_MAX_FILES as u64),
+            )
             .unwrap_or(DEFAULT_FILE_MAX_FILES),
         }
     }
@@ -153,12 +173,13 @@ pub struct RouterTelemetryProducer {
 
 impl RouterTelemetryProducer {
     pub fn new(config: &RouterConfig) -> Option<Self> {
-        let telemetry = config.telemetry.as_ref()?;
-        if !telemetry.enabled {
-            return None;
+        if let Some(telemetry) = config.telemetry.as_ref() {
+            if !telemetry.enabled {
+                return None;
+            }
         }
         Some(Self {
-            config: Arc::new(RouterTelemetryConfig::from_router(config, telemetry)),
+            config: Arc::new(RouterTelemetryConfig::from_router(config, config.telemetry.as_ref())),
             events: Arc::new(Mutex::new(VecDeque::new())),
             next_seq: Arc::new(AtomicU64::new(1)),
             notify: Arc::new(Notify::new()),

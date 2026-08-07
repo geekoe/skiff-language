@@ -34,7 +34,7 @@ test('local instance spec derives processes, ports, and shared facts from config
   assert.equal(spec.compilerBinary, resolve(skiffRoot, 'build/runtime-stack/bin/skiff-compiler'));
   assert.deepEqual(
     spec.processes.map((process) => process.name),
-    ['mongo', 'telemetry', 'router', 'runtime'],
+    ['mongo', 'router', 'runtime'],
   );
   const mongo = spec.processes.find((process) => process.name === 'mongo');
   assert.equal(mongo.args[mongo.args.indexOf('--port') + 1], '27017');
@@ -115,7 +115,7 @@ async function buildFixture(t, { watch = false } = {}) {
     'profile: debug',
     'process:',
     '  mongo: managed',
-    '  telemetry: managed',
+    '  telemetry: disabled',
     `  watch: ${watch ? 'managed' : 'disabled'}`,
     '',
   ].join('\n'));

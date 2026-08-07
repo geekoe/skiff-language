@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chmod, copyFile, mkdir, stat } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -247,8 +247,7 @@ async function materializeOutputs(spec, sourceSnapshot) {
   for (const output of spec.outputs) {
     if (output.kind === 'binary') {
       await mkdir(path.dirname(output.path), { recursive: true });
-      await copyFile(output.source, output.path);
-      await chmod(output.path, 0o755);
+      await copyBinaryAtomic(output.source, output.path);
       artifacts.push(await artifactRecord(output, output.path));
       continue;
     }
@@ -265,6 +264,22 @@ async function materializeOutputs(spec, sourceSnapshot) {
     }
   }
   return artifacts;
+}
+
+async function copyBinaryAtomic(source, destination) {
+  // Write to a fresh temp file then rename: in-place overwrite of a signed
+  // binary that a running process still maps poisons subsequent execs on
+  // macOS (Killed: 9 until the stale mapping is gone). Atomic rename gives
+  // every exec a fresh inode with a valid signature.
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await copyFile(source, temporary);
+    await chmod(temporary, 0o755);
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 async function artifactRecord(output, file) {

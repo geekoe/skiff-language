@@ -43,7 +43,6 @@ export function localInstanceSpecFrom({ stack, skiffRoot, manifest }) {
     process.mongoDbPath ?? 'mongo-data',
   );
   const routerPorts = routerPortsFrom(stack.router);
-  const telemetryPort = telemetryPortFrom(stack.telemetry);
   const mongoPort = mongoPortFrom(stack.router);
   const binary = (unitName, fallback) => {
     const artifact = manifest.units?.[unitName]?.artifacts?.find(
@@ -67,19 +66,6 @@ export function localInstanceSpecFrom({ stack, skiffRoot, manifest }) {
       ],
       cwd: buildRoot,
       ports: [mongoPort],
-      healthUrl: null,
-    });
-  }
-  if (process.telemetry === 'managed') {
-    processes.push({
-      name: 'telemetry',
-      command: 'pnpm',
-      args: [
-        '--dir', join(skiffRoot, 'telemetry'),
-        'dev', '--config', join(buildRoot, 'telemetry.yml'),
-      ],
-      cwd: skiffRoot,
-      ports: [telemetryPort],
       healthUrl: null,
     });
   }
@@ -140,14 +126,6 @@ function routerPortsFrom(router) {
     throw new Error('router.yml must declare http.port and runtime.port');
   }
   return { http, control };
-}
-
-function telemetryPortFrom(telemetry) {
-  const port = telemetry?.telemetry?.port ?? telemetry?.port;
-  if (!Number.isSafeInteger(port)) {
-    throw new Error('telemetry.yml must declare telemetry.port');
-  }
-  return port;
 }
 
 function mongoPortFrom(router) {

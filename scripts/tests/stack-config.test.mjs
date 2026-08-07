@@ -162,6 +162,24 @@ test('build.yml units must be known build units', async (t) => {
   assert.equal(KNOWN_BUILD_UNITS.has('router'), true);
 });
 
+test('build.yml rejects process.telemetry managed (standalone repo owns the process)', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-stack-telemetry-flag-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, 'build.yml'), [
+    'target: x86_64-unknown-linux-gnu',
+    'zigDir: /cache/zig',
+    'buildRoot: build/runtime-stack',
+    'cargoTargetDir: build/cargo-target',
+    'process:',
+    '  telemetry: managed',
+    '',
+  ].join('\n'));
+  await assert.rejects(
+    loadStackConfig(root, { skiffRoot, files: ['build.yml'] }),
+    /process\.telemetry must be "disabled"/,
+  );
+});
+
 test('parseStackConfigDirArg accepts both option forms and rejects ambiguity', () => {
   assert.equal(
     parseStackConfigDirArg(['--configDir', '/tmp/stack']).configDir,

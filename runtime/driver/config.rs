@@ -158,21 +158,26 @@ impl RuntimeFileConfig {
 
 /// Parses the telemetry block into the host producer config.
 ///
-/// `enabled: false` (or absent telemetry block) disables telemetry entirely
-/// (`None`); otherwise a config is returned with `endpoint: Some(non-empty)`
-/// for the WS exporter or `endpoint: None` for the default JSONL file sink.
-/// The `filePath` override is passed through unresolved: absolute paths are
-/// used directly, relative paths resolve against the default
-/// `<runtime_home.parent()>/logs/telemetry` root in the host.
+/// `enabled: false` disables telemetry entirely (`None`); an absent telemetry
+/// block defaults to the JSONL file sink (three-state: endpoint / file /
+/// disabled). `endpoint: Some(non-empty)` selects the WS exporter, otherwise
+/// the default JSONL file sink is used. The `filePath` override is passed
+/// through unresolved: absolute paths are used directly, relative paths
+/// resolve against the default `<runtime_home.parent()>/logs/telemetry` root
+/// in the host.
 fn runtime_telemetry(
     telemetry: Option<RawRuntimeTelemetryConfig>,
 ) -> anyhow::Result<Option<RuntimeTelemetryConfig>> {
-    let Some(telemetry) = telemetry else {
-        return Ok(None);
-    };
-    if telemetry.enabled == Some(false) {
+    if telemetry.as_ref().is_some_and(|t| t.enabled == Some(false)) {
         return Ok(None);
     }
+    let telemetry = telemetry.unwrap_or(RawRuntimeTelemetryConfig {
+        enabled: None,
+        endpoint: None,
+        file_path: None,
+        file_max_bytes: None,
+        file_max_files: None,
+    });
     Ok(Some(RuntimeTelemetryConfig {
         endpoint: telemetry.endpoint.filter(|endpoint| !endpoint.trim().is_empty()),
         file_path: telemetry.file_path.map(PathBuf::from),
