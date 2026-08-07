@@ -56,6 +56,8 @@ const usage = `usage:
   skiff service dev registry list [--config <path>]
   skiff service dev registry add <package-or-service-root> [--profile <name>] [--config <path>]
   skiff service dev registry remove <service-id-or-root> [--config <path>]
+  skiff build <router|runtime|compiler|all>... [--profile debug|release]
+  skiff <router|runtime> <start|stop|restart|status|logs> --dir <run-dir>
   skiff instance <up|restart|status|down|supervise|repair> [--runtime <dir>] [component]
   skiff watch [--once] [--runtime <dir>] --config <watchDir> [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff package build <root> --artifact-root <dir> [--profile <name>] [--json]
@@ -106,6 +108,13 @@ async function main(args) {
       return;
     case 'service':
       await serviceCommand(args);
+      return;
+    case 'build':
+      await run('node', [join(scriptDir, 'skiff-build.mjs'), ...args], process.cwd());
+      return;
+    case 'router':
+    case 'runtime':
+      await run('node', [join(scriptDir, 'skiff-process.mjs'), command, ...args], process.cwd());
       return;
     case 'instance':
       await run('node', [join(scriptDir, 'skiff-instance.mjs'), ...args], process.cwd());
