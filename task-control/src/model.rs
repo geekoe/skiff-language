@@ -11,8 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     ActorImplementationIdentity, ActorMethodIdentity, PackageCallableId,
-    RecoverableExpectedTypePlan, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-    ServiceDeploymentRef,
+    RecoverableExpectedTypePlan, ServiceDeploymentRef,
 };
 use skiff_deployment::projection::actor_routing::ActorRoutingRef;
 
@@ -271,8 +270,6 @@ pub struct TaskTraceContext {
 pub struct TaskExecutionImageRef {
     pub target_profile: String,
     pub package_version: String,
-    pub assembly: RuntimeAssemblyRef,
-    pub config_snapshot: RuntimeConfigSnapshotRef,
     pub deployment: ServiceDeploymentRef,
 }
 

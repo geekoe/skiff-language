@@ -721,10 +721,9 @@ pub(crate) mod tests {
             TaskExecutionImageRef, TaskId, TaskTraceContext,
         };
         use skiff_artifact_model::{
-            ActorImplementationIdentity, ActorMethodIdentity, AssemblyIdentity,
-            DeploymentArtifactIdentity, DeploymentRevision, PackageCallableId,
-            RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RuntimeAssemblyRef,
-            RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+            ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
+            DeploymentRevision, PackageCallableId, RecoverableExpectedTypePlan,
+            RecoverableExpectedTypeRoot, ServiceDeploymentRef,
         };
         use skiff_deployment::projection::actor_routing::ActorRoutingRef;
 
@@ -733,17 +732,6 @@ pub(crate) mod tests {
             let execution = TaskExecutionImageRef {
                 target_profile: "prod".to_string(),
                 package_version: "1.0.0".to_string(),
-                assembly: RuntimeAssemblyRef {
-                    assembly_identity: AssemblyIdentity::new(format!(
-                        "skiff-runtime-assembly-v3:sha256:{seed:064x}"
-                    )),
-                },
-                config_snapshot: RuntimeConfigSnapshotRef {
-                    snapshot_id: RuntimeConfigSnapshotId::parse(format!(
-                        "skiff-runtime-config-snapshot-v1:{seed:032x}"
-                    ))
-                    .expect("config id"),
-                },
                 deployment: ServiceDeploymentRef {
                     service_id: format!("svc-{seed}"),
                     contract_version: "1.0.0".to_string(),

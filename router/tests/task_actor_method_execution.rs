@@ -17,8 +17,7 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, PackageArtifactRef,
     PackageBuildId, PackageLocalAbiIdentity, RecoverableExpectedTypePlan,
-    RecoverableExpectedTypeRoot, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
-    RuntimeConfigSnapshotRef, ServiceDeploymentRef, TypeRefIr,
+    RecoverableExpectedTypeRoot, ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
@@ -198,17 +197,6 @@ fn corpus_image() -> TaskExecutionImageRef {
     TaskExecutionImageRef {
         target_profile: dispatch_harness::CORPUS_PROFILE.to_string(),
         package_version: dispatch_harness::CORPUS_CONTRACT_VERSION.to_string(),
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                dispatch_harness::CORPUS_ASSEMBLY_IDENTITY.to_string(),
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                dispatch_harness::CORPUS_CONFIG_SNAPSHOT_ID.to_string(),
-            )
-            .expect("config snapshot id"),
-        },
         deployment: dispatch_harness::corpus_deployment_ref(),
     }
 }

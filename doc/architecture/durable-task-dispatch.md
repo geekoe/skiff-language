@@ -137,13 +137,11 @@ enum DetachedCallTarget {
 ```text
 targetProfile
 exact PackageVersion label
-RuntimeAssemblyRef
-RuntimeConfigSnapshotRef
 ServiceDeploymentRef
 ```
 
-其中 `RuntimeAssemblyRef` 闭合 exact `PackageBuildId` 和 executable graph；`ServiceDeploymentRef` 闭合 deployment revision。
-PackageVersion label 必须作为 task 的显式、可观测版本事实保留，不能在执行时从 active deployment 反推。
+`ServiceDeploymentRef` 闭合 deployment revision 与 deployment artifact identity；执行镜像不再 pin 独立的 assembly / config
+snapshot 引用。PackageVersion label 必须作为 task 的显式、可观测版本事实保留，不能在执行时从 active deployment 反推。
 
 `DurableUtcTimestamp` 是可持久化、可跨主机比较的 canonical UTC epoch timestamp，不是 Rust / Tokio 的进程内 monotonic
 `Instant`。`due_at` visibility、lease expiry 与过期竞争都使用 TaskStore 的权威时钟。Runtime / scheduler 的 monotonic clock
@@ -171,20 +169,18 @@ task 在提交时冻结完整 execution image，而不是只保存可读 target 
 ```text
 service owner
 + service version
-+ exact build / assembly identity
-+ deployment revision
-+ exact Runtime configuration snapshot
++ exact deployment (deployment revision + artifact identity)
 + exact function or actor-method identity
 + payload expected-type plan identity
 ```
 
-`TaskExecutionImageRef` 是这些 immutable artifact / configuration facts 的受认证引用。它不包含提交 request 所在的物理 Runtime
+`TaskExecutionImageRef` 是这些 immutable artifact facts 的受认证引用。它不包含提交 request 所在的物理 Runtime
 replica，也不引用该 replica 当时的 activation generation：正常发布和 drain 必须能结束旧 Runtime，而不能因为一个很久以后的 task
 把旧进程留住。到期 attempt 由 task control plane 针对 frozen image 建立新的 task activation，或选择已经 admission 同一 image 的
 Runtime；这个 activation 拥有自己的 generation，并继续服从普通 Runtime admission 与 drain 规则。
 
-因此“执行旧代码”固定的是可重新激活的旧 execution image，不是某个旧进程。非 terminal task 是其 image、配置 snapshot 和必要
-artifact 的 retention root。发布、drain 和 artifact GC 不得让已接受 task 静默改用不同实现；若 operator 显式破坏 retention，
+因此“执行旧代码”固定的是可重新激活的旧 execution image，不是某个旧进程。非 terminal task 是其 image 和必要 artifact 的
+retention root。发布、drain 和 artifact GC 不得让已接受 task 静默改用不同实现；若 operator 显式破坏 retention，
 task 以可观察的平台失败收敛，不能 fallback 到 latest build。terminal transition 必须原子释放 execution image / artifact
 retention root；后续 status / audit tombstone retention 不继续 pin executable
 artifact。若审计需要长期保存代码，必须使用独立 artifact audit retention policy。
@@ -193,8 +189,7 @@ artifact。若审计需要长期保存代码，必须使用独立 artifact audit
 [`recoverable-value.md`](recoverable-value.md) 的 owner-internal envelope 规则编码；execution image 是 task 调度元数据，
 decode 使用该 image 已 admission 的 linked expected plan。
 
-scheduled horizon 和 outstanding-task quota 同时限制旧 image 的最长 retention 与数量。配置 snapshot 若包含 secret capability，必须以
-平台受保护引用保存并在 attempt 激活时重新授权，不能把明文 secret 复制进 task record 或 payload。
+scheduled horizon 和 outstanding-task quota 同时限制旧 image 的最长 retention 与数量。
 
 ### Actor-method target
 

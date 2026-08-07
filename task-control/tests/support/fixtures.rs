@@ -1,8 +1,7 @@
 //! Canonical record builders for contract tests.
 
 use skiff_artifact_model::{
-    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, PackageCallableId,
-    RuntimeAssemblyRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+    DeploymentArtifactIdentity, DeploymentRevision, PackageCallableId, ServiceDeploymentRef,
 };
 use skiff_task_control::model::{
     DetachedCallTarget, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
@@ -16,17 +15,6 @@ pub fn record(seed: u64, due_at_millis: i64) -> TaskRecord {
         execution: TaskExecutionImageRef {
             target_profile: "prod".to_string(),
             package_version: "1.0.0".to_string(),
-            assembly: RuntimeAssemblyRef {
-                assembly_identity: AssemblyIdentity::new(format!(
-                    "skiff-runtime-assembly-v3:sha256:{seed:064x}"
-                )),
-            },
-            config_snapshot: RuntimeConfigSnapshotRef {
-                snapshot_id: RuntimeConfigSnapshotId::parse(format!(
-                    "skiff-runtime-config-snapshot-v1:{seed:032x}"
-                ))
-                .expect("config id"),
-            },
             deployment: ServiceDeploymentRef {
                 service_id: format!("svc-{seed}"),
                 contract_version: "1.0.0".to_string(),

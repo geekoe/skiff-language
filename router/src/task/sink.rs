@@ -93,53 +93,22 @@ impl ReleaseTaskExecutionImageSource {
         Self { profile, release }
     }
 
-    /// Resolves the deployment for one service/version and derives the
-    /// frozen execution image facts. `assembly` / `config_snapshot` are
-    /// epoch-era vestiges retained by the frozen task-control record schema
-    /// (M5 removes them); they no longer gate admission.
-    fn resolve_deployment(
-        &self,
-        service_id: &str,
-        version: &str,
-    ) -> Option<TaskExecutionImageRef> {
+    /// Resolves the deployment for one service/version and freezes the
+    /// execution image facts (M5: the epoch-era `assembly` /
+    /// `config_snapshot` fields were dropped; the deployment is the only
+    /// artifact pin and no longer gets a vestige identity derivation).
+    fn resolve_deployment(&self, service_id: &str, version: &str) -> Option<TaskExecutionImageRef> {
         let deployment = self
             .release
             .resolve(&self.profile, service_id, version)
             .ok()
             .flatten()?;
-        let identity = deployment.deployment_artifact_identity.as_str();
-        let snapshot_id = skiff_artifact_model::RuntimeConfigSnapshotId::parse(format!(
-            "skiff-runtime-config-snapshot-v1:{}",
-            &identity_hash(identity)[..32]
-        ))
-        .ok()?;
         Some(TaskExecutionImageRef {
             target_profile: self.profile.clone(),
             package_version: version.to_string(),
-            assembly: skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: skiff_artifact_model::AssemblyIdentity::new(format!(
-                    "{}:{}",
-                    skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
-                    identity_hash(identity)
-                )),
-            },
-            config_snapshot: skiff_artifact_model::RuntimeConfigSnapshotRef {
-                snapshot_id,
-            },
             deployment,
         })
     }
-}
-
-/// Deterministic 64-hex digest over one build id (vestige derivation only).
-fn identity_hash(value: &str) -> String {
-    let mut hash = [0u8; 32];
-    for (index, byte) in value.bytes().enumerate() {
-        hash[index % 32] ^= byte;
-    }
-    hash.iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
 }
 
 impl TaskExecutionImageSource for ReleaseTaskExecutionImageSource {

@@ -9,10 +9,7 @@ mod health_common;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use skiff_artifact_model::{
-    AssemblyIdentity, PackageCallableId, RuntimeAssemblyRef, RuntimeConfigSnapshotId,
-    RuntimeConfigSnapshotRef,
-};
+use skiff_artifact_model::PackageCallableId;
 use skiff_router::session::demux::InboundFrameSink;
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::supervisor::ws::WsSessionWriter;
@@ -153,17 +150,6 @@ fn corpus_image() -> TaskExecutionImageRef {
     TaskExecutionImageRef {
         target_profile: dispatch_harness::CORPUS_PROFILE.to_string(),
         package_version: dispatch_harness::CORPUS_CONTRACT_VERSION.to_string(),
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(
-                dispatch_harness::CORPUS_ASSEMBLY_IDENTITY.to_string(),
-            ),
-        },
-        config_snapshot: RuntimeConfigSnapshotRef {
-            snapshot_id: RuntimeConfigSnapshotId::parse(
-                dispatch_harness::CORPUS_CONFIG_SNAPSHOT_ID.to_string(),
-            )
-            .expect("corpus config snapshot"),
-        },
         deployment: dispatch_harness::corpus_deployment_ref(),
     }
 }
