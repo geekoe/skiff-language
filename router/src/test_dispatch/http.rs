@@ -406,6 +406,23 @@ fn build_test_dispatch_header(
     decoded: &DecodedTestDispatch,
 ) -> Result<RuntimeAssemblyRequestStartFrameHeader, String> {
     let (timeout_ms, expires_at) = deadline_parts(Duration::from_millis(decoded.timeout_ms));
+    // M4: the dispatched routing header always carries the exact deployment
+    // build id (the candidate admission fails closed without it). The
+    // caller-provided routing may omit buildId; the exact deployment was
+    // already validated against the release pointer table, so its artifact
+    // identity is the authoritative build id (same rule as the HTTP ingress
+    // resolver).
+    let mut routing = decoded.routing.clone();
+    if routing.build_id.is_none() {
+        routing.build_id = Some(
+            decoded
+                .routing
+                .deployment
+                .deployment_artifact_identity
+                .as_str()
+                .to_string(),
+        );
+    }
     let header = RuntimeAssemblyRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
@@ -414,7 +431,7 @@ fn build_test_dispatch_header(
         caller: RuntimeAssemblyRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: decoded.routing.clone(),
+        routing,
         client_session: None,
         deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
             timeout_ms,
@@ -1009,6 +1026,38 @@ mod tests {
             24
         );
         assert_eq!(request.payload_bytes, Bytes::from_static(b"null"));
+    }
+
+    #[tokio::test]
+    async fn missing_body_build_id_is_resolved_from_the_exact_deployment() {
+        let fixture = fixture();
+        let dispatcher = FakeHttpDispatcher::new(vec![FakeDispatchPlan::UnaryOk {
+            status: 200,
+            headers: vec![(
+                "content-type".to_string(),
+                "application/json; charset=utf-8".to_string(),
+            )],
+            payload: Bytes::from_static(b"null"),
+        }]);
+        let handler = handler_with(&fixture, dispatcher.clone());
+        let mut value = body(&fixture);
+        value["routing"]
+            .as_object_mut()
+            .expect("routing object")
+            .remove("buildId")
+            .expect("fixture routing carries buildId");
+        let bytes = serde_json::to_vec(&value).expect("body serializes");
+        let response = handler
+            .handle_parts(&Method::POST, &bytes)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let recorded = dispatcher.recorded_requests();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].header.routing.build_id.as_deref(),
+            Some(fixture.deployment.deployment_artifact_identity.as_str())
+        );
     }
 
     #[tokio::test]
