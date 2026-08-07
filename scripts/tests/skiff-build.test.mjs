@@ -55,10 +55,10 @@ test('expandComponents expands all, validates names, and deduplicates', () => {
   assert.throws(() => expandComponents(['bogus']), /unknown component bogus/);
 });
 
-test('parseBuildArgs collects positional components and defaults profile to debug', () => {
+test('parseBuildArgs collects positional components and defaults profile to release', () => {
   assert.deepEqual(parseBuildArgs(['router', 'runtime']), {
     components: ['router', 'runtime'],
-    profile: 'debug',
+    profile: 'release',
     help: false,
   });
   assert.deepEqual(parseBuildArgs(['all', '--profile', 'release']), {
@@ -69,6 +69,11 @@ test('parseBuildArgs collects positional components and defaults profile to debu
   assert.deepEqual(parseBuildArgs(['--profile', 'release', 'compiler']), {
     components: ['compiler'],
     profile: 'release',
+    help: false,
+  });
+  assert.deepEqual(parseBuildArgs(['--profile', 'debug', 'runtime']), {
+    components: ['runtime'],
+    profile: 'debug',
     help: false,
   });
 });

@@ -32,6 +32,7 @@ const COMPONENT_SPECS = {
 const USAGE = [
   'usage: skiff build <component...> [--profile debug|release]',
   '  components: router, runtime, compiler, all',
+  '  default profile: release (debug is opt-in; release builds are used by dev processes)',
 ].join('\n');
 
 const skiffRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,7 +60,7 @@ export function expandComponents(names) {
 
 export function parseBuildArgs(rawArgs) {
   const components = [];
-  let profile = 'debug';
+  let profile = 'release';
   let help = false;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
