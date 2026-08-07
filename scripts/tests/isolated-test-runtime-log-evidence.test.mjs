@@ -71,29 +71,26 @@ test('failed isolated test keeps evidence after cleanup and combines cleanup fai
     makeTempRoot: async () => root,
     claimWorkspace: async () => ({ root: { path: root }, nonce: 'owned' }),
     createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
-    writeConfig: async (path) => {
+    initializeInstance: async () => {
       await mkdir(join(root, 'instance', 'logs'), { recursive: true });
-      await writeFile(path, 'owned: true\n');
+    },
+    seedBootstrap: async () => ({}),
+    spawnMongo: () => ({ pid: 4241 }),
+    waitMongoPrimary: async () => {},
+    spawnRouter: async () => {
       await writeFile(
         join(root, 'instance', 'logs', 'router.err.log'),
         'authorization=DO_NOT_RETAIN at /private/owned/config.yml',
       );
+      return { pid: 4242 };
     },
-    captureConfigOwnership: async (receipt, path) => ({ ...receipt, config: { path } }),
-    seedBootstrap: async () => ({}),
-    spawnSupervisor: () => ({}),
-    waitMongoStarted: async () => {},
-    waitMongoPrimary: async () => {},
-    seedActivationState: async () => {},
-    releaseStartupGate: async () => {},
+    spawnRuntime: () => ({ pid: 4243 }),
     waitReady: async () => {},
-    stopSupervisor: async () => actions.push('stop'),
-    stopOwnedInstance: async () => actions.push('down'),
-    verifyInstanceStopped: async () => {
-      actions.push('status');
-      throw new Error('status cleanup failed');
+    stopProcesses: async () => actions.push('stop'),
+    assertPortsClosed: async () => {
+      actions.push('ports');
+      throw new Error('ports cleanup failed');
     },
-    assertPortsClosed: async () => actions.push('ports'),
     removeOwnedWorkspace: async () => {
       actions.push('workspace');
       removed = true;
@@ -133,9 +130,12 @@ test('failed isolated test keeps evidence after cleanup and combines cleanup fai
     assert.match(routerError.sanitizedTail, /<REDACTED_SECRET>/);
     assert.match(routerError.sanitizedTail, /<PATH>/);
     assert.equal(JSON.stringify(primary).includes('DO_NOT_RETAIN'), false);
-    assert.deepEqual(actions, ['stop', 'down', 'status', 'ports', 'lease']);
+    assert.deepEqual(actions, ['stop', 'ports', 'lease']);
     assert.equal(removed, false);
-    assert.equal((await readFile(join(root, 'instance', 'config.yml'), 'utf8')).length > 0, true);
+    assert.equal(
+      (await readFile(join(root, 'instance', 'logs', 'router.err.log'), 'utf8')).length > 0,
+      true,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

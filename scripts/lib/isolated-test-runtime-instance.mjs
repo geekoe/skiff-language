@@ -1,11 +1,10 @@
 import {
-  spawn as spawnSupervisorChild,
+  spawn as spawnIsolatedChild,
 } from 'node:child_process';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 import { renderRouterConfig, renderRuntimeConfig } from './runtime-stack-config.mjs';
@@ -13,63 +12,6 @@ import { ensureLocalServiceDbKeyring } from './service-db-keyring.mjs';
 
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
-
-export function isolatedTestInstanceYml({
-  devHome,
-  basePort,
-  mongoPort,
-  profile = 'skiff-test',
-  routerBinary,
-  runtimeBinary,
-  mongoBinary = 'mongod',
-}) {
-  if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
-    throw new Error('isolated test instance mongoPort must be a positive integer');
-  }
-  const httpPort = basePort;
-  const controlPort = basePort + 1;
-  const pidDir = join(devHome, 'pids');
-  const logDir = join(devHome, 'logs');
-  return [
-    'schemaVersion: skiff-instance-v1',
-    `profile: ${JSON.stringify(profile)}`,
-    `devHome: ${JSON.stringify(devHome)}`,
-    `artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}`,
-    `pidDir: ${JSON.stringify(pidDir)}`,
-    `logDir: ${JSON.stringify(logDir)}`,
-    `mongoDbPath: ${JSON.stringify(join(devHome, 'mongo-data'))}`,
-    'processes:',
-    '  - name: mongo',
-    `    command: ${JSON.stringify(mongoBinary)}`,
-    '    args:',
-    `      - ${JSON.stringify('--dbpath')}`,
-    `      - ${JSON.stringify(join(devHome, 'mongo-data'))}`,
-    '      - --port',
-    `      - ${JSON.stringify(String(mongoPort))}`,
-    '      - --replSet',
-    '      - rs0',
-    '      - --bind_ip',
-    '      - 127.0.0.1',
-    `    cwd: ${JSON.stringify(devHome)}`,
-    `    ports: [${mongoPort}]`,
-    '    healthUrl: null',
-    '  - name: router',
-    `    command: ${JSON.stringify(routerBinary)}`,
-    '    args:',
-    `      - ${JSON.stringify(join(devHome, 'router.yml'))}`,
-    `    cwd: ${JSON.stringify(devHome)}`,
-    `    ports: [${httpPort}, ${controlPort}]`,
-    `    healthUrl: ${JSON.stringify(`http://127.0.0.1:${controlPort}/__router/health`)}`,
-    '  - name: runtime',
-    `    command: ${JSON.stringify(runtimeBinary)}`,
-    '    args:',
-    `      - ${JSON.stringify(join(devHome, 'runtime.yml'))}`,
-    `    cwd: ${JSON.stringify(devHome)}`,
-    '    ports: []',
-    '    healthUrl: null',
-    '',
-  ].join('\n');
-}
 
 export function isolatedTestRunnerEnvironment({
   baseEnv,
@@ -114,7 +56,6 @@ export function isolatedTestInstanceRuntimeFiles({
     keyringPath: join(secretsDir, 'service-db-keyring.json'),
     dirs: {
       mongoData: join(devHome, 'mongo-data'),
-      pids: join(devHome, 'pids'),
       logs: join(devHome, 'logs'),
       secrets: secretsDir,
       runtimeHome: join(devHome, 'runtime-home'),
@@ -156,7 +97,7 @@ export function bootstrapCanonicalArgs({
     '--bin',
     'skiff-package-service-smoke-fixture',
     '--',
-    // The isolated instance boots from an empty pointer table; the dedicated
+    // The isolated stack boots from an empty pointer table; the dedicated
     // bootstrap fixture seeds the canonical generation-0 records (std + the
     // bootstrap service deployment and its release pointer) into the store
     // before the Router starts.
@@ -202,16 +143,6 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
 
 export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
   return {
-    writeConfig: async (configPath, config, ownershipReceipt) => {
-      await assertIsolatedTestWorkspaceOwned(ownershipReceipt);
-      await mkdir(dirname(configPath), { recursive: true });
-      await assertIsolatedTestWorkspaceOwned(ownershipReceipt);
-      await writeFile(configPath, config, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-    },
     seedBootstrap: async ({ artifactRoot, profile, env, signal }) => {
       const result = await captureCheckedCommand(
         'cargo',
@@ -220,23 +151,6 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       );
       return JSON.parse(result.stdout);
     },
-    spawnSupervisor: ({ configPath, startupGate, startupReady, env }) => {
-      // child-process-owner: isolated-supervisor
-      return spawnSupervisorChild(
-        'node',
-        [
-          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
-          'supervise',
-          '--runtime',
-          dirname(configPath),
-          '--startup-gate',
-          startupGate,
-          '--startup-ready',
-          startupReady,
-        ],
-        { cwd: skiffRoot, env, stdio: 'inherit' },
-      );
-    },
     initializeInstance: async ({
       profile,
       devHome,
@@ -244,7 +158,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       mongoPort,
       ownershipReceipt,
     }) => {
-      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: false });
       const files = isolatedTestInstanceRuntimeFiles({
         profile,
         devHome,
@@ -267,74 +181,91 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
         mode: 0o600,
       });
     },
-    waitMongoStarted,
-    waitMongoPrimary: initializeSingleNodeReplicaSet,
-    releaseStartupGate: async (startupGate, ownershipReceipt) => {
-      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
-      await writeFile(startupGate, 'bootstrap-seeded\n', {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
+    spawnMongo: ({ mongoBinary, mongoPort, mongoDataDir, cwd, env }) => {
+      // child-process-owner: isolated-mongo
+      return spawnIsolatedChild(
+        mongoBinary,
+        [
+          '--dbpath', mongoDataDir,
+          '--port', String(mongoPort),
+          '--replSet', 'rs0',
+          '--bind_ip', '127.0.0.1',
+        ],
+        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    },
+    waitMongoPrimary: async ({ mongoPort, child, signal }) => {
+      const uri = `mongodb://127.0.0.1:${mongoPort}/admin?directConnection=true`;
+      const initiate = [
+        'try {',
+        '  const status = rs.status();',
+        '  if (status.myState !== 1) quit(2);',
+        '} catch (error) {',
+        `  rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${mongoPort}'}]});`,
+        '  quit(2);',
+        '}',
+      ].join(' ');
+      const startedAt = Date.now();
+      let lastError;
+      while (Date.now() - startedAt < START_TIMEOUT_MS) {
+        signal.throwIfAborted();
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`isolated MongoDB exited before primary election with ${child.signalCode ?? child.exitCode}`);
+        }
+        try {
+          await captureCheckedCommand(
+            'mongosh',
+            [uri, '--quiet', '--eval', initiate],
+            { signal },
+          );
+          return;
+        } catch (error) {
+          lastError = error;
+        }
+        await delay(100);
+      }
+      throw new Error(
+        `isolated MongoDB did not elect its single-node primary: ${errorMessage(lastError)}`,
+      );
+    },
+    spawnRouter: ({ routerBinary, routerConfigPath, cwd, env }) => {
+      // child-process-owner: isolated-router
+      return spawnIsolatedChild(
+        routerBinary,
+        [routerConfigPath],
+        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    },
+    spawnRuntime: ({ runtimeBinary, runtimeConfigPath, cwd, env }) => {
+      // child-process-owner: isolated-runtime
+      return spawnIsolatedChild(
+        runtimeBinary,
+        [runtimeConfigPath],
+        { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
     },
     waitReady: waitForIsolatedRuntime,
-    stopSupervisor,
-    stopOwnedInstance: async (ownershipReceipt) => {
-      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
-      return runOwnedCommand(
-        'node',
-        [
-          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
-          'down',
-          '--runtime',
-          dirname(ownershipReceipt.config.path),
-        ],
-        { cwd: skiffRoot, env: baseEnv },
-      );
-    },
-    verifyInstanceStopped: (ownershipReceipt) => verifyInstanceStopped({
-      skiffRoot,
-      ownershipReceipt,
-      env: baseEnv,
-    }),
+    stopProcesses: stopIsolatedChildren,
   };
-}
-
-async function waitMongoStarted({ startupReady, supervisor, signal }) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < START_TIMEOUT_MS) {
-    signal.throwIfAborted();
-    if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error(
-        `isolated MongoDB supervisor exited during spawn with ${
-          supervisor.signalCode ?? supervisor.exitCode
-        }`,
-      );
-    }
-    try {
-      await access(startupReady);
-      return;
-    } catch {
-      await delay(50);
-    }
-  }
-  throw new Error(`isolated MongoDB did not report a successful spawn within ${START_TIMEOUT_MS}ms`);
 }
 
 async function waitForIsolatedRuntime({
   controlUrl,
   bootstrap,
-  supervisor,
+  children,
   signal,
 }) {
-  const exit = childExit(supervisor);
   const startedAt = Date.now();
   let lastError;
   let routerReady = false;
   while (Date.now() - startedAt < START_TIMEOUT_MS) {
     signal.throwIfAborted();
-    if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error(`isolated Router/Runtime supervisor exited before readiness with ${supervisor.signalCode ?? supervisor.exitCode}`);
+    for (const child of children) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(
+          `isolated process exited before readiness with ${child.signalCode ?? child.exitCode}`,
+        );
+      }
     }
     try {
       const response = await fetch(`${controlUrl}/__router/health`, { signal });
@@ -348,7 +279,7 @@ async function waitForIsolatedRuntime({
     } catch (error) {
       lastError = error;
     }
-    await Promise.race([delay(100), exit.then(() => undefined)]);
+    await delay(100);
   }
   const component = routerReady ? 'Runtime' : 'Router';
   throw new Error(
@@ -356,80 +287,32 @@ async function waitForIsolatedRuntime({
   );
 }
 
-async function initializeSingleNodeReplicaSet({ mongoPort, supervisor, signal }) {
-  const uri = `mongodb://127.0.0.1:${mongoPort}/admin?directConnection=true`;
-  const initiate = [
-    'try {',
-    '  const status = rs.status();',
-    '  if (status.myState !== 1) quit(2);',
-    '} catch (error) {',
-    `  rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${mongoPort}'}]});`,
-    '  quit(2);',
-    '}',
-  ].join(' ');
-  const startedAt = Date.now();
-  let lastError;
-  while (Date.now() - startedAt < START_TIMEOUT_MS) {
-    signal.throwIfAborted();
-    if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error('isolated MongoDB supervisor exited before primary election');
+async function stopIsolatedChildren(children) {
+  const errors = [];
+  for (const child of children) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      continue;
     }
-    try {
-      await captureCheckedCommand(
-        'mongosh',
-        [uri, '--quiet', '--eval', initiate],
-        { signal },
-      );
-      return;
-    } catch (error) {
-      lastError = error;
+    const exit = childExit(child);
+    child.kill('SIGTERM');
+    const stopped = await Promise.race([
+      exit.then(() => true),
+      delay(STOP_TIMEOUT_MS).then(() => false),
+    ]);
+    if (stopped) {
+      continue;
     }
-    await delay(100);
+    child.kill('SIGKILL');
+    const killed = await Promise.race([
+      exit.then(() => true),
+      delay(5_000).then(() => false),
+    ]);
+    if (!killed) {
+      errors.push(new Error(`isolated process pid ${child.pid} did not stop`));
+    }
   }
-  throw new Error(
-    `isolated MongoDB did not elect its single-node primary: ${errorMessage(lastError)}`,
-  );
-}
-
-async function stopSupervisor(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  const exit = childExit(child);
-  child.kill('SIGTERM');
-  const stopped = await Promise.race([
-    exit.then(() => true),
-    delay(STOP_TIMEOUT_MS).then(() => false),
-  ]);
-  if (stopped) {
-    return;
-  }
-  child.kill('SIGKILL');
-  const killed = await Promise.race([
-    exit.then(() => true),
-    delay(5_000).then(() => false),
-  ]);
-  if (!killed) {
-    throw new Error(`isolated runtime supervisor pid ${child.pid} did not stop`);
-  }
-}
-
-async function verifyInstanceStopped({ skiffRoot, ownershipReceipt, env }) {
-  await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
-  const configPath = ownershipReceipt.config.path;
-  const result = await runCommandCapture('node', [
-    join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
-    'status',
-    '--runtime',
-    dirname(configPath),
-    '--json',
-  ], { cwd: skiffRoot, env });
-  const status = JSON.parse(result.stdout);
-  const active = (status.processes ?? []).filter((processStatus) =>
-    ['mongo', 'router', 'runtime'].includes(processStatus.name)
-    && processStatus.alive === true);
-  if (active.length > 0) {
-    throw new Error(`isolated instance still owns active components: ${active.map((entry) => `${entry.name}:${entry.pid ?? 'unknown'}`).join(', ')}`);
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'isolated stack shutdown failed');
   }
 }
 
@@ -441,24 +324,6 @@ function childExit(child) {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolvePromise({ code, signal }));
   });
-}
-
-async function runCommandCapture(command, args, options) {
-  try {
-    return await captureCheckedCommand(command, args, options);
-  } catch (error) {
-    throw new Error([
-      `${command} exited with ${error?.signal ?? error?.code ?? 'UNKNOWN'}`,
-      streamDiagnostic('stderr', error?.stderr),
-      streamDiagnostic('stdout', error?.stdout),
-    ].filter(Boolean).join('\n'));
-  }
-}
-
-function streamDiagnostic(label, value) {
-  return typeof value === 'string' && value.trim().length > 0
-    ? `${label}:\n${value.trim()}`
-    : '';
 }
 
 function errorMessage(error) {

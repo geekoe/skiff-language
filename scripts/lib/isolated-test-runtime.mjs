@@ -7,12 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './cargo-target-dir.mjs';
 import {
   isolatedInstanceOperations,
-  isolatedTestInstanceYml,
   isolatedTestRunnerEnvironment,
 } from './isolated-test-runtime-instance.mjs';
 import { assertPortsClosed, leaseConsecutiveLocalPorts } from './local-port-lease.mjs';
 import {
-  captureIsolatedTestConfig,
   claimIsolatedTestWorkspace,
   removeOwnedIsolatedTestWorkspace,
 } from './isolated-test-runtime-workspace.mjs';
@@ -140,39 +138,24 @@ async function startIsolatedTestRuntime({
   const portLease = await ops.leasePorts();
   let tempRoot;
   let ownershipReceipt;
-  let supervisor;
-  let additionalRuntimes = [];
-  let additionalRuntimeLogFiles = [];
-  let configOwnershipRequired = false;
-  let supervisorAttempted = false;
+  const children = [];
+  const additionalRuntimes = [];
+  const additionalRuntimeLogFiles = [];
+  let spawnAttempted = false;
   try {
     tempRoot = await ops.makeTempRoot();
     ownershipReceipt = await ops.claimWorkspace(tempRoot);
     const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
     await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
-    const configPath = join(instanceRoot, 'instance.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
-    const startupGate = join(instanceRoot, 'bootstrap-seeded.ready');
-    const startupReady = join(instanceRoot, 'mongo-started.ready');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
     const mongoPort = portLease.ports[3];
     const routerBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-router');
     const runtimeBinary = join(skiffRoot, 'build', 'runtime-stack', 'bin', 'skiff-runtime');
     await ensureRuntimeBinaries({ routerBinary, runtimeBinary });
-    const config = isolatedTestInstanceYml({
-      devHome,
-      basePort,
-      mongoPort,
-      profile,
-      routerBinary,
-      runtimeBinary,
-    });
-    configOwnershipRequired = true;
-    await ops.writeConfig(configPath, config, ownershipReceipt);
-    ownershipReceipt = await ops.captureConfigOwnership(ownershipReceipt, configPath);
     await ops.initializeInstance({
       profile,
       devHome,
@@ -190,19 +173,18 @@ async function startIsolatedTestRuntime({
       profile,
     });
     signal.throwIfAborted();
-    supervisorAttempted = true;
-    supervisor = await stageCall('Mongo spawn', () =>
-      ops.spawnSupervisor({
-        skiffRoot,
-        configPath,
-        startupGate,
-        startupReady,
+    spawnAttempted = true;
+    const mongoChild = await stageCall('Mongo spawn', () =>
+      ops.spawnMongo({
+        mongoBinary: 'mongod',
+        mongoPort,
+        mongoDataDir: join(devHome, 'mongo-data'),
+        cwd: instanceRoot,
         env: isolatedEnv,
       }));
-    await stageCall('Mongo spawn', () =>
-      ops.waitMongoStarted({ startupReady, supervisor, signal }));
+    children.push(mongoChild);
     await stageCall('Mongo primary election', () =>
-      ops.waitMongoPrimary({ mongoPort, supervisor, signal }));
+      ops.waitMongoPrimary({ mongoPort, child: mongoChild, signal }));
     const bootstrap = await stageCall('bootstrap seed', async () => {
       const receipt = await ops.seedBootstrap({
         skiffRoot,
@@ -212,25 +194,40 @@ async function startIsolatedTestRuntime({
         signal,
       });
       validateBootstrapReceipt?.(receipt);
-      await ops.releaseStartupGate(startupGate, ownershipReceipt);
       return receipt;
     });
     const controlUrl = `http://127.0.0.1:${controlPort}`;
     const routerHttpUrl = `http://127.0.0.1:${basePort}`;
+    const routerChild = await stageCall('Router spawn', () =>
+      ops.spawnRouter({
+        routerBinary,
+        routerConfigPath: join(devHome, 'router.yml'),
+        cwd: instanceRoot,
+        env: isolatedEnv,
+      }));
+    children.push(routerChild);
+    const runtimeChild = await stageCall('Runtime spawn', () =>
+      ops.spawnRuntime({
+        runtimeBinary,
+        runtimeConfigPath: join(devHome, 'runtime.yml'),
+        cwd: instanceRoot,
+        env: isolatedEnv,
+      }));
+    children.push(runtimeChild);
     await stageCall('Router/Runtime readiness', () => ops.waitReady({
       controlUrl,
       routerHttpUrl,
       mongoPort,
       artifactRoot,
       bootstrap,
-      supervisor,
+      children,
       signal,
     }));
     for (let replica = 1; replica < runtimeReplicas; replica += 1) {
       const runtimeHome = join(tempRoot, `runtime-${replica + 1}-home`);
       const runtimeConfig = join(tempRoot, `runtime-${replica + 1}.yml`);
       await mkdir(runtimeHome, { recursive: true });
-      const logsDir = join(tempRoot, 'instance', 'logs');
+      const logsDir = join(instanceRoot, 'logs');
       await mkdir(logsDir, { recursive: true });
       const stdoutLogPath = join(logsDir, `runtime-${replica + 1}.log`);
       const stderrLogPath = join(logsDir, `runtime-${replica + 1}.err.log`);
@@ -271,29 +268,25 @@ async function startIsolatedTestRuntime({
     return {
       artifactRoot,
       sourceArtifactRoot,
-      configPath,
       controlUrl,
       routerHttpUrl,
       devHome,
       portLease,
       ports: portLease.ports,
-      supervisor,
+      children,
       additionalRuntimes,
       additionalRuntimeLogFiles,
       tempRoot,
       profile,
-      instanceOwnership: ownershipReceipt,
       ownershipReceipt,
       testRunnerEnv: isolatedEnv,
     };
   } catch (error) {
     const partial = {
-      instanceOwnership: supervisorAttempted ? ownershipReceipt : undefined,
       ownershipReceipt,
-      configOwnershipRequired,
       portLease,
       ports: portLease.ports,
-      supervisor,
+      children,
       additionalRuntimes,
       additionalRuntimeLogFiles,
       tempRoot,
@@ -322,7 +315,7 @@ async function ensureRuntimeStackDebugBinaries({ routerBinary, runtimeBinary }) 
   }
   if (missing.length > 0) {
     throw new Error(
-      `runtime-stack debug binaries missing (${missing.join(', ')}); run "skiff stack build --configDir .stack --profile debug" first`,
+      `runtime-stack debug binaries missing (${missing.join(', ')}); run "skiff build router runtime" first`,
     );
   }
 }
@@ -343,27 +336,8 @@ async function cleanupIsolatedTestRuntime(stack, ops, testError) {
       }
     );
   }
-  if (stack.supervisor !== undefined) {
-    await settleCleanupStep(errors, 'stop supervisor', async () => {
-      const stopped = await ops.stopSupervisor(stack.supervisor);
-      if (stopped?.stopped === false) {
-        throw new Error('isolated runtime supervisor reported stopped:false');
-      }
-    });
-  }
-  if (stack.instanceOwnership !== undefined) {
-    await settleCleanupStep(
-      errors,
-      'stop owned instance',
-      () => ops.stopOwnedInstance(stack.instanceOwnership),
-    );
-  }
-  if (stack.instanceOwnership !== undefined) {
-    await settleCleanupStep(
-      errors,
-      'verify instance stopped',
-      () => ops.verifyInstanceStopped(stack.instanceOwnership),
-    );
+  if ((stack.children ?? []).length > 0) {
+    await settleCleanupStep(errors, 'stop isolated stack', () => ops.stopProcesses(stack.children));
   }
   if (testError !== undefined && stack.tempRoot !== undefined) {
     await retainIsolatedRuntimeLogEvidence(testError, stack.tempRoot, {
@@ -376,12 +350,6 @@ async function cleanupIsolatedTestRuntime(stack, ops, testError) {
     errors.push(cleanupStepError(
       'preserve unowned temp workspace',
       new Error(`isolated workspace ownership receipt was not established for ${stack.tempRoot}`),
-    ));
-  }
-  if (stack.configOwnershipRequired && stack.ownershipReceipt?.config === undefined) {
-    errors.push(cleanupStepError(
-      'preserve workspace with uncaptured config',
-      new Error(`instance config ownership was not captured for ${stack.tempRoot}`),
     ));
   }
   if (errors.length === 0 && stack.ownershipReceipt !== undefined) {
@@ -471,7 +439,6 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
     claimWorkspace: claimIsolatedTestWorkspace,
     createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
-    captureConfigOwnership: captureIsolatedTestConfig,
     assertPortsClosed,
     removeOwnedWorkspace: removeOwnedIsolatedTestWorkspace,
     readFailureLog: undefined,
