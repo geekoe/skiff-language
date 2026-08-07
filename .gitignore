@@ -27,3 +27,5 @@ artifact-model/target/
 artifact-identity/target/
 runtime/target/
 target/
+
+.skiff-dev/

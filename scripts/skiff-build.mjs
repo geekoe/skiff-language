@@ -187,7 +187,6 @@ export async function runBuild({
     skiffRoot: root,
     manifest: specs[0].manifest,
     env,
-    runCommand,
   });
   const results = [];
   for (const spec of specs) {
