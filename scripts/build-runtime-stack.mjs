@@ -151,6 +151,7 @@ function rsUnit({ unitName, manifest, cargoBin, outputName, inputs, testArgs }) 
         name: `${unitName}:debug-build`,
         command: 'cargo',
         args: ['build', '--manifest-path', manifest, '--bin', cargoBin],
+        env: buildEnv(),
       }
     : {
         name: `${unitName}:linux-build`,
@@ -170,6 +171,7 @@ function rsUnit({ unitName, manifest, cargoBin, outputName, inputs, testArgs }) 
         name: `${unitName}:test`,
         command: 'cargo',
         args: testArgs || ['test', '--manifest-path', manifest, '--no-fail-fast'],
+        env: buildEnv(),
       },
       buildPhase,
     ],
@@ -193,6 +195,7 @@ function rsVerificationUnit({ unitName, manifest, inputs, testArgs }) {
         name: `${unitName}:test`,
         command: 'cargo',
         args: testArgs || ['test', '--manifest-path', manifest, '--no-fail-fast'],
+        env: buildEnv(),
       },
     ],
     outputs: [
