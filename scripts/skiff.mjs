@@ -104,20 +104,20 @@ async function main(args) {
       await devCommand(args);
       return;
     case 'watch':
-      await run('node', [join(scriptDir, 'skiff-watch.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-watch.mjs'), ...args], process.cwd());
       return;
     case 'service':
       await serviceCommand(args);
       return;
     case 'build':
-      await run('node', [join(scriptDir, 'skiff-build.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-build.mjs'), ...args], process.cwd());
       return;
     case 'router':
     case 'runtime':
-      await run('node', [join(scriptDir, 'skiff-process.mjs'), command, ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-process.mjs'), command, ...args], process.cwd());
       return;
     case 'instance':
-      await run('node', [join(scriptDir, 'skiff-instance.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-instance.mjs'), ...args], process.cwd());
       return;
     case 'package':
       await packageCommand(args);
@@ -148,16 +148,16 @@ async function stackCommand(args) {
       await stackBuild(args);
       return;
     case 'init':
-      await run('node', [join(scriptDir, 'skiff-stack-init.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-stack-init.mjs'), ...args], process.cwd());
       return;
     case 'deploy':
-      await run('node', [join(scriptDir, 'deploy-runtime-stack.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'deploy-runtime-stack.mjs'), ...args], process.cwd());
       return;
     case 'status':
-      await run('node', [join(scriptDir, 'skiff-stack-status.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-stack-status.mjs'), ...args], process.cwd());
       return;
     case 'validate':
-      await run('node', [join(scriptDir, 'skiff-stack-validate.mjs'), ...args], process.cwd());
+      await run(process.execPath, [join(scriptDir, 'skiff-stack-validate.mjs'), ...args], process.cwd());
       return;
     default:
       throw new Error(`unknown stack command ${subcommand || '(missing)'}\n${usage}`);
