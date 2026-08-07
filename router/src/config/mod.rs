@@ -44,6 +44,7 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "releaseMode",
     "requestTimeoutMs",
     "rewrite",
+    "runDir",
     "runtime",
     "runtimePath",
     "runtimePort",
@@ -98,6 +99,10 @@ pub struct RouterConfig {
     pub runtime_path: String,
     pub runtime_port: u16,
     pub runtime_max_concurrency: u64,
+    /// Optional process run directory: when set, the binary acquires an
+    /// exclusive `<run_dir>/router.pid` file before starting listeners
+    /// (process self-defense against double start).
+    pub run_dir: Option<String>,
     pub file_backend: Option<FileBackendConfig>,
     pub service_db: ServiceDbConfig,
     pub telemetry: Option<TelemetryConfig>,
@@ -285,6 +290,7 @@ fn parse_router_config(
         "websocket.path",
         DEFAULT_WEBSOCKET_PATH,
     )?;
+    let run_dir = read_optional_non_empty_string(get(&root, "runDir"), "runDir")?;
 
     let file_backend = read_file_backend_config(get(&root, "fileBackend"), config_dir)?;
     let telemetry = read_telemetry_config(get(&root, "telemetry"))?;
@@ -304,6 +310,7 @@ fn parse_router_config(
         runtime_path,
         runtime_port,
         runtime_max_concurrency,
+        run_dir,
         file_backend,
         service_db,
         telemetry,
@@ -1054,5 +1061,59 @@ mod tests {
         assert_eq!(normalize_host("registry.localhost"), "registry.localhost");
         assert_eq!(normalize_host("[::1]:4000"), "[::1]");
         assert_eq!(normalize_host("127.0.0.1"), "127.0.0.1");
+    }
+
+    #[test]
+    fn run_dir_parses_and_defaults_to_none() {
+        let minimal = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/router-config/valid/minimal.yml"
+        ))
+        .expect("minimal fixture");
+
+        let with_run_dir = temp_config_file(&format!("{minimal}\nrunDir: {}\n", run_dir_path()));
+        let config = load_router_config(with_run_dir.to_str().expect("utf8 path"))
+            .expect("runDir must parse");
+        assert_eq!(config.run_dir, Some(run_dir_path()));
+
+        let without_run_dir = temp_config_file(&minimal);
+        let config = load_router_config(without_run_dir.to_str().expect("utf8 path"))
+            .expect("config without runDir must parse");
+        assert_eq!(config.run_dir, None);
+    }
+
+    #[test]
+    fn empty_run_dir_is_rejected() {
+        let minimal = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/router-config/valid/minimal.yml"
+        ))
+        .expect("minimal fixture");
+        let config_path = temp_config_file(&format!("{minimal}\nrunDir: \"\"\n"));
+        let error = load_router_config(config_path.to_str().expect("utf8 path"))
+            .expect_err("empty runDir must be rejected");
+        assert!(
+            error.to_string().contains("runDir"),
+            "error {error:?} must mention runDir"
+        );
+    }
+
+    fn run_dir_path() -> String {
+        format!("{}/run", std::env::temp_dir().display())
+    }
+
+    fn temp_config_file(content: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "skiff-router-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        let path = directory.join("router.yml");
+        std::fs::write(&path, content).expect("write temp config");
+        path
     }
 }

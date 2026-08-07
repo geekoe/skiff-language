@@ -9,6 +9,7 @@ use skiff_runtime_transport::protocol::decode_router_bootstrap_frame;
 
 fn config() -> RouterConfig {
     RouterConfig {
+        run_dir: None,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),

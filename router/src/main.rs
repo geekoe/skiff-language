@@ -16,6 +16,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use skiff_router::{load_router_config, run_router};
+use skiff_runtime_transport::pid_lock::{PidFileGuard, PidLockError};
 
 const SHA256_ROUND_CONSTANTS: [u32; 64] = [
     0x428a_2f98,
@@ -117,6 +118,22 @@ async fn main() -> ExitCode {
             eprintln!("skiff-router: {error}");
             return ExitCode::FAILURE;
         }
+    };
+    let _pid_file_guard = match &config.run_dir {
+        Some(run_dir) => match PidFileGuard::acquire(Path::new(run_dir), "router") {
+            Ok(guard) => Some(guard),
+            Err(PidLockError::AlreadyRunning { pid }) => {
+                eprintln!(
+                    "skiff-router: run dir {run_dir} is already in use by pid {pid}; refusing to start"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("skiff-router: failed to acquire pid file in run dir {run_dir}: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
     };
     match run_router(config).await {
         Ok(()) => ExitCode::SUCCESS,

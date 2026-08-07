@@ -1,5 +1,9 @@
 router: ws://127.0.0.1:4001/runtime
 runtime-home: .runtime-home
+# runDir: .skiff-dev/runtime
+#   Optional run directory for the process pid lock (self-defense against double
+#   start, D8): when set, the runtime creates <runDir>/runtime.pid with O_EXCL
+#   before starting and removes it on graceful exit; a live pid refuses to start.
 telemetry:
   enabled: true
   endpoint: ws://127.0.0.1:4002/telemetry

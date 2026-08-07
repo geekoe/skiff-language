@@ -65,6 +65,7 @@ pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 128 * 1024 * 1024;
 pub struct RuntimeFileConfig {
     pub router: String,
     pub runtime_home: PathBuf,
+    pub run_dir: Option<PathBuf>,
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
@@ -77,6 +78,8 @@ struct RawRuntimeFileConfig {
     router: String,
     #[serde(alias = "runtime-home")]
     runtime_home: PathBuf,
+    #[serde(default)]
+    run_dir: Option<PathBuf>,
     #[serde(default)]
     service_db: Option<RawRuntimeServiceDbConfig>,
     #[serde(default)]
@@ -145,6 +148,7 @@ impl RuntimeFileConfig {
         Ok(Self {
             router: raw.router,
             runtime_home,
+            run_dir: runtime_run_dir(base_dir, raw.run_dir)?,
             service_db_encryption_keyring_file: runtime_service_db_encryption_keyring_file(
                 base_dir,
                 raw.service_db,
@@ -184,6 +188,16 @@ fn runtime_telemetry(
         file_max_bytes: telemetry.file_max_bytes,
         file_max_files: telemetry.file_max_files,
     }))
+}
+
+fn runtime_run_dir(base_dir: &Path, run_dir: Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
+    let Some(run_dir) = run_dir else {
+        return Ok(None);
+    };
+    if run_dir.as_os_str().is_empty() {
+        anyhow::bail!("runtime config runDir must be a non-empty string");
+    }
+    Ok(Some(resolve_relative_path(base_dir, run_dir)))
 }
 
 fn runtime_service_db_encryption_keyring_file(

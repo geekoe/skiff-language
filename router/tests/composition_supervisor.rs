@@ -85,6 +85,7 @@ fn materialize(profile: &str) -> TestRoot {
 
 fn config(artifact_root: &Path) -> RouterConfig {
     RouterConfig {
+        run_dir: None,
         artifacts_path: artifact_root.to_path_buf(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),

@@ -24,6 +24,7 @@ mod tests {
 
     fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
         RouterConfig {
+            run_dir: None,
             artifacts_path: PathBuf::from("/tmp/skiff-artifacts"),
             dev_reload: None,
             host: "127.0.0.1".to_string(),

@@ -22,6 +22,7 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn test_config(runtime_max_concurrency: u64) -> RouterConfig {
     RouterConfig {
+        run_dir: None,
         artifacts_path: "/opt/skiff/artifacts".into(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),

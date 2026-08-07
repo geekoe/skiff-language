@@ -5,6 +5,7 @@ use runtime::config::{
 use skiff_runtime_capability_context::DbProviderSource;
 use skiff_runtime_host::{RuntimeHost, RuntimeProductionConfig};
 use skiff_runtime_service_db::{DbEncryptionKeyring, MongoServiceDbProviderFactory};
+use skiff_runtime_transport::pid_lock::{PidFileGuard, PidLockError};
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Debug, Parser)]
@@ -48,6 +49,25 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     let file_config = RuntimeFileConfig::load(&args.config)?;
+    // Process self-defense against double start in one run dir (dev-without-stack D8):
+    // held for the rest of `run`, so the pid file is removed on graceful exit.
+    let _pid_guard = match &file_config.run_dir {
+        Some(run_dir) => {
+            Some(
+                PidFileGuard::acquire(run_dir, "runtime").map_err(|error| match &error {
+                    PidLockError::AlreadyRunning { pid } => anyhow::anyhow!(
+                        "runtime is already running in {} (pid {pid}); refusing to start",
+                        run_dir.display()
+                    ),
+                    _ => anyhow::anyhow!(
+                        "failed to acquire runtime pid lock in {}: {error}",
+                        run_dir.display()
+                    ),
+                })?,
+            )
+        }
+        None => None,
+    };
     let keyring = file_config
         .service_db_encryption_keyring_file
         .as_deref()

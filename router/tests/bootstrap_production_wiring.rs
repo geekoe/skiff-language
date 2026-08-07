@@ -46,6 +46,7 @@ impl Drop for TestRoot {
 
 fn config(profile: &str, artifacts_path: &Path) -> RouterConfig {
     RouterConfig {
+        run_dir: None,
         artifacts_path: artifacts_path.to_path_buf(),
         dev_reload: None,
         host: "127.0.0.1".to_string(),
