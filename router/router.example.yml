@@ -23,3 +23,9 @@ runtime:
   port: 4001
   path: /runtime
   maxConcurrency: 256
+
+# Optional run dir: when set, the router acquires an exclusive
+# <runDir>/router.pid file before binding listeners (process self-defense
+# against double start under the same run dir). The pid file is removed on
+# graceful shutdown; a stale file with a dead pid is taken over on next start.
+# runDir: ../.skiff-dev/router

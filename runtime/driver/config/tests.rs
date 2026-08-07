@@ -505,6 +505,92 @@ fn config_rejects_runtime_http_egress_proxy_with_non_string_value() {
 }
 
 #[test]
+fn config_reads_relative_run_dir() {
+    let temp = TempDir::new("config-run-dir-relative");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "runDir: .skiff-dev/runtime",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(config.run_dir, Some(temp.path.join(".skiff-dev/runtime")));
+}
+
+#[test]
+fn config_reads_absolute_run_dir() {
+    let temp = TempDir::new("config-run-dir-absolute");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime".to_string(),
+            "runtime-home: .runtime-home".to_string(),
+            format!("runDir: {}", temp.path.join("absolute-run").display()),
+            String::new(),
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(config.run_dir, Some(temp.path.join("absolute-run")));
+}
+
+#[test]
+fn config_defaults_run_dir_when_missing() {
+    let temp = TempDir::new("config-run-dir-missing");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(config.run_dir, None);
+}
+
+#[test]
+fn config_rejects_empty_run_dir() {
+    let temp = TempDir::new("config-run-dir-empty");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "runDir: \"\"",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let error = RuntimeFileConfig::load(&config_path).expect_err("empty runDir should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "runtime config runDir must be a non-empty string"
+    );
+}
+
+#[test]
 fn config_rejects_top_level_artifacts_key() {
     let temp = TempDir::new("config-artifacts");
     let config_path = temp.path.join("runtime.yml");
