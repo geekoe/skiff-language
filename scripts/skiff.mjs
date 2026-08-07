@@ -33,7 +33,6 @@ import {
   readProjectPackageDirs,
 } from './lib/project-config.mjs';
 import { renderRouterConfig, renderRuntimeConfig } from './lib/runtime-stack-config.mjs';
-import { buildStack } from './lib/stack-build.mjs';
 import { parseStackConfigDirArg } from './lib/stack-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -69,11 +68,7 @@ const usage = `usage:
   skiff deploy <service> <version> --root <dir> --artifact-root <dir> --profile <name> [--control-url <url>] [--skip-verify] [--verify-timeout-ms <ms>] [--json]
   skiff verify <service> <version> --artifact-root <dir> --profile <name> [--control-url <url>] [--json]
   skiff rollback <service> <version> [--to <build-id>] --artifact-root <dir> --profile <name> [--json]
-  skiff stack build --configDir <dir> [--profile debug|release]
   skiff stack init --configDir <dir>
-  skiff stack deploy --configDir <dir>
-  skiff stack status --configDir <dir>
-  skiff stack validate --configDir <dir>
 
 The dev registry watches only explicitly listed package and service roots;
 service package dependencies are not discovered as local source roots.
@@ -144,42 +139,12 @@ async function main(args) {
 async function stackCommand(args) {
   const subcommand = args.shift();
   switch (subcommand) {
-    case 'build':
-      await stackBuild(args);
-      return;
     case 'init':
       await run(process.execPath, [join(scriptDir, 'skiff-stack-init.mjs'), ...args], process.cwd());
-      return;
-    case 'deploy':
-      await run(process.execPath, [join(scriptDir, 'deploy-runtime-stack.mjs'), ...args], process.cwd());
-      return;
-    case 'status':
-      await run(process.execPath, [join(scriptDir, 'skiff-stack-status.mjs'), ...args], process.cwd());
-      return;
-    case 'validate':
-      await run(process.execPath, [join(scriptDir, 'skiff-stack-validate.mjs'), ...args], process.cwd());
       return;
     default:
       throw new Error(`unknown stack command ${subcommand || '(missing)'}\n${usage}`);
   }
-}
-
-async function stackBuild(rawArgs) {
-  const parsed = parseStackConfigDirArg(rawArgs, { options: ['--profile'] });
-  const profileOverride = parsed.profile;
-  if (
-    profileOverride !== undefined
-    && profileOverride !== 'debug'
-    && profileOverride !== 'release'
-  ) {
-    throw new Error(`--profile must be "debug" or "release"; got ${profileOverride}`);
-  }
-  const result = await buildStack({
-    configDir: parsed.configDir,
-    skiffRoot,
-    profileOverride,
-  });
-  console.log(JSON.stringify(result, null, 2));
 }
 
 async function projectCommand(args) {

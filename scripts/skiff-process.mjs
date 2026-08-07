@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, open, readFile } from 'node:fs/promises';
@@ -111,7 +111,8 @@ export async function componentProfile(runDir, component) {
 }
 
 export function runCargoMetadata({ manifest, env }) {
-  const result = spawnSync(
+  // child-process-owner: skiff-process-metadata
+  const result = execFileSync(
     'cargo',
     ['metadata', '--no-deps', '--format-version', '1', '--manifest-path', manifest],
     { encoding: 'utf8', env, timeout: CARGO_METADATA_TIMEOUT_MS },
@@ -223,6 +224,7 @@ async function actionStart({ component, runDir, root }) {
   const env = mergeEnv(process.env, processYml === null ? {} : processYml.env);
   const outLog = await open(join(runDir, `${component}.out.log`), 'a');
   const errLog = await open(join(runDir, `${component}.err.log`), 'a');
+  // child-process-owner: skiff-process-child
   const child = spawn(resolved.binary, buildBinaryArgs(info, configPath), {
     cwd: root,
     env,

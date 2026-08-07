@@ -35,6 +35,12 @@ test('tests and rust-quality retain separate canonical ownership', async () => {
         args: ['fmt', '--all', '--', '--check'],
       },
       {
+        id: 'rust-quality:clippy',
+        kind: 'rust-quality',
+        command: 'cargo',
+        args: ['clippy', '--workspace'],
+      },
+      {
         id: 'rust-quality:file-lines',
         kind: 'rust-quality',
         command: 'node',
@@ -53,6 +59,7 @@ test('default verify includes both Rust quality tasks exactly once and no live w
     'implementation:runtime:rust',
     'implementation:test-runner:rust',
     'rust-quality:format',
+    'rust-quality:clippy',
     'rust-quality:file-lines',
     'checks:artifact-identity',
     'checks:compiler-boundaries',
@@ -72,10 +79,12 @@ test('rust-quality CLI list exposes exactly the format and file-line tasks', asy
     '--list',
   ]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /tasks: 2/);
+  assert.match(result.stdout, /tasks: 3/);
   assert.equal((result.stdout.match(/rust-quality:format/g) ?? []).length, 1);
+  assert.equal((result.stdout.match(/rust-quality:clippy/g) ?? []).length, 1);
   assert.equal((result.stdout.match(/rust-quality:file-lines/g) ?? []).length, 1);
   assert.match(result.stdout, /cargo fmt --all -- --check/);
+  assert.match(result.stdout, /cargo clippy --workspace/);
   assert.match(result.stdout, /node scripts\/check-rust-file-lines\.mjs/);
 });
 
@@ -103,7 +112,7 @@ test('CI runs canonical test domains plus a distinct quality/check scope', async
   const installedPackages = [
     ...workflow.matchAll(/pnpm --dir (\S+) install --frozen-lockfile/g),
   ].map((match) => match[1]);
-  assert.deepEqual(installedPackages, ['telemetry', 'scripts', 'vscode']);
+  assert.deepEqual(installedPackages, ['scripts', 'vscode']);
   assert.match(workflow, /uses: actions\/checkout@v6\n\s+with:\n\s+persist-credentials: false/);
   assert.match(workflow, /uses: actions\/setup-node@v6/);
   assert.match(workflow, /package-manager-cache: false/);

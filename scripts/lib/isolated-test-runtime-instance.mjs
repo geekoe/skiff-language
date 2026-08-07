@@ -182,8 +182,8 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       });
     },
     spawnMongo: async ({ mongoBinary, mongoPort, mongoDataDir, cwd, env, logDir }) => {
-      // child-process-owner: isolated-mongo
       const stdio = await logFileStdio(logDir, 'mongo');
+      // child-process-owner: isolated-stack-child
       return spawnIsolatedChild(
         mongoBinary,
         [
@@ -230,8 +230,8 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       );
     },
     spawnRouter: async ({ routerBinary, routerConfigPath, cwd, env, logDir }) => {
-      // child-process-owner: isolated-router
       const stdio = await logFileStdio(logDir, 'router');
+      // child-process-owner: isolated-stack-child
       return spawnIsolatedChild(
         routerBinary,
         [routerConfigPath],
@@ -239,8 +239,8 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       );
     },
     spawnRuntime: async ({ runtimeBinary, runtimeConfigPath, cwd, env, logDir }) => {
-      // child-process-owner: isolated-runtime
       const stdio = await logFileStdio(logDir, 'runtime');
+      // child-process-owner: isolated-stack-child
       return spawnIsolatedChild(
         runtimeBinary,
         [runtimeConfigPath],

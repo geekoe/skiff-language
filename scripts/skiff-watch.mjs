@@ -6,7 +6,7 @@
 // `--once` performs a single sync; the default mode watches the roots and
 // re-syncs on changes. It replaces the old `skiff dev sync` / `skiff dev watch`.
 
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -110,23 +110,41 @@ function parseArgs(rawArgs) {
 }
 
 async function loadRuntimeSpec(runtimeDir) {
-  const file = join(runtimeDir, 'instance.yml');
+  const file = join(runtimeDir, 'router.yml');
   const source = await readFile(file, 'utf8').catch(() => null);
   if (source === null) {
     throw new Error(
-      `instance.yml not found at ${file}; run "skiff stack build --configDir <dir> --profile debug" first`,
+      `router.yml not found at ${file}; run "skiff build router runtime" first`,
     );
   }
-  const spec = parseStackYaml(source, 'instance.yml');
-  if (
-    spec.schemaVersion !== 'skiff-instance-v1'
-    || typeof spec.profile !== 'string'
-    || typeof spec.artifactRoot !== 'string'
-    || typeof spec.compilerBinary !== 'string'
-  ) {
-    throw new Error('instance.yml must declare schemaVersion, profile, artifactRoot, and compilerBinary');
+  const router = parseStackYaml(source, 'router.yml');
+  if (typeof router.profile !== 'string' || router.profile.length === 0) {
+    throw new Error('router.yml must declare profile');
   }
-  return spec;
+  if (typeof router.artifactsPath !== 'string' || router.artifactsPath.length === 0) {
+    throw new Error('router.yml must declare artifactsPath');
+  }
+  const compilerBinary = await resolveCompilerBinary(runtimeDir);
+  return {
+    profile: router.profile,
+    artifactRoot: router.artifactsPath,
+    compilerBinary,
+  };
+}
+
+async function resolveCompilerBinary(runtimeDir) {
+  for (const candidate of [
+    join(runtimeDir, 'bin', 'skiff-compiler'),
+    join(skiffRoot, 'build', 'bin', 'skiff-compiler'),
+  ]) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  throw new Error('skiff-compiler binary not found; run "skiff build compiler" first');
 }
 
 async function loadWatchConfig(configDir) {

@@ -359,7 +359,7 @@ test('stop on a dir with no pid prints not running; status/logs tolerate missing
   assert.equal(parsed.runDir, resolve(runDir));
   assert.equal(parsed.pid, null);
   assert.equal(parsed.alive, false);
-  assert.equal(Object.hasOwn(parsed, 'binary'), false);
+  assert.equal(Object.hasOwn(parsed, 'binary'), true);
 
   const logs = await runCli(['router', 'logs', '--dir', runDir]);
   assert.equal(logs.code, 0, logs.stderr);
@@ -370,6 +370,7 @@ test('stop on a dir with no pid prints not running; status/logs tolerate missing
   const missingParsed = JSON.parse(missingDir.stdout);
   assert.equal(missingParsed.pid, null);
   assert.equal(missingParsed.alive, false);
+  assert.equal(Object.hasOwn(missingParsed, 'binary'), true);
 });
 
 test('start fails without a config file and on missing binary', async (t) => {

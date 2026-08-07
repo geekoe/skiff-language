@@ -19,12 +19,9 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
   owner('scripts/lib/owned-command.mjs', 'spawn', 'spawnOwnedCapturedChild',
     'owned-captured-process-group', 'captureOwnedCommand', 'owned-process-group',
     'captured owned command drains stdio and owns detached process-group Abort/TERM/KILL'),
-  owner('scripts/skiff-instance.mjs', 'spawn', 'spawnManagedChild',
-    'instance-managed-component', 'startProcess', 'managed-component',
-    'instance.yml-driven local process supervisor retains pid files and log descriptors'),
-  owner('scripts/lib/isolated-test-runtime-instance.mjs', 'spawn', 'spawnSupervisorChild',
-    'isolated-supervisor', 'isolatedInstanceOperations', 'supervisor',
-    'isolated runtime lifecycle retains the supervisor child handle'),
+  owner('scripts/lib/isolated-test-runtime-instance.mjs', 'spawn', 'spawnIsolatedChild',
+    'isolated-stack-child', 'isolatedInstanceOperations', 'managed-component',
+    'isolated stack children (mongo/router/runtime) retain the child handle', 3),
   owner('scripts/lib/isolated-test-runtime.mjs', 'spawn', 'spawnAdditionalRuntimeChild',
     'isolated-additional-runtime', 'startIsolatedTestRuntime', 'managed-component',
     'isolated runtime cleanup retains the child handle, sends TERM, escalates to KILL after timeout, and awaits exit'),
@@ -71,6 +68,12 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
     ownerClass: COMMAND_OWNER_CLASSES.DOMAIN_ADAPTER,
     reason: 'rust file line gate runs rg and wc synchronously and preserves their output/exit semantics',
   },
+  owner('scripts/skiff-process.mjs', 'spawn', 'spawn', 'skiff-process-child', 'actionStart', 'managed-component',
+    'skiff process start spawns the component binary with run-dir log redirection'),
+  owner('scripts/skiff-process.mjs', 'execFileSync', 'execFileSync', 'skiff-process-metadata', 'runCargoMetadata', 'managed-component',
+    'skiff process resolves the component binary through cargo metadata'),
+  owner('scripts/run-eval-bench.mjs', 'execFileSync', 'execFileSync', 'eval-bench-spawn', 'main', 'managed-component',
+    'eval bench spawns the skiff test CLI synchronously'),
 ]);
 
 function owner(
@@ -81,6 +84,7 @@ function owner(
   ownerFunction,
   ownerClass,
   reason,
+  callCount = 1,
 ) {
   return {
     path,
@@ -88,7 +92,7 @@ function owner(
     localAlias,
     ownerId,
     ownerFunction,
-    callCount: 1,
+    callCount,
     ownerClass,
     reason,
   };

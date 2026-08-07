@@ -207,34 +207,6 @@ test('parseStackConfigDirArg accepts both option forms and rejects ambiguity', (
   );
 });
 
-test('stack validate CLI exits zero on the fixture and non-zero on a broken configDir', async () => {
-  const validateScript = join(skiffRoot, 'scripts', 'skiff-stack-validate.mjs');
-  const ok = await spawnCapture(process.execPath, [
-    validateScript,
-    '--configDir',
-    fixtureConfigDir,
-  ]);
-  assert.equal(ok.code, 0, ok.stderr);
-  const summary = JSON.parse(ok.stdout);
-  assert.equal(summary.ok, true);
-  assert.equal(summary.profile, 'prod');
-
-  const brokenRoot = await writeStackConfigDir(null, {
-    router: 'profile: other\n',
-  });
-  try {
-    const broken = await spawnCapture(process.execPath, [
-      validateScript,
-      '--configDir',
-      brokenRoot,
-    ]);
-    assert.notEqual(broken.code, 0);
-    assert.match(broken.stderr + broken.stdout, /stack profile mismatch/);
-  } finally {
-    await rm(brokenRoot, { recursive: true, force: true });
-  }
-});
-
 async function writeStackConfigDir(t, {
   config = VALID_CONFIG_YML,
   router = VALID_ROUTER_YML,

@@ -247,49 +247,36 @@ instance.yml is the source of truth for instance processes:
 cat build/runtime-stack/instance.yml
 ```
 
-To create another directory instance that can run at the same time, copy
-`.stack/` and change ports in the three YAML files:
+Each component runs from its own run directory (`skiff <router|runtime> start --dir <dir>`);
+run dirs hold the component config (`<component>.yml`), the pid file the process
+writes itself (exclusive, see `runtime/transport/src/pid_lock.rs`), and logs.
+Binaries are built into the shared cargo cache and snapshotted per checkout:
 
 ```bash
-cp -R .stack ../skiff-experiment/.stack
+node scripts/skiff.mjs build router runtime compiler
+node scripts/skiff.mjs router start --dir .skiff-dev/router
+node scripts/skiff.mjs runtime start --dir .skiff-dev/runtime
+node scripts/skiff.mjs watch --runtime <runtime-dir> --config <watchDir>
 ```
 
-To test current repository runtime or identity changes, rebuild the instance
-binaries and run:
-
-```bash
-node scripts/skiff.mjs stack build --configDir .stack --profile debug
-node scripts/skiff.mjs instance up --runtime build/runtime-stack
-```
-
-For service validation against the instance, watch the service through the
-watch command so artifacts and reloads target the instance artifact root:
-
-```bash
-node scripts/skiff.mjs watch --runtime build/runtime-stack --config .stack/watch
-```
-
-`skiff instance up` starts detached local processes and records structured pid
-metadata plus logs under the instance directory. `skiff instance down` stops
-component process groups, `skiff instance restart [component]` restarts all or
-one managed component, and `skiff instance supervise` is the explicit foreground
-debug supervisor. `skiff instance run` remains only as a deprecated alias for
-`supervise`; launchd should call `up --repair-owned-conflicts`.
+`skiff <component> stop|restart|status|logs` manage the run-dir process; the
+process itself refuses to start twice against one run dir.
 
 ## Runtime Stack Deploy
 
-`build-runtime-stack.mjs` validates and builds the deployable runtime stack into `build/runtime-stack/manifest.json` under the repository root. It records each unit's commit, source key, verification status, and artifact paths. Rust units build Linux x86_64 release binaries after tests; TypeScript units run type-check and tests. The sibling `skiff-packages/` repository is tested separately and is not part of the runtime-stack build.
+`deploy-runtime-stack.mjs` publishes the router and runtime binaries and
+configs to a remote host, writes a PM2 ecosystem file, and reloads the
+selected components. It does not deploy the compiler. Telemetry consumption is
+owned by the standalone `skiff-telemetry` repository and is not deployed from
+this repository.
 
 ```bash
-node build-runtime-stack.mjs
 node deploy-runtime-stack.mjs \
   --remote <user@host> \
   --service-db-mongo-url <mongodb-url> \
   --http-max-request-bytes 67108864 \
   --http-max-response-bytes 8388608
 ```
-
-`deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router and runtime processes, then writes config, installs dependencies, and reloads the selected components. It does not deploy the compiler. Telemetry consumption is owned by the standalone `skiff-telemetry` repository and is not deployed from this repository.
 
 Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables. The generated Router config owns the absolute shared `artifactsPath` (`${remoteSkiff}/artifacts`) and the required `serviceDb.mongoUrl`; Runtime receives both through its Router bootstrap and neither value is written to `runtime.yml`.
 The same generator writes `runtime.maxConcurrency: 128` explicitly into the

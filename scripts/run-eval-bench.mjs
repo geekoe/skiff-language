@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -14,10 +14,12 @@ const skiffCli = join(skiffRoot, 'scripts', 'skiff.mjs');
 const runs = 3;
 const wallMs = [];
 
+function main() {
 try {
   for (let i = 0; i < runs; i += 1) {
     const started = process.hrtime.bigint();
-    const result = spawnSync(
+    // child-process-owner: eval-bench-spawn
+    const result = execFileSync(
       process.execPath,
       [skiffCli, 'test', targetRoot, '--artifact-root', artifactRoot, '--deny-skips', '--require-tests'],
       { cwd: targetRoot, stdio: 'inherit' },
@@ -36,3 +38,6 @@ console.log(
   `eval-bench wall time: ${wallMs.map((ms) => `${ms.toFixed(0)}ms`).join(', ')} `
   + `min=${wallMs[0].toFixed(0)}ms median=${wallMs[1].toFixed(0)}ms`,
 );
+}
+
+main();
