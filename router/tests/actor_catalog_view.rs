@@ -183,11 +183,11 @@ mod tests {
             )),
             ActorMethodIdentity::new(format!("skiff-actor-method-v1:sha256:{}", "d".repeat(64))),
         )));
-        assert_eq!(view.health().misses, 1);
+        assert_eq!(view.health().misses, 2, "miss reloads the projection once and retries");
     }
 
     #[test]
-    fn view_loads_the_catalog_once_and_caches_it() {
+    fn view_reloads_the_catalog_on_miss_after_record_replacement() {
         let first: ActorRoutingProjection =
             serde_json::from_str(&a3_record("single-entry")).expect("first projection");
         let second: ActorRoutingProjection =
@@ -209,11 +209,8 @@ mod tests {
         let method = method_from_projection(&first);
         assert!(view.has_method(&query_from_method(&method)));
         assert_eq!(view.loads(), 1);
-        // Replacing the record on disk must not refresh the cached catalog
-        // (single on-demand load per process; M4 has no epoch replacement).
-        // The multi-entry record shares its first entry with the cached
-        // single-entry catalog, so the miss probe must use an entry that is
-        // genuinely absent from the loaded catalog.
+        // Build switch replaces the record on disk; the cached catalog is
+        // stale but a miss reloads it and resolves the new build.
         store
             .write_actor_routing_projection(&second)
             .expect("write second projection");
@@ -224,8 +221,14 @@ mod tests {
             replacement.actor_implementation_identity.clone(),
             replacement.method_identity.clone(),
         );
-        assert!(!view.has_method(&replacement_query));
-        assert_eq!(view.loads(), 1);
+        assert!(
+            view.has_method(&replacement_query),
+            "miss reloads the replaced projection and resolves the new entry"
+        );
+        assert_eq!(view.loads(), 2);
+        // The cached (reloaded) catalog still serves the first entry.
+        assert!(view.has_method(&query_from_method(&method)));
+        assert_eq!(view.loads(), 2);
     }
 
     #[test]
@@ -286,10 +289,10 @@ mod tests {
         );
         assert!(view.method_for(&miss).is_none());
         let health = view.health();
-        assert_eq!(health.captures, 3);
+        assert_eq!(health.captures, 4);
         assert_eq!(health.hits, 2);
-        assert_eq!(health.misses, 1);
-        assert_eq!(view.loads(), 1);
+        assert_eq!(health.misses, 2);
+        assert_eq!(view.loads(), 2, "the miss reloads the projection once and retries");
     }
 
     #[test]
