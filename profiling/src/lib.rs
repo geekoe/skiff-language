@@ -41,12 +41,12 @@ pub struct ProfileConfig {
     pub sampling_hz: u64,
     /// 导出窗口时长（ms），必须为 60_000 的整数倍，默认 60_000。
     pub export_interval_ms: u64,
-    /// 每个窗口保留的栈条数上限（按 samples 降序截断），默认 2048。
+    /// 每个窗口保留的栈条数上限（按 samples 降序截断），默认 512。
     pub max_stacks: usize,
-    /// 单条折叠栈字符串的字符数上限，超长截断（截到该长度即可，无标记），默认 1024。
+    /// 单条折叠栈字符串的字符数上限，超长截断（截到该长度即可，无标记），默认 256。
     pub max_folded_chars: usize,
     /// 窗口内全部栈的估算字节总预算（每条按 `len(folded) + 32` 计，32 为 JSON
-    /// 开销余量），超出部分从低 samples 侧截断，默认 196_608（192KB）。
+    /// 开销余量），超出部分从低 samples 侧截断，默认 49_152（48KB）。
     pub max_stacks_bytes: usize,
 }
 
@@ -56,9 +56,9 @@ impl Default for ProfileConfig {
             enabled: false,
             sampling_hz: 1000,
             export_interval_ms: MINUTE_MS,
-            max_stacks: 2048,
-            max_folded_chars: 1024,
-            max_stacks_bytes: 196_608,
+            max_stacks: 512,
+            max_folded_chars: 256,
+            max_stacks_bytes: 49_152,
         }
     }
 }

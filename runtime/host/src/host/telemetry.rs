@@ -728,10 +728,37 @@ where
     <W as Sink<Message>>::Error: std::fmt::Display,
 {
     for batch in producer.drain_batches() {
-        send_json(writer, &batch).await?;
+        // A send must never block the exporter forever: a stalled peer (TCP
+        // backpressure from a consumer that stopped reading) would otherwise
+        // freeze the whole telemetry pipeline (queue backlog, profile windows
+        // minutes late). On timeout the batch is dropped and the caller breaks
+        // out of the connected exporter loop, which reconnects and resumes.
+        match timeout(EXPORTER_SEND_TIMEOUT, send_json(writer, &batch)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                warn!(
+                    event = "telemetry.send_failed",
+                    error = %error
+                );
+                return Err(error);
+            }
+            Err(_) => {
+                warn!(
+                    event = "telemetry.send_timed_out",
+                    batch_events = batch.events.len(),
+                    timeoutMs = EXPORTER_SEND_TIMEOUT.as_millis(),
+                );
+                return Err("telemetry send timed out; dropping batch and reconnecting".to_string());
+            }
+        }
     }
     Ok(())
 }
+
+/// Max wall time for a single batch send over the telemetry WebSocket. A send
+/// that exceeds it is treated as a stalled connection: the batch is dropped
+/// and the exporter reconnects.
+const EXPORTER_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn send_json<W, T>(writer: &mut W, envelope: &T) -> Result<(), String>
 where
@@ -792,21 +819,27 @@ pub fn build_batches(
         return Vec::new();
     }
 
+    // Incremental byte accounting: each event is serialized once instead of
+    // re-serializing the whole growing candidate batch per event (the old
+    // quadratic behavior made flushes with large events (rust.profile
+    // windows) pathologically slow and starved the queue drain).
     let mut batches = Vec::new();
     let mut current = Vec::new();
+    let mut current_size = 0usize;
     for event in events {
-        let mut candidate = current.clone();
-        candidate.push(event.clone());
+        let event_size = serialized_event_size(&event).saturating_add(BATCH_EVENT_JSON_OVERHEAD);
         if !current.is_empty()
-            && (candidate.len() > max_events
-                || serialized_batch_size(producer_id, *next_seq, &candidate) > max_bytes)
+            && (current.len() >= max_events
+                || current_size.saturating_add(event_size) > max_bytes)
         {
             batches.push(make_batch(
                 producer_id,
                 next_seq,
                 std::mem::take(&mut current),
             ));
+            current_size = 0;
         }
+        current_size = current_size.saturating_add(event_size);
         current.push(event);
     }
 
@@ -816,6 +849,11 @@ pub fn build_batches(
 
     batches
 }
+
+/// Per-event JSON envelope overhead allowance used by [`build_batches`] byte
+/// budgeting (envelope keys, separators, per-event field names). The budget is
+/// a heuristic, so an approximate constant is sufficient.
+const BATCH_EVENT_JSON_OVERHEAD: usize = 256;
 
 pub fn redact_event(
     mut event: TelemetryEvent,
@@ -889,18 +927,6 @@ fn make_batch(
     };
     *next_seq += 1;
     batch
-}
-
-fn serialized_batch_size(producer_id: &str, seq: u64, events: &[TelemetryEvent]) -> usize {
-    let batch = TelemetryBatchEnvelope {
-        envelope_type: TELEMETRY_BATCH_TYPE.to_string(),
-        producer_id: producer_id.to_string(),
-        seq,
-        events: events.to_vec(),
-    };
-    serde_json::to_vec(&batch)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX)
 }
 
 fn serialized_event_size(event: &TelemetryEvent) -> usize {

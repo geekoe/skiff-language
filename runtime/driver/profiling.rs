@@ -18,7 +18,7 @@ use crate::config::RuntimeProfileConfig;
 const TAKE_WINDOW_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 契约 §1 的 `max_stacks` 默认值；runtime.yml 暂不暴露该字段。
-const DEFAULT_MAX_STACKS: usize = 2048;
+const DEFAULT_MAX_STACKS: usize = 512;
 
 /// 事件名（契约 §2）。
 const RUST_PROFILE_EVENT_NAME: &str = "rust.profile";
