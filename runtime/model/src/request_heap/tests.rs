@@ -1516,3 +1516,52 @@ fn test_interface(payload: RuntimeValue) -> InterfaceValue {
         },
     )
 }
+
+/// Regression guard: map/object entry sets must persist in release builds.
+///
+/// These mutations used to live inside `debug_assert_eq!` arguments, which
+/// release builds compile out entirely, silently dropping every
+/// `set_map_entry`/`set_object_field` write. Debug builds evaluated the
+/// assertion argument and therefore masked the bug; this guard only runs when
+/// `debug_assertions` is disabled.
+#[cfg(not(debug_assertions))]
+#[test]
+fn release_sets_persist_map_and_object_entries() {
+    let mut heap = RequestHeap::default();
+    let map_handle = heap
+        .alloc_map(RuntimeMap::new())
+        .expect("map should allocate");
+    let object_handle = heap
+        .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::new()))
+        .expect("object should allocate");
+
+    heap.set_map_entry(
+        map_handle,
+        RuntimeValueKey::string("reasoning_levels"),
+        RuntimeValue::from("false"),
+    )
+    .expect("map set should succeed");
+    heap.set_object_field(
+        object_handle,
+        "reasoningLevels".to_string(),
+        RuntimeValue::from("false"),
+    )
+    .expect("object field set should succeed");
+
+    let HeapNode::Map(map) = heap.get(map_handle).expect("map should resolve") else {
+        panic!("expected map node");
+    };
+    assert_eq!(
+        map.get(&RuntimeValueKey::string("reasoning_levels")),
+        Some(&RuntimeValue::from("false")),
+        "map entry set must persist in release builds"
+    );
+    let HeapNode::Object(object) = heap.get(object_handle).expect("object should resolve") else {
+        panic!("expected object node");
+    };
+    assert_eq!(
+        object.fields().get("reasoningLevels"),
+        Some(&RuntimeValue::from("false")),
+        "object field set must persist in release builds"
+    );
+}

@@ -764,7 +764,8 @@ impl RequestHeap {
                     "Map target is not an object".to_string(),
                 ));
             };
-            debug_assert_eq!(map.insert(key, value).is_some(), existed);
+            let previous = map.insert(key, value).is_some();
+            debug_assert_eq!(previous, existed);
             apply_estimated_bytes_replacement(&mut slot.estimated_bytes, old_bytes, new_bytes);
         }
         self.apply_stats_estimated_bytes_replacement(old_bytes, new_bytes);
@@ -789,7 +790,8 @@ impl RequestHeap {
                     "field assignment target is not an object".to_string(),
                 ));
             };
-            debug_assert_eq!(object.fields_mut().insert(field, value).is_some(), existed);
+            let previous = object.fields_mut().insert(field, value).is_some();
+            debug_assert_eq!(previous, existed);
             apply_estimated_bytes_replacement(&mut slot.estimated_bytes, old_bytes, new_bytes);
         }
         self.apply_stats_estimated_bytes_replacement(old_bytes, new_bytes);
