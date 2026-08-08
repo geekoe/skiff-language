@@ -473,6 +473,12 @@ try {
     }
     if (tempRoot !== undefined) {
       try {
+        const workspace = join(tempRoot, 'host-tools-workspace');
+        try {
+          await captureCheckedCommand('chmod', ['-R', 'u+w', workspace], { cwd: repoRoot });
+        } catch {
+          // workspace may not exist or may already be gone; deletion proceeds.
+        }
         await rm(tempRoot, { recursive: true, force: true });
       } catch (error) {
         errors.push(error);
