@@ -95,8 +95,12 @@ impl EvalRecoverableBehaviorHooks {
         interface_identity: &str,
         concrete_type_identity: &str,
         method_table: &InterfaceMethodTable,
-    ) -> BoundaryResult<Option<(&'a RecoverableMethodTableKey, &'a RecoverableMethodTableEntry)>>
-    {
+    ) -> BoundaryResult<
+        Option<(
+            &'a RecoverableMethodTableKey,
+            &'a RecoverableMethodTableEntry,
+        )>,
+    > {
         let matches = self
             .index
             .iter()

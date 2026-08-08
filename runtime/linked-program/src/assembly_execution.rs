@@ -9,6 +9,7 @@ use skiff_artifact_model::{
     PackageOperationTarget, PackageRefIr, ServiceCallRefIndex,
 };
 
+use crate::recoverable_behavior::RecoverableBehaviorIndex;
 use crate::{
     ActivationRelativeServiceCall, ConstAddr, ConstIr, DbTargetIr, ExecutableAddr, FileAddr,
     LinkOverlay, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
@@ -17,7 +18,6 @@ use crate::{
     ServiceErrorTypeIndex, SharedPackageCode, SharedPackageImageError, SharedPackageLinkedImage,
     TypeAddr, UnitAddr,
 };
-use crate::recoverable_behavior::RecoverableBehaviorIndex;
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
 #[derive(Debug)]
@@ -168,10 +168,7 @@ impl AssemblyExecutionImage {
     /// Attaches the build-once recoverable interface behavior index materialized by
     /// the linker. Images without one (test fixtures) fall back to on-demand
     /// construction in eval.
-    pub fn with_recoverable_behavior_index(
-        mut self,
-        index: RecoverableBehaviorIndex,
-    ) -> Self {
+    pub fn with_recoverable_behavior_index(mut self, index: RecoverableBehaviorIndex) -> Self {
         self.recoverable_behavior_index = Some(Arc::new(index));
         self
     }

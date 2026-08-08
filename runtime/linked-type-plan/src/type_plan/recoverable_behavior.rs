@@ -521,11 +521,12 @@ mod tests {
             },
             package_schema_index: PackageSchemaIndexRef {
                 package_id: package_id.to_string(),
-                package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
-                    package_id,
-                    &BTreeMap::new(),
-                )
-                .expect("empty package schema index is canonical"),
+                package_schema_index_identity:
+                    skiff_artifact_identity::package_schema_index_identity(
+                        package_id,
+                        &BTreeMap::new(),
+                    )
+                    .expect("empty package schema index is canonical"),
             },
             package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks::default(),
