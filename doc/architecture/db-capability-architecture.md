@@ -1,6 +1,6 @@
 # Skiff DB Capability Architecture
 
-本文定义 Skiff DB capability 在 compiler、artifact、runtime、router 和测试基础设施之间的长期内部边界。它不是用户语言参考，也不是迁移 checklist。用户可见规则见 `../reference/db.md`，实现步骤见 `../implementation/db-read-record-removal-implementation.md`。
+本文定义 Skiff DB capability 在 compiler、artifact、runtime、router 和测试基础设施之间的长期内部边界。它不是用户语言参考，也不是迁移 checklist。用户可见规则见 `../reference/db.md`。
 
 ## Goals
 
@@ -11,7 +11,7 @@ DB 架构目标：
 - DB query / projection 是 compiler 可分析的语言结构，不是 Mongo JSON。
 - runtime 接收已经规范化的普通 type descriptor，不理解 `ReadRecord`。
 - Mongo 只存在于 service DB adapter 内，不进入 Skiff source、File IR result type 或 service API schema。
-- service DB连接能力由router/platform activation注入；database identity由operator选择的受信Mongo
+- service DB连接能力由Router connection bootstrap注入；database identity由operator选择的受信Mongo
   endpoint/storage domain、profile与serviceId共同定界，不引入`platformId`。业务源码和service配置
   不能选择database、namespace或连接串。
 - 一个service只有一个数据库；同一service中的Package共享它，但每个DB target仍保留精确
@@ -103,8 +103,8 @@ dependency entry with `topLevelAlias` to one immutable implementation artifact.
 The entry's ordinary `alias` still resolves its `api.yml` public paths. Source
 resolution through `topLevelAlias` canonicalizes back to that primary alias, so
 both names produce one dependency edge, one requirement and one binding.
-Assembly resolution produces a `PackageBinding`; linker resolution then
-follows one fail-closed chain:
+While building an exact `DeploymentExecutionImage`, deployment-package-closure resolution
+produces a `PackageBinding`; image-local linker resolution then follows one fail-closed chain:
 
 ```text
 consumer DbTargetIr.PackageSymbol
@@ -194,64 +194,90 @@ Mongo-specific responsibilities stay below this boundary:
 
 Skiff runtime above the store talks in service DB commands and business JSON, not Mongo documents.
 
+### Transaction Boundary
+
+`db transaction`在一次execution中只允许一个active DB transaction；nested transaction不支持。
+Compiler与artifact verifier拒绝静态可见的嵌套，Runtime在helper等动态路径重入时必须先拒绝，
+不能开启第二个session transaction，也不能把内层`db transaction`静默折叠进外层边界。
+
+Actor method（含`create`）中的transaction是DB-only：commit/abort只作用于DB，不为Actor arena建立
+snapshot overlay。Transaction body禁止直接或经callee写Actor field；直接赋值和以Actor field为
+receiver的原地修改都属于field write。Compiler effect summary必须闭合同包helper与可静态解析的
+package-direct call；unknown/dynamic target不能证明无Actor field write时保守拒绝。普通local仍使用
+`let`或`var`，不存在local `const`。
+
 ### Exact Service DB Index Plan
 
-Runtime admission从candidate的exact linked DB metadata为每个service建立一份完整`ServiceDbIndexPlan`。
-该plan不是新的artifact，也不从运行中的request或Mongo反向推断。它按以下顺序形成：
+Runtime loader为每个exact `DeploymentExecutionImage`从该deployment自己的exact package closure和
+linked DB metadata派生一份完整`ServiceDbIndexPlan`。该plan是image-local derived metadata，
+不是新artifact，也不从运行中request、current release pointer、其它loaded image或Mongo反向
+推断。它按以下顺序形成：
 
-1. 对candidate中同一`(storage domain, profile, serviceId)`的全部deployment/version收集DB metadata；
+1. 从exact deployment package closure收集DB metadata；
 2. 按系统physical collection identity合并collection；
-3. 同一logical index identity且field、顺序、方向、unique和collation完全相同时去重；
-4. 同名index定义不同、collection metadata owner冲突、physical encoding collision或同Package ID不同
-   exact build时，在任何Mongo mutation前拒绝candidate；
-5. 不同logical index identity形成并集，使同service并存version看到同一个兼容DB plan。
+3. 同一stable logical index identity且field、顺序、方向、unique和collation完全相同时去重；
+4. 同一stable logical index identity的定义不同、collection metadata owner冲突、physical encoding
+   collision或同Package ID解析到不同exact build时，在任何Mongo mutation前拒绝image；
+5. 不同stable logical index identity形成当前image所需的并集；不试图从全局
+   “当前版本集”生成plan。
+
+受管index的stable identity是
+`(packageId, logical collection identity, logical index identity)`；Package version/build、
+service version、dependency alias、edge path和runtime replica都不参与该identity。因此多个build可以
+共享同一stable identity，但只有canonical definition完全相同时才兼容。
 
 每个受管index的physical name由系统对
 `(packageId, logical collection identity, logical index identity)`做稳定、无碰撞、满足Mongo限制的编码。
-源码index name、Package version/build、service version、dependency alias、edge path和runtime replica都
-不能直接成为physical name。`_id_`是Mongo内建主键索引，不进入受管plan，也不参与removed检查。
+源码index name不能直接成为physical name。`_id_`是Mongo内建主键索引，不进入受管plan，也不参与
+removed检查。
 
 Index field path必须复用canonical DB field policy和physical field mapper，不能另写一套dot-path parser。
 encrypted、recoverable-envelope内部、动态shape及其它不允许query/order的path同样不允许index。所有受管
 index固定使用Mongo simple/binary collation；collation是canonical definition的一部分。
 
-在candidate prepare和cold recovery中，每个Runtime replica都必须在发布activation context或返回prepared
-ACK之前协调完整plan：
+每个Runtime replica在把exact build的`DeploymentExecutionImage`记为loaded并对业务请求可执行
+之前，必须独立reconcile该image-local完整plan：
 
-- 缺少的受管index：additive、幂等创建；
-- physical name与canonical definition精确一致：通过；
-- 已有受管index同名但keys、方向、unique或collation变化：fail closed；
-- 数据库中存在但candidate完整plan已不再声明的受管index：fail closed；
+- 缺少的受管index：additive、幂等创建，创建后复读并验证canonical definition；
+- 已有的同一stable identity受管index与canonical definition精确一致：通过；
+- 已有的同一stable identity受管index与keys、方向、unique或collation不一致：fail closed；
+- 数据库中存在但当前image plan未声明的受管index：保留且忽略；
 - 非Skiff受管index：保留且忽略，不能自动drop；
 - Mongo `_id_`：保留且忽略。
 
-多replica并发协调必须收敛到同一结果：重复的exact create视为幂等成功；任一replica观察到定义冲突或创建后
-复读不一致都拒绝prepare。Runtime不在activation中drop、rename或background rebuild受管index。索引变更与
-删除必须由显式migration先完成，再提交能通过exact admission的新candidate。
+多replica及多build并发load各自执行同一幂等算法；Skiff不建立跨replica/build的等待或协调协议，
+storage backend自身的DDL串行化不改变该契约。
+重复的exact create视为幂等成功；任一replica观察到同一stable index identity定义冲突或创建后
+复读不一致，都拒绝当前image load。另一build遗留但当前image未声明的受管index不是drift，
+不得因其存在而拒绝load。
+Runtime不在image load中drop、rename或background rebuild受管index。索引变更与删除必须先由
+显式migration完成，再发布能通过exact load verification的新deployment。
 
 创建unique index时发现历史duplicate，以及业务写入触发duplicate key，统一映射为脱敏、不可重试的
 `std.db.ConstraintError`分类；不得泄漏Mongo code/message、database、collection、physical index、key
-pattern或业务值。业务request中的约束冲突可被用户捕获；prepare/cold recovery中的冲突只作为sanitized
-activation rejection。其它Mongo错误继续映射到既有平台/内部错误边界，不能伪装成constraint。
+pattern或业务值。业务request中的约束冲突可被用户捕获；deployment image load中的冲突只作为sanitized
+load rejection。其它Mongo错误继续映射到既有平台/内部错误边界，不能伪装成constraint。
 
 Partial index不属于当前架构。Compiler遇到index `where`必须报静态错误；File IR、runtime projection、
 linked DB metadata和store command均不得携带raw source AST或Mongo predicate。未来若支持partial index，
 必须先设计可类型检查、canonical identity稳定、可在artifact boundary验证的封闭typed predicate IR。
 
-## Router And Activation
+## Router Bootstrap And Deployment Load
 
-Router / platform activation injects `serviceDb.mongoUrl`. Source files and service config do not contain the real DB URL.
+Router connection bootstrap injects `serviceDb.mongoUrl`. Source files and service config do not contain the real DB URL.
 
-Router仍是prepare/commit/abort coordinator，但不解析index metadata。Runtime participant只有在exact assembly、
-config snapshot、service DB identity和上述完整index plan全部admit并协调成功后才能返回prepared ACK。
-Cold recovery执行同一plan比较与协调，不能因为数据库中已有某些index就跳过candidate验证。
+Router不解析index metadata，也不协调prepare/commit/abort。不存在为service DB汇总多个
+release/build的global candidate generation或activation prepare。Runtime按exact deployment build构建image时，
+必须在业务storage mutation前验证service DB identity和完整index plan；同replica内的同build并发load按
+per-build临界区收敛。已有某些index不能跳过其余plan验证，失败不得把半可执行image记为loaded或注册。
 
 `package.yml state`、`PackageRuntimeRequirements.state`、`StateBinding`和deployment state binding都不是DB
-capability的一部分。Runtime仅在精确activation闭包含DB metadata时按需创建service DB handle；没有DB
+capability的一部分。Runtime仅在精确deployment package closure包含DB metadata时按需创建service DB handle；没有DB
 metadata的service不需要创建空数据库。跨service DB访问禁止。未来Redis、queue或第三方数据库必须定义
 独立capability，不能复用一个通用state namespace配置面。
 
-Local dev examples and service-level live tests should discover DB configuration from dev `router.yml` through the same path as runtime activation. Low-level runtime crate tests may stay opt-in through an environment variable when they are testing adapter internals, but user-facing examples should not teach direct env-only DB setup.
+Local dev examples and service-level live tests should discover DB configuration from dev `router.yml` through the same
+Router bootstrap path. Low-level runtime crate tests may stay opt-in through an environment variable when they are testing adapter internals, but user-facing examples should not teach direct env-only DB setup.
 
 ## Testing Boundary
 

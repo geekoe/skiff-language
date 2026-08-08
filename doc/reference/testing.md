@@ -14,8 +14,8 @@ Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 
 - `assert` 只允许出现在 `test` block 中。
 - 生产文件是所有不以 `.test.skiff` 结尾的 `.skiff` 文件。
 - 生产文件中的普通 declaration 都进入生产编译产物，即使它只被测试使用。
-- test-only declaration 只参与测试编译，不进入 production artifact、package assembly、
-  service assembly、public API surface 或 config metadata。
+- test-only declaration 只参与测试编译，不进入 production artifact、deployment closure、
+  public API surface 或 config metadata。
 
 ## 2. Test-Only Source
 
@@ -33,7 +33,7 @@ Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 
 ## 3. Test Service And Visibility
 
 测试源码属于独立 test service，不再作为被测 package 的 source overlay 编译。test service
-使用普通 PackageArtifact、ServiceContract、Deployment 和 RuntimeAssembly 格式；不定义
+使用普通 `PackageArtifact`、`ServiceContract` 和 `ServiceDeployment` 格式；不定义
 TestServiceArtifact。
 
 `service.yml` 必须声明：
@@ -51,21 +51,20 @@ kind: test
 - test service 的 config profile固定为`skiff-test`，来自`config.skiff-test.yml`；
 - 本机或部署时的私密覆盖使用同profile的`config.skiff-test.secret.yml`，该文件不得提交；
 - 同一个test service在一次runner execution中只编译一次`PackageArtifact`，所有selected cases共享
-  authored config layers和dependency graph。非live runner按发现顺序把case装入有界batch；每个batch的
-  generated deployments作为多个root进入自己的`RuntimeAssembly`，并把各自隔离的snapshot分区写入一个
-  batch-local `RuntimeConfigSnapshot`。一个case只属于一个batch，并观察该batch generation钉住的两个ref；
+  authored config layers和dependency graph。非live runner按发现顺序把case装入有界batch；
+  batch只是runner调度和有界资源回收单位，不是runtime artifact、admission或generation；
 - 每个case仍有独立synthetic `ServiceDeployment`、`ServiceContract`、gateway entry/ingress binding、
-  系统派生service数据库、heap、effect registry和execution nonce。共享assembly/snapshot record不等于
-  共享deployment、ConfigView或mutable state；
+  deployment-owned `BakedConfigPayload`、精确`buildId`、release pointer、系统派生service数据库、heap、
+  effect registry和execution nonce。共享Package artifact不等于共享deployment、ConfigView或mutable state；
 - 需要不同配置时使用另一个test service，不提供per-case config override，也不允许调用方切换
   test service config profile。
 
-测试service配置profile与激活target是两个概念：
+测试service配置profile与release target是两个概念：
 
 - `skiff-test`固定选择测试service的配置和secret overlay；
-- live runner的激活target（`--profile`）标识外部Router/Runtime中的activation generation，可能是`dev`或
-  其它部署profile；
-- 激活target不得反向选择`config.<profile>.yml`。普通隔离测试中两者通常都叫
+- live runner的release target（`--profile`）选择外部Router使用的release pointer namespace，
+  可能是`dev`或其它部署profile；
+- release target不得反向选择`config.<profile>.yml`。普通隔离测试中两者通常都叫
   `skiff-test`，不能因此在实现里合并两个owner。
 
 test service dependency 可以声明：
@@ -126,11 +125,12 @@ aihub-tests -> aihub -> llm-providers
 访问`llm-providers`的顶层符号，必须在自己的manifest中再声明一条指向`llm-providers`的direct
 dependency，并在该entry设置`topLevelAlias`。
 
-这会形成direct与transitive两条真实dependency edge。对于声明DB metadata的Package，activation把精确
-provider metadata链接到当前test service由系统派生的唯一数据库。这里“一条active projection”只表示
+这会形成direct与transitive两条真实dependency edge。对于声明DB metadata的Package，deployment
+image link把精确provider metadata绑定到当前test service由系统派生的唯一数据库。这里“一条effective
+projection”只表示
 一个最终生效的Package/schema/collection metadata owner，不表示创建额外数据库：
 
-- 两条edge解析到同一精确`PackageBuild`且owner facts相同时，合并为一个active projection；
+- 两条edge解析到同一精确`PackageBuild`且owner facts相同时，合并为一个effective projection；
 - 同一Package ID解析到不同build，拒绝；
 - logical collection identity缺失/重复或system physical-name encoding collision，拒绝。
 
@@ -171,39 +171,36 @@ test-only source file 输入：
 - 仓库 canonical Skiff 源码套件为整个 registry plan 创建一套隔离 router / runtime，并在所有
   registry entry 之间复用该进程。
 - runner对同一个普通`kind: test` service只执行一次package compile、config layer读取和dependency
-  graph resolve。非live case按`relative_path`文件顺序贪心装箱，每个activation batch硬上限16个case：
-  一个不超过上限的文件保持完整，只有单文件超过16个case时才按上限切分。每个batch的独立synthetic
-  deployments作为roots链接成一个multi-root `RuntimeAssembly`，并把对应隔离配置分区写入一个
-  `RuntimeConfigSnapshot`，再由一次activation transaction并列提交两个ref。单个case不另有assembly或
-  generation；live显式文件执行仍使用一个activation，不采用non-live batch上限。
-- authored config layers与runner保留overlay在分批前读取并冻结一次；每个batch从同一份内存snapshot投影
-  ConfigView，执行期间不得重读磁盘config或观察不同authored snapshot。
-- runner在开始任何activation前完成全部batch的assembly/config projection和artifact publication。每个
-  batch使用唯一execution scope，并从调用者提供的同一base assembly/config pair独立投影；后一个batch
-  不得把前一个test batch当成base或累积其generated deployments。activation、readiness和case dispatch
-  随后按batch顺序串行执行，generation从上一个成功commit的精确值安全递增。
-- runner从本次隔离activation的受信target profile写入snapshot顶层；Runtime必须在物化任何case
-  `ConfigView`前验证它与activation profile精确相等。
+  graph resolve。非live case按`relative_path`文件顺序贪心装箱，每个batch硬上限16个case：
+  一个不超限的文件保持完整，只有单文件超限时才切分。batch只是runner调度单位；
+  每个case仍拥有独立synthetic service、deployment与`buildId`。live显式文件执行不采用
+  non-live batch上限。
+- authored config layers与runner保留overlay在分批前读取并冻结一次；每个case从同一份
+  内存值生成deployment-owned `BakedConfigPayload`，执行期间不重读磁盘config。
+- runner在开始任何dispatch前构建、验证并发布全部case deployment，再写入各自的隔离
+  release pointer。Runtime按case的精确`buildId`懒加载immutable `DeploymentExecutionImage`；
+  batch不生成`RuntimeAssembly`、`RuntimeConfigSnapshot`或activation generation，Runtime也不以
+  batch、profile、version或current pointer作为load key。
 - 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
 - runner负责构造逐case synthetic deployment、contract、gateway entry/ingress binding和root request
-  frame；package测试由runner自动生成临时test service及其共享multi-root assembly activation。
-- runner在对应generated deployment的snapshot分区中增加
+  frame；package测试由runner自动生成临时test service及普通deployment。
+- runner在对应generated deployment的baked config中增加
   `skiff.test.ingressUrl`动态只读overlay；Package不读取ambient environment，authored文件不能覆盖它。
-- runtime进程和batch内assembly activation复用不扩大可变状态生命周期。每个case的数据库identity由
+- runtime进程与Package artifact复用不扩大可变状态生命周期。每个case的数据库identity由
   `(testRunId, generatedTestServiceId)`系统派生，其ConfigView、
   heap、effect registry、execution nonce和synthetic deployment资源仍按runner isolation contract
-  独立finalize；batch artifacts和activation只由该test service execution统一清理。
+  独立finalize；immutable artifacts由最外层test execution owner统一清理。
 
 每次root test dispatch都新建一个不透明`testCaseCapability`。它只标识该case execution的effect与
-生命周期authority，不替代deployment selector，也不从assembly generation派生。该值只存在于
-Router/Runtime Host的测试传输与注册状态，不是Skiff值、config或用户可见effect API。普通production
-request及其Actor调用不携带该capability。
+生命周期authority，并与精确deployment `buildId`共同定界、钉住execution owner；capability或`buildId`
+任一项都不能单独授权派生或替代另一项。该值只存在于Router/Runtime Host的测试传输与注册状态，
+不是Skiff值、config或用户可见effect API。普通production request及其Actor调用不携带该capability。
 
 root发起的direct dispatch、任意深度recursive dispatch、同步Actor method call与
 `dispatch actor.method(...)`都是同一case的派生请求。测试运行时为它们携带父请求的同一
 capability和当前active parent request id；Router只从同一Runtime session上仍active的父请求
 授权派生，capability token本身不足以授权。派生请求不得新建capability、借用其它root的
-capability或在父请求终结后迟到加入。另一个case的root dispatch即使属于同一assembly，也必须
+capability或在父请求终结后迟到加入。另一个case的root dispatch即使复用同一Package artifact，也必须
 获得不同值。
 
 携带test capability的Actor method首版必须与active parent属于同一service，并在父请求的精确
@@ -214,11 +211,10 @@ fail closed；测试语义不承诺跨service或Runtime共享test effects。已a
 到达的新Actor child。这项test-only约束不改变production Actor语义：不携带test capability的
 跨service Actor dispatch仍按普通Actor owner routing合法执行。
 
-activation generation推进不会重绑已active的test Actor execution。它的同步Actor call与Actor dispatch继续
-使用进入该execution时已固定的capability、parent chain、assembly/deployment与generation authority。
-该authority仍是current generation时，Actor发起的self-ingress完整继承它；Actor已属于old generation时，
-self-ingress必须在路由前fail closed。runner不为此保留或构造历史gateway route snapshot，也不得把
-old-generation execution重绑到current route。
+release pointer推进不会重绑已active的test Actor execution。它的同步Actor call、Actor dispatch与
+self-ingress继续使用进入execution时已固定的capability、parent chain和deployment `buildId`。
+Router从该immutable deployment读取gateway metadata，不重读current pointer，也不构造另一份历史
+route snapshot。
 
 ### 5.1 HTTP entry tests
 
@@ -229,8 +225,8 @@ production `http.yml`。
 测试源码使用现有HTTP client：
 
 ```skiff
-const baseUrl = config.require<string>("skiff.test.ingressUrl")
-const response = std.http.request(std.http.HttpClientRequest {
+let baseUrl = config.require<string>("skiff.test.ingressUrl")
+let response = std.http.request(std.http.HttpClientRequest {
   method: "POST",
   url: baseUrl.concat("/chat/events"),
   headers: headers,
@@ -255,9 +251,8 @@ ingress URL时，该调用是self-ingress：
   capability/parent pair；Host只把capability-only frame视为root，携带pair的frame必须从仍active的
   parent建立derived execution，不得重复创建root case；
 - entry内部的outbound effects继续使用父case同一个inline-effect registry；
-- current-generation test Actor的self-ingress及其direct/recursive dispatch、同步Actor method call与
-  Actor method dispatch完整继承父root的derived authority，不得因共享assembly或activation generation
-  附着到另一个case；old-generation Actor可继续其immutable direct/dispatch chain，但self-ingress fail closed；
+- test Actor的self-ingress及其direct/recursive dispatch、同步Actor method call与Actor method
+  dispatch完整继承父root的derived authority与精确deployment `buildId`，不得附着到另一个case；
 - 同一case第一版禁止两个active self-ingress请求。stream EOF、失败或consumer drop/break才释放
   active状态。
 
@@ -275,8 +270,9 @@ Live smoke：
   effect。
 - live只改变runtime target ownership和effect policy；test service仍固定读取
   `config.skiff-test.yml`及可选`config.skiff-test.secret.yml`。
-- activation URL、ingress URL、artifact root、target profile与expected generation是每次运行的
-  显式target参数，不属于test service config，也不能写进secret overlay。
+- release target profile（`--profile`）、control URL（`--control-url`）、ingress URL和artifact root是
+  每次运行的显式target参数，不属于test service config，也不能写进secret overlay；live target不接受
+  base `RuntimeAssembly` / `RuntimeConfigSnapshot` pair。
 - 应使用 `defaultRun false` 并通过文件路径运行。
 - 没有 live key 时应 skip，而不是失败。
 - 只验证真实外部服务的少量关键路径，不替代 unit / integration 覆盖。
@@ -289,7 +285,7 @@ package 测试由归属该 package 仓库的 test service 承载。test service 
 规则：
 
 - test helper 只进入 test service artifact，不进入被测 package production artifact；
-- 测试通过普通config snapshot、dependency、contract、deployment和assembly机制运行；
+- 测试通过普通dependency、contract、deployment、baked config和lazy-load机制运行；
 - package 内部测试使用top-level alias调用被测实现，不使用overlay `root.*`；
 - Package 仍不是远程 service；本机 Package call 不得伪装成 service-to-service RPC；
 - public API、implementation top-level、manifest 或 shared helper 变化时运行对应 test
@@ -379,13 +375,13 @@ event 表使用 effect DSL 的 `[item, ...]`，不是 Skiff 通用 array literal
 
 - compiler 必须解析精确 effect target，并静态检查 expect/respond/typed error/stream event；
 - compiler 可以把 `effects` block 降低为 test-only hidden setup callable，但 setup 不是独立
-  request，也不创建另一份 heap、activation 或 execution nonce；
+  request，也不创建另一份 heap、deployment owner 或 execution nonce；
 - runner 对一个 case 只创建一次执行上下文，并在其中依次执行 setup 和 test body；setup
   产生的 response、error 和 stream event 必须立即按 linked target type plan
   materialize 到该 case 的 effect registry，不能把 heap value 作为跨执行共享对象保存；
 - root dispatch为该执行上下文新建`testCaseCapability`；direct/recursive dispatch、同步Actor method call和
   Actor method dispatch必须由同Runtime session上的active parent派生，并继承父请求的同一
-  capability，因此共享该case的registry与finalization owner，但不与同一assembly内其它root共享；
+  capability，因此共享该case的registry与finalization owner，但不与其它root共享；
 - setup 成功后才执行 test body；setup 失败时 body 不执行；
 - case finalization 是 runtime-owned teardown phase。无论 body 成功、assert 失败、throw、
   timeout 或 cancel，都必须检查未消费 double、销毁 registry 并释放 case 资源；
@@ -409,10 +405,10 @@ AI 和 CI 不需要测试配置文件来决定默认测试。它们按改动范�
 - 改生产文件，运行所属 service / package 目录，或显式选择受影响的 test-only 文件。
 - 改 test-only 文件，运行该 test-only 文件。
 - 改 package public API、manifest 或 shared helper，运行受影响 package 的测试。
-- 改 runtime effect、config、HTTP 编码、router activation，运行相关 integration 测试。
+- 改 runtime effect、config、HTTP 编码、Router release/lazy-load，运行相关 integration 测试。
 - live smoke 只在用户显式要求、nightly 或 release 验证流程中运行。
 
-Runner flag只控制runtime target ownership、target profile/generation和effect policy，不改变
+Runner flag只控制runtime target ownership、release target profile和effect policy，不改变
 测试源码语义，不选择test service config profile，也不把`defaultRun false`文件加入目录默认发现。
 非live与live都不切换到compiler VM。
 
@@ -422,7 +418,7 @@ production build 必须满足：
 
 - 生产文件中出现 `test` block 是编译错误。
 - `*.test.skiff` 不进入 production source set。
-- test-only code 不进入 file artifact bytecode、service assembly 或 package assembly。
+- test-only code 不进入 production file artifact bytecode或deployment closure。
 - test-only config reads 不进入 production config use metadata。
 - test-only declarations 不进入 production package API 或 service protocol surface。
 - test-only helper 不影响 package / service identity。

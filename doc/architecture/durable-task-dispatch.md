@@ -69,7 +69,7 @@ terminal retention。普通 FIFO queue 不具备完整 contract；它最多承�
 Task control plane 是 TaskStore、scheduler 与 Runtime task capability 的逻辑 owner。它可以与 Router 共进程，也可以独立部署；
 这种物理位置不改变以下信任边界：
 
-- Runtime submission side 只能使用当前受认证 ActivationContext 注入的 task capability，不能提交任意 owner、profile、
+- Runtime submission side只能使用当前受认证`DeploymentExecutionContext`注入的task capability，不能提交任意owner、profile、
   execution image 或 target。
 - task control plane 必须把提交方 authority 精确投影成 task owner 与 trusted execution witness；TaskStore 不接受 Runtime 自报的
   service/build/display name 作为 authority。
@@ -137,11 +137,12 @@ enum DetachedCallTarget {
 ```text
 targetProfile
 exact PackageVersion label
-ServiceDeploymentRef
+exact deployment buildId
 ```
 
-`ServiceDeploymentRef` 闭合 deployment revision 与 deployment artifact identity；执行镜像不再 pin 独立的 assembly / config
-snapshot 引用。PackageVersion label 必须作为 task 的显式、可观测版本事实保留，不能在执行时从 active deployment 反推。
+deployment buildId闭合ServiceDeployment revision、Package closure与deployment-owned config payload；执行镜像不再pin独立的
+assembly/config snapshot引用。PackageVersion label必须作为task的显式、可观测版本事实保留，不能在执行时从release pointer反推。
+`buildId`是Runtime唯一加载键；TaskStore不保存`RuntimeAssembly`、current assembly或activation generation。
 
 `DurableUtcTimestamp` 是可持久化、可跨主机比较的 canonical UTC epoch timestamp，不是 Rust / Tokio 的进程内 monotonic
 `Instant`。`due_at` visibility、lease expiry 与过期竞争都使用 TaskStore 的权威时钟。Runtime / scheduler 的 monotonic clock
@@ -164,40 +165,46 @@ owner scope，不保存 Runtime address、queue partition、lease id 或 mutable
 
 ## Execution Image And Target Pinning
 
-task 在提交时冻结完整 execution image，而不是只保存可读 target 名字并在到期时选择 latest：
+task在提交时冻结完整execution image identity（核心是exact deployment `buildId`），而不是只保存可读target
+名字并在到期时选择latest：
 
 ```text
 service owner
 + service version
-+ exact deployment (deployment revision + artifact identity)
++ exact deployment buildId
 + exact function or actor-method identity
 + payload expected-type plan identity
 ```
 
-`TaskExecutionImageRef` 是这些 immutable artifact facts 的受认证引用。它不包含提交 request 所在的物理 Runtime
-replica，也不引用该 replica 当时的 activation generation：正常发布和 drain 必须能结束旧 Runtime，而不能因为一个很久以后的 task
-把旧进程留住。到期 attempt 由 task control plane 针对 frozen image 建立新的 task activation，或选择已经 admission 同一 image 的
-Runtime；这个 activation 拥有自己的 generation，并继续服从普通 Runtime admission 与 drain 规则。
+`TaskExecutionImageRef`是提交时exact deployment `buildId`及其immutable artifact facts的受认证引用。它不包含
+提交request所在的物理Runtime replica，也不引用任何ambient release state。到期attempt把该exact `buildId`
+交给普通Runtime selection/lazy-load路径：可以选择已加载该build的Runtime，也可以选择具备同一artifact store
+懒加载能力的Runtime。Runtime以`buildId`为唯一key取得或构建、验证并缓存immutable
+`DeploymentExecutionImage`；load失败按平台attempt失败/重试策略收敛，不解析release pointer，也不fallback到
+latest。这里没有`RuntimeAssembly`、deployment cold activation或activation generation。
 
-因此“执行旧代码”固定的是可重新激活的旧 execution image，不是某个旧进程。非 terminal task 是其 image 和必要 artifact 的
+因此“执行旧代码”固定的是可按exact `buildId`重新加载的旧 execution image，不是某个旧进程。非 terminal task 是其 image 和必要 artifact 的
 retention root。发布、drain 和 artifact GC 不得让已接受 task 静默改用不同实现；若 operator 显式破坏 retention，
 task 以可观察的平台失败收敛，不能 fallback 到 latest build。terminal transition 必须原子释放 execution image / artifact
 retention root；后续 status / audit tombstone retention 不继续 pin executable
 artifact。若审计需要长期保存代码，必须使用独立 artifact audit retention policy。
 
-这一规则冻结代码和配置语义，但不把 artifact/build identity 复制进 recoverable payload。payload 仍按
+这一规则冻结代码和配置语义，但不把artifact/build identity复制进recoverable payload。payload仍按
 [`recoverable-value.md`](recoverable-value.md) 的 owner-internal envelope 规则编码；execution image 是 task 调度元数据，
-decode 使用该 image 已 admission 的 linked expected plan。
+decode使用该`DeploymentExecutionImage`已验证的linked expected plan。
 
 scheduled horizon 和 outstanding-task quota 同时限制旧 image 的最长 retention 与数量。
 
 ### Actor-method target
 
-Actor logical identity 按 [`actor-model.md`](actor-model.md) 保持跨 service version 稳定；task 中的 service version 和
-`ActorImplementationIdentity` 只决定这一次延迟调用要求的代码，不进入 ActorIdentity。actor-method task 不是保存一个易失对象指针，
+Actor logical identity 按 [`actor-model.md`](actor-model.md) 保持跨 service version 稳定；task 的
+`TaskExecutionImageRef`以exact deployment `buildId`唯一钉住这次延迟调用的代码与配置，service version只保留
+可观测版本事实，`ActorImplementationIdentity`用于target与Actor admission校验；三者都不进入ActorIdentity。
+actor-method task 不是保存一个易失对象指针，
 而是保存以下可恢复事实：
 
 - ActorIdentity；
+- `TaskExecutionImageRef`中的exact deployment `buildId`；
 - 提交时精确的 ActorImplementationIdentity 与 method identity；
 - 从 actor registry entry 冻结的 key / create 输入和对应 expected-type plan，即 `ActorActivationSnapshot`。
 
@@ -208,8 +215,13 @@ Actor logical identity 按 [`actor-model.md`](actor-model.md) 保持跨 service 
 到期时 task control plane 执行的是 Actor 路由层内部的 **get-or-activate**，语义上复用 `std.actor.get` 的激活路径，但不是重新求值
 一段用户源码：
 
-1. live incarnation 与 task 的 implementation identity 相同：按普通 Actor admission 排队执行 method。
-2. 没有 live incarnation，但 registry entry 仍存在：按 entry 保存的创建输入激活 task 固定的旧 implementation，再执行 method。
+进入以下分支前，Runtime先按task的exact `buildId`取得或懒加载immutable `DeploymentExecutionImage`；任意
+load/verify失败都不能用其它build替代。
+
+1. live incarnation 与task的implementation identity相同：按普通Actor admission排队，并从task exact-build
+   image执行method；identity相同不授权改用live owner碰巧已加载的其它build。
+2. 没有 live incarnation，但 registry entry 仍存在：按 entry 保存的创建输入，从task exact-build image激活
+   task固定的旧implementation，再执行method。
 3. Router 重启等原因使 registry entry 丢失：用 task 持久保存的 `ActorActivationSnapshot` 恢复最小 entry，执行 `create` 后再调用
    method。
 4. task implementation 是 Actor 升级控制器认可的 forward target：和普通调用一样触发或等待升级；临时
@@ -229,14 +241,16 @@ incarnation，可以按普通旧方法完成；升级先关闭 admission，则�
 
 第三种情况不会恢复逐出或崩溃前的 Actor 内存；`create` 仍应按 Actor 模型从 service DB 等业务事实重建。actor-method task 保证的是
 可靠投递 attempt，不是 Actor 内存快照或 exactly-once method effect。若 Actor 已不存在但没有不同 implementation 的 live owner，
-允许从 task 固定的旧 image 冷激活旧实现；之后普通新版本调用仍可按 Actor 升级协议接管它。
+允许Runtime按task固定的exact `buildId`懒加载旧image，再走Actor get/create激活旧实现；之后普通新版本调用仍可按
+Actor升级协议接管它。这里的`ActorActivationSnapshot`与“激活”都是Actor实例生命周期术语，不是deployment activation。
 
 ## Submission And Visibility
 
 提交顺序固定为：
 
-1. 求值 timing、receiver 和全部参数；一次 source operation 中每项只求值一次。
-2. 解析并冻结 exact execution image 与 target；actor-method target 同时冻结 ActorActivationSnapshot。
+1. 依次求值 receiver、全部参数和 timing；一次 source operation 中每项只求值一次。
+2. 解析并冻结含exact deployment `buildId`的`TaskExecutionImageRef`与target；actor-method target同时冻结
+   `ActorActivationSnapshot`。
 3. 按 target expected plan 完整编码 recoverable payload。
 4. 生成 TaskId，原子 durable-create task record 并登记 execution image / artifact retention root。
 5. TaskStore 确认 durable create 后，submission 才成功返回 task reference。
@@ -282,7 +296,8 @@ leased ────cancel────────────> leased          (
 
 ## Claim, Lease And Fencing
 
-scheduler 只 claim `due_at <= now`、state 为 ready、execution image 可重新激活且 policy 有容量的 task。claim 原子写入：
+scheduler只claim `due_at <= now`、state为ready、task exact `buildId`的retained artifacts仍可加载且policy有容量的
+task。claim原子写入：
 
 - state = leased；
 - monotonically increasing attempt generation；
@@ -304,7 +319,7 @@ lease fencing 只保护平台 task state。旧 Runtime 在失去 lease 后仍可
 
 ## At-Least-Once Contract
 
-成功提交且未取消、未 terminal 的 task 在 execution image 可用且基础设施最终恢复的前提下持续可调度。Runtime admission
+成功提交且未取消、未 terminal 的 task 在 exact-build execution image 可加载且基础设施最终恢复的前提下持续可调度。Runtime admission
 只是一次 attempt 的开始，不是 logical task 的完成点。普通 ready notification 重复、due scanner 重复、scheduler 重试和
 提交响应重试不得自行产生新的 logical task。
 
@@ -368,15 +383,16 @@ cancel-requested、停止确认、outcome unknown 和副作用边界，不能扩
 
 ## Runtime Admission And Settlement
 
-claim 本身不等于 target 已开始。scheduler 在获得 lease 后，必须针对 exact execution image 冷激活或向已经 admission 该 image 的
-Runtime 发起普通
-request admission。admission 失败且平台能证明 Runtime 未接受 request 时，可以释放或重新 claim；admission 结果不确定时按
+claim本身不等于target已开始。scheduler获得lease后，必须选择已加载task exact deployment `buildId`或具备
+lazy-load能力的Runtime；Runtime只在取得并验证该`buildId`的immutable `DeploymentExecutionImage`后发起普通
+request admission。Image load/请求admission失败且平台能证明Runtime未接受request时，可以释放或重新claim；结果不确定时按
 lease-loss recovery 处理，允许产生重复 attempt。
 
 一次 attempt 的 Runtime request：
 
-- 使用 fresh request heap 和 request-local context；不继承提交方 call frame、timeout、cancel token、DB transaction、stream、
-  live connection 或 mutable heap identity。
+- 使用fresh request-local context；不继承提交方call frame、timeout、cancel token、DB transaction、stream、
+  live connection或mutable heap identity。function target使用fresh `RequestHeap`；actor-method target只使用边界
+  decode scratch（若需要），参数以value snapshot导入instance-owned shared arena，不创建逐方法heap或字段副本。
 - 它是 target 对应类别的普通 request，复用相同的 Runtime admission、connection concurrency、heap / payload limit、instruction /
   continuous-execution budget、native effect guard、deadline / timeout 和内部 stop 机制；平台不为 task execution 建第二套资源模型。
 - fresh attempt 不继承提交方已经消耗的剩余 deadline，而是按 target 在当前 execution context 中创建一个完整的新普通 request
@@ -384,8 +400,9 @@ lease-loss recovery 处理，允许产生重复 attempt。
   timeout。
 - 继承 task trace correlation，但创建新的 attempt / request span。
 - function target 作为独立 service request 执行。
-- actor-method target 通过 actor registry / owner fencing 的 get-or-activate 路径执行，并遵守 actor instance 的串行、升级与
-  suspension 契约；task lease 不替代 actor owner lease，ActorActivationSnapshot 也不绕过唯一 live incarnation 约束。
+- actor-method target通过actor registry / owner fencing的get-or-activate路径执行；同步段由
+  `ActorSegmentLease`串行，只有actual `Pending`释放后才与其它协程交错，并继续遵守升级与恢复契约。task lease
+  不替代actor owner lease，`ActorActivationSnapshot`也不绕过唯一live incarnation约束。
 - return value 必须为 void / null；平台只保存 task outcome，不保存 callable result。
 
 Runtime 得到明确 outcome 后用当前 lease id settlement。若 terminal write 失败或响应不确定，Runtime 可以用同一 lease id 重试
@@ -515,6 +532,5 @@ ready queue，它也只是 scheduler 的非权威 delivery lane。用户只持�
 - [`actor-model.md`](actor-model.md) 中的 detached Actor call 必须收敛到本文的 durable actor-method target：使用
   `ActorActivationSnapshot` 支持 registry 丢失后的 get-or-activate，并继续遵守旧 implementation rejection；不得保留独立易失
   `spawn` 队列。
-- [`runtime-deployment-topology.md`](runtime-deployment-topology.md) 必须增加 retained task image 的 cold activation lane；它与
-  active / draining generation pin 分开，不能为了未来 task 阻止旧 Runtime replica 正常退出，也不能在到期时解析 latest
-  assembly 或 config snapshot。
+- [`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)的exact `buildId` lazy-load路径同时服务retained task image；
+  future task不能阻止旧Runtime replica退出，也不能在到期时解析latest release pointer或ambient config。

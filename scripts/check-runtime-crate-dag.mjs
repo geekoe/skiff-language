@@ -155,7 +155,7 @@ const expectedPromotedRuntimePackages = new Set([
 const hostBoundaryTarget = {
   hostPackageName: 'skiff-runtime-host',
   docs: [
-    'doc/architecture/runtime-layered-crate-architecture.md',
+    'doc/architecture/bytecode-vm.md',
   ],
   allowedRuntimeDeps: [
     'skiff-runtime-transport',

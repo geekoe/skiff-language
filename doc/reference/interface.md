@@ -68,6 +68,11 @@ interface QueueSink<Item> {
 concrete nominal type”。`Self` 不应出现在普通 type、alias、record field、service boundary payload
 或非 receiver 参数位置。
 
+interface method requirement 的 receiver 和其它参数都只能是普通 value parameter，不得声明
+`inout`。record / `Array` / `Map` / `JsonObject` 作为普通参数时传递逻辑 snapshot；参数
+binding 及从它派生的 member/index path 在 callee 中不可写。callee 若需修改自己的副本，
+必须先绑定到局部 `var`；该修改不反向暴露为 caller 可观察的 mutable alias。
+
 concrete type 实现 interface 时，compiler 按 type 参数替换 requirement，然后检查该 concrete type 的
 method namespace 中存在匹配 method：
 
@@ -101,6 +106,12 @@ method 实现。
   这个保守事实属于 call site 分析，不写回 interface requirement。
 - 远程 public instance / `any I` remote carrier 的调用是 service call；service call 本身就是调用方的
   潜在挂起点，不读取 callee implementation 的内部 summary。
+
+这也是 `inout` 不能进入 interface requirement 的硬边界：`inout` 是 caller-writable exclusive
+loan，只允许调用已精确解析到 Package-local / package-direct concrete callable 的 Package
+Local ABI，且 compiler 与 verifier 都必须证明该 target 是 `NoPending`（`maySuspend=false`）。
+interface dispatch 既擦除 exact concrete target，又必须保守当作 `maySuspend=true`，因此不能借
+method table、callback adapter 或边界 projection 绕过该限制。
 
 `maySuspend=true` 只是静态 may-analysis 结果，不会插入调度点。runtime 仍只在执行到真实等待且等待尚未
 完成时释放 actor 执行权；语言没有显式 `yield`。
@@ -202,7 +213,9 @@ first-class interface value（动态分派）是 `any I`，见 `any-interface.md
 > first-class 值（是装箱源 / 寻址 root），只能在 `.method()` 或 `as I` 左边出现。详见 `any-interface.md`。
 
 pattern / narrowing 可以用 interface conformance 做有限类型测试，但不创建 interface value。当前
-Package 的普通 public const 不会自动成为可调用 root。
+Package 的普通 public const 不会自动成为可调用 root。这里的 `const` 是顶层、由
+compiler 求值并 deep freeze 的常量；它不是局部 writable binding，也不因被公开就获得
+receiver identity。局部 runtime binding 使用不可写的 `let` 或可写的 `var`。
 
 `any I` 的 value layout 见 `any-interface.md §3` 和 `../architecture/any-interface-value.md`（含本地 /
 远程两类装箱源的泛化布局）。不能把 ordinary object 的 per-instance runtime shape 偷偷扩展成隐式 vtable。
@@ -276,10 +289,19 @@ concrete executable / public callable 的推断 suspension summary 由 executabl
 metadata 另行保存。public instance 的具体 method binding引用该 concrete callable；interface method
 table和interface conformance metadata不得复制、默认或比较一个 requirement-level `maySuspend` 位。
 
+artifact admission 必须拒绝任何在 interface requirement 或其 method-table signature 中携带
+`inout` mode 的产物。`inout` mode / path effect 只属于 exact concrete callable 的 Package Local
+ABI，不属于 interface fact、callback contract 或 ServiceContract。
+
 runtime 执行 concrete method 时不需要给 ordinary object 附加 interface identity。interface metadata
 只用于compile/link与artifact projection阶段的静态解析、ABI identity和compatibility check。runtime不依据
 interface id + method name 做动态派发；实际 call target 必须已经链接成 local executable、package
 callable target或service `ContractOperationId`。
+
+这些 linked target 总是在当前 execution 已固定的 exact deployment `buildId` 所对应的
+immutable execution image 内解析。deployment activation generation 或全局 runtime assembly 不是
+execution owner，也不得作为查找、兼容或 fallback key。Actor activation identity 与 transport
+socket generation 是各自子系统的寿命/传输事实，不替代 deployment `buildId`。
 
 ## 12. Non-Goals
 

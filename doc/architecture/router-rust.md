@@ -1,212 +1,140 @@
 # Router（Rust）Architecture
 
-状态：authoritative contract。Router Rust 迁移实施完成后，本文是唯一长期
-Router 架构参考；`doc/implementation/router-rust-migration-plan.md` 已置
-`complete`，不充当第二份架构规范。
-
-## 本文负责 / 不负责
-
-本文负责：
-
-- `skiff-router` 作为唯一生产 Router 的长期 owner/contract 汇总；
-- 进程拓扑、state owner、wire/artifact/durable model 归属、named gates 与
-  验证入口、rollback 策略。
-
-本文不负责：
-
-- 用户可见语言语义、service API 和配置字段（归 `doc/reference/`）；
-- 部署脚本 CLI 拼写、端口具体值（归 `scripts/README.md` 与部署配置）；
-- Runtime 进程内部的 execution model（归 runtime 相关 architecture 文档）。
+本文是`skiff-router`进程、Router-owned mutable state与Runtime transport的长期内部契约。Release pointer、
+artifact store与lazy-load规则只由
+[`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)定义；ServiceDeployment与gateway
+identity只由[`package-service-contract-deployment.md`](package-service-contract-deployment.md)定义。本文不
+复制它们的DTO或状态机。
 
 ## 1. 进程拓扑
 
-Router 是独立 Rust binary，与 Runtime 保持两个独立进程，不共享进程内
-mutable state：
+Router与Runtime是两个独立Rust进程，不共享mutable state：
 
 ```text
 client / ingress
   -> skiff-router public HTTP + client WebSocket
-  -> skiff-router runtime/control listener
+  -> skiff-router control/runtime listener
        <- runtime actively connects over /runtime
 
 skiff-router
-  -> shared artifact filesystem (read-only routing records)
-  -> MongoDB (activation state + audit only)
+  -> shared immutable artifact store + release pointer table
+
+runtime
+  -> the same artifact store
+  -> service DB transport supplied by Router bootstrap
 ```
 
-- router 负责 service HTTP、control HTTP 和 runtime WebSocket；runtime 主动
-  连接 router 并注册当前 loaded service。
-- artifacts 是不可变 build record 和 release pointer；router 只读路由记录，
-  不拥有 artifact 可变状态。
-- MongoDB 只保存 durable activation state 与 audit；router 不启动 runtime、
-  Mongo 或 telemetry。
-- release-mode HTTP 必须带 `X-Skiff-Service` / `X-Skiff-Version` selector；
-  缺 selector、release 不存在或 runtime 未注册一律 fail closed。
-- canonical control 契约是 `/__skiff/activate-assembly`（发布新的 active
-  assembly）与 `/__router/health`（health/loop-risk projection）；stale
-  `/__skiff/reload-artifacts` 不作为 control reload。
+Router负责external ingress、release resolution、Runtime selection、request/stream correlation、WebSocket
+connection/broker与Actor routing。Runtime执行用户代码并按buildId lazy-load。Router不启动Runtime、MongoDB
+或telemetry，不解析Package executable，也不持有deployment执行状态。
 
-## 2. State owners
+External request必须带受信`x-skiff-service`与`x-skiff-version`。Router严格解析
+`(profile, serviceId, version) -> buildId` pointer，再在该deployment内解析gateway entry。缺selector、
+pointer、entry或eligible Runtime都fail closed。
 
-Owner 按单一 invariant 命名并唯一拥有对应状态；禁止 `RouterCore` / 全局
-mutable state / 万能 coordinator。任何 owner 合并必须先写出共同 invariant 和
-sequence test。
+## 2. Connection bootstrap
+
+Runtime主动连接后，Router恰好发送一次连接级bootstrap：
+
+```text
+artifactsPath
+serviceDb.mongoUrl
+http.maxResponseBytes
+transport/schema capabilities
+```
+
+同一连接中bootstrap缺失、重复冲突或变更都fail closed。Runtime随后通告：
+
+```text
+RuntimeReplicaId
+loadedBuildIds
+lazyLoadCapability + artifactStoreIdentity
+transport capabilities
+```
+
+Loaded set可以增长或因本地eviction缩小；它是placement hint，不是release truth。Router不等待全体replica
+加载某个build，也不等待多replica确认。Preload只能是fire-and-forget hint。
+
+## 3. State owners
+
+禁止一个万能`RouterCore`或协调器。Router业务mutable state穷尽为pointer、session、routing与actor四个
+domain；每个事实只能落在下表一个owner中：
 
 | Owner | 唯一拥有 | 明确不拥有 |
 | --- | --- | --- |
-| `ActiveRoutingEpochStore` | 当前 immutable routing epoch 的原子 publication | pending activation、session eligibility cache、pin map |
-| `RuntimeRegistrationDirectory` | live `RuntimeSessionEpoch`、registered assembly tuple、capability index、socket handle、replica/epoch 双索引 | active/draining 副本、capacity/pending、health history |
-| `RuntimeHealthLedger` | current/retained health observation | routing eligibility、socket ownership |
-| `RuntimeAdmissionPool` | per-session capacity permits、selection cursor/policy | session truth、request pending、active routing epoch |
-| `RequestDispatcher` | ordinary unary/stream 与 derived task correlation、terminal、reservation token | actor-method invocation、peer WS correlation、socket |
-| `ClientConnectionIndex` | logical client connection、business identity replacement、`ClientSocketGeneration` | Runtime generation pin、broker pending |
-| `RuntimeGenerationPinLedger` | Runtime generation acquire/release pending/cache/session attachment | client business index、peer RPC correlation |
-| `WebSocketRequestBroker` | peer request/response correlation、deadline、tombstone、captured socket generation | ordinary dispatcher pending、connection replacement policy |
-| stateless `ActorMethodCatalogView` | 对显式 `Arc<RoutingEpoch>` 中 actor index 的 typed query | 独立 index、mailbox、refresh/publication、actor live state |
-| `ActorOwnershipRegistry` | actor identity、incarnation、current owner fence、authoritative claim reservation/commit | activation request correlation、invocation correlation、timer |
-| `ActorActivationRequestBroker` | get-or-create operation dedup、activation request/ACK correlation | actor key 上的 claim truth、invocation、lease scheduling |
-| `ActorInvocationRelay` | actor method invocation/return/error/cancel correlation | owner registry mutation、owner-control ACK |
-| `ActorOwnerControlBroker` | claim/renew/evict 等 owner-control correlation | method invocation、idle timing |
-| `ActorLeaseExpiryScheduler` | lease/idle deadline scheduling 和 eviction trigger | actor registry truth、control correlation |
-| `ActivationStateRepository` | durable DTO/revision/audit、Mongo indexes、read/CAS/retry | coordinator transaction、routing epoch |
-| `ActivationCoordinator` | durable activation transaction lifecycle 和 live/recovery participant binding | active epoch storage、session mutation、socket write |
-| pre-auth/per-session/per-client task | `RuntimeConnectionEpoch`、physical socket halves、bounded ingress/outbound queue、abort handle | logical routing/pending maps |
-| `HealthAggregator` | owner-published read-only snapshots | 反向修改任一 owner |
-| `RouterSupervisor` | config、construction、listener/task join、shutdown | 所有上述业务 mutable state |
+| `ReleasePointerIndex` | strict release pointer target与原子refresh | artifact/route write、Runtime image、request/session状态 |
+| `RuntimeSessionDirectory` | live session/replica/runtime-transport socket、session incarnation、loaded build set、lazy-load/store capability、容量计数与permit、session health observation | release pointer、request terminal、Actor truth |
+| `RequestRoutingState` | validated immutable ingress-routing view、exact-build dispatch pin、unary/stream/task-attempt correlation、client connection/socket incarnation、peer WebSocket pending/tombstone/deadline | pointer mutation、session replacement、Actor ownership |
+| `ActorRoutingState` | actor identity/incarnation/owner fence/lease、instance get/create dedup、method与owner-control correlation、idle/expiry schedule | release pointer、ordinary request/peer WebSocket pending |
 
-关键不变式：
+`RequestDispatcher`、`ClientConnectionIndex`与`WebSocketRequestBroker`只能是`RequestRoutingState`内互斥记录种类；
+Actor registry、instance broker、invocation relay、owner-control broker与expiry scheduler只能是
+`ActorRoutingState`内部结构。`RouterSupervisor`只负责process config、construction、listener/task join与shutdown，
+不成为第五个业务state domain。Health端点按需读取上述owner投影，不能建立独立ledger或反向修改owner。
 
-- active routing 只有 `ActiveRoutingEpochStore` 一个 authority：immutable
-  `RoutingEpoch`（profile、assembly generation/identity、config snapshot
-  id、ingress/deployment/actor projection）原子 `Arc` 发布；admission 捕获
-  完整 epoch，不允许混合新旧 epoch。
-- `RuntimeRegistrationDirectory` 使用 `current_by_replica` 与
-  `sessions_by_epoch` 两张 exact index；replacement 先标记并 cancel old epoch
-  再安装 new epoch，old close barrier 只能删除 old session 记录。
-- 候选资格由 stateless `RuntimeCandidateQuery` 统一投影（epoch + exact
-  registered tuple + capability + cancellation）；heartbeat freshness 不参与
-  admission/activation。pending 持有 routing epoch、registered session lease
-  和 permit，terminal 时一次释放。
-- identity/fence 使用独立 newtype：`AssemblyGeneration`、
-  `RuntimeConnectionEpoch`、`RuntimeSessionEpoch`、`ClientSocketGeneration`、
-  `RuntimeGenerationLeaseId`、`ActorIncarnationFence`、`ActivationId` /
-  `ActivationParticipantBinding`；禁止通用 fence 或裸字符串跨 domain 传递。
-- runtime handshake 固定为：accept → router.bootstrap →
-  runtime.capabilities → bind `RuntimeSessionEpoch` →
-  assembly.activation:Register → runtime.registered ACK → runtime.health；
-  `assembly.activation:Register` 的 state owner 仍是
-  `RuntimeRegistrationDirectory`，不是 `ActivationCoordinator`。
-- runtime disconnect 是 cancellation + barrier：installed component manifest
-  静态声明 session-keyed state 和 terminal sink；全部 ACK 后删除 exact
-  session，超时/槽位失效时 Router fail-stop。durable activation state 才在
-  restart 后做 persistence reconciliation。
-- client socket 生命周期有独立 finalizer：先撤销 business index，再触发
-  client cancellation、broker detach、pin release、dispatcher terminal 和
-  writer close；old finalizer 不得删除 replacement generation。
-- concurrent first-owner 的 authoritative transition 只在
-  `ActorOwnershipRegistry`：原子 reserve actor key 并签发
-  `ActorClaimToken`，broker 持 token 执行 operation/dedup，commit/abort 必须
-  带 token 回 registry；broker 不各存一份 claim truth。
+## 4. Routing and pinning invariants
 
-## 3. Model ownership（wire / artifact / durable）
+一次新dispatch按以下顺序捕获事实：
 
-| 类别 | canonical owner | consumer |
-| --- | --- | --- |
-| Router↔Runtime wire model | `skiff-runtime-transport` 及必要的低层 request contract | Router、Runtime |
-| compiler/Router/Runtime artifact model | `skiff-artifact-model`、`skiff-artifact-identity`、`skiff-deployment` strict reader | compiler/deployment/Router/Runtime |
-| Router/platform durable activation model | canonical deployment/persistence crate 中的 DTO/pure reducer；Mongo adapter Router-owned | Router/deployment tooling；不是 Runtime wire contract |
-
-边界契约：
-
-- `skiff-router` 不得直接或传递依赖宽 `skiff-runtime-model`、runtime-host、
-  eval 或 request execution；Runtime 不依赖 Router。
-- Runtime 只消费 activation prepare/commit/abort wire projection，不消费
-  Mongo durable record。
-- actor catalog 只读 canonical routing projection，不读
-  PackageArtifact/File IR。
-- 第三类 durable model 即使物理位于 shared crate，也不得扩大 Runtime 或
-  Router 的依赖面。
-
-## 4. Named gates 与验证入口
-
-verify registry（`scripts/lib/verify-rust-subjects.mjs` /
-`verify-selector-graph.mjs` / `verify-plan.mjs`）：
-
-- Rust subject `router` 是 `skiff-router` 的唯一 owner（leaf
-  `router-contracts`，task `router:contracts`，自动生成唯一 Cargo test
-  leaf）；manual `router` selector 只展开 Rust leaves：
-  `router-contracts` + `router-rust-process-smoke`（task
-  `router-rust:process-smoke`）。
-- 每个 Rust workspace package 必须归入恰好一个 subject；新增 crate 漏 owner
-  或同一 name 双 owner 都会让 registry integrity / transition test 失败。
-- 已删除 TypeScript Router builder/leaf；`pnpm test`、默认 verify 与 CI 不再
-  展开任何 TS Router 任务。
-
-常用入口：
-
-```bash
-node scripts/verify.mjs --only router
-node scripts/verify.mjs --only router-rust-process-smoke
-cargo test -p skiff-router
+```text
+trusted service/version
+  -> ReleasePointerIndex exact buildId
+  -> RequestRoutingState exact gateway entry identity
+  -> eligible Runtime session + capacity permit
+  -> immutable DispatchOwnerPin(buildId, deployment identity, session incarnation)
 ```
 
-live/manual gates（tier `live/manual`，默认 verify、`pnpm test`、Cargo
-workspace 和 CI 都不展开）：
+- Candidate是已注册该buildId的session，或声明同一artifact store lazy-load能力的session。
+- Pointer在dispatch后变化不迁移request/stream/connection；新dispatch重新解析。
+- Runtime load失败以该request的明确platform error收敛；Router不改投另一个build。
+- Session replacement先cancel/close old incarnation再安装new incarnation；old finalizer不能删除replacement记录。
+- Pending同时持有exact owner pin、session lease与session directory签发的permit，terminal恰好释放一次。
+- 同进程service child由Runtime自己的boundary scheduler处理；Router不把service call降级为Package call。
 
-| Selector | 内容 |
-| --- | --- |
-| `router-rust-bootstrap-live` | compiler artifact、committed reader、initial epoch |
-| `router-rust-session-live` | real Runtime bootstrap/register/reconnect/shutdown；无 unary |
-| `router-rust-dispatch-live` | fake ingress → admission/pending → real Runtime |
-| `router-rust-http-live` | real HTTP → Router → Runtime |
-| `router-rust-ws-live` | real WS/broker/generation |
-| `router-rust-actor-live` | two-replica actor chain |
-| `router-activation-mongo-live` | reducer/CAS/retry/audit failure + temporary Mongo |
-| `router-activation-full-chain-live` | real Router+Mongo+compiler artifact+Runtime commit/re-register/new request |
-| `router-chat-full-chain-live` | pinned Skiff/internals/packages commits + Agine chat smoke |
-| `router-clean-host-live` | Linux binary/PM2，无 pnpm/tsx/router node_modules |
+WebSocket upgrade固定exact deployment build、gateway entry与`ClientSocketIncarnation`。JSON-RPC response必须
+精确匹配connection、socket incarnation、direction/profile与transport id；pointer更新不迁移旧socket。
 
-其他验证契约：
+Actor routing使用独立`ActorIncarnationFence`。实例get/create只改变`ActorRoutingState`，不能携带或重建
+ambient multi-service release state。
 
-- `loop-risk-health-live` / `loop-risk-stress-live` 必须通过
-  `--loop-risk-config` 或 `SKIFF_LOOP_RISK_CONFIG` 传同一份 canonical JSON
-  config，health URL 精确指向 `/__router/health?detail=loop-risk`。
-- `runtime-live` 必须显式提供 runtime config、router reload URL 和 artifact
-  root，不读取通用 env 也不猜 stable 4001。
-- `db-encrypted-storage-live` 保留业务回归，但不用于证明 Router 无 Node
-  依赖；该证明只归 `router-clean-host-live`。
-- cross-repo chat full chain 在 `internals/agine` 运行
-  `npm run e2e:chat-smoke`，并记录 Skiff/internals/skiff-packages commit 与
-  service artifact identities。
-- task 未实现且未出现在 `verify --list`、workflow 未实际调用前，不得标记
-  gate 已建立。
+## 5. Model ownership
 
-## 5. Rollback 策略
+| 类别 | canonical owner | Router职责 |
+| --- | --- | --- |
+| Router↔Runtime wire | `skiff-runtime-transport`与request contract | strict encode/decode、session state |
+| artifact/identity | `skiff-artifact-model`、`skiff-artifact-identity` | strict routing view，不解析code |
+| release pointer | `runtime-lazy-load-deployment.md`定义的store | read/refresh/resolve target |
+| gateway与service frame identity | package/service deployment文档 | strict ingress-routing view；service payload/operation保持opaque |
+| VM/request execution | `bytecode-vm.md`与Runtime crates | 不依赖、不执行 |
 
-- 同一 release 只启动一个 Router；不做双 Router production canary。
-- 回滚对象是上一完整 repository/build release（immutable binary + config +
-  artifacts），不是补丁式 hotfix。
-- 演练顺序：stop admission → shutdown current Router → 确认 PID/listener
-  退出 → 启动目标 immutable process → Runtime reconnect exact committed
-  tuple → activation/readiness → 开放 admission → HTTP/WS/actor/chat smoke。
-- 若必须改变 durable state / wire / artifact，先拆成独立 generation
-  checkpoint，不在同一 release 内混用变更与回滚。
-- build/instance/deploy/PM2 全部管理 Rust binary：`build-runtime-stack` 用
-  Cargo-metadata source closure 生成 `build/runtime-stack/bin/skiff-router`；
-  instance build/up 构建并安装 binary；deploy 上传 binary 并由 PM2 直接执行
-  `--config`；clean host 只提供 binary/config/artifacts，PATH 不含
-  pnpm/tsx。
+`skiff-router`不得依赖runtime evaluator/VM/host execution。Runtime不依赖Router实现 crate。Unknown nested
+wire/artifact field、schema mismatch、owner mismatch与跨build substitution都fail closed；没有dual-read或
+display-name fallback。
 
-## 6. 完成契约
+## 6. Limits, health and rollback
 
-- 唯一生产 Router 是 Rust `skiff-router` binary；TypeScript Router
-  source/tests/package/lockfile/dist/CI/remote install 已全部删除。
-- Router↔Runtime wire 和 artifact DTO/identity/reader 只有 canonical owner，
-  无 TS/local mirror。
-- active routing 只有 `ActiveRoutingEpochStore` 一个 authority；ordinary
-  pending、WS broker pending、client connection、Runtime generation lease、
-  actor ownership/claim/invocation/control/lease 和 activation transaction
-  各有独立 owner。
-- 所有 owner counters 在 success/error/disconnect/saturation/shutdown 后归零。
-- 长期 owner/contract 以本文为准；`doc/implementation/router-rust-migration-plan.md`
-  已置 `complete`，不再作为架构规范。
+`runtime.maxConcurrency`按Runtime WebSocket session限制ordinary pending request；满载时立即overload，不
+排队。HTTP request/response limits由Router operator配置并按`../reference/runtime.md`执行。Actor/control
+frame不计ordinary pending permit。
+
+`/__router/health`是pointer、session capability、loaded build与loop-risk的只读projection，不是另一份
+routing state。健康信息不能让不存在的pointer/build变得eligible。
+
+Service rollback只原子把release pointer指回已验证旧buildId。Router binary rollback是process release
+操作：停止接流量、shutdown运行中的process、启动目标immutable binary/config、等待Runtime reconnect，再做
+HTTP/WS/Actor/chat smoke。Service rollback与Router process替换彼此独立。
+
+## 7. Verification contract
+
+至少验证：
+
+- pointer resolution、missing/incompatible build与跨build frame substitution fail closed；
+- loaded candidate与lazy-load candidate选择，load failure不fallback；
+- pointer更新不迁移in-flight unary/stream/WebSocket；
+- permit、pending、session、broker tombstone在所有terminal/disconnect路径归零；
+- session replacement与client socket replacement的old finalizer不能删除new incarnation；
+- Actor claim/install/release只由`ActorRoutingState`改变truth；
+- Router不依赖VM/eval crate，也不持有deployment execution image或跨service协调状态；
+- real Router↔Runtime HTTP、WebSocket、Actor与Agine chat smoke通过。
+
+具体迁移历史留在`doc/implementation/`，不再作为第二份架构规范。

@@ -1,36 +1,20 @@
 # Managed Dev Watch
 
-本文定义开发态managed watch如何把动态service root集合投影为
-`RuntimeAssembly + RuntimeConfigSnapshot`，并通过Router activation CAS持续收敛。它是tooling/control
-plane契约，不是语言语义，也不定义production平台发布流程。
+本文只定义本地managed watch的registry、fingerprint、publish、withdraw与重试契约。Deployment release、
+pointer和Runtime lazy-load语义由
+[`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)拥有；本文不定义artifact DTO、跨service
+事务或Runtime load协议。
 
-## 输入与状态
+## 输入
 
-Managed watch的期望状态由以下输入共同决定：
+Watch的期望状态来自：
 
-- dev registry的schema版本、profile和entries；
+- dev registry的schema、profile与entries；
 - 命令行显式追加的静态root；
-- effective root集合的源码、control files、三层配置和Package解析输入。
+- effective roots的源码、control files、三层配置和Package解析输入；
+- compiler/toolchain identity与dependency resolution结果。
 
-Router当前committed activation tuple是CAS观察状态，不是期望状态输入，也不进入语义fingerprint；否则
-watch自己的每次成功activation都会凭generation变化再次触发下一次activation。
-
-watch不能只在进程启动时展开一次registry。每轮poll及registry文件变化后都必须重新读取registry，重新计算
-effective profile与root集合，再验证live roots。registry schema、effective profile、canonical
-entry/root集合及root内容都进入同一个语义fingerprint；只比较启动时root的mtime不是合法实现。
-
-watch内部至少区分：
-
-- `lastKnownGoodRegistry`：最近一次结构合法且live root验证通过的registry；
-- `pendingFingerprint`：当前等待构建或重试的期望状态；
-- `lastSuccessfulFingerprint`：已经完成build、snapshot publish和activation commit的状态；
-- Router返回的exact committed profile、generation、assembly ref与config snapshot ref。
-
-这些状态不能折叠为一个“最近看过的fingerprint”。失败的输入从未成功生效，因此不能被标记为已处理。
-
-## Registry v2
-
-Registry使用`skiff-package-service-dev-registry-v2`。顶层只有：
+Registry使用`skiff-package-service-dev-registry-v2`：
 
 ```json
 {
@@ -46,98 +30,75 @@ Registry使用`skiff-package-service-dev-registry-v2`。顶层只有：
 }
 ```
 
-每个entry持久保存`kind`、规范化绝对`root`和可选`serviceId`。普通Package root的canonical kind为
-`package`；同时具有`package.yml`和`service.yml`的Package具有service role，其canonical kind为
-`service`，`serviceId`必填且必须等于entry写入时`service.yml`声明的canonical service ID。普通Package
-entry不得保存`serviceId`。数组按`kind + root` canonical排序，同一root或service ID不得重复。
+`root`必须是规范化绝对路径。普通Package使用`kind: package`且没有`serviceId`；同时拥有`package.yml`与
+`service.yml`的root使用`kind: service`，其持久`serviceId`必须等于authoring声明。数组按`kind + root`
+canonical排序；root或service ID不能重复。
 
-读取分成两个阶段：
+读取分两步：结构读取只检查JSON/schema/排序/唯一性，不访问文件系统；live validation在build前确认root
+存在、kind和service ID仍匹配。这样已删除目录仍可被`registry remove`唯一定位。Add必须先做live validation；
+remove同时按规范化root与持久service ID匹配，零命中或歧义都fail closed。
 
-1. **结构读取**只校验JSON、schema、entry字段、绝对路径、排序与唯一性，不访问root文件系统；
-2. **live root验证**在sync/watch需要构建时确认root仍存在、kind仍一致，service root的当前ID仍与持久
-   `serviceId`相同。
-
-这个分离保证root已经被删除时，`registry remove`仍能读取和修改registry。`add`必须先完成live root验证；
-`remove <root-or-service-id>`同时按规范化root和持久service ID匹配，只允许唯一命中。零命中、多个命中，
-或root解释与service ID解释命中不同entry时都fail closed，不猜测用户目标。
-
-Registry修改必须在目标文件同一目录创建临时文件，完整写入并`fsync`后原子`rename`；支持目录同步的平台
-还要同步父目录。不得原地截断目标文件。写入失败保留原registry。
-
-Canonical CLI是：
+Registry修改在同目录写临时文件，flush后原子rename；支持目录同步的平台还要同步父目录。旧
+`skiff dev registry`拼写不保留，canonical CLI是：
 
 ```text
-skiff service dev registry add <service-dir>
+skiff service dev registry add <root>
 skiff service dev registry list
 skiff service dev registry remove <root-or-service-id>
 ```
 
-Skiff尚未发布，旧`skiff dev registry`语法直接删除，不保留alias或兼容分派。
+## 状态与 fingerprint
 
-## Last-known-good 与动态 root
-
-registry暂时不存在、JSON损坏、schema错误或任一live root验证失败时：
-
-- 当前committed activation和`lastKnownGoodRegistry`保持不变；
-- 本轮明确失败并进入重试，不能把错误输入解释为空registry；
-- 不提交`lastSuccessfulFingerprint`；
-- 后续registry或root修复后无需再编辑其它源码即可自动恢复。
-
-watch首次启动且尚无last-known-good时，同样不能投影空assembly；它保持无本地期望状态并按失败退避重新
-读取。显式移除最后一个合法entry则不同：这是一个结构合法的空root集合，必须生成canonical empty
-`RuntimeAssembly`和同profile、零deployment分区的empty `RuntimeConfigSnapshot`，再通过普通CAS提交
-新generation。empty activation负责撤下先前全部dev services，不是特殊的Router清理旁路。
-
-Router activation freeze对zero-deployment epoch仍以exact registered sessions作为参与方
-（此时session的capability binding为空，也照常参与），否则`stack init`种下的empty generation 0
-无法通过普通CAS提交第一个真实assembly。
-
-命令行显式root是本次进程的静态输入，与每轮重新读取的registry entries组成canonical union。只有最终
-effective root集合为空时才生成empty pair。
-
-## 启动同步与 Activation CAS
-
-Managed watch启动后、第一次activation前必须先读取`GET /__router/health`。Router health必须公开一个
-exact committed tuple：
+Watch至少持有：
 
 ```text
-profile
-generation
-runtimeAssemblyRef
-runtimeConfigSnapshotRef
+lastKnownGoodRegistry
+pendingFingerprint
+lastSuccessfulFingerprint
+ownedReleasePointers: key -> lastPublishedBuildId
 ```
 
-watch校验Router profile与本次effective profile一致，并以health中的generation作为第一次
-activation的`expectedGeneration`。不得在managed instance launcher或watch内部写死`0`。低层
-`skiff assembly activate`仍保留显式expected generation，因为它是调用方直接操作CAS的接口。
+Fingerprint覆盖effective profile、canonical root集合、每个root的完整build输入、dependency resolution和
+toolchain identity；Router health、当前loaded set、release pointer mtime和上次错误不进入fingerprint。
+Watch每轮poll与registry文件变化后都重新读取registry，不能只在启动时展开一次root集合。
 
-每次期望状态按以下顺序收敛：
+配置输入只以canonical protected-store writer返回的store-domain keyed `BakedConfigPayloadRef`进入fingerprint；
+fingerprint、ledger与日志都不得保存Secret明文或它的unkeyed digest。该ref的算法仍由artifact contract唯一拥有，
+watch只消费结果。
 
-1. 构建或复用exact assembly；
-2. 构建并安全发布exact config snapshot；
-3. 以最近一次Router health generation提交activation CAS；
-4. 只有Router确认exact pair committed后，才提交`lastSuccessfulFingerprint`。
+`ownedReleasePointers`是本watch实例持久local ledger，只记录它成功发布过的service pointer。它不能扫描
+整个profile后声称所有pointer归自己，也不能删除另一个operator创建的key。
 
-HTTP 409不表示可以盲目递增本地generation。watch必须重读health：
+## 收敛流程
 
-- 若Router committed tuple已经精确等于本次目标assembly/snapshot，视为幂等成功；
-- 若generation相对本次CAS的expected generation已经前进且目标tuple不同，采用新generation并在有界
-  退避后重新提交；
-- 若generation没有变化、profile不符、health缺字段或tuple无法精确判断，则本次失败，回到正常
-  health/read重试，不能用原expected generation紧循环。
+一次fingerprint的plan按dependency顺序执行：
 
-CAS始终保留；读取health只是获得当前比较基线，不允许改成无条件“latest wins”写入。
+1. 编译或复用PackageArtifact、ServiceContract、ServiceDeployment与owned `BakedConfigPayload`；
+2. 完整写入并验证全部immutable records；
+3. 对每个service root原子更新
+   `(profile, serviceId, exactVersion) -> deployment buildId`，同时更新owned ledger；
+4. 对从effective roots移除且仍由ledger拥有的service，只有pointer target仍等于ledger记录的旧buildId时才
+   原子unset；若已被外部更新则报告ownership conflict，不覆盖；
+5. 可选请求Router/runtime按buildId做health/smoke验证；它不是发布原子性的一部分；
+6. 全部planned publish/withdraw完成后才提交`lastSuccessfulFingerprint`。
 
-## 失败、替换与退避
+普通Package root只发布供依赖解析的immutable Package records，不创建service release pointer。Service配置
+变化通过canonical artifact writer生成新的deployment-owned `BakedConfigPayloadRef`与ServiceDeployment/buildId；
+watch不另行定义config identity或publish入口。显式移除最后一个root只withdraw仍由ledger拥有的service pointer。
 
-第一次看到新fingerprint立即尝试。失败后按`1s, 2s, 4s, 8s, 16s, 30s`退避，随后保持最多`30s`；不因
-build、snapshot、Router不可用、Runtime reject或CAS冲突的错误类型而永久停止。等待期间出现新fingerprint
-时，新期望状态立即替换旧pending并立刻尝试，旧状态不继续排队。
+多service收敛由一组彼此独立的单键pointer update组成，读者可能在watch执行期间观察到新旧build混合；
+Service boundary每次invocation仍按自己的pointer解析。Watch不得在这些pointer之上增加共同commit点。
 
-一次成功的边界是build、snapshot publish与activation commit全部成功。任何阶段失败都不能推进
-`lastSuccessfulFingerprint`。已经发布的immutable build/snapshot可以由后续重试安全复用，但复用不能
-伪造activation成功。`--build-only`不属于managed activation成功边界，也不能推进后续managed watch使用
-的activation fingerprint。
+## 失败与重试
 
-Watch退出或被替换时只停止本地循环，不修改Router committed state。Stable rollout、production release、
-多operator仲裁和snapshot垃圾回收不在本文范围内。
+Registry暂时缺失/损坏、live root无效、compile/publish/pointer/verify失败时：
+
+- `lastKnownGoodRegistry`、已成功pointer和`lastSuccessfulFingerprint`不伪装成新状态；
+- 合法的已完成单键publish无需回滚，重试按content identity与pointer target幂等复用；
+- 失败输入不能被解释为空registry；修复文件后无需触碰其它源码即可恢复；
+- 首次失败且没有last-known-good时不发布或withdraw任何pointer。
+
+第一次看到新fingerprint立即尝试。失败后按`1s, 2s, 4s, 8s, 16s, 30s`退避，之后上限保持30s；等待时
+出现新fingerprint会替换旧pending并立即尝试。Watch退出只停止本地循环，不修改release pointer。
+
+Stable production rollout、多operator仲裁、artifact GC和跨service原子部署不属于managed watch。

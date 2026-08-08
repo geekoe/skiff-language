@@ -7,7 +7,7 @@
 平台把业务协调分成两个互补机制：
 
 - **数据面**：service-owned database。业务事实、长时工作、跨 version 共享的状态都在这里；同一实体的运行唯一性由 actor 面表达，后台推进由 `dispatch` 唤醒。
-- **actor 面**：运行时唯一实体。同一 identity 同时至多一个 live 实例，成员方法在同一实例上串行执行，承载“短同步裁决”。actor 不承诺持久性，但持久性不是它的定义特征；定义特征是运行时唯一性。
+- **actor 面**：运行时唯一实体。同一 identity 同时至多一个 live 实例，成员方法的同步段在同一实例上串行执行，只有 actual `Pending` 释放 segment lease 后协程才会交错，承载“短同步裁决”。actor 不承诺持久性，但持久性不是它的定义特征；定义特征是运行时唯一性。
 
 唯一性归属：业务声明的 `db object` 不承载租约语义或语法；“谁在推进、谁能写”的运行时唯一性由
 actor 面承担。平台内部可以使用租约实现 actor 的单实例保证与 fencing，但那是实现机制，不作为
@@ -49,7 +49,7 @@ impl DocHub {
   }
 
   function submitOp(self: DocHub, op: Op) -> SeqReceipt {
-    const seq = self.nextSeq
+    let seq = self.nextSeq
     self.nextSeq = seq + 1
     self.pendingOps.push(op)
     return SeqReceipt { seq: seq }
@@ -64,7 +64,7 @@ impl DocHub {
 - actor 字段是易失工作内存，不自动持久化、不自动回填；持久化完全通过 impl 中的显式 db 操作表达（典型模式：create 里 `db require` / `db insert` 加载或建立，方法里 `db update` 写回）。actor type 不区分 volatile / 持久字段；成员可以是任意可编码类型，包括带 `db object` 附着的 record 类型，成员本身不产生持久化语义。一个 actor 可以拥有任意多个这类成员。
 - 推荐形态（执行器模式）：actor 类型可以只含 key 字段（例如 `ThreadActor`），持久事实放在独立 db object 类型（例如 `Thread`）中，impl 方法通过显式 db 操作访问。actor 类型与持久类型不必同名、不需要包裹关系；`actor` 声明仍然必须存在（它提供 key/create 与句柄语义），仅当 attached type 除 key 外没有其他字段时可省略 create。
 - actor 声明只描述 actor 面元数据：`key(field)` 和可选的 `create(...)`。成员方法不进 actor 声明，全部通过 `impl` 引入。
-- `create` 是平台保留方法：由平台在首次激活时调用，不进句柄 method namespace，业务代码不能通过句柄直接调用。
+- `create` 是平台保留方法：由平台在每个新 incarnation 的激活路径调用，不进句柄 method namespace，业务代码不能通过句柄直接调用。
 - `key(field)` 指定 identity 字段：必须是 attached type 的字段，类型必须可稳定 canonical 编码。key 字段由平台在激活时写入（create 执行前），成员方法内只读。key 与持久状态主键的对应关系由 impl 维护，v1 编译器不强制。
 - actor 字段在实例存活期间跨调用保留；实例消亡即丢失。
 - 需要跨实例存活的事实必须显式写 service-owned database。
@@ -75,10 +75,16 @@ impl DocHub {
 
 actor identity 由 service id、actor 类型、key 字段类型和 key 的 canonical 编码组成。service version / build id 不进入 identity：业务实体的地址必须跨发布稳定。
 
+每次 actor get/create 或方法调用仍携带发起执行所要求的 exact deployment `buildId`。Runtime 以该
+`buildId` 为唯一加载键，取得或懒加载 immutable `DeploymentExecutionImage` 后才进入 Actor admission；
+该 invocation 及其 continuation pin 这个 execution owner，不从 ambient release pointer 重新选择代码或配置。
+这里的“激活”专指 Actor 实例的 get/create 生命周期，不是 deployment activation；运行时不存在
+`RuntimeAssembly`、current assembly 或 activation generation。
+
 第一版注册入口只有 `std.actor.get`，它是 put-if-absent 的 get-or-create：
 
 ```skiff
-const hub = std.actor.get<DocHub>("room-1", 0)
+let hub = std.actor.get<DocHub>("room-1", 0)
 ```
 
 - entry 不存在：创建实例，由平台写入 key 字段，执行 `create`，激活，并把创建输入（id 与 create 参数）保存到 registry entry。
@@ -89,7 +95,7 @@ const hub = std.actor.get<DocHub>("room-1", 0)
 
 `create` 是初始化方法，不是外部成员：
 
-- 不能通过句柄调用；只在平台首次激活路径执行。
+- 不能通过句柄调用；只在平台为新 incarnation 执行的 Actor 激活路径中执行。
 - actor 声明中的 create 签名与 `impl` 中 create 方法的签名（不含 self 的参数表与返回类型）必须精确一致；重复、缺失、不一致都是编译错误。
 - create 返回前必须对所有非 key 字段完成赋值（definite assignment）；未赋值就读取或返回报编译错误。
 - create 可以包含潜在 suspension point（典型是 `db require` / `db insert` / `db upsert`）。create 执行期间实例未 admission：其他方法不能进入，调用方的 `get` 等待 create 返回后才拿到句柄；因此挂起不会产生半初始化可见性或并发交错。
@@ -99,16 +105,18 @@ const hub = std.actor.get<DocHub>("room-1", 0)
 ### dispatch 到 actor 方法（自消息 / 异步推进）
 
 `dispatch` 可以以 actor 方法为 target：提交的调用是 durable actor-method task（权威契约：
-[`durable-task-dispatch.md`](durable-task-dispatch.md) "Actor-method target"）。提交时冻结
-`ActorActivationSnapshot`（key / create 输入 / expected-type plan），TaskStore 接受后作为该
-actor 的一次独立方法调用，按 identity 路由、在单线程 executor 上执行；调用方不等结果
+[`durable-task-dispatch.md`](durable-task-dispatch.md) "Actor-method target"）。提交时同时冻结 exact
+deployment `buildId` 和 `ActorActivationSnapshot`（key / create 输入 / expected-type plan），TaskStore
+接受后作为该 actor 的一次独立方法调用；Runtime 只从该 `buildId` 的 immutable
+`DeploymentExecutionImage` 执行目标方法，按 identity 路由并服从同一 instance 的 segment lease；调用方不等结果
 （fire-and-forget，只等 durable “已接收”）。
 
 - actor 不在 live 时，task control plane 执行 **get-or-activate**：registry entry 存在时按
   entry 保存的创建输入激活实例；entry 因 Router 重启等原因丢失时，用 task 持久保存的
   `ActorActivationSnapshot` 恢复最小 entry（put-if-absent，首次恢复获胜）后执行 `create` 再调用
   目标方法。actor-method task 不保存 Actor 内存字段，也没有独立易失 `spawn` 队列。
-- dispatched 调用与 caller request 生命周期分离；同一实例的多个 dispatched 调用串行执行。
+- dispatched 调用与 caller request 生命周期分离；同一实例的多个 dispatched 调用按同步段串行，某次调用
+  actual `Pending` 并释放 segment lease 后可以与其它调用交错。
 - task lease 不替代 actor owner lease；task 执行仍遵守 actor 的 admission、升级与旧实现拒绝
   （`ActorVersionRejectedError` → 该 attempt 以 platform failure 收敛，不切回旧实现）。
 - 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
@@ -132,9 +140,11 @@ actor 声明的权威表示是 PackageArtifact 中的 actor 元数据（key/crea
 异常/trace 上下文曾未穿透 invoke 帧。二者均为“消费视图未枚举、单一事实源未落实”的
 表现，修复时须同时补对应视图的回归。
 
-registry entry 保存创建输入，不保存实例状态：
+registry entry 保存创建输入，不保存实例状态，也不是 deployment activation state：
 
-- entry 是激活所需的最小事实，不是持久层；durable activation state 丢失（例如 operator 删除或数据丢失）时 entry 丢失，业务在入口路径用 `get` 从业务事实重建；普通 router 重启不触发该路径。
+- entry 是 Actor 激活所需的最小易失事实，不是持久层；Router 重启、进程丢失或 operator 清理都可能使其
+  丢失。普通入口随后用 `get` 的 id / create 参数从业务事实重建；durable actor-method task 则使用自身冻结的
+  `ActorActivationSnapshot` 做同一 put-if-absent 恢复。两条路径都不恢复旧 Actor 内存字段。
 - 实例状态的演化不写回 registry；idle 逐出后重新激活时，按 entry 保存的创建输入重新执行 create 构造初始状态，不恢复逐出前的内存状态。
 - create 不要求是纯函数：允许挂起读取外部状态。典型实现是“记录存在则加载、不存在则按创建输入建立”——当 actor 需要持久状态时，create 内用 `db require` / `db find` 加载对应 db object 并回填成员，缺失则 `db insert` / `db upsert` 建立初始记录。重新激活因此以数据库当前事实为准，而不是恢复旧内存快照。
 
@@ -142,8 +152,15 @@ registry entry 保存创建输入，不保存实例状态：
 
 - 同一 identity 同时至多一个 live 实例，materialize 在单一 owner runtime 上。
 - 实例在首个调用到达时按 entry 创建输入激活：首次创建执行 create，之后从创建输入重建。
-- 不同 actor 实例可以由不同 executor 或线程并行执行；同一实例固定在一个单线程 actor executor 上，不允许多个 OS 线程同时访问它的字段。
-- 同一实例的多个成员方法是并发协程。一个方法在同步代码段中独占 executor；stream next、异步 service call、WebSocket request、timer 等潜在 suspension point 只有在运行时实际等待时才释放执行权，此时其他方法可以执行。恢复后的方法必须假设 actor 字段已经变化。
+- 不同 actor 实例可以由不同 executor 或线程并行执行；同一实例由逻辑 Actor executor 与 segment lease
+  串行化，不要求硬 OS-thread affinity，但任何时刻不允许多个 OS 线程同时访问它的字段。
+- 每个 live 实例拥有一个 instance-owned shared arena 和稳定 field root；同一实例的所有方法协程直接共享这份 state，不把字段克隆到逐方法 request heap，也没有 return-time commit overlay。
+- 每个同步段持有 `ActorSegmentLease`，直接读写 shared arena。已经执行的字段 / 节点写入立即对后来取得 lease 的协程可见，包括本方法实际返回 `Pending` 前的写入；普通 return 或失败都不提交副本，也不回滚已执行写入。
+- 同一实例的多个成员方法是并发协程。stream next、异步 service call、WebSocket request、timer 等只是潜在 suspension point；只有本次操作实际返回 `Pending` 时才释放 segment lease 和执行权。同步 ready 不产生 yield，静态 `maySuspend` 也不产生预先释放。
+- continuation 恢复前必须重新 acquire `ActorSegmentLease`，并重新校验 actor identity、exact deployment
+  `buildId` / `DeploymentExecutionImage` owner、`ActorImplementationIdentity`、incarnation fence 与 arena epoch；
+  任何不匹配都 fail closed。恢复后的方法必须假设 actor 字段已经变化并按需重新读取。
+- 普通 record / Array / Map 仍采用 value semantics：赋值、普通参数传递、返回与 container store 产生 logical snapshot。局部 `let` 和普通参数不可写；局部 `var` 是 writable binding，首次写共享 backing 时按 path COW 分离。把 `self.field` 读入普通 local 或传给普通参数只得到 snapshot，不获得隐藏的 mutable alias；直接 writable `self.field` path 仍然修改 Actor shared state。
 - `connection.send` 只把消息同步写入本地发送队列，不等待网络或对端确认，因此不是 suspension point，也不提供送达或 exactly-once 保证。
 - `std.websocket.requestJsonToConnection` 通过内置JSON-RPC 2.0 text配置发送request并等待匹配response；
   平台拥有且隐藏transport `id`。等待尚未完成时会释放执行权，因此是潜在suspension point。它只保证
@@ -151,7 +168,7 @@ registry entry 保存创建输入，不保存实例状态：
   cancellation终止该等待但不生成可捕获错误；deadline仍产生`TimeoutError`。
 - 调用是同步的：调用方挂起等待返回。调用方所在 runtime 不需要拥有实例；路由是位置透明的。
 
-没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长同步方法会阻塞该实例的所有其他方法，直到返回、失败或被连续执行预算/watchdog终止；runtime 不在任意指令之间自动抢占，也不提供显式 `yield`。
+没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长同步方法会阻塞该实例的所有其他方法，直到返回、失败或被连续执行预算/watchdog终止；失败只结束调用，不把本段已经完成的 Actor 写入回滚。runtime 不在任意指令之间自动抢占，也不提供显式 `yield`。
 
 compiler 的 `maySuspend` 是保守静态 summary，不是 runtime 调度指令。通过 `any I` / 未知 interface
 dispatch 的调用即使被保守标记为可能挂起，也不会因此在调用前后自动释放 executor；若最终 concrete
@@ -203,11 +220,11 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 
 ## 任期与 Version
 
-- actor logical identity 不包含 service version。实例任期从激活开始，到逐出结束；任期内钉死单一 owner runtime、单一 implementation identity 和单一 epoch。
+- actor logical identity 不包含 service version 或 deployment `buildId`。实例任期从激活开始，到逐出结束；任期内钉死单一 owner runtime、单一 implementation identity 和单一 incarnation epoch。每个 method invocation / continuation 另外 pin 自己的 exact deployment `buildId` 与 immutable `DeploymentExecutionImage`。
 - compiler 为 actor 生成 ABI identity 和 implementation identity。ABI identity 覆盖 key 字段类型与 canonical 编码、字段布局、公开成员方法签名和 actor runtime ABI；implementation identity 还覆盖规范化可执行 IR 及其可达依赖。
 - identity 计算基于有限的声明、类型和调用依赖图，不递归展开类型。自引用和互相递归通过稳定符号引用与强连通分量 canonicalization 产生有限、确定的 fingerprint。
 - fingerprint 相同只表示规范化编译结果相同；compiler 不尝试证明两个不同程序语义等价。
-- service version 不同但 actor implementation identity 相同时，可以共同访问同一个 live incarnation；方法仍由该 incarnation 的 owner runtime 执行。
+- service version / deployment build 不同但 actor implementation identity 相同时，可以共同访问同一个 live incarnation；方法仍由该 incarnation 的 owner runtime 执行，但每次 invocation 必须使用自身 pin 的 exact-build `DeploymentExecutionImage`，不能替换为 owner runtime 上的其它 build。
 - actor implementation identity 不同时，不允许两个 incarnation 并发拥有同一 logical identity，也不迁移旧实例的内存字段。
 - 需要跨 version 一致的数据不允许只存在 actor 内存里。
 
@@ -215,8 +232,8 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 
 1. 第一个携带不同 implementation identity 的调用原子地把 live incarnation 标记为 `upgrading`，并指定目标 implementation。
 2. `upgrading` 关闭新调用 admission，避免持续流量使旧实例永远无法退出。目标 implementation 的触发调用可以短暂等待；未在 deadline 内完成切换则收到可重试的 `ActorUpgradingError`。
-3. 已执行的旧方法运行到最近一次真实挂起或正常返回；没有挂起点的长同步方法由连续执行预算和 watchdog 限制。runtime 在协程恢复前检查 incarnation 状态与 epoch；已被替换的方法以 `ActorIncarnationReplacedError` 结束。
-4. active method 清零后销毁旧实例、推进 epoch，并在目标 version 的 runtime 上按 entry 保存的创建输入执行目标 implementation 的 create 创建新实例。旧内存状态不保存、不复制。
+3. 已执行的旧方法运行到最近一次 actual `Pending` 或正常返回；没有挂起点的长同步方法由连续执行预算和 watchdog 限制。runtime 在协程恢复前重新 acquire segment lease 并检查 incarnation fence 与 arena epoch；已被替换的方法以 `ActorIncarnationReplacedError` 结束。
+4. active method 清零后销毁旧实例、推进 epoch，并在已加载或可懒加载目标 exact deployment `buildId` 的 runtime 上，按 entry 保存的创建输入执行目标 implementation 的 create 创建新实例。旧内存状态不保存、不复制。
 5. 新 incarnation 激活后，只接受匹配其 implementation identity 的调用。后续旧 implementation 请求以 `ActorVersionRejectedError` 拒绝，不透明转发给新代码。
 
 实现完全相同的旧 version 请求不属于升级，可以继续处理。实现不同但 ABI 恰好兼容的旧请求也不继续处理：结构可解码不代表业务语义兼容。若未来出现必须跨 implementation 延续任期的真实需求，再单独设计显式兼容与迁移机制，第一版不预留隐式推断。

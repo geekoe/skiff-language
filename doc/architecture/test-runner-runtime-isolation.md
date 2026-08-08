@@ -1,144 +1,106 @@
 # Test Runner Runtime Isolation
 
-本文定义非 live runtime-backed test 与本地 runtime stack 的隔离边界。它描述 runner 和
-CLI 的内部编排契约，不改变 `test` 语法、测试发现或 effect policy。
+本文只定义非 live runtime-backed test 的进程、store、deployment 和 capability 编排边界。
+`test` 语法、发现、effect policy 与用户可见语义由
+[`../reference/testing.md`](../reference/testing.md)负责；本文不重复它们。
 
 ## Ownership Boundary
 
-普通 `skiff test`、canonical Skiff 源码套件和实现测试中的 test-runner runtime integration
-harness 都不借用开发者常驻的 router、runtime、artifact root 或 build root。Node host
-orchestrator 按最外层测试 invocation 拥有临时 instance：普通 CLI 命令和 runtime integration
-harness 各自拥有一套；`node scripts/run-skiff-tests.mjs` 为整个 canonical registry plan 只创建
-一套，并在所有 entry 之间复用同一个 router / runtime 进程：
+普通 `skiff test`、canonical Skiff 源码套件和 test-runner runtime integration harness 都不
+借用开发者常驻的 Router、Runtime、artifact root 或 build root。最外层 Node host
+orchestrator 拥有临时 instance：
 
-- router HTTP/control 使用 `46000`–`46999` 内租约保护的动态端口；
-- artifact、build、runtime home、pid、log 和 config 都位于同一个临时 workspace；
-- Mongo 可以读取本机 `127.0.0.1:27017`，但 mongo、telemetry 和 watch 组件不由临时
+- Router HTTP/control 使用 `46000`–`46999` 内租约保护的动态端口；
+- artifact store、build root、runtime home、pid、log 和 process config 位于同一个临时
+  workspace；
+- Mongo 可连接本机 `127.0.0.1:27017`，但 Mongo、telemetry 和 watch 不由临时
   instance 启动；
-- router/runtime binary 和 router source 来自执行 CLI 的当前 Skiff checkout。
+- Router/Runtime binary 及 Router source 来自执行 CLI 的当前 checkout。
 
-仓库测试按被测对象分为两个一等 domain，而不是按实现语言或子进程工具链分类：
+`node scripts/run-skiff-tests.mjs` 为整个 canonical registry plan 只创建一套进程；普通 CLI
+命令和 Cargo runtime integration harness 各自创建自己的 instance。entry 可复用进程和
+immutable store，但不复用 case mutable state。
 
-- `skiff-tests` 只验证 checked-in Skiff 测试源码，通过 production `skiff-test-runner` 和本文
-  定义的真实隔离 runtime 执行 canonical registry；
-- `implementation-tests` 验证 compiler、runtime、router、telemetry、test-runner 和 tooling
-  实现本身。它可以由 Cargo、Node 或跨语言 harness 执行；test-runner runtime integration
-  虽由 Cargo harness 进入，仍通过 Node host 启动本文定义的隔离 runtime。
-
-工具链只是 domain 内部的执行细节，不能成为一等 taxonomy，也不能据此把 Skiff 源码测试
-遗漏在默认 non-live gate 之外。
-
-Router 不接受空 artifact root。CLI 必须在 supervisor 启动前，用当前 checkout 的
-`skiff-dev-sync` 向临时 artifact/build root 写入专用 bootstrap service（不激活、不
-reload，activation 由后续显式 bootstrap/activation URL 完成）。readiness 先通过带
-service/version selector 的 isolated HTTP bootstrap 路由
-触发 lazy runtime；路由响应成功后，还必须同时观察 isolated health、临时 artifact root 和
-bootstrap service 的 runtime registration。health 200 本身不代表 runtime 已能 dispatch。
+Router 不接受空 artifact root。supervisor 启动前，CLI 用当前 checkout 的 compiler/publisher
+向临时 store 写入专用 bootstrap `ServiceDeployment`，并写入该隔离 profile 的 release
+pointer。带 service/version selector 的 bootstrap HTTP 路由触发 Runtime 按 `buildId` 懒加载。
+readiness 必须同时证明 Router 可路由、Runtime session 可 dispatch，以及 bootstrap build
+已加载；health 200 本身不足以证明 readiness。
 
 ## Runner Contract
 
-Canonical Skiff 源码 registry 由 `scripts/lib/skiff-source-test-registry.mjs` 唯一声明，
-`scripts/run-skiff-tests.mjs` 只调用一次 `runInIsolatedTestRuntime`，并在该 owner 的 `runTest`
-closure 内依次执行全部 entry。每个 entry 都调用 production `skiff-test-runner` path，固定启用
-`--deny-skips` 和 `--require-tests`，且不得传 `--live` 或 `--allow-network`。entry 不能自行创建
-runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` 端口。
+Canonical registry 由 `scripts/lib/skiff-source-test-registry.mjs` 唯一声明。
+`scripts/run-skiff-tests.mjs` 只调用一次 `runInIsolatedTestRuntime`，并在该 owner 内顺序执行
+entry。每个 entry 走 production `skiff-test-runner` path，固定启用 `--deny-skips` 和
+`--require-tests`，且不得传 `--live` 或 `--allow-network`。
 
-复用边界包含router/runtime进程、其隔离workspace，以及普通`kind: test` service execution内有界的
-assembly activation batch。对同一个test service，runner必须只执行一次Package compile、resolved
-config layer读取和dependency graph解析。non-live selected cases保持discovery顺序，按`relative_path`
-文件优先贪心装箱，硬上限为16：不超过上限的单文件case不可为了填满前一batch而切分；只有一个文件自身
-超过16个case时才在文件内按16切分。resolved config layers和runner-owned ingress overlay在进入batch
-assembly前冻结一次；后续batch只能克隆该内存snapshot，不能重新读取authored config。live显式文件执行
-不采用该non-live batching规则。
+对同一个 `kind: test` service，runner 只执行一次 Package compile、authored config layer
+读取和 dependency graph resolve。non-live selected cases 保持 discovery 顺序，按
+`relative_path` 文件优先贪心装箱，每 batch 最多 16 个 case；只有单个文件自身超限
+时才在文件内切分。batch 只是 runner 的调度和有界资源回收单位，不是 Runtime
+artifact、不是 admission 单位。它不生成 `RuntimeAssembly`、`RuntimeConfigSnapshot` 或
+activation generation，也不成为任何 execution authority。
 
-每个batch内的case各自生成fresh synthetic `ServiceDeployment`、对应`ServiceContract`和gateway
-entry/ingress binding，再作为多个root链接进一个`RuntimeAssembly`。runner同时为batch内每个generated
-deployment构造独立snapshot分区，汇入一个`RuntimeConfigSnapshot`，并从本次隔离activation的受信输入
-写入snapshot顶层target profile。每个batch只提交一次activation transaction，并列钉住assembly
-ref与snapshot ref；Runtime先验证snapshot target与activation profile精确相等，再物化逐case
-ConfigView。一个case只属于一个batch，使用该batch的activation generation，不拥有单独assembly、snapshot
-或generation。
+分批前，runner 把 resolved authored config 和保留的 `skiff.test.ingressUrl` overlay
+冻结在内存中；后续 batch 只能从该值投影，不重读文件。每个 case 各自产生：
 
-runner必须先完成所有batch的plan、assembly/config projection和artifact publication，之后才能开始第一
-次activation。每个batch使用同一run owner下的唯一execution scope；每次projection都从调用者传入的原始
-base assembly/config pair独立开始，不能把先前test batch的assembly、snapshot或generated deployment
-并入下一batch。activation、readiness和root dispatch按batch顺序串行；每次candidate generation对上一个
-已commit generation执行checked increment。跨batch的case result使用同一顺序ledger，后续activation、
-readiness或dispatch基础设施失败必须保留全部已完成result，并把失败坐标准确指向当前case。
+- fresh synthetic service identity、`ServiceContract` 和 `ServiceDeployment`；
+- 包含 case config 与 ingress overlay 的 deployment-owned `BakedConfigPayload`；
+- 独立 gateway entry/ingress selector 和 release pointer；
+- 精确 `buildId`、数据库 identity、request heap、effect registry 和 execution nonce。
 
-batch内共享assembly/snapshot record严格不等于共享deployment、ConfigView或mutable state。每个case仍
-拥有独立synthetic service identity、deployment/contract/gateway entry/ingress selector、snapshot分区、
-由`(testRunId, generatedTestServiceId)`系统派生的数据库、heap、inline-effect registry和execution nonce。
-case finalization精确清理这些逐case资源；共享Package artifact以及各batch assembly artifact、snapshot
-record和activation由该test service execution统一清理。一个case或registry entry的可变测试状态不得泄漏
-到另一个case或entry。
+所有 case deployment 都必须在第一次 dispatch 前完成构建、结构验证、发布和 pointer
+写入。Runtime 只以每个 case 的精确 `buildId` 为 load key，按需懒加载对应 immutable
+`DeploymentExecutionImage`；它不接收 batch identity，也不读取 release pointer 重新选择 build。
+之后 runner 按 batch/case 顺序触发 lazy load 并 dispatch。后续 case 的 load、
+readiness 或 dispatch 失败必须保留已完成 result，并把基础设施错误定位到当前 case。
+一个 case 的 finalization 精确清理其 mutable resources；共享 Package artifact 和 immutable
+deployment records 由最外层 execution owner 回收。
 
-隔离stack同时向runner提供动态business HTTP ingress URL。runner把它作为保留的runner overlay
-`skiff.test.ingressUrl`写入对应generated deployment的Package-scoped snapshot分区，并拒绝authored
-同名path；它不写secret文件，也不允许
-固定端口fallback。每个case的synthetic service id和contract version是self-ingress selector的唯一
-来源。测试源码只传普通绝对HTTP URL；测试执行适配在URL origin精确命中该动态ingress时自动加入现有
-service/version selector，用户headers不能覆盖selector、Host、body framing或hop-by-hop headers。
+## Derived Test Authority
 
-Router对此不增加test route、session header或business控制面旁路，只按普通business HTTP路径分发。
-每次root test dispatch由Router新建一个不透明`testCaseCapability`；同一shared assembly中的不同root
-必须获得不同capability。Runtime在隔离单runtime内按共享assembly identity/generation、精确case
-deployment和该capability把self-ingress子请求附着到仍active的父test execution：共享inline-effect
-registry，子请求不finalize，父case结束时唯一finalize。assembly/generation不能充当case identity。
+每次 root test dispatch 由 Router 新建一个不透明 `testCaseCapability`。case identity 至少包含
+`(testRunId, generatedTestServiceId, buildId, testCaseCapability)`；batch 序号和 release pointer
+都不是 authority。`testCaseCapability` 与精确 case `buildId` 共同定界 execution；任一项都不能
+单独授权派生或替代另一项。capability 只存在 Router/Runtime Host 的私有传输与注册状态，
+不进入 Skiff value、config 或业务 effect surface。
 
-`testCaseCapability`是Router/Runtime Host间的不透明私有authority，不进入Eval value、config或业务
-effect surface。direct dispatch、任意深度recursive dispatch与Actor method dispatch使用的
-`task.submit.request` wire只携带`callerRequestId`与`TaskId`；它不得重复携带
-`testCaseCapability`或test parent id。Router只从发送
-frame的同一Runtime WebSocket session上的active parent request派生authority：父可以是root/derived
-runtime-assembly request，也可以是已admit且尚未terminal的Actor invocation。同步Actor method call、
-Actor get-or-create与self-ingress仍在各自的私有控制边界携带精确派生authority。Router不信任Runtime
-单独提供的capability或未绑定session的parent id，不允许跨session、跨root或已结束父请求的派生。对Actor派生，首版还要求目标
-service与active parent service精确相同；test capability chain不得跨service。继承链同时保持父root
-固定的assembly/deployment authority，因此shared assembly不会扩大effect registry或execution nonce的
-可见范围。
+direct/recursive dispatch 与 Actor method dispatch 的 `task.submit.request` 只携带
+`callerRequestId` 与 `TaskId`。Router 只从同一 Runtime WebSocket session 上仍 active 的父
+request 派生 capability、精确 test deployment `buildId` 和 case lease；不信任 Runtime 单独
+提供的 capability 或未绑定 session 的 parent id。父结束、跨 session、跨 root 或跨
+service 派生均 fail closed。这一 same-service 限制只属于 test effect sharing，不改变
+production 的 cross-service Actor dispatch。
 
-derived authority还不可变地钉住其activation generation。generation推进后，已active的old-generation
-Actor invocation及其同步Actor call/Actor dispatch仍沿原capability、parent chain、assembly/deployment和generation
-执行；Router和Runtime不得把它们重绑到current generation。current-generation test Actor的self-ingress携带
-该完整derived authority进入普通gateway route。old-generation Actor没有可安全使用的历史gateway route
-snapshot，其self-ingress必须在dispatch前fail closed；不保留、合成、后补或构造历史snapshot，也不
-借用current gateway route。
+派生链不可变地钉住 root case 的 deployment `buildId`。后续 release pointer 更新不
+重绑已运行的 request 或 Actor。self-ingress 继承该 authority，Router 使用 immutable
+deployment 中的 gateway metadata 路由到同一 build，不读取 current pointer、不保留另一份
+历史 route snapshot。deployment 缺失或完整性校验失败时 fail closed。
 
-对携带test capability的Actor invocation，Router把owner约束为该派生链的精确origin Runtime id与
-Runtime WebSocket connection。首次激活只能在该connection上建立owner；已有owner位于其它Runtime、origin
-connection已断开/换代或dispatch后owner connection不再精确相同时必须fail closed。Runtime Host的
-Router reader在同步frame handler内用capability与active parent request id取得derived case lease，并先
-注册cancellation correlation，再把execution与leases移交给detached Actor owner task；两项admission中任一
-失败都不得回报receipt或启动task。derived lease保留到owner task完成terminal编码/发送尝试、
-失败记录并退出；因此root close可以拒绝late child，但case finalization要等待已admit Actor child的该
-lease释放。
+携带 test capability 的 Actor owner 必须是派生链的精确 origin Runtime id 和 connection。
+Router 先建立 cancellation correlation 和 derived case lease，再把 execution 移交给 Actor owner
+task；任一 admission 失败都不得回报 receipt 或启动 task。root close 拒绝 late child，
+但 finalization 必须等待已 admit child 释放 lease。首版每 case 只允许一个 active
+self-ingress；EOF、失败或 consumer drop/break 后才释放 slot。
 
-该约束依赖service-scoped、Runtime-local case registry与effect state，不定义或承诺跨service/Runtime
-test-effect共享。production request、同步Actor call与Actor dispatch均不携带test capability/parent id，仍按
-普通Actor owner routing执行，也不能访问test case registry；其中cross-service Actor dispatch仍然合法，Router不得
-把test-only same-service约束应用到production。首版每个case只允许一个active self-ingress；stream在EOF、
-失败或consumer drop/break后才释放active slot，并沿普通HTTP disconnect/backpressure链收束。
+## Runner Inputs
 
 Node host 向 Rust runner 显式注入 `SKIFF_DEV_HOME`、`SKIFF_TEST_RUNTIME_ARTIFACT_ROOT`、
-`SKIFF_TEST_ACTIVATION_URL`（精确指向 `/__skiff/activate-assembly`）、
-`SKIFF_TEST_INGRESS_URL`、`SKIFF_TEST_ENVIRONMENT`、`SKIFF_TEST_EXPECTED_GENERATION` 和
-`SKIFF_TEST_PLATFORM_SOURCE_ROOT`。canonical registry中
-每个runner child结束后，Node host必须从同一隔离Router的health读取已settle active generation，作为下一
-child的expected generation；registry index或预估batch数不能充当generation source。live 与非 live
-runtime path 都在任何 health/activation 网络请求前验证 activation URL 和 artifact root 同时存在；
-需要 self-ingress 的 non-live path 还必须在共享 test service assembly activation 前验证 business
-ingress URL。CLI options高于
-环境变量，缺任一都 fail closed。两种模式都
-不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。activation
-target 只接受带显式端口的 IPv4/DNS `http://` URL，且 path 精确为
-`/__skiff/activate-assembly`；HTTPS、默认端口、IPv6、userinfo、其它 path、query 和 fragment
-均在网络前拒绝且错误不回显原 URL。stale `/__skiff/reload-artifacts` 不是当前契约。
+`SKIFF_TEST_CONTROL_URL`、`SKIFF_TEST_INGRESS_URL`、`SKIFF_TEST_ENVIRONMENT` 和
+`SKIFF_TEST_PLATFORM_SOURCE_ROOT`。不再注入 activation URL 或 expected generation。CLI options
+高于环境变量；组合不完整时在任何网络请求前 fail closed。
+
+control/ingress target 只接受带显式端口的 IPv4/DNS `http://` URL；拒绝默认端口、
+userinfo、query 和 fragment，错误不回显原 URL。runner 不 fallback 到
+`127.0.0.1:4001`，不从 health 推断可写 artifact root。具体 publish/pointer API 属于
+control protocol，不使用已退役的 `/__skiff/activate-assembly` 或
+`/__skiff/reload-artifacts`。
 
 真正的 live fixture 仍使用显式 live selector，不属于 Cargo workspace 默认测试。canonical
-`runtime-live` 还同时启用 `--deny-skips` 和 `--require-tests`：任意 SKIP 或零 discovered result
-都使 summary 显示 `FAILED` 并返回非零。库层 live smoke 仍保留可选 SKIP 结果，严格性由显式
-CLI policy 控制。
+`runtime-live` 同时启用 `--deny-skips` 和 `--require-tests`：任意 SKIP 或零 discovered
+result 都使 summary 显示 `FAILED` 并返回非零；库层 live smoke 的可选 SKIP 由
+显式 CLI policy 控制。live target 由 release profile、control URL、ingress URL 和 artifact root
+唯一描述；它不接受或推导 base `RuntimeAssembly` / `RuntimeConfigSnapshot` pair。
 
 ## Live Verification Ownership
 
@@ -170,7 +132,7 @@ non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 
 `node`/`ps` 和从 `router/package.json` 解析的 `ws` 模块。plan/list 阶段只读检查文件类型和
 executable bit，execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有
 `live/manual` task 仍排除在默认 verify、所有普通 non-live selector 和 CI 之外。
-Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 activation URL 也会
+Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 control URL 也会
 逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
 
 loop-risk 的两个 selector 只接受 `--loop-risk-config <path>` 或 `SKIFF_LOOP_RISK_CONFIG`。

@@ -42,7 +42,7 @@ PublicPath        -> 外部源码可写 API 名字
 Descriptor        -> 类型或 callable 的 canonical shape / signature / schema fact
 ABI nominal id    -> 类型相等和 ABI graph/link identity 的 artifact key
 Contract revision -> descriptor/schema/signature compatibility key
-Runtime address   -> 某次 activation/linking 后的执行地址或 slot
+Runtime address   -> 某个 linked deployment image 中的执行地址或 slot
 ```
 
 任何阶段不得把其中一个当成另一个：
@@ -354,7 +354,8 @@ enum ResolverRoot {
 - package alias 指向 dependency package public surface，后续调用使用 local linkage。
 - service alias指向service dependency public operation/public instance surface，后续调用使用service-boundary
   linkage。
-- `config`指向当前Package声明、由activation提供的config requirement API，不是普通runtime object。
+- `config`指向当前Package声明、由deployment config plan提供的config requirement API，不是普通
+  runtime object。
 
 Resolver root 不创建 `EntityId`。如果某个 language feature 未来允许把 package、service、config 或
 namespace 当作 first-class value，它必须显式引入新的 entity kind 和 runtime value layout；不能复用
@@ -728,7 +729,7 @@ type equality key。
 因此下面判断必须能成立：
 
 ```skiff
-const user = pkg.getUser()
+let user = pkg.getUser()
 pkg.updateUser(user)
 ```
 
@@ -781,7 +782,7 @@ AbiCallableId -> ExecutableAddr
 EntityId -> local lowering/link target -> runtime address
 ```
 
-但不能把 runtime address 写回 artifact DTO，也不能让 artifact/projection 依赖某次 activation 的 address。
+但不能把 runtime address 写回 artifact DTO，也不能让 artifact/projection 依赖某次 image load 的 address。
 Runtime may keep type descriptors, protocol metadata, operation names, JSON field names or source maps for boundary
 handling and diagnostics. Those strings are not entity lookup keys for ordinary execution.
 
@@ -889,5 +890,5 @@ Architecture-level tests should cover:
   identity。
 - changing public path changes export surface without making public path the only type identity。
 - File IR local `type_index` cannot be used outside its owning file without owner context。
-- runtime `TypeAddr` equality is not used as artifact/ABI equality across activations。
+- runtime `TypeAddr` equality is not used as artifact/ABI equality across deployment images。
 - runtime call execution does not parse source display paths to find symbols。

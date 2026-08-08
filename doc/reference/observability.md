@@ -10,10 +10,10 @@ Observability 是平台能力，不是业务服务自己接日志数据库 SDK�
 
 它要回答：
 
-- 哪个 service、revision、build、activation 或 runtime 产生了事件。
+- 哪个 service、revision、exact deployment `buildId` 和 runtime session 产生了事件。
 - 慢在哪里，timeout / cancel / unavailable 发生在哪个 target。
 - 某条日志属于哪个 trace、request、span、service 或 runtime。
-- 某个 runtime、target、request frame 或 activation 是否健康。
+- 某个 runtime、target、request frame 或 deployment image 是否健康。
 
 Observability 只承载可丢失的运行观测数据。它不能承载业务正确性依赖的数据。
 
@@ -66,16 +66,23 @@ router / gateway 是自身运行事件源，也负责转发或下发 telemetry �
 
 - timestamp 与自描述事件字段。
 - event source。
-- service 归属：service id、revision id、build id、activation identity。
-- runtime 归属：runtime id、provider / host 相关摘要。
+- service 归属：service id、revision id、exact deployment `buildId`。
+- runtime 归属：`runtimeId`、`runtimeSessionId`、provider / host 相关摘要。
 - 因果链：trace id、request id、client request id、span id、parent span id，以及错误事件的 error id。
 - target：stable target id。
 - 内容：level、name、message、attrs、error、duration、dropped counters。
 
 事件字段必须能被脱敏和限长。secret、完整 prompt、完整 external raw payload、完整文件内容默认不得进入 telemetry。
 
-runtime error 可以携带当前service的完整诊断帧。帧应引用当前 build / assembly 内的 source id，并依赖事件
-上的 build id 或 assembly identity 回查 source map；telemetry 不保存源码全文。最初throw、跨service转换和
+execution 事件上的 `buildId` 必须是本次执行 pin 住的 exact ServiceDeployment build id，不是
+Package build id、release pointer 的当前值、deployment activation identity、runtime activation identity 或
+assembly generation。`runtimeSessionId` 表示本次物理连接的 session epoch，与稳定的 `runtimeId` /
+replica identity 分开。Actor activation id 和 client socket generation 只能作为明确 Actor / socket
+生命周期事件的 scoped attrs，不能
+代替通用执行归属。
+
+runtime error 可以携带当前service的完整诊断帧。帧应引用当前 deployment image 内的 source id，
+并依赖事件上的 exact deployment `buildId` 回查 source map；telemetry 不保存源码全文。最初throw、跨service转换和
 后续传播使用同一`traceId`并以`errorId`关联，使每一跳各自记录的本地栈能组成同一错误因果链。
 
 完整本地栈只进入受限telemetry/log。service error response不能携带私有source id、源码路径、函数名或原始
@@ -101,7 +108,8 @@ remote-boundary诊断。
 
 要求：
 
-- request frame 事件必须能关联到 stable target id、service revision、runtime activation 和 trace / span。
+- request frame 事件必须能关联到 stable target id、service revision、exact deployment
+  `buildId`、`runtimeId`、`runtimeSessionId` 和 trace / span。
 - trace 可以是 event-only；第一版 telemetry 不强制 start / end 成对。
 - 长时间业务 run 应使用业务 durable id，例如 run id、thread id 或 tool call id，而不是 request id。
 
@@ -115,7 +123,8 @@ remote-boundary诊断。
 - 它产生 best-effort 日志事件（`message` / `level` 形态由消费端识别，不声明 topic）。
 - `level` / `message` 是 `std.log` 专属字段：平台事件不得携带（见「Event Model」），平台代码
   没有构造业务日志的接口。
-- runtime 自动补充 request frame、trace、span、service、runtime 和 target context。
+- runtime 自动补充 request frame、trace、span、service、exact deployment `buildId`、`runtimeId`、
+  `runtimeSessionId` 和 target context。
 - attrs 应是可脱敏、可限长的结构化数据。
 - telemetry 不可用、队列满或发送失败不能影响业务返回值。
 
@@ -127,7 +136,10 @@ remote-boundary诊断。
 
 归属由事件字段表达；事件模型没有 topic 维度。
 
-因果归属包括 trace id、request id、span id、parent span id 和 client request id。运行归属包括 source、runtime id、provider id / revision、build id 和 activation identity。service / 权限归属包括 service id、revision id、stable target id、actor ref 摘要和可选 tenant id。
+因果归属包括 trace id、request id、span id、parent span id 和 client request id。运行归属包括 source、
+`runtimeId` / `runtimeSessionId`、provider id / revision 和 exact deployment `buildId`。通用执行归属不使用
+deployment activation identity、runtime activation identity 或 assembly generation。service / 权限归属包括
+service id、revision id、stable target id、actor ref 摘要和可选 tenant id。
 
 `userId` 不作为平台硬编码字段。业务身份应先映射成actor句柄identity或等价摘要，观测事件只记录可审计且可脱敏的摘要。
 
@@ -140,8 +152,8 @@ remote-boundary诊断。
 - time range。
 - trace id、request id、span id。
 - service id。
-- revision id、build id、activation identity。
-- runtime id。
+- revision id、exact deployment `buildId`。
+- `runtimeId`、`runtimeSessionId`。
 - target。
 - level。
 - error code。
@@ -177,6 +189,8 @@ DB、actor、queue、timer 和 runtime request 都应产生观测事件，但观
 - actor put / remove、method call、owner lease renewal、dispatch submit / execution 可以产生 trace / metric / health。
 - queue wait、claim batch、lease renew、deadline miss、cancel、timeout、failure 可以产生 trace / metric / log。
 - runtime request start / end / error / cancel 是 request frame 的基础 trace 事件。
+- deployment image load / link / verify / cache / rejection、VM fiber / owner transfer 和 managed heap / GC
+  应产生可按 exact `buildId` 与 `runtimeSessionId` 聚合的 metric / health 事件。
 
 这些事件用于诊断和告警；真正的业务状态仍在 service-owned database、queue store、timer store 或业务 durable state 中。
 
@@ -189,6 +203,8 @@ DB、actor、queue、timer 和 runtime request 都应产生观测事件，但观
 - 通过事件字段表达权限、租户、actor 或 target（过滤由消费端按 `visibility` / `serviceId` 承担）。
 - 把 client request id 当作内部 request id。
 - 把 request id 当作长时间业务 run id。
+- 用 deployment activation identity、runtime activation identity 或 assembly generation 代替 exact deployment `buildId` 和
+  `runtimeSessionId` 表达通用执行归属。
 - 在 telemetry 中保存源码全文、完整 prompt、secret 或完整外部 raw payload。
 
 ## 未定问题

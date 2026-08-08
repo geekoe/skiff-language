@@ -256,6 +256,8 @@ serviceCalls:
 - 每个public callable仍生成`BoundaryCallableProjection`，用于说明它技术上能否跨service boundary。
   未被选择的callable无论`Available`或`Unavailable`都只是合法Package API；被选择的callable必须
   `Available`，否则Service projection以全部结构化原因报错，不能静默排除。
+- 含`inout`参数的public callable是合法Package API与Package Local ABI，但其projection必须为
+  `Unavailable(InOutNotAllowedAtServiceBoundary)`；不得因同进程部署而改成可跨service。
 - ServiceContract operation 使用稳定 `ContractOperationId` 和 canonical boundary descriptor；
   ServiceDeployment再把该 id 精确绑定到 implementation `PackageCallableId`。
 - `ServiceProtocolIdentity` 使用 operation ids/descriptors 与实际可达的
@@ -307,7 +309,7 @@ owner Package的普通public
 type出现在该owner的`api.yml`并满足`SchemaClosed`；它不因此成为某个operation signature的一部分。
 
 source module path 不作为 service protocol identity。HTTP path、WebSocket route key、handler selector、
-adapterArgs、gateway entry identity、timeout、routing revision 和 runtime activation 属于external
+adapterArgs、gateway entry identity、timeout、routing revision 和 deployment execution metadata 属于external
 ingress projection或部署metadata，不属于`api.yml`或`ServiceProtocolIdentity`。
 
 ## 9. Validation Summary

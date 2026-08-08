@@ -3,7 +3,8 @@
 本文负责：
 
 - 定义 Skiff runtime 的稳定执行边界：gateway / router / service runtime 各自承担什么。
-- 定义 request frame、heap value、mutable root、concurrent lane、join、timeout、内部停止、stream 和错误选择的运行时语义。
+- 定义 request frame、heap value、writable place/`InOut`、concurrent lane、join、timeout、
+  内部停止、stream 和错误选择的运行时语义。
 - 定义 HTTP / WebSocket entry 与 service-to-service call 如何共享request执行机制，同时保持不同的
   identity与路由surface。
 - 说明 effect metadata 在 runtime 中如何参与并发、timeout、内部停止、观测和测试替身。
@@ -22,9 +23,20 @@ Skiff runtime 是一组边界职责，不是用户源码可访问的全局对象
 
 Gateway adapter 负责外部协议适配：接收 HTTP、HTTP stream / SSE、WebSocket 等入口，维护外部连接，执行协议层 decode / encode，把外部入口转换成 router 可路由的 typed dispatch，并把 unary response、stream chunk、stream end 或 error 编码回外部协议。Gateway 不执行用户 Skiff 代码，不拥有 Skiff call stack 或 request heap。
 
-Hub / router 是独立于用户 service runtime 的平台基础设施。它负责 service runtime 注册、service revision 注册、可用实例选择、service protocol identity与gateway entry identity各自的匹配、client session / actor binding / WebSocket Connection 索引、in-flight request / stream 配对、internal stop hint / drain路由、负载和流量切换。Router core 不使用HTTP Host、cookie、session、应用 WebSocket eventName或业务requestId选择service。它先严格解析ingress注入的`x-skiff-service`/`x-skiff-version`选择唯一精确deployment，再只在该deployment内解释已声明的method/path。专用WebSocket request broker拥有编码无关的transport request identity与pending state；第一版JSON-RPC 2.0 text adapter解释其控制字段，但不能把transport `id`投影成业务字段或据此选择用户handler。
+Hub / router 是独立于用户 service runtime 的平台基础设施。它负责Runtime session注册、
+release pointer解析、loaded/lazy-load capability选择、service protocol identity与gateway entry identity
+各自的匹配、client session / actor binding / WebSocket Connection索引、in-flight request /
+stream配对、internal stop hint / drain路由和容量门禁。Router core 不使用HTTP Host、cookie、
+session、应用WebSocket eventName或业务requestId选择service。它先严格解析ingress注入的
+`x-skiff-service`/`x-skiff-version`选择唯一精确deployment，再只在该deployment内解释已声明的
+method/path。专用WebSocket request broker拥有编码无关的transport request identity与pending
+state；第一版JSON-RPC 2.0 text adapter解释其控制字段，但不能把transport `id`投影成
+业务字段或据此选择用户handler。
 
-Service runtime 是执行用户 Skiff 代码的边界。它加载已发布 artifact，构造 service revision singleton，为每次 dispatch 创建 request frame，解码 payload，调用 implementation method 或 entry handler，执行表达式、函数、collection mutation、`concurrent`、`timeout(...)`、`emit` 和 cleanup，并编码 response / chunk / error。
+Service runtime 是执行用户 Skiff 代码的边界。它按exact deployment `buildId`加载、验证并缓存
+immutable `DeploymentExecutionImage`，为每次dispatch创建request frame，解码payload，调用
+implementation method或entry handler，执行表达式、函数、collection mutation、`concurrent`、
+`timeout(...)`、`emit`和cleanup，并编码response/chunk/error。
 
 Service runtime不维护外部WebSocket物理socket生命周期。WebSocket Connection属于gateway / hub；
 connect handler dispatch是进入service runtime的一次request。Skiff主动发出的WebSocket request在原
@@ -43,9 +55,13 @@ dispatch、WebSocket connect dispatch、declared WebSocket JSON-RPC method dispa
 
 Gateway / router 可以维护 entry envelope、routing context、transport state、Connection 和 stream pairing state，但这些不是 Skiff request frame。
 
-Request frame 包含 request 参数、request context、deadline、trace、runtime内部停止状态、Skiff call frames、slot values、request-local heap、exception envelope、`concurrent` lane state、join state、server-stream sink 或 external stream source handle，以及 request 内创建的 mutable root / resource handle。
+Request frame 包含 request 参数、request context、deadline、trace、runtime内部停止状态、Skiff call
+frames、slot values、request-local heap、writable-place/`InOut`loan state、exception envelope、
+`concurrent` lane state、join state、server-stream sink 或 external stream source handle，以及 request 内
+创建的resource handle。
 
-Request frame 不包含外部 WebSocket 连接生命周期、跨 request 业务状态、持久化数据库状态或 service revision singleton。
+Request frame 不包含外部 WebSocket 连接生命周期、跨 request 业务状态、持久化数据库状态或
+ambient/current release state。
 
 Unary request 在 response end、response error、timeout 或runtime内部停止后结束。Server-stream request 在 stream end、stream error、timeout 或runtime内部停止后结束。Server-stream request 仍是一段有限 request 生命周期，不是 WebSocket connection，也不是后台任务。
 
@@ -77,7 +93,8 @@ Skiff保证一类明确的本地尾调用不随递归次数增加程序调用深
 
 `maySuspend`本身不是尾调用障碍。Exact local callee可以在同一个request、execution scope、heap和Actor
 execution frame内挂起并恢复；只有真实pending work适用既有suspension规则。Actor method内对local helper的
-exact executable调用可以是尾调用，但Actor dispatch本身不能越过owner、admission或epoch边界。
+exact executable调用可以是尾调用，但Actor dispatch本身不能越过deployment/instance owner或arena fence
+边界。
 
 尾转移仍按普通调用逐次计入instruction budget，并在每个callee function entry执行deadline、internal stop
 和budget checkpoint。无限尾递归因此必须被既有execution budget有界终止，不能因为不增长stack而逃逸。
@@ -105,20 +122,19 @@ socket、raw WebSocket frame、raw SSE event或宿主语言HTTP object暴露给s
 使用`GatewayEntryIdentity`和精确handler target，不伪造`ContractOperationId`。
 
 HTTP与WebSocket external ingress使用两阶段路由。Router外部ingress可以按Host等平台规则注入可信
-`x-skiff-service`与`x-skiff-version`；Router严格解析后，从active RuntimeAssembly选择唯一精确
-`ServiceDeploymentRef`，再在该deployment内按HTTP `(protocol, method, path)`或WebSocket
-`(protocol, path)`选择gateway entry。Host仍保留在HTTP request envelope供业务检查，但不参与Router
-lookup。直接向Router提供这两个header是Skiff production boundary；Skiff不在Router内重做Host映射。
+`x-skiff-service`与`x-skiff-version`；Router严格解析后，经release pointer取得唯一精确deployment
+`buildId`，再在该deployment内按HTTP `(protocol, method, path)`或WebSocket `(protocol, path)`选择gateway
+entry。Host仍保留在HTTP request envelope供业务检查，但不参与Router lookup。直接向Router提供这两个
+header是Skiff production boundary；Skiff不在Router内重做Host映射。
 
-Router到Runtime的request frame必须携带精确deployment、assembly identity/generation与gateway entry。
-Runtime只接受当前admitted activation中逐项匹配的tuple，不从Host、path、latest pointer或ambient
-registration重新推断。不同service可以共享相同method/path；同一service重复selector、缺失/非法/
-歧义header、同一service/version多revision和跨deployment substitution都fail closed。
+Router到Runtime的request frame必须携带精确deployment `buildId`与gateway entry identity。Runtime只接受
+与该buildId懒加载并验证完成的`DeploymentExecutionImage`逐项匹配的tuple，不从Host、path、latest pointer或
+ambient registration重新推断。不同service可以共享相同method/path；同一deployment重复selector、缺失/
+非法/歧义header、pointer记录不兼容和跨build substitution都fail closed。
 
-该路由模型以ServiceDeploymentInput v5、ServiceDeployment/DeploymentArtifact v4、RuntimeAssembly v3和
-runtime frame v4一次硬切；旧Host-bearing route、裸全局ingress或旧frame不兼容读取。v4 activation
-control携带generation钉住的exact assembly/config snapshot refs；普通request仍通过已验证generation pin
-选择对应ActivationContext。
+该路由模型不再拥有active assembly、activation admission或generation frame。旧Host-bearing route、裸全局
+ingress key、assembly/config-snapshot ref和旧frame不兼容读取。可选`ReleaseBundle`只是离线发布清单，
+不进入request transport。
 
 Unary dispatch 最多产生一个 final response：成功时 response end 携带 payload，失败时 response error 携带 runtime error envelope；unary dispatch 不能产生 stream chunk。
 
@@ -126,51 +142,59 @@ Server-stream dispatch 产生有序 chunk 序列，最后产生一个 end 或 er
 
 Payload 在进入 service runtime 前按 expected schema decode，离开 service runtime 时按 response schema encode。JSON 只是显式 codec 的一种，runtime boundary 不把裸 JSON DOM 当作默认 payload 语义。
 
+Router operator配置必须给出正safe integer `http.maxRequestBytes`与`http.maxResponseBytes`，没有per-service
+override或隐藏默认值。Router在读取完整request body前限制前者；Runtime按bootstrap下发的后者尽早停止
+过大response，Router在external boundary再次校验。HTTP stream按同一response生命周期累计，不能通过拆
+chunk绕过；WebSocket frame使用自己的独立limit。
+
 Skiff不提供公开的“取消请求”能力。Runtime内部仍有停止信号，用于deadline、并发loser、consumer提前结束stream、connection owner结束和drain等生命周期事件。该信号只停止不再需要的计算并隔离晚到结果；internal transport可以发送幂等、best-effort的stop hint，但hint不是业务协议、可靠撤销或公开terminal。断线时可能已经没有可写response，不能为了“明确取消”再制造普通错误。
 
 默认不自动 retry。只有 effect metadata 和 operation schema 明确声明幂等、可比较 target / conflict-key，并由平台策略允许时，router 才能重试。
 
-Runtime activation对Package diamond保留每条真实dependency edge，但同一精确build沿direct与transitive
-路径到达时只建立一个code slot、一份Package-scoped `ConfigView`和一个DB metadata owner。Package alias
+DeploymentExecutionImage对Package diamond保留每条真实dependency edge，但同一精确build沿direct与
+transitive路径到达时只建立一个code slot、一份Package-scoped `ConfigView`和一个DB metadata owner。Package alias
 不参与这些identity。同一Package ID解析到不同build、logical collection identity缺失/重复或system
 physical-name encoding collision都fail closed。
 
 每个service只获得一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain、
-activation profile与serviceId共同定界；语言模型不引入`platformId`。Package不声明database state
-requirement，service/profile也不配置namespace；只有activation闭包含DB metadata时Runtime才按需提供
+profile与serviceId共同定界；语言模型不引入`platformId`。Package不声明database state requirement，
+service/profile也不配置namespace；只有当前deployment package closure包含DB metadata时Runtime才按需提供
 service DB handle。同一service的Package共享该数据库，但每次DB operation仍以精确PackageArtifact/File
 IR/type identity选择schema和collection。跨service DB访问禁止。
 Physical collection由stable`(packageId, declared logical collection identity)`确定性系统编码；不同
 Package使用相同裸collection名字不会共享storage。Package dependency、requirement、binding及配置文件都
 没有author-provided collection-name mapping。
 
-每个committed activation generation并列钉住`RuntimeAssemblyRef`与`RuntimeConfigSnapshotRef`。Runtime
-必须在prepare和cold recovery中先验证snapshot顶层受信`profile`与activation profile精确
-相等，再按`ServiceDeploymentRef`隔离snapshot并按精确Package build向slot注入只读配置；比较失败前不得
-物化任何`ConfigView`。cold recovery必须读取generation固定的两个ref，不能读取ambient或latest配置。
+发布工具把校验后的typed config graph冻结成ServiceDeployment-owned protected payload，并让deployment
+buildId提交其不可替换opaque ref。Runtime按buildId load image时只从该payload为精确Package build构造只读
+`ConfigView`；不得读取ambient/latest配置，也不存在独立`RuntimeConfigSnapshot`、config generation或
+cold-recovery re-pairing。
 
-### Service call 的 activation owner
+### Service call 的 deployment owner
 
-同一进程中的service call仍然跨service boundary。进入provider时，Runtime一次性切换到当前request已经
-pin住的同一assembly/snapshot/generation中目标deployment的activation owner：
+同一进程中的service call仍然跨service boundary。每次调用开始时，boundary resolver按依赖中冻结的
+`serviceId + exact version + expected protocol identity`解析当前release pointer，取得并pin精确provider
+build。进入provider时，Runtime一次性切换到该build的deployment owner：
 
 - provider看到自己的Package配置、service DB、file、actor、dispatch、WebSocket、telemetry及service
   dependency；
-- deadline、内部停止、time source、request generation/lifecycle、trace/error、runtime request identity、
+- deadline、内部停止、time source、request lifecycle、trace/error、runtime request identity、
   stream lifecycle、测试effect/case capability及heap上限仍属于原request；
 - provider使用fresh request heap，参数、返回、错误、callback payload和stream item按ServiceContract
   materialize，不能直接共享caller heap引用；
-- caller call frame、mutable root和actor execution frame不进入provider；内部actor句柄已有显式owner，
+- caller call frame、writable place/`InOut` loan和actor execution frame不进入provider；内部actor句柄已有显式owner，
   不因service owner切换而改写；
 - Package静态资源始终随当前执行callable的Package projection选择，不随deployment context复制。
 
-目标deployment在该exact generation中不存在、歧义或已完成drain时，调用在provider执行前失败。Runtime
-不能改用当前最新generation、latest snapshot或ambient service。普通continuation不切换owner；只有进入
-service provider及调用request-scope callback capability时发生这种原子切换。
+pointer缺失、protocol不匹配、provider build无法加载或目标owner不可用时，调用在provider执行前失败，
+不得按display name、ambient service或其它version猜测。provider image已在同一进程时，scheduler可以用
+child fiber同步执行；否则走runtime transport。两条路径都使用fresh provider heap和相同boundary plan，
+只有解析、transport或child执行真实等待时才产生Pending。普通continuation不切换owner；只有进入service
+provider及调用request-scope callback capability时发生这种原子切换。
 
-若service返回的stream越过generation切换仍在使用，stream继续pin创建时的旧generation；后续item、
-callback和terminal都在原context中完成，直到stream end/error/drop才释放。旧generation进入draining不
-表示把既有stream迁移到新代码或新配置。
+若service返回stream，stream继续pin创建它的provider build；后续item、callback和terminal都在原owner中
+完成，直到stream end/error/drop才释放。Release pointer更新只影响后续新调用，不迁移既有stream或在途
+invocation。
 
 ### Runtime连接并发门禁
 
@@ -190,14 +214,13 @@ package-test root以及leased task attempt对应的active request都计入同一
 scheduled / ready backlog不计入任何Runtime connection。`response.end`、
 `response.error`、cancel/timeout收束或连接断开会释放计数；Actor与其他control frame不计入。
 
-未绑定的请求可以选择另一条仍有容量的合格Runtime连接；已经钉死连接或generation的请求不能为了绕过
+未绑定的请求可以选择另一条仍有容量的合格Runtime连接；已经钉死连接或deployment build的请求不能为了绕过
 容量而迁移。目标连接已满且没有其他合法选择时，Router立即返回overload，不排队、不重试，也不创建
 新的pending。多条Runtime连接分别应用同一个配置值，各自独立计数。
 
-Service源码、`service.yml`、任何`config*`文件、ServiceDeployment和RuntimeAssembly都不能声明、
-复制或覆盖并发上限。Service profile的整个`lifecycle`配置面非法；旧`maxConcurrency`和
-`idleTimeoutMs`都已删除，ServiceDeployment不再包含`activation` policy。并发门禁不属于service ABI、
-artifact identity或Runtime bootstrap wire。
+Service源码、`service.yml`、任何`config*`文件、ServiceDeployment和可选release bundle都不能声明、复制或
+覆盖并发上限。Service profile的整个`lifecycle`配置面非法；旧`maxConcurrency`和`idleTimeoutMs`都已删除。
+并发门禁不属于service ABI、artifact identity或Runtime bootstrap wire。
 
 ## 4. Runtime identities
 
@@ -212,7 +235,7 @@ JSON-RPC profile版本与connection policy shape；每个declared JSON-RPC metho
 params/result shape、adapter sources和固定external error projection。外部method仍是selector。
 Selector、handler/pre/guard callable、
 目标参数名、Package build、deployment policy、内部connection-context nominal identity/codec及完整
-adapter execution plan不进入该identity；只替换实现而外部协议不变时只改变deployment revision。
+adapter execution plan不进入该identity；只替换实现而外部协议不变时只改变deployment `buildId`。
 任何gateway entry变化都不改变service protocol identity。
 
 Stable target id描述执行类别，而不是资源实例。Service operation、HTTP entry、WebSocket connect、
@@ -220,37 +243,57 @@ connection close平台事件、WebSocket send/request等std host operation和Pac
 stable target。Target用于
 effect metadata、timeout source、trace、日志、指标、测试替身和错误聚合。
 
-HTTP dispatch使用gateway entry identity做admission与观测。WebSocket Connection必须绑定connection
-protocol identity与deployment/activation generation；outbound response必须精确匹配原connection、
-socket generation与transport request id，inbound method也必须在同一pinned generation中解析gateway
-entry。它不绑定或冒充service-call protocol operation；schema-changing发布后，旧Connection继续使用其
-已pin generation，直到drain或断开。
+HTTP dispatch使用gateway entry identity做匹配与观测。WebSocket Connection必须绑定connection protocol
+identity与exact deployment build；outbound response必须精确匹配原connection、socket generation与
+transport request id，inbound method也必须在同一pinned build中解析gateway entry。它不绑定或冒充
+service-call protocol operation；schema-changing发布后，旧Connection继续使用其已pin build，直到drain
+或断开。
 
 ## 5. Request heap and values
 
 `null`、`bool`、`number` / `integer` 表现为值语义。`string` 和 `bytes` 对用户表现为不可变值；实现可以选择 inline、shared buffer 或 heap 优化，但不得暴露可变 alias。
 
-`Array<T>`、`Map<K, V>`、`JsonObject`、record / object 和 opaque resource handle 是 heap value。赋值和传参复制 handle，不 deep clone。需要独立副本时必须显式 clone。
+`Array<T>`、`Map<K,V>`、`JsonObject`和record/object是aggregate value。赋值、普通参数传递、
+返回和container store都产生当时内容的logical snapshot；后续从任一writable binding修改时，
+不影响其它snapshot。实现不必deep copy：可以move unique backing，或通过share transition与
+path copy-on-write保留语义。用户程序不能观察physical handle/backing identity。
 
-`const` 只限制当前 binding 不能重新绑定，不表示指向的 heap value 深度不可变。`const` 指向的 collection、record / object 或 mutable handle 仍可通过 mutating API 修改。
+局部`let`初始化与普通parameter binding都取得logical snapshot，并且是immutable runtime binding；从它们
+派生的field/index path不可写。Aggregate writable access-path root只来自三类：局部`var`、当前有效的
+`InOut` loan，以及Actor method中允许直接写入的`self.field` member/index path。局部`var`可重绑；直接
+`self.field` path mutation写Actor shared state，把该field先读入普通local或传给普通parameter则只得到
+snapshot。Actor method的DB transaction body仍禁止直接或经callee写Actor field，包括以该field path为
+receiver的collection mutation。
 
-每个 request 创建 request-local heap。Request 参数、DB / HTTP / service call / external source 返回值、array / map / object / record literal、clone 结果、需要 heap 表达的 nominal / representation wrapper、request-local resource handle 和 external stream source handle 都分配在该 heap 中。
+顶层`const`位于immutable `ConstantHeap`，是request-independent且deeply frozen的值；把const aggregate放入
+`var`后，第一次写入会创建request-owned COW node，不改变constant graph。
 
-Request 结束时 heap 整体释放。Heap handle 是 request-local id，不是跨 request、跨 artifact 或跨 service 的 ABI。
+普通function/Package的参数与返回值都是logical snapshot，不携带caller-writable origin；callee不会因收到
+Map、Array或其它aggregate就获得caller-writable reference。ServiceContract与gateway boundary还会把值
+materialize到接收方heap，同样不能传递writable origin或`InOut` loan。只有静态解析到exact
+Package-local/package-direct concrete callable的显式`inout`参数是短期exclusive write-through loan；callee
+target必须经verifier证明`NoPending`（`maySuspend = false`）。`inout`只进入Package Local ABI，不得进入
+service/gateway/interface/callback/Actor external/host effect/recoverable boundary；ordinary throw不回滚已执行
+写入。
 
-Mutable root 是一次可变状态的语言层身份。`let` binding、record / object、`Array<T>`、`Map<K, V>`、`JsonObject`、runtime / package API 标记为 mutable handle 的 opaque resource，以及未来声明为 mutable handle 的 cursor / transaction / stream 都携带 mutable root。普通 scalar、immutable descriptor 和不含 mutable root 的临时表达式不携带 mutable root。
+每个request owner（包括service boundary创建的provider owner）都创建fresh request-local managed heap。
+Request参数、DB/HTTP/service/external边界物化值、literal、COW node、需要heap表达的nominal wrapper与
+request-local resource handle都属于对应heap。Collector对每个request heap都可用，但只在allocation
+pressure触发；“长/短请求”不是语义分类。低分配request可在从未运行collection的情况下结束，最后整体
+释放heap。
 
-Root identity 不等于词法名。`const b = a` 复制引用并继承 `a` 的 root provenance；字段访问继承对应子路径 provenance；clone API 返回 fresh root；无法证明 provenance 的 mutable return 按 opaque root 处理。
+Opaque resource、transaction、stream source与其它native handle是identity-bearing capability，不因aggregate
+value semantics自动获得copy/COW。它们的copyability、owner、close和escape规则由各自surface明确
+定义。Heap handle本身是request-local id，不是跨request、跨artifact或跨service的ABI。
 
-Root provenance 区分“当前值自身可能指向的 direct root”和“从当前值内容可达的 root”。fresh 容器中保存 caller-owned value 时，caller root 只属于后者；容器本身仍是 fresh root。读取该字段或容器元素时，结果重新获得对应 caller projection 的 direct root。控制流合并会合并所有可能的 direct root，不得因为其中存在 fresh 分支而丢弃 caller-owned 分支。
+目标value graph不支持用户可见cycle。会形成cycle的mutation、materialize或wire payload必须
+fail closed。Nested mutation沿writable path检查每个node的share state，只复制需要分离的path；
+不允许只检查最外层collection而泄漏嵌套alias。
 
-Collection 和 object mutation 是原地 mutation。Runtime 沿编译后的 mutable access path 定位 heap node，检查目标类型，再执行短同步写入。第一版 request heap 不支持 cycle；会形成 cycle 的 mutation、materialize、wire payload 或 clone 必须失败。
+`Map<K,V>.keys()` 返回一个`Array<K>`快照值。返回值放入`var`后修改不影响原 map；
+调用后修改原 map 也不改变该数组的元素集合。
 
-Cycle 检查沿 fresh root 和 caller projection 的可达边遍历，并以“同一 root 且路径为祖先”判断回边。字段或容器元素 projection 不能折叠回参数 root，也不能把任意深度 payload 提升为所读字段的 direct root；前者会误拒绝普通取出、修改、写回，后者会凭空制造 cycle。直接和间接真实回边都必须 fail closed。
-
-`Map<K,V>.keys()` 分配一个 fresh `Array<K>`，内容是调用时 map key 的快照。修改返回数组不影响原 map；调用后修改原 map 也不改变该数组的元素集合。
-
-map `for` 循环在循环开始时读取快照。`for key in map` 读取 key 快照；循环期间对 map 执行 `set` / `delete` 不改变本轮将访问的 key 集合。`for key, value in map` 读取 entry 快照；循环期间对 map 执行 `set` / `delete` 不改变本轮 key/value 对，若某个尚未访问的 key 被重新 `set`，后续迭代的 `value` 仍是循环开始时的 value。
+map `for` 循环在循环开始时读取快照。`for key in map` 读取 key 快照；循环期间对 map 执行 `put` / `delete` 不改变本轮将访问的 key 集合。`for key, value in map` 读取 entry 快照；循环期间对 map 执行 `put` / `delete` 不改变本轮 key/value 对，若某个尚未访问的 key 被重新 `put`，后续迭代的 `value` 仍是循环开始时的 value。
 
 map key 快照顺序是 canonical map key order，不是插入顺序。当前合法 map key 是 `string` 或 string representation，排序按 canonical string payload 的 UTF-8 字节序升序；未来如果扩展非 string key，runtime 必须先为该 key 类型定义 canonical map ordering。
 
@@ -264,11 +307,19 @@ string representation map key 在 request heap 中按 erased string payload 保�
 
 `concurrent { ... }` 只把被修饰 block 的第一层直属项划分为 lane：直属 statement 是一个 lane，直属 `serial { ... }` 整体是一个 lane，`concurrent value { ... }` 的 tail expression 是保留 `tail` kind 的普通 synthetic lane。当前 `concurrent` surface 是受限 lane list，不是普通 block；`if`、`match`、loop、`with`、`timeout`、普通 `value` block、`return`、`break`、`continue`、直接 `throw` / `rethrow`、`catch`、`emit`、`dispatch`、嵌套 `serial`、嵌套 `concurrent` 和 callback / anonymous function body 在该 surface 内非法，包括在直属 `serial { ... }` 内非法。被调用函数内部仍可包含普通控制流；lane 只观察其normal return、throw、timeout或内部停止结果。
 
-`concurrent` block 自身是词法作用域，但只有直属 const declaration lane 声明的 `const` 能被后续 sibling lane 读取。后续 lane 只能读取源码位置严格在前的 sibling-visible `const`。读取后方声明是 forward reference。当前 `let` 在 `concurrent` surface 内非法；嵌套 block 内声明和 `serial` 内声明都不跨 sibling 可见。
+`concurrent` block自身是词法作用域，但只有直属`let` declaration lane的结果能被后续
+sibling lane读取。后续lane只能读取source position严格在前的sibling-visible `let`；读取
+后方声明是forward reference。`var`在`concurrent` surface直属位置非法；嵌套block与`serial`
+内声明不跨sibling可见。
 
-Compiler 为每个 `concurrent` block 建立 lane DAG。Lane B 读取 lane A 的 sibling-visible `const`，则 A 必须先于 B 完成。Tail lane 依赖它读取的前序 const，也隐式依赖源码位置在它之前的所有 lane normal exit。外层 mutable root 写入不是依赖边；当前直接禁止。
+Compiler为每个`concurrent` block建立lane DAG。Lane B读取lane A的sibling-visible `let`，则A
+必须先于B完成。传入B的aggregate是A结果的logical snapshot。Tail lane依赖它读取的前序
+`let`，也隐式依赖source position在它之前的所有lane normal exit。
 
-当前，`concurrent` sibling lane 禁止对外层 mutable root 产生 Skiff 可见写入。该限制按 root provenance 判定，而不是按词法名判定。即使两个 sibling lane 写不同字段，只要 root 来自 `concurrent` 外层，也不允许。Lane-local fresh root 可以在该 lane 内 mutation。`serial { ... }` 只收束顺序逻辑，不绕过外层 mutable root 写入限制。
+Sibling lane禁止写入从`concurrent`外层捕获的`var`或发起`inout`调用，即使静态路径是
+不同字段也一样。Lane-local `var`可在该lane内mutation。普通aggregate snapshot不携带共享的
+caller-writable reference；identity-bearing resource仍按其effect/conflict-key检查跨lane冲突。`serial { ... }`
+只收束顺序逻辑，不绕过外层writable-place限制。
 
 `concurrent` block normal completion 前，所有已启动 lane 都必须 normal exit。某个 lane error、外层有效 timeout 或 ancestor内部停止确定获胜事件后，尚未启动的 lane 不再启动，正在运行的 lane 收到结构化停止信号，被停止lane后续产生的值、错误和 Skiff 可见写入被丢弃。已提交外部副作用不回滚，只能依赖effect分类、幂等、日志和补偿策略治理。
 
@@ -319,10 +370,9 @@ operation timeout；需要更短调用预算时由caller显式使用`timeout(...
 deployment timeout。
 
 Router `requestTimeoutMs`是external business request的平台上限，不是所有Router工作的通用timeout。
-RuntimeAssembly activation prepare/commit/abort是控制面事务，使用独立的operator prepare budget；
-WebSocket generation release也使用自己的release budget。二者都不能继承或覆盖
-`requestTimeoutMs`或用户代码`timeout(...)`。反过来，控制面预算也不能
-改变普通dispatch deadline。
+Deployment image lazy-load/preload和WebSocket connection drain使用各自operator-owned lifecycle budget；
+它们不能继承或覆盖`requestTimeoutMs`或用户代码`timeout(...)`。反过来，load/drain budget也不能改变普通
+dispatch deadline。Skiff没有assembly prepare/commit/abort或generation release事务。
 
 Runtime 使用单调时钟计算内部 absolute deadline。该 absolute deadline 不暴露给用户代码；用户可见的是 `TimeoutError` 的 budget / source 语义。
 
@@ -383,7 +433,7 @@ HTTP entry 是gateway-selected external HTTP dispatch，不是service-to-service
 浏览器、移动端或CLI客户端，也可以是支付回调等第三方服务器；反向代理和上游HTTP/SSE转发同样属于该入口。
 Skiff service之间的调用始终使用ServiceContract，不通过HTTP entry伪装。
 
-Router根据trusted service/version header先选择精确deployment/activation，再按该deployment内的
+Router根据trusted service/version header经release pointer选择精确deployment build，再按该deployment内的
 method/path和loaded gateway entry metadata调用HTTP handler。该
 handler由`http.yml`选择，不要求进入`api.yml`或ServiceContract。Router不按display/source path猜target，
 也不根据HTTP Host、content-type或业务payload自行解释或选择target。
@@ -413,10 +463,10 @@ deployment/ingress配置变化，不改变service protocol identity；HTTP Host�
 WebSocket entry主要属于客户端直连的API层service。下游业务service不拥有Connection，也不把WebSocket
 当作service-to-service transport。
 
-WebSocket物理连接由gateway/hub维护。Upgrade先按严格service/version header选择精确deployment，并在
-该deployment内按path选择entry。Connection拥有connection id、service id、状态、
-business identity、entry identity、精确deployment/activation generation和物理socket；它不需要一个
-service-call protocol operation identity。
+WebSocket物理连接由gateway/hub维护。Upgrade先按严格service/version header经release pointer选择精确
+deployment build，并在该deployment内按path选择entry。Connection拥有connection id、service id、状态、
+business identity、entry identity、精确deployment build和物理socket；它不需要一个service-call protocol
+operation identity。
 
 Connect operation是一次request frame，用于连接验证和connection policy初始化。连接建立后，service可
 发送单向notification，或通过`std.websocket.requestJsonToConnection`向精确connection发起request并等待
@@ -424,11 +474,11 @@ peer response。Peer也可以调用`websocket.yml.jsonRpc`显式声明的method�
 frame的`receive`函数。未声明request method不进入业务代码；第一版所有notification都不进入业务代码。
 
 Router中的专用WebSocket request broker拥有编码无关的request identity、pending生命周期和
-connection/generation归属；第一版`jsonrpc-2.0-text` adapter解释JSON-RPC 2.0控制字段。业务`method`、
+connection/socket-generation归属；第一版`jsonrpc-2.0-text` adapter解释JSON-RPC 2.0控制字段。业务`method`、
 `params`、`result`与error `data`保持opaque。Response只有在
 `(outbound, connectionId, socket/generation identity, profile, id)`精确命中pending request时才转回原
 runtime execution；它不创建新的runtime ingress request。Request按
-`(inbound, websocketEntryId, pinned generation, profile, method)`解析gateway entry，经
+`(inbound, websocketEntryId, pinned deployment build, socket generation, profile, method)`解析gateway entry，经
 `RuntimeDispatcher`创建独立request frame。Raw text/binary send不选择RPC配置；未来binary RPC必须是
 另一个显式配置。
 
@@ -443,12 +493,11 @@ Service端主动推送必须显式调用`std.websocket.send*`；需要peer结果
 deadline仍产生`TimeoutError`。平台transport correlation不取代业务幂等、durable run或tool attempt
 identity，也不提供自动retry。
 
-WebSocket连接按已冻结的connection protocol identity和deployment/activation generation路由；
-request/response不能跨connection或generation恢复。第一版不接受peer request cancellation；
+WebSocket连接按已冻结的connection protocol identity、deployment build与socket generation路由；
+request/response不能跨connection、build或socket generation恢复。第一版不接受peer request cancellation；
 peer disconnect表示该socket上没有response consumer，runtime内部停止仍在执行的inbound handler并失败
-outbound pending。既有socket继续绑定旧generation，直到
-drain或断开。Generation release的等待预算属于Router lifecycle owner，不能被external request
-`requestTimeoutMs`覆盖。
+outbound pending。Release pointer更新不迁移既有socket；它继续绑定旧build，直到drain或断开。Connection
+drain的等待预算属于Router lifecycle owner，不能被external request `requestTimeoutMs`覆盖。
 
 ## 12. Effect metadata at runtime
 
@@ -465,9 +514,10 @@ best-effort收束。
 只有metadata显式声明concurrency safe并提供可比较conflict-key时，runtime才能允许更宽松并发。
 需要顺序执行多个冲突effect时，源码应把它们放到同一个`serial { ... }` lane或普通顺序代码中。
 
-`config.require` / `config.optional`读取当前精确Package slot从activation snapshot取得的局部config
-view，是本地只读访问，不是外部I/O。源码path相对当前Package分区，不能越过Package ID边界。Array、
-Map、scalar receiver方法只产生local read/write effect，并按mutable root provenance参与并发检查。
+`config.require` / `config.optional`读取当前精确deployment中为Package slot烘焙的局部`ConfigView`，是本地
+只读访问，不是外部I/O。源码path相对当前Package分区，不能越过Package ID边界。Array、
+Map、scalar receiver方法只产生local read/write effect；mutation按writable place或`inout` path参与
+并发检查，pure static transform只读取输入snapshot。
 `std.json.encode` / `std.json.decode`是boundary codec helper，不访问外部系统。
 
 `std.http.request`、`std.http.stream`、`std.http.sse`、service call、telemetry emit、WebSocket send 和
@@ -486,7 +536,8 @@ non-suspending；`std.websocket.requestJsonToConnection`必须标记`maySuspend`
 - 双向 stream、用户 operation stream 参数、半关闭、reconnect / resume、持久化 stream cursor 或 `Stream<T, R>`。
 - `Stream<T>` 作为用户 operation 参数、用户 record 字段、持久化字段、collection 元素或普通 public API type 字段。
 - 语言级 snapshot / read view 表达式。
-- request-scope component 或把 request-local 状态保存进 service revision singleton。
+- request-scope component，或任何把request-local状态保存进deployment-scoped/process-global mutable
+  singleton的机制。
 - queue、cron、async task 和 durable long-running workflow。
 - 用户可调用的request cancellation、按request id取消或runtime stop inspection API。
 - WebSocket JSON-RPC peer `$/cancelRequest`与`-32800 Request cancelled`。
@@ -500,4 +551,5 @@ non-suspending；`std.websocket.requestJsonToConnection`必须标记`maySuspend`
 
 这些限制是当前 runtime 合约的一部分，不应由 std wrapper、package wrapper 或 router 配置绕过。
 
-未来支持这些能力时，必须显式定义其 request 生命周期、heap / root provenance、effect metadata、timeout、内部停止和边界 schema 规则，不能隐式复用当前 request frame 语义。
+未来支持这些能力时，必须显式定义其 request 生命周期、heap/resource provenance、effect metadata、
+timeout、内部停止和边界 schema 规则，不能隐式复用当前 request frame 语义。

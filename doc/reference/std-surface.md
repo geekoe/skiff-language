@@ -10,7 +10,7 @@ prelude 类型和基础 receiver API 默认加载，不需要 `import`。它们�
 
 `std` 是内建平台标准库 root，不是普通 package dependency。源码可以直接访问 `std.http.decodeJson`、`std.json.decode`、`std.crypto.sha256`、`std.log.info`、`std.websocket.sendTextToConnection` 等 surface；`import std` 可以保留为显式风格，但不是使用平台 std 的前提。
 
-`std.<module>` 是平台 std 的模块化 helper path，不是 package id。模块函数一律走 `std.<module>.<name>` 路径，函数名不带模块前缀（例如 `std.http.json`，不是 `std.httpJson`）；HTTP 类型走 `std.http.*`，不拍平到 `std` root。命名规则与事实来源见 `../implementation/std-naming-and-source-of-truth.md`。`import std.http`、`import std.json` 和旧 `ext.*` 聚合 root 都不属于目标 surface。
+`std.<module>` 是平台 std 的模块化 helper path，不是 package id。模块函数一律走 `std.<module>.<name>` 路径，函数名不带模块前缀（例如 `std.http.json`，不是 `std.httpJson`）；HTTP 类型走 `std.http.*`，不拍平到 `std` root。`import std.http`、`import std.json` 和旧 `ext.*` 聚合 root 都不属于目标 surface。
 
 根级语言内建（`bytes`、`Json`、`JsonObject`、`Stream<T>`、`config`）是例外：它们直接在 `std` root（或如 `config` 作为内建 value root），不进二级模块、不加前缀。
 
@@ -58,8 +58,8 @@ decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes
 
 `std.db.ConstraintError`表示数据库约束拒绝一次写入，不能作为transaction conflict重试。第一版
 `kind`只会是`"unique"`；错误只暴露`kind`、声明DB object的Package ID和源码声明的logical
-collection identity。它不暴露Mongo原始消息、物理collection名、物理索引名或冲突值。activation期间
-创建唯一索引发现已有重复值也使用同一脱敏constraint分类拒绝candidate，但该控制面失败不进入业务
+collection identity。它不暴露Mongo原始消息、物理collection名、物理索引名或冲突值。image load期间
+创建唯一索引发现已有重复值也使用同一脱敏constraint分类拒绝该build，但该控制面失败不进入业务
 `catch`。
 
 provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 provider runtime 不可用。
@@ -97,17 +97,40 @@ remote-boundary frame。完整callee栈留在服务端telemetry/log，通过`tra
 
 ## 5. Collections
 
-`Array<T>` 和 `Map<K,V>` 是 mutable collection，携带 mutable root。`const` 只限制 binding，不让 collection deep immutable。
+`Array<T>` 和 `Map<K,V>`是aggregate value，不暴露reference identity。赋值、普通传参、返回与
+container store产生logical snapshot；普通callee不会获得caller-writable origin，Runtime可以用
+move/share/COW共享physical backing。
 
-`Array.empty<T>()` 和 `Map.empty<K,V>()` 返回 fresh mutable root。literal 构造也返回 fresh mutable root。
+`Array.empty<T>()`、`Map.empty<K,V>()`和literal构造返回普通collection value。Receiver mutation要求精确
+name/member/index writable path，其root只允许局部`var`、有效`inout` loan，或Actor method中允许直接写入的
+`self.field` path。前两类修改当前local/loan；第三类直接修改Actor shared state。把Actor field读入普通local
+或传给普通parameter只得到snapshot。Actor method的DB transaction body禁止直接或经callee写Actor field，
+包括以该field path为receiver的mutation。
 
-`Array<T>` 提供长度读取、push、set、pop、clone、map 和 filter 等基础 surface。mutation API 写 receiver root；clone / map / filter 返回 fresh root。
+`let`、普通parameter与顶层`const`派生的path不可写；顶层`const` aggregate是deeply frozen，把其snapshot
+存入上述verified writable root后才能修改，shared/frozen backing在所属heap首次写入时按COW分离。
+
+`Array<T>`提供长度读取、`push`、`set`、`pop`、`map`和`filter`等基础surface。
+`push`/`set`/`pop`是receiver mutator，只接受上述writable path；`map`/`filter`是pure transform。
+`Array.concat(left, right)`是type-namespace static transform，返回两个输入的拼接值。例如：
+
+```skiff
+let ys = Array.concat(xs, [4])
+```
 
 `Array.map` 和 `Array.filter` 的 callback 是 lane-local non-escaping callback；callback effect 并入承载该 API 调用的 lane。
 
-`Map<K,V>` 提供长度读取、keys、get、has、set、delete 和 clone 等基础 surface。set / delete 写 receiver root；keys / get / has / length 是 local read。
+`Map<K,V>`提供长度读取、`keys`、`get`、`has`、`put`和`delete`。`put`/`delete`是receiver mutator，
+只接受上述writable path；其它操作是local read。`Map.merge(base, updates)`是type-namespace
+static transform，在返回值中用`updates`覆盖同名key，不修改任一输入。
 
-`Map<K,V>.keys() -> Array<K>` 返回 key 的 request-local 快照数组。调用后修改原 map 不改变该数组的元素集合；调用方可以像普通 `Array<K>` 一样修改该数组，且不会影响原 map。
+Source surface不定义`appending`、`setting`等依赖英语词形来区分purity的成对API。
+上述receiver mutator（`push`/`set`/`pop`/`put`/`delete`）表示对writable place的mutation；
+read/pure receiver API不因此变成写。`Array.concat`、`Map.merge`等显式type-namespace call表示pure
+transform。
+
+`Map<K,V>.keys() -> Array<K>` 返回 key 的 request-local 快照值。调用后修改原 map 不改变该数组的元素集合；
+返回值放入`var`后可独立修改，不影响原 map。
 
 `for key in map` 遍历 map key，等价于遍历 `map.keys()`。`for key, value in map` 遍历 map entry 快照，`key: K`、`value: V`。双绑定 `for` 不适用于 `Array<T>` 或 `Stream<T>`。
 
@@ -117,7 +140,8 @@ remote-boundary frame。完整callee栈留在服务端telemetry/log，通过`tra
 
 `{ ... }` 支持 target-typed map/json literal，但只在目标类型是 `Map<string,T>`、`JsonObject` 或 `Json` 的 object branch 时启用。无目标类型时不能自行推断为 map。
 
-mutable collection 是 invariant；例如 `Map<string,string>` 不能整体赋给 `Map<string,Json>` 或 `JsonObject`。
+Collection generic参数不做协变；例如 `Map<string,string>` 不能整体赋给
+`Map<string,Json>` 或 `JsonObject`。
 
 ## 6. Scalar And Bytes
 
@@ -149,7 +173,8 @@ bytes surface 包括 concat、fromBase64、fromHex、fromUtf8、length、toBase6
 
 赋值到 `Json` 目标类型时，`null`、`bool`、`number`、`integer`、`string`、`Array<Json>` 和 `JsonObject` 都可直接进入。
 
-`Map<string,Json>` 与 `JsonObject` 在 JSON 位置等价，但 mutable collection invariance 仍成立。
+`Map<string,Json>` 与 `JsonObject` 在 JSON 位置等价，但两者仍是value semantics，且collection
+generic invariance仍成立。
 
 裸 `Json` / `JsonObject` 不携带用户 representation、union 或 map-key identity。把 representation 放进裸 JSON 需要显式 projection。
 
@@ -165,7 +190,7 @@ config path 是 dotted path，例如 `openai.apiKey`。每个 segment 必须匹�
 
 path 必须是 string literal 或 compile-time const-foldable string。普通动态字符串调用不进入 publisher 的 config shape 收集。
 
-`config.require<T>(path)`表示required path；overlay后缺失应导致service activation失败，运行时shape
+`config.require<T>(path)`表示required path；overlay后缺失应导致deployment publication失败，运行时shape
 不匹配抛`config.DecodeError`。Authoring中的`null`是删除path的tombstone，不是可读取值。
 
 `config.optional<T>(path)`表示optional path；overlay后缺失返回`null`，存在时必须匹配`T`。空字符串是
@@ -177,8 +202,8 @@ path 必须是 string literal 或 compile-time const-foldable string。普通动
 
 当前 config 可解码基础目标包括非 nullable `string`、`number`、`bool`、`Json` 和 `JsonObject`。未来 record decode 需要补 schema closure 规则。
 
-config read只读取当前Package slot由activation snapshot注入的配置视图，不表示外部I/O，不产生external
-effect，也不改变package/deployment/assembly identity。
+config read只读取当前Package slot由deployment-owned `BakedConfigPayload`物化的配置视图，
+不表示外部I/O，不产生external effect，也不改变package/deployment identity。
 
 每个Package只读取自己canonical Package ID分区中的local path；它不读取宿主service或dependency Package
 分区。同一Package build在不同ServiceDeployment中获得彼此隔离的ConfigView。
@@ -217,7 +242,7 @@ URL percent-encoding helper 区分 query component 和 path；path encoding 保�
 
 ## 11. HTTP Std Surface
 
-HTTP std surface 都在 `std.http.*` 模块下，属于内建 platform std，不通过普通 package resolver。函数名不带 `http` 前缀（`std.http.json`，不是 `std.httpJson`），类型走 `std.http.*`（`std.http.HttpRequest`），不拍平到 `std` root。命名规则见 `../implementation/std-naming-and-source-of-truth.md`。
+HTTP std surface 都在 `std.http.*` 模块下，属于内建 platform std，不通过普通 package resolver。函数名不带 `http` 前缀（`std.http.json`，不是 `std.httpJson`），类型走 `std.http.*`（`std.http.HttpRequest`），不拍平到 `std` root。
 
 更高层 SDK / wrapper package 应组合 std HTTP helpers，而不是各自定义 runtime native driver。
 
@@ -325,7 +350,7 @@ native function requestJsonToConnection<TRequest, TResponse>(
 ```
 
 WebSocket是通用双向transport；平台request broker与编码配置分离。Broker拥有request identity、pending、
-deadline/内部停止、connection/generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
+deadline/内部停止、connection/socket-generation归属和容量限制，不把JSON字段写死在核心状态机中。第一版
 `requestJsonToConnection`选择内置`jsonrpc-2.0-text`配置；未来binary RPC必须用新的显式API/配置定义
 版本、framing、codec与协商，不能把普通binary frame自动解释成RPC。现有raw text/binary send不受影响。
 
@@ -352,7 +377,7 @@ Skiff主动发起request时的wire精确为：
 
 `result`与error `data`可以是任意受大小限制的JSON值。第一版每个text frame只接受一个JSON-RPC对象，
 不执行batch；request `params`必须是object或array，outbound response `id`必须是string，error `code`必须是
-integer且`message`必须是string。Wrong-connection、wrong-generation或未知id的response不能命中pending
+integer且`message`必须是string。Wrong-connection、wrong-socket-generation或未知id的response不能命中pending
 调用，并以协议错误`1002`关闭。平台保留有界短期settled tombstone；与完成/内部停止竞态的晚到或重复response
 只命中tombstone并被丢弃，不能恢复调用。Declared peer request走独立inbound mapping，不能误命中同值
 outbound id。第一版不支持binary request/response。

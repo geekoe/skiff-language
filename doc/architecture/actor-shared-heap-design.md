@@ -1,13 +1,13 @@
 # Actor 实例共享 heap 求值设计
 
-> Status: 设计稿 v4（权威设计），实现阶段使用 multi-agent-development.md 流程。
-> 取代：[actor-instance-evaluator-design.md](actor-instance-evaluator-design.md)（canonical 字段表草案，保留为历史）。
+> Status: 设计稿 v4（权威设计）。
+> 取代并删除了旧canonical字段表草案；其评审结论已浓缩进§1，不再保留第二份设计。
 > 相关文档：[actor-model.md](actor-model.md)、[runtime.md](../reference/runtime.md)（§6 Concurrent lane model）。
 
 ## 1. 决策演进摘要
 
-v1 草案（canonical 字段表）经 review 否决：逐字段编码破坏跨字段别名身份；原地修改无法被赋值级
-脏跟踪捕获；事务与并发块发布时机的假设与已测语义冲突。
+v1 草案（canonical 字段表）经 review 否决：逐字段编码会丢失aggregate value graph的O(1) physical sharing
+并引入无谓复制；原地修改无法被赋值级脏跟踪捕获；事务与并发块发布时机的假设与已测语义冲突。
 
 v2 草案（共享 heap + 事务持有实例）经 review 判定“可行但按原样不可行”，三个核心问题：
 
@@ -21,8 +21,8 @@ v2 草案（共享 heap + 事务持有实例）经 review 判定“可行但按�
 v3 决策：
 
 - 共享 heap 方向不变，按 review 修正求值器借用模型、压缩 epoch、失败段语义；
-- 事务简化：v1 编译期禁止 actor 方法内与 `concurrent` lane 内的 `db transaction`（当前业务未使用）。
-  普通 request 的事务原样保留，不在本设计范围内。
+- 事务简化：actor方法允许DB-only `db transaction`，但transaction body禁止写actor字段，abort不回滚
+  actor arena；nested transaction仍禁止。普通request的事务语义保持其独立contract。
 
 v3 独立 review 结论：“有条件可行，按现状不可直接实现”。关键修正（已并入下文各节）：
 
@@ -31,8 +31,8 @@ v3 独立 review 结论：“有条件可行，按现状不可直接实现”。
 3. 跨 await 载点不止漏斗：`DbIrEvaluator`、timeout 子求值器、stream consumer 等嵌套 future 都要纳入（§4.2）；
 4. provider-stream 路径可能把共享 arena 句柄带进 `tokio::spawn` 任务，需边界修复（§3.5、§7.2）；
 5. 实例级 active/suspended 计数与压缩无现成实现；router 存在 idle 逐出与 upgrade 互卡竞态，需先修（§7.2）；
-6. 事务禁令在“同包直接语法 + 本地 helper 可达性”可行；跨包 / service call 目标需要新的 artifact
-   effect bit，v1 接受该边界为文档化限制（§5）；
+6. transaction body字段写禁令必须由canonical effect summary闭合同包、本地helper与package-direct调用；
+   unknown/dynamic target保守拒绝（§5）；
 7. arena epoch 由 arena wrapper 持有并在每次分配/解引用校验（§7.1）。
 
 v4 决策（用户确认）：
@@ -47,17 +47,22 @@ v4 决策（用户确认）：
 目标：
 
 1. 每 actor 实例一个共享 arena，字段为稳定根 slot；
-2. 方法段级借用 arena：真实挂起前释放、恢复时重取（reacquire），实例内零复制、零编码；
-3. 别名 live：挂起期间其他方法对共享节点的修改直接可见；
-4. 普通 request 语义不变（独占 heap，不需要 reacquire），但求值器统一走模式通用 heap 访问。
+2. 方法段级借用 arena：只有 actual `Pending` 才释放 `ActorSegmentLease`，恢复时重取（reacquire），
+   实例内零复制、零编码；
+3. shared state live：挂起期间其他方法对actor field root的修改立即可见；把field读入普通local时遵守
+   aggregate value semantics，得到O(1) snapshot，不获得隐藏的mutable alias；
+4. 普通request仍使用独占heap access，不需要reacquire；目标bytecode VM的aggregate value semantics由
+   [`bytecode-vm.md`](bytecode-vm.md)统一定义。
 
 非目标（v1）：
 
 - 不做 canonical 字段表 / 字段版本化 / 惰性解码；
-- 不引入 GC；arena 回收只靠 quiescence 压缩与实例逐出；
+- Actor arena v1不引入并发/tracing GC；arena回收只靠quiescence压缩与实例逐出。普通request heap的GC
+  由[`bytecode-vm.md`](bytecode-vm.md)独立定义；
 - 不引入 promise；
 - **v1 不支持 `concurrent` / `serial`（编译期拒绝）**：删除运行时 concurrent 机制与 E3 bridge；
-- actor 方法（含 `create`）内不支持 `db transaction`（编译期禁止；普通 request 不受影响）；
+- actor方法（含`create`）支持DB-only `db transaction`，但禁止nested transaction与transaction body中的
+  actor field write；普通request不受该field禁令影响；
 - 不改变跨 runtime 调用边界编解码（actor 调用仍走 router，与 service call 一致）；
 - 不做硬线程亲和：actor 段保持当前 driver 线程 inline 执行模型（见 §8）。
 
@@ -72,29 +77,39 @@ v4 决策（用户确认）：
 
 ### 3.2 段生命周期
 
-1. 方法进入：acquire —— 等 admission（首次 create 完成后）→ lock arena → 校验 instance fence /
-   epoch / identity / **arena epoch** → 取得段借用（guard）；
+1. 方法进入：acquire —— 等 admission（首次 create 完成后）→ lock arena → 校验 Actor identity、exact
+   deployment `buildId` / `DeploymentExecutionImage` owner、`ActorImplementationIdentity`、incarnation fence 与
+   **arena epoch** → 取得 `ActorSegmentLease` / guard；
 2. 同步段执行：字段读写、原地修改直接在共享 arena 上进行（无副本、无 wire 往返）；request-scoped
-   校验在写路径执行（见 3.5）；
-3. 真实挂起（唯一 yield 点）：释放 arena 借用，future 返回 `Pending`；
-4. 恢复：reacquire（可能等待其他段）→ 重新校验 fence / identity / **arena epoch** → 继续；
-5. 方法结束：归还借用；字段状态留在 arena。
+   校验在写路径执行（见 3.5），完成的写入立即成为实例共享 state；
+3. actual `Pending`（唯一 yield 点）：future 确认本次未 ready 后，释放 arena guard 与
+   `ActorSegmentLease`；潜在挂起或静态 `maySuspend` 本身不释放；
+4. 恢复：reacquire（可能等待其他段）→ 重新校验 exact deployment `buildId` / image owner、
+   `ActorImplementationIdentity`、incarnation fence 与 **arena epoch** → 继续；
+5. 方法 return 或失败：归还 lease；字段状态留在 arena，没有 commit overlay，失败也不回滚已经执行的写入。
 
 ### 3.3 与现状的对应（删除项）
 
 - `ActorInstanceExecutionLease` 的 fields + heap 克隆 → 删除；
 - `snapshot_persistent_fields` / resume 导入 → 删除；
 - `write_field` wire 往返 → 删除（保留类型校验与 request-scoped 校验）；
-- `commit_execution` 的字段 + heap 发布 → 退化为借用归还 + generation/epoch 校验；
+- `commit_execution` 的字段 + heap 发布 → 删除；return / failure 只归还 segment lease，resume 做
+  incarnation fence / arena epoch 校验；
 - `ActorExecutionFrame::suspend` / `resume` → drop / reacquire + fence 校验；
-- actor 路径的 `with_transaction_live_fields` / 事务回滚接入 → 删除（actor 内事务已禁止）。
+- actor路径的`with_transaction_live_fields`/arena事务回滚接入 → 删除（actor transaction只回滚DB）。
 
-### 3.4 别名与失败段语义
+### 3.4 Value snapshot、共享state与失败段语义
 
-- 别名 live：字段↔字段、局部↔字段、参数/返回值共享；挂起期间其他方法的修改直接可见；
-  actor-model.md 的“恢复后必须重新读字段”改为“别名 live，读取即当前值”；
-- **失败段不保证字段原子性**：uncatchable 错误时，段内已执行的字段/节点修改保留（与“已提交副作用
-  不回滚”一致）；不再复制“失败段不发布”的现状保证。相关测试改写为文档化行为；
+- 共享state live：direct `self.field`读取总是当前field root，direct writable field path的修改立即写入shared
+  arena；本协程在actual `Pending`前完成的写入无需commit就已可见，挂起期间其他方法的已执行写入也对恢复后的
+  重新读取可见；
+- 普通赋值、普通参数传递、返回与container store遵守aggregate value semantics并产生logical snapshot。
+  `let x = self.items`与普通parameter都是immutable snapshot，其派生path不可写；`var x = self.items`是
+  writable snapshot，随后local mutation通过path COW分离，不暗中修改`self.items`。修改Actor state必须使用
+  direct writable field path或显式写回；
+- field-to-field赋值复制logical value，不建立语言可观察的mutable alias。Physical backing仍可O(1)共享；
+- **失败段不保证字段原子性**：throw、internal failure或uncatchable错误结束调用时，段内已执行的字段/节点
+  修改保留；失败不会回滚shared arena，也不存在“失败段不发布”的保证。相关测试改写为文档化行为；
 - 编译器对“挂起前读取字段、恢复后依赖旧值”的诊断保留为提示性。
 
 ### 3.5 request-scoped 校验
@@ -109,11 +124,12 @@ v4 决策（用户确认）：
 
 ### 4.1 硬规则
 
-- **任何能返回 `Pending` 的 future 状态中不得存在共享 arena 派生的 `&mut RequestHeap` 或共享 guard**
-  （普通 request 的 `Exclusive(&mut RequestHeap)` 保持现状，不受此规则约束）；
+- **future本次实际返回`Pending`后保存的状态 / continuation中，不得存在共享arena派生的
+  `&mut RequestHeap`、共享guard或仍持有的`ActorSegmentLease`**（普通request的
+  `Exclusive(&mut RequestHeap)`保持现状，不受此规则约束）；
 - heap 访问一律通过 `HeapAccess` 双模式（`Exclusive` / `Shared`；具体签名见实现接口契约）：
   - `Exclusive`：普通 request / 未共享路径，保持现状借用语义；
-  - `Shared`：actor 实例 arena；段内持有 guard，真实挂起前 drop，恢复时重取；
+  - `Shared`：actor 实例 arena；段内持有 guard，只有本次actual `Pending`才在返回前drop，恢复时重取；
 - `EvalContext.heap` 从 `&'a mut RequestHeap` 改为 `HeapAccess`，所有 heap 访问走 `heap_mut()`；
 - `heap_mut()` 定义在 `HeapAccess` 上（字段级访问），不得定义在 `EvalContext` 上——否则会同时借用
   `self.env` / `self.context`，破坏约 40 处同语句双借点；
@@ -125,7 +141,7 @@ v4 决策（用户确认）：
   `program_stream/current_scope.rs::next_with_actor`、`callback_native/prepared.rs` wait、
   actor frame `await_if_pending` / `resume`，以及 `program_execution.rs` 的全部 `Interpreter` async 入口；
 - 实际载点约 130+（EvalContext 方法、Interpreter 入口、DbIrEvaluator、program stream、timeout 子求值器、
-  assembly / callback / provider 分发、dispatch ops）；**嵌套 future 是结构性改造，不是漏斗机械修改**；
+  deployment image / callback / provider 分发、dispatch ops）；**嵌套 future 是结构性改造，不是漏斗机械修改**；
 - 普通 request 走 `Exclusive` 模式，语义与所有权不变，但代码路径统一经过 `HeapAccess`；
   这是全 API 面的机械改动，不是局部漏斗改动。
 
@@ -134,7 +150,7 @@ v4 决策（用户确认）：
 - 释放 / 重取只允许发生在漏斗内；外层 eval 链只借 `HeapAccess`；
 - Rust 借用检查拦截不了“guard 字段跨 await 存活”的逻辑错误（能编译，会造成实例串行化或死锁）；
   补充手段：debug 断言（挂起返回 `Pending` 前 guard 必须为 None）+ 每个漏斗路径的纪律测试；
-- 风险控制：先在 actor 单路径（get → method → suspend → resume）做最小原型（Slice 2），验证
+- 风险控制：先在 actor 单路径（get → method → actual `Pending` → resume）做最小原型（Slice 2），验证
   `HeapAccess::Shared` 模式后再铺开。
 
 ## 5. 事务：DB-only 语义（v1）
@@ -157,7 +173,9 @@ v4 决策（用户确认）：
   与“事务体内禁写字段”完全吻合；
 - 共享 arena 下 truncate 不安全，而“不回滚内存”从根上避免 dangling handle、竞争者写入、
   事务锁与 rebase 一整套复杂度；
-- 与 §3.4“失败段不保证字段原子性”一致：事务 abort 等同失败段，字段保持已执行写入。
+- 与 §3.4“失败不回滚 Actor 写入”一致：事务 abort 只恢复 DB；编译器的 transaction-body field-write
+  禁令使事务体通常不能产生 Actor 字段写，但它不会建立 arena checkpoint，也不会回滚进入事务前或失败路径上
+  已经完成的 Actor 写入。
 
 ### 5.3 影响
 
@@ -202,7 +220,7 @@ v4 决策（用户确认）：
 
 ### 7.2 quiescence 压缩
 
-- 实例维护 active / suspended 续体计数（含 `create`；事务已删除故不参与）与 upgrade / discard 状态；
+- 实例维护active/suspended续体计数（含`create`和transaction cleanup）与upgrade/discard状态；
 - 触发条件：计数 == 0、无 pending upgrade / discard、arena 规模超过阈值、实例仍存活；
 - 操作：锁内克隆 live 根（字段）到新 arena → bump arena epoch → 原子替换 store arena；
 - 升级 / 逐出优先级高于压缩：实例进入 `upgrading` 或被 discard 时跳过压缩；
@@ -221,17 +239,17 @@ v4 决策（用户确认）：
 ### 7.4 限制
 
 - per-instance arena limits（节点数 / 字节）：超限报平台错误（触发压缩或逐出留作后续策略）；
-- 长方法（如 LLM 流式 turn）在运行期间独占 arena 并累积节点，压缩只能等其结束；由 limits 兜底，
-  超限行为与现状 heap 限制一致；
+- 长方法（如 LLM 流式 turn）的同步段持有segment lease，actual `Pending`时释放；但active或suspended
+  continuation仍会阻止quiescence压缩，因此压缩只能等方法结束。由limits兜底，超限行为与现状heap限制一致；
 - 与 no-GC 决策一致：不回收单对象，只做整体整理与整体销毁。
 
 ## 8. 线程模型
 
 - Rust 线程 = OS 线程；tokio 为 multi-thread runtime；
-- 现状：session-owned child work（actor owner invoke / control、request leases）由 runtime
-  driver 线程 inline poll → 同一实例方法实际在同一（driver）线程执行；v1 **保持该模型**，
-  不把 actor 段 `tokio::spawn` 到 worker 池；
-- 因此不依赖“tokio 软亲和”作为机制承诺；arena 由互斥 / 借用串行化；
+- 现状：session-owned child work（actor owner invoke / control、request leases）由runtime driver inline
+  poll；v1保持inline模型，不把actor段独立`tokio::spawn`到worker池；
+- 不把某个Actor实例硬绑定到固定OS线程，也不依赖“tokio软亲和”作为机制承诺；不同poll可以落到不同
+  driver线程，但`ActorSegmentLease`与arena guard保证任意时刻只有一个线程访问该实例state；
 - 十万级挂起 actor / 十几线程规模下，线程迁移与缓存亲和收益可忽略；性能预算放在零复制、
   有界内存、短唤醒路径；
 - 未来若需跨核并行：改为多 shard 单线程 executor（每 shard 托管一组实例）或专用调度设计，
@@ -240,6 +258,9 @@ v4 决策（用户确认）：
 ## 9. 跨 runtime 边界与 identity
 
 - caller ↔ owner 编解码不变（service call 语义）；owner 内部共享 arena 对调用方透明；
+- 每次Actor invocation携带exact deployment `buildId`；owner Runtime按该key取得或懒加载immutable
+  `DeploymentExecutionImage`，并在method entry/resume校验exact image owner与`ActorImplementationIdentity`。Actor shared arena属于
+  instance，不属于image，也不经`RuntimeAssembly`或activation generation切换；
 - 升级 / 逐出 / 断连：按创建输入重建，字段不跨任期；升级期间旧实例需无活跃段（计数 == 0）；
 - ABI：字段存储形态是内部实现，不改变 artifact ABI；
 - **implementation identity**：字段存储与求值器改造会改变规范化编译结果；必须重新冻结 identity
@@ -249,25 +270,27 @@ v4 决策（用户确认）：
 ## 10. 验收矩阵
 
 1. `concurrent` / `serial` 编译期拒绝；运行时 concurrent 机制与 E3 全部删除，无残留引用；
-2. Slice 2 完成后：actor 单路径（get → method → 真实挂起 → resume）走 `HeapAccess::Shared`，
-   挂起零复制零编码；guard 不跨 `Pending` 存活；
+2. Slice 2 完成后：actor 单路径（get → method → actual `Pending` → resume）走 `HeapAccess::Shared`；
+   `Pending`前写入立即可见且失败不回滚，只有actual `Pending`释放segment lease，guard不跨`Pending`存活，
+   resume先reacquire并校验fence/arena epoch；
 3. 普通 request 走 `Exclusive` 路径，行为与现有测试不回归；
-4. `db transaction` 在 actor 方法内编译期拒绝（同包边界）；普通 request 事务测试不回归；
+4. `db transaction`在actor方法内走DB-only语义；nested transaction和transaction body actor field write
+   编译期拒绝；普通request事务测试不回归；
 5. 压缩：epoch 失效无泄漏；计数 == 0 才触发；upgrade / 逐出优先（router 竞态先修）；
-6. 失败段语义按 §3.4（不保证字段原子性）文档化并测试；
-7. 升级 / 逐出 / 断连语义不回归；implementation identity 重新冻结；跨包视图 1–4 不回归。
+6. aggregate value semantics矩阵覆盖immutable `let` / 普通parameter snapshot、writable `var` COW与direct
+   Actor field shared write；失败段语义按 §3.4（不保证字段原子性）文档化并测试；
+7. exact `buildId` lazy-load、升级 / 逐出 / 断连语义不回归；implementation identity 重新冻结；跨包视图
+   1–4 不回归。
 
 ## 11. 风险与开放问题
 
 - R1. `HeapAccess` 双模式改造的真实函数面（~130+ 载点）是否可穷举；`Exclusive` 模式是否真正做到
   语义不变（Slice 2 原型验证）。
-- R2. `db transaction` 同包禁令的边界：`create`、本地 helper 可达性、`dispatch` 目标排除；跨包边界
-  文档化限制是否可接受。
+- R2. Actor transaction body field-write禁令的可达性边界：`create`、本地helper、package-direct helper和
+  dynamic target必须由canonical effect summary保守闭合。
 - R3. arena epoch 的表示与校验点（句柄结构变更的波及面：codec、序列化、测试向量）。
 - R4. per-instance arena limits 与长方法增长的阈值；压缩触发条件（Slice 3+）。
-- R5. 别名 live 与失败段部分写入对现有测试 / 文档的影响范围（Slice 2 测试矩阵）。
-- R6. 失败段语义的两个候选（接受部分写入 vs 失败即丢弃实例）——本文选择接受部分写入，
-  如 review 有异议需在评审中给出替代论证。
+- R5. aggregate value snapshot与失败段部分写入对现有测试/文档的影响范围（Slice 2测试矩阵）。
 
 ## 12. 实现与任务文档
 

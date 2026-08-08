@@ -3,9 +3,9 @@
 本文定义 compiler 的长期内部阶段边界。它面向 compiler、artifact 与 deployment 维护者，不是用户可见
 语言规范，也不是迁移计划。本文里的类型名是职责草图，不冻结 Rust public API 或最终字段拼写。
 
-本文服从 [`package-service-contract-deployment.md`](package-service-contract-deployment.md) 的四对象模型：
-Package 是唯一源码编译单元；ServiceContract、ServiceDeployment 与 RuntimeAssembly 是独立 projection，
-不存在 Package/Service 的共同 `Publication` 输入、产物或流水线。
+本文服从[`package-service-contract-deployment.md`](package-service-contract-deployment.md)的三artifact模型：
+Package是唯一源码编译单元；ServiceContract与ServiceDeployment是独立projection，可选release bundle不属于
+compiler source pipeline。不存在Package/Service共同`Publication`输入、产物或流水线。
 
 ## Scope
 
@@ -41,12 +41,9 @@ CompiledPackage + PackageArtifact + typed http.yml/websocket.yml ingress
   -> typed gateway entries
 
 PackageArtifact + ServiceContract + typed gateway entries
+  + selected three-layer config + exact package closure
   -> ServiceDeploymentProjection
-  -> ServiceDeployment
-
-selected three-layer config + exact deployment/package closure
-  -> RuntimeConfigSnapshotProjection
-  -> RuntimeConfigSnapshot
+  -> ServiceDeployment + owned BakedConfigPayload + BakedConfigPayloadRef
 ```
 
 每个阶段只消费前一阶段显式提供的 typed facts。下游若需要源码、AST、配置原文或 path/string
@@ -58,15 +55,34 @@ selected three-layer config + exact deployment/package closure
 
 共享 artifact DTO 与 canonical identity 分开：
 
-- artifact model 拥有 PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly 及其共享叶子
-  DTO；
-- artifact identity owner 唯一负责 canonical bytes、hash、prefix、normalization 和 identity validation；
+- `skiff-artifact-model`拥有File IR refs、PackageArtifact、ServiceContract、ServiceDeployment、只聚合exact
+  refs/verification receipts的optional release bundle及其共享叶子canonical DTO；
+- `skiff-artifact-identity`唯一负责公开artifact的canonical bytes、hash、prefix、normalization和identity
+  validation；protected config ref由protected store writer负责；
 - compiler projection input 只承担 typed DTO handoff，不解析 source、不推导 type/ABI、不执行 IO；
 - source、lowering、projection 和 emission 不复制 identity builder。
 
-旧的 `PublicationAbiUnit`、`PackageUnit`、`ServiceUnit`、`CompiledPublication`、
-`LoweredPublication` 或共同 projection bundle 不是目标态 owner。迁移期代码只能作为待删除 legacy
-consumer，不能被新入口或新 artifact 继续依赖。
+Crate依赖方向固定为：
+
+```text
+compiler source/lowering/projection
+  -> skiff-artifact-model
+  -> skiff-artifact-identity
+
+runtime loader/linker
+  -> skiff-artifact-model + skiff-artifact-identity
+
+skiff-router
+  -> strict routing DTO/view + skiff-runtime-transport
+```
+
+`skiff-artifact-model`不得依赖compiler、runtime或Router；`skiff-artifact-identity`只消费artifact-model的typed
+DTO/projection；runtime linked overlay与Router session/socket不得写回artifact。Router不拥有canonical hash，
+不依赖compiler AST/lowering或runtime evaluator/VM；无法共享实现时必须以同一schema与language-neutral golden
+fixture验证parity，不能复制一套独立identity算法。
+
+`PublicationAbiUnit`、`PackageUnit`、`ServiceUnit`、`CompiledPublication`、
+`LoweredPublication`或共同projection bundle均不是合法owner，也不能被任何入口或artifact依赖。
 
 ## Package Compile Input
 
@@ -188,7 +204,7 @@ Service dependency 的 provider config 不进入 caller requirement；它属于 
 
 - 同 path、同 typed access：合并并保留所有 provenance；
 - 同 path、同 type 的 required + optional：effective 为 required；
-- 同 path、不同 type：在 deployment/activation 前 fail closed；
+- 同path、不同type：在ServiceDeployment build前fail closed；
 - `has` 不让 path 变成 required，但仍进入使用与诊断事实。
 
 诊断必须能指出 path、type、requiredness、声明 Package 与 dependency chain。具体显示格式不是架构契约。
@@ -280,17 +296,20 @@ artifact-identity owner计算；各consumer不得自行重算另一套identity�
 
 ## ServiceDeployment Projection
 
-Deployment projection只消费typed code artifacts，不消费config profile，也不拥有AST、source text、
-type/effect inference 或 lowering helper。它负责：
+Deployment projection消费typed code artifacts与受信profile选择的三层config，但不拥有AST、source text、
+type/effect inference或lowering helper。它负责：
 
 - 验证 ServiceContract operations 与 Package callable bindings一一对应；
 - 验证 gateway entries、external selectors 与 exact implementation facts；
-- 闭合 package/service dependency bindings；
-- 生成 immutable ServiceDeployment 与 revision identity。
+- 闭合exact package dependency bindings；service dependency只生成coordinate、expected protocol与used
+  operation slots，不绑定provider build或address；
+- 按exact Package closure验证config requirements，生成deployment-owned protected payload，并通过canonical
+  artifact store writer取得store-domain deterministic keyed `BakedConfigPayloadRef`；
+- 生成immutable ServiceDeployment、payload ref与revision/build identity。
 
-独立config snapshot projection消费三层配置文件、exact ServiceDeployment refs与Package closure，验证每个
-Package自己的typed requirements，并生成`RuntimeConfigSnapshot`。业务配置值、SecretRef、state/resource
-binding和platform policy不进入ServiceDeployment。
+业务配置值不进入PackageArtifact或ServiceContract；Secret明文也不进入公开identity preimage。Config没有
+独立projection或发布生命周期；ref算法与protected-store语义只由
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md)定义，compiler不得复制。
 
 ## Emission Boundary
 
@@ -300,7 +319,7 @@ binding和platform policy不进入ServiceDeployment。
 允许：
 
 - emission按需把typed artifact渲染成JSON；
-- identity owner从专用 typed identity projection计算canonical bytes；
+- public artifact identity owner从专用typed identity projection计算canonical bytes；
 - artifact writer写入content-addressed blobs与immutable records。
 
 禁止：
@@ -318,11 +337,11 @@ binding和platform policy不进入ServiceDeployment。
 - service root仍通过唯一Package compile入口；
 - `http.yml`/`websocket.yml` external ingress不会进入Package API graph或ServiceContract；
 - `service.yml`不接受HTTP/WebSocket内联字段；
-- config profile值只由独立snapshot projection读取，不进入deployment/assembly；
+- config profile值只由ServiceDeployment projection读取并冻结到owned protected payload；
 - SourceModel之后不重建name/type/conformance；
 - lowering不读取manifest或重新推断expression type；
 - projection不读取AST、调用lowering helper或解析raw artifact JSON；
-- identity只有一个canonical owner；
+- 每种public artifact identity与protected config ref各自只有一个canonical owner；
 - 没有generated Skiff source wrapper；
-- 没有legacy Unit/RuntimeProgram/publication ABI被新四对象链重新依赖；
+- 没有共同unit/executable aggregate或publication ABI被三artifact链依赖；
 - 每个strict reader拒绝旧字段、unknown nested field、缺失identity与不匹配owner。

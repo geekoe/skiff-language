@@ -32,14 +32,12 @@ independently of the LaunchAgent's inherited limit.
 ```
 
 From a service directory, `skiff service dev sync` and `skiff service dev watch`
-compile the Package and service control files, build the exact RuntimeAssembly,
-and independently publish a RuntimeConfigSnapshot from `config.yml`,
-`config.<profile>.yml`, and ignored `config.<profile>.secret.yml`. The three
-config files have canonical Package IDs at their root; they are not copied into
-code artifacts or deployment identity. A config-only watch change reuses the
-exact code assembly and publishes a fresh opaque snapshot. For the main
-worktree instance the artifact root is `.stack/dev-home/artifacts`, and
-snapshots are stored securely below its `runtime-config/` directory.
+compile Package/service control files and publish an immutable
+ServiceDeployment. `config.yml`, `config.<profile>.yml`, and ignored
+`config.<profile>.secret.yml` form its protected config payload; a config-only
+change therefore creates a new deployment buildId. The retired RuntimeAssembly and
+independently switched RuntimeConfigSnapshot models are not used. For the main
+worktree instance the artifact root is `.stack/dev-home/artifacts`.
 `skiff check <root>` runs compile validation without syncing local instance
 artifacts. `skiff dev sync` / `skiff dev watch` publish packages, contracts and
 deployments through the compiler; publish already writes the release pointer
@@ -145,9 +143,8 @@ do not require restarting the watch process. Registry entries persist their
 root role and service ID; removing a root still works after its directory has
 already been deleted. A malformed or temporarily missing registry keeps the
 last-known-good sync result and retries—it is never interpreted as an empty
-registry. Explicitly removing the final valid service instead converges watch
-to one exact empty assembly/config-snapshot pair and withdraws the previous dev
-services.
+registry. Explicitly removing the final valid service withdraws only the
+release pointers still owned by that watch ledger.
 
 The registry is also the exact source-watch boundary. Register every service
 root and every package root being developed locally. A service's `package.yml`
@@ -162,7 +159,7 @@ pointer table `(profile, serviceId, version) -> buildId` together with the
 deployment record, so a successful sync needs no separate activation step and
 idempotent republish is the retry strategy. A sync failure after the publish
 phase retains the build state so watch retries reuse it instead of republishing
-every root. Build, snapshot publication, and pointer write must all succeed
+every root. Build, deployment/payload publication, and pointer write must all succeed
 before the input fingerprint is marked successful. Transient
 failures retry after 1, 2, 4, 8, 16, and at most 30 seconds; a new input
 fingerprint replaces the pending retry immediately.
@@ -186,9 +183,12 @@ node scripts/skiff.mjs rollback <service> <version> [--to <build-id>] --artifact
 
 `deploy` publishes `<root>` through `package publish`, which writes the
 release pointer in the same transaction, records the pointer observed before
-the deploy, then waits for `/__router/health` `activeAssembly.buildIds` to
-project the new buildId (default 30s; `--verify-timeout-ms` overrides,
-`--skip-verify` skips the wait) and fails closed on timeout. Re-deploying the
+the deploy, then runs the same exact-build probe as `verify`: the pointer must
+resolve to the new buildId and at least one eligible Runtime must successfully
+load and verify its `DeploymentExecutionImage` (default 30s;
+`--verify-timeout-ms` overrides, `--skip-verify` skips the probe). Health may
+project `releasePointers` and `loadedBuildIds`, but it is not an admission
+record. Re-deploying the
 same content is idempotent and keeps the same buildId. The pre-deploy pointer
 is stored in a rollback record at
 `<artifact-root>/pointers/rollback/<profile>/<service~enc>/<version>.json`
@@ -386,9 +386,9 @@ An explicitly selected Skiff stack must already be running with a connected runt
 must name that stack's ingress origin, existing artifact root, and profile. The runner never
 defaults to the stable instance; non-live execution never writes its external input artifact root.
 The selected `.test.skiff` file must belong to a canonical package root containing `package.yml`.
-Tests that require existing services must select that exact runtime assembly with
-`--base-assembly`; its business config is selected independently with the matching
-`--base-config-snapshot`. Canonical/manual gating should pass `--deny-skips` and `--require-tests`.
+Tests that require existing services resolve their exact service/version release pointers in the
+selected profile. There is no base assembly/config-snapshot pair. Canonical/manual gating should
+pass `--deny-skips` and `--require-tests`.
 
 ```bash
 cd skiff-language
@@ -396,8 +396,6 @@ node scripts/skiff.mjs test \
   /path/to/package/internal/example.live.test.skiff \
   --live \
   --artifact-root /path/to/that-instance/artifacts \
-  --base-assembly '<assembly-identity>' \
-  --base-config-snapshot '<config-snapshot-identity>' \
   --ingress-url 'http://127.0.0.1:<ingress-port>' \
   --profile '<profile>' \
   --deny-skips \
@@ -420,7 +418,7 @@ reused incrementally via its sidecar digest; a missing or empty store triggers
 a hermetic full rebuild), `--fresh` forces a full rebuild, `--plan` prints the
 plan without publishing, compiling, or running, and `--max-cases <n>` caps
 cases per shard, passed to each shard process as
-`SKIFF_TEST_MAX_CASES_PER_ACTIVATION`.
+`SKIFF_TEST_MAX_CASES_PER_BATCH`.
 
 ## WebSocket Fixture Browser/WebSocket Smoke
 

@@ -8,21 +8,21 @@ Service首先是Package，因此root仍必须包含`package.yml`与`api.yml`。S
 - 可选`http.yml`：HTTP external ingress；
 - 可选`websocket.yml`：唯一WebSocket connection entry、connect与close、declared JSON-RPC methods；
 - 可选`config.yml`、`config.<profile>.yml`与ignored `config.<profile>.secret.yml`：同一service
-  activation的三层Package业务配置。
+  deployment的三层Package业务配置。
 
 `http.yml`或`websocket.yml`只能在同root存在合法`service.yml`时出现。三个authoring文件都不参与
 `root.*` namespace，不能被Skiff源码import。`service.yml`中的`http`/`websocket`字段非法；Skiff尚未发布，
 不读取旧内联格式。
 
 三种`config*`文件同样只属于service root；普通Package不能自带一份profile配置。dependency Package的值写在
-宿主service同一文件中，以该Package的canonical ID为key。完整shape与snapshot语义见
+宿主service同一文件中，以该Package的canonical ID为key。完整shape与baked-deployment语义见
 [`config.md`](config.md)。
 
 Skiff没有developer-authored `assembly.yml`。Package和service之间的依赖关系只来自各项目自己的
 `package.yml`；源码仓库不通过一个顶层清单重新声明这些关系，也不因为同仓库存在多个项目而成为一个
 集中编排单元。开发态由watch registry或命令显式给出的service roots选择本次参与的项目，生产态由平台部署
-状态选择精确deployment。Tooling据此生成RuntimeAssembly；配置tooling另行生成
-`RuntimeConfigSnapshot`。二者都不是source authoring文件，且互不引用。
+状态选择精确deployment。Tooling据此生成ServiceContract和ServiceDeployment；配置作为该deployment-owned
+protected payload冻结，不存在developer-authored或runtime-active assembly。
 
 ## 2. service.yml
 
@@ -48,11 +48,11 @@ serviceCalls:
   business request只使用Router operator配置的`requestTimeoutMs`。未来平台policy/resource必须由
   operator-owned独立配置拥有。
 - `kind: test`的profile按testing reference固定为`skiff-test`，使用`config.skiff-test.yml`及可选的
-  ignored `config.skiff-test.secret.yml`；live激活target不改变该config profile。
+  ignored `config.skiff-test.secret.yml`；live release target不改变该config profile。
 
 只改变`serviceCalls`会改变ServiceContract/ServiceProtocolIdentity，但不改变PackageArtifact。HTTP或
-WebSocket文件变化不改变ServiceContract。配置文件变化只创建新的`RuntimeConfigSnapshot`与activation
-generation，不改变PackageArtifact、ServiceDeployment或RuntimeAssembly。配置文件精确schema见
+WebSocket文件变化不改变ServiceContract。配置文件变化创建新的ServiceDeployment/buildId，但不改变
+PackageArtifact或ServiceContract。配置文件精确schema见
 [`config.md`](config.md)。
 
 ## 3. http.yml
@@ -162,13 +162,13 @@ jsonRpc:
 
 一个peer request按
 `(websocket entry id, jsonrpc-2.0-text, method) -> GatewayEntryKey -> GatewayEntryIdentity`
-在socket pin住的deployment generation中路由。业务handler看不到transport id。第一版不支持任何
+在socket pin住的deployment build中路由。业务handler看不到transport id。第一版不支持任何
 notification handler；即使notification的`method`与已声明request method同名也不dispatch。
 第一版也不支持JSON-RPC batch、peer request cancellation或binary RPC。
 
 WebSocket upgrade与HTTP使用相同的service选择阶段：Router严格解析
 `x-skiff-service`/`x-skiff-version`，选择精确deployment，再按该deployment内的
-`(websocket, path)`选择entry并把deployment/generation固定到socket。HTTP Host不参与upgrade route选择。
+`(websocket, path)`选择entry并把deployment `buildId`固定到socket。HTTP Host不参与upgrade route选择。
 
 ## 5. 错误与内部停止
 
@@ -186,7 +186,7 @@ Inbound JSON-RPC固定使用以下platform codes：
 
 未捕获Skiff throw统一脱敏为`-32603`，不把名义错误、stack或私有字段发给peer。预期业务失败使用typed result
 union。Peer disconnect后socket已没有response consumer，runtime可以内部停止该
-connection/generation上仍在执行的handler并丢弃晚到结果；这不产生JSON-RPC cancel error，也不承诺撤销
+connection/socket generation上仍在执行的handler并丢弃晚到结果；这不产生JSON-RPC cancel error，也不承诺撤销
 handler已经提交的副作用。所有notification（包括平台保留前缀）都不执行用户代码、不改变active request。
 每个有id且socket仍存活的已接纳request最多写一个result/error。Parse、batch或无法识别合法id的
 Invalid Request用`id: null`；其余request错误回显原string/safe-integer id。同方向重复active id以`1002`

@@ -18,7 +18,25 @@ Skiff 以名义身份优先。用户声明的 `type` 都创建独立身份；两
 跨 request / 持久边界还要求值满足可恢复值 contract。裸 interface、callback、`unknown` 和无法枚举的结构不能藏在
 ordinary schema 边界深层；`any I` 只有在明确的 owner-internal recoverable boundary 中按可恢复值规则处理。
 
-record / object / collection 采用可变引用语义。`const` 只约束 binding，不表示 deep immutable。
+record / object / `Array` / `Map` / `JsonObject` 以及包含它们的名义 aggregate 采用 value
+semantics。赋值、普通参数传递、返回和 container store 都创建当时内容的逻辑 snapshot；
+之后通过任一 writable binding 修改时都不影响其它 snapshot。实现可以用 move/share/COW
+避免 deep copy，但不能暴露 physical backing identity 或 mutable alias。
+
+`const` 只能在顶层声明，是 compiler-evaluated、request-independent 且 deeply frozen 的值。
+`let` 与 `var` 只能是局部声明；`const`、`let` 和 `var` 都必须在声明处初始化。局部
+`let` 与普通 parameter 的 binding 都取得 logical snapshot 并且不可重绑；从它们以及顶层
+`const`、loop/pattern/`with` binding 派生的 member/index path 都不可写。
+
+Aggregate writable access-path root 只有三类：局部 `var`、当前有效的 `inout` loan，以及
+Actor method 中允许直接写入的 `self.field` member/index path。`var` 可重绑；前两类的
+name/member/index path 可作为 assignment 或 receiver mutation。第三类直接修改 Actor shared
+state；把 `self.field` 先读入普通 local 或传给普通 parameter 只得到 snapshot。Actor method 的 DB
+transaction body 禁止直接或经 callee 写 Actor field，包括以该 field path 为 receiver 的 mutation。
+精确 place 可写性是静态事实，不依赖 runtime refcount。
+
+Opaque resource 与 capability handle 遵守各自的 identity、owner、copy 和 escape 规则；aggregate
+value semantics 不会把它们变成可随意复制的普通值。
 
 ## 2. Nominal Representation Types
 
@@ -144,9 +162,12 @@ or-pattern 的 narrowing 是各分支 narrowing 的 union；所有分支必须�
 
 若 then 或 else 分支必然以 `return`、`throw`、`rethrow`、`break` 或 `continue` 退出，后继代码可应用相反条件的 narrowing。
 
-对某个稳定路径或其前缀赋值，会清除该路径及其子路径的 narrowing。
+对某个稳定路径或其前缀赋值，会清除该路径及其子路径的 narrowing。以该路径作为
+`inout`参数调用后也执行同样的清除。
 
-record / object 是可变引用。传参、callback、method call、host / package API 只要可能写入相关路径或其前缀，就必须清除旧 narrowing。
+普通赋值、传参、返回和container store是logical snapshot，因此一个普通callee不能通过aggregate
+参数修改caller path，也不因普通调用无条件清除caller narrowing。Identity-bearing resource
+与`inout`按各自显式effect/write path处理。
 
 loop 中 narrowing 只在本次迭代控制流内有效，不自动归纳到下一次迭代。
 
@@ -258,9 +279,13 @@ symbol path和ABI expectation；dependency requirement另行约束精确provider
 
 当前禁止 import cycle。顶层 `const` 初始化按源码顺序检查，只能引用已声明的本模块顶层 `const` 或 import 进来的顶层符号。
 
-顶层 `const` 初始化必须是纯的、不可变的、请求无关常量表达式。不得保存请求上下文、用户、trace、事务、临时缓存或随 request 改变的值。
+顶层 `const` 初始化必须是纯的、可终止的、请求无关常量表达式。不得保存请求上下文、
+用户、trace、事务、resource/callback capability、临时缓存或随request改变的值。
 
-`Array`、`Map` 等 mutable collection literal 不允许用于顶层 `const` 初始化。请求内共享临时状态应使用参数、局部变量或显式 request context 模型。
+`Array`、`Map`、record 和 nominal aggregate 可出现在顶层 `const` 中，前提是整个初始化图可由
+const evaluator 完整求值并 deep freeze。读取该值不产生 request allocation；若程序需要可写
+snapshot，必须先存入§1定义的合法 writable root：局部 `var`、当前有效的 `inout` loan，或 Actor
+method 中允许直接写入的 `self.field` path。首次写入按 value/COW 语义分离 frozen backing。
 
 ## 11. Callback Static Rules
 
@@ -276,34 +301,26 @@ callback 捕获外层变量时，其读写集合并入承载 API 调用的 lane�
 
 ## 12. Function Effect Metadata
 
-函数 effect metadata 至少描述 Skiff 可见 read / write path、external effect target 和 conflict-key、返回值
-provenance、boundary分析需要的throw payload provenance、callback profile、stream 生产 / 消费行为和
-推断的 suspension summary。
+函数 effect metadata 至少描述 `inout`、Actor `self.field` 与 identity-bearing resource 的 read/write
+path、external effect target 和 conflict-key、resource provenance、boundary 分析需要的 throw payload
+provenance、callback profile、stream 生产/消费行为和推断的 suspension summary。
 它不包含对调用方公开的“可能抛出类型集合”；函数签名、Package ABI和ServiceContract都不声明或推导
 operation-specific throw set。
 
 跨模块调用使用被 import 模块发布的 metadata；resolver 不重新解析依赖模块实现来猜 effect。
 
-递归和 mutual recursion 使用固定点推导。无法证明返回 root provenance 时，返回值视为 `opaque`。
+普通 aggregate 参数与返回值是 logical snapshot，不携带 caller-writable origin。旧的 mutable
+aggregate root / heap-alias 模型，以及为它发布的 `returnOrigins` / `directReturnOrigins`，不再是 aggregate
+正确性事实，也不进入目标 artifact。Compiler 可以为 move/share/COW 优化跟踪 physical provenance，
+但不得把它变成用户可观察 alias，或用它决定普通 aggregate 是否能进入 service boundary。
 
-返回 provenance 同时记录两层事实：`returnOrigins` 是从返回值可达的全部 origin（包含
-返回值自身），`directReturnOrigins` 只表示返回值自身可能是哪一个 root。fresh 容器的
-直接 root 与其 payload 中可达的 caller root 因而不会混为一谈。payload 包含 caller
-值不等于容器本身是 caller alias；但控制流合并后若 direct root 可能同时为 fresh 和
-caller-owned，write / identity 分析必须保留 caller 候选并保守拒绝不安全边界。
+只有语义上具有身份的 resource/capability handle 保留显式 provenance 与 lifetime descriptor。无法
+证明该 resource 的 owner、lane safety 或 boundary eligibility 时 fail closed，不能把它当作普通 value。
 
-caller 参数的字段或容器元素投影必须保留为“参数序号 + 结构化 selector path”。path
-只允许稳定字段名和 `containerElement`，不得使用源码位置、表达式遍历序号或 callable
-名称。当前 heap 分析对字段内容是 field-insensitive 的：读取字段时只把接收者 root 的
-一层直接 payload 作为该字段的保守 direct 候选，不得把任意深度可达 root 都提升为字段
-自身，否则会制造不存在的 cycle。未知、非法或超过实现上限的 path 必须 fail closed。
-
-`returnOrigins`、`directReturnOrigins` 和结构化 path 都必须跨 Package artifact
-序列化，并参与 package build identity。它们是实现语义事实，不进入 Local ABI 或
-service protocol identity。`maySuspend` 是下节规定的例外：它会被提升为 concrete public Package
-callable 的 Local ABI summary，但仍不进入 interface requirement 或 service protocol。
-
-`opaque` mutable root 不能在 `concurrent` sibling lane 中参与 mutation；若编译器无法证明 lane-local，必须报错。
+`inout` 参数的读/写集使用“参数序号 + 结构化 selector path”跨 Package artifact 发布。
+Path 只允许稳定字段与 container element projection，不得使用 source location、遍历序号或
+display name。未知、非法或超限 path 必须 fail closed。`inout` mode、path effect 与 `maySuspend`
+进入 Package Local ABI，但不进入 `ServiceProtocolIdentity`。
 
 metadata 改变不改变 service protocol identity，但会改变 code revision、编译缓存和并发诊断结果；
 concrete public Package callable 的 `maySuspend` 改变还会改变其 Package Local ABI。
@@ -314,6 +331,9 @@ concrete public Package callable 的 `maySuspend` 改变还会改变其 Package 
 executable 都由 compiler 对函数体、调用图和内建等待点执行 sound may-analysis，得到
 `maySuspend`。递归与 mutual recursion 按固定点收敛；无法证明不会挂起的调用必须保守为
 `maySuspend=true`。
+
+`NoPending` 是经验证的 sound `maySuspend=false` 事实：exact concrete executable 不可达任何
+pending-capable operation。没有 `async` 或显式 `yield` 语法不能单独证明 `NoPending`。
 
 调用传播规则是：
 
@@ -342,6 +362,54 @@ stream/callback形状和开放错误通道不变时，callee内部summary改变�
 dispatch处主动切换。stream next、service call、timer等操作只有在执行到该点且实际需要等待时才释放
 actor执行权；保守分析本身不产生调度点。
 
+### 12.2 Writable Places And `InOut`
+
+普通 parameter 在调用进入时取得 immutable logical snapshot。Callee 需要修改自己的
+aggregate copy 时，先写 `var local = parameter`；该修改不影响 caller。只有显式 `inout`
+参数是 caller-writable loan；该参数在 callee 中是当前有效的 writable root：
+
+```skiff
+function appendOne(inout values: Array<number>) -> void {
+  values.push(1)
+}
+
+function appendedValues() -> Array<number> {
+  var values = [1, 2]
+  appendOne(inout values)
+  return values
+}
+```
+
+规则：
+
+- `inout` 只用于 Package-local execution 中的 exact concrete target：callee 必须是同 Package
+  local target，或通过 Package Local ABI 精确解析的 package-direct callable；不得通过
+  interface/dynamic dispatch 猜 target。
+- Argument 必须是从局部 `var` 派生的精确 name/member/index place，并在 call site 写作
+  `inout place`。Actor `self.field`、局部 `let`、普通 parameter 和顶层 `const` 都不是合法 actual。
+- Compiler 必须证明整个调用期间 loan exclusive；两个重叠 path 不能同时作为 argument，loan
+  不能被 callback capture、保存到 resource 或让 concurrent sibling 观察。
+- Callee 必须有 verified `NoPending`；即§12.1定义的 sound `maySuspend=false`，loan 不能跨越
+  child/host `Pending`。
+- `inout` 可进入 Package public API 与 Package Local ABI，但不得进入 service operation /
+  `ServiceContract`、gateway entry/handler、interface requirement、callback、Actor external method、host effect
+  ABI 或 durable/recoverable payload；这些边界始终执行 value materialization。
+- 写入执行时立即对 caller place 生效；ordinary throw 不回滚已执行写入，caller 捕获错误后
+  仍能观察它们。
+- Verifier 必须重新验证 exact target、parameter mode、exclusive loan 与 `NoPending`，不信任未验证
+  summary。
+
+### 12.3 Concurrent Writable-Place Rules
+
+`concurrent` 的 sibling lane 禁止写入从该 `concurrent` 外层捕获的 `var`，也禁止写入从
+外层 `inout` 参数派生的任何 path；即使两个 lane 修改静态不同的字段也不放行。直接赋值、
+receiver mutation 以及调用 effect 传递得到的间接写入都按同一规则拒绝。
+
+Sibling lane 不得发起 `inout` 调用，因此不会有 caller-writable loan 在 sibling 内存活。Lane-local
+`var` 仍可在本 lane 内修改；普通 aggregate snapshot 不是共享 mutable root。`serial { ... }` 只收束
+顺序，不绕过外层 writable-place 禁令。Callback capture 的读/写集并入所属 lane；identity-bearing
+resource 仍按其 effect/conflict-key 检查跨 lane 冲突。
+
 ## 13. Recursive Types
 
 用户自定义 `type Name = Type` 不允许直接或间接递归。用户自定义 alias 当前也非递归。
@@ -362,6 +430,11 @@ API，即使技术上boundary-available也不会成为service operation。普通
 被选择的public instance可作为receiver root，由其显式listed interface methods派生operations。public
 interface仍只是conformance contract，不直接成为service operation。`serviceCalls`只引用`api.yml`
 public path，不重复source selector或signature；重复、unknown或non-callable path均fail closed。
+
+含 `inout` 参数的 callable 可以是 Package public API，但按§12.2它只能被 Package-direct 调用；
+其 service boundary projection 必须是 `Unavailable(InOutNotAllowedAtServiceBoundary)`。同样的参数
+mode 也不允许出现在 external ingress handler/pre/guard、interface requirement、callback 或 Actor
+external method 中。
 
 HTTP、WebSocket等external ingress不属于service-call projection。它们分别由`http.yml`和
 `websocket.yml`选择当前Package中的handler/pre/guard；这些callable不要求public，也不生成service
@@ -494,6 +567,9 @@ Recoverable boundary 的静态检查对象是 recoverable state plan，而不是
 connection、file descriptor 或没有 durable adapter 的 native handle。`any I` 在 owner-internal recoverable boundary
 中静态允许，但 artifact 必须标记 runtime carrier/self recoverability check：`carrier = Local` 且 self payload 全可恢复时
 可进入边界；`carrier = Remote` 是 request-scope 正向远程引用，进入 recoverable boundary 时 fail closed。
+
+`inout` loan、writable place 与 physical backing identity 不是值，不能进入 recoverable state plan；
+DB / dispatch / queue / persistent payload 不得保存它们或伪造远程 writeback。
 
 ### 18.1 Recoverable Compatibility Contract
 

@@ -28,12 +28,14 @@ layout。
   分派。
 - 远程装箱的 fail-closed 锚点（装箱点锁定 callee protocol identity）。
 - `any I` 与 ordinary object type erasure、package/public ABI、service boundary、DB 和 JSON 的边界。
+- ordinary aggregate snapshot、writable place 与 `inout` 对 interface dispatch 的硬限制。
+- runtime interface target 如何归属 exact deployment `buildId` execution owner。
 - generic interface instantiation、object-safety、concrete receiver identity 和 method slot identity 的长期约束。
 
 本文不负责：
 
 - 用户语法的完整 reference。见 `../reference/any-interface.md`。
-- 静态 interface / explicit conformance 的完整实现计划。见 `../implementation/interface-implementation.md`。
+- 静态 interface / explicit conformance 的完整语义；该契约归 `../reference/interface.md`。
 - 具体 Rust 模块拆分、迁移步骤和任务顺序；这些属于实现计划，不写入本 architecture 文档。
 - durable / 跨 request 持有的远程能力句柄（remote capability transport）、service callback、downcast、
   reflection 或 marker interface runtime value。
@@ -105,10 +107,11 @@ AnyInterface {
 ```
 
 Package-owned interface target在PackageArtifact中使用精确Package Local ABI nominal identity；
-Package-local target保持local identity。`AnyInterface`不能进入ServiceContract operation signature，
-service-call boundary projection必须返回结构化Unavailable原因，不能把它改写成
-`ContractTypeRef`或PackageSchema。`Nullable`和container继续在existential外层保持结构，generic
-arguments不并入显示名称。
+Package-local target保持local identity。Raw `AnyInterface`不能作为ordinary ServiceContract
+`ContractTypeRef`或PackageSchema。唯一例外是reference明确允许的operation顶层、非泛型位置：
+boundary projection把它转换为opaque request-scope callback-capability plan，而不是把
+`AnyInterface`本身写入contract schema。其它位置必须返回结构化Unavailable原因。
+`Nullable`和container继续在existential外层保持结构，generic arguments不并入显示名称。
 
 规则：
 
@@ -131,6 +134,37 @@ arguments不并入显示名称。
 `any I | null` 是内部类型；是否能出现在某个位置由 boundary validator 决定。`Map<any I, V>`（map key 位置）
 必须在 **type checker** 静态 fail closed——这是此特性 map-key 拦截的唯一权威定义点，与 §Runtime Value
 "map key 是 type checker 静态拒绝"一致；不退到 runtime，也不依赖独立的 map-key shape validator 兜底。
+
+## Value Semantics, Writable Places, And `InOut`
+
+ordinary record / object / `Array` / `Map` / `JsonObject` 采用 value semantics。赋值、普通参数传递、
+返回、container store 和 local `as I` 装箱都产生逻辑 snapshot。implementation 可以用 move、
+shared backing 或 COW 避免 eager deep copy，但不得让一个 snapshot 的写入经 physical alias 被
+另一 snapshot 观察。`InterfaceCarrier::Local.payload` 保存的也是这种逻辑 snapshot；
+wrapper 赋值/传参/入容器不会创建 caller-writable payload alias。
+
+绑定可写性是静态 place fact：
+
+- 局部 `let`、普通 parameter、loop/pattern/`with` binding 及从它们派生的 path 不可写；
+- 局部 `var` 可重绑，从它派生且未经 immutable/identity boundary 的精确 member/index path
+  可写；
+- 顶层 `const` 是 compiler-evaluated、request-independent 且 deeply frozen 的 value，不是局部
+  binding 或可写单例。从 ConstantHeap 读取后若需可写副本，先放入 request-local `var`，
+  首次写入按 value/COW 语义产生 request-owned node。
+
+普通 aggregate 参数是 immutable snapshot。callee 要修改自己的副本时先写 `var local = parameter`；
+该写入不影响 caller。只有显式 `inout` 是 caller-writable exclusive loan，且它必须同时满足：
+
+- call site 传入从 `var` 派生的精确、exclusive place，并在实参处重复 `inout`；
+- target 是已解析的 exact Package-local / package-direct concrete callable，`inout` mode 与读写
+  path 进入 Package Local ABI；
+- compiler 与 artifact verifier 都证明 target 是 `NoPending`（`maySuspend=false`），不信任未验证 summary。
+
+`inout` 不得出现在 interface requirement（含 receiver）、interface method table、callback
+signature、ServiceContract、gateway/external ingress、Actor external method、host effect 或 recoverable
+payload/boundary。通过 `any I` 的 `InterfaceMethod` call 既没有静态 exact concrete target，又必须
+保守为 `maySuspend=true`，因此绝不能作为 `inout` loan 的 callee。verifier 必须拒绝任何尝试借
+same-process 部署、callback adapter 或 remote operation projection 绕过该限制的 artifact。
 
 ## Boxing
 
@@ -169,7 +203,7 @@ public API graph 的 `public_instance_key`。`.` 是成员访问符，用它拼�
 裸 `remoteLlm/managedLlm` **不是值，没有 first-class 类型**。它是一个装箱源 / public instance 寻址 root，
 只能出现在两种位置：`remoteLlm/managedLlm.method(...)`（直接 operation 调用）或 `remoteLlm/managedLlm as I`
 （装箱）。这两种**语法**都是 `/` 一同引入的新写法；底层 outbound dispatch **机制**复用现状 service
-dependency 调用路径（语法新、机制旧）。`const x = remoteLlm/managedLlm` 非法（装箱源不是值）。不给它 first-class
+dependency 调用路径（语法新、机制旧）。`let x = remoteLlm/managedLlm` 非法（装箱源不是值）。不给它 first-class
 类型，是因为候选只有"裸 interface 名"（当类型违法）或"codegen 的 stub type"（不做 codegen）——寻址
 靠 interface 类型 + `contract_operation_id` 已足够，类型出现在装箱**之后**，是 `any I`。
 
@@ -292,7 +326,9 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
   判据见`recoverable-value.md`。
 - `carrier`（method table / operation 寻址）、type descriptor 和 artifact metadata 不计入 ordinary object
   payload，也不写入 DB / JSON。
-- clone/materialize/debug 可以保留 interface wrapper 的运行时可执行性，但不能把它编码成 ordinary JSON。
+- clone/materialize/debug 可以保留 interface wrapper 的运行时可执行性，但 clone 仍是逻辑
+  snapshot；可以共享 COW backing，不得共享可观察 mutable alias，也不能把 wrapper 编码成
+  ordinary JSON。
 - equality、map key、JSON encode、DB encode 默认不支持 `any I`；若未来要支持，必须先修改 reference
   明确定义语义。第一版 fail closed，但拦截层级不同：map key 与 JSON/DB encode 是 type checker 静态拒绝
   （等同“裸 interface 不能当值”级别的保证，不能退到 runtime）；equality 这类无法在 type checker 拦尽的残余情况由 runtime 兜底。
@@ -301,6 +337,23 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
   顶层 `interface` 与 `carrier.operations` 不同。故一个 `any I` 值的完整身份是 `(interface, carrier)`，
   `carrier` 单独不足以唯一标识。这是未来定义 equality / downcast 时的前置事实：远程值的相等性须按
   `(interface, 寻址坐标)` 而非仅寻址坐标判定。
+
+## Execution Owner
+
+每次 request、stream producer 或 callback invocation 都先 pin 一个 exact deployment `buildId`，并只在该
+build 的 immutable `DeploymentExecutionImage` 内解析 executable、method table、type/restore plan 和
+ConstantHeap。`InterfaceValue` 不需要在每个 wrapper 中重复保存 buildId；`Local` 分支的 linked id
+由当前 execution frame 的 exact image 定界，不得在其它 build 的 overlay 中解析。
+
+`Remote` carrier 保存 service requirement / public-instance / protocol operation 坐标，不把某个 provider
+implementation build 永久写入该值。每次真正进入 provider 时按 release/dependency contract 解析并
+pin 当次 exact provider deployment `buildId`；调用、stream 和 callback 在其生命内继续使用该
+owner，不会被后续 pointer 更新迁移。callback capability 除 runtime route 外必须固定
+`ownerDeploymentBuildId`；route 只是 transport coordinate，不是 owner identity。
+
+这个模型不存在 deployment activation generation 或全局 `RuntimeAssembly` owner。Actor activation
+identity/generation 和 transport socket generation 可以保留为它们各自子系统的生命周期事实，
+但不得参与 deployment execution owner、interface target lookup 或 fallback。
 
 ## Method Table
 
@@ -337,7 +390,7 @@ struct InterfaceMethodSlot {
   *数据形态*而非 binding 机制本身。）
   其余字段用结构化 ref，唯独这里是 string，原因即此；它必须包含 generic interface type args。
 - slot signature 是 interface requirement 完成 type substitution 后的 canonical调用形状，不包含
-  `maySuspend`。
+  `maySuspend`，也不允许任何 `inout` parameter mode。
 - target 是 conformance checker 选出的 concrete receiver method；linker 把 artifact target 解析为
   executable address。concrete target自己的推断summary保留在executable/Package callable metadata，
   不进入method table的requirement signature。
@@ -393,7 +446,7 @@ struct RemoteOperationSlot {
 对 `any I` 值调用 method：
 
 ```skiff
-const out = provider.execute(ctx, call)
+let out = provider.execute(ctx, call)
 ```
 
 compiler 必须把它识别为 interface method call，而不是普通 field access 加动态 object lookup。
@@ -417,8 +470,8 @@ enum CallTargetIr {
 2. receiver 的 `interface` 与 call target interface 一致这一不变量由 linker 静态保证；runtime 不承担生产校验，至多在 debug build 做 assert。runtime 只信任已经验证并 linked 的 plan，不退回字符串比较的兜底路径。
 3. 按 `carrier` 分支分流：
    - `Local`：从 `carrier.method_table.slots[slot]` 取 linked target，以 `carrier.payload` 作为 explicit
-     `self`，再追加用户参数，调用 concrete receiver executable（本进程）。本地分支必有 payload，由 enum
-     保证。
+     `self`，再追加用户参数的逻辑 snapshot，调用 concrete receiver executable（本进程）。
+     `self` 和普通参数在 callee 中都是 immutable value binding；本地分支必有 payload，由 enum 保证。
    - `Remote`：从`carrier.operations`取该slot对应的`ContractOperationId`，按`carrier.dependency_ref`走
      service dependency dispatch（与 `remoteLlm/managedLlm.method(...)` 直接 operation 调用走同一条 outbound
      dispatch 机制——该机制复用现状 service dependency 调用路径，`/` 写法本身是新增语法）；远程分支结构上
@@ -434,6 +487,8 @@ enum CallTargetIr {
 静态suspension分析不能从`any I` requirement取得concrete summary，因此所有`InterfaceMethod`调用都保守为
 `maySuspend=true`。`Remote`分支还因其本身是service call而必然属于caller-side suspension；两种分支都
 不会仅因保守summary在runtime自动插入`yield`。
+任何 `InterfaceMethod` call 携带 `inout` argument mode，或任何 method table / remote operation slot 声称
+接受 `inout`，都是 verifier 必须拒绝的 malformed artifact。
 
 禁止路径：
 
@@ -544,6 +599,7 @@ Contract。
 `any I` 只允许 object-safe interface：
 
 - method requirement 必须有 `self: Self` receiver。
+- receiver 和其它 requirement 参数都不得使用 `inout`。
 - method requirement 不得带 method-level type params。
 - `Self` 不得出现在非 receiver 参数、返回值、record field、container element 或 function type 中。
 - method requirement 不能是 `static`、`native` 或 provider-only declaration。
@@ -557,7 +613,7 @@ Contract。
 `AnyInterface` 是 schema-open runtime type。边界判据是**值进入哪类 boundary policy**，不是"是否离开当前函数"。
 以下位置默认 fail closed（`carrier` 里的 method table / `contract_operation_id` 在对端无意义）：
 
-- service operation 参数或返回值。
+- service operation 中除上述显式顶层callback-capability projection以外的参数或返回值。
 - public instance operation signature。
 - public API type schema closure。
 - ~~service DB schema、queue/spawn/persistent work item payload~~ —— **此条已被 `recoverable-value.md` 取代**：
@@ -577,8 +633,13 @@ Contract。
 
 判据收敛为：ordinary public schema 不承载 `any I` 默认 wire shape；owner-internal DB/dispatch/queue/persistent/runtime
 lane 按“值必须可恢复”处理；离开 owner service trust domain 的行为值第一版 fail closed。boundary walker 区分
-"Package入口签名"（local link，允许）、"service operation签名"（service boundary，拒绝）和
+"Package入口签名"（local link，允许）、"service operation签名"（只允许显式顶层
+callback-capability projection，其它拒绝）和
 "owner-internal recoverable boundary"（按 carrier/self recoverability 判定）。
+
+上述任何 boundary 都不能携带 `inout` loan。顶层 `any I` 若按显式规则投影为
+request-scope callback capability，其 operation 也只接收 detached value snapshot，不保留 caller-writable
+origin。same-process fast path 不得改变这一 ABI 事实。
 
 ## Relationship To Type Erasure
 
@@ -607,19 +668,20 @@ per-instance source type metadata。
   （第一版 fail-closed，卡 callback transport），不属本条；本条说的是“把一个远程引用坐标 durable 化”这件**另一回事**。
 - ~~**运行期实例级跨service句柄**（为运行期临时实例铸造可寻址坐标+"句柄→活实例"注册表+生命周期/GC）~~
   **（已否定，2026-06-27，据 `recoverable-value.md §Cross-Service Interface Value`）**。这块基建当初的设想是"用
-  坐标机制去寻址运行期临时实例"，但**坐标与临时对象机制不匹配**：坐标只能指**有稳定身份的顶层符号**（顶层 const /
-  public instance），临时对象没有这种身份，硬要给它坐标就得造注册表把它**伪装**成稳定实例——这是用错机制。正解是
+  坐标机制去寻址运行期临时实例"，但**坐标与临时对象机制不匹配**：远程调用坐标只能指向
+  `api.yml` 显式公开并被 `service.yml.serviceCalls` 选择的 public instance root。普通顶层
+  `const` 是 deeply frozen value，不是 identity-bearing singleton；它的 logical snapshot 可按 value/COW
+  语义复用，不得为它隐式铸造 remote receiver identity。临时对象同样没有 public-instance 身份，
+  硬要给它坐标就得造注册表把它**伪装**成稳定实例——这是用错机制。正解是
   按对象类别分两条互不替代的机制：
-  - **顶层符号**（单例，不可复制）→ **传坐标**。其中被`service.yml.serviceCalls`选择的public instance坐标
-    `(service, public_instance_key)`复用现状service dispatch、无需注册表/GC；而私有顶层const的内部路径
-    坐标需要跨service寻址层**新增能力**（非“复用现状”）。第一版跨service寻址单元只有`api.yml`公开且被
-    `service.yml.serviceCalls`选择的public instance；调用按`ContractOperationId`寻址，未进入ServiceContract的symbol
-    不在该寻址面中。故私有顶层const第一版**寻址层不认**，其坐标方案属演进（见
-    `recoverable-value.md §Cross-Service`）。
-  - **运行期临时（局部）对象** → **直传可恢复字节**，对端持有、回拨带回、构造侧按 build id 无状态重建等价副本，
+  - **已发布 public instance root** → **传坐标**。`(service, public_instance_key)` 复用现有
+    service dispatch，调用按 `ContractOperationId` 寻址，无需注册表/GC。未进入 ServiceContract
+    的 symbol（包括普通顶层 `const`）不在该寻址面中。
+  - **运行期临时（局部）对象** → **直传可恢复字节**，对端持有、回拨带回、构造侧在当次
+    exact deployment `buildId` owner 中无状态重建等价副本，
     不铸句柄、不持有活实例、无注册表/GC。
   两条都不需要"实例级句柄 + 注册表"，故本块基建不再认领。**进恢复边界（值被传去对端、对端回拨）的只有局部对象直传
-  这一条，其卡点是下方的 service callback transport**；顶层符号那条第一版要么是正向 `Remote`（consumer 主动调、不进
+  这一条，其卡点是下方的 service callback transport**；已发布 public-instance 坐标那条第一版要么是正向 `Remote`（consumer 主动调、不进
   恢复机制）、要么寻址层不认（演进），不在“进恢复边界”之列。
 - **service callback transport**（consumer 拿句柄回调打回 callee 特定活实例）。现状 outbound dispatch 单向
   （runtime 主动连 router，业务流量 consumer→callee）；反向入站路由到一个特定活对象实例是相反方向的传输层
@@ -640,15 +702,16 @@ callback 形态。
 
 - callee 返回的 `any J` 装箱源是**已发布 public instance**（再下游的远程公开实例）：其坐标是
   `(service, public_instance_key)`，但 `dep_in_callee` 是 **callee 侧的 alias**，consumer 侧无此 alias——须**重映射
-  坐标**到 consumer 可寻址的地址系，不是原样透传。这是纯坐标重映射，不涉及临时实例。（未发布的私有顶层 const 第一版
-  跨 service 寻址层不认，不在此列——见 `recoverable-value.md §Cross-Service` 演进项。）
-- callee 返回的 `any J` 装箱源是**运行期临时（局部）实例**（`localImpl as J`）：没有顶层符号身份，坐标无处可指，
-  改走**直传**——callee 把它的可恢复字节进 wire，consumer 持有，回拨时带回、由 callee 按 build id 无状态重建等价
+  坐标**到 consumer 可寻址的地址系，不是原样透传。这是纯坐标重映射，不涉及临时实例。
+  普通顶层 `const` 没有 public-instance receiver identity，不在此列。
+- callee 返回的 `any J` 装箱源是**运行期临时（局部）实例**（`localImpl as J`）：没有 public-instance receiver identity，坐标无处可指，
+  改走**直传**——callee 把它的可恢复字节进 wire，consumer 持有，回拨时带回、由 callee 在当次
+  exact deployment `buildId` owner 中无状态重建等价
   副本。**不铸句柄、不维护注册表**（那块基建已否定，见上）。
 
 两类**都不需要"运行期实例级句柄 + 注册表"**。真正的卡点是 **service callback transport**：consumer 之后对这个
 `any J` 调方法要反向打回 callee，而现状 outbound dispatch 单向。该通道落地后，本约束方可解除；在此之前，远程方法
-签名含 `any I` 在装箱点编译失败。（顶层符号坐标本身的寻址复用现状 service dispatch，不依赖 callback transport；
+签名含 `any I` 在装箱点编译失败。（public-instance 坐标本身的寻址复用现状 service dispatch，不依赖 callback transport；
 依赖它的是"反向回拨"这个动作。）
 
 downcast 仍未提供。未来若支持：本地装箱值复用 `carrier::Local.concrete_type` 回到 concrete type；

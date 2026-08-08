@@ -48,7 +48,7 @@ db object User {
 DB target沿用测试顶层名字语法：
 
 ```skiff
-const session = db require subjectImpl/model.AdminSession(sessionId)
+let session = db require subjectImpl/model.AdminSession(sessionId)
 ```
 
 这里的`subjectImpl/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
@@ -66,7 +66,7 @@ dependency的logical collection分别由stable
 `(packageId, declared logical collection identity)`系统编码；作者不提供physical mapping。
 
 同一含DB metadata的Package可因direct与transitive依赖形成菱形。若两条edge解析到同一精确build且
-owner-relevant facts相同，activation将其合并为一个metadata owner；同一Package ID解析到不同build、
+owner-relevant facts相同，deployment image link将其合并为一个metadata owner；同一Package ID解析到不同build、
 logical collection identity缺失/重复或system physical-name encoding collision都必须失败。
 
 普通service同样只有一个数据库。数据库identity由operator选择的受信Mongo endpoint/storage domain与
@@ -102,16 +102,18 @@ db object User {
 - 带`where`条件的partial index当前不支持，compiler必须直接拒绝。源码predicate不能以未类型化AST或
   Mongo filter形式进入artifact或Runtime；未来需要partial index时必须先定义封闭的typed predicate IR。
 
-Runtime只会在当前service完整DB plan已经满足后接纳activation。新增普通或唯一索引可以由平台以幂等方式
-创建；更改或删除已受管索引需要显式schema migration，不能在activation时静默drop/rebuild。一个candidate
-同时包含同service多个version时，Runtime先合并并验证它们的索引声明；同一logical index identity出现不同
-定义会拒绝activation。
+Runtime只会在exact deployment image的完整DB plan已经满足后执行该build。Plan只来自该image自己的
+exact package closure；Runtime不合并其它release/build的索引声明，也不运行全局candidate generation或
+activation prepare。Image load期间，平台幂等创建缺少的普通或唯一索引，并复读验证同一stable identity
+的定义完全一致。更改或删除已受管索引需要显式schema migration，不能在image load时静默drop/rebuild。
+当前build未声明的已有受管索引保留，以允许多build并存；
+但同一logical index identity已存在不合容定义时，image load fail closed。
 
 违反已生效唯一索引的业务写入抛出
 `std.db.ConstraintError { kind: "unique", packageId: string, collection: string }`。
 `collection`是源码声明的logical collection identity。该错误不包含Mongo错误文本、database、physical
 collection/index name、冲突key或业务值。若Runtime为已有
-数据创建唯一索引时发现重复值，candidate prepare同样以脱敏、不可重试的constraint分类失败；由于service
+数据创建唯一索引时发现重复值，deployment image load同样以脱敏、不可重试的constraint分类失败；由于service
 request尚未开始，该失败不进入业务`catch`。
 
 ### 1.3 Contract Storage And Host Implementation
@@ -146,7 +148,8 @@ db contract AgentThread {
 - `db contract Name` 必须附着到同模块同名 `type`，附着类型当前必须是非泛型 concrete record（与 `db object` 相同）。
 - 契约声明 primary key 与**必需索引**；不产生物理 collection 身份，不参与
   `(packageId, declared logical collection identity)` 编码。
-- 契约是引擎代码中该类型 db 操作可编译的前提；契约内的 db target 在宿主 assembly 中解析（见 §1.3.3）。
+- 契约是引擎代码中该类型 db 操作可编译的前提；契约内的 db target 由宿主的 exact
+  `DeploymentExecutionImage`基于自己的 deployment package closure 作 image-local binding（见 §1.3.3）。
 - 引擎其它自有 `db object` 不受本机制影响。
 - 契约的 db 操作不能引用不在契约字段集中的字段（field path 校验以契约类型为准）。
 
@@ -179,17 +182,17 @@ db object Thread implements agent/model.AgentThread {
 - 实现声明拥有完整存储语义：物理集合身份按宿主 package 编码，字段来自宿主类型，索引与
   `storage ... using encrypted` 等 mapping 在此一处声明。
 - 契约必需索引必须被实现声明覆盖（同一 logical index identity，定义一致）。
-- 一个契约在同一 service assembly 内必须恰好被一个实现声明覆盖；缺失、重复或契约与实现的
-  package/artifact 解析不一致都 fail closed。该约束按 assembly 无条件生效，不因契约 target 是否被
-  实际使用而豁免。
+- 一个契约在同一 exact `DeploymentExecutionImage`的 deployment package closure 内必须恰好被一个实现
+  声明覆盖；缺失、重复或契约与实现的 package/artifact 解析不一致都 fail closed。该约束按 image
+  无条件生效，不因契约 target 是否被实际使用而豁免。
 - `kind: test` service 经 topLevelAlias 引用契约类型的场景不在本节定义：契约 target 不产生物理集合，
   宿主实现是 production service 场景，test 不承担宿主角色。
 
 #### 1.3.3 绑定与覆盖校验
 
-- 绑定发生在链接/激活期：契约的 db target 解析到实现声明的物理集合；引擎读行按自己的字段子集
-  plan 解码，宿主读行按完整字段集解码。绑定或覆盖校验失败在编译/激活阶段 fail closed，不进入业务
-  `catch`。
+- 绑定发生在 exact `DeploymentExecutionImage`的 image-local link/verification：契约的 db target 解析到
+  当前 deployment package closure 内实现声明的物理集合；引擎读行按自己的字段子集 plan 解码，宿主读行按
+  完整字段集解码。绑定或覆盖校验失败在编译或 image load 阶段 fail closed，不进入业务`catch`。
 - 覆盖校验（fail closed）：
   - 实现类型字段集覆盖契约类型字段集；重叠字段的 schema identity 逐字段一致（identity 按
     `static-semantics.md §16/§17` 的 schema / wire identity 规则判定）。**identity 一致 = 归一化
@@ -263,7 +266,7 @@ type User {
   profile: UserProfile?
 }
 
-const users = db find many User {
+let users = db find many User {
   fields { profile.displayName, profile.avatar.url }
 }
 ```
@@ -293,7 +296,7 @@ const users = db find many User {
 Key read 可以追加只含 projection 的 block：
 
 ```skiff
-const user = db require User(id) {
+let user = db require User(id) {
   fields { profile.displayName }
 }
 ```
@@ -307,7 +310,7 @@ const user = db require User(id) {
 示例：
 
 ```skiff
-const users = db find many User {
+let users = db find many User {
   fields { name, visits }
   where createdAt > 1
   order id asc
@@ -400,7 +403,7 @@ alias UserListItem = { id: string, name: string, visits: number }
 
 ```skiff
 db transaction {
-  const user = db require User(id)
+  let user = db require User(id)
   db update User(id) { visits += 1 }
 }
 ```
@@ -408,7 +411,7 @@ db transaction {
 `db transaction value` 是产值形态：
 
 ```skiff
-const result = db transaction value {
+let result = db transaction value {
   db require User(id)
 }
 ```
@@ -424,7 +427,13 @@ const result = db transaction value {
   撤销已经开始的commit。
 - 读取结果仍是 readonly snapshot。
 - 所有持久写入必须显式使用 DB operation。
-- 嵌套 transaction 当前不支持。
+- transaction body中的普通局部绑定使用`let`或`var`；局部`const`不是语法。
+- 嵌套 transaction不支持。Compiler拒绝词法可见的嵌套；经helper动态重入时，Runtime必须在进入
+  内层`db transaction`前拒绝，不能把它静默折叠进外层边界。
+- Actor method（含`create`）中的transaction是DB-only boundary。Transaction body可读Actor
+  fields，但禁止直接或经callee写Actor fields；赋值与以Actor field为receiver的原地修改都
+  属于写。Compiler必须用闭合的callable effect检查该规则；无法证明无field write的dynamic
+  target保守拒绝。DB abort不回滚Actor fields，也不为Actor transaction建立内存快照。
 - transaction 冲突不自动重试。数据库写冲突或 transient transaction conflict 会归一为可捕获的
   `std.db.ConflictError { target: "std.db", message: string, retryable: true }`；错误消息是稳定、
   脱敏的 DB 冲突说明，不包含 Mongo 原始详情。调用方只应在确认整个重试边界不包含外部副作用时
@@ -470,7 +479,7 @@ db object Thread {
 `db claim` 是 try-claim：获取成功则执行块体并最终返回 `true`；槽被持有且未过期则不执行块体、立即返回 `false`。没有等待或排队语义。
 
 ```skiff
-const claimed = db claim Thread(threadId).drain as thread {
+let claimed = db claim Thread(threadId).drain as thread {
   runDrainLoop(thread)
 }
 ```
@@ -506,7 +515,7 @@ const claimed = db claim Thread(threadId).drain as thread {
 ### 8.4 槽状态读取
 
 ```skiff
-const slot = db lease Thread(threadId).drain
+let slot = db lease Thread(threadId).drain
 ```
 
 返回 `{ owner: string, expiresAt: number, requestId: string? }?`；`null` 表示无人持有或已过期。
@@ -527,7 +536,8 @@ const slot = db lease Thread(threadId).drain
 
 每个 service 在每个部署环境拥有自己的数据库命名空间。database identity 与稳定 service id 绑定，不包含 service version、build id 或 profile。
 
-业务源码和 `service.yml` 不配置真实 DB 连接串。平台通过 router / runtime activation 下发 `serviceDb.mongoUrl`。业务代码不能读取连接串，也不能选择任意 database。
+业务源码和`service.yml`不配置真实DB连接串。Router通过connection bootstrap向Runtime下发
+`serviceDb.mongoUrl`。业务代码不能读取连接串，也不能选择任意database。
 
 一个 service 默认不能直接读写另一个 service 的 database。跨 service 数据访问应通过 service API、事件复制或未来明确设计的只读投影视图。
 
@@ -629,7 +639,7 @@ keyring、业务代码主动暴露 plaintext 或进程 memory dump 的攻击者�
 
 ### 10.4 Runtime host keyring
 
-Keyring 是 runtime host secret，不属于 router、service activation、control frame、resolved service config 或 artifact。
+Keyring是runtime host secret，不属于Router、ServiceDeployment、control frame、resolved service config或artifact。
 `runtime.yml` 中的唯一引用是：
 
 ```yaml

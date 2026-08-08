@@ -58,9 +58,10 @@ fail closed。
 record 值**，或**远程 public instance 寻址源**（见 §2.5）。
 
 ```skiff
-const p: any ToolProvider = HostProvider { ... } as ToolProvider   // 本地装箱源
+let p: any ToolProvider = HostProvider { ... } as ToolProvider     // 本地装箱源
+var providers: Array<any ToolProvider> = []
 providers.push(DbProvider { ... } as ToolProvider)
-const llm: any LlmClient = remoteLlm/managedLlm as LlmClient           // 远程装箱源（见 §2.5）
+let llm: any LlmClient = remoteLlm/managedLlm as LlmClient        // 远程装箱源（见 §2.5）
 ```
 
 - 本地装箱源：`expr` 的静态类型必须是 concrete nominal record instantiation，且 `implements I`（显式
@@ -90,9 +91,9 @@ const llm: any LlmClient = remoteLlm/managedLlm as LlmClient           // 远程
 - 远程装箱值：经该值携带的 operation 寻址走跨 service 调用（带 remote 语义，见 §2.5、§6）。
 
 ```skiff
-const p: any ToolProvider = ...
-const tools = p.listTools(ctx)     // 间接调用：本地或远程，由 p 的装箱源决定
-const out = p.execute(ctx, call)
+let p: any ToolProvider = ...
+let tools = p.listTools(ctx)       // 间接调用：本地或远程，由 p 的装箱源决定
+let out = p.execute(ctx, call)
 ```
 
 只能调用 `I` 声明的 method requirement；`any I` 不暴露具体类型的其它成员。
@@ -108,8 +109,8 @@ service call，因service call本身而是潜在挂起点，不读取callee内�
 `any I` 一样赋值、传参、进 `Array<any I>`，调用方法时走跨 service 调用。
 
 ```skiff
-const llm: any LlmClient = remoteLlm/managedLlm as LlmClient
-const providers: Array<any ToolProvider> = [
+let llm: any LlmClient = remoteLlm/managedLlm as LlmClient
+let providers: Array<any ToolProvider> = [
   remoteLlm/remoteTools as ToolProvider,   // 远程
   localTools as ToolProvider,           // 本地
 ]
@@ -122,13 +123,32 @@ const providers: Array<any ToolProvider> = [
   `remoteLlm/managedLlm` 寻址成装箱源，再 `as I` 装箱。`/` 寻址整体优先级与 `.`/call 等 postfix 同级，高于
   §2.3 所述 `as` 的转换运算优先级。
 - 裸 `remoteLlm/managedLlm` **不是值**，没有可赋值的类型。它只能出现在 `.method(...)`（直接调用）或 `as I`
-  （装箱）左边。`const x = remoteLlm/managedLlm` 非法。
+  （装箱）左边。`let x = remoteLlm/managedLlm` 非法。
 - 远程装箱源必须显式 implements `as I` 选定的 interface，并公开该 interface 方法对应的 operation。
 - 远程对象也是本地对象：装箱后的 `any I` 值在本进程内自由流动；"远程"只体现在**调用方法时**——那一刻
   发生跨 service 调用（带 remote 语义）。值传递本身不跨进程。
 - 远程能力是 request-scope 正向远程引用，不能持久化后跨 request 重建（见 §7）。若进入
   DB/dispatch/queue/persistent payload 或显式 recoverable slot，按可恢复值规则以
   `recoverable_remote_carrier_not_persistable` fail closed。
+
+### 2.6 值语义、可写绑定与 `inout`
+
+record / `Array` / `Map` / `JsonObject` 及其装入 `carrier = Local` 的 payload 都保持 value
+semantics。`as I` 先求值装箱源，再把当时的逻辑 snapshot 放入 interface wrapper；
+后续赋值、普通参数传递、返回或 container store 也都产生逻辑 snapshot。实现可以用
+move/share/COW 共享 physical backing，但不得暴露 mutable alias。`carrier = Remote` 的 snapshot
+复制的是不可写的寻址/operation 坐标，不是远程活对象指针。
+
+局部 `let` 是不可写 runtime binding；局部 `var` 可重绑，其未经 immutable/identity boundary
+的精确 member/index path 可写。`const` 只是顶层 compiler-evaluated、request-independent 且
+deeply frozen 的常量，不是第三种局部 mutable binding。普通参数（包括 `any I`）是
+immutable value binding；callee 需要可写副本时必须先放入局部 `var`。
+
+显式 `inout` 是唯一的 caller-writable loan，只允许 exact Package Local ABI 中的
+Package-local / package-direct concrete callable，且 compiler 与 verifier 都必须证明 `NoPending`。
+interface requirement 不得声明 `inout`；因此通过 `any I` 的间接调用也不可发起或传播
+`inout` loan。`inout` 同样不得进入 callback、service/gateway/Actor external contract、host
+effect 或 recoverable boundary。
 
 ## 3. 值布局
 
@@ -175,6 +195,7 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 只有满足 object-safety 的 interface 才能用于 `any I`（method table 的每个槽必须是定长可寻址的实现地址）：
 
 - method requirement 必须有 `self: Self` receiver。
+- receiver 和其它 requirement 参数都不得使用 `inout`。
 - method requirement 不得带 method-level 泛型参数。
 - `Self` 不得出现在非 receiver 参数、返回值、record 字段、container element 或 function type 中。
 - method requirement 不得是 `static`、`native` 或 provider-only declaration。
@@ -208,6 +229,9 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
   `any I` **可以**作为同进程 **package public 入口参数**（package link 进 consumer 同一 runtime，值不
   跨进程；远程性只在调用时 dispatch）。这是 binding 退役后 package 抽象依赖能力的承载点（见 §8）。
 - **§4 显式 conformance**：`as I` 装箱要求装箱源显式 `implements I`，本地远程一致，与 §4 一致。
+
+callback capability 的所有 operation 参数与返回值都依然是 boundary snapshot；它不得携带
+`inout` mode 或 caller-writable origin。这不因 owner 与对端物理上处于同一 runtime 而放宽。
 
 ## 7. 非目标（本版）
 
@@ -267,6 +291,10 @@ compiler和artifact admission从同一个canonical position规则重建并校验
 interface清单。DB/dispatch/queue/persistent等跨request边界是否接受普通local `any I`由recoverable boundary
 plan与runtime carrier check决定，本文不展开。
 
+本地 method table、callback owner 与每次远程调用进入的 provider execution 都必须属于已固定
+exact deployment `buildId` 的 immutable execution image。不存在可以代替该 owner 的 deployment
+activation generation 或全局 runtime assembly；Actor activation 和 transport socket generation 只是
+它们各自域内的状态，不参与 interface target identity。
+
 内部架构契约见 `../architecture/any-interface-value.md`；可恢复边界契约见
-`../architecture/recoverable-value.md`；落地阶段计划见
-`../implementation/any-interface-completed.md` 和 `../implementation/any-interface-todo.md`。
+`../architecture/recoverable-value.md`。

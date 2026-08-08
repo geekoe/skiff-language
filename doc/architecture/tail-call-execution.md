@@ -1,9 +1,9 @@
 # Tail-call Execution Architecture
 
-本文是Skiff本地尾调用识别、执行与递归stack安全的唯一内部架构事实源。用户可观察的tail position、支持
-范围、budget、错误与non-tail failure语义只由
+本文是Skiff本地尾调用eligibility、递归stack安全与诊断语义的内部架构事实源。用户可观察的tail position、
+支持范围、budget、错误与non-tail failure语义只由
 [`../reference/runtime.md#tail-call-execution-and-recursive-stack-safety`](../reference/runtime.md#tail-call-execution-and-recursive-stack-safety)
-定义；本文只规定compiler/linker/runtime怎样实现该语义，不复制另一套语言规则。
+定义；目标bytecode执行机制由[`bytecode-vm.md`](bytecode-vm.md)共同约束。
 
 设计锚定baseline commit
 `874ee3a6bd5123d2c54e1a550d07fd99b29b27ad`、tree
@@ -12,53 +12,66 @@
 ## Scope and outcome
 
 完成态必须让direct self recursion、同一Package内的mutual recursion、跨source module mutual recursion及
-generic/impl self recursion在满足reference eligibility时通过一个迭代evaluator loop执行。递归次数不得
+generic/impl self recursion在满足reference eligibility时由同一bytecode dispatch loop执行frame
+replacement。递归次数不得
 增加native poll stack、active non-tail program depth或尾调用诊断栈空间。
 
-同一实现同时服务canonical RuntimeAssembly projection和legacy/test `EvalRuntimeProgram` projection。它不
-增加语言关键字、annotation、manifest字段、环境旋钮或用户配置，也不依赖`tokio::spawn`把普通尾调用拆成新
-task。
+目标实现服务当前request钉住的exact deployment `buildId` `DeploymentExecutionImage`。树遍历
+evaluator迁移期间仍可使用本文件记录的
+`Flow::TailCall` trampoline，但production cutover后由bytecode `tail_call_local`替代；不保留legacy/test
+projection或fallback。该变化不增加语言关键字、annotation、manifest字段、环境旋钮或用户配置，也不依赖
+`tokio::spawn`把普通尾调用拆成新task。
 
-## Existing sufficient facts
+## Tree-evaluator baseline facts
 
-Baseline已经保留识别所需的全部事实：
+以下是迁移前tree evaluator已经保留的识别事实，用于解释为什么该阶段不新增tail marker；bytecode target
+由上一节的emitter/verifier facts取代：
 
 - `StmtIr::Return { value: Option<ExprRefIr> }`精确引用其返回表达式；
 - `ExprIr::Call { call: CallIr }`保存target、source site、ordered args和generic type args；
 - source/lowering把same-file target降为`LocalExecutable`，跨module target降为
   `PublicationExecutable`；
-- assembly linker把两者都归一为`LinkedCallTarget::Executable { addr: ExecutableAddr }`；
+- 迁移前tree-evaluator linker把两者都归一为
+  `LinkedCallTarget::Executable { addr: ExecutableAddr }`；
 - linked executable保存params、return type、self type、slot layout、`maySuspend`和body；
-- `ExecutableInvocation`与`AssemblyExecutableInvocation`已经拥有env创建、generic substitution、
+- 迁移前evaluator的invocation/projection seam已经拥有env创建、generic substitution、
   explicit/inherited self及argument declaration逻辑；
-- `RuntimeExecutionProjection`已经统一legacy与assembly的target/type view；
 - `ProgramExecutionContext`已经共享execution control、request heap limits、Actor frame、exception
   correlation与local call stack。
 
 这些事实足以在linked evaluator的`Return`分支做精确识别。删除任何一个事实都会破坏target、argument、
 generic/self或source attribution；新增persisted marker则不会提供新的必要信息。
 
-## Canonical owner and rejected alternatives
+## Canonical owner and cutover
 
-Canonical组合只有两部分：
+Target bytecode组合只有四部分：
 
-1. `runtime/eval`在可传播到当前callable exit的`Return`处识别既有`LinkedExprIr::Call`和exact
-   `LinkedCallTarget::Executable`。
-2. `runtime/eval::program_execution`拥有唯一prepared tail frame与迭代trampoline；implicit-self和
-   explicit-self入口必须收敛到这一个loop。
+1. Source/lowering按reference识别eligible direct-return call，并保留exact relocation与return plan facts。
+2. Canonical artifact ISA新增semantic opcode `tail_call_local`，bytecode emitter为eligible edge发射该
+   instruction与exact target relocation；它不是可漂移的boolean marker。
+3. Pre-link validator验证opcode/relocation结构；post-link verifier证明exact-local target、return plan、self/
+   generic substitution、`NoPending`/`InOut`和cleanup-region eligibility。
+4. VM在同一dispatch loop中以单一commit替换当前frame/value segment。
 
-不得新增File IR `tail`字段、metadata convention、artifact terminator、linked marker或compiler SCC
-annotation。原因是现有`Return -> ExprRef -> Call -> exact linked target`已经无歧义；新persisted shape会
-额外扩张artifact DTO、identity/generation、link validation、legacy projection和consumer矩阵，却不解除
-任何当前阻断。
+树遍历evaluator阶段不新增File IR `tail`字段、metadata convention或SCC annotation，继续从
+`Return -> ExprRef -> Call -> exact linked target`识别并产生internal `Flow::TailCall`。Bytecode hard cut后，
+`tail_call_local`有意废止并取代“artifact不得有tail opcode/marker”的旧contract。新ISA
+允许且要求PackageArtifact持久化该opcode；仍禁止的只是与opcode并行、可与之漂移的
+`is_tail`布尔字段或SCC/metadata marker。新ISA reader不识别该opcode时必须按version fail closed；
+runtime不得重新猜测第二套eligibility或fallback为普通call。
 
-不得只优化self symbol。Exact executable地址已经自然覆盖mutual和cross-module recursion，symbol/SCC
-special case反而会复制linker owner。不得用`tokio::spawn`或每hop heap continuation模拟TCO：前者改变
-scheduling、Actor、heap与exception语义，后者把native stack线性增长换成heap线性增长。
+`tail_call_local`的relocation只能在当前exact deployment `buildId`的
+`DeploymentExecutionImage`内解析成exact executable target。Frame replacement不得改变
+`DeploymentOwnerIdentity`或跨service/deployment边界；execution identity中没有`RuntimeAssembly`、
+assembly/activation generation或ambient active set。
 
-## Internal control contract
+两代实现都不得只优化self symbol。Exact target自然覆盖mutual/cross-module recursion；不得用
+`tokio::spawn`或每hop heap continuation模拟TCO。
 
-`runtime/eval`需要一个internal-only control result，职责草图如下；名字和Rust字段不是public API：
+## Tree-evaluator migration control contract
+
+迁移期`runtime/eval`使用一个internal-only control result；production bytecode VM不保留该Rust control
+shape：
 
 ```text
 Flow::TailCall(PreparedTailCall)
@@ -123,16 +136,17 @@ local/publication edges在link后都属于该variant，因此direct self、mutua
 以下target不进入第一版trampoline：
 
 - `PackageDirect`：必须保留Package target validation、test-effect interception、Local ABI lane及optional
-  receiver const求值。Package dependency graph不能形成普通本地递归SCC；进入dependency callable后，其
+  top-level `const` receiver求值。Package dependency graph不能形成普通本地递归SCC；进入dependency callable后，其
   内部`Executable`递归仍可TCO。
-- local interface method与local const receiver executable：动态receiver/payload或const必须先求值；
+- local interface method与top-level `const` receiver executable：动态receiver/payload或frozen const必须先求值；
   进入exact method后的静态递归仍由`Executable`覆盖。
-- activation-relative service、Actor dispatch和callback capability：它们跨activation/owner、fresh heap、
-  admission、epoch、wire或continuation boundary。
+- service、Actor dispatch和callback capability：它们跨deployment/instance/capability owner、fresh heap、
+  boundary materialization、wire或continuation boundary。
 - native、builtin、receiver builtin及未链接/未知interface target：它们不是普通program frame replacement。
 - stream defer、dispatch和emit：它们分别属于scheduler、request或stream terminal owner。
 
-未来扩展到`PackageDirect`或运行时解析出的local interface/const receiver时，必须先把现有validation、
+未来扩展到`PackageDirect`或运行时解析出的local interface/top-level `const` receiver时，
+必须先把现有validation、
 test-effect、receiver和call-site preparation收敛到同一个prepared-frame seam。不能复制dispatch逻辑，也
 不能改变reference tail-position定义；该扩展不是本次完成标准。
 
@@ -154,6 +168,55 @@ instantiated `RuntimeTypePlan` canonical-equivalent时安全：
 Generic type args必须在caller env销毁前通过既有`call_type_substitutions`实例化。Impl method沿用现有
 explicit-self param、SelfValue slot与inherited self规则；tail replacement不能重新推断receiver，也不能
 丢失self carrier的heap/catch identity。
+
+### Bytecode frame replacement safety
+
+`tail_call_local`是已验证artifact的semantic instruction，不是runtime探测后可回退的optimization。
+Post-link verifier必须在VM执行前证明：
+
+- target在同exact deployment `buildId` image内，arity、parameter/return plan、self、generic
+  substitution与Package Local ABI精确匹配；
+- opcode处在可直接退出callable的region depth，没有未完成cleanup/catch/timeout/transaction/
+  scheduler owner，也不在unwind path中；
+- frame中没有必须由被删除slot继续拥有的callback capture、resource guard、transient root或
+  pending/resume state；VM只能在fiber为`Runnable`、`PendingOperation = None`、
+  `UnwindState = None`时commit replacement；
+- 普通aggregate argument按value semantics做move/share snapshot。Physical backing可共享，但callee不能
+  因frame replacement获得可观察mutable alias或指向已删除slot的raw reference。
+
+VM必须在caller frame仍完整存活时，按源码顺序对每个argument求值一次，并把结果放入
+不会被source/destination overlap覆盖的rooted prepared segment。求值、分配、target/arity/type检查或budget
+检查失败时，caller frame仍可用于正常unwind和call-site归因；不得留下部分新frame。全部准备
+完成后，VM以一个commit：
+
+1. 保留旧frame的caller continuation、return destination和exact deployment owner；
+2. 完成loan结束/转移与root所有权变换；
+3. 截断旧slot/operand/region segment，安装callee frame与prepared arguments；
+4. 把pc切到callee entry，中间不暴露可调度或可观察的half-replaced state。
+
+Commit后任何live slot、loan、handle或resource都不得指向已删除frame segment。这一不变量无法证明时，
+emitter必须发射`call_local` + `return`，或verifier fail closed；runtime不能把已验证的
+`tail_call_local`临时降级成普通call。
+
+### `NoPending` and `InOut`
+
+`InOut`是Package Local ABI的exclusive write-through loan，不是普通value。Tail replacement必须保持其
+loan lifetime而不保留caller frame：
+
+- 任何拥有`InOut`形参的callable都必须通过transitive `NoPending`验证。该callable可达的
+  `tail_call_local`、argument evaluation与target body都不得到达pending-capable instruction；不能用
+  runtime“这次恰好Ready”替代proof。
+- target含`InOut`形参时，verifier必须同时证明target是当前image内的exact local executable、其
+  Local ABI为`NoPending`、actual是exclusive writable `var` path，且loan不逃逸到callback/resource/
+  concurrent sibling。
+- caller已有的incoming loan只能在tail edge上结束，或将同一writable-path descriptor与loan
+  token线性转移给callee；不允许copy loan或同时保留两个writer。
+- 以将被截断的caller local slot为base的新`InOut`实参不能在首版直接进入
+  `tail_call_local`；emitter必须保留普通call。未来若支持，必须在ISA中定义可验证的
+  typed rehome/transfer，不能让runtime保留raw caller-slot pointer。
+
+任何`NoPending`、loan exclusivity、base lifetime或linear transfer无法证明的edge都不得发射
+`tail_call_local`；已损坏artifact在post-link verification阶段拒绝。
 
 ## Instruction, depth and scheduler boundaries
 
@@ -216,15 +279,17 @@ Tail chain的诊断空间必须常量有界：
 这是刻意的tail-call stack语义，不是诊断缺失。若未来需要完整logical tail history，必须使用独立、有界的
 telemetry sampling；不能恢复unbounded exception stack。
 
-## Legacy and assembly projection
+## Evaluator-to-bytecode migration
 
-识别与loop位于shared linked evaluator，而不是compiler artifact rewrite或assembly-only linker：
+树遍历evaluator存活期间，canonical和test path必须共享同一个linked evaluator/trampoline，不能增加
+test-only识别。Bytecode production cutover后：
 
-- assembly projection用`RuntimeAssemblyExecutionProjection`解析addr/type；
-- legacy/test projection用`EvalProgramProjection`解析同一linked stmt/expr shape；
-- 两者都通过`RuntimeExecutionProjection`取得return plan并进入同一trampoline；
-- canonical assembly不得转换回legacy `RuntimeProgram`；
-- malformed/unlinked target继续按现有projection fail closed，不能因tail fallback选择另一projection。
+- PackageArtifact保存relocatable `tail_call_local`及exact target relocation；
+- exact deployment buildId loader/linker/verifier产生唯一可执行image，不生成
+  `RuntimeAssembly`或assembly/activation generation；
+- malformed target或不满足eligibility的opcode fail closed，不能在runtime降级成另一projection；
+- old `RuntimeExecutionProjection`/`EvalProgramProjection`与tree trampoline一起删除；
+- 语义改变的aggregate value/top-level `const`/`InOut` case不以旧evaluator作为等价oracle。
 
 ## Verification and completion
 
@@ -232,25 +297,31 @@ telemetry sampling；不能恢复unbounded exception stack。
 
 - compiler lowering：direct self、same-file mutual、cross-module publication、generic function及impl self的
   `Return` ExprRef必须直接指向exact Call；wrapped/non-tail forms不得满足该结构。
-- linker：local/publication edges在canonical assembly中归一为exact `ExecutableAddr`；不新增tail
-  artifact field、metadata convention或schema generation。
-- runtime positive：legacy与assembly各有一条direct self深递归；same-file和cross-module mutual；
+- emitter/linker/verifier：eligible edge发射`tail_call_local`并解析为同exact-build image target；不新增
+  独立tail boolean metadata/SCC convention；非法return plan/region/target、live pending/unwind state、
+  `NoPending`/`InOut`或removed-slot lifetime拒绝。
+- runtime positive：deployment bytecode真实路径覆盖direct self深递归、same-file和cross-module mutual；
   generic/impl self；branch return；ordered/single argument evaluation。
 - runtime negative：binary/wrapper/call-argument/catch/timeout/concurrent/DB/stream defer/service/Actor/native
-  不误转移；plan不等价回退普通调用。
+  不误转移；plan不等价、caller-local `InOut` base或不可证明loan transfer由emitter保留
+  普通调用，损坏的opcode由verifier拒绝。
 - safety：non-tail depth 128可进入、下一层以`programCallDepth`失败且runtime继续健康；现有tail-recursion
   guard fixture改成真正non-tail recursion。
 - budget：无限tail recursion由小instruction limit终止，不返回depth error；有限tail loop的instruction
   accounting与对应普通调用逐hop一致。
 - carrier/error：generic/self、nominal/union/representation/container carrier等价；throw/catch/rethrow
   identity与correlation保持；tail stack长度不随100,000 hop增长。
+- frame/loan：argument failure留住完caller frame可unwind；commit后无live reference指向removed
+  slots；incoming `InOut`结束/线性转移、caller-local loan负例与transitive `NoPending`都有
+  focused verifier/runtime test。
 - scheduler：所有独立callable task从fresh depth开始；stream terminal独立测试不计作TCO证据。
 
 ### Pressure and real path
 
 至少一个runtime test在1 MiB Tokio worker stack上完成100,000次tail hop并验证结果，不能只依赖production
 64 MiB stack。至少一个canonical Skiff source fixture必须经过真实
-source -> compiler -> File IR -> assembly/link -> runtime路径，覆盖大于32层的self或mutual recursion。
+source -> compiler -> bytecode artifact -> deployment load/link/verify -> runtime路径，覆盖大于32层的self或
+mutual recursion。
 
 聚焦owner先运行：
 
@@ -271,14 +342,17 @@ node scripts/verify.mjs --only skiff-tests
 - tail hop保留argument、generic/self、heap carrier、budget、deadline、stop、error与Actor-local语义；
 - 所有lexical/owner boundary负例保持普通路径；
 - non-tail recursion在native stack耗尽前结构化失败，尾递归不受任意depth常数限制；
-- legacy与canonical assembly共享owner，无artifact marker、第二trampoline或fallback projection；
+- deployment bytecode只有一个`tail_call_local`执行owner，无第二eligibility/trampoline或fallback projection；
+- 执行owner是request钉住的exact deployment `buildId`，无`RuntimeAssembly`或generation identity；
+- frame replacement为全准备后的单一commit，`PendingOperation`/`UnwindState`、removed-slot lifetime与
+  `NoPending`/`InOut` loan安全均由verifier fail closed；
 - compiler、runtime、Skiff source真实路径及1 MiB stack压力证据齐全；
 - canonical文档与实现一致，没有语言关键字、用户配置、test-only production bypass或stream terminal混入。
 
 ## Non-goals
 
-- 不优化非尾递归，也不把所有evaluator recursion改写成显式VM stack。
-- 不承诺PackageDirect、dynamic interface、const receiver、service、Actor、callback、native或stream scheduler
+- 不把non-tail call误做tail replacement；non-tail call由VM显式frame stack承载。
+- 不承诺PackageDirect、dynamic interface、top-level `const` receiver、service、Actor、callback、native或stream scheduler
   boundary的TCO。
 - 不保留无限logical tail-call traceback。
 - 不改变instruction limit、deadline、internal stop、request heap、Actor admission/suspension或stream

@@ -3,29 +3,22 @@
 ## 本文负责 / 不负责
 
 本文定义部署与版本解析的长期模型：**不可变产物 + 小指针表 + 注册目录 + runtime 懒加载**。
-它已取代 activation 协调层（Mongo `activation_state` 仓库、coordinator 的 prepare/commit CAS、
-epoch store、generation lease、durable pending 与 reconcile）成为部署语义的权威
-（M1–M4 落地，2026-08-06 合入 main；M5 收尾中）。
+每个service release都由自己的exact pointer决定；不存在跨service的全局运行记录或切换协议。
 
-本文不定义语言语法、YAML 字段、artifact DTO 细节或 CLI 拼写。Package / ServiceContract /
-ServiceDeployment / RuntimeAssembly 的对象语义仍以
-[`package-service-contract-deployment.md`](package-service-contract-deployment.md) 为最高权威；
-registry 生命周期与 typed pointer 的机械细节以
-[`release-registry.md`](release-registry.md) 为权威。本文只负责"版本如何解析到 buildId、
-runtime 如何获得可执行内容、部署切换为什么不需要协调"。
-
-迁移过程见 [`doc/implementation/runtime-lazy-deploy/`](../implementation/runtime-lazy-deploy/)；
-本文只保留长期契约，不记录临时执行细节。
+本文不定义语言语法、YAML字段、artifact DTO细节或CLI拼写。Package / ServiceContract /
+ServiceDeployment与可选release bundle的对象语义仍以
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md)为最高权威；本文拥有
+registry immutable-write、release pointer、版本解析、runtime load与rollback机械契约。
 
 ## 四条不变式
 
-1. **产物只增不换**。内容寻址的 immutable record（file-ir、package artifact、service contract、
-   service deployment、runtime assembly）一旦写入永不变更；相同内容的重构建产出相同 identity。
+1. **产物只增不换**。内容寻址的immutable record（file-ir、package artifact、service contract、
+   service deployment，以及可选release bundle）一旦写入永不变更。公开artifact的相同内容产出相同全局
+   identity；含protected config ref的deployment在同一store security domain内确定性重构建为同一buildId。
 2. **唯一可变状态是一张小指针表**。`(profile, serviceId, version) → buildId`，单键原子更新；
-   没有"当前 assembly"概念，多个版本可以同时存在。
+   多个版本可以同时存在，也不聚合成跨service运行对象。
 3. **runtime 无协调状态**。runtime 以 buildId 为唯一加载单位：内存中有就直接执行，没有就从
-   配置的 artifact 目录懒加载；加载不到就是错误。runtime 不感知版本、不感知"当前"、不参与任何
-   跨 runtime 协议。
+   配置的 artifact 目录懒加载；加载不到就是错误。runtime 不感知人类版本坐标，也不参与跨runtime切换协议。
 4. **路由 fail closed**。请求携带人类坐标 `(serviceId, version)`；router 解析指针得到 buildId，
    只派发给"已加载该 buildId 或具备懒加载能力"的 runtime；解析不到、无候选或加载失败一律快速失败。
 
@@ -37,22 +30,55 @@ runtime 如何获得可执行内容、部署切换为什么不需要协调"。
   唯一的加载单位，也是指针表的取值。
 - **指针表**：`(profile, serviceId, version) → buildId`。复用 typed pointer store 的原子写机制
   （rename + lock），单键更新天然原子。rollback = 把键指回旧 buildId。
-- **deployment 记录**：服务的一次发布产物，烘焙该次发布的服务配置（config 属于产物，不属于
-  独立提交的 snapshot），指向其 package 闭包与 file-ir。
+- **deployment 记录**：服务的一次发布产物，以不可替换的deployment-owned `BakedConfigPayloadRef`冻结
+  protected配置，指向package闭包与file-ir，并保存service dependency contract slot；它不保存provider
+  build或runtime address。
+- **DeploymentExecutionImage**：一个 exact deployment `buildId` 的 immutable runtime image。它只闭合
+  该deployment的package-direct code/type/const/capability。它是唯一运行执行单位；跨service provider在
+  每次boundary invocation开始时另行解析并pin，不进入consumer image identity。
+
+## Immutable store、pointer 与 audit
+
+Registry分别存储PackageArtifact及其子记录、ServiceContract、ServiceDeployment与可选release bundle。
+这些对象没有共同kind或共同父DTO。写入必须按canonical bytes计算identity，在目标目录写临时文件、完整
+flush/rename后重读校验；record缺失、hash/owner不符或引用闭包不完整都fail closed。Reader不能观察半写入
+record，也不能从source revision补齐runtime事实。
+
+Runtime release唯一可变状态是：
+
+```text
+ReleasePointerKey(profile, serviceId, exactVersion) -> deployment buildId
+```
+
+Pointer更新是单键原子操作；实现可以使用同目录rename + lock或等价CAS。Publish必须先使目标deployment及其
+闭包完整可读，再更新pointer。每次production变更保存append-only history，至少记录old/new target、actor、
+时间、原因和toolchain/provenance receipt；audit不成为runtime fallback。Rollback只把同一key指回一个仍可
+验证的旧buildId，不修改历史record。
+
+Package coordinate pointer可以作为compiler/tooling解析依赖的独立typed index，但不能被Runtime用于选择
+已构建image内的PackageArtifact。Source revision同样只服务可信重编译、审计与复现，不是Runtime加载对象。
+Registry service或CLI可以拥有这些durable facts；Router/Runtime只消费已经materialize的immutable store与
+release pointer，不反向调用registry业务service。
 
 ## Runtime 懒加载
 
 runtime 收到一个待执行的 buildId：
 
-1. 内存中已有该 buildId 的已加载 image → 直接执行。
+1. 内存中已有该 buildId 的已验证 `DeploymentExecutionImage` → 直接执行。
 2. 没有 → 进入该 buildId 的临界区（per-buildId 锁）：同 buildId 的并发请求在锁外等待；
-   持锁者按内容寻址从配置的 artifact 目录读取 deployment 记录、package 闭包与 file-ir 并
-   构建可执行 image。
+   持锁者按内容寻址从配置的 artifact 目录读取 deployment 记录、package 闭包与 file-ir，先做
+   pre-link structural validation，再 link relocation/constant heap，最后做 post-link semantic verification
+   并构建 image。完整 VM 契约见 [`bytecode-vm.md`](bytecode-vm.md)。
 3. 加载成功 → 注册进"已加载集合"，放行等待的请求。
 4. 加载失败或超时（记录缺失、目录不可达、超时阈值）→ 等待的请求快速失败。
 
-已加载集合**只增不删**，与内容寻址同一哲学。长期运行的 runtime 内存会累积 buildId；逐出策略
-（如 LRU）是 runtime 本地策略，逐出后回到懒加载路径，语义不变，不引入任何协调。
+同一个 buildId 不得因load期间任何service pointer的取值不同而生成不同image。Service dependency slot只保存
+`serviceId + exact version + expected protocol identity`；执行该slot时解析provider pointer，取得provider
+buildId并加载/进入另一个image。一次invocation及其stream/callback pin该provider owner；pointer更新只影响
+后续新invocation。不同service pointer彼此独立，读者可以观察到任意合法的新旧build组合。
+
+已加载集合是runtime本地cache，可以增长，也可以按本地策略（如LRU）逐出未被owner pin的image；逐出后
+回到同一懒加载路径。Cache变化不修改release pointer，也不要求其它replica同步。
 
 runtime 的注册与能力通告：
 
@@ -78,8 +104,8 @@ runtime 的注册与能力通告：
 - **同版本覆盖**（version 相同，唯一替换路径）：新 buildId + 单键指针更新。旧 buildId 的
   image 在已加载集合中保留；在途请求不受影响；新请求走新 buildId。
 - **回滚**：指针指回旧 buildId。旧 buildId 大概率仍在 runtime 内存中，瞬时可用；不在则懒加载。
-- **assembly 的重新定位**：assembly 不再是运行时切换单位，而是**发布/验证的快照 bundle**
-  （build-once-deploy-many 的引用单位，供 verify 与 release promotion 使用）。
+- **可选离线聚合**：`ReleaseBundle`只列出exact `ServiceDeploymentRef`与verification receipt ref/receipt，
+  便于verify或promotion复现；bundle identity由这两组事实确定性计算。它不进入load、routing或request。
 
 ## 多 runtime
 
@@ -87,66 +113,51 @@ runtime 的注册与能力通告：
 互不通知，零协调成本。新版本通过"收敛"而非"切换"扩散到全部实例。单 runtime 与多 runtime
 没有任何语义差异——多 runtime 只是同一模型的水平复制。
 
+## Artifact store 与 Runtime bootstrap
+
+Router配置唯一规范化`artifactsPath`与`serviceDb.mongoUrl`。Runtime主动连接后，Router在dispatch前发送
+一次连接级bootstrap，至少包含这两个事实和Runtime所需的HTTP response limit；同一连接内缺失、重复冲突或
+变更都fail closed。Router与Runtime可以位于不同机器，但`artifactsPath`必须指向内容一致的共享immutable
+store。它们不从源码、registry service、ambient environment或Runtime本地默认值重建这些事实。
+
+Router只读取release pointer和routing metadata，不解析Package executable。Runtime按buildId读取deployment
+闭包、protected config payload、PackageArtifact与bytecode并构造image。`artifactsPath`、Mongo URL和HTTP
+limit是operator topology，不进入PackageArtifact、ServiceContract、ServiceDeployment或build identity；
+service代码也不能读取provider URL或物理database name。
+
 ## 配置归属
 
-服务配置（API key、provider 端点等）在发布时烘焙进 deployment 记录，随 buildId 懒加载。
-不存在独立于产物的 config snapshot 提交；没有第二个可变状态。
-
-## 被移除的机制
-
-| 机制 | 原职责 | 为什么不再需要 |
-| --- | --- | --- |
-| `skiff-router.activation_state` 仓库 | committed 世代持久化 + pending | 权威改为指针表；无 pending 概念 |
-| coordinator prepare/commit/abort CAS | 两阶段切换 + 乐观锁 | 无"切换"；指针更新单键原子 |
-| durable pending / reconcile / 启动恢复 | 崩溃一致性 | 无跨步骤事务 |
-| epoch store + generation lease | 一致视图 + 请求钉住 | 请求在 admission 时绑定 runtime 会话；版本并行存在 |
-| config snapshot 提交 | 随切换提交配置 | config 烘焙进 deployment 记录 |
-| runtime 全量 assembly admission | 提交前预载候选 | 懒加载按 buildId 按需加载 |
-| activation 504 语义 | 超时可能异步提交 | 无跨参与者等待，不存在歧义终态 |
+服务配置（API key、provider端点等）在发布时冻结到ServiceDeployment-owned `BakedConfigPayload`，随buildId
+懒加载。Protected ref是store security domain内确定性的keyed identity：同domain同canonical payload得到同一
+ref，不同domain得到不同ref，且不知道domain key的一方不能离线枚举候选secret。Ref进入deployment identity；
+payload没有独立selector或发布lifecycle，缺失、替换、解密失败或校验失败都会使整个image load失败。Ref的
+唯一算法owner、immutable-put与secret规则见
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md) §11；
+authoring规则见[`../reference/config.md`](../reference/config.md)。
 
 ## 流水线接口
 
 与部署流水线（publish / deploy / verify / rollback）对齐：
 
-- **publish**：产出 buildId + deployment 记录（+ assembly 快照 bundle），写入不可变 store；
-  幂等（同内容同 identity）。
+- **publish**：产出buildId + deployment记录（可选附带只含refs/receipts的`ReleaseBundle`），写入不可变store；
+  在各自identity domain内对相同canonical输入幂等。
 - **deploy**：更新指针（单键原子）+ 可选预载提示；目标环境（dev / 线上）只是不同的
   store / router / 指针表实例。
-- **verify**：health / smoke 门禁，按 bundle 验证。
+- **verify**：对exact deployment refs执行health / smoke，并可把结果写成receipt后聚合进bundle。
 - **rollback**：指针指回旧 buildId。
 
 watch 只是 deploy 的自动触发器，不拥有流程。
 
-## 与既有文档的关系
+## 文档所有权
 
-- [`runtime-deployment-topology.md`](runtime-deployment-topology.md) 的"每个 profile 只有一个
-  active RuntimeAssembly / 全量加载"部分由本文取代为"按 buildId 懒加载、多版本并存"。
-- [`managed-dev-watch.md`](managed-dev-watch.md) 中 committed generation、activation CAS、
-  expectedGeneration 的契约由本文取代为"指针更新 + 幂等 deploy"。
-- [`release-registry.md`](release-registry.md) 的 release lifecycle 保持；本文把
-  "dev lifecycle 的原子切换"具体化为指针更新。
-
-## 迁移路径（已完成）
-
-M1–M4 已按本路径全部落地（2026-08-06 合入 main），部署链路已从 activation 协调层切换到本文模型：
-
-1. **M1 — 指针表落地** ✅：typed pointer store 新增 release 指针键 `(profile, serviceId, version)`，
-   由 publish 写入（与 deployment 记录同事务）；CLI `skiff release set/unset/get`。
-2. **M2 — runtime 懒加载** ✅：按 buildId 构建 image 的路径复用现有 loader；注册为
-   "已加载 buildId 集合 + 能力通告"（capabilities-only，无 Register 帧）。
-3. **M3 — router 派发切换** ✅：请求解析走 release 指针；候选集并入"能力者"；fail-closed 保留。
-4. **M4 — 移除 activation 协调层** ✅：activation_state 仓库、coordinator、epoch、lease、
-   config snapshot 独立提交全部下线；`assembly.activation` 帧族、`/__skiff/activate-assembly`、
-   `assembly activate` / `assembly sync-state` 退役；watch 改走"指针 + 幂等 deploy"；
-   router bootstrap 不再连 Mongo，health `activeAssembly` 为指针表投影。
-5. **存量迁移** ✅：无线上数据，未做世代迁移（M4 总监决策）。
-
-剩余为 M5 收尾（进行中）：`skiff deploy` / verify / rollback CLI 与 agine 侧验证。
+- 本文是release pointer、immutable store、lazy load、replica与rollback的唯一长期事实源。
+- [`package-service-contract-deployment.md`](package-service-contract-deployment.md)拥有artifact对象、identity、
+  ServiceContract和service/package boundary。
+- [`managed-dev-watch.md`](managed-dev-watch.md)只拥有本地registry、fingerprint、重试与由watch管理的pointer
+  ledger；它不得为多个service pointer增加共同事务。
+- [`bytecode-vm.md`](bytecode-vm.md)拥有deployment image的decode/link/verify/execute内部契约。
 
 ## 开放问题
 
 - 懒加载 image 的内存上限与逐出策略（本地策略，先不做）。
 - 同版本覆盖的窗口期是否需要在线上默认开启预载提示。
-- ~~release 指针与 package/service pointer 的复用与命名冲突~~：已解决（M1）——release
-  指针走独立的 `(profile, serviceId, version)` 键与独立 path 命名空间，与 package/
-  service pointer 键不冲突。

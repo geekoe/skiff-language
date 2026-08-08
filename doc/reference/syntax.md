@@ -14,7 +14,7 @@ Skiff 当前不使用分号。简单语句由逻辑行结束；在括号、方�
 
 普通标识符只使用 ASCII：首字符为 `_` 或 ASCII 字母，后续字符可含 `_`、ASCII 字母和 ASCII 数字。关键字不能作为普通标识符。
 
-关键字包括声明、控制流、并发、导入导出和基础 literal 相关单词：`function`、`fn`、`native`、`static`、`type`、`alias`、`interface`、`impl`、`const`、`let`、`if`、`else`、`match`、`value`、`for`、`while`、`return`、`break`、`continue`、`throw`、`rethrow`、`catch`、`with`、`emit`、`concurrent`、`serial`、`timeout`、`import`、`export`、`implements`、`in`、`as`、`true`、`false`、`null`、`Self`。
+关键字包括声明、控制流、并发、导入导出和基础 literal 相关单词：`function`、`fn`、`native`、`static`、`type`、`alias`、`interface`、`impl`、`const`、`let`、`var`、`inout`、`if`、`else`、`match`、`value`、`for`、`while`、`return`、`break`、`continue`、`throw`、`rethrow`、`catch`、`with`、`emit`、`concurrent`、`serial`、`timeout`、`import`、`export`、`implements`、`in`、`as`、`true`、`false`、`null`、`Self`。
 
 基础类型名、prelude 核心类型名和内建 value root 是保留名；它们不能被声明、import alias 或局部绑定 shadow。关键 root 包括 `std`、`root` 和 `config`。
 
@@ -31,9 +31,20 @@ duration literal 是单个 token，由正整数和单位 `ms`、`s`、`m`、`h`�
 普通顶层声明不带 `export` 修饰。源码层 public API 不通过 `.skiff` re-export 声明表达；public API
 是 source-layer metadata，不是 Skiff source file 语法的一部分。
 
-顶层 item 包括 `function`、`type`、`alias`、`interface`、`impl` 和 `const`。`let` 只允许出现在 block 内。
+顶层 item 包括 `function`、`type`、`alias`、`interface`、`impl` 和 `const`。`const` 只是
+顶层声明；`let` 与 `var` 只允许出现在 block 内，局部 `const` 不是语法。三者都必须在
+声明处提供 initializer：
 
-顶层 `const` 必须初始化。局部 `const` / `let` 也必须初始化。`const` 约束 binding 不能重新赋值，不承诺其引用值 deep immutable。
+```ebnf
+TopLevelConstDecl = "const" Identifier (":" Type)? "=" Expr
+LocalBindingDecl = ("let" | "var") Identifier (":" Type)? "=" Expr
+```
+
+三个名称的职责不重叠：
+
+- 顶层 `const` 表示 compiler-evaluated、request-independent、deeply frozen 值；
+- 局部 `let` 表示运行时不可重绑且不可通过该 binding 修改的值；
+- 局部 `var` 表示可重绑、可作为 writable access-path root 的值。
 
 普通裸 block 不是 statement。block 只出现在函数体、控制流、`with`、`timeout`、`concurrent`、`serial`、`value` 等语法结构要求的位置。
 
@@ -59,7 +70,10 @@ namespace，也不生成 wrapper 或普通 type alias。
 
 函数声明由可选 `native` / `static` 修饰、函数头和函数体组成。普通函数有 block body；`native` 函数可以无 body。
 
-函数头包含 `function`、名称、可选类型参数、参数列表和返回类型。参数必须写类型。类型参数写在 `<...>` 中，允许尾随逗号。
+函数头包含 `function`、名称、可选类型参数、参数列表和返回类型。参数必须写类型。普通参数
+写作 `name: Type`；显式 write-through 参数写作 `inout name: Type`。`inout` 是参数 mode，
+不是类型修饰符；它的 Package-local exact-target 限制由 static semantics §12.2 检查。
+类型参数写在 `<...>` 中，允许尾随逗号。
 
 `static function` 是 type namespace 成员，不绑定 `self`。普通 receiver method 通过 impl block 引入，并通过 method call 调用。
 
@@ -103,7 +117,9 @@ record type 写作 `{ field: Type, ... }`，主要作为类型表达式。边界
 
 block 是 `{ Stmt* }`。statement 包括声明、赋值、控制流、stream 输出、错误控制、resource / timeout / concurrent 结构和受限 expression statement。
 
-赋值是 statement，不是 expression。左侧 place 由名字、member 和 index 组成；可写性由 static semantics 检查。
+赋值是 statement，不是 expression。左侧 place 由名字、member 和 index 组成；语法不把任意
+place 当作可写。Static semantics 只接受从局部 `var`、当前有效的 `inout` loan，或 Actor method
+中允许直接写入的 `self.field` 派生的精确 writable path；Actor DB transaction body 还有额外禁写规则。
 
 `if` 只作为 statement，不作为 expression。需要产值时使用 ternary、`match` expression 或
 `value` block。
@@ -143,6 +159,10 @@ expression statement 的最外层表达式必须是普通函数调用、method c
 关系比较和相等比较不允许链式写法。`a < b < c` 应写成显式布尔组合。
 
 postfix 表达式由 primary 加任意数量的 member、index 和 call suffix 组成。call suffix 可带 type args。
+
+普通 call argument 是 expression。与 `inout` 参数对应的 argument 必须显式写作 `inout place`，
+`place` 只能是从局部 `var` 派生的 name/member/index access path；`inout` argument 不是可单独
+使用的 expression，Actor `self.field` 也不因本身可写而成为合法 `inout` argument。
 
 generic call 只有在 postfix 后出现可成功解析的 `<...>` 且随后直接进入 `(` 时成立。`>` 和 `(` 必须在同一逻辑行，中间只允许普通空白或注释。
 

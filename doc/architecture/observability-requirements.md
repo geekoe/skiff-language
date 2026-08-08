@@ -52,7 +52,15 @@
 - service call 延迟：平台看总量与分位数，owner 看自己发起的调用明细；
 - DB 操作延迟：平台看每集合 / 每服务的总量与分位数，owner 看自己请求内的操作。
 
-### 3.4 生产 / 消费职责划分
+### 3.4 运行归属
+
+执行事件的运行归属必须同时包含 exact deployment `buildId`、`runtimeId` 和
+`runtimeSessionId`（session epoch）。`buildId` 是本次执行已 pin 的 ServiceDeployment build id，不是
+Package build id 或 release pointer 的当前值。通用运行归属不得使用 deployment activation identity、
+runtime activation identity 或 assembly generation。Actor activation id 和 client socket generation 可保留在
+语义明确的 Actor / socket 生命周期事件中，但不能代替上述归属字段。
+
+### 3.5 生产 / 消费职责划分
 
 - 生产端（skiff 仓库：router / runtime）负责事件发射、基础脱敏 / 限长 / 采样、
   bounded buffering，以及默认文件落盘（无 `telemetry.endpoint` 时 JSONL 写
@@ -118,8 +126,15 @@
 #### 4.2.4 runtime
 
 - service call 边界 dispatch 延迟（进入 provider 的固定成本）；
-- request heap / activation owner 切换次数与耗时；
-- assembly prepare / commit 耗时（已有事件，补耗时指标）。
+- VM fiber 的 create / runnable / park / resume / complete 计数、ready queue 深度与 park 时长；
+- 跨 service / Actor / callback owner transfer 的次数、耗时和 terminal / rejection 分类；
+- managed heap 的 allocation bytes / objects、current / peak bytes、limit rejection，以及 GC 次数、
+  pause 耗时和 reclaimed bytes；
+- deployment image load / link / verify 分阶段耗时、cache hit / miss / wait，load rejection 按
+  missing / decode / structural validation / link / semantic verification / resource limit / timeout 分类。
+
+上述指标必须可按 exact deployment `buildId`、`runtimeId` 和 `runtimeSessionId` 聚合；Actor
+activation id 或 socket generation 只在相应 owner / socket 事件中作 scoped 维度。
 
 #### 4.2.5 Mongo 哨兵
 
@@ -133,7 +148,8 @@
 - 每个 HTTP request 与 service call 都产生 trace，包含 start / end、duration、
   serviceId、operation、requestId；跨 router → runtime → service call → DB
   传播同一 trace id。
-- service call 的子 span 记录 provider 切换、参数 / 返回物化耗时。
+- service call 的子 span 记录 provider owner transfer、参数 / 返回物化耗时，并携带
+  provider 的 exact deployment `buildId`、`runtimeId` 与 `runtimeSessionId`。
 - DB 操作默认不单独建 span（避免噪声），由延迟直方图覆盖；慢操作
   （> 阈值）挂到当前 span。
 - 服务可向 span 附加业务属性（chatId、runId、messageSeq），属性必须可脱敏、
@@ -147,7 +163,8 @@
   service-call 边界标记为 UnknownEffect 导致不可用，属于阻断性缺陷，优先级
   最高。
 - 日志级别 debug / info / warn / error；结构化 attrs；
-- 自动附加 request / trace / service / thread 上下文；
+- 自动附加 request / trace / service / exact deployment `buildId` / `runtimeId` /
+  `runtimeSessionId` 上下文；
 - 默认限长、脱敏；禁止记录完整 prompt、secret、原始外部 payload；
 - 平台自身日志（router / runtime）与 service 日志同协议、同查询入口。
 
@@ -182,6 +199,8 @@
 - 消费端 telemetry `/metrics`（或等价查询）能看到 service-db 写 p95 升高与
   `skiff-router.tasks` 操作率异常；
 - service owner 能通过 trace 看到一次 `/chat/send` 的完整阶段耗时；
+- runtime 查询能按 exact deployment `buildId` 和 `runtimeSessionId` 分解 image load / link / verify /
+  cache / rejection、fiber / owner transfer 与 heap / GC 指标；
 - `std.log` 可以出现在导出 service 方法中并被 `/logs` 查询到；
 - 空遥测窗口会产生 warn。
 
