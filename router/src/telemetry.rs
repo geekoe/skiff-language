@@ -603,49 +603,6 @@ pub fn task_event(
         .into_event(telemetry_timestamp_now(), TelemetrySource::Router)
 }
 
-/// Backlog gauge event (authoritative design "Observability And Retention":
-/// backlog depth, oldest eligible age and terminal age). Ages are derived
-/// against the store-authority `observedAt`, never a local wall clock.
-pub fn backlog_metric_event(
-    observation: &skiff_task_control::store::BacklogObservation,
-) -> TelemetryEvent {
-    let mut attrs = Map::new();
-    attrs.insert("scheduled".to_string(), json!(observation.scheduled));
-    attrs.insert("ready".to_string(), json!(observation.ready));
-    attrs.insert("leased".to_string(), json!(observation.leased));
-    attrs.insert(
-        "terminalCount".to_string(),
-        json!(observation.terminal_count),
-    );
-    if let Some(oldest_due_at) = observation.oldest_due_at {
-        attrs.insert("oldestDueAtMs".to_string(), json!(oldest_due_at.millis()));
-        if let Some(observed_at) = observation.observed_at {
-            attrs.insert(
-                "oldestEligibleAgeMs".to_string(),
-                json!((observed_at.millis() - oldest_due_at.millis()).max(0)),
-            );
-        }
-    }
-    if let Some(oldest_terminal_at) = observation.oldest_terminal_at {
-        attrs.insert(
-            "oldestTerminalAtMs".to_string(),
-            json!(oldest_terminal_at.millis()),
-        );
-        if let Some(observed_at) = observation.observed_at {
-            attrs.insert(
-                "terminalAgeMs".to_string(),
-                json!((observed_at.millis() - oldest_terminal_at.millis()).max(0)),
-            );
-        }
-    }
-    if let Some(observed_at) = observation.observed_at {
-        attrs.insert("observedAtMs".to_string(), json!(observed_at.millis()));
-    }
-    PlatformEvent::new("task.backlog")
-        .with_attrs(Some(attrs))
-        .into_event(telemetry_timestamp_now(), TelemetrySource::Router)
-}
-
 pub fn telemetry_timestamp_now() -> String {
     crate::health::time::format_iso_millis(SystemTime::now())
 }

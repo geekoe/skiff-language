@@ -18,8 +18,7 @@ use skiff_router::task::{
     TaskControlCounters, TaskExecutionImageSource,
 };
 use skiff_router::telemetry::{
-    backlog_metric_event, task_event, RouterTelemetryFileSink, RouterTelemetryProducer,
-    TaskTelemetrySink,
+    task_event, RouterTelemetryFileSink, RouterTelemetryProducer, TaskTelemetrySink,
 };
 use skiff_runtime_transport::protocol::{
     encode_task_cancel_request_frame, encode_task_submit_request_frame,
@@ -35,7 +34,7 @@ use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
     SchedulerObservation,
 };
-use skiff_task_control::store::{BacklogObservation, ClaimRejection, RenewRejection, TaskStore};
+use skiff_task_control::store::{ClaimRejection, RenewRejection, TaskStore};
 use skiff_task_control::MemoryTaskStore;
 
 const SERVICE_ID: &str = "example.com/service-1";
@@ -422,10 +421,7 @@ async fn scheduler_observation_emits_task_events() {
 
     let names = telemetry.names();
     for expected in [
-        "task.ready",
-        "task.claim",
         "task.duplicate.absorbed",
-        "task.lease.renewed",
         "task.lease.lost",
         "task.recovered",
         "task.lease.released",
@@ -435,19 +431,25 @@ async fn scheduler_observation_emits_task_events() {
             "missing {expected}: {names:?}"
         );
     }
-    let claim = telemetry
+    for absent in ["task.ready", "task.claim", "task.lease.renewed"] {
+        assert!(
+            !names.iter().any(|name| name == absent),
+            "{absent} must not be emitted (health counters cover trends)"
+        );
+    }
+    let lost = telemetry
         .events()
         .into_iter()
-        .find(|event| event.name.as_deref() == Some("task.claim"))
-        .expect("claim event");
-    let attrs = claim.attrs.expect("claim attrs");
+        .find(|event| event.name.as_deref() == Some("task.lease.lost"))
+        .expect("lease lost event");
+    let attrs = lost.attrs.expect("lease lost attrs");
     assert_eq!(attrs["taskId"], serde_json::json!(TASK_ID));
-    assert_eq!(attrs["attemptId"], serde_json::json!("attempt-1"));
-    assert_eq!(attrs["eligibleWaitMs"], serde_json::json!(100_000));
+    assert_eq!(attrs["leaseId"], serde_json::json!("lease-1"));
+    assert!(attrs["reason"].is_string());
 }
 
 #[test]
-fn producer_batches_and_backlog_metric_shape() {
+fn producer_batches_submit_events() {
     let mut config = health_common::config(std::path::Path::new("."));
     config.telemetry = Some(skiff_router::config::TelemetryConfig {
         enabled: true,
@@ -470,16 +472,6 @@ fn producer_batches_and_backlog_metric_shape() {
     for _ in 0..3 {
         assert!(producer.emit(event.clone()));
     }
-    let backlog = BacklogObservation {
-        scheduled: 2,
-        ready: 1,
-        leased: 1,
-        oldest_due_at: Some(DurableUtcTimestamp::from_millis(1_699_999_900_000)),
-        terminal_count: 1,
-        oldest_terminal_at: Some(DurableUtcTimestamp::from_millis(1_699_999_000_000)),
-        observed_at: Some(DurableUtcTimestamp::from_millis(1_700_000_000_000)),
-    };
-    assert!(producer.emit(backlog_metric_event(&backlog)));
 
     let batches = producer.drain_batches();
     assert_eq!(batches.len(), 1, "all events fit one batch");
@@ -487,16 +479,10 @@ fn producer_batches_and_backlog_metric_shape() {
         .into_iter()
         .flat_map(|batch| batch.events)
         .collect::<Vec<_>>();
-    assert_eq!(events.len(), 4);
-    let metric = events
+    assert_eq!(events.len(), 3);
+    assert!(events
         .iter()
-        .find(|event| event.name.as_deref() == Some("task.backlog"))
-        .expect("backlog metric");
-    let attrs = metric.attrs.as_ref().expect("metric attrs");
-    assert_eq!(attrs["scheduled"], serde_json::json!(2));
-    assert_eq!(attrs["oldestEligibleAgeMs"], serde_json::json!(100_000));
-    assert_eq!(attrs["terminalAgeMs"], serde_json::json!(1_000_000));
-    assert_eq!(attrs["terminalCount"], serde_json::json!(1));
+        .all(|event| event.name.as_deref() == Some("task.submit.accepted")));
 }
 
 #[test]
