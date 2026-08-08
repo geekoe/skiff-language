@@ -248,6 +248,10 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
 /// 无样本时 threads 为空（契约允许）。折叠串按根→叶子用 `;` 连接，
 /// 顺序与 pprof flamegraph 实现一致（frames 与内联符号均逆序）。
 ///
+/// 噪声过滤：SIGPROF 可能在 libc 等待函数的用户态内部（condvar/kevent 的
+/// syscall 往返间隙）触发，产生以等待原语开头的栈。这类样本不构成 CPU 时间
+/// 归因（cpuMs 由内核计账给出），直接丢弃——见 [`is_wait_root`]。
+///
 /// 体积控制顺序：折叠串先按 `max_folded_chars` 截断（截到该长度即可，无标记），
 /// 再按 samples 降序排列，最后按 `max_stacks_bytes` 预算从高 samples 侧累加截断
 /// （每条估算 `len(folded) + 32`，32 为 JSON 开销余量），并同时保留 `max_stacks`
@@ -268,10 +272,13 @@ fn collect(
         if count == 0 {
             continue;
         }
+        let mut folded = fold(frames);
+        if is_wait_root(&folded) {
+            continue;
+        }
         total_samples += count;
         *thread_samples.entry(frames.thread_name_or_id()).or_insert(0) += count;
 
-        let mut folded = fold(frames);
         if folded.chars().count() > max_folded_chars {
             // 折叠栈字符串超长截断（截到 max_folded_chars 即可，无标记）。
             folded = folded.chars().take(max_folded_chars).collect();
@@ -325,6 +332,28 @@ fn fold(frames: &pprof::Frames) -> String {
         }
     }
     parts.join(";")
+}
+
+/// 已知等待原语集合：折叠栈以这些符号开头时，判定样本是 SIGPROF 在 libc
+/// 等待内部触发的噪声（线程实际在等，不消耗 CPU），不参与归因。
+const WAIT_ROOTS: &[&str] = &[
+    "__pthread_cond_wait",
+    "__psynch_cvwait",
+    "__ulock_wait",
+    "__semwait_signal",
+    "kevent",
+    "mach_msg2_trap",
+    "semaphore_wait_trap",
+    "__psynch_cvsignal",
+];
+
+/// 折叠栈首段是否为已知等待原语（`std::thread::sleep` 栈同样以等待开头，
+/// 已被 `__psynch_cvwait`/`__semwait_signal` 覆盖）。
+fn is_wait_root(folded: &str) -> bool {
+    let Some(root) = folded.split(';').next() else {
+        return false;
+    };
+    WAIT_ROOTS.contains(&root)
 }
 
 /// 分片睡眠：每片检查停止标志；返回 `false` 表示期间收到停止请求。
