@@ -469,7 +469,12 @@ router/src/http/
 Each phase should land with its own focused tests and a requirement-ledger update. Do not organize the work as
 a file-by-file rewrite; each milestone should close one end-to-end contract.
 
-### Phase 0: baseline audit and requirement ledger
+The executable phase contracts, mandatory Live policy, evidence-epoch rules and result template are under
+[`phases/`](phases/README.md). Every phase must pass both its phase-specific proof and the isolated
+`chat-smoke` + strict full `host-tools` gate on the same candidate. After the phase is merged to the repository
+main branches, the same two smokes must pass against the stable stack before the phase is `complete`.
+
+### [Phase 0: baseline audit, requirement ledger and trustworthy Live](phases/phase-0-baseline-live.md)
 
 1. Extract the three exact patches from section 2 and assign every semantic hunk a stable requirement id.
 2. Map each requirement to a code owner and mark it `missing`, `existing-needs-proof`, `implemented`, or
@@ -478,24 +483,41 @@ a file-by-file rewrite; each milestone should close one end-to-end contract.
    service-boundary and Router work.
 4. Turn the known Actor lease/idle ordering issue and missing exact-build fence into failing focused tests
    before changing lifecycle code.
+5. Make compiler/router/runtime provenance explicit, make `host-tools` fail on false terminals/empty output/zero
+   tool calls/wrong PID, and register one isolated combined Agine Live gate.
+6. Freeze the functional/performance baseline and its exact three-repository inputs.
 
-### Phase 1: artifact schema and structural validator
+### [Phase 1: artifact schema and structural validator](phases/phase-1-artifact-schema.md)
 
 1. Define the canonical opcode schema, function/template records, constant graphs, relocations, source maps
    and limits.
 2. Derive or centrally implement encoding/decoding and instruction-length/operand validation.
 3. Add malformed-artifact, determinism, identity and resource-limit tests.
 
-No runtime execution should be needed to prove this phase.
+No Runtime execution is needed for the phase-specific artifact proof. The common full-stack Live regression is
+still mandatory and must explicitly report that it is exercising the legacy engine rather than claiming VM
+execution.
 
-### Phase 2: compiler emission
+### [Phase 2: compiler facts and emission](phases/phase-2-compiler-emission.md)
 
 1. Complete source-owned effect, value-transfer, loan, suspension and callback facts.
-2. Lower a small but real control-flow subset to relocatable bytecode with deterministic frame/stack metadata.
-3. Add generic templates, synthetic callback bodies and source attribution incrementally.
-4. Test source-to-artifact output rather than asserting internal lowering accidents.
+2. Establish a compiler-owned typed executable MIR/CFG rather than recovering verifier facts from serialized
+   File IR.
+3. Lower a small but real control-flow subset to relocatable bytecode with deterministic frame/stack metadata.
+4. Evaluate top-level constants through a bounded deterministic compiler-owned evaluator and emit frozen
+   constant graphs rather than request-time executable bodies.
+5. Add generic templates, synthetic callback bodies and source attribution incrementally.
+6. Test source-to-artifact output rather than asserting internal lowering accidents.
 
-### Phase 3: deployment linker and semantic verifier
+### [Phase 3A: exact-build deployment owner cut](phases/phase-3a-deployment-owner.md)
+
+1. Cache an immutable execution owner by exact deployment `buildId` while temporarily allowing its code body
+   to remain legacy tree code.
+2. Close only the consumer's Package-local closure; keep service dependency slots symbolic.
+3. Resolve and pin the provider image for every boundary invocation rather than at consumer-image load time.
+4. Remove closure-wide build registration and prove provider pointer changes do not mutate the consumer image.
+
+### [Phase 3B: deployment linker and semantic verifier](phases/phase-3b-linker-verifier.md)
 
 1. Build the exact deployment closure and bounded specialization worklist.
 2. Resolve relocations into a concrete `LinkedBytecodeImage` with no remaining `TypeParam`.
@@ -504,7 +526,7 @@ No runtime execution should be needed to prove this phase.
 
 This is the gate before any untrusted bytecode is executable.
 
-### Phase 4: minimal production-shaped VM vertical slice
+### [Phase 4: minimal production-shaped VM vertical slice](phases/phase-4-minimal-vm.md)
 
 1. Implement frames, value slots, constants, local calls, branches, returns, throws and hard instruction fuel.
 2. Route one real unary service operation from source through compiler, artifact, loader, linker, verifier and
@@ -515,22 +537,31 @@ This is the gate before any untrusted bytecode is executable.
 This slice proves that ownership boundaries work before GC, streams and Actor behavior multiply the state
 space.
 
-### Phase 5: scheduler, adapters and streams
+### [Phase 5: scheduler, adapters and streams](phases/phase-5-scheduler-streams.md)
 
 1. Add the flat child trampoline and `Ready`/`EnterChild`/`Pending` state machine.
 2. Prove synchronous child completion uses a flat Rust stack and does not publish a false suspension.
 3. Add the pending race handshake, cancellation/deadline cleanup and resumable native adapter frames.
 4. Add stream producer supervision, bounded backpressure and affine endpoint tests.
+5. Move at least one provider used by the real Agine chat smoke to VM-only execution and prove the chat request
+   traversed it.
 
-### Phase 6: heap, boundary and recoverable behavior
+### [Phase 6A: boundary, DB/unwind, callback and Agine VM cutover](phases/phase-6a-agine-cutover.md)
+
+1. Move service values/errors/stream items across fresh owner heaps using typed plans.
+2. Add DB transaction guards, asynchronous unwind/resource cleanup and timeout/internal-stop terminal rules.
+3. Move same-Runtime callback capability execution onto `EnterChild`; reject cross-Runtime callback placement
+   at admission.
+4. Move the complete Agine/AIHub/Codex Relay chat and host-tools closure to VM-only execution.
+
+### [Phase 6B: heap, value semantics and recoverable parity](phases/phase-6b-heap-values.md)
 
 1. Add request GC, constant thawing, path COW/transient builders and complete root accounting.
-2. Move service values/errors/stream items across fresh heaps using typed plans.
-3. Add DB transaction guards, unwind/resource cleanup and durable/recoverable logical codecs.
-4. Move same-Runtime callback capability execution onto `EnterChild`; reject cross-Runtime callback
-   placement at admission.
+2. Finalize `ConstantHeap`, value-transfer/`InOut`, affine resource/drop and collection representation.
+3. Preserve durable/recoverable logical codecs independently of the new physical heap layout.
+4. Keep the already-VM-only Agine chat and host-tools closure green throughout the memory cut.
 
-### Phase 7: Actor and Router exact-build slice
+### [Phase 7: Actor and Router exact-build slice](phases/phase-7-actor-router.md)
 
 1. Put exact `buildId` and image identity into Actor owner fences, leases and continuations.
 2. Implement mismatch rejection without idle refresh or upgrade and allow independent Actor ids to pin
@@ -542,7 +573,7 @@ space.
 5. Test same-id mismatch, different-id mixed versions, idle destruction followed by newer/same/rollback build,
    disconnect races and stale continuation rejection.
 
-### Phase 8: hard cutover and deletion
+### [Phase 8: hard cutover and deletion](phases/phase-8-hard-cutover.md)
 
 1. Move every gateway, operation, Actor, task, callback and stream ingress to the verified image/VM path.
 2. Delete the tree evaluator, old executable artifact reader, `RuntimeAssembly`/generation model and production
@@ -550,19 +581,20 @@ space.
 3. Remove stale terms and adapters, enforce the intended runtime crate DAG and ensure tests use the same
    production-shaped loader path.
 
-### Phase 9: acceptance and performance gates
+### [Phase 9: release acceptance and performance gates](phases/phase-9-release.md)
 
-1. Run focused compiler, artifact, linker, VM, boundary, Actor and Router suites while developing.
-2. Add end-to-end cases for local/remote/callback carriers, Ready/Pending races, tail calls, unwind, GC roots,
-   memory/fuel limits, Actor partial writes and exact-build lifecycle.
+1. Independently audit the accumulated requirement ledger and production-path evidence; Phase 9 is not the
+   first execution of correctness or Live gates.
+2. Run the full repository verification and repeat the complete managed Live/stable rehearsal on one exact
+   final evidence epoch.
 3. Benchmark sync/ready request overhead, deep calls, tail calls, allocation/GC, collections, callbacks,
    streams and Actor suspension. Optimize quickening or representation only after correctness gates pass.
-4. Rebuild and restart the shared Router/Runtime binaries after Runtime changes, then run the Agine chat smoke
-   test as required by the workspace development contract.
+4. Rebuild and restart the shared Router/Runtime/Compiler binaries, verify fresh release pointers, and run
+   both Agine chat smoke and strict full host-tools profiling.
 
 Cargo commands must be run sequentially because all worktrees share one target directory. A full repository
 verification should be saved for the appropriate integration points rather than repeated after every small
-edit.
+edit; this does not relax the mandatory per-phase isolated and stable Live gates.
 
 ## 8. Completion definition
 
@@ -575,5 +607,6 @@ The project is complete only when:
 - service/Actor/callback boundaries preserve exact owners, heap separation and typed value semantics;
 - Actor exact-build rejection, idle destruction and subsequent arbitrary-build recreation are race-safe;
 - old evaluator, assembly/generation and fallback paths are deleted rather than left dormant;
-- focused tests, integration suites, crate-DAG checks and the Agine chat smoke pass; and
+- focused tests, integration suites, crate-DAG checks, every phase's isolated/stable Agine chat smoke and
+  strict full host-tools pass; and
 - performance measurements show no unresolved correctness-driven regression hidden by a fallback path.
