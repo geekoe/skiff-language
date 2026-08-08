@@ -1,11 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use skiff_runtime_linked_program::{
-    LinkOverlay, RuntimeExecutionPackage, RuntimeTypeContext, UnitAddr,
-};
+use skiff_runtime_linked_program::{LinkOverlay, RuntimeExecutionPackage, RuntimeTypeContext};
 
-use super::{local_concrete_owner, EvalRecoverableBehaviorHooks};
-use crate::{error::RuntimeError, invocation::EvalProgramProjection};
+use super::EvalRecoverableBehaviorHooks;
+use crate::invocation::EvalProgramProjection;
 
 const PACKAGE_ID: &str = "skiff.test/shared";
 
@@ -57,21 +55,4 @@ fn duplicate_package_id_different_build_allows_plain_data_hook_construction() {
 
     EvalRecoverableBehaviorHooks::new(program.projection(), "artifact:test", "build:test")
         .expect("plain-data hook construction must not eagerly validate package owner lookup");
-}
-
-#[test]
-fn duplicate_package_id_fails_closed_when_package_local_concrete_owner_is_needed() {
-    let program = DuplicatePackageProgram::new();
-    let projection = super::RuntimeExecutionProjection::from(program.projection());
-
-    let result = local_concrete_owner(&projection, &UnitAddr::Package(0));
-
-    match result {
-        Err(RuntimeError::InvalidArtifact(message)) => assert!(
-            message.contains("package id skiff.test/shared is ambiguous"),
-            "unexpected invalid artifact message: {message}"
-        ),
-        Err(error) => panic!("expected invalid artifact error, got {error}"),
-        Ok(owner) => panic!("ambiguous package owner must fail closed, got {owner:?}"),
-    }
 }

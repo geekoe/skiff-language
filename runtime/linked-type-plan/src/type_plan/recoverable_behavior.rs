@@ -487,3 +487,83 @@ fn module_path_segments(module_path: &str) -> Vec<String> {
         module_path.split('.').map(ToString::to_string).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use skiff_artifact_model::{
+        PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
+        PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    };
+    use skiff_runtime_linked_program::{
+        PackageCodeSlotIndex, PublicationResourceTable, RuntimeExecutionPackage, UnitAddr,
+    };
+
+    use super::local_concrete_owner;
+
+    /// Mirrors eval's `runtime_execution_package_fixture`: an admitted package
+    /// artifact with no files and no resources is enough to exercise owner
+    /// lookup semantics.
+    fn package_fixture(package_id: &str, code_slot: usize) -> Arc<RuntimeExecutionPackage> {
+        let artifact = PackageArtifact {
+            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            package_id: package_id.to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new(&format!("{package_id}:build")),
+            files: Vec::new(),
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new(&format!("{package_id}:abi")),
+                public_symbols: BTreeMap::new(),
+                implementation_symbols: BTreeMap::new(),
+            },
+            package_schema_index: PackageSchemaIndexRef {
+                package_id: package_id.to_string(),
+                package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                    package_id,
+                    &BTreeMap::new(),
+                )
+                .expect("empty package schema index is canonical"),
+            },
+            package_schema_type_records: BTreeMap::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        };
+        Arc::new(
+            RuntimeExecutionPackage::try_new(
+                PackageCodeSlotIndex::new(code_slot),
+                Arc::new(artifact),
+                Vec::new(),
+                PublicationResourceTable::default(),
+            )
+            .expect("test package execution context must be exact"),
+        )
+    }
+
+    #[test]
+    fn duplicate_package_id_fails_closed_when_package_local_concrete_owner_is_needed() {
+        let packages = vec![
+            package_fixture("skiff.test/shared", 0),
+            package_fixture("skiff.test/shared", 1),
+        ];
+
+        let result = local_concrete_owner(&packages, &UnitAddr::Package(0));
+
+        match result {
+            Err(message) => assert!(
+                message.contains("package id skiff.test/shared is ambiguous"),
+                "unexpected ambiguous owner message: {message}"
+            ),
+            Ok(owner) => panic!("ambiguous package owner must fail closed, got {owner:?}"),
+        }
+    }
+}
