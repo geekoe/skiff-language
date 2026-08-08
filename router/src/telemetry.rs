@@ -752,6 +752,18 @@ pub fn profile_window_event(window: &skiff_profiling::ProfileWindow) -> Telemetr
             .map(|stack| json!({ "folded": stack.folded, "samples": stack.samples }))
             .collect::<Vec<_>>()),
     );
+    attrs.insert(
+        "functions".to_string(),
+        json!(window
+            .functions
+            .iter()
+            .map(|function| json!({
+                "name": function.name,
+                "units": function.units,
+                "cpuMs": function.cpu_ms,
+            }))
+            .collect::<Vec<_>>()),
+    );
     PlatformEvent::new("rust.profile")
         .with_attrs(Some(attrs))
         .into_event(telemetry_timestamp_now(), TelemetrySource::Router)

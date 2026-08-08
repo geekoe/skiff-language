@@ -6,6 +6,13 @@
 //! （根→叶子用 `;` 连接）、按线程归因的样本与进程 CPU 时间，供 runtime /
 //! router 进程内的后台任务消费（`take_window` 取窗口 → 发 PlatformEvent）。
 //!
+//! 函数级归因：解释器（或任何热路径代码）在 statement 边界调用
+//! [`record_function_units`] 累加进程级全局计数表（FNV-1a 哈希分片的
+//! `OnceLock` 单例，无锁优先、一次 lock 完成累加）；采样线程在窗口结束时
+//! 读快照、diff 出窗口增量，按 units 比例分摊窗口 CPU 时间后放入
+//! `ProfileWindow.functions`（units 降序，条数与 stacks 同限）。未启用采样
+//! 或无计数时该字段为空。
+//!
 //! 依赖仅 `pprof` / `libc` / `anyhow`，不引入 frame-pointer 编译要求（pprof
 //! 默认用 unwind backtrace）。CPU 时间读取按平台分支：Linux 解析
 //! `/proc/self/stat` 的 utime+stime（clock ticks），macOS 用
@@ -14,9 +21,10 @@
 //! 注意：pprof-rs 的 profiler 是进程级单例（全局 SIGPROF handler），同一进程
 //! 内同一时间只允许一个采样窗口；本 crate 的窗口串行执行，天然满足。
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -71,6 +79,16 @@ pub struct StackSample {
     pub samples: u64,
 }
 
+/// 单个函数的归因样本（Skiff 函数级 statement 计数）。
+pub struct FunctionSample {
+    /// 函数名（解释器侧传入，形如 `<module>;<symbol>`）。
+    pub name: String,
+    /// 窗口内该函数执行的 statement 计数（解释器每语句 +1）。
+    pub units: u64,
+    /// 按 units 比例分摊的窗口 CPU 时间（ms，`cpu_ms * units / total_units`）。
+    pub cpu_ms: u64,
+}
+
 /// 一个完整采样窗口的产物。
 pub struct ProfileWindow {
     /// 对齐到壁钟分钟边界的窗口起点（unix 毫秒）。
@@ -86,6 +104,9 @@ pub struct ProfileWindow {
     /// 折叠栈，按 samples 降序，截断到 `max_stacks` 条数与 `max_stacks_bytes`
     /// 字节预算（取更严格者）。
     pub stacks: Vec<StackSample>,
+    /// 函数级归因，按 units 降序，条数截断到 `max_stacks`；未启用函数计数
+    /// 或窗口内无计数时为空数组。
+    pub functions: Vec<FunctionSample>,
 }
 
 /// 采样句柄：由 [`start`] 返回，持有后台采样线程与已完成窗口的队列。
@@ -165,6 +186,112 @@ pub fn start(config: ProfileConfig) -> Result<ProfileHandle> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// 进程级函数计数表（Skiff 函数级归因）
+// ---------------------------------------------------------------------------
+
+/// 函数计数表的 shard 数：解释器热路径高频写入，256 个 `Mutex<HashMap>` 分片
+/// 摊薄锁竞争；同一 name 经 FNV-1a 哈希后总是落入同一 shard 与同一 key。
+const FUNCTION_SHARDS: usize = 256;
+
+/// 单个函数的计数单元。
+struct CounterCell {
+    /// 函数名（首次写入时记录；哈希冲突合并时保留先写入者）。
+    name: String,
+    /// 累计 statement 计数（单调累加，进程生命周期内不回退）。
+    units: u64,
+}
+
+/// 进程级全局函数计数表（`OnceLock` 单例，惰性初始化）。
+///
+/// key 为函数名的 FNV-1a 64 位哈希；不同 name 落入同一 key 的冲突概率低，
+/// 容忍合并：units 相加、name 保留先写入者。
+static FUNCTION_TABLE: OnceLock<[Mutex<HashMap<u64, CounterCell>>; FUNCTION_SHARDS]> = OnceLock::new();
+
+/// 取全局计数表，首次调用时惰性初始化全部 shard。
+fn function_table() -> &'static [Mutex<HashMap<u64, CounterCell>>; FUNCTION_SHARDS] {
+    FUNCTION_TABLE.get_or_init(|| std::array::from_fn(|_| Mutex::new(HashMap::new())))
+}
+
+/// FNV-1a 64 位哈希：只用于分片与 diff 键，不承担安全用途。
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 记录一次函数 statement 计数（解释器热路径，每语句调用一次）。
+///
+/// 热路径只做一次 FNV-1a 哈希与一次分片锁（`units == 0` 或空名直接返回，
+/// 不触碰全局表）。计数跨窗口累积，窗口增量由 [`function_units_diff`] 计算。
+pub fn record_function_units(name: &str, units: u64) {
+    if units == 0 || name.is_empty() {
+        return;
+    }
+    let key = fnv1a(name.as_bytes());
+    let mut cells = function_table()[key as usize % FUNCTION_SHARDS]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match cells.entry(key) {
+        Entry::Occupied(mut entry) => {
+            entry.get_mut().units = entry.get().units.saturating_add(units);
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(CounterCell {
+                name: name.to_owned(),
+                units,
+            });
+        }
+    }
+}
+
+/// 遍历全部 shard，返回 key → units 快照（供窗口 diff 的 before/after）。
+pub fn function_units_snapshot() -> HashMap<u64, u64> {
+    let mut snapshot = HashMap::new();
+    for shard in function_table() {
+        let cells = shard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (key, cell) in cells.iter() {
+            snapshot.insert(*key, cell.units);
+        }
+    }
+    snapshot
+}
+
+/// 计算两个快照的差值（窗口增量），输出 `(name, delta)`。
+///
+/// 过滤 `delta == 0`（含 after 计数回退/键消失的情况，按 0 处理），按 delta
+/// 降序（同值按 name 字典序稳定）；名字从全局表按 key 查询（diff 期间再读
+/// 一次 shard，查不到时为空串）。
+pub fn function_units_diff(
+    before: &HashMap<u64, u64>,
+    after: &HashMap<u64, u64>,
+) -> Vec<(String, u64)> {
+    let mut diffs = Vec::new();
+    for (key, after_units) in after {
+        let delta = after_units.saturating_sub(before.get(key).copied().unwrap_or(0));
+        if delta == 0 {
+            continue;
+        }
+        diffs.push((function_name(*key), delta));
+    }
+    diffs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    diffs
+}
+
+/// 从全局表按 key 查函数名；key 不在表中时返回空串。
+fn function_name(key: u64) -> String {
+    let cells = function_table()[key as usize % FUNCTION_SHARDS]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cells
+        .get(&key)
+        .map(|cell| cell.name.clone())
+        .unwrap_or_default()
+}
+
 /// 后台采样主循环：每轮「睡到下一个对齐窗口起点 → 起 ProfilerGuard 采样 →
 /// 睡满窗口 → 停止、算 cpu/wall、构建窗口入队」。
 fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<VecDeque<ProfileWindow>>>) {
@@ -204,6 +331,10 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
             }
         };
 
+        // 窗口起点函数计数快照：guard 构建成功后才取，起 guard 失败的跳窗
+        // 不会污染下一窗口的 before。
+        let function_units_before = function_units_snapshot();
+
         // 睡满整个窗口。中途收到停止信号则丢弃这个不完整窗口。
         if !sleep_until_stop(interval_ms, &stop) {
             drop(guard);
@@ -211,6 +342,16 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
         }
         let wall_ms = window_instant.elapsed().as_millis() as u64;
         let cpu_ms = process_cpu_ms().saturating_sub(cpu_start);
+
+        // 窗口结束：读函数计数快照，diff 出窗口增量并归因 CPU（见
+        // [`collect_functions`]）。
+        let function_units_after = function_units_snapshot();
+        let functions = collect_functions(
+            &function_units_before,
+            &function_units_after,
+            cpu_ms,
+            config.max_stacks,
+        );
 
         // 停止采样并产出窗口。report 需要在 guard 存活期间构建。
         let (threads, stacks) = match guard.report().build() {
@@ -238,6 +379,7 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
                 cpu_ms,
                 threads,
                 stacks,
+                functions,
             });
     }
 }
@@ -321,6 +463,35 @@ fn collect(
     stacks.truncate(max_stacks);
 
     (threads, stacks)
+}
+
+/// 把窗口内函数计数增量收敛成归因样本（见 [`function_units_diff`]）。
+///
+/// CPU 时间按 units 比例分摊窗口进程 CPU：`cpu_ms * units / total_units`
+/// （与 threads 同法；无增量时函数为空）。diff 已按 units 降序，直接截断到
+/// `max_functions` 条数上限（沿用 `max_stacks`，与 stacks 同限）。
+fn collect_functions(
+    before: &HashMap<u64, u64>,
+    after: &HashMap<u64, u64>,
+    cpu_ms: u64,
+    max_functions: usize,
+) -> Vec<FunctionSample> {
+    let diffs = function_units_diff(before, after);
+    let total_units: u64 = diffs.iter().map(|(_, units)| units).sum();
+    let mut functions: Vec<FunctionSample> = diffs
+        .into_iter()
+        .map(|(name, units)| FunctionSample {
+            name,
+            units,
+            cpu_ms: if total_units > 0 {
+                cpu_ms.saturating_mul(units) / total_units
+            } else {
+                0
+            },
+        })
+        .collect();
+    functions.truncate(max_functions);
+    functions
 }
 
 /// 把一条样本的栈帧折叠成「根;…;叶子」串；空栈（无符号）返回空串。

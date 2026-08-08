@@ -89,6 +89,18 @@ fn rust_profile_attrs(window: &skiff_profiling::ProfileWindow) -> Map<String, Va
                 .map(|stack| json!({ "folded": stack.folded, "samples": stack.samples }))
                 .collect::<Vec<_>>()),
         ),
+        (
+            "functions".to_string(),
+            json!(window
+                .functions
+                .iter()
+                .map(|function| json!({
+                    "name": function.name,
+                    "units": function.units,
+                    "cpuMs": function.cpu_ms,
+                }))
+                .collect::<Vec<_>>()),
+        ),
     ])
 }
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_recursion::async_recursion;
 use skiff_runtime_linked_program::{
     ActivationRelativeServiceCall, AssignTargetIr, BinaryOpIr, BlockIr, CallIr, ExecutableAddr,
@@ -97,6 +99,10 @@ pub struct EvalContext<'a> {
     pub addr: &'a ExecutableAddr,
     pub file: &'a LinkedFileUnit,
     pub executable: &'a LinkedExecutable,
+    /// 当前函数标识 `<module>;<symbol>` 的 FNV-1a 64 位哈希（rust.profile 函数级归因）。
+    function_id: u64,
+    /// 当前函数标识 `<module>;<symbol>`（契约 §1 FunctionSample.name）。
+    function_name: Arc<str>,
     tail_call_context: TailCallContext,
 }
 
@@ -190,6 +196,7 @@ impl<'a> EvalContext<'a> {
         executable: &'a LinkedExecutable,
     ) -> Self {
         let execution = context.execution();
+        let (function_id, function_name) = Self::function_identity(file, executable);
         Self {
             interpreter,
             projection,
@@ -200,6 +207,8 @@ impl<'a> EvalContext<'a> {
             addr,
             file,
             executable,
+            function_id,
+            function_name,
             tail_call_context: TailCallContext::Transparent,
         }
     }
@@ -217,6 +226,7 @@ impl<'a> EvalContext<'a> {
     ) -> Result<Self> {
         let projection = RuntimeExecutionProjection::for_context(interpreter, &context)?;
         let execution = context.execution();
+        let (function_id, function_name) = Self::function_identity(file, executable);
         Ok(Self {
             interpreter,
             projection,
@@ -227,8 +237,25 @@ impl<'a> EvalContext<'a> {
             addr,
             file,
             executable,
+            function_id,
+            function_name,
             tail_call_context,
         })
+    }
+
+    /// 当前函数的 `<module>;<symbol>` 标识（契约 §1 `FunctionSample.name`，module
+    /// 取 `LinkedFileUnit.module_path`）与其 FNV-1a 64 位哈希。`executable` 一经
+    /// EvalContext 绑定不再变更——尾调用切换通过 trampoline 新建 EvalContext 换
+    /// executable（见 `program_execution` 的 `exec_tail_call_hop`），因此构造时
+    /// 计算一次即可，计数不会归错函数。
+    fn function_identity(file: &LinkedFileUnit, executable: &LinkedExecutable) -> (u64, Arc<str>) {
+        let name: Arc<str> = Arc::from(format!("{};{}", file.module_path, executable.symbol));
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        (hash, name)
     }
 
     pub(crate) async fn exec_program_block_with_tail_call_barrier(
@@ -427,6 +454,9 @@ impl<'a> EvalContext<'a> {
         statement: &LinkedStmtIr,
     ) -> Result<EvaluatorControl> {
         self.checkpoint_generated_chunk(1)?;
+        // 函数级指令计数：每 statement 恰好 +1（契约 §1 FunctionSample.units，
+        // 解释器每语句 +1），归因到当前函数的 `<module>;<symbol>` 标识。
+        skiff_profiling::record_function_units(self.function_name.as_ref(), 1);
         match statement {
             LinkedStmtIr::Timeout {
                 duration_ms,

@@ -2669,6 +2669,7 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-compiler",
  "skiff-deployment",
+ "skiff-profiling",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
