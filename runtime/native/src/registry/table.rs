@@ -18,10 +18,10 @@ use crate::handlers::{
     array_empty, crypto_hmac_sha1_base64, crypto_random_token, crypto_sha256, crypto_uuid,
     crypto_uuid_simple, date_from_epoch_milliseconds, date_now, date_parse, date_require_parse,
     duration_milliseconds, duration_seconds, duration_to_milliseconds,
-    json_codec_requires_runtime_dispatch, json_merge, map_empty, number_assert_safe_integer,
-    number_is_integer, number_is_safe_integer, number_parse, string_encode_path,
-    string_encode_query_component, string_is_ascii_digits, string_join, string_split,
-    string_truncate_utf8_bytes,
+    json_codec_requires_runtime_dispatch, json_field_access_requires_runtime_dispatch, json_merge,
+    map_empty, number_assert_safe_integer, number_is_integer, number_is_safe_integer, number_parse,
+    string_encode_path, string_encode_query_component, string_is_ascii_digits, string_join,
+    string_split, string_truncate_utf8_bytes,
 };
 
 pub(super) type RegistryValidationResult = std::result::Result<(), String>;
@@ -353,6 +353,11 @@ pub(super) const REQUIRED_HANDLER_KEYS: &[&str] = &[
     "std.json.encode",
     "std.json.decode",
     "std.json.merge",
+    "std.json.get",
+    "std.json.getString",
+    "std.json.getNumber",
+    "std.json.getBool",
+    "std.json.getArray",
     "std.string.join",
     "std.string.split",
     "std.string.isAsciiDigits",
@@ -426,6 +431,26 @@ pub(super) const NATIVE_BINDINGS: &[NativeHandlerEntry] = &[
     NativeHandlerEntry {
         binding_key: "std.json.decode",
         handler: json_codec_requires_runtime_dispatch,
+    },
+    NativeHandlerEntry {
+        binding_key: "std.json.get",
+        handler: json_field_access_requires_runtime_dispatch,
+    },
+    NativeHandlerEntry {
+        binding_key: "std.json.getString",
+        handler: json_field_access_requires_runtime_dispatch,
+    },
+    NativeHandlerEntry {
+        binding_key: "std.json.getNumber",
+        handler: json_field_access_requires_runtime_dispatch,
+    },
+    NativeHandlerEntry {
+        binding_key: "std.json.getBool",
+        handler: json_field_access_requires_runtime_dispatch,
+    },
+    NativeHandlerEntry {
+        binding_key: "std.json.getArray",
+        handler: json_field_access_requires_runtime_dispatch,
     },
     NativeHandlerEntry {
         binding_key: "std.json.merge",

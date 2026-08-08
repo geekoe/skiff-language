@@ -6,6 +6,17 @@ type DecodeError {
 native function encode<T>(value: T) -> string
 native function decode<T>(input: string) -> T
 
+// Zero-serialization field access: these natives read directly from the shared
+// runtime value (the same native object that JsonObject receiver methods and
+// encode/decode operate on) without any string round trip. A non-object value
+// or a missing field yields null; typed getters yield null when the field is
+// present but has a different JSON type.
+native function get(value: Json, key: string) -> Json?
+native function getString(value: Json, key: string) -> string?
+native function getNumber(value: Json, key: string) -> number?
+native function getBool(value: Json, key: string) -> bool?
+native function getArray(value: Json, key: string) -> Array<Json>?
+
 // Shallow object overlay merge: returns a new object where overlay's top-level
 // keys override base's same-named keys, base-only keys are kept, and overlay-only
 // keys are appended. Overlay null values are kept as null (they do NOT delete the

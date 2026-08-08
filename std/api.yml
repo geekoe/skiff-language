@@ -3,6 +3,11 @@ json:
   encode: json.encode
   decode: json.decode
   merge: json.merge
+  get: json.get
+  getString: json.getString
+  getNumber: json.getNumber
+  getBool: json.getBool
+  getArray: json.getArray
   encodeJson: json.encodeJson
 bytes:
   DecodeError: bytes.DecodeError

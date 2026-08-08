@@ -1803,12 +1803,16 @@ fn native_registry_exposes_only_json_codecs_for_std_json() {
     assert!(registry.is_registered("std.json.encode"));
     assert!(registry.is_registered("std.json.decode"));
     assert!(registry.is_registered("std.json.merge"));
+    assert!(registry.is_registered("std.json.get"));
+    assert!(registry.is_registered("std.json.getString"));
+    assert!(registry.is_registered("std.json.getNumber"));
+    assert!(registry.is_registered("std.json.getBool"));
+    assert!(registry.is_registered("std.json.getArray"));
 
     for target in [
         "std.json.parse",
         "std.json.stringify",
         "std.json.from",
-        "std.json.get",
         "std.json.at",
         "std.json.asString",
         "std.json.asNumber",

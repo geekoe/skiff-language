@@ -8,6 +8,12 @@ pub(crate) fn json_codec_requires_runtime_dispatch(_args: &[Value]) -> Result<Va
     ))
 }
 
+pub(crate) fn json_field_access_requires_runtime_dispatch(_args: &[Value]) -> Result<Value> {
+    Err(RuntimeError::Unsupported(
+        "std.json field access requires typed runtime dispatch".to_string(),
+    ))
+}
+
 /// Shallow object overlay merge for `std.json.merge(base, overlay)`.
 ///
 /// When both arguments are JSON objects, overlay's top-level keys override base's

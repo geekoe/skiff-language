@@ -99,6 +99,11 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.json.decode"),
     detached_scalar_native("std.json.encode"),
     detached_scalar_native("std.json.merge"),
+    detached_scalar_native("std.json.get"),
+    detached_scalar_native("std.json.getString"),
+    detached_scalar_native("std.json.getNumber"),
+    detached_scalar_native("std.json.getBool"),
+    detached_scalar_native("std.json.getArray"),
     detached_scalar_native("std.string.join"),
     detached_scalar_native("std.string.split"),
     detached_scalar_native("std.string.isAsciiDigits"),
@@ -157,6 +162,10 @@ const STRING_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&ST
 const BYTES_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&BYTES);
 const HTTP_HEADER_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&HTTP_HEADER);
 const STRING_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&STRING);
+const NUMBER_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&NUMBER);
+const BOOL_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&BOOL);
+const JSON_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&JSON);
+const JSON_ARRAY_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&JSON_ARRAY);
 const HTTP_RESPONSE_NULLABLE: NativeSignatureTypeExpr =
     NativeSignatureTypeExpr::Nullable(&HTTP_RESPONSE);
 const JSON_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&JSON);
@@ -408,6 +417,46 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         type_param_count: 0,
         params: &[JSON, JSON],
         return_type: JSON,
+    },
+    NativeSignatureDef {
+        target: "std.json.get",
+        binding_key: "std.json.get",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[JSON, STRING],
+        return_type: JSON_NULLABLE,
+    },
+    NativeSignatureDef {
+        target: "std.json.getString",
+        binding_key: "std.json.getString",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[JSON, STRING],
+        return_type: STRING_NULLABLE,
+    },
+    NativeSignatureDef {
+        target: "std.json.getNumber",
+        binding_key: "std.json.getNumber",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[JSON, STRING],
+        return_type: NUMBER_NULLABLE,
+    },
+    NativeSignatureDef {
+        target: "std.json.getBool",
+        binding_key: "std.json.getBool",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[JSON, STRING],
+        return_type: BOOL_NULLABLE,
+    },
+    NativeSignatureDef {
+        target: "std.json.getArray",
+        binding_key: "std.json.getArray",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[JSON, STRING],
+        return_type: JSON_ARRAY_NULLABLE,
     },
     NativeSignatureDef {
         target: "std.string.join",

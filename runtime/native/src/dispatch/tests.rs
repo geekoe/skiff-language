@@ -21,6 +21,13 @@ use super::{
     time::{clamp_sleep_millis, sleep_millis_from_runtime_value, TIME_SLEEP_MAX_MILLIS},
     RuntimeNativeInvocation, RuntimeNativeRoute,
 };
+use skiff_runtime_boundary::json::decode_untyped_wire_json;
+use skiff_runtime_model::{
+    request_heap::RequestHeap as ModelRequestHeap,
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
+    value::RuntimeValue as ModelRuntimeValue,
+};
+use skiff_runtime_native_contract::{NativeBindingKey, NativeCallPlan, NativeRequiredContext};
 
 #[test]
 fn native_signature_registry_shared_targets_are_runtime_reachable() {
@@ -82,6 +89,183 @@ fn std_time_sleep_requires_safe_integer_milliseconds() {
     assert!(
         error.to_string().contains("safe integer"),
         "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn std_json_field_access_reads_shared_values_without_serialization() {
+    let mut heap = ModelRequestHeap::default();
+    let chunk = decode_untyped_wire_json(
+        &json!({
+            "id": "chatcmpl-1",
+            "model": 42,
+            "ok": true,
+            "enabled": "not-a-bool",
+            "choices": [{ "index": 0 }, "nope"],
+            "meta": { "depth": 1 },
+        }),
+        &mut heap,
+    )
+    .expect("chunk should decode");
+
+    let json_plan = RuntimeTypePlan::json_value_plan();
+    let string_plan = RuntimeTypePlan::new("string", None, RuntimeTypeNode::String);
+    let nullable_json = RuntimeTypePlan::synthetic_nullable(json_plan.clone());
+    let nullable_string = RuntimeTypePlan::synthetic_nullable(string_plan.clone());
+    let nullable_number = RuntimeTypePlan::synthetic_nullable(RuntimeTypePlan::new(
+        "number",
+        None,
+        RuntimeTypeNode::Number,
+    ));
+    let nullable_bool = RuntimeTypePlan::synthetic_nullable(RuntimeTypePlan::new(
+        "bool",
+        None,
+        RuntimeTypeNode::Bool,
+    ));
+    let nullable_array =
+        RuntimeTypePlan::synthetic_nullable(RuntimeTypePlan::synthetic_array(json_plan.clone()));
+
+    fn invocation(
+        binding_key: &'static str,
+        arg_plans: Vec<RuntimeTypePlan>,
+        return_plan: RuntimeTypePlan,
+    ) -> RuntimeNativeInvocation {
+        RuntimeNativeInvocation::new(
+            binding_key.to_string(),
+            binding_key,
+            Some(NativeCallPlan::new(
+                NativeBindingKey::from_static(binding_key),
+                arg_plans,
+                return_plan,
+                NativeRequiredContext::None,
+            )),
+            None,
+            None,
+        )
+    }
+
+    let mut dispatch =
+        |key: &'static str, field: &str, plans: Vec<RuntimeTypePlan>, ret: RuntimeTypePlan| {
+            JsonNativeDispatch::dispatch(
+                &invocation(key, plans, ret),
+                key,
+                vec![chunk.clone(), RuntimeValue::String(field.to_string())],
+                &mut heap,
+            )
+        };
+
+    assert_eq!(
+        dispatch(
+            "std.json.get",
+            "id",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_json.clone(),
+        )
+        .expect("get should read the string field"),
+        RuntimeValue::String("chatcmpl-1".to_string())
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.get",
+            "missing",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_json.clone(),
+        )
+        .expect("get should yield null for a missing field"),
+        RuntimeValue::Null
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getString",
+            "id",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_string.clone(),
+        )
+        .expect("getString should read the string field"),
+        RuntimeValue::String("chatcmpl-1".to_string())
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getString",
+            "model",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_string.clone(),
+        )
+        .expect("getString should yield null for a non-string field"),
+        RuntimeValue::Null
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getNumber",
+            "model",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_number.clone(),
+        )
+        .expect("getNumber should read the number field"),
+        RuntimeValue::Number(42.0)
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getNumber",
+            "id",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_number.clone(),
+        )
+        .expect("getNumber should yield null for a non-number field"),
+        RuntimeValue::Null
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getBool",
+            "ok",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_bool.clone(),
+        )
+        .expect("getBool should read the bool field"),
+        RuntimeValue::Bool(true)
+    );
+    assert_eq!(
+        dispatch(
+            "std.json.getBool",
+            "enabled",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_bool.clone(),
+        )
+        .expect("getBool should yield null for a non-bool field"),
+        RuntimeValue::Null
+    );
+    let array_field = dispatch(
+        "std.json.getArray",
+        "choices",
+        vec![json_plan.clone(), string_plan.clone()],
+        nullable_array.clone(),
+    )
+    .expect("getArray should read the array field");
+    let RuntimeValue::Heap(array_handle) = array_field else {
+        panic!("getArray should return a heap array");
+    };
+    let skiff_runtime_model::runtime_value::HeapNode::Array(items) = heap
+        .get(array_handle)
+        .expect("array field handle should resolve")
+    else {
+        panic!("field should be a heap array");
+    };
+    assert_eq!(items.len(), 2);
+
+    let error = JsonNativeDispatch::dispatch(
+        &invocation(
+            "std.json.getString",
+            vec![json_plan.clone(), string_plan.clone()],
+            nullable_string.clone(),
+        ),
+        "std.json.getString",
+        vec![chunk.clone()],
+        &mut heap,
+    )
+    .expect_err("getters should require the declared argument count");
+    assert!(
+        error.to_string().contains("expects 2 argument(s)"),
+        "unexpected arity diagnostic: {error}"
     );
 }
 

@@ -13,7 +13,9 @@ pub(super) use crypto::{
 };
 pub(super) use date::{date_from_epoch_milliseconds, date_now, date_parse, date_require_parse};
 pub(super) use duration::{duration_milliseconds, duration_seconds, duration_to_milliseconds};
-pub(super) use json::{json_codec_requires_runtime_dispatch, json_merge};
+pub(super) use json::{
+    json_codec_requires_runtime_dispatch, json_field_access_requires_runtime_dispatch, json_merge,
+};
 pub(super) use number::{
     number_assert_safe_integer, number_is_integer, number_is_safe_integer, number_parse,
 };
