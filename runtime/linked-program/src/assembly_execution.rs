@@ -17,6 +17,7 @@ use crate::{
     ServiceErrorTypeIndex, SharedPackageCode, SharedPackageImageError, SharedPackageLinkedImage,
     TypeAddr, UnitAddr,
 };
+use crate::recoverable_behavior::RecoverableBehaviorIndex;
 
 /// Immutable, activation-independent executable/type image for one admitted assembly.
 #[derive(Debug)]
@@ -28,6 +29,7 @@ pub struct AssemblyExecutionImage {
     link_overlay: LinkOverlay,
     types: RuntimeTypeContext,
     service_error_types: Arc<ServiceErrorTypeIndex>,
+    recoverable_behavior_index: Option<Arc<RecoverableBehaviorIndex>>,
 }
 
 /// Canonical runtime package context for one admitted package code slot.
@@ -104,6 +106,7 @@ impl AssemblyExecutionImage {
             link_overlay,
             types,
             service_error_types,
+            recoverable_behavior_index: None,
         })
     }
 
@@ -160,6 +163,22 @@ impl AssemblyExecutionImage {
         }
         self.task_routes = routes;
         Ok(self)
+    }
+
+    /// Attaches the build-once recoverable interface behavior index materialized by
+    /// the linker. Images without one (test fixtures) fall back to on-demand
+    /// construction in eval.
+    pub fn with_recoverable_behavior_index(
+        mut self,
+        index: RecoverableBehaviorIndex,
+    ) -> Self {
+        self.recoverable_behavior_index = Some(Arc::new(index));
+        self
+    }
+
+    /// Returns the linker-materialized recoverable interface behavior index, when present.
+    pub fn recoverable_behavior_index(&self) -> Option<&Arc<RecoverableBehaviorIndex>> {
+        self.recoverable_behavior_index.as_ref()
     }
 
     pub fn task_route(&self, target: &str) -> Option<&ExecutableAddr> {

@@ -8,6 +8,7 @@ pub mod file_unit;
 pub mod linked;
 mod overlay;
 pub mod package_unit;
+pub mod recoverable_behavior;
 pub mod resolver;
 mod service_error_index;
 pub mod service_unit;
