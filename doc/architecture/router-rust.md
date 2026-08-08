@@ -65,7 +65,7 @@ domain；每个事实只能落在下表一个owner中：
 | `ReleasePointerIndex` | strict release pointer target与原子refresh | artifact/route write、Runtime image、request/session状态 |
 | `RuntimeSessionDirectory` | live session/replica/runtime-transport socket、session incarnation、loaded build set、lazy-load/store capability、容量计数与permit、session health observation | release pointer、request terminal、Actor truth |
 | `RequestRoutingState` | validated immutable ingress-routing view、exact-build dispatch pin、unary/stream/task-attempt correlation、client connection/socket incarnation、peer WebSocket pending/tombstone/deadline | pointer mutation、session replacement、Actor ownership |
-| `ActorRoutingState` | actor identity/incarnation/owner fence/lease、instance get/create dedup、method与owner-control correlation、idle/expiry schedule | release pointer、ordinary request/peer WebSocket pending |
+| `ActorRoutingState` | actor identity/incarnation、exact-build owner fence/lease、instance get/create dedup、method与owner-control correlation、idle/expiry schedule | release pointer、newest/superseded build、ordinary request/peer WebSocket pending |
 
 `RequestDispatcher`、`ClientConnectionIndex`与`WebSocketRequestBroker`只能是`RequestRoutingState`内互斥记录种类；
 Actor registry、instance broker、invocation relay、owner-control broker与expiry scheduler只能是
@@ -94,7 +94,10 @@ trusted service/version
 WebSocket upgrade固定exact deployment build、gateway entry与`ClientSocketIncarnation`。JSON-RPC response必须
 精确匹配connection、socket incarnation、direction/profile与transport id；pointer更新不迁移旧socket。
 
-Actor routing使用独立`ActorIncarnationFence`。实例get/create只改变`ActorRoutingState`，不能携带或重建
+Actor routing 使用独立 `ActorIncarnationFence`，每个 live identity 的 owner fence 另钉住创建它的 exact
+deployment `buildId`。不同 identity 可以同时运行不同 build；同 identity 的不同 build 请求直接拒绝，不触发
+升级/逐出，也不刷新当前 owner 的 idle 时钟。实例因 idle、断连或 shutdown 销毁后，下一次 claim 由请求
+自己的 build 决定，允许回退。`ActorRoutingState` 不保存 Actor release pointer、newest/superseded 集合或
 ambient multi-service release state。
 
 ## 5. Model ownership
@@ -133,7 +136,10 @@ HTTP/WS/Actor/chat smoke。Service rollback与Router process替换彼此独立�
 - pointer更新不迁移in-flight unary/stream/WebSocket；
 - permit、pending、session、broker tombstone在所有terminal/disconnect路径归零；
 - session replacement与client socket replacement的old finalizer不能删除new incarnation；
-- Actor claim/install/release只由`ActorRoutingState`改变truth；
+- Actor claim/install/release只由`ActorRoutingState`改变truth；同identity跨build拒绝、不同identity异版本并存、
+  mismatch不刷新idle、idle销毁后任意build重新claim都有竞态测试；owner lease expiry
+  不能抢在idle discard之前只清Router fence，测试必须同时证明Runtime instance已被exact discard或旧session
+  已被fence；
 - Router不依赖VM/eval crate，也不持有deployment execution image或跨service协调状态；
 - real Router↔Runtime HTTP、WebSocket、Actor与Agine chat smoke通过。
 

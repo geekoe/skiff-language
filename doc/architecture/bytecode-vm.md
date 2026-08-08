@@ -30,6 +30,9 @@ top-level frozen `const`、local `var` / immutable `let`，以及只允许Packag
   Actor segment lease，恢复前重新 acquire 并校验 fence/arena epoch。
 - artifact 保存 relocatable ISA。任何 linker 索引访问前先做 structural validation；link 后再做 CFG、类型、
   exact target、effect、exception、resume 与 `NoPending` semantic verification。
+- PackageArtifact 可以保存 generic bytecode template；deployment linker 对 exact package closure 做有限、确定性的
+  monomorphization。`LinkedBytecodeImage` 中所有 function/frame/type/shape 都已 concrete，不存在 runtime
+  `TypeParam` substitution 或按调用现场临时编译。
 - VM slots、operand stack 和 collection elements 使用紧凑、固定宽度的 value slot。nominal/catch/union
   identity 必须保留，但不在每个值上复制完整 identity object。
 - 普通 record、Array 和 Map 对用户采用 value semantics；实现以 move、root share transition、path COW 和
@@ -77,6 +80,7 @@ DeploymentExecutionImage
   operationEntries
   gatewayEntries
   packageDirectBindings
+  concreteSpecializations
   serviceDependencySlots
   type/shape/recoverable plans
   deployment-owned capability descriptors
@@ -123,8 +127,8 @@ transaction contract，不能重新把 ambient multi-service generation 塞进 V
 2. **Bytecode emitter** 负责控制流、stack effects、constant graph、relocation、frame layout、exception
    region、statement entry、source map 与 synthetic callback body，不制造 runtime address。
 3. **Structural validator** 在 linker 前验证不可信 artifact 的格式、边界、索引和资源上限。
-4. **Deployment linker** 消费 exact package/deployment facts，把 relocation 解析为 image-local target、type、
-   shape、effect adapter、capability 和 const entry。
+4. **Deployment linker** 消费 exact package/deployment facts，计算有界 generic specialization closure，并把
+   relocation 解析为 image-local target、type、shape、effect adapter、capability 和 const entry。
 5. **Semantic verifier** 不信任 compiler/linker summary，独立证明 linked code 可安全执行。
 6. **VM core** 只拥有 program frame、value stack、control flow、unwind 和 invocation protocol；它不直接实现
    DB、HTTP、release pointer、Actor registry 或 native resource lifetime。
@@ -161,6 +165,7 @@ Artifact bytecode 使用 wordcode：
 ```text
 RelocatableBytecodeFunction
   functionKey
+  typeParameters
   words: [u32]
   relocations: [BytecodeRelocation]
   frameLayout
@@ -174,7 +179,44 @@ RelocatableBytecodeFunction
 Package artifact 另保存 bounded frozen constant graphs、type/shape declarations、callback capture layouts 和
 debug table。Debug binding name 不扩大 runtime frame。
 
-### 3.3 Relocation and dynamic targets
+### 3.3 Deployment-link monomorphization
+
+泛型采用用户选择的方案 A：artifact 保留 relocatable template，exact deployment 在 link 时单态化。算法契约：
+
+```text
+SpecializationKey
+  templateFunctionKey
+  canonicalConcreteTypeArguments
+  concreteReceiver/SelfInstantiation
+
+roots = operation/gateway/Actor/package-direct/frozen-const behavior entries
+worklist = roots in canonical identity order
+while worklist not empty:
+  intern SpecializationKey -> concrete function index
+  substitute frame slots, value-transfer plans, type/shape refs,
+             call relocations, return/exception plans and callback captures
+  enqueue newly reachable concrete specializations in (call-site pc, key) order
+```
+
+- specialization key 的所有 type argument 必须 fully concrete。Artifact template/call relocation可引用词法
+  `TypeParam`，但对某个concrete key代换后若仍残留`TypeParam`、unresolved associated fact或caller-local
+  inference variable，该build立即link失败。
+- 同一个 key 的 direct/mutual recursion 可以指向正在构造的 concrete function index，因此普通递归不会让
+  worklist无限展开。若 polymorphic recursion 持续生成新 key，或specialization数量、单函数/总code words、
+  type depth超出受信上限，整个buildId以稳定link error失败；不得lazy specialize、截断后fallback或把
+  template交给runtime解释。
+- canonical root/worklist顺序与intern规则保证相同validated输入生成相同linked overlay；并发load共享同一个
+  per-buildId结果。
+- specialization会重算 concrete `CallableEffectSummary`、frame layout、max operand depth、exception/callback
+  plan与tail-call eligibility；不能把template summary不经代换直接当作proof。
+- post-link verifier拒绝 `LinkedBytecodeImage` 中任何残留 `TypeParam`。VM frame不携带generic environment，
+  `call_local`/`tail_call_local`只引用exact concrete function index。
+
+Service operation和external ingress第一版仍不能是generic declaration；它们可以使用fully instantiated的
+generic platform/user types。Package public generic callable可作为template发布，只在某个exact consumer/
+deployment closure形成finite concrete specialization时可执行。
+
+### 3.4 Relocation and dynamic targets
 
 Artifact relocation 至少区分：
 
@@ -215,7 +257,7 @@ LinkedBytecodeImage
 Package code 不因不同 deployment 被原地 patch。Decoded instruction 保存 image-local table index；若未来实测
 证明 patch private decoded copy 更快，可以在不改变 artifact ISA 的前提下采用。
 
-### 3.4 Initial instruction families
+### 3.5 Initial instruction families
 
 首版 ISA 至少包含以下语义族；numeric opcode 由 artifact schema 单一声明生成，compiler 与 runtime 不得
 各自复制编号：
@@ -268,6 +310,10 @@ Collection
   map_get
   map_put_owned
 
+Stream
+  stream_next
+  emit_stream
+
 Exception/region
   throw
   rethrow
@@ -278,9 +324,11 @@ Host effect
   invoke_host
 ```
 
-`copy_slot`、`dup`、container store 和普通 by-value argument preparation 都执行 semantic share transition；
-它们不能只复制 16 bytes 后留下两个“唯一”edit token。`move_slot` 转移 value 并使 source slot dead；verifier
-必须证明之后不再读取。
+`copy_slot`、`dup`、container store 和普通 by-value argument preparation 按 linked `ValueTransferPlan`执行；
+ordinary aggregate 才做 semantic share transition。它们不能只复制16 bytes后留下两个“唯一”edit token，
+也不能复制move-only/affine resource。`move_slot`转移value并使source slot dead；verifier必须证明之后不再读取。
+`stream_next`消费一次性stream endpoint的下一项；`emit_stream`只能出现在verified server-stream producer，
+并在buffer满/consumer未就绪时形成真实backpressure Pending。
 
 `tail_call_local` 是新 bytecode ISA 的显式操作。它只由 emitter 在 source eligibility 已确定且 relocation
 为 exact-local kind 时产生，并由 post-link verifier 再证明 return plan 与 region eligibility。它有意取代
@@ -289,7 +337,7 @@ Host effect
 不存在 transitive-function `call_suspend`，也不存在无法验证的 `invoke_unknown`。Restricted callback 有
 `make_callback` 与 synthetic function；这不是开放 general first-class closure/yield。
 
-### 3.5 Decoded micro-ops
+### 3.6 Decoded micro-ops
 
 Runtime 可以在 semantic verification 后把 wordcode 解码为固定 micro-op array并 quicken：
 
@@ -331,12 +379,16 @@ Link 后 verifier 至少证明：
 - 所有 CFG path 无 stack underflow，merge point stack height、slot liveness 与 type state 一致；
 - 重算的 max operand depth 不超过 validated declaration；
 - typed stack input/output 与 linked type/shape/nominal plan 相容；
+- linked function、slot、type/shape、exception/callback/value-transfer plan中没有残留`TypeParam`，每个concrete
+  specialization key唯一且所有call edge指向对应exact specialization；
 - dynamic interface method slot、Local/Remote/Callback 三条 carrier path 共享同一 canonical signature；
 - exception region 正确嵌套，handler stack height、catch slot、matcher 与 cleanup depth 合法；
 - 每个 pending-capable site 有唯一 resume descriptor，resume result/error shape 正确；
 - declared `NoPending` callable 不可到达 pending-capable instruction；
 - `tail_call_local` 满足 exact target、return plan equivalence 与 cleanup eligibility；
 - move、share、builder edit token、writable path 和 `InOut` loan 不产生 use-after-move 或同时可写 alias；
+- 每个slot/parameter/result/container field的`ValueTransferPlan`完整；move-only/affine resource不会经过copy、dup、
+  普通snapshot store或多consumer stream路径，所有overwrite/frame-pop/unwind edge都有exact drop；
 - callback capture layout 与 synthetic body slot/signature/effect profile一致且不违反 escape policy；
 - source/statement tables 覆盖所有 call、throw、effect 和 generated failure site；
 - frame/stack/constant/object size 不溢出 runtime resource accounting；
@@ -466,6 +518,28 @@ TransientRootStack
 Frame、slot 与 operand stack 不放进 managed heap；它们使用 request-owned contiguous vector/page segments，
 纳入统一 budget。Stream endpoint、socket、file staging、timer registration 和 service callback capability 等
 具有显式 lifetime 的对象进入 ResourceTable，不能依赖 tracing GC 的不确定 finalizer。
+
+### 6.5 Value transfer and affine resources
+
+每个linked type/slot/parameter/result/container position都有显式`ValueTransferPlan`，至少区分：
+
+```text
+SnapshotShare       # ordinary scalar/aggregate value；copy产生logical snapshot/COW share
+MoveOnly            # identity-bearing value；只能move
+AffineResource      # 最多一个live owner，离开作用域必须release
+ExplicitCloneLease  # 只有声明了clone adapter的resource才能显式复制lease
+```
+
+`ResourceRef`不是ordinary aggregate，不能自动走share transition。`Stream<T>` endpoint是
+`AffineResource`/one-shot consumer：赋值、参数准备和return默认move，`copy_slot`、`dup`、普通container store与
+第二次迭代都由source checker/verifier拒绝。Socket/file/timer等是否move-only或可显式clone由各自native
+contract决定，不能从slot kind猜测。
+
+`move_slot`原子转移resource token并清空source。`drop`、slot overwrite、frame truncation、tail replacement、
+normal return、throw/unwind与request stop都执行linked drop plan；ResourceTable以
+`(resourceId, generation, owner)`做exact、幂等release，显式close后后续drop为no-op。含resource的特权native
+record必须有递归drop/transfer plan；普通用户record/schema仍不能藏resource。GC只追踪resource payload显式
+登记的managed roots，不承担close时机。
 
 ## 7. ConstantHeap initialization
 
@@ -653,7 +727,6 @@ Frame
   slotBase/slotCount
   operandBase/operandDepth
   callSite
-  instantiatedTypeContext
 ```
 
 进入 frame时按 verified max depth一次扩展 contiguous segment；普通 instruction不触发 stack realloc。Return
@@ -664,7 +737,8 @@ Frame
 `call_local` 按源码顺序求值参数，以 move/share准备 slots，push callee frame，然后在同一 dispatch loop继续。
 不检查 callee transitive `maySuspend`，不创建 future；深处 actual Pending时整个 fiber一起停放。
 
-`tail_call_local` 在 caller frame live 时求值参数一次，验证共同 return plan/self/generic/region eligibility后
+`tail_call_local` 在 caller frame live 时求值参数一次，验证共同 return plan/concrete Self specialization/
+region eligibility后
 替换当前 frame segment。每 hop 保留 call/function-entry charge与hard fuel；eliminated edge不增长诊断栈。
 
 ### 10.3 `InOut` is Package Local only
@@ -694,6 +768,8 @@ VmControl
   Continue
   Complete(Result<ValueSlot, VmError>)
   EnterChild(ChildInvocation)
+  EnterAdapter(AdapterInvocation)
+  EmitStream(StreamItem)
   Park(PendingOperation)
 ```
 
@@ -702,6 +778,7 @@ Host adapter启动结果为：
 ```text
 EffectStart
   Ready(Result<ValueSlot, VmError>)
+  EnterAdapter(AdapterInvocation)
   Pending(PendingOperation)
 ```
 
@@ -714,8 +791,12 @@ Service/Actor/callback dispatch adapter 可以进一步返回：
 BoundaryStart
   Ready(Result<BoundaryValue, VmError>)
   EnterChild(ChildInvocation)
+  OpenStreamChild(StreamInvocation)
   Pending(PendingOperation)      # remote transport, actor acquisition, etc.
 ```
+
+`VmFiber`与resumable `NativeAdapterFrame`都是scheduler unit；两者只能通过上述control result交还执行权，
+不能从adapter递归调用VM，也不能为方便把同步callback/stream步骤伪造成Pending。
 
 ### 11.2 Enter child without native recursion
 
@@ -728,7 +809,52 @@ parent。整个过程可以跨任意层 owner，但 native stack保持扁平。
 Child 遇到真实 host Pending时，scheduler保存 parent/child chain并 park leaf。调用链上持有的 Actor segment
 lease在此时按各自规则释放；普通 request heap仍由 rooted fibers拥有。Wake后从leaf恢复，逐层同步完成并返回。
 
-### 11.3 Park and resume
+### 11.3 Resumable native adapters
+
+接收restricted callback的native API（例如`Array.map/filter`类adapter）不能在Rust栈上直接poll callback
+bytecode。`EnterAdapter`安装：
+
+```text
+NativeAdapterFrame
+  adapterIndex
+  stateId + bounded adapterState
+  rootedInputs/partialOutput
+  callbackClosureRefs
+  callerDestination + resultPlan
+  sourceSite
+
+AdapterControl
+  Continue
+  EnterChild(CallbackInvocation)
+  Complete(Result<ValueSlot, VmError>)
+  Park(PendingOperation)
+```
+
+Adapter每次需要调用callback时返回`EnterChild`；child结果由scheduler写回adapter resume slot，adapter随后可继续
+迭代、再次调用或完成。Adapter state只保存stable handles/owned host bytes并计入request budget；callback
+throw在原callback/call site进入同一unwind。只有adapter自己的host operation实际等待才`Park`。这使大collection
+callback、callback内local/service call及真实Pending都保持flat native stack。
+
+### 11.4 Stream producer and consumer
+
+`OpenStreamChild`为verified server-stream invocation建立一个`StreamSupervisor`、consumer endpoint与provider
+producer fiber。Service call在provider admission和boundary plans验证完成后，先把affine consumer handle
+materialize给caller，再poll producer body；不能先同步跑producer直到buffer满才让caller取得handle。Gateway
+root则把同一supervisor接到已有external response sink。Producer始终pin exact provider build、request
+frame/deadline/trace/call stack与provider heap；它不是detached coroutine，也不允许普通local function任意spawn
+一个可逃逸stream。
+
+Producer执行`emit_stream`时返回`EmitStream`。Supervisor只在waiting consumer或bounded buffer有容量时同步接收；
+否则把producer停在真实backpressure `PendingOperation`。`stream_next`消费一个item、end或error；item按boundary
+plan materialize，不能共享provider heap handle。Producer normal exit生成一次end，throw/timeout生成一次error；
+consumer break/drop/ancestor stop关闭affine endpoint并向producer发送best-effort stop，晚到item只做内部清理。
+同一endpoint不得被两个fiber/lane消费。
+
+Native external source stream也登记在同一ResourceTable/Supervisor contract，但其producer由host adapter拥有。
+Package-direct stream wrapper复用当前request已有的stream registry；普通Skiff package/local body仍不能创建新的
+可逃逸`Stream<T>`。这些限制由source checker、effect metadata与post-link verifier共同证明。
+
+### 11.5 Park and resume
 
 Park前 site 已有 verified stack/result/resume descriptor。Fiber至少保存：
 
@@ -745,8 +871,29 @@ unwindPhase if cleanup is pending
 Arguments在 adapter contract下完成 move/materialize/root transfer；fiber进入waiting table；scheduler拥有
 PendingOperation、deadline/internal-stop registration与wake。Frame chain不复制、不序列化。
 
+Start、completion、deadline、internal stop与cancel可能发生在不同线程；`Park`不能依赖“先登记waiter、后端才
+可能完成”的时序假设。每个pending site使用一个受信completion cell：
+
+```text
+PendingCellState
+  Open(rootEscrow)
+  Waiting(waiter, pendingOwner)
+  Settled(outcome, rootEscrow)   # completion早于waiter publication
+  Claimed                       # outcome已恰好一次交给scheduler
+```
+
+Adapter在把completion handle交给host前先建立root escrow。Host completion从`Open -> Settled`，或从
+`Waiting -> Claimed`并enqueue一次；scheduler发布waiting owner时从`Open -> Waiting`，或观察`Settled`后
+`-> Claimed`并立即enqueue。Deadline/stop/cancel通过同一个terminal arbiter竞争settlement；只有一个winner，
+duplicate/late completion只命中bounded tombstone并释放自身host payload，不能二次wake、二次drop或覆盖terminal。
+
+Roots、pending budget reservation、callback/resource lease和boundary buffers在Ready、Pending publication与
+pre-completed outcome三条路径上必须恰好转移一次。Actor segment lease只能在pending owner及其roots已经成功
+发布后释放；若publication失败，仍由当前fiber同步unwind。该原子握手必须有completion-before-register、
+register-before-completion、deadline/cancel四向竞态和duplicate completion测试。
+
 Wake result为 `Value`、`Throw` 或 internal terminal。成功按plan导入并回到runnable；失败在原effect site注入，
-走同一个unwind state machine。Budget、profiling、type context、diagnostic prefix与transaction region不重置。
+走同一个unwind state machine。Budget、profiling、concrete specialization、diagnostic prefix与transaction region不重置。
 
 ## 12. Dynamic interface and callback execution
 
@@ -766,17 +913,26 @@ RemoteService
 
 CallbackCapability
   capability owner + operationTable + request lifetime
-  -> EnterChild back to capability owner or transport Pending
+  -> same-runtime EnterChild back to capability owner
+     or RemoteBoundary transport Pending when that transport exists
 ```
 
 Verifier证明method slot和三条分支的参数/返回shape都等于interface requirement；image construction验证每个
 local method table exact target和remote operation table。Unknown carrier/tag/slot fail closed。Local branch
 即使静态 `maySuspend` 保守为true，也不会因此yield；remote/callback分支只有actual wait才park。
 
+当前 Runtime 的 service callback capability只覆盖同runtime owner lookup/context switch；目标bytecode VM
+必须把这条路径收敛为`EnterChild`。Router wire没有反向callback frame。
+因此跨runtime callback必须在deployment admission fail closed，不能把上图的`transport Pending`读成现状能力。
+未来RemoteBoundary需要由service/runtime transport文档先定义owner route、request/cancel/response、认证、
+lifetime与backpressure，VM只消费其已验证adapter。Agine的package-local `any I` adapter内部调用AIHub是Local
+branch + 普通正向service call，不覆盖这条transport门禁。
+
 ### 12.2 Restricted callback bodies
 
-当前静态语义已经允许 IIFE、白名单 callback argument和具名 callback reference，因此 bytecode ISA不能把
-closure全部推到未来：
+目标reference允许IIFE、白名单callback argument和具名callback reference，因此bytecode ISA不能把closure
+全部推到未来。当前source parser/AST/lowering尚未形成完整`FnExpr`链路；production完成必须补齐真实
+source-to-bytecode路径，不能只用手工artifact fixture证明：
 
 - emitter把每个 callback body outline为 `SyntheticCallbackFunction`，保存exact signature、effect summary、
   capture layout、source map和普通bytecode body；
@@ -821,7 +977,10 @@ Commit、abort、lease release和stream/resource close都可能Pending，因此f
 ```text
 UnwindState
   reason: Return | Throw | Timeout | InternalStop | ChildFailure
-  primaryTerminal
+  candidateOutcome: Option<ReturnValue | ThrowValue | ChildFailure>
+  selectedOutcome: Option<ReturnValue | ThrowValue | VmFailure | PlatformTerminal>
+  responsePublication: NotEligible | Unpublished | Published
+  cleanupFailure: Option<VmError>
   regionCursor
   cleanupPhase: Enter | Starting(actionId) | Waiting(actionId, pendingId)
                 | Completed(actionId) | Done
@@ -829,14 +988,28 @@ UnwindState
 
 规则：
 
-- `primaryTerminal` 一旦选择就不会因resume/re-poll丢失；
+- normal return/ordinary throw在必须完成的commit/abort/close前只进入`candidateOutcome`；cleanup
+  改变最终语义时不能先向caller发布success。`selectedOutcome`一旦选择不被resume/re-poll/
+  late cleanup覆盖；
+  只有逃出request/gateway root的outcome才进入response publication，且只能`Unpublished -> Published`一次；
 - 每个cleanup action有稳定action id和单调phase，Pending resume只继续该phase，不能重复commit/abort；
-- normal transaction exit先commit；commit失败把commit error设为primary failure，再按policy尽力abort，abort
-  failure不覆盖原commit error；
-- ordinary throw在commit选择前等待abort，并保留原throw为primary；
-- timeout/internal stop的可见terminal按reference立即固定，best-effort cleanup可以在bounded owner中继续，但
-  不延迟已固定response，也不能把late result写回结束heap；
+- normal transaction exit先commit；commit成功后才选择return。commit失败以commit error选择failure，
+  再按policy尽力abort；abort failure只进`cleanupFailure`/telemetry，不覆盖commit error；
+- ordinary throw在发布前等待语义要求的abort，并保留原throw；abort失败不把同一request变成第二个terminal；
+- timeout立即选择当前timeout scope的`TimeoutError`，仍可由外层Skiff `catch`处理；request deadline
+  逃出root时才投影为response terminal。internal stop直接选择不可捕获的platform terminal。两者的
+  best-effort cleanup可以在bounded owner中继续，但不延迟已固定语义结果，也不能把late result写回
+  已结束的scope/request heap；
 - cleanup自身调用child/host时继续使用同一 trampoline/actual-Pending协议。
+
+Timeout/internal stop选择outcome后若cleanup仍可能Pending，scheduler只可把**driver-owned** transaction/resource/session
+句柄和owned host bytes转移给`CleanupOwner`。该owner有独立有限budget/deadline与pending
+handshake；它不能保留Skiff frame、request/Actor heap handle、callback closure、用户bytecode继续执行权，或
+发起新的用户语义effect/response写回。已经开始的DB commit或外部effect仍可能在后台完成或成为
+unknown outcome；cleanup owner只做收尾/观测，不得把结果重新注入Skiff状态。Request heap只有在所有roots已
+释放或原子转移后才能销毁。局部timeout被caught时外层fiber继续拥有原request heap，只有已
+转移的driver handle在cleanup owner中收尾；不得把这误实现为销毁整个request heap。普通return/throw
+路径仍由原request owner完成语义必要cleanup；不能为了提早响应把commit/abort随意detach。
 
 ### 13.3 Transaction state
 
@@ -853,16 +1026,23 @@ compiler/verifier effect rule，不是内存rollback机制。不得为Actor重�
 每个live Actor instance拥有一个 `ActorStateHeap` shared arena和stable field root slots。Actor method不是把
 state clone到request heap：
 
-1. method entry acquire `ActorSegmentLease`，校验actor identity、implementation build/identity、incarnation
-   fence和arena epoch；
+1. 每个identity的live incarnation钉住创建它的exact deployment `buildId`、`DeploymentExecutionImage`与
+   ActorStateHeap；不同identity可以同时运行不同build。method entry acquire `ActorSegmentLease`并校验请求build
+   与owner build精确相等、actor identity/implementation identity、incarnation fence和arena epoch；
 2. 同步段直接读写shared arena。已执行field/node mutation立即对后续获得lease的方法可见；
 3. ordinary return只归还lease，不“commit”副本；throw/internal failure也不回滚已经执行的actor write；
 4. 只有leaf真正返回Pending时才drop arena guard/lease；fiber保存
    `ActorContinuation { identity, implementationBuildId, fence, arenaEpoch, leaseState }`；
-5. resume前重新acquire并重新校验。Actor已升级/逐出、fence或epoch不匹配时按Actor terminal contract失败，
+5. resume前重新acquire并重新校验。Actor已逐出/owner失效、fence或epoch不匹配时按Actor terminal contract失败，
    不能在stale snapshot上继续；
 6. request-scoped stream/resource/callback capability在actor field写路径立即fail closed；
 7. compaction只在无active/suspended continuation的quiescence执行，并bump arena epoch。
+
+不同build的get/method/task在live incarnation存在时直接`ActorVersionRejectedError`：VM/Router不在旧heap上跑
+新image代码，不触发upgrade/retirement，也不刷新旧owner的idle时钟。普通idle TTL、disconnect或shutdown
+销毁实例后，下一个成功claimant以自己的exact build创建，允许回退；不存在Actor release pointer或
+newest/superseded集合。第一版即使`ActorAbiIdentity`相同也不跨build共享heap。未来若以ABI兼容优化，必须先
+定义所有image-local type/shape/const/behavior引用的重绑定proof，不能只比较一个hash便混用两个image。
 
 Aggregate value semantics不改变共享state可见性：直接actor field path write仍立即修改shared arena；只是把field
 读取到普通local或传给普通参数时得到logical snapshot，COW防止local mutation暗中改actor。显式写回
@@ -907,18 +1087,23 @@ decode到当前owner的fresh value；不能把image-local const index当durable 
 
 ### 16.1 Unbypassable hard fuel
 
-Artifact semantic charge metadata不能单独承担安全性。VM dispatch每执行一条semantic instruction都更新受信
-hard fuel counter；counter耗尽必须检查instruction limit、deadline和internal stop后再继续。Artifact不能关闭、
-跳过或重置该counter。
+Artifact semantic charge metadata不能单独承担安全性。VM dispatch对每条semantic instruction从受信raw-op
+quantum扣1；quantum为0时无条件poll deadline/internal stop，并从execution policy拥有的finite instruction
+limit扣除已执行数量。总limit耗尽立即产生结构化resource terminal；继续执行时只能由VM按固定、非零、受信
+上限补充下一个quantum。Artifact不能设置、关闭、跳过或重置quantum/总limit，也不能用metadata扩大预算。
 
-Post-link verifier另证明每个CFG cycle经过`budget_checkpoint`，以保持当前loop/backedge semantic charging和
-及时stop行为。两层同时存在：hard fuel防损坏artifact/validator bug无限pure jump；显式checkpoint保持语言
-可观察budget单位。Decoded fusion/JIT必须按所含semantic op数量扣fuel，并在内部unbounded loop poll。
+Post-link verifier另证明每个CFG cycle经过`budget_checkpoint`，以保持语言级loop/backedge semantic charging与
+source attribution；checkpoint本身有固定非零raw-op成本，但不是唯一interrupt poll。两层同时存在：raw hard
+fuel即使面对损坏artifact/validator bug也界定两次stop poll之间的最大工作量，semantic checkpoint保持既有
+可观察budget单位。Decoded fusion/JIT必须按所含semantic op数量扣raw fuel；任何runtime micro-op内部循环也按
+固定quantum poll，不能一次调用吞掉无界工作。
 
 ### 16.2 Semantic charging and profiling
 
 Emitter为statement/expression/function entry/local call/tail hop/loop/generated chunk等当前语义点生成稳定charge
-metadata。VM可批量提交unit，但quickening、micro-op数或machine instruction数不能改变语义unit。
+metadata。Metadata只声明canonical charge kind/source attribution；数量与合法pc由schema规则决定，post-link
+verifier从CFG/opcode重算并拒绝缺失、重复或伪造entry。VM可批量提交unit，但quickening、micro-op数或machine
+instruction数不能改变语义unit，也不能影响raw hard fuel。
 
 Artifact分开保存：
 
@@ -974,14 +1159,29 @@ implementation benchmark plan绑定workload、release profile、机器、统计�
 - Package/Service契约拒绝service/gateway/interface/callback `InOut`，Package Local ABI保留该mode和
   `maySuspend` summary；
 - artifact schema由单一opcode/operand/stack-effect声明生成；
+- generic Package template在deployment link形成finite deterministic concrete specialization closure，linked image
+  无`TypeParam`或runtime generic environment；polymorphic recursion/上限超出稳定fail closed；
 - pre-link structural validator不能被linker绕过，post-link semantic verifier对未知target/type fail closed；
 - compiler-time const evaluator与ConstantHeap load/freeze protocol落地；
-- service/Actor/interface/callback的EnterChild/Ready/Pending矩阵共享一个scheduler trampoline；
-- restricted callback synthetic body/capture和三分支`call_interface`有真实source-to-runtime test；
+- service/Actor/interface/callback的EnterChild/Ready/Pending矩阵、resumable native adapter和stream producer/
+  consumer共享一个scheduler trampoline；adapter不得递归poll VM，`emit_stream`具有真实backpressure；
+- restricted callback synthetic body/capture和三分支`call_interface`有真实source-to-runtime test；同runtime
+  callback capability执行与cross-runtime placement fail-closed分别验收，Agine package-local callback +
+  forward AIHub call不算remote callback transport证据；
 - request heap、Actor heap、constant heap、resource table、VM stack和transient roots owner分离；
+- move-only/affine ResourceRef（特别是one-shot Stream）在copy/dup/store、frame pop、tail replacement与unwind上
+  通过linked transfer/drop plan验证，release exact且幂等；
 - sync、actual-Pending、resume error、timeout/stop、catch/rethrow、transaction commit-fail-abort、stream cleanup、
   Actor partial write、tail call、GC transient root和memory limit都有focused test；
-- hard fuel与CFG-cycle checkpoint共同阻止无charge pure jump loop；
+- Pending completion-before-register、register-before-completion、deadline/cancel/stop与duplicate completion竞态证明
+  单winner、单wake、单root transfer；selected outcome/response publication唯一，bounded CleanupOwner
+  不保留结束heap或产生late write；
+- Actor owner fence包含exact build；不同identity可异版本并存、同identity mismatch只拒绝且不刷新idle，idle销毁
+  后任意build可重新claim；当前registry的implementation pin必须从no-live-owner路径移除；当前owner
+  lease/idle TTL同为30s且sweep先expire lease的默认路径必须修正，不能在未向Runtime发送/确认
+  discard时只清Router fence并把残留instance当成已销毁；idle/disconnect后的新owner还必须
+  推进incarnation epoch，不能让旧ref/continuation命中新instance；
+- 受信raw hard fuel quantum/finite instruction limit与CFG-cycle checkpoint共同阻止无charge pure jump loop；
 - source-to-artifact-to-deployment-load-to-runtime真实路径、GC pressure与Agine chat smoke通过；
 - production tree evaluator、old artifact reader、assembly admission/generation、`call_suspend`、test-only
   evaluator和compatibility fallback全部删除。

@@ -420,6 +420,23 @@ resource 仍按其 effect/conflict-key 检查跨 lane 冲突。
 
 `Json` / `JsonObject` 的递归来自 compiler-known prelude descriptor，不是普通 alias 例外。
 
+### 13.1 Generic executable closure
+
+泛型是编译期参数化，不是 runtime reified dispatch。Source checker必须为每个generic call解析完整、满足约束的
+type-argument expression；在generic body内该expression可以引用词法可见的`TypeParam`。PackageArtifact可以发布
+generic body template，exact deployment linker再按
+`(callable, concrete type arguments, concrete receiver/Self)`单态化。
+
+同一concrete instantiation上的direct/mutual recursion合法并复用同一个specialization。若polymorphic
+recursion不断构造新的type arguments，使exact deployment的reachable specialization closure不有限，或对
+某个concrete key代换后的reachable edge仍含未解`TypeParam`，deployment link必须fail closed。实现可以设置受信的
+specialization数量、code size与
+type-depth上限；超限是build/link resource error，不允许请求执行时lazy specialize或fallback到动态泛型解释。
+
+这一规则不放宽§14：service-call operation与external ingress第一版仍不能是generic declaration；它们只能在
+签名中使用fully instantiated的generic type。Package public generic callable可以供package linkage使用，但
+只有形成finite concrete closure的exact deployment才能执行。
+
 ## 14. Service API Static Boundary
 
 Service API roots只来自`service.yml.serviceCalls`按public path显式选择的Package API callable roots。

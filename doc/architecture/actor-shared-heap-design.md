@@ -1,6 +1,6 @@
 # Actor 实例共享 heap 求值设计
 
-> Status: 设计稿 v4（权威设计）。
+> Status: 设计稿 v5（权威设计）。
 > 取代并删除了旧canonical字段表草案；其评审结论已浓缩进§1，不再保留第二份设计。
 > 相关文档：[actor-model.md](actor-model.md)、[runtime.md](../reference/runtime.md)（§6 Concurrent lane model）。
 
@@ -42,6 +42,15 @@ v4 决策（用户确认）：
   使用该语法）。作为前置片删除运行时 concurrent 机制与 E3 bridge；
 - 共享 heap 迁移按批次实施（见 `../implementation/actor-shared-heap/interfaces.md`）。
 
+v5 版本边界决策（用户确认）：
+
+- 每个Actor identity的live incarnation钉住创建它的exact deployment `buildId`/image；不同identity可同时运行
+  不同build；
+- live期间不同build请求只拒绝，不进入`upgrading`、不触发逐出，也不刷新idle；实例由普通idle TTL、断连或
+  shutdown回收；
+- 销毁后不保留newest/superseded pointer，下一次owner claim由请求自己的build决定，允许回退；
+- 第一版不做Actor ABI兼容复用，旧upgrade状态机/控制帧不属于目标态。
+
 ## 2. 目标与非目标
 
 目标：
@@ -72,7 +81,7 @@ v4 决策（用户确认）：
 
 - 实例 store 持有 `ActorInstanceState { fields: Vec<ActorFieldValue>, arena: SharedArena }`；
 - `SharedArena = Arc<tokio::sync::Mutex<RequestHeap>>`；字段根是 arena 内节点句柄；
-- arena 生命周期 = 实例生命周期：激活时创建（create 执行前写入 key 字段），逐出/升级时整体丢弃
+- arena 生命周期 = 实例生命周期：激活时创建（create 执行前写入 key 字段），逐出/owner失效时整体丢弃
   （按创建输入重建）。
 
 ### 3.2 段生命周期
@@ -220,15 +229,17 @@ v4 决策（用户确认）：
 
 ### 7.2 quiescence 压缩
 
-- 实例维护active/suspended续体计数（含`create`和transaction cleanup）与upgrade/discard状态；
-- 触发条件：计数 == 0、无 pending upgrade / discard、arena 规模超过阈值、实例仍存活；
+- 实例维护active/suspended续体计数（含`create`和transaction cleanup）与discard状态；
+- 触发条件：计数 == 0、无 pending discard、arena 规模超过阈值、实例仍存活；
 - 操作：锁内克隆 live 根（字段）到新 arena → bump arena epoch → 原子替换 store arena；
-- 升级 / 逐出优先级高于压缩：实例进入 `upgrading` 或被 discard 时跳过压缩；
+- 逐出优先级高于压缩：实例进入discard时跳过压缩；不同build请求只拒绝，不改变压缩状态；
 - 跨任务边界（dispatch 载荷、stream producer）不得持有共享 arena 句柄（§3.5 校验保证），
   因此 detached task 不构成压缩阻碍；
-- **前置修复（独立于压缩）**：router `inMemoryRegistryStore` 存在 idle 逐出与 upgrade 互卡竞态
-  （进入 `upgrading` 时未取消 pending eviction，逐出 ACK 清 owner 后 `upgradeFence` 永久等待）；
-  压缩/升级优先级成立前必须先修复该状态机并补 router 回归测试。
+- 旧router idle逐出与upgrade互卡状态机直接删除；不以修复`upgradeFence`的方式保留第二套版本切换。
+  回归测试改为证明cross-build mismatch不触发control frame、不刷新idle，idle ACK只影响exact owner，
+  并在Runtime exact discard确认后推进incarnation epoch。
+  当前默认owner lease TTL与idle TTL都为30s，且sweep先expire owner；这会跳过`IdleEvict`。落地时必须
+  调整时序/所有权协议，并端到端证明Router释放owner时Runtime store不留可重用的残留instance。
 
 ### 7.3 provider-stream 边界（Slice 2 前置）
 
@@ -259,9 +270,11 @@ v4 决策（用户确认）：
 
 - caller ↔ owner 编解码不变（service call 语义）；owner 内部共享 arena 对调用方透明；
 - 每次Actor invocation携带exact deployment `buildId`；owner Runtime按该key取得或懒加载immutable
-  `DeploymentExecutionImage`，并在method entry/resume校验exact image owner与`ActorImplementationIdentity`。Actor shared arena属于
-  instance，不属于image，也不经`RuntimeAssembly`或activation generation切换；
-- 升级 / 逐出 / 断连：按创建输入重建，字段不跨任期；升级期间旧实例需无活跃段（计数 == 0）；
+  `DeploymentExecutionImage`，并在method entry/resume校验exact image owner与`ActorImplementationIdentity`。
+  Actor shared arena属于该incarnation并由同一个image解释；不得用另一build的image-local type/shape/const/
+  behavior索引访问它，也不经`RuntimeAssembly`或activation generation切换；
+- cross-build invocation直接`ActorVersionRejectedError`，不刷新idle或触发升级。逐出/断连后字段不跨任期；
+  下一个成功claimant按自己的build与create snapshot重建，允许回退；
 - ABI：字段存储形态是内部实现，不改变 artifact ABI；
 - **implementation identity**：字段存储与求值器改造会改变规范化编译结果；必须重新冻结 identity
   测试向量，并回归 actor-model.md 的四个消费视图：同包直接调用、公共跨包调用、
@@ -276,11 +289,11 @@ v4 决策（用户确认）：
 3. 普通 request 走 `Exclusive` 路径，行为与现有测试不回归；
 4. `db transaction`在actor方法内走DB-only语义；nested transaction和transaction body actor field write
    编译期拒绝；普通request事务测试不回归；
-5. 压缩：epoch 失效无泄漏；计数 == 0 才触发；upgrade / 逐出优先（router 竞态先修）；
+5. 压缩：epoch 失效无泄漏；计数 == 0 才触发；discard优先，cross-build rejection不改变压缩状态；
 6. aggregate value semantics矩阵覆盖immutable `let` / 普通parameter snapshot、writable `var` COW与direct
    Actor field shared write；失败段语义按 §3.4（不保证字段原子性）文档化并测试；
-7. exact `buildId` lazy-load、升级 / 逐出 / 断连语义不回归；implementation identity 重新冻结；跨包视图
-   1–4 不回归。
+7. exact `buildId` lazy-load；不同identity异build并存、同identity mismatch只拒绝且不刷新idle、idle/断连后
+   任意build重新claim；implementation identity重新冻结；跨包视图1–4不回归。
 
 ## 11. 风险与开放问题
 

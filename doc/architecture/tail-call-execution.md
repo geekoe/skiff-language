@@ -15,6 +15,8 @@
 generic/impl self recursion在满足reference eligibility时由同一bytecode dispatch loop执行frame
 replacement。递归次数不得
 增加native poll stack、active non-tail program depth或尾调用诊断栈空间。
+Generic edge在deployment link时已经按`bytecode-vm.md`单态化；VM看到的是exact concrete specialization，
+不是携带runtime substitution environment的template frame。
 
 目标实现服务当前request钉住的exact deployment `buildId` `DeploymentExecutionImage`。树遍历
 evaluator迁移期间仍可使用本文件记录的
@@ -49,8 +51,8 @@ Target bytecode组合只有四部分：
 1. Source/lowering按reference识别eligible direct-return call，并保留exact relocation与return plan facts。
 2. Canonical artifact ISA新增semantic opcode `tail_call_local`，bytecode emitter为eligible edge发射该
    instruction与exact target relocation；它不是可漂移的boolean marker。
-3. Pre-link validator验证opcode/relocation结构；post-link verifier证明exact-local target、return plan、self/
-   generic substitution、`NoPending`/`InOut`和cleanup-region eligibility。
+3. Pre-link validator验证opcode/relocation结构；deployment linker先解析exact concrete specialization，post-link
+   verifier再证明exact-local target、return plan、concrete self、`NoPending`/`InOut`和cleanup-region eligibility。
 4. VM在同一dispatch loop中以单一commit替换当前frame/value segment。
 
 树遍历evaluator阶段不新增File IR `tail`字段、metadata convention或SCC annotation，继续从
@@ -165,17 +167,18 @@ instantiated `RuntimeTypePlan` canonical-equivalent时安全：
 - plan不同或无法证明等价时走普通调用，不能积累unbounded return-plan continuation stack；
 - terminal value只按共同plan物化一次，并以测试证明对该plan的carrier结果与原普通路径等价。
 
-Generic type args必须在caller env销毁前通过既有`call_type_substitutions`实例化。Impl method沿用现有
-explicit-self param、SelfValue slot与inherited self规则；tail replacement不能重新推断receiver，也不能
-丢失self carrier的heap/catch identity。
+迁移期tree evaluator仍必须在caller env销毁前通过既有`call_type_substitutions`实例化generic type args。
+Bytecode完成态不保留这一步：deployment linker已把caller与callee解析成唯一concrete specialization，frame
+只保存concrete function index。Impl method沿用现有explicit-self param、SelfValue slot与inherited self规则；
+tail replacement不能重新推断receiver，也不能丢失self carrier的heap/catch identity。
 
 ### Bytecode frame replacement safety
 
 `tail_call_local`是已验证artifact的semantic instruction，不是runtime探测后可回退的optimization。
 Post-link verifier必须在VM执行前证明：
 
-- target在同exact deployment `buildId` image内，arity、parameter/return plan、self、generic
-  substitution与Package Local ABI精确匹配；
+- target在同exact deployment `buildId` image内，arity、parameter/return plan、concrete Self specialization与
+  Package Local ABI精确匹配，且caller/callee plan均无残留`TypeParam`；
 - opcode处在可直接退出callable的region depth，没有未完成cleanup/catch/timeout/transaction/
   scheduler owner，也不在unwind path中；
 - frame中没有必须由被删除slot继续拥有的callback capture、resource guard、transient root或
@@ -301,7 +304,7 @@ test-only识别。Bytecode production cutover后：
   独立tail boolean metadata/SCC convention；非法return plan/region/target、live pending/unwind state、
   `NoPending`/`InOut`或removed-slot lifetime拒绝。
 - runtime positive：deployment bytecode真实路径覆盖direct self深递归、same-file和cross-module mutual；
-  generic/impl self；branch return；ordered/single argument evaluation。
+  generic/impl self的concrete specialization；branch return；ordered/single argument evaluation。
 - runtime negative：binary/wrapper/call-argument/catch/timeout/concurrent/DB/stream defer/service/Actor/native
   不误转移；plan不等价、caller-local `InOut` base或不可证明loan transfer由emitter保留
   普通调用，损坏的opcode由verifier拒绝。
@@ -309,7 +312,7 @@ test-only识别。Bytecode production cutover后：
   guard fixture改成真正non-tail recursion。
 - budget：无限tail recursion由小instruction limit终止，不返回depth error；有限tail loop的instruction
   accounting与对应普通调用逐hop一致。
-- carrier/error：generic/self、nominal/union/representation/container carrier等价；throw/catch/rethrow
+- carrier/error：concrete generic/self specialization、nominal/union/representation/container carrier等价；throw/catch/rethrow
   identity与correlation保持；tail stack长度不随100,000 hop增长。
 - frame/loan：argument failure留住完caller frame可unwind；commit后无live reference指向removed
   slots；incoming `InOut`结束/线性转移、caller-local loan负例与transitive `NoPending`都有

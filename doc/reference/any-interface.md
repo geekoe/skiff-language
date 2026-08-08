@@ -152,12 +152,13 @@ effect 或 recoverable boundary。
 
 ## 3. 值布局
 
-`any I` 的值布局显式定义。它承载两类装箱源（本地 / 远程），布局据此泛化：
+`any I` 的值布局显式定义。Source `as I` 有两类装箱源（本地 / 远程）；本地值进入
+service boundary时还可投影出第三种callback capability carrier：
 
 ```text
 any I = {
-  interface_id        // 装箱后保留的 interface（本地 / 远程共有）
-  carrier             // 装箱源整体，本地 / 远程二选一（一个 enum 分支，不是三个独立字段）：
+  interface_id        // 保留的 interface（三种 carrier 共有）
+  carrier             // 互斥 enum（不是可以任意拼接的平铺字段）：
                       //   Local  { concrete_type, method_table, payload }
                       //     concrete_type: 具体 type id（保留，供未来 downcast；本版不暴露）
                       //     method_table:  I 的 method requirement 的具体实现地址表
@@ -166,14 +167,18 @@ any I = {
                       //     dependency/public_instance: (依赖, 远程实例) 寻址坐标，即"是哪个远程实例"
                       //     operations: I 方法 → operation 寻址 + service dispatch
                       //     （远程分支无本地 payload，self 由远端实例承载）
+                      //   CallbackCapability { owner, request_lifetime, operations, capability_id }
+                      //     service boundary产生的反向能力；self仍由owner保管
 }
 ```
 
 本地装箱值是一个 fat 值（数据 + 方法表）；远程装箱值不携带本地 payload，只携带寻址坐标与 operation
-寻址。"本地必有 payload、远程必无 payload" 由 `carrier` 是单个 enum 分支天然保证——`source_identity` /
+寻址。Callback capability只携带opaque owner与受限operation。"本地必有 payload、远程/callback必无本地
+payload" 由 `carrier` 是单个 enum 分支天然保证——`source_identity` /
 `dispatch` / `payload` 不是三个可独立取值的字段，拼不出非法组合。无论哪种，都不是把普通 object 的
-per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止后者）。该布局只在显式 `as I` 装箱点
-产生。完整内部契约（含 `carrier` enum 定义、fail-closed、远程性可见性）见
+per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止后者）。显式 `as I` 装箱产生
+`Local`/`Remote`分支；`CallbackCapability`只由service boundary projection产生。完整内部契约
+（含 `carrier` enum 定义、fail-closed、远程性可见性）见
 `../architecture/any-interface-value.md`。
 
 ## 4. 与单态化泛型的边界（为什么两者都要）
@@ -182,8 +187,8 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 | --- | --- | --- |
 | 多态种类 | universal / 参数化 | existential / 存在 |
 | 类型信息 | 保留（`T` = 具体类型） | 擦除（只剩“满足 `I`”） |
-| 分派 | 编译期静态 | 运行时：本地经 method table / 远程经 operation 寻址 |
-| 值表示 | 原生具体类型 | 本地 fat 值（含 method table）/ 远程寻址值（含 operation 坐标） |
+| 分派 | 编译期静态 | 运行时：本地经 method table / 远程经 operation 寻址 / callback经owner capability |
+| 值表示 | 原生具体类型 | 本地 fat 值 / 远程寻址值 / callback capability |
 | `Array<它>` | 同质（一次调用一个 `T`） | **可异构**（混装不同实现） |
 | `-> 它` | 可表达“进出同型” | 不可（已擦除） |
 | 成本 | 零运行时间接，代码膨胀 | 间接调用，无膨胀 |
@@ -232,6 +237,11 @@ per-instance shape 偷偷扩成隐式 vtable（`interface.md §7` 明确禁止�
 
 callback capability 的所有 operation 参数与返回值都依然是 boundary snapshot；它不得携带
 `inout` mode 或 caller-writable origin。这不因 owner 与对端物理上处于同一 runtime 而放宽。
+
+当前可执行实现只覆盖同 runtime 的 `InProcessBoundary` capability table。跨 runtime/Router 的反向 callback
+需要独立 transport；在它落地前，deployment 必须拒绝把 callback owner 与 provider 分开。Package-local
+`any I` 的方法内部再发普通 service call（例如 Agine adapter 调 AIHub）仍只是本地 dynamic dispatch + 正向
+service call，不等于 callback 跨过 service/Router boundary。
 
 ## 7. 非目标（本版）
 

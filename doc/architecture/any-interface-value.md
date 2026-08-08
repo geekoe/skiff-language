@@ -37,8 +37,22 @@ layout。
 - 用户语法的完整 reference。见 `../reference/any-interface.md`。
 - 静态 interface / explicit conformance 的完整语义；该契约归 `../reference/interface.md`。
 - 具体 Rust 模块拆分、迁移步骤和任务顺序；这些属于实现计划，不写入本 architecture 文档。
-- durable / 跨 request 持有的远程能力句柄（remote capability transport）、service callback、downcast、
-  reflection 或 marker interface runtime value。
+- durable / 跨 request 持有的远程能力句柄（remote capability transport）、service callback 的 wire
+  protocol、downcast、reflection 或 marker interface runtime value。Service callback 的 value/projection
+  语义仍由本文约束；其 boundary/transport owner 见 `package-service-contract-deployment.md`。
+
+### 当前实现边界
+
+必须区分三条形似“回调”的路径，不能互相当作完成证据：
+
+1. Package-local `any I`：例如 Agine 把本地 LLM/event adapter 传入 Agent package，adapter 内部再发普通
+   Agine → AIHub service call。这始终是 `Local` method-table dispatch 加一条正向 service operation，不是
+   callback capability，也没有把 `any I` 送过 Router。
+2. Service operation 顶层 `any I` 的 boundary projection：当前 Runtime 已能在同一 runtime/execution
+   assembly 内登记 opaque capability，并在 provider 调用时切回 owner；这是 `InProcessBoundary`。
+3. 跨 runtime/Router 的反向 callback：当前 Router wire 没有 callback request/cancel/response family，
+   capability 也不能经 JSON、recoverable 或 DB codec。`RemoteBoundary` 在新增 owner route、认证、lifetime、
+   cancellation、deadline 与 backpressure 协议前必须 fail closed；它不是 bytecode VM 单独能补齐的能力。
 
 ## Position
 
@@ -237,9 +251,10 @@ dependency 调用路径（语法新、机制旧）。`let x = remoteLlm/managedL
   `as I`选定的interface conformance（`InterfaceInstantiationRef`一致）及选定interface methods派生的
   `ContractOperationId`集合。
 - **选定 interface 的方法签名（参数与返回）不得含 `any I` 或任何 boundary-unsafe 类型**（**第一版约束**，
-  非地基级永久禁令）。Service-carrier method对应callee的service-boundary operation，而`any I`值不跨
-  service boundary（§Boundary Contract），
-  故含`any I`的方法无法projection成`ContractOperationId`。这是object-safety/boundary-safety之外，对
+  非地基级永久禁令）。普通service operation的顶层`any I`可以在同runtime投影成
+  `CallbackCapability`，但`Remote` carrier的方法表第一版必须保持placement-independent；在
+  `RemoteBoundary` callback transport缺失时，不能把这类方法投影成可跨runtime的
+  `ContractOperationId`。这是object-safety/boundary-safety之外，对
   "远程可装箱 interface"的第三个约束；本地装箱无此限制（本地方法可收发 `any J`，全程同进程）。解除该约束
   需要两块本 workstream 范围外的基建，见 §Evolution "远程方法返回 `any I`"。该约束的两道执行点：
   - **根因点 = callee ServiceContract projection**：含`any I`方法的interface无法生成service operation，
@@ -269,9 +284,9 @@ artifact 破坏上述不变量都必须在 verifier/linker 阶段 fail closed。
 
 `any I` 是 type erasure 架构白名单里的显式 dynamic value。目标态 runtime value 可以选择 dedicated
 `RuntimeValue` variant 或 heap node；架构契约是必须有一个 request-scope interface value record。合并后，
-"装箱源真实身份 + 方法分派 + payload" 三者不再是三个可独立取值的平铺字段，而是收敛进单个 `carrier`
-enum——本地分支恰好携带 concrete type / method table / payload，远程分支携带 instance 寻址坐标 /
-operation 寻址，且不带本地 payload。
+"装箱源真实身份 + 方法分派 + payload/owner" 不再是可独立取值的平铺字段，而是收敛进单个 `carrier`
+enum——本地分支恰好携带 concrete type / method table / payload，正向远程分支携带 published instance 寻址
+坐标 / operation 寻址，callback 分支携带 request-scoped owner capability；后两者都不带本地 payload。
 
 ```rust
 struct InterfaceValue {
@@ -279,7 +294,7 @@ struct InterfaceValue {
     carrier: InterfaceCarrier,
 }
 
-// 本地 / 远程是"二选一整体"：source identity、dispatch、payload 的本地-远程一致性
+// 三个 carrier 是互斥整体：source identity、dispatch、payload/owner 的一致性
 // 由 enum 分支天然保证，不存在 source=Local 配 dispatch=Remote、或 Local 分支缺 payload
 // 这类非法组合。verifier 不需要再单独对账三个轴的配对。
 enum InterfaceCarrier {
@@ -294,17 +309,26 @@ enum InterfaceCarrier {
         operations: RemoteOperationTableId,        // linked overlay id；plan 侧是 operations_plan
         // 无本地 payload：self 由远端 instance 承载
     },
+    CallbackCapability {
+        owner_deployment_build_id: DeploymentBuildId,
+        owner_runtime_route: CallbackOwnerRoute,
+        request_identity: RequestIdentity,
+        operations: CallbackOperationTableId,
+        opaque_capability_id: CapabilityId,
+        lifetime: RequestOrStreamLifetime,
+        // 无本地 payload：self 留在 capability owner
+    },
 }
 ```
 
 命名约定：plan（artifact 侧）一律带 `_plan` 后缀（`method_table_plan` / `operations_plan`），linked overlay
-id（runtime 侧）一律无后缀（`method_table` / `operations`）。本地与远程两条线对齐，避免出现"两个都叫
+id（runtime 侧）一律无后缀（`method_table` / `operations`）。plan与linked id对齐，避免出现"两个都叫
 operations 却一个是 plan ref、一个是 linked id"的歧义。
 
 字段含义：
 
-- `interface`：被擦除后保留的 interface instantiation identity（两类共有）。
-- `carrier`：装箱源整体，本地 / 远程二选一。
+- `interface`：被擦除后保留的 interface instantiation identity（三种 carrier 共有）。
+- `carrier`：装箱源/边界投影整体，本地、正向远程或 callback capability 三选一。
   - `Local.concrete_type`：concrete nominal instantiation identity（供 runtime validation 和未来 downcast）。
   - `Local.method_table` / `Local.payload`：linked method table + 具体值本体。
   - `Remote.{dependency_ref, public_instance_key}`：即"是哪个远程实例"。它**不**指向 concrete type——
@@ -313,14 +337,18 @@ operations 却一个是 plan ref、一个是 linked id"的歧义。
     Fail-Closed）。诊断/工具若要标注"此处发生跨 service 调用"，直接判 `carrier` 是 `Remote` 分支即可，
     不引入独立 effect。
   - `Remote.operations`：`ContractOperationId`集合与service dispatch；远程分支无本地payload。
-- 因为 `carrier` 把 source identity / dispatch / payload 锁成一个 enum 分支，"本地必有 payload、远程必无
-  payload"在类型层不可违反——这是把原平铺三字段合并的主要收益。
+  - `CallbackCapability`：只由 service boundary 的显式顶层 projection 产生，记录 exact owner、允许的
+    operation 与 request/stream lifetime。同 runtime 调用查 capability table；remote route 只有
+    `RemoteBoundary` transport capability 存在时才可执行。
+- 因为 `carrier` 把 source identity / dispatch / payload-or-owner 锁成一个 enum 分支，"本地必有 payload、
+  remote/callback 必无本地 payload"在类型层不可违反——这是把原平铺字段合并的主要收益。
 
 约束：
 
 - Interface value 是 request-scope dynamic value。**本条的绝对排除已被 `recoverable-value.md` 部分取代**：
   `carrier = Local` 的行为值可经可恢复 codec 进 DB/dispatch/persistent（self payload 全可恢复时）；跨 service 把 `any I`
-  作 payload 传去对端、对端回拨这一恢复语义第一版 fail-closed（卡 service callback transport）。仍然成立的是：远程
+  作 payload传去对端、对端回拨时，同runtime顶层projection可形成`CallbackCapability`，跨runtime
+  RemoteBoundary仍fail closed。仍然成立的是：远程
   装箱的`ContractOperationId`（正向`Remote` carrier，consumer主动调用service-call public instance）是
   request-scope寻址，不持久化重建——它是“指向远程实例的引用”，不是被恢复的值。能否进DB/dispatch的权威
   判据见`recoverable-value.md`。
@@ -476,16 +504,18 @@ enum CallTargetIr {
      service dependency dispatch（与 `remoteLlm/managedLlm.method(...)` 直接 operation 调用走同一条 outbound
      dispatch 机制——该机制复用现状 service dependency 调用路径，`/` 写法本身是新增语法）；远程分支结构上
      无本地 payload，self 由远端 instance 承载。
+   - `CallbackCapability`：校验 request/stream lifetime、owner build/route 与 operation slot；同 runtime
+     通过 capability table 切回 owner execution context。跨 runtime 只有 transport 明确声明 reverse-callback
+     capability 时才可发起，否则稳定返回 `CapabilityUnavailable`，不能退化成本地 method table 或普通正向
+     service call。
 4. 返回值按 ordinary runtime value 返回；如果返回 `any J`，它必须是被显式装箱过的 interface value。
-   注意：**远程**方法不可能返回`any J`——远程方法对应callee的service-boundary operation，而`any I`值不
-   跨service boundary
-   （§Boundary Contract），故选定interface的方法签名含`any I`（参/返）时无法进入callee
-   ServiceContract；consumer装箱点随之因找不到operation而拒（§Boxing远程额外要求的两道执行点）。下面
-   这条只对本地装箱值成立。
+   `Local`与`CallbackCapability`分支可按各自owner/boundary plan返回；`Remote`分支第一版的
+   operation table因上述placement-independent约束不会含返回`any J`的slot，consumer装箱点会因
+   找不到完整`ContractOperationId`集合而拒绝。
 
-无论本地远程，调用 lowering 选 slot 的逻辑相同；只有 §3 的最终 target 解析按 `carrier` 分支分流。
+三种 carrier 的调用 lowering 选 slot 逻辑相同；只有 §3 的最终 target 解析按 `carrier` 分支分流。
 静态suspension分析不能从`any I` requirement取得concrete summary，因此所有`InterfaceMethod`调用都保守为
-`maySuspend=true`。`Remote`分支还因其本身是service call而必然属于caller-side suspension；两种分支都
+`maySuspend=true`。`Remote`/`CallbackCapability`分支还因boundary call而属于caller-side suspension；三种分支都
 不会仅因保守summary在runtime自动插入`yield`。
 任何 `InterfaceMethod` call 携带 `inout` argument mode，或任何 method table / remote operation slot 声称
 接受 `inout`，都是 verifier 必须拒绝的 malformed artifact。
@@ -567,19 +597,18 @@ fail-closed 位置更合理：锁在装箱点（产生远程引用的 consumer�
 完全不碰 fail-closed，只认 `any api.LlmClient` 这个类型。package 依赖的是"能力的形状"（import 定义
 interface 的包），不是"能力的实现"——这正是 binding 当初要的解耦，用普通 package dependency 即达成。
 
-**canonical example（example.com/agent 现状迁移）**：现状 `agent` 包用三个 binding——`agentTools:
-ToolExecutor`、`agentLlm: LlmClient`（可能绑远端 remoteLlm）、`agentEvents: AgentEventReceiver`，在
-`drain.skiff` 里直接 `agentTools.execute(input)` / `agentLlm.streamChat(input)`。合并后改为入口参数
-`tools: any ToolExecutor` / `llm: any LlmClient` / `events: any AgentEventReceiver`，调用 `tools.execute(...)`
-不变。`agentLlm` 绑 remoteLlm 这条恰好覆盖远程场景：consumer 传 `remoteLlm/managedLlm as LlmClient`，本地
-`tools`/`events` 传 `localImpl as ...`，三者混在同一组入口参数——本地 + 远程 + 异构全覆盖（三者签名第一版
-均可远程，见下方核对表）。现状之所以是 binding 而非 `any I`，仅因 `any I` 尚未实现；它一旦实现，binding 退役。
+**canonical current example（Agine/Agent）**：Agine已经把本地`any LlmClient`、`any ToolExecutor`和
+`any AgentEventReceiver` adapter作为runtime bindings传给Agent package；Agent通过local method table调用这些
+adapter。Agine的Llm adapter内部再调用`aihub/managedLlm.streamChat`，那一跳是普通正向service operation。
+因此这条生产链证明`Local` carrier与Package capability parameter可行，但不证明`Remote`装箱或
+`CallbackCapability`经过Router。目标写法`remoteLlm/managedLlm as LlmClient`仍必须由对应source/lowering/
+runtime路径单独验收。
 
 `any I` 作为 package public 入口参数不违反 linked-program-local 边界：package link 进 consumer 同一
 runtime，`any I` 值从 consumer 流到 package 入口全程同进程，远程性只在调用时 dispatch。见 §Boundary
 Contract。
 
-### 三个 capability interface 远程可装箱性核对
+### 三个 capability interface 的目标远程可装箱性核对
 
 "本地 + 远程 + 异构全覆盖"这一宣称要求三个 capability interface 的方法签名都满足 §Boxing 的远程额外约束
 （签名闭包不含 `any I`）。实地核对结果——三者签名闭包全部干净，第一版即可全部远程装箱：
@@ -683,9 +712,10 @@ per-instance source type metadata。
   两条都不需要"实例级句柄 + 注册表"，故本块基建不再认领。**进恢复边界（值被传去对端、对端回拨）的只有局部对象直传
   这一条，其卡点是下方的 service callback transport**；已发布 public-instance 坐标那条第一版要么是正向 `Remote`（consumer 主动调、不进
   恢复机制）、要么寻址层不认（演进），不在“进恢复边界”之列。
-- **service callback transport**（consumer 拿句柄回调打回 callee 特定活实例）。现状 outbound dispatch 单向
-  （runtime 主动连 router，业务流量 consumer→callee）；反向入站路由到一个特定活对象实例是相反方向的传输层
-  新增。
+- **RemoteBoundary service callback transport**（consumer 跨 runtime 拿 capability 回调 owner 的特定
+  request/stream）。同 runtime 的 capability table 已有实现；这里缺的是 Router 上的反向 request/cancel/
+  response、认证、lifetime 与 backpressure。现状 outbound dispatch 单向（runtime 主动连 router，业务流量
+  consumer→callee），不能把普通 service call 反过来当成该协议。
 - method-level generic interface requirement 的 dynamic dispatch。
 - structural matching 或按 method set 自动 conformance。
 

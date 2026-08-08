@@ -199,7 +199,8 @@ scheduled horizon 和 outstanding-task quota 同时限制旧 image 的最长 ret
 
 Actor logical identity 按 [`actor-model.md`](actor-model.md) 保持跨 service version 稳定；task 的
 `TaskExecutionImageRef`以exact deployment `buildId`唯一钉住这次延迟调用的代码与配置，service version只保留
-可观测版本事实，`ActorImplementationIdentity`用于target与Actor admission校验；三者都不进入ActorIdentity。
+可观测版本事实。exact `buildId`是live Actor版本admission key；`ActorImplementationIdentity`在该build内校验
+actor declaration/method target，不能替代build相等性。三者都不进入ActorIdentity。
 actor-method task 不是保存一个易失对象指针，
 而是保存以下可恢复事实：
 
@@ -218,31 +219,26 @@ actor-method task 不是保存一个易失对象指针，
 进入以下分支前，Runtime先按task的exact `buildId`取得或懒加载immutable `DeploymentExecutionImage`；任意
 load/verify失败都不能用其它build替代。
 
-1. live incarnation 与task的implementation identity相同：按普通Actor admission排队，并从task exact-build
-   image执行method；identity相同不授权改用live owner碰巧已加载的其它build。
-2. 没有 live incarnation，但 registry entry 仍存在：按 entry 保存的创建输入，从task exact-build image激活
-   task固定的旧implementation，再执行method。
-3. Router 重启等原因使 registry entry 丢失：用 task 持久保存的 `ActorActivationSnapshot` 恢复最小 entry，执行 `create` 后再调用
-   method。
-4. task implementation 是 Actor 升级控制器认可的 forward target：和普通调用一样触发或等待升级；临时
-   `ActorUpgradingError` 属于可恢复平台错误，按退避形成后续 attempt。
-5. live incarnation 或 registry fencing 已由不同的新 implementation 接管，而 task implementation 已被标记为旧实现：拒绝旧 task；
-   不得切回旧实现，也不得把旧 payload 交给新代码。该 attempt 以 `ActorVersionRejectedError` 明确结束，task terminal 为
+1. live incarnation 的 exact deployment `buildId` 与 task build 相同：按普通 Actor admission 排队，并在
+   owner pin 的同一个 immutable image 中执行 method。
+2. live incarnation build 不同：直接拒绝 task；不得把 task payload 交给 live owner 的代码，也不触发 Actor
+   升级、逐出或 idle/lease 刷新。该 attempt 以 `ActorVersionRejectedError` 明确结束，task terminal 为
    `platform-failed`。
+3. 没有 live incarnation：task 用自己的 exact build 与 `ActorActivationSnapshot` 参与 owner claim；成功者
+   执行 `create` 后再调用 method。registry 中 expected plan 精确兼容的 create input 可以复用，但历史
+   implementation/build 不是版本 pointer。
+4. Router 重启使 registry entry 丢失时，仍用同一 snapshot 恢复最小 entry；多个 build/不同 snapshot 并发
+   竞争同一 ActorIdentity 时只允许一个 claim 成功，失败者重新观察 winner，并按前两条处理。
 
-registry entry 已存在时永远沿用 entry 的创建输入，忽略 task snapshot，和 `std.actor.get` 的 put-if-absent 规则一致；snapshot 只用于
-entry 缺失时重建。若 Router 重启前后产生的多个 task 为同一 ActorIdentity 携带了不同 snapshot，第一次成功恢复 entry 的操作获胜，
-后续 task 不覆盖它。恢复 entry、普通 `get` 与 Actor owner claim 必须在同一个 identity fencing 下竞争，不能并发创建两个 live
-incarnation。
-
-旧 task 与升级请求竞争时仍以 Actor owner 的原子 admission / upgrade fencing 为准：旧 task 在 upgrade 关闭 admission 前已进入旧
-incarnation，可以按普通旧方法完成；升级先关闭 admission，则旧 task 被拒绝。task lease 不提供第二套顺序，也不能使旧 task 触发
-反向升级。
+Actor runtime 不记录 newest/superseded build，也不比较 semver。因 idle TTL、owner crash 或 shutdown 已经没有
+live incarnation 后，旧 task 的 exact build 可以重新获胜；这是允许的回退，不是把 live Actor 反向升级。
+task lease 不提供第二套版本顺序，也不能绕过唯一 live incarnation fence。
 
 第三种情况不会恢复逐出或崩溃前的 Actor 内存；`create` 仍应按 Actor 模型从 service DB 等业务事实重建。actor-method task 保证的是
-可靠投递 attempt，不是 Actor 内存快照或 exactly-once method effect。若 Actor 已不存在但没有不同 implementation 的 live owner，
-允许Runtime按task固定的exact `buildId`懒加载旧image，再走Actor get/create激活旧实现；之后普通新版本调用仍可按
-Actor升级协议接管它。这里的`ActorActivationSnapshot`与“激活”都是Actor实例生命周期术语，不是deployment activation。
+可靠投递 attempt，不是 Actor 内存快照或 exactly-once method effect。若 Actor 已不存在，允许 Runtime 按
+task 固定的 exact `buildId` 懒加载旧 image，再走 Actor get/create 激活旧实现；之后其它 build 的调用在该
+实例存活期间只会被拒绝，不能接管它。这里的 `ActorActivationSnapshot` 与“激活”都是 Actor 实例生命周期
+术语，不是 deployment activation。
 
 ## Submission And Visibility
 
@@ -401,7 +397,8 @@ lease-loss recovery 处理，允许产生重复 attempt。
 - 继承 task trace correlation，但创建新的 attempt / request span。
 - function target 作为独立 service request 执行。
 - actor-method target通过actor registry / owner fencing的get-or-activate路径执行；同步段由
-  `ActorSegmentLease`串行，只有actual `Pending`释放后才与其它协程交错，并继续遵守升级与恢复契约。task lease
+  `ActorSegmentLease`串行，只有actual `Pending`释放后才与其它协程交错，并继续遵守exact-build admission与
+  恢复契约。task lease
   不替代actor owner lease，`ActorActivationSnapshot`也不绕过唯一live incarnation约束。
 - return value 必须为 void / null；平台只保存 task outcome，不保存 callable result。
 
@@ -530,7 +527,7 @@ ready queue，它也只是 scheduler 的非权威 delivery lane。用户只持�
 - timing clause、task reference 和 cancel result 的具体公开拼写属于 reference 设计，但都必须投影到本文唯一的 durable task
   dispatch contract。
 - [`actor-model.md`](actor-model.md) 中的 detached Actor call 必须收敛到本文的 durable actor-method target：使用
-  `ActorActivationSnapshot` 支持 registry 丢失后的 get-or-activate，并继续遵守旧 implementation rejection；不得保留独立易失
-  `spawn` 队列。
+  `ActorActivationSnapshot` 支持 registry 丢失后的 get-or-activate，并继续遵守live incarnation exact-build
+  rejection；不得保留独立易失 `spawn` 队列。
 - [`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)的exact `buildId` lazy-load路径同时服务retained task image；
   future task不能阻止旧Runtime replica退出，也不能在到期时解析latest release pointer或ambient config。

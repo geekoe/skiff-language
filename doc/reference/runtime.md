@@ -76,7 +76,7 @@ Skiff保证一类明确的本地尾调用不随递归次数增加程序调用深
   `match`或普通loop body中的显式`return`适用同一规则。
 - linked target是当前program中的exact executable。它可以是direct self、mutual recursion、同一Package
   跨source module的function或静态解析的impl method；不要求callee与caller是同一个symbol。
-- caller与callee在当前generic substitution下的return plan canonical-equivalent，因此删除caller frame
+- caller与callee在deployment link形成的concrete generic specialization下return plan canonical-equivalent，因此删除caller frame
   不会跳过representation、nominal identity、union branch或container carrier materialization。
 - 调用点没有仍需在callee完成后运行的catch、timeout、transaction、concurrent join、stream cleanup或其它
   lexical continuation。
@@ -285,6 +285,9 @@ pressure触发；“长/短请求”不是语义分类。低分配request可在�
 Opaque resource、transaction、stream source与其它native handle是identity-bearing capability，不因aggregate
 value semantics自动获得copy/COW。它们的copyability、owner、close和escape规则由各自surface明确
 定义。Heap handle本身是request-local id，不是跨request、跨artifact或跨service的ABI。
+`Stream<T>`明确是affine one-shot handle：传参/返回只能转移consumer ownership，不能普通copy、放进多个lane
+或开始第二次迭代；normal end、error、break、return、timeout与request stop都恰好一次释放endpoint并传播
+best-effort source stop。
 
 目标value graph不支持用户可见cycle。会形成cycle的mutation、materialize或wire payload必须
 fail closed。Nested mutation沿writable path检查每个node的share state，只复制需要分离的path；

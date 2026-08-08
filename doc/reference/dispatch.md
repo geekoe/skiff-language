@@ -72,8 +72,8 @@ std.task.cancel(ref: std.task.TaskRef) -> TaskCancelResult
 - db transaction 内禁止 dispatch（静态检查；业务一致性由 outbox / reconciliation 处理，不由本机制隐式保证）。
 - actor `create` 内禁止 `dispatch self.method(...)`。
 - actor-method target 提交时同时冻结 exact deployment `buildId` 与 `ActorActivationSnapshot`；Runtime 只从该
-  build 的 immutable `DeploymentExecutionImage` 执行，Actor 实例执行仍走 get-or-activate；旧 implementation
-  被升级接管时按 platform-failed 拒绝（细节见权威文档）。
+  build 的 immutable `DeploymentExecutionImage` 执行，Actor 实例执行仍走 get-or-activate；live incarnation
+  build 不同时按 platform-failed 拒绝，且不触发升级或逐出（细节见权威文档）。
 
 ## 5. 执行语义（摘要，细节以权威文档为准）
 
@@ -127,8 +127,9 @@ std.task.cancel(ref: std.task.TaskRef) -> TaskCancelResult
     actor-method target使用instance-owned shared arena / `ActorSegmentLease`，不创建逐方法heap或字段副本；trace继承
     TaskId并新建attempt / request span。
 17. function target 作为独立 service request 执行。
-18. actor-method target 在exact-build image内走get-or-activate五个分支：live同implementation / registry存在 /
-    registry丢失用`ActorActivationSnapshot`恢复 / 升级forward target / 旧implementation被接管 → platform-failed。
+18. actor-method target 在 exact-build image 内走 get-or-activate：live build 相同则 admission；live build
+    不同则 `ActorVersionRejectedError` → platform-failed 且不改变该 Actor；没有 live owner 则用
+    `ActorActivationSnapshot` 参与唯一 owner claim，允许旧 build 在自然销毁后重新获胜。
 19. 普通 request timeout → `failed`（不是 lease loss，不重跑）。
 
 ### 端到端（真实链路）
@@ -137,8 +138,8 @@ std.task.cancel(ref: std.task.TaskRef) -> TaskCancelResult
 21. 延迟 dispatch：到期前不可执行；到期后执行；到期前取消成功。
 22. 崩溃恢复：runtime 断连 / lease 过期后同 TaskId 新 attempt 执行；重复 effect 允许（at-least-once）。
 23. router重启：已接受task不丢；Actor volatile owner entry可丢失，但后续入口依据业务durable facts与
-    `ActorActivationSnapshot`重建正确implementation owner，并按task exact `buildId`懒加载image；不依赖
-    ambient release pointer或任何deployment generation。
+    `ActorActivationSnapshot` 用 task exact `buildId` 参与 owner claim 并懒加载 image；多个 build 竞争仍
+    只有一个 live owner，不依赖 ambient release pointer 或任何 deployment generation。
 24. 取消：scheduled / ready → canceled 后不执行；leased → alreadyStarted。
 25. 执行image冻结：发布后旧task仍按提交时冻结的exact `buildId`加载同一immutable image；不fallback latest。
 26. retention：terminal 原子释放 artifact root；过期后 status / cancel 返回 expired，不重建 task。

@@ -75,20 +75,32 @@ impl DocHub {
 
 actor identity 由 service id、actor 类型、key 字段类型和 key 的 canonical 编码组成。service version / build id 不进入 identity：业务实体的地址必须跨发布稳定。
 
-每次 actor get/create 或方法调用仍携带发起执行所要求的 exact deployment `buildId`。Runtime 以该
-`buildId` 为唯一加载键，取得或懒加载 immutable `DeploymentExecutionImage` 后才进入 Actor admission；
-该 invocation 及其 continuation pin 这个 execution owner，不从 ambient release pointer 重新选择代码或配置。
-这里的“激活”专指 Actor 实例的 get/create 生命周期，不是 deployment activation；运行时不存在
-`RuntimeAssembly`、current assembly 或 activation generation。
+每次 actor get/create 或方法调用都携带发起执行所要求的 exact deployment `buildId`。这个 build 不进入
+logical identity，而是该请求希望访问的 Actor 代码版本。版本选择是**逐 Actor identity**的：不存在 service
+级 Actor release pointer，也不要求同一 Actor type 的所有 key 同时切版；`DocHub("a")` 可以运行 build A，
+同时 `DocHub("b")` 运行 build B。
 
-第一版注册入口只有 `std.actor.get`，它是 put-if-absent 的 get-or-create：
+一个 live incarnation 从 create 到销毁始终 pin **同一个** exact `buildId`、immutable
+`DeploymentExecutionImage`、implementation identity 和 owner runtime；其所有已 admission 的 method 与
+continuation 都在 owner image 中执行。调用方自己的 image 只负责在调用边界生成/验证参数和结果，不能把
+caller image-local type/shape/const/method-table 索引直接带进 ActorStateHeap。请求的 build 与 live
+incarnation build 不同时，不在旧 heap 上执行新代码，直接按下文规则拒绝。
+
+这里的“激活”专指 Actor 实例的 get/create 生命周期，不是 deployment activation；运行时不存在
+`RuntimeAssembly`、current assembly、activation generation 或 Actor 专用 release pointer。
+
+第一版注册入口只有 `std.actor.get`，它是按 logical identity / live owner fence 串行化的 get-or-create：
 
 ```skiff
 let hub = std.actor.get<DocHub>("room-1", 0)
 ```
 
 - entry 不存在：创建实例，由平台写入 key 字段，执行 `create`，激活，并把创建输入（id 与 create 参数）保存到 registry entry。
-- entry 已存在：返回现有句柄，忽略本次 create 参数，不替换已有 entry、不打扰现有实例。创建参数只在 entry 缺失时生效；重新激活使用 entry 保存的创建输入，不使用调用点本次参数。
+- live incarnation 已存在且 build 相同：返回现有句柄，忽略本次 create 参数，不打扰现有实例。
+- live incarnation 已存在但 build 不同：拒绝本次 get，不更新 entry，不影响旧实例的 idle/lease 时钟。
+- 没有 live incarnation：本次 get 可以竞争新的 owner claim；获胜者把自己的 exact build、ABI 与 create
+  输入绑定到新 incarnation。旧 entry 中保存的 create 输入只有在 expected plan 与本次 build 精确兼容时
+  才能复用；否则使用本次 get 的完整 create 输入，缺失则 fail closed。
 - `create` 可以省略：仅当 attached type 除 key 字段外没有其他字段时合法（v1 没有字段默认值）。省略后 `get<T>(id)` 直接激活。
 - 声明了 `create` 时，`get<T>(id, ...createArgs)` 的调用形态由声明中的 create 签名合成；编译器在所有调用点强制参数一致。
 - `replace`、`find`、`remove` 等注册控制操作不在第一版，出现真实需求后再定义；实例回收由 idle TTL 表达。
@@ -111,14 +123,15 @@ deployment `buildId` 和 `ActorActivationSnapshot`（key / create 输入 / expec
 `DeploymentExecutionImage` 执行目标方法，按 identity 路由并服从同一 instance 的 segment lease；调用方不等结果
 （fire-and-forget，只等 durable “已接收”）。
 
-- actor 不在 live 时，task control plane 执行 **get-or-activate**：registry entry 存在时按
-  entry 保存的创建输入激活实例；entry 因 Router 重启等原因丢失时，用 task 持久保存的
-  `ActorActivationSnapshot` 恢复最小 entry（put-if-absent，首次恢复获胜）后执行 `create` 再调用
-  目标方法。actor-method task 不保存 Actor 内存字段，也没有独立易失 `spawn` 队列。
+- actor 不在 live 时，task control plane 执行 **get-or-activate**：用 task 持久保存的
+  `ActorActivationSnapshot` 参与 owner claim；首次成功的 exact build 执行 `create` 再调用目标方法。
+  compatible registry create input 可以复用，但 registry 中历史 implementation 不是版本指针。
+  actor-method task 不保存 Actor 内存字段，也没有独立易失 `spawn` 队列。
 - dispatched 调用与 caller request 生命周期分离；同一实例的多个 dispatched 调用按同步段串行，某次调用
   actual `Pending` 并释放 segment lease 后可以与其它调用交错。
-- task lease 不替代 actor owner lease；task 执行仍遵守 actor 的 admission、升级与旧实现拒绝
-  （`ActorVersionRejectedError` → 该 attempt 以 platform failure 收敛，不切回旧实现）。
+- task lease 不替代 actor owner lease；task 执行仍遵守同一个逐 identity build admission。task 冻结的
+  build 与 live incarnation 不同时，不能把旧 payload 交给另一 build 的代码；该 attempt 以
+  `ActorVersionRejectedError` 收敛。Actor 已销毁时，后续独立请求仍可用任意可加载 build 重新创建。
 - 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
   `dispatch actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
 - 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `dispatch` 目标方法。
@@ -144,14 +157,18 @@ registry entry 保存创建输入，不保存实例状态，也不是 deployment
 
 - entry 是 Actor 激活所需的最小易失事实，不是持久层；Router 重启、进程丢失或 operator 清理都可能使其
   丢失。普通入口随后用 `get` 的 id / create 参数从业务事实重建；durable actor-method task 则使用自身冻结的
-  `ActorActivationSnapshot` 做同一 put-if-absent 恢复。两条路径都不恢复旧 Actor 内存字段。
-- 实例状态的演化不写回 registry；idle 逐出后重新激活时，按 entry 保存的创建输入重新执行 create 构造初始状态，不恢复逐出前的内存状态。
+  `ActorActivationSnapshot` 竞争恢复。两条路径都不恢复旧 Actor 内存字段。
+- entry 中与 build/ABI/expected plan 绑定的 activation snapshot 只服务于当前 live incarnation，不能在实例
+  销毁后继续充当版本 fence。没有 live owner 时，首个 claim 可以用自身 exact build 与兼容的保存输入重建，
+  或以自身完整 create 输入原子替换不兼容的 snapshot；并发 claim 仍只有一个获胜。
+- 实例状态的演化不写回 registry；idle 逐出后重新激活会再次执行 create 构造初始状态，不恢复逐出前的内存状态。
 - create 不要求是纯函数：允许挂起读取外部状态。典型实现是“记录存在则加载、不存在则按创建输入建立”——当 actor 需要持久状态时，create 内用 `db require` / `db find` 加载对应 db object 并回填成员，缺失则 `db insert` / `db upsert` 建立初始记录。重新激活因此以数据库当前事实为准，而不是恢复旧内存快照。
 
 ## 常驻实例与协程并发
 
 - 同一 identity 同时至多一个 live 实例，materialize 在单一 owner runtime 上。
-- 实例在首个调用到达时按 entry 创建输入激活：首次创建执行 create，之后从创建输入重建。
+- 实例在没有 live owner 时由首个成功 claim 的 exact build 激活；create 输入来自该请求的完整 snapshot，或
+  来自与其 expected plan 精确兼容的 registry snapshot。
 - 不同 actor 实例可以由不同 executor 或线程并行执行；同一实例由逻辑 Actor executor 与 segment lease
   串行化，不要求硬 OS-thread affinity，但任何时刻不允许多个 OS 线程同时访问它的字段。
 - 每个 live 实例拥有一个 instance-owned shared arena 和稳定 field root；同一实例的所有方法协程直接共享这份 state，不把字段克隆到逐方法 request heap，也没有 return-time commit overlay。
@@ -210,7 +227,7 @@ impl Thread {
 
 `stream.next()` 是潜在 suspension point：下一项已经缓冲时立即返回且不释放执行权，尚未到达时才挂起。因此 `run` 在等待 provider 时，同实例的其它方法（如 `isRunning`）可以执行。编译器仍将包含该操作的方法标记为 `maySuspend`，因为是否等待是运行时事实。
 
-第一版不提供平台级业务打断：长方法只能运行到正常结束，或由实例生命周期机制（逐出、升级）终止；挂起点不会被平台强制终止（ancestor cancellation 除外）。`stop`、`cancel` 等名字没有平台特殊语义。业务需要取消时，用普通方法设置标记字段，业务逻辑在自身的检查点读取该字段协作退出。
+第一版不提供平台级业务打断：长方法只能运行到正常结束，或由实例逐出/owner失效等生命周期机制终止；挂起点不会仅因出现不同 build 的请求而被平台强制终止（ancestor cancellation 除外）。`stop`、`cancel` 等名字没有平台特殊语义。业务需要取消时，用普通方法设置标记字段，业务逻辑在自身的检查点读取该字段协作退出。
 
 runtime 在实例内部维护不暴露给业务的内部状态（如 incarnation epoch）。业务源码里不存在 generation 字段，也没有其它等价手工计数；跨 suspension point 的假设通过恢复后重新读取字段表达。
 
@@ -220,32 +237,62 @@ actor 的协程并发只隔离单个实例。actor 不是跨实体业务锁；�
 
 ## 任期与 Version
 
-- actor logical identity 不包含 service version 或 deployment `buildId`。实例任期从激活开始，到逐出结束；任期内钉死单一 owner runtime、单一 implementation identity 和单一 incarnation epoch。每个 method invocation / continuation 另外 pin 自己的 exact deployment `buildId` 与 immutable `DeploymentExecutionImage`。
-- compiler 为 actor 生成 ABI identity 和 implementation identity。ABI identity 覆盖 key 字段类型与 canonical 编码、字段布局、公开成员方法签名和 actor runtime ABI；implementation identity 还覆盖规范化可执行 IR 及其可达依赖。
+- actor logical identity 不包含 service version 或 deployment `buildId`。实例任期从激活开始，到逐出结束；
+  任期内钉死单一 owner runtime、单一 exact deployment `buildId` / immutable
+  `DeploymentExecutionImage`、单一 implementation identity 和单一 incarnation epoch。不同 logical
+  identity 的任期互相独立，可以同时钉住不同 build。
+- compiler 为 actor 生成 ABI identity 和 implementation identity。ABI identity 覆盖 key 字段类型与
+  canonical 编码、字段布局、`create`参数与编码、公开成员方法签名和 actor runtime ABI；implementation
+  identity 还覆盖规范化可执行 IR、const/code identity及其可达依赖。
 - identity 计算基于有限的声明、类型和调用依赖图，不递归展开类型。自引用和互相递归通过稳定符号引用与强连通分量 canonicalization 产生有限、确定的 fingerprint。
 - fingerprint 相同只表示规范化编译结果相同；compiler 不尝试证明两个不同程序语义等价。
-- service version / deployment build 不同但 actor implementation identity 相同时，可以共同访问同一个 live incarnation；方法仍由该 incarnation 的 owner runtime 执行，但每次 invocation 必须使用自身 pin 的 exact-build `DeploymentExecutionImage`，不能替换为 owner runtime 上的其它 build。
-- actor implementation identity 不同时，不允许两个 incarnation 并发拥有同一 logical identity，也不迁移旧实例的内存字段。
+- 第一版即使两个 deployment 的 actor ABI/implementation identity 完全相同，只要请求 build 与 live
+  incarnation build 不同，也不能共同访问同一个 live heap；只有现有instance经普通生命周期销毁后，另一
+  build才可能赢得下个incarnation。这样
+  ActorStateHeap 内的 image-local tag/shape/const/method-table 始终由任期 pin 的单一 image 解释。
+- 任意时刻不允许两个 deployment incarnation 并发拥有同一 logical identity，也不把旧实例内存字段迁移到
+  新实例。
 - 需要跨 version 一致的数据不允许只存在 actor 内存里。
 
-升级策略第一版固定，不提供逐 actor policy：
+版本 admission 第一版固定，不升级 live Actor，不记录 current/newest build，也不比较 semver：
 
-1. 第一个携带不同 implementation identity 的调用原子地把 live incarnation 标记为 `upgrading`，并指定目标 implementation。
-2. `upgrading` 关闭新调用 admission，避免持续流量使旧实例永远无法退出。目标 implementation 的触发调用可以短暂等待；未在 deadline 内完成切换则收到可重试的 `ActorUpgradingError`。
-3. 已执行的旧方法运行到最近一次 actual `Pending` 或正常返回；没有挂起点的长同步方法由连续执行预算和 watchdog 限制。runtime 在协程恢复前重新 acquire segment lease 并检查 incarnation fence 与 arena epoch；已被替换的方法以 `ActorIncarnationReplacedError` 结束。
-4. active method 清零后销毁旧实例、推进 epoch，并在已加载或可懒加载目标 exact deployment `buildId` 的 runtime 上，按 entry 保存的创建输入执行目标 implementation 的 create 创建新实例。旧内存状态不保存、不复制。
-5. 新 incarnation 激活后，只接受匹配其 implementation identity 的调用。后续旧 implementation 请求以 `ActorVersionRejectedError` 拒绝，不透明转发给新代码。
+1. 请求 build 与该 identity 的 live incarnation exact build 相同，才可以 ordinary admission，并刷新该
+   incarnation 的 owner lease / idle 时钟。
+2. build 不同的 get、method 或 durable task 直接以 `ActorVersionRejectedError` 拒绝；不进入当前 heap，
+   不更新 registry/version facts，不触发 retirement，也不刷新旧 incarnation 的 lease / idle 时钟。
+3. 同 build 已经 admission 的 method/continuation 继续由 owner image 执行，直到正常结束、失败或实例按普通
+   生命周期被回收；发布新 build 本身不打断它们。
+4. idle TTL、owner runtime 断连、shutdown 等普通生命周期事件销毁 live instance后，释放 owner image pin、
+   清除该 incarnation 的 build admission facts并推进 epoch。旧内存状态不保存、不复制。
+5. 此后第一个成功取得该 identity owner claim、且携带完整或兼容 create snapshot 的请求，用**自己的** exact
+   build 重新执行 `create`。平台不记住哪个 build 是“新版”，所以允许向新 build 前进，也允许旧 build
+   重新获胜而回退。
+6. 两个 build 并发竞争空 identity 时只允许一个 claim/owner fence 成功；失败方重新观察结果，并在 build
+   不同的情况下按第 2 条拒绝，不能并发创建第二个实例。
 
-实现完全相同的旧 version 请求不属于升级，可以继续处理。实现不同但 ABI 恰好兼容的旧请求也不继续处理：结构可解码不代表业务语义兼容。若未来出现必须跨 implementation 延续任期的真实需求，再单独设计显式兼容与迁移机制，第一版不预留隐式推断。
+这个简单规则的明确代价是：只要同 build 流量持续刷新 idle 时钟，hot Actor 可以长期停留在旧 build；部署
+系统不能等待 runtime 主动升级它。Actor runtime 也不保存 release pointer、superseded-build 集合或临时升级
+target。未来可以把 `ActorAbiIdentity` 相同作为跨 build 复用 live heap 的必要条件，并显式重绑定所有
+image-local tag/shape/const/behavior 引用；这只是优化。第一版不做该优化：ABI 相同仍拒绝跨 build 调用，
+ABI 不同也不能读取旧 heap 或把旧编码直接交给新 image。
 
-“安全点”不是持久化 checkpoint。升级、runtime crash 或网络断开都可能发生在外部副作用完成而方法尚未返回的时刻；actor method 不获得 exactly-once 保证。
+“安全点”不是持久化 checkpoint。逐出、runtime crash 或网络断开都可能发生在外部副作用完成而方法尚未返回的时刻；actor method 不获得 exactly-once 保证。
 
 ## 生命周期与恢复
 
-- 逐出的安全条件是实例没有 active method（包括没有 suspended method）：有方法在执行或挂起时不能逐出，v1 没有平台级打断可以终止它。满足安全条件且 idle TTL 内无人访问时实例为 idle，runtime 可以自动逐出。安全条件回答“可以销毁”，TTL 回答“何时销毁”，避免逐出后立即重新激活的颠簸。典型 TTL 是数分钟，不属于业务正确性承诺。
-- 正常 idle 逐出只清理 live 内存，不删除 registry entry；下次调用按 entry 保存的创建输入重新激活。
-- `upgrading` incarnation 即使有 suspended method 也会在这些方法到达安全点并退出后逐出。
-- owner runtime 断连或 crash：排队与执行中的调用以平台错误返回调用方；实例状态丢失；下一个调用按创建输入重新激活。
+- runtime 会根据 idle TTL 自动发起逐出；TTL/扫描周期是operator/runtime policy，不是业务可依赖的
+  定时承诺。达到TTL后先关闭新admission并把live instance标为待销毁；已在运行的同步段只在
+  回到runtime检查点时观察fence，suspended continuation在resume前观察fence。只有active/suspended/cleanup
+  计数全部归零后才物理释放heap。这是普通实例生命周期，与是否出现新build请求无关。
+- Router 不能仅因owner lease本地过期就把实例当成已销毁并开放新owner。正常idle路径要求
+  exact-owner discard ACK；owner断连/crash路径要求session/incarnation fence使旧owner不再能admit/resume，
+  新incarnation才能发布。否则会在Router无owner而Runtime仍有残留instance时破坏唯一性。
+- 正常 idle 逐出清理 live 内存和该 incarnation 的 build admission facts；registry 可以保留 key/create
+  输入作为重建材料，但它不是版本指针。下次激活由首个 claimant 的 exact build 决定；保存输入与该 build
+  的 create plan 不兼容时必须要求该请求提供新的完整 create 输入，否则 fail closed。
+- 不同 build 的拒绝不改变当前实例；只有 idle TTL、owner/runtime 生命周期与显式平台清理会触发逐出。
+- owner runtime 断连或 crash：排队与执行中的调用以平台错误返回调用方；实例状态丢失；下一个成功 claimant
+  按自己的 exact build 与 create snapshot 重新激活。
 - actor 面本身不持久化待执行调用队列；actor-method `dispatch` 的可靠投递、基础设施恢复与
   at-least-once attempt 由 durable task dispatch 承载（见
   [`durable-task-dispatch.md`](durable-task-dispatch.md)），业务补偿属于数据面。

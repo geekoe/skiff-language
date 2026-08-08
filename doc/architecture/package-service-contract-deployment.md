@@ -1010,8 +1010,12 @@ CallbackCapability
 - `any I`只有所有被投影method都boundary-capable时才可生成callback；native value必须有显式callback
   adapter，否则对应operation不可用。
 
-InProcessBoundary用runtime capability table实现；未来RemoteBoundary使用opaque route回到owner。
-两者对语言层值保持同一lifetime与失效语义。
+InProcessBoundary 用 runtime capability table 实现，且是当前唯一可执行的 service callback binding。
+RemoteBoundary 不能复用普通正向 service request：它需要新增 opaque owner route、反向 request/cancel/response、
+认证、deadline、lifetime 与 backpressure transport。当前 Router wire 没有该 family，因此任何会把 callback
+放到另一 runtime 的 deployment 都必须在 admission 时 fail closed，不能以 Agine/AIHub 的普通正向 service
+call 或 package-local `any I` 作为完成证据。未来 RemoteBoundary 必须保持与 in-process 相同的语言层 lifetime
+与失效语义。
 
 ## 8. Effect 与 Boundary Eligibility
 
@@ -1439,7 +1443,8 @@ release resolution）失败，不能靠名字或fallback猜测：
 
 - 不提供任意package function的透明RPC。
 - 不让所有package public API都强制boundary-safe。
-- 不实现RemoteBoundary、service级进程隔离或独立扩缩容。
+- 不实现RemoteBoundary、service级进程隔离或独立扩缩容；因此本版 service callback 只允许
+  InProcessBoundary，placement 不能把 capability owner/provider 分到不同 runtime。
 - 不定义历史artifact、manifest或数据库内容的兼容迁移。
 - 不在本文冻结ServiceContract authoring文件格式、deployment YAML字段名或CLI命令；这些表面语法必须
   在保持本文owner与数据流不变的前提下另行定义。

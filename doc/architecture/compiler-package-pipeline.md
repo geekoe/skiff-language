@@ -149,6 +149,9 @@ collection projection。旧`access: topLevel`输入严格拒绝，不增加compa
 
 - parsed production source set 与 all-symbol `root.*` index；
 - name/type resolution、alias expansion与generic binding；
+- generic declaration/template identity、每个call site的fully resolved type-argument expression（generic
+  body内可引用词法`TypeParam`），以及可判定的
+  polymorphic-recursion facts；
 - expression type、constructor、field、operator、control-flow narrowing facts；
 - Package API graph；
 - exact executable signature（包含推断的concrete suspension summary）与不含该summary的interface
@@ -187,6 +190,11 @@ Source spelling、public path、PackageSchemaTypeId、PackageCallableId 和 runt
 domain，不得互换。Lowering 不重新推断类型；projection 不从 AST、display string 或 File IR
 execution representation恢复 source facts。
 
+Generic callable 的 source fact 与 executable specialization 分属不同阶段：source/type checker证明每个调用
+的type argument与constraint，lowering把generic body保留为relocatable template并在call relocation上写canonical
+type arguments。Package compile不要求预见所有downstream consumer instantiation，也不按本包当前调用点提前
+复制多份body。
+
 ## Config Requirements
 
 有效 config requirement 是当前 Package 与全部 Package dependency requirements 的合并：
@@ -216,6 +224,7 @@ Service dependency 的 provider config 不进入 caller requirement；它属于 
 ```text
 LoweredPackage
   FileIrUnit[]
+  generic executable template facts + symbolic instantiation relocations
   executable/source mapping
   package call targets
   unresolved ServiceCallRefs
@@ -229,11 +238,19 @@ Lowering 不直接读取 manifest、config value 或 artifact JSON，不重建 n
 External ingress 可以使用 lowering-owned typed synthetic adapter facts，但不能生成 Skiff source text。
 Wrapper 是 compiler/runtime adapter 结构，不是隐藏用户源码。
 
+Deployment linker消费exact package closure后，以
+`(templateFunctionKey, canonicalConcreteTypeArguments, concreteReceiver/Self)`为key做有界、确定性
+monomorphization；这由[`bytecode-vm.md`](bytecode-vm.md)拥有。普通递归复用同一specialization key；持续生成
+新type argument的polymorphic recursion、非concrete substitution或超出specialization/code-size/type-depth
+上限使整个buildId link失败。VM不接收generic environment，也不在请求热路径lazy specialize。
+
 ## PackageArtifact Projection
 
 Package projection 消费 `CompiledPackage = PackageSourceModel + LoweredPackage`，生成：
 
 - FileIrUnit refs；
+- relocatable generic bytecode templates、携带canonical type-argument expression的symbolic instantiation
+  relocations与template effect facts；
 - PackageLocalAbi、PackageCallableId 与 implementation links；
 - PackageSchema type records/index；
 - Package/service requirements；
@@ -340,6 +357,8 @@ type/effect inference或lowering helper。它负责：
 - config profile值只由ServiceDeployment projection读取并冻结到owned protected payload；
 - SourceModel之后不重建name/type/conformance；
 - lowering不读取manifest或重新推断expression type；
+- generic call relocation保留source已解析的canonical type arguments；deployment link后无`TypeParam`残留，
+  specialization closure超限/不收敛稳定fail closed；
 - projection不读取AST、调用lowering helper或解析raw artifact JSON；
 - 每种public artifact identity与protected config ref各自只有一个canonical owner；
 - 没有generated Skiff source wrapper；
