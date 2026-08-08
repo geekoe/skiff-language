@@ -35,6 +35,7 @@ pub fn start_profile_emitter(
         sampling_hz: profile.sampling_hz,
         export_interval_ms: profile.export_interval_ms,
         max_stacks: DEFAULT_MAX_STACKS,
+        ..Default::default()
     })?;
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(async move {

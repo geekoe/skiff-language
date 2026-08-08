@@ -37,6 +37,7 @@ pub const DEFAULT_BATCH_MAX_BYTES: usize = 262_144;
 pub const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
 pub const DEFAULT_STRING_MAX_CHARS: usize = 2048;
 pub const DEFAULT_EVENT_MAX_BYTES: usize = 16 * 1024;
+pub const PROFILE_EVENT_MAX_BYTES: usize = 512 * 1024;
 pub const DEFAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_FILE_MAX_FILES: usize = 8;
 pub const TELEMETRY_FILE_HEADER_TYPE: &str = "fileHeader";
@@ -846,7 +847,12 @@ pub fn redact_event(
         .map(|dropped| redact_map(dropped, string_max_chars));
 
     let original_size = serialized_event_size(&event);
-    if original_size > event_max_bytes {
+    let effective_max = if event.name.as_deref() == Some("rust.profile") {
+        event_max_bytes.max(PROFILE_EVENT_MAX_BYTES)
+    } else {
+        event_max_bytes
+    };
+    if original_size > effective_max {
         let truncation = Map::from_iter([
             ("truncated".to_string(), Value::Bool(true)),
             ("originalSizeBytes".to_string(), json!(original_size)),

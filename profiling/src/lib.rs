@@ -35,6 +35,11 @@ pub struct ProfileConfig {
     pub export_interval_ms: u64,
     /// 每个窗口保留的栈条数上限（按 samples 降序截断），默认 2048。
     pub max_stacks: usize,
+    /// 单条折叠栈字符串的字符数上限，超长截断（截到该长度即可，无标记），默认 1024。
+    pub max_folded_chars: usize,
+    /// 窗口内全部栈的估算字节总预算（每条按 `len(folded) + 32` 计，32 为 JSON
+    /// 开销余量），超出部分从低 samples 侧截断，默认 196_608（192KB）。
+    pub max_stacks_bytes: usize,
 }
 
 impl Default for ProfileConfig {
@@ -44,6 +49,8 @@ impl Default for ProfileConfig {
             sampling_hz: 1000,
             export_interval_ms: MINUTE_MS,
             max_stacks: 2048,
+            max_folded_chars: 1024,
+            max_stacks_bytes: 196_608,
         }
     }
 }
@@ -76,7 +83,8 @@ pub struct ProfileWindow {
     pub cpu_ms: u64,
     /// 按线程归因的 CPU 时间；无法归因时为空数组。
     pub threads: Vec<ThreadSample>,
-    /// 折叠栈，按 samples 降序，截断到 `max_stacks`。
+    /// 折叠栈，按 samples 降序，截断到 `max_stacks` 条数与 `max_stacks_bytes`
+    /// 字节预算（取更严格者）。
     pub stacks: Vec<StackSample>,
 }
 
@@ -206,7 +214,13 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
 
         // 停止采样并产出窗口。report 需要在 guard 存活期间构建。
         let (threads, stacks) = match guard.report().build() {
-            Ok(report) => collect(&report, cpu_ms, config.max_stacks),
+            Ok(report) => collect(
+                &report,
+                cpu_ms,
+                config.max_stacks,
+                config.max_folded_chars,
+                config.max_stacks_bytes,
+            ),
             Err(err) => {
                 eprintln!("skiff-profiling: failed to build report: {err}");
                 (Vec::new(), Vec::new())
@@ -228,12 +242,23 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
     }
 }
 
-/// 把 pprof report 收敛成线程归因与折叠栈（按 samples 降序，截断 max_stacks）。
+/// 把 pprof report 收敛成线程归因与折叠栈（按 samples 降序）。
 ///
 /// 线程 CPU 时间按样本比例归因进程 CPU：`cpu_ms * 线程样本数 / 总样本数`。
 /// 无样本时 threads 为空（契约允许）。折叠串按根→叶子用 `;` 连接，
 /// 顺序与 pprof flamegraph 实现一致（frames 与内联符号均逆序）。
-fn collect(report: &pprof::Report, cpu_ms: u64, max_stacks: usize) -> (Vec<ThreadSample>, Vec<StackSample>) {
+///
+/// 体积控制顺序：折叠串先按 `max_folded_chars` 截断（截到该长度即可，无标记），
+/// 再按 samples 降序排列，最后按 `max_stacks_bytes` 预算从高 samples 侧累加截断
+/// （每条估算 `len(folded) + 32`，32 为 JSON 开销余量），并同时保留 `max_stacks`
+/// 条数上限（取更严格者）。
+fn collect(
+    report: &pprof::Report,
+    cpu_ms: u64,
+    max_stacks: usize,
+    max_folded_chars: usize,
+    max_stacks_bytes: usize,
+) -> (Vec<ThreadSample>, Vec<StackSample>) {
     let mut thread_samples: HashMap<String, u64> = HashMap::new();
     let mut stack_samples: HashMap<String, u64> = HashMap::new();
     let mut total_samples = 0u64;
@@ -246,7 +271,11 @@ fn collect(report: &pprof::Report, cpu_ms: u64, max_stacks: usize) -> (Vec<Threa
         total_samples += count;
         *thread_samples.entry(frames.thread_name_or_id()).or_insert(0) += count;
 
-        let folded = fold(frames);
+        let mut folded = fold(frames);
+        if folded.chars().count() > max_folded_chars {
+            // 折叠栈字符串超长截断（截到 max_folded_chars 即可，无标记）。
+            folded = folded.chars().take(max_folded_chars).collect();
+        }
         if !folded.is_empty() {
             *stack_samples.entry(folded).or_insert(0) += count;
         }
@@ -270,6 +299,18 @@ fn collect(report: &pprof::Report, cpu_ms: u64, max_stacks: usize) -> (Vec<Threa
         .map(|(folded, samples)| StackSample { folded, samples })
         .collect();
     stacks.sort_by(|a, b| b.samples.cmp(&a.samples).then_with(|| a.folded.cmp(&b.folded)));
+
+    // 字节预算从高 samples 侧逐条累加（`len(folded) + 32`），保留预算内的栈；
+    // retain 保持降序，随后仍按 max_stacks 条数上限截断（两者取更严格者）。
+    let mut used_bytes = 0usize;
+    stacks.retain(|stack| {
+        let cost = stack.folded.len() + 32;
+        if used_bytes.saturating_add(cost) > max_stacks_bytes {
+            return false;
+        }
+        used_bytes += cost;
+        true
+    });
     stacks.truncate(max_stacks);
 
     (threads, stacks)

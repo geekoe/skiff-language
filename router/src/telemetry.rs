@@ -41,6 +41,7 @@ const DEFAULT_BATCH_MAX_EVENTS: usize = 200;
 const DEFAULT_BATCH_MAX_BYTES: usize = 262_144;
 const DEFAULT_STRING_MAX_CHARS: usize = 2048;
 const DEFAULT_EVENT_MAX_BYTES: usize = 16 * 1024;
+const PROFILE_EVENT_MAX_BYTES: usize = 512 * 1024;
 const DEFAULT_FLUSH_INTERVAL_MS: u64 = 1000;
 const DEFAULT_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_FILE_MAX_FILES: usize = 8;
@@ -840,10 +841,15 @@ fn redact_event(
     event.message = truncate_option(event.message, string_max_chars);
     event.attrs = event.attrs.map(|attrs| redact_map(attrs, string_max_chars));
     event.error = event.error.map(|error| redact_map(error, string_max_chars));
+    let effective_max = if event.name.as_deref() == Some("rust.profile") {
+        event_max_bytes.max(PROFILE_EVENT_MAX_BYTES)
+    } else {
+        event_max_bytes
+    };
     if serde_json::to_vec(&event)
         .map(|bytes| bytes.len())
         .unwrap_or(usize::MAX)
-        > event_max_bytes
+        > effective_max
     {
         event.attrs = Some(Map::from_iter([
             ("truncated".to_string(), Value::Bool(true)),
