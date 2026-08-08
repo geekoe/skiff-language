@@ -26,6 +26,7 @@ const runtimeDag = new Map([
       'skiff-runtime-native-contract',
       'skiff-runtime-boundary',
       'skiff-runtime-model',
+      'skiff-runtime-service-db',
     ],
   ],
   [
@@ -118,6 +119,7 @@ const runtimeDag = new Map([
     [
       'skiff-runtime-loader',
       'skiff-runtime-linked-program',
+      'skiff-runtime-linked-type-plan',
       'skiff-runtime-native-contract',
       'skiff-runtime-boundary',
       'skiff-runtime-model',
@@ -168,6 +170,7 @@ const hostBoundaryTarget = {
     'skiff-runtime-activation',
     'skiff-runtime-capability-context',
     'skiff-runtime-model',
+    'skiff-runtime-service-db',
   ],
   temporaryDebtRationales: new Map([
     [
@@ -777,32 +780,29 @@ function runSelfTests() {
       },
     },
     {
-      name: 'host boundary fails on retired service-db production edge',
+      name: 'host boundary allows service-db managed-index naming edge',
       run: () => {
         const metadata = metadataFromRuntimeDag({
-          hostDependencies: [
-            ...hostBoundaryTarget.allowedRuntimeDeps,
-            'skiff-runtime-service-db',
-          ],
+          hostDependencies: [...hostBoundaryTarget.allowedRuntimeDeps],
         });
         const dagResult = checkRuntimeDag(metadata);
         const hostResult = checkHostBoundaryTarget(metadata);
         assert(
-          dagResult.violations.some(
-            (violation) =>
-              violation.packageName === 'skiff-runtime-host'
-              && violation.message.includes('skiff-runtime-service-db is not allowed'),
-          ),
-          'expected skiff-runtime-host -> skiff-runtime-service-db to be rejected by DAG',
+          dagResult.violations.length === 0,
+          `expected service-db edge to pass the DAG, got ${dagResult.violations.length} violations`,
         );
         assert(
-          hostResult.unregisteredDebts.some(
+          hostResult.allowed.some(
             (edge) => edge.dependencyName === 'skiff-runtime-service-db',
           ),
-          'expected skiff-runtime-service-db to be unregistered host target debt',
+          'expected skiff-runtime-service-db to be a target-allowed host edge',
         );
-        assert(hostBoundaryExitCode(hostResult, 'report') === 1, 'report mode should fail for service-db regression');
-        assert(hostBoundaryExitCode(hostResult, 'deny') === 1, 'deny mode should fail for service-db regression');
+        assert(
+          hostResult.unregisteredDebts.length === 0,
+          'expected no unregistered host target debt',
+        );
+        assert(hostBoundaryExitCode(hostResult, 'report') === 0, 'report mode should pass for a target-allowed edge');
+        assert(hostBoundaryExitCode(hostResult, 'deny') === 0, 'deny mode should pass for a target-allowed edge');
       },
     },
     {
