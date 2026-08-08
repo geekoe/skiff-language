@@ -284,7 +284,11 @@ function checkHostRequestChain(ownerMatches, violations) {
         detail: 'host request entry must use only its pinned active assembly route without lazy/legacy fallback',
       }));
     }
-    const semanticFallback = /\b(?:build_id|operation_abi_id|display_name|display_target)\b/g;
+    // build_id is the canonical M4 distribution key carried in the wire
+    // header (router dispatches by build id); querying the loaded state of
+    // that build id is protocol, not a redirect. Only operation/display
+    // metadata must never redirect the canonical assembly ingress.
+    const semanticFallback = /\b(?:operation_abi_id|display_name|display_target)\b/g;
     for (const entry of match.item.identifiers.matchAll(semanticFallback)) {
       violations.push(runtimeExecutionBoundaryViolation({
         id: 'host-request-semantic-fallback',

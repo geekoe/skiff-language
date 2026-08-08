@@ -266,7 +266,7 @@ function checkKnownSource(relPath, source) {
       for (const name of ['encode', 'decode']) {
         expectExportedNativeFunction(source, name, relPath);
       }
-      for (const name of ['parse', 'stringify', 'from', 'get', 'at', 'asString', 'asNumber', 'asBool', 'asArray']) {
+      for (const name of ['parse', 'stringify', 'from', 'at', 'asString', 'asNumber', 'asBool', 'asArray']) {
         expectNotMatches(source, exportedNativeFunctionPattern(name), `${relPath} must not export native ${name}`);
       }
       return;

@@ -17,7 +17,10 @@ use skiff_artifact_model::{
 use skiff_compiler::authoring::{
     package_actor_routing_input, project_assembly_actor_routing_from_inputs,
 };
-use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
+use skiff_deployment::{
+    projection::actor_routing::ActorRoutingProjection,
+    storage::{CanonicalArtifactStore, ReleasePointer},
+};
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
 
 use crate::{
@@ -268,11 +271,14 @@ fn execute_assembly_batches(
             }
             for artifact in &packages {
                 if !actor_routing_inputs.contains_key(&artifact.package_build_id) {
-                    let input = package_actor_routing_input(&store, artifact).map_err(|error| {
-                        CanonicalFixtureError::InvalidInput(format!(
-                            "actor routing package input failed for the batch: {error}"
-                        ))
-                    })?;
+                    let input =
+                        package_actor_routing_input(runtime_artifact_root, artifact).map_err(
+                            |error| {
+                                CanonicalFixtureError::InvalidInput(format!(
+                                    "actor routing package input failed for the batch: {error}"
+                                ))
+                            },
+                        )?;
                     actor_routing_inputs.insert(artifact.package_build_id.clone(), input);
                 }
             }
@@ -285,6 +291,12 @@ fn execute_assembly_batches(
                     "actor routing projection failed for the batch: {error}"
                 ))
             })?;
+            let projection = serde_json::from_value::<ActorRoutingProjection>(projection)
+                .map_err(|error| {
+                    CanonicalFixtureError::InvalidInput(format!(
+                        "decode actor routing projection for the batch: {error}"
+                    ))
+                })?;
             store
                 .write_actor_routing_projection(&projection)
                 .map_err(|error| {

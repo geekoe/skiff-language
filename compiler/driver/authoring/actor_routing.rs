@@ -8,8 +8,12 @@
 //! the producer. It never forwards module paths, actor/method names, source
 //! spans, executable coordinates or payload bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
+use serde_json::Value;
 use skiff_artifact_identity::{package_artifact_ref, service_deployment_ref};
 use skiff_artifact_model::{
     FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
@@ -69,10 +73,21 @@ pub fn project_assembly_actor_routing(
 /// every File IR unit to extract actor declaration identities. The caller can
 /// compute it once per package build and reuse the typed facts across many
 /// deployments/assemblies that share the same package closure.
+///
+/// The return value is the canonical producer-input record (the camelCase
+/// JSON shape of
+/// `skiff_deployment::projection::actor_routing::ActorRoutingPackageInput`)
+/// so the public surface exposes only approved value crates.
 pub fn package_actor_routing_input(
-    store: &CanonicalArtifactStore,
+    artifact_root: &Path,
     artifact: &PackageArtifact,
-) -> AuthoringResult<ActorRoutingPackageInput> {
+) -> AuthoringResult<Value> {
+    let store = CanonicalArtifactStore::open(artifact_root).map_err(|error| {
+        invalid_input(format!(
+            "actor routing projection: open artifact root {}: {error}",
+            artifact_root.display()
+        ))
+    })?;
     let canonical_package_ref = package_artifact_ref(artifact)
         .map_err(|error| invalid_input(format!("actor routing projection: {error}")))?;
     // File refs are read from the published record (not the in-memory
@@ -100,9 +115,15 @@ pub fn package_actor_routing_input(
             })?;
         collect_actor_inputs(&unit, &mut actor_inputs);
     }
-    Ok(ActorRoutingPackageInput {
+    serde_json::to_value(ActorRoutingPackageInput {
         package: canonical_package_ref,
         actors: actor_inputs,
+    })
+    .map_err(|error| {
+        invalid_input(format!(
+            "actor routing projection: encode package input for {}@{}: {error}",
+            artifact.package_id, artifact.package_version
+        ))
     })
 }
 
@@ -111,10 +132,16 @@ pub fn package_actor_routing_input(
 /// artifact store, so callers that activate many deployments over the same
 /// package closure can avoid repeated canonical JSON admission and File IR
 /// reads.
+///
+/// `package_inputs` carries the canonical producer-input records produced by
+/// [`package_actor_routing_input`]; the return value is the canonical
+/// projection record (the camelCase JSON shape of
+/// `skiff_deployment::projection::actor_routing::ActorRoutingProjection`) so
+/// the public surface exposes only approved value crates.
 pub fn project_assembly_actor_routing_from_inputs(
     deployments: &[ServiceDeployment],
-    package_inputs: &BTreeMap<PackageBuildId, ActorRoutingPackageInput>,
-) -> AuthoringResult<ActorRoutingProjection> {
+    package_inputs: &BTreeMap<PackageBuildId, Value>,
+) -> AuthoringResult<Value> {
     let mut methods = Vec::new();
     for deployment in deployments {
         let deployment_ref = service_deployment_ref(deployment);
@@ -130,7 +157,16 @@ pub fn project_assembly_actor_routing_from_inputs(
                     package_ref.package_build_id
                 ))
             })?;
-            package_inputs_for_deployment.push(input.clone());
+            let typed_input = serde_json::from_value::<ActorRoutingPackageInput>(input.clone())
+                .map_err(|error| {
+                    invalid_input(format!(
+                        "actor routing projection: decode package input for {}@{} ({}): {error}",
+                        package_ref.package_id,
+                        package_ref.package_version,
+                        package_ref.package_build_id
+                    ))
+                })?;
+            package_inputs_for_deployment.push(typed_input);
         }
         let projection = project_actor_routing(ActorRoutingProducerInput {
             schema_version: ACTOR_ROUTING_PRODUCER_INPUT_SCHEMA_VERSION.to_string(),
@@ -140,8 +176,14 @@ pub fn project_assembly_actor_routing_from_inputs(
         .map_err(projection_error)?;
         methods.extend(projection.methods);
     }
-    ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
-        .map_err(projection_error)
+    let projection = ActorRoutingProjection::new(
+        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
+        methods,
+    )
+    .map_err(projection_error)?;
+    serde_json::to_value(projection).map_err(|error| {
+        invalid_input(format!("actor routing projection: encode projection: {error}"))
+    })
 }
 
 fn project_deployment_actor_routing(

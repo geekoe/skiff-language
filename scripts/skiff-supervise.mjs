@@ -104,6 +104,7 @@ async function waitForRouterHealth() {
 async function startComponent(component, runDir) {
   log(`starting ${component} (${runDir})`);
   await new Promise((resolvePromise) => {
+    // child-process-owner: skiff-supervise-spawn
     const child = spawn(process.execPath, [
       join(SCRIPT_DIR, 'skiff-process.mjs'),
       component,

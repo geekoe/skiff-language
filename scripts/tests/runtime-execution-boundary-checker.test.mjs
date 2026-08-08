@@ -240,8 +240,8 @@ test('production registry names every required subject and owner role exactly on
       ),
       owner(
         'host-request-route-lookup',
-        'lookup_active_assembly_request_route',
-        'runtime/host/src/host/request_entry.rs',
+        'resolve_active_assembly_request_route',
+        'runtime/host/src/host/request_entry/assembly_wire.rs',
       ),
       owner(
         'assembly-request-wire',

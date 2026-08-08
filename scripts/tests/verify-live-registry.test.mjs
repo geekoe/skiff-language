@@ -51,6 +51,7 @@ test('live registry is the single declaration for current selectors, policies, a
     'durable-task-e2e-live',
     'router-live:http',
     'router-live:chat',
+    'router-live:agine',
     'router-live:clean-host',
     'loop-risk-health-live',
     'loop-risk-stress-live',
