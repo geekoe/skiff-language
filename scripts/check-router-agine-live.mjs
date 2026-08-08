@@ -27,7 +27,7 @@
 // The harness never touches the stable instance, stable Mongo, PM2, or the
 // fixed 4000-4007 ports.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   access,
@@ -613,13 +613,7 @@ async function prepareStrictHostWorkspace(tempRoot) {
   const sourceDoc = join(repoRoot, 'doc');
   const workspace = join(tempRoot, 'host-tools-workspace');
   await cp(sourceDoc, workspace, { recursive: true });
-  const outcome = spawnSync('chmod', ['-R', 'a-w', workspace], { encoding: 'utf8' });
-  if (outcome.status !== 0) {
-    throw new Error(
-      `router-live:agine could not make host workspace read-only: `
-      + `${outcome.stderr || outcome.status}`,
-    );
-  }
+  await captureCheckedCommand('chmod', ['-R', 'a-w', workspace], { cwd: repoRoot });
   await chmod(workspace, 0o555);
   return workspace;
 }
@@ -670,7 +664,7 @@ function assertHostToolsFullEvidence(phase, output) {
 }
 
 async function runCapturedTee(command, args, { cwd, env }) {
-  const child = spawn(command, args, {
+  const child = spawnDirect(command, args, {
     cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -797,8 +791,7 @@ async function spawnManaged(label, command, args, { cwd, tempRoot }) {
   const stderr = await open(stderrPath, 'w');
   logFiles.push({ path: stdoutPath, handle: stdout });
   logFiles.push({ path: stderrPath, handle: stderr });
-  // child-process-owner: router-agine-live-spawn
-  const child = spawn(command, args, {
+  const child = spawnDirect(command, args, {
     cwd,
     env: process.env,
     stdio: ['ignore', stdout.fd, stderr.fd],
@@ -808,6 +801,11 @@ async function spawnManaged(label, command, args, { cwd, tempRoot }) {
     child.once('exit', (code, signal) => resolvePromise({ code, signal }));
   });
   return { label, child, exited };
+}
+
+function spawnDirect(command, args, options) {
+  // child-process-owner: router-agine-live-spawn
+  return spawn(command, args, options);
 }
 
 async function stopManagedChild(managed) {
