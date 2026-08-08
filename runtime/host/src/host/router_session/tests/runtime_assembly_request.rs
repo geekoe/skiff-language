@@ -1242,7 +1242,7 @@ async fn assert_race_settled(
             event.request_id.as_deref() == Some(request_id)
                 && matches!(
                     event.name.as_deref(),
-                    Some("request.end" | "request.error" | "request.cancel")
+                    Some("request.error" | "request.cancel")
                 )
         })
         .count();

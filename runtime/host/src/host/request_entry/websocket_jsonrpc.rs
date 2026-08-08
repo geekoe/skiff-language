@@ -58,7 +58,7 @@ impl RuntimeHost {
         let supervisor_request = websocket_jsonrpc_supervisor_request(&header, &route);
         let supervised_request = self
             .request_supervisor
-            .begin(&supervisor_request, telemetry, "request.start")
+            .begin(&supervisor_request, telemetry)
             .await;
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -136,7 +136,7 @@ impl RuntimeHost {
         };
         if !self
             .request_supervisor
-            .complete_success(supervised_request, "request.end", CompletionTrace::RUNTIME)
+            .complete_success(supervised_request, CompletionTrace::RUNTIME)
             .await
         {
             return;

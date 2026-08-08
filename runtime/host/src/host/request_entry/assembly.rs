@@ -76,7 +76,7 @@ impl RuntimeHost {
         telemetry.parent_span_id = header.trace.parent_span_id.clone();
         let Some(supervised_request) = self
             .request_supervisor
-            .begin_task(&header, telemetry.clone(), "request.start")
+            .begin_task(&header, telemetry.clone())
             .await
         else {
             self.send_http_gateway_admission_error(
@@ -212,11 +212,7 @@ impl RuntimeHost {
                 Ok(response) => {
                     if !host
                         .request_supervisor
-                        .complete_success(
-                            &supervised_request,
-                            "request.end",
-                            CompletionTrace::RUNTIME,
-                        )
+                        .complete_success(&supervised_request, CompletionTrace::RUNTIME)
                         .await
                     {
                         return;
@@ -297,7 +293,7 @@ impl RuntimeHost {
         let supervisor_request = websocket_connect_supervisor_request(&header, &route);
         let supervised_request = self
             .request_supervisor
-            .begin(&supervisor_request, telemetry, "request.start")
+            .begin(&supervisor_request, telemetry)
             .await;
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
@@ -350,11 +346,7 @@ impl RuntimeHost {
                 Ok(result) => {
                     if !host
                         .request_supervisor
-                        .complete_success(
-                            &supervised_request,
-                            "request.end",
-                            CompletionTrace::RUNTIME,
-                        )
+                        .complete_success(&supervised_request, CompletionTrace::RUNTIME)
                         .await
                     {
                         return;
@@ -422,7 +414,7 @@ impl RuntimeHost {
         let telemetry = self.http_gateway_telemetry_context(&header, &route);
         let supervised_request = self
             .request_supervisor
-            .begin_http_gateway(&header, telemetry, "request.start")
+            .begin_http_gateway(&header, telemetry)
             .await;
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
@@ -526,7 +518,7 @@ impl RuntimeHost {
                 }
                 if !self
                     .request_supervisor
-                    .complete_success(supervised_request, "request.end", CompletionTrace::RUNTIME)
+                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
                     .await
                 {
                     response_sink.cancel_without_response();

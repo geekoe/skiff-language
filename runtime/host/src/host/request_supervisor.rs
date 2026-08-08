@@ -72,13 +72,11 @@ impl RequestSupervisor {
         &self,
         request: &RequestEnvelope,
         telemetry: RequestTelemetryContext,
-        start_event: &'static str,
     ) -> SupervisedRequest {
         self.begin_with_budget(
             request.request_id.clone(),
             Arc::new(ExecutionBudget::for_runtime_request(&request.extra)),
             telemetry,
-            start_event,
         )
         .await
     }
@@ -87,7 +85,6 @@ impl RequestSupervisor {
         &self,
         header: &RuntimeAssemblyRequestStartFrameHeader,
         telemetry: RequestTelemetryContext,
-        start_event: &'static str,
     ) -> SupervisedRequest {
         let mut extra = Map::new();
         if let Some(deadline) = &header.deadline {
@@ -101,7 +98,6 @@ impl RequestSupervisor {
             header.request_id.clone(),
             Arc::new(ExecutionBudget::for_runtime_request(&extra)),
             telemetry,
-            start_event,
         )
         .await
     }
@@ -110,7 +106,6 @@ impl RequestSupervisor {
         &self,
         header: &RuntimeAssemblyTaskRequestStartFrameHeader,
         telemetry: RequestTelemetryContext,
-        start_event: &'static str,
     ) -> Option<SupervisedRequest> {
         let mut extra = Map::new();
         if let Some(deadline) = &header.deadline {
@@ -133,7 +128,6 @@ impl RequestSupervisor {
         if requests.contains_key(&header.request_id) {
             return None;
         }
-        active.telemetry.emit_trace(start_event, None, None, None);
         requests.insert(header.request_id.clone(), active.clone());
         Some(SupervisedRequest {
             request_id: header.request_id.clone(),
@@ -146,7 +140,6 @@ impl RequestSupervisor {
         request_id: String,
         execution_budget: Arc<ExecutionBudget>,
         telemetry: RequestTelemetryContext,
-        start_event: &'static str,
     ) -> SupervisedRequest {
         let cancellation = CancellationToken::new();
         let active = ActiveRequest {
@@ -158,7 +151,6 @@ impl RequestSupervisor {
             cancel_event_emitted: Arc::new(AtomicBool::new(false)),
         };
 
-        active.telemetry.emit_trace(start_event, None, None, None);
         self.active
             .lock()
             .await
@@ -170,7 +162,6 @@ impl RequestSupervisor {
     pub(crate) async fn complete_success(
         &self,
         request: &SupervisedRequest,
-        event_name: &'static str,
         trace: CompletionTrace,
     ) -> bool {
         match self.claim_completion(request).await {
@@ -183,12 +174,6 @@ impl RequestSupervisor {
         }
         request.active.execution_budget.finish(Instant::now());
         let duration_ms = request.duration_ms();
-        request.active.telemetry.emit_trace(
-            event_name,
-            trace.include_duration.then_some(duration_ms),
-            None,
-            request.budget_attrs(duration_ms, trace),
-        );
         emit_request_duration_metric(&request.active, duration_ms, "ok");
         true
     }
