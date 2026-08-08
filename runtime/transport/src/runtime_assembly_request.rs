@@ -17,6 +17,7 @@ use lexical::{
     deserialize_optional_assembly_identity, deserialize_optional_build_id,
     deserialize_optional_safe_activation_generation, deserialize_optional_test_case_capability,
     deserialize_optional_test_case_parent_request_id,
+    deserialize_optional_websocket_connection_closed_business_identity,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
     deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
     deserialize_runtime_assembly_websocket_jsonrpc_connection_id,
@@ -77,6 +78,7 @@ pub struct RuntimeAssemblyRequestStartFrameHeader {
 pub enum RuntimeAssemblyRequestStartFrameWireHeader {
     Http(RuntimeAssemblyRequestStartFrameHeader),
     WebSocketConnect(RuntimeAssemblyWebSocketConnectRequestStartFrameHeader),
+    WebSocketConnectionClosed(RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader),
     WebSocketJsonRpc(RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader),
     Task(RuntimeAssemblyTaskRequestStartFrameHeader),
 }
@@ -109,21 +111,31 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
             "http" => serde_json::from_value(value)
                 .map(Self::Http)
                 .map_err(de::Error::custom),
-            "webSocket" => match value
-                .get("routing")
-                .and_then(|routing| routing.get("ingress"))
-                .and_then(|ingress| ingress.get("method"))
-            {
-                Some(serde_json::Value::Null) => serde_json::from_value(value)
-                    .map(Self::WebSocketConnect)
-                    .map_err(de::Error::custom),
-                Some(serde_json::Value::String(_)) => serde_json::from_value(value)
-                    .map(Self::WebSocketJsonRpc)
-                    .map_err(de::Error::custom),
-                _ => Err(de::Error::custom(
-                    "request.start WebSocket routing.ingress.method must be null or a string",
-                )),
-            },
+            "webSocket" => {
+                let ingress = value
+                    .get("routing")
+                    .and_then(|routing| routing.get("ingress"));
+                let method = ingress.and_then(|ingress| ingress.get("method"));
+                let entry_kind = ingress.and_then(|ingress| ingress.get("entryKind"));
+                match method {
+                    Some(serde_json::Value::String(_)) => serde_json::from_value(value)
+                        .map(Self::WebSocketJsonRpc)
+                        .map_err(de::Error::custom),
+                    _ => match entry_kind.and_then(serde_json::Value::as_str) {
+                        Some("connectionClosed") => serde_json::from_value(value)
+                            .map(Self::WebSocketConnectionClosed)
+                            .map_err(de::Error::custom),
+                        _ => match method {
+                            Some(serde_json::Value::Null) => serde_json::from_value(value)
+                                .map(Self::WebSocketConnect)
+                                .map_err(de::Error::custom),
+                            _ => Err(de::Error::custom(
+                                "request.start WebSocket routing.ingress.method must be null or a string",
+                            )),
+                        },
+                    },
+                }
+            }
             _ => Err(de::Error::custom(
                 "request.start routing.ingress.protocol must be http or webSocket",
             )),
@@ -284,6 +296,180 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader {
     pub websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
+    pub schema_version: String,
+    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
+    pub frame_type: String,
+    pub request_id: String,
+    #[serde(deserialize_with = "deserialize_unary_dispatch_mode")]
+    pub mode: String,
+    pub caller: RuntimeAssemblyRequestCallerFrameHeader,
+    pub routing: RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
+    pub websocket_connection_closed: RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader,
+    #[serde(default)]
+    pub test_effects_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+    pub kind: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_assembly_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_identity: Option<AssemblyIdentity>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_activation_generation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assembly_generation: Option<u64>,
+    #[serde(deserialize_with = "deserialize_service_deployment_ref")]
+    pub deployment: ServiceDeploymentRef,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_build_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_id: Option<String>,
+    #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
+    pub gateway_entry_identity: GatewayEntryIdentity,
+    pub ingress: RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
+    pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+    pub path: String,
+    pub entry_kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
+    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+    path: String,
+    entry_kind: String,
+}
+
+impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader::deserialize(
+            deserializer,
+        )?;
+        if !raw.path.starts_with('/') {
+            return Err(de::Error::custom(
+                "routing.ingress.path must be an absolute path",
+            ));
+        }
+        if raw.entry_kind != "connectionClosed" {
+            return Err(de::Error::custom(
+                "routing.ingress.entryKind must be connectionClosed",
+            ));
+        }
+        Ok(Self {
+            protocol: raw.protocol,
+            path: raw.path,
+            entry_kind: raw.entry_kind,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+    pub connection_id: String,
+    pub websocket_entry_id: WebSocketEntryId,
+    pub gateway_entry_identity: GatewayEntryIdentity,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_websocket_connection_closed_business_identity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub business_identity: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub close_code: Option<u16>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub close_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+    connection_id: String,
+    websocket_entry_id: WebSocketEntryId,
+    gateway_entry_identity: GatewayEntryIdentity,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_websocket_connection_closed_business_identity"
+    )]
+    business_identity: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    close_code: Option<u16>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    close_reason: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader::deserialize(
+            deserializer,
+        )?;
+        if raw.connection_id.is_empty()
+            || raw.connection_id.len() > 255
+            || !raw.connection_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'~' | b'-')
+            })
+        {
+            return Err(de::Error::custom(
+                "websocketConnectionClosed.connectionId is not canonical",
+            ));
+        }
+        Ok(Self {
+            connection_id: raw.connection_id,
+            websocket_entry_id: raw.websocket_entry_id,
+            gateway_entry_identity: raw.gateway_entry_identity,
+            business_identity: raw.business_identity,
+            close_code: raw.close_code,
+            close_reason: raw.close_reason,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,6 +807,20 @@ pub fn decode_runtime_assembly_request_start_frame(
             if payload.is_empty() || payload.len() > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES {
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly websocketJsonRpc request.start frame: payload must be present and within the payload limit",
+                ));
+            }
+        }
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(websocket) => {
+            if websocket.websocket_connection_closed.gateway_entry_identity
+                != websocket.routing.gateway_entry_identity
+            {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly websocketConnectionClosed request.start frame: websocketConnectionClosed.gatewayEntryIdentity must match routing.gatewayEntryIdentity",
+                ));
+            }
+            if !payload.is_empty() {
+                return Err(TransportError::decode(
+                    "invalid runtimeAssembly websocketConnectionClosed request.start frame: payload must be empty",
                 ));
             }
         }

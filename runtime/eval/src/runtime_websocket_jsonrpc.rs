@@ -284,7 +284,9 @@ fn validate_target<'a>(
             GatewayAdapterSource::HttpRequest
             | GatewayAdapterSource::HttpBody
             | GatewayAdapterSource::HttpContext
-            | GatewayAdapterSource::WebSocketConnectRequest => return Err(()),
+            | GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => return Err(()),
         }
     }
     let surface_sources = surface
@@ -381,7 +383,9 @@ fn handler_args(
             GatewayAdapterSource::HttpRequest
             | GatewayAdapterSource::HttpBody
             | GatewayAdapterSource::HttpContext
-            | GatewayAdapterSource::WebSocketConnectRequest => {
+            | GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => {
                 return Err(HandlerArgumentError::InvalidTarget)
             }
         };

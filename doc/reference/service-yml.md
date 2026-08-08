@@ -6,7 +6,7 @@ Service首先是Package，因此root仍必须包含`package.yml`与`api.yml`。S
 
 - `service.yml`：service identity与service-to-service callable选择；
 - 可选`http.yml`：HTTP external ingress；
-- 可选`websocket.yml`：唯一WebSocket connection entry、connect与declared JSON-RPC methods；
+- 可选`websocket.yml`：唯一WebSocket connection entry、connect与close、declared JSON-RPC methods；
 - 可选`config.yml`、`config.<profile>.yml`与ignored `config.<profile>.secret.yml`：同一service
   activation的三层Package业务配置。
 
@@ -117,6 +117,12 @@ connect:
     - param: connectionId
       source: { kind: websocket.connectionId }
 
+close:
+  handler: websocket.handleConnectionClosed
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+
 jsonRpc:
   getStatus:
     method: status.get
@@ -130,11 +136,15 @@ jsonRpc:
         source: { kind: websocket.businessIdentity }
 ```
 
-顶层只允许`path`、`connect`和`jsonRpc`：
+顶层只允许`path`、`connect`、`close`和`jsonRpc`：
 
 - `path`必填；文件可以只声明path，供Skiff主动send/request使用。
 - `connect`可省略。存在时handler返回`std.websocket.WebSocketConnectResult`；可用source只有
   `websocket.connectRequest`与`websocket.connectionId`。
+- `close`可省略。存在时handler返回`void`；可用source只有`websocket.connectionId`（string）、
+  `websocket.closeCode`（integer）、`websocket.closeReason`（string）与`websocket.businessIdentity`
+  （string?），每种至多绑定一次。close是单向通知：router在客户端连接拆除时向runtime发close帧，
+  无response；v1中`closeCode`/`closeReason`恒为null，但source类型已支持。
 - Connect accept可返回由service事务分配的正安全整数`admissionRank`。它与单连接
   `close-oldest` policy配合时是Router的business-identity fencing token；service应在提交业务连接状态的
   同一事务中递增并持久化该rank。

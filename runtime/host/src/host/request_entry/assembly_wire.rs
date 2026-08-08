@@ -12,14 +12,16 @@ use skiff_runtime_request::{
     BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
     RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget, RuntimeGatewayIngressPin,
     RuntimeHttpGatewayRequest, RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
+    RuntimeWebSocketConnectionClosedIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
     RuntimeAssemblyTaskRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
-    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcProfile, RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -43,6 +45,12 @@ pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     pub(super) request: RuntimeWebSocketConnectIngress,
+}
+
+pub(super) struct AdmittedWebSocketConnectionClosedRequest {
+    pub(super) route: ActiveAssemblyRoute,
+    pub(super) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    pub(super) request: RuntimeWebSocketConnectionClosedIngress,
 }
 
 /// Per-request WebSocket JSON-RPC resolution: the physical WebSocket route is
@@ -87,6 +95,9 @@ impl RuntimeHost {
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
                 header.request_id.clone()
             }
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+                header.request_id.clone()
+            }
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 header.request_id.clone()
             }
@@ -107,6 +118,10 @@ impl RuntimeHost {
                 .websocket_connect_request_from_wire(header, body, bootstrap)
                 .await
                 .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => self
+                .websocket_connection_closed_request_from_wire(header, body, bootstrap)
+                .await
+                .map(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed),
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
                 .websocket_jsonrpc_request_from_wire(header, body, bootstrap)
                 .await
@@ -131,6 +146,15 @@ impl RuntimeHost {
             }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
                 self.task_websocket_connect_on_active_assembly_route(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(request)) => {
+                self.task_websocket_connection_closed_on_active_assembly_route(
                     router_session_id.to_string(),
                     request,
                     bootstrap.max_response_bytes,
@@ -223,6 +247,33 @@ impl RuntimeHost {
         }
         let request = websocket_connect_ingress_from_wire(&route, &header);
         Ok(AdmittedWebSocketConnectRequest {
+            route,
+            header,
+            request,
+        })
+    }
+
+    async fn websocket_connection_closed_request_from_wire(
+        &self,
+        header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+        body: Vec<u8>,
+        bootstrap: &ConnectionBootstrap,
+    ) -> Result<AdmittedWebSocketConnectionClosedRequest> {
+        validate_websocket_connection_closed_header(&header, &body)?;
+        let selector = websocket_connection_closed_ingress_selector(&header);
+        let key = ServiceIngressKey {
+            deployment: header.routing.deployment.clone(),
+            selector: selector.clone(),
+        };
+        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        validate_websocket_connection_closed_route(&header, &selector, &route)?;
+        if route.entry().close_handler().is_none() {
+            return Err(RuntimeError::Decode(
+                "connection close handler is not declared".to_string(),
+            ));
+        }
+        let request = websocket_connection_closed_ingress_from_wire(&route, &header);
+        Ok(AdmittedWebSocketConnectionClosedRequest {
             route,
             header,
             request,
@@ -455,6 +506,7 @@ impl RuntimeHost {
 enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
+    WebSocketConnectionClosed(AdmittedWebSocketConnectionClosedRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
     Task(AdmittedTaskRequest),
 }
@@ -480,6 +532,9 @@ fn wire_routing_build_id(header: &RuntimeAssemblyRequestStartFrameWireHeader) ->
     let deployment = match header {
         RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => &header.routing.deployment,
         RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+            &header.routing.deployment
+        }
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
             &header.routing.deployment
         }
         RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
@@ -539,6 +594,25 @@ fn websocket_connect_ingress_from_wire(
         version: request.version.clone(),
         websocket_entry_id: request.websocket_entry_id.clone(),
         connect_gateway_entry_identity: request.gateway_entry_identity.clone(),
+        test_effects_enabled: header.test_effects_enabled,
+    }
+}
+
+fn websocket_connection_closed_ingress_from_wire(
+    route: &ActiveAssemblyRoute,
+    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+) -> RuntimeWebSocketConnectionClosedIngress {
+    let request = &header.websocket_connection_closed;
+    RuntimeWebSocketConnectionClosedIngress {
+        request_id: header.request_id.clone(),
+        pin: gateway_ingress_pin(route, &header.routing.gateway_entry_identity),
+        ingress_path: header.routing.ingress.path.clone(),
+        connection_id: request.connection_id.clone(),
+        websocket_entry_id: request.websocket_entry_id.clone(),
+        close_gateway_entry_identity: request.gateway_entry_identity.clone(),
+        business_identity: request.business_identity.clone(),
+        close_code: request.close_code,
+        close_reason: request.close_reason.clone(),
         test_effects_enabled: header.test_effects_enabled,
     }
 }
@@ -657,6 +731,30 @@ fn validate_websocket_connect_header(
     Ok(())
 }
 
+fn validate_websocket_connection_closed_header(
+    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    body: &[u8],
+) -> Result<()> {
+    if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket connection close requires a non-empty requestId, gateway caller and unary mode"
+                .to_string(),
+        ));
+    }
+    if !body.is_empty() {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket connection close request payload must be empty".to_string(),
+        ));
+    }
+    let request = &header.websocket_connection_closed;
+    if request.gateway_entry_identity != header.routing.gateway_entry_identity {
+        return Err(RuntimeError::Decode(
+            "websocketConnectionClosed gateway identity does not match routing".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_websocket_jsonrpc_header(
     header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
     params: &[u8],
@@ -752,6 +850,51 @@ fn websocket_connect_ingress_selector(
         method: None,
         path: ingress.path.clone(),
     }
+}
+
+fn websocket_connection_closed_ingress_selector(
+    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+) -> IngressSelector {
+    let ingress = &header.routing.ingress;
+    IngressSelector {
+        protocol: IngressProtocol::WebSocket,
+        method: None,
+        path: ingress.path.clone(),
+    }
+}
+
+fn validate_websocket_connection_closed_route(
+    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    selector: &IngressSelector,
+    route: &ActiveAssemblyRoute,
+) -> Result<()> {
+    let routing = &header.routing;
+    let activation_identity = route.activation().identity();
+    if !matches!(
+        route.protocol_surface().protocol,
+        GatewayProtocolSurface::WebSocketConnect(_)
+    ) || routing_build_id_mismatch(routing.build_id.as_deref(), route)
+        || route.deployment() != &routing.deployment
+        || route.selector() != selector
+        || route.gateway_entry_identity() != &routing.gateway_entry_identity
+        || &activation_identity.deployment != route.entry().owner()
+        || route.gateway_entry_identity()
+            != &header.websocket_connection_closed.gateway_entry_identity
+        || !route.activation().websocket_entry_matches(
+            selector,
+            route.gateway_entry_key(),
+            route.gateway_entry_identity(),
+            &header.websocket_connection_closed.websocket_entry_id,
+        )
+    {
+        return Err(RuntimeError::Protocol {
+            target: route.gateway_entry_key().as_str().to_string(),
+            message:
+                "canonical request routing does not match the admitted WebSocket connection close route"
+                    .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_websocket_connect_route(

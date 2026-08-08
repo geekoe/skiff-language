@@ -268,10 +268,12 @@ async fn runtime_http_gateway_refuses_websocket_connect_surface_before_execution
             connect_request_shape: GatewayWebSocketShapeVersion::V1,
             connect_result_shape: GatewayWebSocketShapeVersion::V1,
             connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+            connection_close_shape: GatewayWebSocketShapeVersion::V1,
             external_sources: vec![
                 skiff_artifact_model::GatewayAdapterSource::WebSocketConnectRequest,
                 skiff_artifact_model::GatewayAdapterSource::WebSocketConnectionId,
             ],
+            close_external_sources: vec![],
             downlink_frames: vec![
                 GatewayWebSocketDownlinkFrame::Binary,
                 GatewayWebSocketDownlinkFrame::Text,

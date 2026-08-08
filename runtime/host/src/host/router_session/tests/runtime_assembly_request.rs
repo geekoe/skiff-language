@@ -134,7 +134,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let unary = &routes["/current-scope/unary"];
     assert_eq!(
         unary.assembly_identity().as_str(),
-        "skiff-runtime-assembly-v3:sha256:424f2860f0f3bf975ae4336e7a684c7326fbd7731bd7f3f8c3b575c648b57bad"
+        "skiff-runtime-assembly-v3:sha256:f7fea222ef76c34c280c9e7eac9d259a92c26bee8555debce33f8b4dac29f039"
     );
     assert_eq!(
         unary.gateway_entry_identity().as_str(),
@@ -161,7 +161,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let websocket = &routes["/current-scope/socket"];
     assert_eq!(
         websocket.gateway_entry_identity().as_str(),
-        "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d"
+        "skiff-gateway-entry-v2:sha256:6ea166c14c3980ee9fab97561a99e4725cf3f841513e7a5b3a071611acac2319"
     );
     assert!(matches!(
         websocket.protocol_surface().protocol,

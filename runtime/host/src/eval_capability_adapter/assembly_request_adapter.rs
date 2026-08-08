@@ -2,7 +2,9 @@ use skiff_runtime_eval::program_execution::ProgramExecutionContext;
 use skiff_runtime_request::{
     RuntimeHttpGatewayEvalAdapter, RuntimeHttpGatewayEvalExecutionInputParts,
     RuntimeTaskEvalAdapter, RuntimeTaskEvalExecutionInputParts, RuntimeWebSocketConnectEvalAdapter,
-    RuntimeWebSocketConnectEvalExecutionInputParts, RuntimeWebSocketJsonRpcEvalAdapter,
+    RuntimeWebSocketConnectEvalExecutionInputParts,
+    RuntimeWebSocketConnectionClosedEvalAdapter,
+    RuntimeWebSocketConnectionClosedEvalExecutionInputParts, RuntimeWebSocketJsonRpcEvalAdapter,
     RuntimeWebSocketJsonRpcEvalExecutionInputParts,
 };
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -10,6 +12,7 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
     RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 
@@ -64,6 +67,32 @@ pub(crate) struct RuntimeWebSocketConnectEvalAdapterInput {
 pub(crate) fn websocket_connect_eval_adapter(
     input: RuntimeWebSocketConnectEvalAdapterInput,
 ) -> anyhow::Result<Arc<dyn RuntimeWebSocketConnectEvalAdapter>> {
+    let metadata = request_metadata(
+        input.header.request_id,
+        input.header.mode,
+        &input.header.caller,
+        input.header.client_session.as_ref(),
+        input.header.deadline.as_ref(),
+        &input.header.trace,
+        input.header.test_effects_enabled,
+        None,
+        None,
+        None,
+    )?;
+    Ok(Arc::new(RuntimeAssemblyExecutionContext::new(
+        input.context,
+        metadata,
+    )?))
+}
+
+pub(crate) struct RuntimeWebSocketConnectionClosedEvalAdapterInput {
+    pub(crate) context: RuntimeAssemblyEvalAdapterContextInput,
+    pub(crate) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+}
+
+pub(crate) fn websocket_connection_closed_eval_adapter(
+    input: RuntimeWebSocketConnectionClosedEvalAdapterInput,
+) -> anyhow::Result<Arc<dyn RuntimeWebSocketConnectionClosedEvalAdapter>> {
     let metadata = request_metadata(
         input.header.request_id,
         input.header.mode,
@@ -325,6 +354,34 @@ impl RuntimeWebSocketConnectEvalAdapter for RuntimeAssemblyExecutionContext {
         eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
         let RuntimeWebSocketConnectEvalExecutionInputParts {
+            execution,
+            cancellation,
+            cancelled: _,
+            execution_budget: _,
+            request_heap_limits,
+        } = parts;
+        self.program_execution_context(
+            execution,
+            cancellation,
+            request_heap_limits,
+            interpreter,
+            eval_target,
+        )
+    }
+}
+
+impl RuntimeWebSocketConnectionClosedEvalAdapter for RuntimeAssemblyExecutionContext {
+    fn runtime_factory(&self) -> eval_capabilities::EvalRuntimeFactory {
+        runtime_factory()
+    }
+
+    fn execution_context<'a>(
+        &'a self,
+        parts: RuntimeWebSocketConnectionClosedEvalExecutionInputParts<'a>,
+        interpreter: &'a skiff_runtime_eval::Interpreter,
+        eval_target: &'a skiff_runtime_eval::RuntimeAssemblyEvalTarget,
+    ) -> ProgramExecutionContext<'a> {
+        let RuntimeWebSocketConnectionClosedEvalExecutionInputParts {
             execution,
             cancellation,
             cancelled: _,

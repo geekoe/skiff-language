@@ -25,6 +25,7 @@ use tracing::error;
 use super::{
     assembly_wire::{
         AdmittedHttpGatewayRequest, AdmittedTaskRequest, AdmittedWebSocketConnectRequest,
+        AdmittedWebSocketConnectionClosedRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -368,6 +369,80 @@ impl RuntimeHost {
                         &sender,
                     )
                     .await;
+                }
+            }
+            drop(route);
+        });
+    }
+
+    pub(super) async fn task_websocket_connection_closed_on_active_assembly_route(
+        &self,
+        router_session_id: String,
+        request: AdmittedWebSocketConnectionClosedRequest,
+        http_response_max_bytes: usize,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let AdmittedWebSocketConnectionClosedRequest {
+            route,
+            header,
+            request,
+        } = request;
+        let request_id = header.request_id.clone();
+        let target = match route.websocket_connection_closed_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.log_websocket_connection_closed_admission_error(&request_id, error);
+                return;
+            }
+        };
+        let handles = match self.websocket_connection_closed_execution_handles(
+            &route,
+            &header,
+            http_response_max_bytes,
+            &sender,
+            &router_session_id,
+        ) {
+            Ok(handles) => handles,
+            Err(error) => {
+                self.log_websocket_connection_closed_admission_error(&request_id, error);
+                return;
+            }
+        };
+        let telemetry = self.websocket_connection_closed_telemetry_context(&header, &route);
+        let supervisor_request = websocket_connection_closed_supervisor_request(&header, &route);
+        let supervised_request = self
+            .request_supervisor
+            .begin(&supervisor_request, telemetry)
+            .await;
+        let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
+        let execution_budget = supervised_request.execution_budget();
+        let host = self.clone();
+        tokio::spawn(async move {
+            let result = request_runner::execute_runtime_websocket_connection_closed(
+                request_runner::RuntimeWebSocketConnectionClosedExecutionInput {
+                    target,
+                    request,
+                    cancelled,
+                    cancellation: cancellation.clone(),
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                },
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    if !host
+                        .request_supervisor
+                        .complete_success(&supervised_request, CompletionTrace::RUNTIME)
+                        .await
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    host.finish_websocket_connection_closed_error(&supervised_request, error)
+                        .await;
                 }
             }
             drop(route);
@@ -819,6 +894,96 @@ impl RuntimeHost {
         })
     }
 
+    fn websocket_connection_closed_execution_handles(
+        &self,
+        route: &ActiveAssemblyRoute,
+        header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+        http_response_max_bytes: usize,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+        router_session_id: &str,
+    ) -> Result<request_runner::RuntimeWebSocketConnectionClosedExecutionHandles> {
+        let telemetry = self.websocket_connection_closed_telemetry_context(header, route);
+        let eval_adapter = crate::eval_capability_adapter::websocket_connection_closed_eval_adapter(
+            crate::eval_capability_adapter::RuntimeWebSocketConnectionClosedEvalAdapterInput {
+                context: self.runtime_assembly_eval_adapter_context(
+                    route,
+                    telemetry,
+                    sender,
+                    router_session_id,
+                    http_response_max_bytes,
+                )?,
+                header: header.clone(),
+            },
+        )
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        Ok(request_runner::RuntimeWebSocketConnectionClosedExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+            eval_adapter,
+        })
+    }
+
+    fn log_websocket_connection_closed_admission_error(
+        &self,
+        request_id: &str,
+        error: impl std::fmt::Display,
+    ) {
+        error!(
+            event = "runtime.websocket_connection_closed_admission_error",
+            request_id,
+            error = %error
+        );
+    }
+
+    async fn finish_websocket_connection_closed_error(
+        &self,
+        supervised_request: &SupervisedRequest,
+        request_error: RequestError,
+    ) {
+        if request_error.is_cancellation_terminal() {
+            self.request_supervisor
+                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .await;
+            return;
+        }
+        let response_error = request_error
+            .ordinary_response_error()
+            .expect("cancellation was split before ordinary response mapping");
+        // The close notification carries no response frame: the router has no
+        // correlation for it, so the error is only supervised and traced.
+        self.request_supervisor
+            .complete_error(
+                supervised_request,
+                "request.error",
+                &response_error,
+                CompletionTrace::RUNTIME,
+            )
+            .await;
+    }
+
+    fn websocket_connection_closed_telemetry_context(
+        &self,
+        header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+        route: &ActiveAssemblyRoute,
+    ) -> RequestTelemetryContext {
+        let mut context = RequestTelemetryContext::new(self.telemetry.clone());
+        context.service_id = Some(route.activation().identity().deployment.service_id.clone());
+        context.build_id = Some(
+            route
+                .activation()
+                .implementation_package_build_id()
+                .as_str()
+                .to_string(),
+        );
+        context.activation_identity = Some(route.activation().activation_id().as_str().to_string());
+        context.runtime_id = Some(self.base_runtime_id.clone());
+        context.request_id = Some(header.request_id.clone());
+        context.target = Some(route.gateway_entry_key().as_str().to_string());
+        context.trace_id = Some(header.trace.trace_id.clone());
+        context.span_id = Some(header.trace.span_id.clone());
+        context.parent_span_id = header.trace.parent_span_id.clone();
+        context
+    }
+
     pub(super) fn runtime_assembly_eval_adapter_context(
         &self,
         route: &ActiveAssemblyRoute,
@@ -919,6 +1084,35 @@ fn websocket_connect_supervisor_request(
         test_effect_doubles: Default::default(),
         payload_bytes: Vec::new(),
         extra,
+    }
+}
+
+fn websocket_connection_closed_supervisor_request(
+    header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    route: &ActiveAssemblyRoute,
+) -> RequestEnvelope {
+    RequestEnvelope {
+        request_id: header.request_id.clone(),
+        mode: header.mode.clone(),
+        target: route.gateway_entry_key().as_str().to_string(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(route.activation().identity().deployment.service_id.clone()),
+        build_id: route
+            .activation()
+            .implementation_package_build_id()
+            .as_str()
+            .to_string(),
+        service_protocol_identity: route.service_protocol_identity().as_str().to_string(),
+        contract_identity: None,
+        activation_identity: Some(route.activation().activation_id().as_str().to_string()),
+        ingress_selector: Some(route.selector().clone()),
+        binary_http: None,
+        http_adapter: None,
+        test_effects_enabled: header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: Vec::new(),
+        extra: Default::default(),
     }
 }
 

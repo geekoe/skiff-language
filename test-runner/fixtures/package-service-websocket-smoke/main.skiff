@@ -18,3 +18,20 @@ function websocketConnect(
     connectionPolicy: null
   }
 }
+
+type ConnectionCloseRecord {
+  connectionId: string,
+  closedAt: string,
+}
+
+db object ConnectionCloseRecord {
+  primary key(connectionId)
+}
+
+// Close notification handler: records the client connection teardown into
+// the service's persistent state so tests can observe that the router's
+// connectionClosed frame reached the service.
+function handleConnectionClosed(connectionId: string) -> void {
+  db insert ConnectionCloseRecord { connectionId = connectionId closedAt = "closed" }
+  return
+}

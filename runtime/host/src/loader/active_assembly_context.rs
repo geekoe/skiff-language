@@ -1402,10 +1402,12 @@ mod websocket_admission_tests {
                     connect_request_shape: GatewayWebSocketShapeVersion::V1,
                     connect_result_shape: GatewayWebSocketShapeVersion::V1,
                     connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                    connection_close_shape: GatewayWebSocketShapeVersion::V1,
                     external_sources: vec![
                         GatewayAdapterSource::WebSocketConnectRequest,
                         GatewayAdapterSource::WebSocketConnectionId,
                     ],
+                    close_external_sources: vec![],
                     downlink_frames: vec![
                         GatewayWebSocketDownlinkFrame::Binary,
                         GatewayWebSocketDownlinkFrame::Text,
@@ -1465,6 +1467,8 @@ mod websocket_admission_tests {
                     handler: Some(skiff_artifact_model::PackageCallableId::new(
                         "callable:websocket-connect",
                     )),
+                    close_handler: None,
+                    close_adapter_plan: None,
                     pre: None,
                     guard: None,
                     adapter_plan: GatewayAdapterPlan {
@@ -1495,6 +1499,8 @@ mod websocket_admission_tests {
                 handler: Some(skiff_artifact_model::PackageCallableId::new(format!(
                     "callable:websocket-{key}"
                 ))),
+                close_handler: None,
+                close_adapter_plan: None,
                 pre: None,
                 guard: None,
                 adapter_plan: GatewayAdapterPlan {

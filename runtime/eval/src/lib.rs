@@ -46,6 +46,7 @@ mod runtime_http_gateway;
 pub mod runtime_ops;
 pub mod runtime_value_view;
 mod runtime_websocket_connect;
+mod runtime_websocket_connection_closed;
 mod runtime_websocket_jsonrpc;
 pub mod source_context;
 pub mod stream_callback;
@@ -89,6 +90,10 @@ pub use runtime_http_gateway::{RuntimeHttpGatewayCallable, RuntimeHttpGatewayExe
 pub use runtime_websocket_connect::{
     RuntimeWebSocketConnectCallable, RuntimeWebSocketConnectExecutionTarget,
     RuntimeWebSocketConnectRequest, RuntimeWebSocketConnectResult, RuntimeWebSocketNameValue,
+};
+pub use runtime_websocket_connection_closed::{
+    RuntimeWebSocketConnectionClosedCallable, RuntimeWebSocketConnectionClosedExecutionTarget,
+    RuntimeWebSocketConnectionClosedRequest,
 };
 pub use runtime_websocket_jsonrpc::{
     RuntimeWebSocketJsonRpcCallable, RuntimeWebSocketJsonRpcExecutionOutcome,

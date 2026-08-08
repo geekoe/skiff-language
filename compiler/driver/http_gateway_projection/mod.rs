@@ -135,6 +135,8 @@ fn project_entry(
             kind: authoring.kind,
             args: authoring.adapter_args.clone(),
         },
+        close_handler: None,
+        close_adapter_plan: None,
     })
 }
 
@@ -289,7 +291,9 @@ fn validate_handler_args(
             GatewayAdapterSource::WebSocketConnectRequest
             | GatewayAdapterSource::WebSocketJsonRpcParams
             | GatewayAdapterSource::WebSocketConnectionId
-            | GatewayAdapterSource::WebSocketBusinessIdentity => {
+            | GatewayAdapterSource::WebSocketBusinessIdentity
+            | GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => {
                 return Err(invalid(
                     key,
                     "adapterArgs",
@@ -354,6 +358,11 @@ fn body_schema(
             key,
             "kind",
             "websocketJsonRpc is not an HTTP adapter kind",
+        )),
+        GatewayAdapterKind::WebSocketConnectionClosed => Err(invalid(
+            key,
+            "kind",
+            "websocketConnectionClosed is not an HTTP adapter kind",
         )),
         GatewayAdapterKind::TypedJson => {
             let by_name = signature
@@ -428,6 +437,11 @@ fn project_handler_return(
                 "kind",
                 "websocketJsonRpc is not an HTTP adapter kind",
             )),
+            GatewayAdapterKind::WebSocketConnectionClosed => Err(invalid(
+                key,
+                "kind",
+                "websocketConnectionClosed is not an HTTP adapter kind",
+            )),
         };
     }
     match kind {
@@ -455,6 +469,11 @@ fn project_handler_return(
             key,
             "kind",
             "websocketJsonRpc is not an HTTP adapter kind",
+        )),
+        GatewayAdapterKind::WebSocketConnectionClosed => Err(invalid(
+            key,
+            "kind",
+            "websocketConnectionClosed is not an HTTP adapter kind",
         )),
     }
 }

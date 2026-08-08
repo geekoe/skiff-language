@@ -58,6 +58,7 @@ pub fn normalize_gateway_entry_protocol_surface(
         }
         GatewayProtocolSurface::WebSocketConnect(mut websocket) => {
             normalize_sources(&mut websocket.external_sources);
+            normalize_sources(&mut websocket.close_external_sources);
             websocket
                 .downlink_frames
                 .sort_by_key(|frame| frame.wire_name());
@@ -378,6 +379,7 @@ fn validate_websocket_connect_surface(
     if surface.connect_request_shape != GatewayWebSocketShapeVersion::V1
         || surface.connect_result_shape != GatewayWebSocketShapeVersion::V1
         || surface.connection_policy_shape != GatewayWebSocketShapeVersion::V1
+        || surface.connection_close_shape != GatewayWebSocketShapeVersion::V1
     {
         return invalid_surface("WebSocket connect protocol shapes must use v1");
     }
@@ -404,6 +406,19 @@ fn validate_websocket_connect_surface(
     if surface.rpc_profiles != [GatewayWebSocketRpcProfile::JsonRpc2_0Text] {
         return invalid_surface(
             "WebSocket connect surface must expose exactly the jsonrpc-2.0-text profile",
+        );
+    }
+    if surface.close_external_sources.iter().any(|source| {
+        !matches!(
+            source,
+            GatewayAdapterSource::WebSocketConnectionId
+                | GatewayAdapterSource::WebSocketCloseCode
+                | GatewayAdapterSource::WebSocketCloseReason
+                | GatewayAdapterSource::WebSocketBusinessIdentity
+        )
+    }) {
+        return invalid_surface(
+            "WebSocket connect surface close sources must be scalar close sources",
         );
     }
     Ok(())
@@ -542,6 +557,9 @@ fn validate_http_surface(surface: &GatewayHttpProtocolSurface) -> Result<()> {
         }
         GatewayAdapterKind::WebSocketJsonRpc => {
             return invalid_surface("HTTP protocol surface cannot use websocketJsonRpc")
+        }
+        GatewayAdapterKind::WebSocketConnectionClosed => {
+            return invalid_surface("HTTP protocol surface cannot use websocketConnectionClosed")
         }
     }
     Ok(())

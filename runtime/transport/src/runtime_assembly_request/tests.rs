@@ -574,6 +574,124 @@ fn runtime_assembly_request_current_http_and_websocket_json_match_shared_goldens
 }
 
 #[test]
+fn runtime_assembly_websocket_connection_closed_round_trips() {
+    let header = websocket_connection_closed_header();
+    let frame = encode_binary_frame(&header, &[]).unwrap();
+    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame)
+        .expect("canonical connectionClosed frame must decode");
+    assert!(matches!(
+        decoded,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+    ));
+    assert!(payload.is_empty());
+    assert_eq!(serde_json::to_value(decoded).unwrap(), header);
+}
+
+#[test]
+fn runtime_assembly_websocket_connection_closed_entry_kind_selects_disjoint_siblings() {
+    let closed = websocket_connection_closed_header();
+    let closed_frame = encode_binary_frame(&closed, &[]).unwrap();
+    assert!(matches!(
+        decode_runtime_assembly_request_start_frame(&closed_frame)
+            .expect("entryKind connectionClosed must select websocketConnectionClosed")
+            .0,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+    ));
+
+    // A method-bearing frame stays websocketJsonRpc regardless of entryKind
+    // selection, but the jsonrpc typed decode rejects the foreign entryKind
+    // field (fail closed).
+    let mut jsonrpc = websocket_connection_closed_header();
+    jsonrpc["routing"]["ingress"]["method"] = Value::String("status.get".to_string());
+    let jsonrpc_frame = encode_binary_frame(&jsonrpc, br#"{}"#).unwrap();
+    assert!(decode_runtime_assembly_request_start_frame(&jsonrpc_frame).is_err());
+
+    // entryKind is not part of the connect vocabulary: method null without
+    // entryKind stays websocketConnect.
+    let connect = websocket_connect_v2_header();
+    let connect_frame = encode_binary_frame(&connect, &[]).unwrap();
+    assert!(matches!(
+        decode_runtime_assembly_request_start_frame(&connect_frame)
+            .expect("method null without entryKind must stay websocketConnect")
+            .0,
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_)
+    ));
+
+    // An unknown entryKind fails closed through the connect typed decode.
+    let mut wrong_kind = websocket_connection_closed_header();
+    wrong_kind["routing"]["ingress"]["entryKind"] = Value::String("connectionOpen".to_string());
+    let wrong_kind_frame = encode_binary_frame(&wrong_kind, &[]).unwrap();
+    assert!(decode_runtime_assembly_request_start_frame(&wrong_kind_frame).is_err());
+}
+
+#[test]
+fn runtime_assembly_websocket_connection_closed_mutations_fail_closed() {
+    let canonical = websocket_connection_closed_header();
+    let mut mutations = Vec::new();
+
+    mutations.push(("payload must be empty", canonical.clone(), vec![b'x']));
+
+    let mut identity_mismatch = canonical.clone();
+    identity_mismatch["websocketConnectionClosed"]["gatewayEntryIdentity"] = Value::String(
+        "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_string(),
+    );
+    mutations.push(("identity mismatch", identity_mismatch, Vec::new()));
+
+    let mut wrong_mode = canonical.clone();
+    wrong_mode["mode"] = Value::String("serverStream".to_string());
+    mutations.push(("wrong mode", wrong_mode, Vec::new()));
+
+    let mut unknown_top_level = canonical.clone();
+    unknown_top_level["peerRequestId"] = Value::String("must-not-enter-wire".to_string());
+    mutations.push(("unknown top-level field", unknown_top_level, Vec::new()));
+
+    let mut unknown_nested = canonical.clone();
+    unknown_nested["websocketConnectionClosed"]["rawSocketId"] =
+        Value::String("must-not-enter-wire".to_string());
+    mutations.push(("unknown nested field", unknown_nested, Vec::new()));
+
+    let mut noncanonical_connection_id = canonical.clone();
+    noncanonical_connection_id["websocketConnectionClosed"]["connectionId"] =
+        Value::String("peer socket id".to_string());
+    mutations.push((
+        "non-canonical connection id",
+        noncanonical_connection_id,
+        Vec::new(),
+    ));
+
+    let mut non_integer_close_code = canonical.clone();
+    non_integer_close_code["websocketConnectionClosed"]["closeCode"] =
+        Value::String("1000".to_string());
+    mutations.push(("non-integer close code", non_integer_close_code, Vec::new()));
+
+    let mut explicit_null_close_code = canonical.clone();
+    explicit_null_close_code["websocketConnectionClosed"]["closeCode"] = Value::Null;
+    mutations.push((
+        "explicit null close code",
+        explicit_null_close_code,
+        Vec::new(),
+    ));
+
+    let mut oversized_business_identity = canonical.clone();
+    oversized_business_identity["websocketConnectionClosed"]["businessIdentity"] =
+        Value::String("b".repeat(1025));
+    mutations.push((
+        "oversized business identity",
+        oversized_business_identity,
+        Vec::new(),
+    ));
+
+    for (name, header, payload) in mutations {
+        let frame = encode_binary_frame(&header, &payload).unwrap();
+        assert!(
+            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn runtime_assembly_websocket_jsonrpc_decoder_accepts_method_bearing_request() {
     let header = websocket_jsonrpc_request_header();
     let payload = br#"{"query":"ready"}"#;
@@ -975,6 +1093,38 @@ fn websocket_jsonrpc_request_header() -> Value {
             "websocketEntryId": websocket_entry_id,
             "gatewayEntryIdentity": gateway_entry_identity,
             "businessIdentity": "tenant-1"
+        }),
+    );
+    header
+}
+
+fn websocket_connection_closed_header() -> Value {
+    let mut header = websocket_connect_v2_header();
+    header["requestId"] = Value::String("request-websocket-connection-closed-1".to_string());
+    // The close ingress carries no method field; entryKind selects the
+    // connectionClosed sibling (mirroring the router's wire shape).
+    header["routing"]["ingress"].as_object_mut().expect("ingress").remove("method");
+    header["routing"]["ingress"]["entryKind"] = Value::String("connectionClosed".to_string());
+    let websocket_connect = header
+        .as_object_mut()
+        .expect("request object")
+        .remove("websocketConnect")
+        .expect("websocketConnect metadata");
+    let websocket_connect = websocket_connect
+        .as_object()
+        .expect("websocketConnect object");
+    let connection_id = websocket_connect["connectionId"].clone();
+    let websocket_entry_id = websocket_connect["websocketEntryId"].clone();
+    let gateway_entry_identity = header["routing"]["gatewayEntryIdentity"].clone();
+    header.as_object_mut().expect("request object").insert(
+        "websocketConnectionClosed".to_string(),
+        serde_json::json!({
+            "connectionId": connection_id,
+            "websocketEntryId": websocket_entry_id,
+            "gatewayEntryIdentity": gateway_entry_identity,
+            "businessIdentity": "tenant-1",
+            "closeCode": 1000,
+            "closeReason": "going away"
         }),
     );
     header

@@ -127,6 +127,10 @@ pub struct DeploymentGatewayEntry {
     pub pre: Option<PackageCallableId>,
     pub guard: Option<PackageCallableId>,
     pub adapter_plan: GatewayAdapterPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_handler: Option<PackageCallableId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_adapter_plan: Option<GatewayAdapterPlan>,
 }
 
 struct GatewayEntriesVisitor;

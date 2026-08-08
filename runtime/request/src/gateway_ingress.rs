@@ -47,3 +47,19 @@ pub struct RuntimeWebSocketConnectIngress {
     pub connect_gateway_entry_identity: GatewayEntryIdentity,
     pub test_effects_enabled: bool,
 }
+
+/// Request-owned WebSocket connection-close notification ingress produced by
+/// the Host transport adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWebSocketConnectionClosedIngress {
+    pub request_id: String,
+    pub pin: RuntimeGatewayIngressPin,
+    pub ingress_path: String,
+    pub connection_id: String,
+    pub websocket_entry_id: WebSocketEntryId,
+    pub close_gateway_entry_identity: GatewayEntryIdentity,
+    pub business_identity: Option<String>,
+    pub close_code: Option<u16>,
+    pub close_reason: Option<String>,
+    pub test_effects_enabled: bool,
+}

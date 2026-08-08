@@ -1351,6 +1351,8 @@ fn gateway_entry(handler: PackageCallableId) -> DeploymentGatewayEntry {
             .expect("fixture gateway surface identity"),
         protocol_surface,
         handler: Some(handler),
+        close_handler: None,
+        close_adapter_plan: None,
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {

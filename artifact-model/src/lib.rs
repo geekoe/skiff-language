@@ -112,7 +112,8 @@ pub use ecosystem_authoring::{
     is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
     HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, RuntimeConfigSourceAuthoring,
     ServiceAuthoringKind, ServiceManifestAuthoring, WebSocketConnectAuthoring,
-    WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
+    WebSocketConnectionCloseAuthoring, WebSocketGatewayDocumentAuthoring,
+    WebSocketJsonRpcMethodAuthoring,
     DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
     DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };

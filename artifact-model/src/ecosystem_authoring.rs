@@ -75,6 +75,14 @@ pub struct WebSocketConnectAuthoring {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSocketConnectionCloseAuthoring {
+    pub handler: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adapter_args: Vec<GatewayAdapterArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebSocketJsonRpcMethodAuthoring {
     pub method: String,
     pub handler: String,
@@ -151,6 +159,12 @@ pub struct WebSocketGatewayDocumentAuthoring {
         deserialize_with = "deserialize_present"
     )]
     pub connect: Option<WebSocketConnectAuthoring>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub close: Option<WebSocketConnectionCloseAuthoring>,
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",

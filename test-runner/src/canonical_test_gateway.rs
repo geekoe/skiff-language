@@ -95,6 +95,8 @@ pub(crate) fn canonical_typed_null_gateway(
         gateway_entry_identity: identity,
         protocol_surface,
         handler: Some(callable_id.clone()),
+        close_handler: None,
+        close_adapter_plan: None,
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {

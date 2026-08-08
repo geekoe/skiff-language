@@ -243,6 +243,20 @@ where
     .map(Some)
 }
 
+pub(super) fn deserialize_optional_websocket_connection_closed_business_identity<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_canonical_string(
+        deserializer,
+        MAX_WEBSOCKET_JSONRPC_BUSINESS_IDENTITY_BYTES,
+        "runtimeAssembly websocketConnectionClosed businessIdentity",
+    )
+    .map(Some)
+}
+
 pub(super) fn deserialize_response_end_type<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,

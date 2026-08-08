@@ -218,6 +218,12 @@ fn websocket_connect_source_wire(
             target,
             "websocket connect execution refuses WebSocket JSON-RPC-only adapter sources",
         )),
+        GatewayAdapterSource::WebSocketCloseCode | GatewayAdapterSource::WebSocketCloseReason => {
+            Err(protocol_error(
+                target,
+                "websocket connect execution refuses WebSocket connection-close-only adapter sources",
+            ))
+        }
     }
 }
 

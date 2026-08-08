@@ -6,3 +6,8 @@ connect:
       source: { kind: websocket.connectRequest }
     - param: connectionId
       source: { kind: websocket.connectionId }
+close:
+  handler: main.handleConnectionClosed
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }

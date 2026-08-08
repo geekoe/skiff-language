@@ -86,8 +86,9 @@ use websocket::{
 pub(crate) use assembly_execution_context::RuntimeAssemblyEvalAdapterContextInput;
 pub(crate) use assembly_request_adapter::{
     http_gateway_eval_adapter, task_eval_adapter, websocket_connect_eval_adapter,
-    websocket_jsonrpc_eval_adapter, RuntimeHttpGatewayEvalAdapterInput,
-    RuntimeTaskEvalAdapterInput, RuntimeWebSocketConnectEvalAdapterInput,
+    websocket_connection_closed_eval_adapter, websocket_jsonrpc_eval_adapter,
+    RuntimeHttpGatewayEvalAdapterInput, RuntimeTaskEvalAdapterInput,
+    RuntimeWebSocketConnectEvalAdapterInput, RuntimeWebSocketConnectionClosedEvalAdapterInput,
     RuntimeWebSocketJsonRpcEvalAdapterInput,
 };
 pub(crate) use error::root_error_into_eval;

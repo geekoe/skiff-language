@@ -91,6 +91,8 @@ mod tests {
                     source: GatewayAdapterSource::HttpBody,
                 }],
             },
+            close_handler: None,
+            close_adapter_plan: None,
         }
     }
 

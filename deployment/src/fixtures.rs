@@ -53,6 +53,8 @@ pub fn gateway_entry_fixture(handler: impl Into<PackageCallableId>) -> Deploymen
             .expect("fixture gateway surface must have a canonical identity"),
         protocol_surface,
         handler: Some(handler.into()),
+        close_handler: None,
+        close_adapter_plan: None,
         pre: None,
         guard: None,
         adapter_plan: GatewayAdapterPlan {

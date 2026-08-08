@@ -367,6 +367,20 @@ fn validate_websocket_authoring(
             violations.push(format!("websocket.connect.adapterArgs is invalid: {error}"));
         }
     }
+    if let Some(close) = &websocket.close {
+        if let Err(message) = SourceSymbolSelector::parse(&close.handler) {
+            violations.push(format!(
+                "websocket.close.handler must be a current-package source selector: {message}"
+            ));
+        }
+        if let Err(error) = validate_gateway_adapter_args(
+            GatewayAdapterKind::WebSocketConnectionClosed,
+            false,
+            &close.adapter_args,
+        ) {
+            violations.push(format!("websocket.close.adapterArgs is invalid: {error}"));
+        }
+    }
     let mut methods = BTreeMap::new();
     for (key, method) in &websocket.json_rpc {
         if method.method.is_empty() {

@@ -214,6 +214,8 @@ fn surface_entry(
             kind: adapter_kind,
             args: adapter_args,
         },
+        close_handler: None,
+        close_adapter_plan: None,
     }
 }
 

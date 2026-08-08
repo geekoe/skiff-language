@@ -87,6 +87,8 @@ pub enum GatewayAdapterKind {
     WebSocketConnect,
     #[serde(rename = "websocketJsonRpc")]
     WebSocketJsonRpc,
+    #[serde(rename = "websocketConnectionClosed")]
+    WebSocketConnectionClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -106,6 +108,10 @@ pub enum GatewayAdapterSource {
     WebSocketConnectionId,
     #[serde(rename = "websocket.businessIdentity")]
     WebSocketBusinessIdentity,
+    #[serde(rename = "websocket.closeCode")]
+    WebSocketCloseCode,
+    #[serde(rename = "websocket.closeReason")]
+    WebSocketCloseReason,
 }
 
 impl<'de> Deserialize<'de> for GatewayAdapterSource {
@@ -130,6 +136,10 @@ impl<'de> Deserialize<'de> for GatewayAdapterSource {
             WebSocketConnectionId {},
             #[serde(rename = "websocket.businessIdentity")]
             WebSocketBusinessIdentity {},
+            #[serde(rename = "websocket.closeCode")]
+            WebSocketCloseCode {},
+            #[serde(rename = "websocket.closeReason")]
+            WebSocketCloseReason {},
         }
 
         Ok(match Wire::deserialize(deserializer)? {
@@ -140,6 +150,8 @@ impl<'de> Deserialize<'de> for GatewayAdapterSource {
             Wire::WebSocketJsonRpcParams {} => Self::WebSocketJsonRpcParams,
             Wire::WebSocketConnectionId {} => Self::WebSocketConnectionId,
             Wire::WebSocketBusinessIdentity {} => Self::WebSocketBusinessIdentity,
+            Wire::WebSocketCloseCode {} => Self::WebSocketCloseCode,
+            Wire::WebSocketCloseReason {} => Self::WebSocketCloseReason,
         })
     }
 }
@@ -154,13 +166,15 @@ impl GatewayAdapterSource {
             Self::WebSocketJsonRpcParams => "websocket.jsonRpcParams",
             Self::WebSocketConnectionId => "websocket.connectionId",
             Self::WebSocketBusinessIdentity => "websocket.businessIdentity",
+            Self::WebSocketCloseCode => "websocket.closeCode",
+            Self::WebSocketCloseReason => "websocket.closeReason",
         }
     }
 
     /// Whether selecting this source changes the external protocol view.
     ///
     /// HTTP context remains in the deployment execution plan. WebSocket
-    /// connection and business-identity sources are part of the closed
+    /// connection, business-identity and close sources are part of the closed
     /// protocol capability surface even though their formal parameter names
     /// and order remain deployment-only facts.
     pub fn is_external_protocol_source(self) -> bool {
@@ -172,6 +186,8 @@ impl GatewayAdapterSource {
                 | Self::WebSocketJsonRpcParams
                 | Self::WebSocketConnectionId
                 | Self::WebSocketBusinessIdentity
+                | Self::WebSocketCloseCode
+                | Self::WebSocketCloseReason
         )
     }
 }
@@ -278,6 +294,13 @@ fn adapter_source_is_allowed(kind: GatewayAdapterKind, source: GatewayAdapterSou
             source,
             GatewayAdapterSource::WebSocketJsonRpcParams
                 | GatewayAdapterSource::WebSocketConnectionId
+                | GatewayAdapterSource::WebSocketBusinessIdentity
+        ),
+        GatewayAdapterKind::WebSocketConnectionClosed => matches!(
+            source,
+            GatewayAdapterSource::WebSocketConnectionId
+                | GatewayAdapterSource::WebSocketCloseCode
+                | GatewayAdapterSource::WebSocketCloseReason
                 | GatewayAdapterSource::WebSocketBusinessIdentity
         ),
     }
@@ -526,6 +549,13 @@ pub struct GatewayWebSocketConnectProtocolSurface {
     pub external_sources: Vec<GatewayAdapterSource>,
     pub downlink_frames: Vec<GatewayWebSocketDownlinkFrame>,
     pub rpc_profiles: Vec<GatewayWebSocketRpcProfile>,
+    // Connection close notification surface. The close shape is always v1 and
+    // the external sources carry the scalar close sources. Both fields are
+    // part of the connect entry identity preimage, so every WebSocket service
+    // connect entry identity changes with this contract; the language is
+    // unreleased and dev watch re-publishes automatically.
+    pub connection_close_shape: GatewayWebSocketShapeVersion,
+    pub close_external_sources: Vec<GatewayAdapterSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

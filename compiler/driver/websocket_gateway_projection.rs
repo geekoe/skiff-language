@@ -13,9 +13,10 @@ use skiff_artifact_model::{
     GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifact,
     PackageCallableSignature, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRef,
-    TypeRefIr, WebSocketConnectAuthoring, WebSocketGatewayDocumentAuthoring,
-    WebSocketJsonRpcMethodAuthoring, WEBSOCKET_CONNECT_REQUEST_V1_TYPE,
-    WEBSOCKET_CONNECT_RESULT_V1_TYPE, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    TypeRefIr, WebSocketConnectAuthoring, WebSocketConnectionCloseAuthoring,
+    WebSocketGatewayDocumentAuthoring, WebSocketJsonRpcMethodAuthoring,
+    WEBSOCKET_CONNECT_REQUEST_V1_TYPE, WEBSOCKET_CONNECT_RESULT_V1_TYPE,
+    WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use thiserror::Error;
 
@@ -108,6 +109,21 @@ fn project_connection_entry(
             || (None, Vec::new()),
             |(handler, args)| (Some(handler), args),
         );
+    let (close_handler, close_args) = authoring
+        .close
+        .as_ref()
+        .map(|close| project_close(close, resolver, classifier))
+        .transpose()?
+        .map_or_else(
+            || (None, Vec::new()),
+            |(handler, args)| (Some(handler), args),
+        );
+    let mut close_external_sources = close_args
+        .iter()
+        .map(|argument| argument.source)
+        .collect::<Vec<_>>();
+    close_external_sources.sort_by_key(|source| source.wire_name());
+    close_external_sources.dedup();
 
     let surface = normalize_gateway_entry_protocol_surface(GatewayEntryProtocolSurface {
         protocol: GatewayProtocolSurface::WebSocketConnect(
@@ -124,6 +140,8 @@ fn project_connection_entry(
                     GatewayWebSocketDownlinkFrame::Binary,
                 ],
                 rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
+                connection_close_shape: GatewayWebSocketShapeVersion::V1,
+                close_external_sources,
             },
         ),
         external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -141,6 +159,11 @@ fn project_connection_entry(
             kind: GatewayAdapterKind::WebSocketConnect,
             args,
         },
+        close_handler,
+        close_adapter_plan: authoring.close.is_some().then(|| GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketConnectionClosed,
+            args: close_args,
+        }),
     })
 }
 
@@ -166,6 +189,28 @@ fn project_connect(
             WEBSOCKET_CONNECT_RESULT_V1_TYPE,
         )
         .map_err(|message| invalid("connect.handler", message))?;
+    Ok((callable.callable_id, authoring.adapter_args.clone()))
+}
+
+fn project_close(
+    authoring: &WebSocketConnectionCloseAuthoring,
+    resolver: &ExactCallableResolver<'_>,
+    classifier: &ExactTypeClassifier<'_>,
+) -> Result<
+    (
+        skiff_artifact_model::PackageCallableId,
+        Vec<skiff_artifact_model::GatewayAdapterArg>,
+    ),
+    WebSocketGatewayProjectionError,
+> {
+    let callable = resolver
+        .resolve(&authoring.handler)
+        .map_err(|message| invalid("close.handler", message))?;
+    reject_generic("close.handler", &callable)?;
+    validate_close_args(authoring, &callable.signature, classifier)?;
+    classifier
+        .require_builtin_type(&callable.signature.return_type, "void")
+        .map_err(|message| invalid("close.handler", message))?;
     Ok((callable.callable_id, authoring.adapter_args.clone()))
 }
 
@@ -215,6 +260,8 @@ fn project_json_rpc_entry(
             kind: GatewayAdapterKind::WebSocketJsonRpc,
             args: authoring.adapter_args.clone(),
         },
+        close_handler: None,
+        close_adapter_plan: None,
     })
 }
 
@@ -258,7 +305,9 @@ fn validate_connect_args(
             | GatewayAdapterSource::HttpBody
             | GatewayAdapterSource::HttpContext
             | GatewayAdapterSource::WebSocketJsonRpcParams
-            | GatewayAdapterSource::WebSocketBusinessIdentity => {
+            | GatewayAdapterSource::WebSocketBusinessIdentity
+            | GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => {
                 return Err(invalid(
                     "connect.adapterArgs",
                     format!(
@@ -267,6 +316,83 @@ fn validate_connect_args(
                     ),
                 ))
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_close_args(
+    authoring: &WebSocketConnectionCloseAuthoring,
+    signature: &PackageCallableSignature,
+    classifier: &ExactTypeClassifier<'_>,
+) -> Result<(), WebSocketGatewayProjectionError> {
+    let field = "close.adapterArgs";
+    validate_exact_formal_coverage(field, &authoring.adapter_args, signature)?;
+    let formals = signature
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.name.as_str(), parameter))
+        .collect::<BTreeMap<_, _>>();
+    let mut counts = BTreeMap::new();
+    for arg in &authoring.adapter_args {
+        let ty = &formals[arg.param.as_str()].ty;
+        match arg.source {
+            GatewayAdapterSource::WebSocketConnectionId => {
+                classifier
+                    .require_builtin_type(ty, "string")
+                    .map_err(|message| invalid(field, message))?;
+            }
+            GatewayAdapterSource::WebSocketCloseCode => {
+                classifier
+                    .require_builtin_type(ty, "integer")
+                    .map_err(|message| invalid(field, message))?;
+            }
+            GatewayAdapterSource::WebSocketCloseReason => {
+                classifier
+                    .require_builtin_type(ty, "string")
+                    .map_err(|message| invalid(field, message))?;
+            }
+            GatewayAdapterSource::WebSocketBusinessIdentity => {
+                classifier
+                    .require_nullable_builtin_type(ty, "string")
+                    .map_err(|message| invalid(field, message))?;
+            }
+            GatewayAdapterSource::HttpRequest
+            | GatewayAdapterSource::HttpBody
+            | GatewayAdapterSource::HttpContext
+            | GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketJsonRpcParams => {
+                return Err(invalid(
+                    field,
+                    format!(
+                        "source {} is not allowed for websocketConnectionClosed",
+                        arg.source.wire_name()
+                    ),
+                ))
+            }
+        }
+        *counts.entry(arg.source).or_insert(0usize) += 1;
+    }
+    for (source, expected) in [
+        (
+            GatewayAdapterSource::WebSocketConnectionId,
+            "websocket.connectionId may be bound at most once",
+        ),
+        (
+            GatewayAdapterSource::WebSocketCloseCode,
+            "websocket.closeCode may be bound at most once",
+        ),
+        (
+            GatewayAdapterSource::WebSocketCloseReason,
+            "websocket.closeReason may be bound at most once",
+        ),
+        (
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            "websocket.businessIdentity may be bound at most once",
+        ),
+    ] {
+        if counts.get(&source).copied().unwrap_or(0) > 1 {
+            return Err(invalid(field, expected));
         }
     }
     Ok(())
@@ -324,7 +450,9 @@ fn validate_json_rpc_args(
             GatewayAdapterSource::HttpRequest
             | GatewayAdapterSource::HttpBody
             | GatewayAdapterSource::HttpContext
-            | GatewayAdapterSource::WebSocketConnectRequest => {
+            | GatewayAdapterSource::WebSocketConnectRequest
+            | GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => {
                 return Err(invalid(
                     &field,
                     format!(

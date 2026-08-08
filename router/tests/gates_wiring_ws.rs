@@ -25,9 +25,10 @@ use skiff_router::ws::{
     OverflowPolicy, PeerWriter, WebSocketLane, WebSocketLaneOptions, WebSocketRequestBrokerOptions,
 };
 use skiff_runtime_transport::connection_protocol::{OpaquePeerId, WebSocketRpcProfile};
+use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestNameValueFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+    RuntimeAssemblyWebSocketConnectIngressProtocol, RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
 };
 use tokio::sync::watch;
 
@@ -85,6 +86,7 @@ fn binding() -> WsBinding {
         websocket_entry_id: websocket_entry(),
         path: "/ws".to_string(),
         connect_handler: true,
+        close_handler: false,
         methods: BTreeMap::from([(
             "chat.send".to_string(),
             WsMethodBinding {
@@ -116,6 +118,17 @@ impl WsSessionWriter for FakeWsSessionWriter {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push((runtime.clone(), bytes));
         Ok(())
+    }
+}
+
+/// Writer that always fails: models the runtime already disconnected (the
+/// close notification must be swallowed, not propagated).
+#[derive(Debug, Default)]
+struct FailingWsSessionWriter;
+
+impl WsSessionWriter for FailingWsSessionWriter {
+    fn write(&self, _runtime: &RuntimeSessionEpoch, _bytes: Vec<u8>) -> Result<(), String> {
+        Err("runtime disconnected".to_string())
     }
 }
 
@@ -186,9 +199,9 @@ fn attach_peer(
     fake
 }
 
-fn store_with(
+fn store_with<W: WsSessionWriter + 'static>(
     lane: &Arc<WebSocketLane>,
-    writer: &Arc<FakeWsSessionWriter>,
+    writer: &Arc<W>,
 ) -> Arc<WsDispatchStore> {
     let handle = WsLaneHandle::new();
     let store = WsDispatchStore::new(
@@ -553,5 +566,114 @@ mod tests {
             rx.borrow_and_update().as_ref(),
             Some(ConnectOutcome::Unavailable { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn unregister_connection_writes_close_frame_when_close_handler_declared() {
+        let runtime = runtime_session("runtime-a");
+        let ws_lane = lane();
+        let writer = Arc::new(FakeWsSessionWriter::default());
+        let store = store_with(&ws_lane, &writer);
+        let mut record = record("wsconn-1", &runtime);
+        record.binding.close_handler = true;
+        record.business_identity = Some("alice".to_string());
+        store.register_connection(record);
+
+        store.unregister_connection("wsconn-1");
+
+        let frames = writer.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1, "exactly one close frame");
+        assert_eq!(
+            frames[0].0, runtime,
+            "close frame targets the pinned runtime"
+        );
+        let (header, payload) =
+            decode_runtime_assembly_request_start_frame(&frames[0].1).expect("close frame decodes");
+        let skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(close) = header else {
+            panic!("expected connectionClosed request.start");
+        };
+        assert_eq!(close.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
+        assert_eq!(close.frame_type, "request.start");
+        assert_eq!(close.mode, "unary");
+        assert_eq!(close.caller.kind, "gateway");
+        assert_eq!(close.routing.kind, "runtimeAssembly");
+        assert_eq!(close.routing.assembly_identity, None);
+        assert_eq!(close.routing.assembly_generation, None);
+        assert_eq!(close.routing.deployment, binding().deployment);
+        assert_eq!(close.routing.build_id.as_deref(), Some(build_id().as_str()));
+        assert_eq!(
+            close.routing.gateway_entry_identity,
+            entry_identity("connect")
+        );
+        assert_eq!(
+            close.routing.ingress.protocol,
+            RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket
+        );
+        assert_eq!(close.routing.ingress.path, "/ws");
+        assert_eq!(close.routing.ingress.entry_kind, "connectionClosed");
+        assert_eq!(close.client_session, None);
+        assert_eq!(close.deadline, None);
+        assert!(close.trace.trace_id.starts_with("ws-trace-"));
+        assert!(!close.test_effects_enabled);
+        assert_eq!(close.websocket_connection_closed.connection_id, "wsconn-1");
+        assert_eq!(
+            close
+                .websocket_connection_closed
+                .websocket_entry_id
+                .as_str(),
+            websocket_entry()
+        );
+        assert_eq!(
+            close.websocket_connection_closed.gateway_entry_identity,
+            entry_identity("connect")
+        );
+        assert_eq!(
+            close
+                .websocket_connection_closed
+                .business_identity
+                .as_deref(),
+            Some("alice")
+        );
+        assert_eq!(close.websocket_connection_closed.close_code, None);
+        assert_eq!(close.websocket_connection_closed.close_reason, None);
+        assert!(payload.is_empty(), "close notification carries no payload");
+
+        // Exactly-once: a second unregister finds no record and writes nothing.
+        store.unregister_connection("wsconn-1");
+        assert_eq!(writer.frames.lock().unwrap().len(), 1);
+        assert_eq!(store.pinned_connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unregister_connection_without_close_handler_writes_no_frame() {
+        let runtime = runtime_session("runtime-a");
+        let ws_lane = lane();
+        let writer = Arc::new(FakeWsSessionWriter::default());
+        let store = store_with(&ws_lane, &writer);
+        store.register_connection(record("wsconn-1", &runtime));
+
+        store.unregister_connection("wsconn-1");
+
+        assert!(
+            writer.frames.lock().unwrap().is_empty(),
+            "no close frame without a declared close handler"
+        );
+        assert_eq!(store.pinned_connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unregister_connection_swallows_write_failure_when_runtime_gone() {
+        let runtime = runtime_session("runtime-a");
+        let ws_lane = lane();
+        let store = store_with(&ws_lane, &Arc::new(FailingWsSessionWriter::default()));
+        let mut record = record("wsconn-1", &runtime);
+        record.binding.close_handler = true;
+        store.register_connection(record);
+
+        // The runtime is already gone (writer fails): the close notification
+        // is dropped and the teardown still completes without an error.
+        store.unregister_connection("wsconn-1");
+
+        assert_eq!(store.pinned_connection_count(), 0);
     }
 }

@@ -122,6 +122,10 @@ impl Interpreter {
                 target,
                 "HTTP gateway execution refuses websocketJsonRpc adapter plans",
             )),
+            GatewayAdapterKind::WebSocketConnectionClosed => Err(protocol_error(
+                target,
+                "HTTP gateway execution refuses websocketConnectionClosed adapter plans",
+            )),
         }
     }
 
@@ -514,6 +518,13 @@ fn handler_args(
                 return Err(protocol_error(
                     target,
                     "HTTP gateway execution refuses WebSocket JSON-RPC-only adapter sources",
+                ))
+            }
+            GatewayAdapterSource::WebSocketCloseCode
+            | GatewayAdapterSource::WebSocketCloseReason => {
+                return Err(protocol_error(
+                    target,
+                    "HTTP gateway execution refuses WebSocket close adapter sources",
                 ))
             }
         };

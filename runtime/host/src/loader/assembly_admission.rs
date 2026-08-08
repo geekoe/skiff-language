@@ -26,7 +26,8 @@ use skiff_runtime_loader::{
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
 use skiff_runtime_request::{
     RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
-    RuntimeAssemblyWebSocketJsonRpcPhysicalRoute, RuntimeAssemblyWebSocketJsonRpcTarget,
+    RuntimeAssemblyWebSocketConnectionClosedTarget, RuntimeAssemblyWebSocketJsonRpcPhysicalRoute,
+    RuntimeAssemblyWebSocketJsonRpcTarget,
 };
 use skiff_runtime_transport::actor_owner::ActorOwnerRouteAuthorityFrameHeader;
 use time::OffsetDateTime;
@@ -196,6 +197,23 @@ impl ActiveAssemblyRoute {
             resolver,
         )?;
         Ok(RuntimeAssemblyWebSocketConnectTarget::new(
+            eval,
+            self.ingress_key.selector.clone(),
+            Arc::clone(&self.entry),
+        )?)
+    }
+
+    pub(crate) fn websocket_connection_closed_target(
+        &self,
+    ) -> anyhow::Result<RuntimeAssemblyWebSocketConnectionClosedTarget> {
+        let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.active.contexts) as _;
+        let eval = RuntimeAssemblyEvalTarget::new(
+            Arc::clone(self.execution_image()),
+            request_activation,
+            resolver,
+        )?;
+        Ok(RuntimeAssemblyWebSocketConnectionClosedTarget::new(
             eval,
             self.ingress_key.selector.clone(),
             Arc::clone(&self.entry),

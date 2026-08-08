@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, path::Path};
 
 use skiff_artifact_model::{
-    GatewayEntryKey, GatewayProtocolSurface, IngressProtocol, PackageLocalAbiSymbol,
-    ServiceAuthoringKind,
+    GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryKey,
+    GatewayProtocolSurface, GatewayWebSocketShapeVersion, IngressProtocol,
+    PackageLocalAbiSymbol, ServiceAuthoringKind,
 };
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,
@@ -197,6 +198,106 @@ mod tests {
                 "{fixture_name} must retain the WebSocket connect protocol surface"
             );
         }
+    }
+
+    #[test]
+    fn websocket_close_handler_projects_onto_the_connect_entry() {
+        let root = TestRoot::new("websocket-close-projection");
+        let artifacts = root.path().join("artifacts");
+        seed_canonical_std(&platform_sources(), &artifacts).expect("seed canonical std");
+        let fixture_root = repository_root()
+            .join("test-runner")
+            .join("fixtures")
+            .join("package-service-websocket-smoke");
+        let project =
+            compile_package_project_for_test(&platform_sources(), &fixture_root, &artifacts)
+                .expect("compile websocket smoke test service");
+        let cases = discover_test_service_cases(&fixture_root, &fixture_root, false)
+            .expect("discover test cases");
+        let assembled =
+            assemble_test_service_fixture(&project, &cases, Default::default(), "skiff-test")
+                .expect("assemble websocket smoke service");
+        let [deployment] = assembled.records.deployments.as_slice() else {
+            panic!("websocket smoke must assemble one deployment")
+        };
+        let websocket_ingress = deployment
+            .ingress
+            .iter()
+            .find(|binding| {
+                binding.selector.protocol == IngressProtocol::WebSocket
+                    && binding.selector.method.is_none()
+                    && binding.selector.path == "/socket"
+            })
+            .expect("websocket smoke physical ingress");
+        let websocket = deployment
+            .gateway_entries
+            .get(&websocket_ingress.gateway_entry_key)
+            .expect("websocket connect entry");
+
+        // The close handler must point at the exact private implementation
+        // callable, exactly like the HTTP probe does.
+        let close_symbol = project
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols
+            .get("main.handleConnectionClosed")
+            .expect("close handler private implementation symbol");
+        let PackageLocalAbiSymbol::Callable {
+            callable_id: close_handler_id,
+            ..
+        } = close_symbol
+        else {
+            panic!("close handler must be a callable")
+        };
+        assert_eq!(
+            websocket.close_handler.as_ref(),
+            Some(close_handler_id),
+            "websocket connect entry must carry the exact close handler callable"
+        );
+        assert!(
+            !project
+                .package
+                .artifact
+                .package_local_abi
+                .public_symbols
+                .contains_key("main.handleConnectionClosed"),
+            "close handler must stay a private implementation callable"
+        );
+
+        // The close adapter plan binds exactly the connectionId scalar source
+        // under the connectionClosed adapter kind.
+        let close_plan = websocket
+            .close_adapter_plan
+            .as_ref()
+            .expect("websocket connect entry must carry a close adapter plan");
+        assert_eq!(
+            close_plan.kind,
+            GatewayAdapterKind::WebSocketConnectionClosed
+        );
+        assert_eq!(
+            close_plan.args,
+            vec![GatewayAdapterArg {
+                param: "connectionId".to_string(),
+                source: GatewayAdapterSource::WebSocketConnectionId,
+            }]
+        );
+
+        // The connect entry surface must carry the close shape and the
+        // declared close external sources.
+        let GatewayProtocolSurface::WebSocketConnect(surface) =
+            &websocket.protocol_surface.protocol
+        else {
+            panic!("websocket entry must retain the connect surface")
+        };
+        assert_eq!(
+            surface.connection_close_shape,
+            GatewayWebSocketShapeVersion::V1
+        );
+        assert_eq!(
+            surface.close_external_sources,
+            vec![GatewayAdapterSource::WebSocketConnectionId]
+        );
     }
 
     #[test]

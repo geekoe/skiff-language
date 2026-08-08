@@ -25,6 +25,8 @@ mod runtime_ingress;
 mod task_execution;
 mod websocket_connect_execution;
 mod websocket_connect_target;
+mod websocket_connection_closed_execution;
+mod websocket_connection_closed_target;
 mod websocket_jsonrpc_execution;
 mod websocket_jsonrpc_target;
 
@@ -50,6 +52,7 @@ pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
 pub use gateway_ingress::{
     RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeWebSocketConnectIngress,
+    RuntimeWebSocketConnectionClosedIngress,
 };
 pub use http_gateway_execution::{
     execute_runtime_http_gateway_request, RuntimeHttpGatewayEvalAdapter,
@@ -96,6 +99,16 @@ pub use websocket_connect_execution::{
 };
 pub use websocket_connect_target::{
     RuntimeAssemblyWebSocketConnectTarget, RuntimeAssemblyWebSocketConnectTargetError,
+};
+pub use websocket_connection_closed_execution::{
+    execute_runtime_websocket_connection_closed, RuntimeWebSocketConnectionClosedEvalAdapter,
+    RuntimeWebSocketConnectionClosedEvalExecutionInputParts,
+    RuntimeWebSocketConnectionClosedExecutionHandles,
+    RuntimeWebSocketConnectionClosedExecutionInput,
+};
+pub use websocket_connection_closed_target::{
+    RuntimeAssemblyWebSocketConnectionClosedTarget,
+    RuntimeAssemblyWebSocketConnectionClosedTargetError,
 };
 pub use websocket_jsonrpc_execution::{
     execute_runtime_websocket_jsonrpc, RuntimeWebSocketJsonRpcEvalAdapter,

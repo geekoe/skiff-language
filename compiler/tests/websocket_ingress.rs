@@ -7,9 +7,10 @@ use common::{
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey,
     GatewayExternalSchema, GatewayProtocolSurface, GatewayWebSocketDownlinkFrame,
-    GatewayWebSocketRpcProfile, HttpGatewayDocumentAuthoring, IngressProtocol,
-    PackageLocalAbiSymbol, PackageTypeRef, ServiceDeployment, ServiceManifestAuthoring, TypeRefIr,
-    WebSocketGatewayDocumentAuthoring, WEBSOCKET_GATEWAY_ENTRY_KEY,
+    GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, HttpGatewayDocumentAuthoring,
+    IngressProtocol, PackageLocalAbiSymbol, PackageTypeRef, ServiceDeployment,
+    ServiceManifestAuthoring, TypeRefIr, WebSocketGatewayDocumentAuthoring,
+    WEBSOCKET_GATEWAY_ENTRY_KEY,
 };
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
@@ -36,6 +37,8 @@ function onConnect(
     connectionPolicy: null
   }
 }
+
+function handleConnectionClosed(connectionId: string) -> void {}
 
 function raw(request: std.http.HttpRequest) -> std.http.HttpResponse {
   return std.http.noContent()
@@ -151,6 +154,18 @@ function wrongResult(
 ) -> string {
   return connectionId
 }
+
+function closeGeneric<T>(connectionId: T) -> void {}
+
+function closeRequestSource(request: std.websocket.WebSocketConnectRequest) -> void {}
+
+function closeWrongConnectionId(connectionId: integer) -> void {}
+
+function closeNonVoid(connectionId: string) -> string {
+  return connectionId
+}
+
+function closeDuplicateCode(closeCode: integer, alsoCloseCode: integer) -> void {}
 "#
 }
 
@@ -165,6 +180,16 @@ connect:
     - param: {connection_id}
       source: {{ kind: websocket.connectionId }}
 "#
+    )
+}
+
+fn close_authoring(handler: &str, args: &str) -> String {
+    format!(
+        r#"path: /chat
+close:
+  handler: {handler}
+  adapterArgs:
+{args}"#
     )
 }
 
@@ -362,6 +387,88 @@ mod tests {
         );
         assert_eq!(assembly.gateway_ingress[0].deployment, deployment_ref);
         skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
+    }
+
+    #[test]
+    fn declared_close_authoring_projects_close_handler_plan_and_surface() {
+        let fixture = compile_fixture(
+            "close-positive",
+            "health: main.health\n",
+            connect_source(),
+            r#"path: /chat
+connect:
+  handler: main.onConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+close:
+  handler: main.handleConnectionClosed
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+"#,
+        );
+        let deployment = fixture.generate().expect("close authoring projection");
+        let entry = &deployment.gateway_entries[&websocket_key()];
+
+        let PackageLocalAbiSymbol::Callable {
+            callable_id: close_callable,
+            ..
+        } = &fixture
+            .project
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols["main.handleConnectionClosed"]
+        else {
+            panic!("close implementation symbol must be callable");
+        };
+        assert_eq!(entry.close_handler.as_ref(), Some(close_callable));
+        let close_plan = entry.close_adapter_plan.as_ref().expect("close plan");
+        assert_eq!(
+            close_plan.kind,
+            GatewayAdapterKind::WebSocketConnectionClosed
+        );
+        assert_eq!(
+            close_plan
+                .args
+                .iter()
+                .map(|arg| (arg.param.as_str(), arg.source))
+                .collect::<Vec<_>>(),
+            vec![("connectionId", GatewayAdapterSource::WebSocketConnectionId)]
+        );
+        let GatewayProtocolSurface::WebSocketConnect(surface) = &entry.protocol_surface.protocol
+        else {
+            panic!("WebSocket entry must have the websocketConnect surface");
+        };
+        assert_eq!(
+            surface.connection_close_shape,
+            GatewayWebSocketShapeVersion::V1
+        );
+        assert_eq!(
+            surface.close_external_sources,
+            vec![GatewayAdapterSource::WebSocketConnectionId]
+        );
+
+        let mut without_close = fixture.websocket.clone();
+        without_close.close = None;
+        let without_close = fixture.generate_with(Some(&without_close)).unwrap();
+        let without_entry = &without_close.gateway_entries[&websocket_key()];
+        assert!(without_entry.close_handler.is_none());
+        assert!(without_entry.close_adapter_plan.is_none());
+        let GatewayProtocolSurface::WebSocketConnect(surface) =
+            &without_entry.protocol_surface.protocol
+        else {
+            panic!("WebSocket entry must have the websocketConnect surface");
+        };
+        assert_eq!(surface.connection_close_shape, GatewayWebSocketShapeVersion::V1);
+        assert!(surface.close_external_sources.is_empty());
+        assert_ne!(
+            without_entry.gateway_entry_identity, entry.gateway_entry_identity,
+            "declared close sources must enter the connect entry identity"
+        );
     }
 
     #[test]
@@ -819,6 +926,54 @@ connect:
                 .to_string(),
                 "not allowed for websocketConnect",
             ),
+            (
+                "close missing callable",
+                close_authoring(
+                    "main.missingClose",
+                    "    - param: connectionId\n      source: { kind: websocket.connectionId }\n",
+                ),
+                "implementationSymbols",
+            ),
+            (
+                "close generic callable",
+                close_authoring(
+                    "main.closeGeneric",
+                    "    - param: connectionId\n      source: { kind: websocket.connectionId }\n",
+                ),
+                "generic parameters",
+            ),
+            (
+                "close wrong source",
+                close_authoring(
+                    "main.closeRequestSource",
+                    "    - param: request\n      source: { kind: websocket.connectRequest }\n",
+                ),
+                "not allowed for websocketConnectionClosed",
+            ),
+            (
+                "close wrong type",
+                close_authoring(
+                    "main.closeWrongConnectionId",
+                    "    - param: connectionId\n      source: { kind: websocket.connectionId }\n",
+                ),
+                "builtin string",
+            ),
+            (
+                "close non-void return",
+                close_authoring(
+                    "main.closeNonVoid",
+                    "    - param: connectionId\n      source: { kind: websocket.connectionId }\n",
+                ),
+                "builtin void",
+            ),
+            (
+                "close duplicate source",
+                close_authoring(
+                    "main.closeDuplicateCode",
+                    "    - param: closeCode\n      source: { kind: websocket.closeCode }\n    - param: alsoCloseCode\n      source: { kind: websocket.closeCode }\n",
+                ),
+                "may be bound at most once",
+            ),
         ];
 
         for (label, authoring, expected) in cases {
@@ -828,6 +983,31 @@ connect:
                 error.to_string().contains(expected),
                 "{label} expected {expected:?}, got {error}"
             );
+        }
+    }
+
+    #[test]
+    fn close_authoring_input_validation_rejects_bad_selectors_and_sources() {
+        let root = TestDir::new("skiff-compiler-websocket", "close-input-negative");
+        root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+        root.write("api.yml", "health: main.health\n");
+        root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+        root.write("main.skiff", connect_source());
+        for (label, close, expected) in [
+            (
+                "invalid selector",
+                "  handler: connect\n",
+                "websocket.close.handler must be a current-package source selector",
+            ),
+            (
+                "http source",
+                "  handler: main.handleConnectionClosed\n  adapterArgs:\n    - param: connectionId\n      source: { kind: http.request }\n",
+                "websocket.close.adapterArgs is invalid",
+            ),
+        ] {
+            root.write("websocket.yml", format!("path: /chat\nclose:\n{close}"));
+            let error = read_service_package_root(root.path()).unwrap_err().to_string();
+            assert!(error.contains(expected), "{label}: {error}");
         }
     }
 

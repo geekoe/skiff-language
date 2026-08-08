@@ -131,8 +131,9 @@ broker只保存peer id到dispatcher request correlation的窄映射。编码配�
 
 Gateway adapter 是 runtime 侧的入口适配逻辑。它把 gateway 提供的平台 metadata 和 payload bytes 组装成用户 handler 参数。
 
-HTTP typed JSON route、raw HTTP route、WebSocket connect和WebSocket JSON-RPC unary method是第一版全部
-gateway adapter场景。Skiff-originated request的peer response由平台broker处理，不被分派为runtime request；
+HTTP typed JSON route、raw HTTP route、WebSocket connect、WebSocket connection close
+notification和WebSocket JSON-RPC unary method是第一版全部gateway adapter场景。
+Skiff-originated request的peer response由平台broker处理，不被分派为runtime request；
 peer-originated declared request使用专用JSON-RPC gateway adapter。
 
 这些external ingress entry分别由`http.yml`和`websocket.yml`拥有，不是`serviceCalls`从`api.yml`
@@ -218,7 +219,7 @@ type GatewayAdapterArg = {
 };
 
 type GatewayAdapterManifest = {
-  kind: 'typedJson' | 'rawHttp' | 'websocketConnect' | 'websocketJsonRpc';
+  kind: 'typedJson' | 'rawHttp' | 'websocketConnect' | 'websocketJsonRpc' | 'websocketConnectionClosed';
   handler: GatewayAdapterCallable;
   guard?: GatewayAdapterCallable;
   pre?: GatewayAdapterCallable;
@@ -251,7 +252,9 @@ type WebSocketGatewayAdapterSource =
   | { kind: 'websocket.connectRequest' }
   | { kind: 'websocket.jsonRpcParams' }
   | { kind: 'websocket.connectionId' }
-  | { kind: 'websocket.businessIdentity' };
+  | { kind: 'websocket.businessIdentity' }
+  | { kind: 'websocket.closeCode' }
+  | { kind: 'websocket.closeReason' };
 ```
 
 规则：
@@ -267,15 +270,17 @@ type WebSocketGatewayAdapterSource =
 
 Source 合法阶段：
 
-| Source | HTTP typed | HTTP raw | WebSocket connect | WebSocket JSON-RPC |
-| --- | --- | --- | --- | --- |
-| `http.request` | 可用 | 可用 | 不可用 | 不可用 |
-| `http.body` | 可用 | 不可用 | 不可用 | 不可用 |
-| `http.context` | 有 `pre` 时可用 | 有 `pre` 时可用 | 不可用 | 不可用 |
-| `websocket.connectRequest` | 不可用 | 不可用 | 可用 | 不可用 |
-| `websocket.jsonRpcParams` | 不可用 | 不可用 | 不可用 | 可用 |
-| `websocket.connectionId` | 不可用 | 不可用 | 可用 | 可用 |
-| `websocket.businessIdentity` | 不可用 | 不可用 | 不可用 | 可用 |
+| Source | HTTP typed | HTTP raw | WebSocket connect | WebSocket JSON-RPC | WebSocket close |
+| --- | --- | --- | --- | --- | --- |
+| `http.request` | 可用 | 可用 | 不可用 | 不可用 | 不可用 |
+| `http.body` | 可用 | 不可用 | 不可用 | 不可用 | 不可用 |
+| `http.context` | 有 `pre` 时可用 | 有 `pre` 时可用 | 不可用 | 不可用 | 不可用 |
+| `websocket.connectRequest` | 不可用 | 不可用 | 可用 | 不可用 | 不可用 |
+| `websocket.jsonRpcParams` | 不可用 | 不可用 | 不可用 | 可用 | 不可用 |
+| `websocket.connectionId` | 不可用 | 不可用 | 可用 | 可用 | 可用 |
+| `websocket.businessIdentity` | 不可用 | 不可用 | 不可用 | 可用 | 可用 |
+| `websocket.closeCode` | 不可用 | 不可用 | 不可用 | 不可用 | 可用 |
+| `websocket.closeReason` | 不可用 | 不可用 | 不可用 | 不可用 | 可用 |
 
 Source 合法性校验 owner：
 
@@ -489,6 +494,13 @@ WebSocket connect handler可以按普通函数语义挂起；每次upgrade最多
 等待handler完成后才结束该dispatch，不把它隐式拆成detached work，也不重复执行。连接建立后，只有声明
 JSON-RPC method可以创建业务dispatch。连接关闭时gateway同步移除连接索引，runtime内部停止该generation
 全部inbound execution并失败outbound pending；关闭后到达的下行发送按已关闭连接正常失败。
+
+连接关闭时，若connect entry声明了`close` authoring，router在拆除客户端连接后向runtime发单向close通知帧
+（发完即忘，不登记correlation，不等待response）。runtime把close handler作为notification dispatch：handler
+返回必须为`void`，执行完不发response帧。close adapter只接受标量source：`websocket.connectionId`（string）、
+`websocket.closeCode`（integer）、`websocket.closeReason`（string）与`websocket.businessIdentity`
+（string?），每种至多绑定一次；v1中router侧closeCode/closeReason恒为null。runtime断开导致router主动关闭
+客户端连接（1011）时runtime已不可达，close帧不发送也不需要。
 
 `std.websocket` 的 connection send 操作本身保持非挂起；它只尝试把 frame 交给 gateway，
 不等待客户端消费或为慢客户端提供 backpressure await。
@@ -818,8 +830,8 @@ Authoring/deployment manifest readers must fail closed:
   entry-local params/result schema。Outbound `requestJsonToConnection`不需要manifest method声明。
 - 迁移后的旧 HTTP `handlerArgs` field 非法。
 - `adapterArgs[].source` unknown kind is invalid.
-- `websocket.jsonRpcParams`和`websocket.businessIdentity`只能出现在JSON-RPC method adapter；
-  transport id永远不是adapter source。
+- `websocket.jsonRpcParams`只能出现在JSON-RPC method adapter；`websocket.closeCode`与
+  `websocket.closeReason`只能出现在close adapter（至多各一次）；transport id永远不是adapter source。
 - Router只消费compiler-derived external schema视图，不接收`parameters[].type`/`responseType`业务类型
   descriptor；任何要求router展开业务类型结构的manifest形态都不该存在。
 

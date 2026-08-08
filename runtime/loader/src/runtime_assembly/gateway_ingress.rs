@@ -37,7 +37,9 @@ pub struct HydratedGatewayEntry {
     gateway_entry_identity: GatewayEntryIdentity,
     protocol_surface: GatewayEntryProtocolSurface,
     adapter_plan: GatewayAdapterPlan,
+    close_adapter_plan: Option<GatewayAdapterPlan>,
     handler: Option<HydratedGatewayCallable>,
+    close_handler: Option<HydratedGatewayCallable>,
     pre: Option<HydratedGatewayCallable>,
     guard: Option<HydratedGatewayCallable>,
 }
@@ -63,8 +65,16 @@ impl HydratedGatewayEntry {
         &self.adapter_plan
     }
 
+    pub fn close_adapter_plan(&self) -> Option<&GatewayAdapterPlan> {
+        self.close_adapter_plan.as_ref()
+    }
+
     pub fn handler(&self) -> Option<&HydratedGatewayCallable> {
         self.handler.as_ref()
+    }
+
+    pub fn close_handler(&self) -> Option<&HydratedGatewayCallable> {
+        self.close_handler.as_ref()
     }
 
     pub fn pre(&self) -> Option<&HydratedGatewayCallable> {
@@ -116,11 +126,25 @@ pub(super) fn hydrate_gateway_ingress(
                 gateway_entry_identity: source.gateway_entry_identity.clone(),
                 protocol_surface: source.protocol_surface.clone(),
                 adapter_plan: source.adapter_plan.clone(),
+                close_adapter_plan: source.close_adapter_plan.clone(),
                 handler: source
                     .handler
                     .as_ref()
                     .map(|callable| {
                         hydrate_callable(owner, key, "handler", implementation.artifact(), callable)
+                    })
+                    .transpose()?,
+                close_handler: source
+                    .close_handler
+                    .as_ref()
+                    .map(|callable| {
+                        hydrate_callable(
+                            owner,
+                            key,
+                            "close_handler",
+                            implementation.artifact(),
+                            callable,
+                        )
                     })
                     .transpose()?,
                 pre: source

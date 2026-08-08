@@ -90,6 +90,8 @@ fn websocket_surface() -> GatewayEntryProtocolSurface {
                     GatewayWebSocketDownlinkFrame::Binary,
                 ],
                 rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
+                connection_close_shape: GatewayWebSocketShapeVersion::V1,
+                close_external_sources: vec![],
             },
         ),
         external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
@@ -209,11 +211,11 @@ fn websocket_gateway_and_internal_entry_id_match_language_neutral_goldens() {
         canonical_gateway_entry_identity_bytes(&surface).expect("canonical gateway preimage");
     assert_eq!(
         String::from_utf8(bytes).unwrap(),
-        r#"{"schema":"skiff-gateway-entry-identity-v2","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketConnect","surface":{"connectRequestShape":"v1","connectResultShape":"v1","connectionPolicyShape":"v1","downlinkFrames":["binary","text"],"externalSources":[{"kind":"websocket.connectRequest"},{"kind":"websocket.connectionId"}],"rpcProfiles":["jsonrpc-2.0-text"]}}}}"#
+        r#"{"schema":"skiff-gateway-entry-identity-v2","surface":{"externalErrorProjection":{"kind":"fixed","version":"v1"},"protocol":{"kind":"websocketConnect","surface":{"closeExternalSources":[],"connectRequestShape":"v1","connectResultShape":"v1","connectionCloseShape":"v1","connectionPolicyShape":"v1","downlinkFrames":["binary","text"],"externalSources":[{"kind":"websocket.connectRequest"},{"kind":"websocket.connectionId"}],"rpcProfiles":["jsonrpc-2.0-text"]}}}}"#
     );
     assert_eq!(
         gateway_entry_identity(&surface).unwrap().as_str(),
-        "skiff-gateway-entry-v2:sha256:f385624021966bab998385e1fd2c88804b51992f15f9c9d76c05d3e17a75018d"
+        "skiff-gateway-entry-v2:sha256:6ea166c14c3980ee9fab97561a99e4725cf3f841513e7a5b3a071611acac2319"
     );
 
     let key = GatewayEntryKey::parse(WEBSOCKET_GATEWAY_ENTRY_KEY).unwrap();
@@ -284,6 +286,61 @@ fn websocket_connect_profiles_normalize_and_loaded_sequences_are_strict() {
         serde_json::from_value::<GatewayEntryProtocolSurface>(wrong_profile).is_err(),
         "unknown profiles must fail at the strict artifact reader"
     );
+}
+
+#[test]
+fn websocket_connect_close_surface_normalizes_and_rejects_foreign_sources() {
+    let canonical = websocket_surface();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &canonical.protocol else {
+        panic!("expected websocketConnect")
+    };
+    assert_eq!(
+        connect.connection_close_shape,
+        GatewayWebSocketShapeVersion::V1
+    );
+    assert!(connect.close_external_sources.is_empty());
+
+    let mut declared = canonical.clone();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &mut declared.protocol else {
+        panic!("expected websocketConnect")
+    };
+    connect.close_external_sources = vec![
+        GatewayAdapterSource::WebSocketCloseReason,
+        GatewayAdapterSource::WebSocketConnectionId,
+        GatewayAdapterSource::WebSocketCloseCode,
+        GatewayAdapterSource::WebSocketBusinessIdentity,
+        GatewayAdapterSource::WebSocketCloseCode,
+    ];
+    assert!(
+        validate_gateway_entry_protocol_surface(&declared).is_err(),
+        "loaded close sources must already be canonical"
+    );
+    let normalized = normalize_gateway_entry_protocol_surface(declared).unwrap();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &normalized.protocol else {
+        panic!("expected websocketConnect")
+    };
+    assert_eq!(
+        connect.close_external_sources,
+        vec![
+            GatewayAdapterSource::WebSocketBusinessIdentity,
+            GatewayAdapterSource::WebSocketCloseCode,
+            GatewayAdapterSource::WebSocketCloseReason,
+            GatewayAdapterSource::WebSocketConnectionId,
+        ]
+    );
+    assert_ne!(
+        gateway_entry_identity(&normalized).unwrap(),
+        gateway_entry_identity(&canonical).unwrap(),
+        "declared close sources must enter the connect entry identity"
+    );
+
+    let mut wrong_phase = canonical.clone();
+    let GatewayProtocolSurface::WebSocketConnect(connect) = &mut wrong_phase.protocol else {
+        panic!("expected websocketConnect")
+    };
+    connect.close_external_sources =
+        vec![GatewayAdapterSource::WebSocketConnectRequest];
+    assert!(normalize_gateway_entry_protocol_surface(wrong_phase).is_err());
 }
 
 #[test]
@@ -695,6 +752,17 @@ fn gateway_validation_rejects_invalid_http_and_non_http_combinations() {
     assert!(
         serde_json::from_value::<GatewayEntryProtocolSurface>(wire).is_err(),
         "non-HTTP adapter kinds must not load"
+    );
+    let mut wire = serde_json::to_value(typed_http_surface()).expect("HTTP JSON");
+    wire["protocol"]["surface"]["adapterKind"] = json!("websocketConnectionClosed");
+    let surface: GatewayEntryProtocolSurface =
+        serde_json::from_value(wire).expect("connection-closed kind must deserialize");
+    assert!(
+        normalize_gateway_entry_protocol_surface(surface)
+            .expect_err("connection-closed kind must not reach an HTTP surface")
+            .to_string()
+            .contains("websocketConnectionClosed"),
+        "HTTP surface rejection must name the connection-closed kind"
     );
     let mut wire = serde_json::to_value(typed_http_surface()).expect("HTTP JSON");
     wire["protocol"]["surface"]["externalSources"] = json!([{ "kind": "websocket.message" }]);

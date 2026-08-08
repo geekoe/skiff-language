@@ -32,6 +32,10 @@ use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyWebSocketConnectRequestFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
     RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader,
     RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
@@ -69,6 +73,10 @@ pub struct WsBinding {
     /// `requiresRuntimePin`); handler-less + method-less bindings fail closed
     /// at admission because the WS lane attach requires an exact runtime.
     pub connect_handler: bool,
+    /// Whether the connect entry declares a connection-close handler; when
+    /// set, removing a pinned connection writes exactly one
+    /// `connectionClosed` notification frame to the pinned runtime.
+    pub close_handler: bool,
     pub methods: BTreeMap<String, WsMethodBinding>,
 }
 
@@ -181,6 +189,7 @@ pub fn ws_surface_view_from_store(
                             websocket_entry_id: websocket_entry_id.to_string(),
                             path: ingress.selector.path.clone(),
                             connect_handler: entry.handler.is_some(),
+                            close_handler: entry.close_handler.is_some(),
                             methods: BTreeMap::new(),
                         },
                     );
@@ -468,21 +477,101 @@ impl WsDispatchStore {
             .insert(record.connection_id.clone(), record);
     }
 
-    /// Removes the pinned connection on finalizer/cleanup.
+    /// Removes the pinned connection on finalizer/cleanup. This is the
+    /// single client-connection teardown funnel (listener reader_loop Close /
+    /// Err paths and reader_loop exit all land here): when the binding
+    /// declares a close handler, exactly one `connectionClosed` notification
+    /// frame is written to the pinned runtime (fire-and-forget; the frame is
+    /// skipped if the websocket entry id does not parse and a write to a
+    /// dead runtime is ignored).
     pub fn unregister_connection(&self, connection_id: &str) {
-        let mut inner = self.lock();
-        inner.connections.remove(connection_id);
-        let affected = inner
-            .inbound
-            .iter()
-            .filter(|(_, pending)| pending.token.connection_id == connection_id)
-            .map(|(request_id, _)| request_id.clone())
-            .collect::<Vec<_>>();
-        for request_id in affected {
-            if let Some(pending) = inner.inbound.remove(&request_id) {
-                pending.reservation.release();
+        let removed = {
+            let mut inner = self.lock();
+            let removed = inner.connections.remove(connection_id);
+            let affected = inner
+                .inbound
+                .iter()
+                .filter(|(_, pending)| pending.token.connection_id == connection_id)
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            for request_id in affected {
+                if let Some(pending) = inner.inbound.remove(&request_id) {
+                    pending.reservation.release();
+                }
             }
+            removed
+        };
+        if let Some(record) = removed {
+            self.write_connection_closed_frame(&record);
         }
+    }
+
+    /// Fire-and-forget close notification: builds the canonical
+    /// `connectionClosed` request.start and writes it to the pinned runtime.
+    /// Failures are non-fatal (the client connection is already tearing down
+    /// and a disconnected runtime has nobody listening).
+    fn write_connection_closed_frame(&self, record: &WsConnectionRecord) {
+        if !record.binding.close_handler {
+            return;
+        }
+        let binding = &record.binding;
+        let websocket_entry_id = match WebSocketEntryId::parse(&binding.websocket_entry_id) {
+            Ok(id) => id,
+            Err(error) => {
+                eprintln!(
+                    "[ws] connection close notification skipped: websocket entry id parse failed: {error}"
+                );
+                return;
+            }
+        };
+        let header = RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            frame_type: "request.start".to_string(),
+            request_id: self.new_request_id(),
+            mode: "unary".to_string(),
+            caller: RuntimeAssemblyRequestCallerFrameHeader {
+                kind: "gateway".to_string(),
+            },
+            routing: RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader {
+                kind: "runtimeAssembly".to_string(),
+                assembly_identity: None,
+                assembly_generation: None,
+                deployment: binding.deployment.clone(),
+                build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
+                gateway_entry_identity: binding.gateway_entry_identity.clone(),
+                ingress: RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
+                    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                    path: binding.path.clone(),
+                    entry_kind: "connectionClosed".to_string(),
+                },
+            },
+            client_session: None,
+            deadline: None,
+            trace: RuntimeAssemblyRequestTraceFrameHeader {
+                trace_id: format!("ws-trace-{}", now_nanos()),
+                span_id: format!("ws-span-{}", now_nanos()),
+                parent_span_id: None,
+                sampled: None,
+            },
+            websocket_connection_closed:
+                RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+                    connection_id: record.connection_id.clone(),
+                    websocket_entry_id,
+                    gateway_entry_identity: binding.gateway_entry_identity.clone(),
+                    business_identity: record.business_identity.clone(),
+                    close_code: None,
+                    close_reason: None,
+                },
+            test_effects_enabled: false,
+        };
+        let bytes = match encode_binary_frame(&header, &[]) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("[ws] connection close notification encode failed: {error}");
+                return;
+            }
+        };
+        let _ = self.writer.write(&record.runtime, bytes);
     }
 
     pub fn connection_runtime(&self, connection_id: &str) -> Option<RuntimeSessionEpoch> {

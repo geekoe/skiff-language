@@ -56,6 +56,8 @@ fn http_gateway_entry() -> (GatewayEntryKey, DeploymentGatewayEntry) {
             gateway_entry_identity: identity,
             protocol_surface: surface,
             handler: Some(PackageCallableId::new("pkg-callable:example:health")),
+            close_handler: None,
+            close_adapter_plan: None,
             pre: None,
             guard: None,
             adapter_plan: GatewayAdapterPlan {

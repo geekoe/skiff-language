@@ -48,6 +48,9 @@ fn protocol_surface(kind: GatewayAdapterKind) -> GatewayEntryProtocolSurface {
         GatewayAdapterKind::WebSocketJsonRpc => {
             panic!("HTTP deployment fixture does not accept websocketJsonRpc")
         }
+        GatewayAdapterKind::WebSocketConnectionClosed => {
+            panic!("HTTP deployment fixture does not accept websocketConnectionClosed")
+        }
     };
     GatewayEntryProtocolSurface {
         protocol: GatewayProtocolSurface::Http(http),
@@ -66,6 +69,9 @@ fn gateway_entry(kind: GatewayAdapterKind) -> DeploymentGatewayEntry {
         GatewayAdapterKind::WebSocketJsonRpc => {
             panic!("HTTP deployment fixture does not accept websocketJsonRpc")
         }
+        GatewayAdapterKind::WebSocketConnectionClosed => {
+            panic!("HTTP deployment fixture does not accept websocketConnectionClosed")
+        }
     };
     DeploymentGatewayEntry {
         gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
@@ -82,6 +88,8 @@ fn gateway_entry(kind: GatewayAdapterKind) -> DeploymentGatewayEntry {
                 source,
             }],
         },
+        close_handler: None,
+        close_adapter_plan: None,
     }
 }
 
@@ -95,10 +103,12 @@ fn websocket_gateway_entry(
                 connect_request_shape: GatewayWebSocketShapeVersion::V1,
                 connect_result_shape: GatewayWebSocketShapeVersion::V1,
                 connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                connection_close_shape: GatewayWebSocketShapeVersion::V1,
                 external_sources: vec![
                     GatewayAdapterSource::WebSocketConnectRequest,
                     GatewayAdapterSource::WebSocketConnectionId,
                 ],
+                close_external_sources: vec![],
                 downlink_frames: vec![
                     GatewayWebSocketDownlinkFrame::Binary,
                     GatewayWebSocketDownlinkFrame::Text,
@@ -118,6 +128,8 @@ fn websocket_gateway_entry(
             kind: GatewayAdapterKind::WebSocketConnect,
             args,
         },
+        close_handler: None,
+        close_adapter_plan: None,
     }
 }
 
@@ -155,6 +167,8 @@ fn websocket_json_rpc_gateway_entry(
             kind: GatewayAdapterKind::WebSocketJsonRpc,
             args,
         },
+        close_handler: None,
+        close_adapter_plan: None,
     }
 }
 
