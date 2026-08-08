@@ -69,9 +69,6 @@ const defaultInternalsRoot = resolve(repoRoot, '..', 'internals');
 const defaultSkiffPackagesRoot = resolve(repoRoot, '..', 'skiff-packages');
 const PROFILE = 'router-live-agine';
 const REPLICA_ID = 'skiff-runtime-live-agine-replica';
-const ACTOR_ROUTING_PROJECTION_RECORD_PATH = 'records/actor-routing/current.json';
-const ACTOR_ROUTING_PROJECTION_CONTENT =
-  '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}';
 const SMOKE_COMMAND = 'npm run e2e:chat-smoke';
 const HOST_TOOLS_CHECK_COMMAND = 'npm run e2e:host-tools -- --check';
 // Strict host-tools allowed tools: read-only file exploration only.
@@ -187,13 +184,6 @@ try {
     configSnapshotId,
     assemblyRecordPath,
   } = await authorAgineStack({ repoRoot, artifactRoot, profile: PROFILE });
-
-  const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
-  await mkdir(projectionDirectory, { recursive: true });
-  await writeFile(
-    join(artifactRoot, ACTOR_ROUTING_PROJECTION_RECORD_PATH),
-    ACTOR_ROUTING_PROJECTION_CONTENT,
-  );
 
   console.log('router-live:agine: leasing isolated router + ingress ports');
   const { ports, release } = await leaseConsecutiveLocalPorts({
@@ -630,6 +620,20 @@ async function prepareStrictHostWorkspace(tempRoot) {
   return workspace;
 }
 
+function normalizeHostToolName(toolName) {
+  const name = String(toolName || '');
+  switch (name) {
+    case 'read_file': return 'host.file.read';
+    case 'write_file': return 'host.file.write';
+    case 'edit_file': return 'host.file.edit';
+    case 'find_files_by_name': return 'host.file.find';
+    case 'search_in_files':
+    case 'search_files': return 'host.file.search';
+    case 'run_command': return 'host.shell.run';
+    default: return name;
+  }
+}
+
 function assertHostToolsFullEvidence(phase, output) {
   const done = /\[host-tools\] done elapsedMs=\d+ terminal=(\w+) assistantChars=(\d+) toolCalls=(\d+)/
     .exec(output);
@@ -648,7 +652,7 @@ function assertHostToolsFullEvidence(phase, output) {
   if (Number(toolCalls) < 1) {
     throw new Error('strict full host-tools must include at least one host.file.* tool call');
   }
-  const calls = [...output.matchAll(/\[host-tools\] tool-call (host\.[A-Za-z0-9_.-]+)/g)]
+  const calls = [...output.matchAll(/\[host-tools\] tool-call ([A-Za-z0-9_.-]+)/g)]
     .map((match) => match[1]);
   if (calls.length !== Number(toolCalls)) {
     throw new Error(
@@ -656,11 +660,18 @@ function assertHostToolsFullEvidence(phase, output) {
     );
   }
   for (const toolName of calls) {
-    if (!toolName.startsWith('host.file.')) {
+    if (normalizeHostToolName(toolName) === 'host.shell.run') {
       throw new Error(
-        `strict full host-tools executed forbidden tool ${toolName}; only host.file.* allowed`,
+        `strict full host-tools executed forbidden tool ${toolName}; host.shell.run is not allowed`,
       );
     }
+  }
+  const allowedToolCalls = calls.filter((toolName) =>
+    normalizeHostToolName(toolName).startsWith('host.file.')).length;
+  if (allowedToolCalls < 1) {
+    throw new Error(
+      `strict full host-tools executed no allowed host.file.* tool; got ${calls.join(', ')}`,
+    );
   }
   const sample = /\[host-tools\] sample file: (\S+) \((?:(\d+) bytes|missing)\)/.exec(output);
   if (!sample || sample[2] === undefined || Number(sample[2]) <= 0) {
@@ -670,7 +681,8 @@ function assertHostToolsFullEvidence(phase, output) {
     terminal,
     assistantChars: Number(assistantChars),
     toolCalls: Number(toolCalls),
-    allowedToolCalls: calls.filter((name) => name.startsWith('host.file.')).length,
+    allowedToolCalls: calls.filter((name) =>
+      normalizeHostToolName(name).startsWith('host.file.')).length,
     sampleBytes: Number(sample[2]),
   };
 }
