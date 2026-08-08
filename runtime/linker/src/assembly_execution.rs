@@ -6,6 +6,7 @@ use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ExecutableAddr, ExecutableKind, LinkedCallTarget, LinkedExprIr,
     LinkedFileUnit, RuntimeExecutionPackage,
 };
+use skiff_runtime_linked_type_plan::build_recoverable_behavior_index;
 
 use crate::linker::linked_file_unit_from_assembly_artifact;
 
@@ -37,7 +38,18 @@ pub(super) fn link_assembly_execution_image(
         AssemblyExecutionImage::try_new(shared, code_slots, types, Arc::new(service_error_types))
             .map_err(anyhow::Error::new)?;
     let task_routes = build_task_routes(&image)?;
+    let recoverable_behavior_index = build_recoverable_behavior_index(
+        None,
+        &[],
+        image.execution_packages(),
+        image.link_overlay(),
+        image.types(),
+    )
+    .map_err(|message| {
+        anyhow::anyhow!("recoverable behavior index materialization failed: {message}")
+    })?;
     image
+        .with_recoverable_behavior_index(recoverable_behavior_index)
         .with_task_routes(task_routes)
         .map(Arc::new)
         .map_err(anyhow::Error::new)
