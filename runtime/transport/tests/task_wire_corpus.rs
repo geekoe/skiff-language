@@ -1,10 +1,10 @@
-//! Task-family byte-exact wire corpus + resolver/router reference model for
-//! C-model-task / C-task
-//! (`doc/implementation/router-rust-migration-c-model-task-contract.md`,
-//! `doc/implementation/router-rust-migration-c-task-contract.md`).
+//! Task-family byte-exact wire corpus + resolver/router reference model.
+//! Durable task semantics are defined by
+//! `doc/architecture/durable-task-dispatch.md`; this test owns the byte-exact
+//! transport corpus.
 //!
 //! The target wire freezes the explicit closed enum
-//! `callerKind = request | actorInvocation` (plan §5.3) with a typed parent
+//! `callerKind = request | actorInvocation` with a typed parent
 //! namespace and no string-prefix fallback. The old shape (no `callerKind`)
 //! is `legacyCut` and must be rejected with no compatible reader. The frame
 //! hexes are frozen from the target mirror (C-model-task); since W-model-task

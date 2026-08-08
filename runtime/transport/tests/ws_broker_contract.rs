@@ -1,5 +1,5 @@
 //! TEST-ONLY reference model for `WebSocketRequestBroker`
-//! (C-ws §4, `doc/implementation/router-rust-migration-c-ws-contract.md`).
+//! (C-ws §4, `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-ws-contract.md`).
 //!
 //! Mirrors the canonical TS `WebSocketRequestBroker` semantics: outbound/
 //! inbound peer correlation, deadline, tombstone FIFO/TTL/capacity,

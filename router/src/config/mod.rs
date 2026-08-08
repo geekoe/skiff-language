@@ -90,7 +90,7 @@ const FILE_BACKEND_OSS_KEYS: &[&str] = &[
 const REWRITE_FIELDS: &[&str] = &["host", "path", "service", "version"];
 
 /// The single frozen Router process config contract (see
-/// `doc/implementation/router-rust-migration-c-config-leaf.md`).
+/// `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-config-leaf.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouterConfig {
     pub artifacts_path: PathBuf,

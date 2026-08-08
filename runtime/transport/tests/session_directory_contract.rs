@@ -1,5 +1,5 @@
 //! Reference-model tests for the frozen C-session contract
-//! (`doc/implementation/router-rust-migration-c-session-contract.md`):
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-session-contract.md`):
 //! `RuntimeRegistrationDirectory` double index, replacement/cancel/barrier,
 //! `RuntimeRegistrationTransition`, pre-auth cap, handshake timeouts,
 //! consumer-manifest permits, and fail-stop semantics.

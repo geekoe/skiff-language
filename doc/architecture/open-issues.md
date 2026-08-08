@@ -46,8 +46,9 @@ nominal public path和service dependency cycle已经在
 7. **数据 migration**
 
    Package/Service contract architecture 已定义 protocol identity、gateway entry identity、dependency
-   binding 和 revision retire 的边界，但当前不定义持久化数据 schema migration。后续需要单独设计
-   Mongo / Redis / future storage 的 schema evolution、backfill、dual-write、read repair 和回滚规则。
+   binding 和 revision retire 的边界，但当前不定义持久化数据 schema migration。尚未实现的设计输入见
+   `durable-schema-evolution.md`；进入实现前仍需收敛 Mongo / Redis / future storage 的 schema evolution、
+   backfill、dual-write、read repair 和回滚规则。
 
 8. **snapshot / read view**
 

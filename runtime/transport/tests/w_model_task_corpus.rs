@@ -4,7 +4,9 @@
 //! golden `frameHex` values are the C-model-task frozen bytes and must not
 //! change.
 //!
-//! Frozen contract: `doc/implementation/router-rust-migration-c-model-task-contract.md`.
+//! Durable task semantics are defined by
+//! `doc/architecture/durable-task-dispatch.md`; this test owns the frozen
+//! byte-exact transport corpus.
 
 use std::collections::BTreeMap;
 

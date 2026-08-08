@@ -1,7 +1,6 @@
 //! Phase 0 baseline: precise tolerant-mode recovery behavior.
 //!
-//! Reference: doc/implementation/parser-rs-refactor.md section 2.5 item 5 and
-//! Phase 0 item 4. `parse_callable_decl_body_tolerant` restores `current` to
+//! `parse_callable_decl_body_tolerant` restores `current` to
 //! the body start and then `skip_balanced_block` consumes the whole failed
 //! body, so the cursor must land exactly on the token after the closing brace.
 

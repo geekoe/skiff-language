@@ -1,5 +1,5 @@
 //! Byte-exact client WS corpus verifier for C-model-connection + C-ws
-//! (`doc/implementation/router-rust-migration-c-model-connection-contract.md`,
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-connection-contract.md`,
 //! `...-c-ws-contract.md`).
 //!
 //! This is a TEST-ONLY reference model. It is not production code, is not

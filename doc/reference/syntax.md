@@ -156,6 +156,8 @@ expression statement 的最外层表达式必须是普通函数调用、method c
 
 表达式优先级从高到低：call / member / index / nominal construct，unary `!` / `-`，乘除模，加减，关系比较，相等比较，`&&`，`||`，ternary。
 
+同一优先级的普通二元运算符左结合。ternary 单独按下文规则右结合。
+
 关系比较和相等比较不允许链式写法。`a < b < c` 应写成显式布尔组合。
 
 postfix 表达式由 primary 加任意数量的 member、index 和 call suffix 组成。call suffix 可带 type args。

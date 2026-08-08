@@ -3,7 +3,7 @@
 //! manifest + ACK barrier + fail-stop, and the closed-family frame demux.
 //!
 //! Frozen contracts consumed here:
-//! `doc/implementation/router-rust-migration-c-session-contract.md`,
+//! `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-session-contract.md`,
 //! `...-c-model-registration-contract.md`, `...-c-process-lifecycle-contract.md`
 //! (authority design plan §3.2/§3.4/§3.5/§3.6/§5.4/§5.5/§6.1).
 

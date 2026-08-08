@@ -1,8 +1,8 @@
 # Skiff Record Spread Reference
 
-> 状态：语言设计输入（未实现）。日期：2026-08-05。
-> `spread` 语法本身尚未在 compiler / runtime 实现；本节描述目标语义。跨包类型引用的斜杠拼写
-> （`alias/module.Symbol`）已实现（见 §2）。
+> 状态：已实现。日期：2026-08-08。
+> `spread` 在 source 语义层完成展开，不引入 runtime 节点；跨包类型引用的斜杠拼写
+> （`alias/module.Symbol`）见 §2。
 
 本文负责：稳定描述 record 声明中的 `spread` 字段复制特性——语法、编译期展开语义、快照与漂移行为、与 db object / interface / impl 的交互边界和错误清单。
 

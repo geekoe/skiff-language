@@ -26,7 +26,7 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 ## 本地开发（每进程独立运行目录）
 
 开发 compiler、runtime 或 router 时，进程由各自的 run dir 管理；`instance` 与
-`stack build` 编排已移除（见 `doc/implementation/dev-without-stack.md`）：
+`stack build` 编排已移除：
 
 ```bash
 node scripts/skiff.mjs build router runtime compiler   # 共享 cargo 缓存 + build/bin 快照

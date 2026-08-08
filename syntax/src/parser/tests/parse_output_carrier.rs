@@ -1,11 +1,10 @@
-//! Phase 0 baseline: reproducible carrier for the Phase 3 "all `.skiff`
-//! fixtures parse output diff" (doc/implementation/parser-rs-refactor.md
-//! section 5, risk "TypeRef.name 字节变化"; Phase 0 item 5).
+//! Reproducible carrier for detecting byte changes in parsed output across all
+//! committed `.skiff` fixtures.
 //!
 //! The carrier enumerates every committed `.skiff` file under the repository
 //! root, computes the `parse_source` output (serialized `SourceFile` or error),
 //! and compares it with the committed Phase 0 baseline data file. After the
-//! Phase 3 refactor, running the same test yields the exact first difference;
+//! A parser refactor that changes output yields the exact first difference;
 //! regenerate the baseline explicitly with
 //! `UPDATE_PARSER_PHASE0_BASELINE=1` only when the change is intentional.
 

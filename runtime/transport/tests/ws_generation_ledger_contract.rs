@@ -1,5 +1,5 @@
 //! TEST-ONLY reference model for `RuntimeGenerationPinLedger`
-//! (C-ws §3, `doc/implementation/router-rust-migration-c-ws-contract.md`;
+//! (C-ws §3, `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-ws-contract.md`;
 //! M4: the per-connection generation pin is keyed by buildId, not the
 //! retired assembly generation).
 //!

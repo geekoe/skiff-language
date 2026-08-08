@@ -3,7 +3,7 @@
 //! C-model-request).
 //!
 //! Frozen contract consumed here:
-//! `doc/implementation/router-rust-migration-c-dispatch-contract.md` and its
+//! `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-dispatch-contract.md` and its
 //! same-chain contracts (`c-routing-query`, `c-model-request`, `c-session`).
 //! The admission pipeline is:
 //!

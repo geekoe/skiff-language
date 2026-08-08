@@ -1,5 +1,5 @@
 //! Reference-model sequence tests for the C-model-actor owners
-//! (`doc/implementation/router-rust-migration-c-model-actor-contract.md`):
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-actor-contract.md`):
 //! `ActorOwnershipRegistry` (ActorClaimToken reserve/commit/abort),
 //! `ActorActivationRequestBroker` (get-or-create dedup),
 //! `ActorInvocationRelay`, `ActorOwnerControlBroker` and

@@ -1,5 +1,5 @@
 //! Byte-exact actor-family wire corpus verifier for C-model-actor
-//! (`doc/implementation/router-rust-migration-c-model-actor-contract.md`).
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-actor-contract.md`).
 //!
 //! This is a TEST-ONLY reference model. It is not production code, is not
 //! imported by any production crate, and must not be treated as the W-actor

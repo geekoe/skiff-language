@@ -1,5 +1,5 @@
 //! Byte-exact request-wire corpus verifier for C-model-request
-//! (`doc/implementation/router-rust-migration-c-model-request-contract.md`).
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-request-contract.md`).
 //!
 //! TEST-ONLY reference model. Not production code and not imported by any
 //! production crate. W-model-request/W-dispatch must implement the frozen

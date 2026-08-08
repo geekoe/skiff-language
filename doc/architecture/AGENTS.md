@@ -3,6 +3,9 @@
 本目录保存长期内部架构契约，面向 compiler、runtime、router 和 artifact
 维护者。它不定义用户可见语言语义，也不是临时实现计划。
 
+明确例外：`durable-schema-evolution.md` 是标注为“草案、未实现”的未来设计输入，不是当前
+architecture contract；实现前必须先完成重新审阅与 canonical 文档收敛。
+
 文档分工：
 
 - `../reference/`：用户可见、稳定的语言、Package API、service 与 runtime 语义。

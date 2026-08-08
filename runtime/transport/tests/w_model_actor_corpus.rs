@@ -2,7 +2,7 @@
 //! through the canonical production codecs (actor_method / actor_owner /
 //! actor control typed DTOs) and must roundtrip byte-exact.
 //!
-//! Frozen contract: `doc/implementation/router-rust-migration-c-model-actor-contract.md`.
+//! Frozen contract: `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-actor-contract.md`.
 
 use std::collections::BTreeMap;
 

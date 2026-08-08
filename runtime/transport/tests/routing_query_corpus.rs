@@ -1,5 +1,5 @@
 //! Reference-model corpus verifier for C-routing-query
-//! (`doc/implementation/router-rust-migration-c-routing-query-contract.md`):
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-routing-query-contract.md`):
 //! captured RoutingEpoch + exact registered tuple/revision/cancellation →
 //! exact RuntimeSessionEpoch candidates.
 //!

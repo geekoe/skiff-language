@@ -118,9 +118,9 @@ request尚未开始，该失败不进入业务`catch`。
 
 ### 1.3 Contract Storage And Host Implementation
 
-> 状态：语言设计输入（未实现）。日期：2026-08-05。
-> 本节定义的 `db contract`、`db object ... implements` 尚未在 compiler / runtime 实现；本节描述目标语义，
-> 与 §1.1 / §1.2 / §10 / §11 的已交付规则并存时，以本节为准仅限本节范围内。
+> 状态：已实现。日期：2026-08-08。
+> 本节定义 `db contract`、`db object ... implements` 的当前语义；与 §1.1 / §1.2 / §10 / §11
+> 共同构成现行 DB contract。
 
 引擎 package 与宿主 service 共享同一物理集合（如线程行）时，可以由引擎声明**存储契约**、由宿主声明**实现**。
 引擎代码以本包类型照常执行 db 操作；物理集合、完整字段集与索引由宿主一处声明。双方看到的是同一物理

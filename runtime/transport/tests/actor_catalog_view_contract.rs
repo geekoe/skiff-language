@@ -1,9 +1,9 @@
 //! A0 actor-routing projection corpus + `ActorMethodCatalogView` reference
-//! model for C-actor (`doc/implementation/router-rust-migration-c-actor-contract.md`)
-//! and C-model-actor (`doc/implementation/router-rust-migration-c-model-actor-contract.md`).
+//! model for C-actor (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-actor-contract.md`)
+//! and C-model-actor (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-actor-contract.md`).
 //!
 //! The projection schema is frozen by the A0 contract
-//! (`doc/implementation/router-rust-migration-a0-contract.md`). The typed
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-a0-contract.md`). The typed
 //! authority for the schema lives in `skiff-deployment::projection::actor_routing`;
 //! this file deliberately uses a TEST-ONLY mirror with `deny_unknown_fields`
 //! so the corpus can be verified inside `skiff-runtime-transport` without

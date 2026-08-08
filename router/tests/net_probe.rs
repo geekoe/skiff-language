@@ -1,7 +1,7 @@
 //! Real-socket probes for the C-net final listener mechanism.
 //!
 //! These probes exercise the mechanism frozen in
-//! `doc/implementation/router-rust-migration-c-net-contract.md` over real local
+//! `doc/implementation/router-rust-migration/contracts/router-rust-migration-c-net-contract.md` over real local
 //! sockets (127.0.0.1:0). They implement no business protocol and no control
 //! endpoint: the probe service only answers empty HTTP requests, performs an
 //! empty HTTP→WebSocket upgrade with a single echo, honors a connection cap,

@@ -1,9 +1,6 @@
 //! Phase 0 baseline: lock the `SourceSpanTable` side channel for
 //! functions/impl_methods/consts/db_index_wheres and the local-variable
 //! collection of `test_default_run_span`.
-//!
-//! Reference: doc/implementation/parser-rs-refactor.md section 2.5 item 1 and
-//! Phase 0 item 3.
 
 use crate::error::SourceSpan;
 use crate::parser::{parse_source, parse_source_with_bodies_tolerant};

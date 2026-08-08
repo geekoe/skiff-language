@@ -1,8 +1,8 @@
 //! Phase 0 baseline: lock binary expression associativity and precedence so the
 //! Phase 1+ expression refactor cannot change semantics silently.
 //!
-//! Reference: doc/implementation/parser-rs-refactor.md section 2.6 and Phase 0
-//! item 1. The parser already uses precedence climbing (`parse_binary(min_prec)`
+//! Reference: `doc/reference/syntax.md` section 7. The parser uses precedence
+//! climbing (`parse_binary(min_prec)`
 //! with `prec + 1` tightening the right operand), so every operator is left
 //! associative and higher-precedence operators bind tighter.
 

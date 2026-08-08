@@ -1,5 +1,5 @@
 //! W-routing-query: stateless exact candidate projection
-//! (`doc/implementation/router-rust-migration-c-routing-query-contract.md`,
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-routing-query-contract.md`,
 //! authority design plan §3.3/§5.4).
 //!
 //! `RuntimeCandidateQuery` is stateless and side-effect free: the candidate

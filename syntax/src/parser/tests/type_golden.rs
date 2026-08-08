@@ -1,6 +1,4 @@
-//! Phase 0 baseline: golden corpus for the type-text channel
-//! (`TypeRef.name`) described in doc/implementation/parser-rs-refactor.md
-//! section 2.5 item 4 and Phase 0 item 2.
+//! Golden corpus for the type-text channel (`TypeRef.name`).
 //!
 //! Each row is "input source → expected `TypeRef.name` bytes". The control
 //! character cases pin the divergence between `quote_string_type`

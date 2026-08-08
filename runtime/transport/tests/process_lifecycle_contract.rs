@@ -1,5 +1,5 @@
 //! Frozen C-process-lifecycle shutdown sequence verifier
-//! (`doc/implementation/router-rust-migration-c-process-lifecycle-contract.md`).
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-process-lifecycle-contract.md`).
 //! TEST-ONLY: validates the checked-in fixture and the fail-stop ordering
 //! contract; the real supervisor implements these steps with real deadlines.
 

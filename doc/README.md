@@ -9,6 +9,8 @@
 - `architecture/`：长期内部架构契约，包括 compiler/runtime/router 边界、DB capability、release/registry、artifact linking、未规范化问题和共享协议 fixture；不作为用户语言规范。
 - `implementation/`：阶段性实现方案、迁移计划和审计记录；不作为长期架构契约。
 
+`architecture/durable-schema-evolution.md` 是明确标注的未实现草案，不属于当前 canonical contract。
+
 ## 维护规则
 
 - 文件名和当前规范阶段不再使用 `v1` 命名；`skiff-*-v1` 这类字符串只作为当前 wire/schema/identity 字面量保留，不能反推出文档阶段名。

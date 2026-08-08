@@ -1,5 +1,5 @@
 //! Reference-model corpus verifier for C-dispatch
-//! (`doc/implementation/router-rust-migration-c-dispatch-contract.md`):
+//! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-dispatch-contract.md`):
 //! routing epoch capture → candidate query → reserve → revalidate → enqueue
 //! → terminal release, pending/terminal semantics, and function-spawn
 //! correlation with actor-method spawn routed to the actor lane.

@@ -1,5 +1,5 @@
-//! Semantic expansion tests for record `spread` (design
-//! `doc/implementation/record-spread-contract-storage.md` §3.3).
+//! Semantic expansion tests for record `spread` (`doc/reference/record-spread.md`
+//! §3).
 //!
 //! Same-package cases compile through `build_package_from_parsed_sources` and
 //! inspect the expanded AST; cross-package cases compile a provider package
