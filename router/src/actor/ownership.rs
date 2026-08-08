@@ -511,3 +511,207 @@ fn fence_identity_matches(current: &ActorOwnerFence, candidate: &ActorOwnerFence
         && current.actor_implementation_identity == candidate.actor_implementation_identity
         && current.declaration_owner == candidate.declaration_owner
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity};
+    use skiff_runtime_transport::actor_method::{
+        ActorDeclarationOwnerFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+    };
+
+    use super::{ActorOwnershipRegistry, OwnershipError};
+    use crate::actor::lease::{
+        ActorLeaseExpiryScheduler, IdleEvictControlPort, LeaseSchedulerOptions,
+    };
+    use crate::actor::types::{
+        ActorLogicalKey, ActorOwnerFence, ActorOwnerRouteAuthority, CommitFenceFacts, LeaseIdMint,
+        DEFAULT_IDLE_TTL_MS, DEFAULT_OWNER_LEASE_TTL_MS,
+    };
+
+    fn test_key(service_id: &str, actor_symbol: &str, suffix: &str) -> ActorLogicalKey {
+        ActorLogicalKey {
+            service_id: service_id.to_string(),
+            actor_type_identity: actor_symbol.to_string(),
+            actor_id_type_identity: "string".to_string(),
+            actor_id_encoding_version: "v1".to_string(),
+            canonical_actor_id_key_bytes_base64: format!("base64:{suffix}"),
+            actor_id_hash: format!("sha256:{suffix}"),
+        }
+    }
+
+    fn test_owner_frame(actor_symbol: &str) -> ActorDeclarationOwnerFrameHeader {
+        ActorDeclarationOwnerFrameHeader {
+            unit: ActorOwnerUnitFrameHeader::Service,
+            file: ActorOwnerFileFrameHeader::FileIrIdentity("file-ir-v1".to_string()),
+            actor_symbol: actor_symbol.to_string(),
+        }
+    }
+
+    fn test_abi() -> ActorAbiIdentity {
+        ActorAbiIdentity::new("skiff-actor-runtime-abi-v1")
+    }
+
+    fn test_implementation() -> ActorImplementationIdentity {
+        ActorImplementationIdentity::new("impl-v1")
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingIdleEvictPort {
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IdleEvictControlPort for RecordingIdleEvictPort {
+        fn send_idle_evict(
+            &self,
+            key: &ActorLogicalKey,
+            _fence: &ActorOwnerFence,
+            eviction_request_id: &str,
+            _connection: &str,
+        ) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(format!("{}:{eviction_request_id}", key.actor_id_hash));
+            Ok(())
+        }
+    }
+
+    // README §5.8 known issue (1), target phase Phase 7
+    // (phase-7-actor-router.md §5: "idle request发出后Router在ack前不清fence；
+    // ... owner lease expiry不会形成双owner").
+    //
+    // "Fix the current default lifecycle hazard in which owner lease TTL and
+    // idle TTL are both 30 seconds and the sweep can expire the Router lease
+    // before completing/acknowledging `IdleEvict`. A new owner cannot be
+    // opened while the old Runtime instance may still exist."
+    //
+    // `LeaseScheduler::sweep` runs `registry.expire(now)` (ownership.rs) ahead
+    // of the idle-eviction branch, so with both clocks at 30s the fence is
+    // silently dropped at the first due tick and `IdleEvict` is never sent or
+    // acknowledged; the registry then admits a new owner although the old
+    // Runtime incarnation may still exist. This test FAILS today.
+    #[test]
+    fn sweep_must_not_open_new_owner_while_idle_evict_is_unacked() {
+        // Precondition of the hazard: both clocks are 30s (C-actor §4/§8).
+        assert_eq!(DEFAULT_OWNER_LEASE_TTL_MS, DEFAULT_IDLE_TTL_MS);
+        let registry = Arc::new(ActorOwnershipRegistry::new());
+        let control = Arc::new(RecordingIdleEvictPort::default());
+        let scheduler = ActorLeaseExpiryScheduler::new(
+            Arc::clone(&registry),
+            control.clone(),
+            LeaseSchedulerOptions {
+                idle_ttl_ms: DEFAULT_IDLE_TTL_MS,
+                max_eviction_retries: 3,
+            },
+        );
+        let key = test_key("svc.idle-order", "SessionActor", "user-1");
+        let authority = ActorOwnerRouteAuthority {
+            build_id: "sha256:build-v1".to_string(),
+        };
+        let owner_frame = test_owner_frame("SessionActor");
+        let abi = test_abi();
+        let implementation = test_implementation();
+        registry.ensure_present(
+            &key,
+            abi.clone(),
+            implementation.clone(),
+            owner_frame.clone(),
+            b"[]",
+        );
+        let token = registry
+            .reserve(&key, 1, "runtime-a", &authority, 0)
+            .expect("first owner reserves");
+        let facts = CommitFenceFacts {
+            actor_abi_identity: abi,
+            actor_implementation_identity: implementation,
+            declaration_owner: owner_frame,
+            owner_lease_id: LeaseIdMint::new().mint(),
+        };
+        let _fence = registry
+            .commit(&token, &facts, 0, DEFAULT_OWNER_LEASE_TTL_MS)
+            .expect("first owner commits");
+        scheduler.mark_live(&key, 0, "runtime-a-connection");
+
+        // One sweep at t=30s: both the owner lease (30s) and the idle TTL
+        // (30s) are due in the same tick. Today the sweep expires the lease
+        // first and never sends/acknowledges `IdleEvict`.
+        scheduler.sweep(DEFAULT_OWNER_LEASE_TTL_MS);
+
+        // Designed invariant (README §5.8): lease expiry is not proof that
+        // the Runtime state was destroyed while the `IdleEvict` is not
+        // completed/acknowledged; a new owner must not be openable.
+        let fence_survived = registry.current_owner(&key).is_some();
+        let new_owner_admitted = registry
+            .reserve(&key, 1, "runtime-b", &authority, DEFAULT_OWNER_LEASE_TTL_MS)
+            .is_ok();
+        let idle_evict_frames_sent = control.sent.lock().unwrap_or_else(|p| p.into_inner()).len();
+        assert!(
+            !new_owner_admitted,
+            "lease expiry opened a new owner while the old incarnation may \
+             still exist (IdleEvict frames sent: {idle_evict_frames_sent}, \
+             owner fence survived: {fence_survived})",
+        );
+    }
+
+    // README §5.8 known issue (2), target phase Phase 3A/7
+    // (phase-3a-deployment-owner.md exact-build owner cut;
+    // phase-7-actor-router.md §5: "stale build/fence/epoch/cancel
+    // continuation拒绝且不重装lease").
+    //
+    // "Add exact build to the owner fence and continuation validation."
+    //
+    // `ActorOwnerFence` carries no build identity: `commit` drops the claim's
+    // `ActorOwnerRouteAuthority::build_id` and `fence_identity_matches`
+    // compares no build, so a continuation minted by an older build is
+    // byte-identical to the live fence in every compared field and passes
+    // validation. This test FAILS today.
+    #[test]
+    fn continuation_without_exact_build_proof_must_be_rejected() {
+        let registry = Arc::new(ActorOwnershipRegistry::new());
+        let key = test_key("svc.build-pin", "SessionActor", "user-2");
+        let authority_v1 = ActorOwnerRouteAuthority {
+            build_id: "sha256:build-v1".to_string(),
+        };
+        let owner_frame = test_owner_frame("SessionActor");
+        let abi = test_abi();
+        let implementation = test_implementation();
+        registry.ensure_present(
+            &key,
+            abi.clone(),
+            implementation.clone(),
+            owner_frame.clone(),
+            b"[]",
+        );
+        let token = registry
+            .reserve(&key, 1, "runtime-a", &authority_v1, 0)
+            .expect("first owner reserves");
+        let facts = CommitFenceFacts {
+            actor_abi_identity: abi,
+            actor_implementation_identity: implementation,
+            declaration_owner: owner_frame,
+            owner_lease_id: LeaseIdMint::new().mint(),
+        };
+        let fence = registry
+            .commit(&token, &facts, 0, DEFAULT_OWNER_LEASE_TTL_MS)
+            .expect("first owner commits");
+
+        // A stale continuation for the same lease, re-issued by an older
+        // build within the lease window, differs from the live fence in no
+        // field the registry compares (no build identity exists today). It
+        // must be rejected as FenceMismatch.
+        let stale_continuation = ActorOwnerFence {
+            lease_expires_at: 15_000,
+            ..fence.clone()
+        };
+        let outcome =
+            registry.renew(&key, &stale_continuation, DEFAULT_OWNER_LEASE_TTL_MS, 10_000);
+        assert!(
+            matches!(outcome, Err(OwnershipError::FenceMismatch)),
+            "a continuation that cannot prove the exact build passed owner \
+             fence validation (renew result: {outcome:?}); the fence must pin \
+             the claim's exact build (README §5.8)",
+        );
+    }
+}
