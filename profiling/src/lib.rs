@@ -292,12 +292,14 @@ fn function_name(key: u64) -> String {
         .unwrap_or_default()
 }
 
-/// 后台采样主循环：每轮「睡到下一个对齐窗口起点 → 起 ProfilerGuard 采样 →
+/// 后台采样主循环：每轮「睡到下一个窗口起点 → 起 ProfilerGuard 采样 →
 /// 睡满窗口 → 停止、算 cpu/wall、构建窗口入队」。
 ///
-/// 窗口起点从「首个对齐分钟边界」开始，之后每次按 `interval_ms` 向前推进，
-/// 保证窗口连续覆盖每个分钟（不能从停止时刻重新对齐——停止时刻已越过起点，
-/// 重新对齐会跳过整个分钟）。
+/// 首个窗口起点对齐壁钟分钟边界；之后每个窗口从「上一个窗口的实际起点」推进
+/// `interval_ms`，而不是从名义边界推进。名义推进会随每轮报告构建耗时（>0）
+/// 逐窗口累积漂移：60s 名义推进配 61s 实际周期，两小时后窗口实际起点落后名义
+/// 起点两分多钟，profile 图表横轴整体滞后。以实际起点为锚保证窗口连续覆盖
+/// 且 `interval_start_ms` 始终是真实采样起点。
 fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<VecDeque<ProfileWindow>>>) {
     let interval_ms = config.export_interval_ms;
     let mut next_start_ms = (unix_now_ms() / interval_ms + 1) * interval_ms;
@@ -307,7 +309,7 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
             break;
         }
 
-        // 睡到下一个对齐的窗口起点（壁钟分钟边界）。
+        // 睡到下一个窗口起点（首个为对齐的壁钟分钟边界）。
         let now_ms = unix_now_ms();
         let wait_ms = next_start_ms.saturating_sub(now_ms);
         if !sleep_until_stop(wait_ms, &stop) {
@@ -317,7 +319,8 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
             break;
         }
 
-        // 记录窗口起点 CPU 时间，然后开始采样。
+        // 记录窗口起点（真实采样起点）与起点 CPU 时间，然后开始采样。
+        let window_start_ms = unix_now_ms();
         let cpu_start = process_cpu_ms();
         let window_instant = Instant::now();
         let guard = match pprof::ProfilerGuardBuilder::default()
@@ -377,7 +380,7 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push_back(ProfileWindow {
-                interval_start_ms: next_start_ms as i64,
+                interval_start_ms: window_start_ms as i64,
                 interval_ms,
                 wall_ms,
                 cpu_ms,
@@ -386,9 +389,9 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
                 functions,
             });
 
-        // 下一个窗口起点：从当前窗口起点推进一个窗口（不能从停止时刻
-        // 重新对齐，否则会跳过整个窗口期）。
-        next_start_ms += interval_ms;
+        // 下一个窗口起点：从本窗口实际起点推进一个窗口。不能从停止时刻或
+        // 名义边界重新对齐：前者跳过整个窗口期，后者随报告构建耗时累积漂移。
+        next_start_ms = window_start_ms + interval_ms;
     }
 }
 
