@@ -73,6 +73,8 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
   },
   owner('scripts/skiff-process.mjs', 'spawn', 'spawn', 'skiff-process-child', 'actionStart', 'managed-component',
     'skiff process start spawns the component binary with run-dir log redirection'),
+  owner('scripts/skiff-supervise.mjs', 'spawn', 'spawn', 'skiff-supervise-spawn', 'startComponent', 'supervisor',
+    'launchd supervisor starts router/runtime through skiff-process.mjs and retains the child handle for exit observation'),
   owner('scripts/skiff-process.mjs', 'execFileSync', 'execFileSync', 'skiff-process-metadata', 'runCargoMetadata', 'managed-component',
     'skiff process resolves the component binary through cargo metadata'),
   owner('scripts/run-eval-bench.mjs', 'execFileSync', 'execFileSync', 'eval-bench-spawn', 'main', 'managed-component',
