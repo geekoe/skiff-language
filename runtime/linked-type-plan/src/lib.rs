@@ -19,7 +19,9 @@ pub use skiff_runtime_model::type_plan::{
 };
 pub use skiff_runtime_native_contract::{NativeCallValidation, NativeSignatureRegistry};
 pub use type_plan::{
+    build_recoverable_behavior_index, interface_method_table_from_linked,
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
-    recoverable_interface_projection_identity, PlanContext, ProgramTypeView,
+    method_tables_runtime_equivalent, recoverable_interface_projection_identity,
+    runtime_interface_method_table_id, PlanContext, ProgramTypeView,
     RuntimeRecoverableExpectedTypePlanLinkedExt, RuntimeTypePlanLinkedExt,
 };

@@ -25,6 +25,7 @@ mod labels;
 mod linked;
 mod nominal;
 mod recoverable;
+mod recoverable_behavior;
 #[cfg(test)]
 mod tests;
 
@@ -48,6 +49,10 @@ pub(crate) use recoverable::sorted_json_string;
 pub use recoverable::{
     linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
     recoverable_interface_projection_identity,
+};
+pub use recoverable_behavior::{
+    build_recoverable_behavior_index, interface_method_table_from_linked,
+    method_tables_runtime_equivalent, runtime_interface_method_table_id,
 };
 #[cfg(test)]
 pub(crate) use tests::test_runtime_package;
