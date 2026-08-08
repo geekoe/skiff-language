@@ -130,6 +130,7 @@ pub fn config(artifact_root: &Path) -> RouterConfig {
             mongo_url: "mongodb://127.0.0.1:27017/skiff".to_string(),
         },
         telemetry: None,
+        profile_sampling: None,
         websocket_path: "/ws".to_string(),
     }
 }

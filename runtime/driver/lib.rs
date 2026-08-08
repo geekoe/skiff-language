@@ -4,6 +4,7 @@ pub mod config_view;
 pub mod error;
 pub mod eval;
 pub mod host;
+pub mod profiling;
 pub mod request;
 pub mod telemetry;
 pub mod transport;

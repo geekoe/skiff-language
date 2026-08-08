@@ -316,6 +316,13 @@ impl RuntimeHost {
         }
     }
 
+    /// Clones the host telemetry producer for process-level emitters (e.g. the
+    /// `rust.profile` sampler) that enqueue PlatformEvents outside any
+    /// request-scoped context.
+    pub fn telemetry_producer(&self) -> TelemetryProducer {
+        self.telemetry.clone()
+    }
+
     pub fn blob_store(&self) -> Option<Arc<dyn BlobStore>> {
         self.blob_store
             .lock()

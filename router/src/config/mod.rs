@@ -26,6 +26,8 @@ pub const DEFAULT_TELEMETRY_QUEUE_MAX_EVENTS: u64 = 10_000;
 pub const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS: u64 = 200;
 pub const DEFAULT_TELEMETRY_BATCH_MAX_BYTES: u64 = 262_144;
 pub const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS: u64 = 1000;
+pub const DEFAULT_PROFILE_SAMPLING_HZ: u64 = 1000;
+pub const DEFAULT_PROFILE_EXPORT_INTERVAL_MS: u64 = 60_000;
 
 /// JavaScript safe-integer upper bound (2^53). `f64` cannot represent 2^53 - 1,
 /// so values at or above 2^53 compare exactly like `Number.isSafeInteger`.
@@ -41,6 +43,7 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "manifest",
     "manifests",
     "profile",
+    "profileSampling",
     "releaseMode",
     "requestTimeoutMs",
     "rewrite",
@@ -68,6 +71,11 @@ const TELEMETRY_KEYS: &[&str] = &[
     "fileMaxBytes",
     "fileMaxFiles",
 ];
+/// `profileSampling` block keys (rust.profile contract §2). Note: the
+/// sampling block cannot be named `profile` in the router config because the
+/// top-level `profile` key is the frozen required activation profile string;
+/// the runtime config (no such key) uses `profile` per the contract.
+const PROFILE_SAMPLING_KEYS: &[&str] = &["enabled", "samplingHz", "exportIntervalMs"];
 const FILE_BACKEND_KEYS: &[&str] = &["local", "oss"];
 const FILE_BACKEND_LOCAL_KEYS: &[&str] = &["root"];
 const FILE_BACKEND_OSS_KEYS: &[&str] = &[
@@ -93,6 +101,9 @@ pub struct RouterConfig {
     pub http_port: u16,
     pub manifests: Vec<PathBuf>,
     pub profile: String,
+    /// Optional rust.profile sampling block (`profileSampling`; `None` when
+    /// absent or `enabled: false`). Mirrors the `telemetry` block.
+    pub profile_sampling: Option<ProfileConfig>,
     pub release_mode: Option<bool>,
     pub request_timeout_ms: u64,
     pub rewrite: Vec<RouterRewriteRule>,
@@ -158,6 +169,16 @@ pub struct TelemetryConfig {
     pub file_path: Option<PathBuf>,
     pub file_max_bytes: Option<u64>,
     pub file_max_files: Option<u64>,
+}
+
+/// Rust profile sampling block (rust.profile contract §2). `max_stacks` is
+/// not configurable in the yml (contract example exposes three keys); the
+/// producer uses the `skiff-profiling` default of 2048.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileConfig {
+    pub enabled: bool,
+    pub sampling_hz: u64,
+    pub export_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,6 +315,7 @@ fn parse_router_config(
 
     let file_backend = read_file_backend_config(get(&root, "fileBackend"), config_dir)?;
     let telemetry = read_telemetry_config(get(&root, "telemetry"))?;
+    let profile_sampling = read_profile_config(get(&root, "profileSampling"))?;
 
     Ok(RouterConfig {
         artifacts_path,
@@ -304,6 +326,7 @@ fn parse_router_config(
         http_port,
         manifests,
         profile,
+        profile_sampling,
         release_mode,
         request_timeout_ms,
         rewrite,
@@ -463,7 +486,6 @@ fn read_telemetry_config(
         )?,
     }))
 }
-
 fn read_telemetry_protocol(value: Option<&JsonValue>) -> Result<String, RouterConfigError> {
     match value {
         None | Some(JsonValue::Null) => Ok(TELEMETRY_PROTOCOL.to_string()),
@@ -474,6 +496,33 @@ fn read_telemetry_protocol(value: Option<&JsonValue>) -> Result<String, RouterCo
             "router config telemetry.protocol must be {TELEMETRY_PROTOCOL}"
         ))),
     }
+}
+
+fn read_profile_config(
+    value: Option<&JsonValue>,
+) -> Result<Option<ProfileConfig>, RouterConfigError> {
+    let Some(value) = require_object(value, "profileSampling")? else {
+        return Ok(None);
+    };
+    reject_unknown_keys(Some(value), PROFILE_SAMPLING_KEYS, "profileSampling")?;
+    let enabled = read_optional_boolean(value.get("enabled"), "profileSampling.enabled")?
+        .unwrap_or(false);
+    if !enabled {
+        return Ok(None);
+    }
+    Ok(Some(ProfileConfig {
+        enabled: true,
+        sampling_hz: read_positive_integer(
+            value.get("samplingHz"),
+            "profileSampling.samplingHz",
+            DEFAULT_PROFILE_SAMPLING_HZ,
+        )?,
+        export_interval_ms: read_positive_integer(
+            value.get("exportIntervalMs"),
+            "profileSampling.exportIntervalMs",
+            DEFAULT_PROFILE_EXPORT_INTERVAL_MS,
+        )?,
+    }))
 }
 
 fn read_rewrite_rules(

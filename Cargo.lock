@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "addr2line"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
+dependencies = [
+ "gimli",
+]
+
+[[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -57,6 +72,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "aligned-vec"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc890384c8602f339876ded803c97ad529f3842aba97f6392b3dba0dd171769b"
+dependencies = [
+ "equator",
 ]
 
 [[package]]
@@ -156,10 +180,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "backtrace"
+version = "0.3.76"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc",
+ "miniz_oxide",
+ "object",
+ "rustc-demangle",
+ "windows-link",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
@@ -364,6 +409,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpp_demangle"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2bb79cb74d735044c972aae58ed0aaa9a837e85b01106a54c39e42e97f62253"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,6 +571,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "debugid"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -611,6 +674,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "equator"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4711b213838dfee0117e3be6ac926007d7f433d7bbe33595975d4190cb07e6fc"
+dependencies = [
+ "equator-macro",
+]
+
+[[package]]
+name = "equator-macro"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44f23cf4b44bfce11a86ace86f8a73ffdec849c9fd00a386a53d278bd9e81fb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -637,6 +720,18 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "findshlibs"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40b9e59cd0f7e0806cca4be089683ecb6434e602038df21fe6bf6711b2f07f64"
+dependencies = [
+ "cc",
+ "lazy_static",
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "foldhash"
@@ -805,6 +900,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -866,7 +967,7 @@ dependencies = [
  "once_cell",
  "rand",
  "ring",
- "thiserror",
+ "thiserror 2.0.18",
  "tinyvec",
  "tokio",
  "tracing",
@@ -889,7 +990,7 @@ dependencies = [
  "rand",
  "resolv-conf",
  "smallvec",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -1341,6 +1442,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,7 +1512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ef2c933617431ad0246fb5b43c425ebdae18c7f7259c87de0726d93b0e7e91b"
 dependencies = [
  "base64",
- "bitflags",
+ "bitflags 2.11.1",
  "bson",
  "derive-where",
  "derive_more",
@@ -1423,7 +1542,7 @@ dependencies = [
  "stringprep",
  "strsim",
  "take_mut",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -1442,6 +1561,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "nix"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
+dependencies = [
+ "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -1466,6 +1596,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -1602,6 +1741,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
+name = "pprof"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afad4d4df7b31280028245f152d5a575083e2abb822d05736f5e47653e77689f"
+dependencies = [
+ "aligned-vec",
+ "backtrace",
+ "cfg-if",
+ "findshlibs",
+ "libc",
+ "log",
+ "nix",
+ "once_cell",
+ "smallvec",
+ "spin",
+ "symbolic-demangle",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1643,7 +1803,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "web-time",
@@ -1664,7 +1824,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror",
+ "thiserror 2.0.18",
  "tinyvec",
  "tracing",
  "web-time",
@@ -1775,7 +1935,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
 ]
 
 [[package]]
@@ -1885,6 +2045,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-profiling",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
@@ -1901,7 +2062,7 @@ dependencies = [
  "skiff-runtime-request",
  "skiff-runtime-service-db",
  "skiff-runtime-transport",
- "thiserror",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-tungstenite",
@@ -1910,6 +2071,12 @@ dependencies = [
  "url",
  "uuid",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"
@@ -1942,7 +2109,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -2176,7 +2343,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2221,7 +2388,7 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-deployment",
  "skiff-syntax",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2238,7 +2405,7 @@ dependencies = [
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2249,7 +2416,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2263,7 +2430,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-canonical-json",
  "skiff-syntax",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2275,7 +2442,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2292,7 +2459,7 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-input-model",
  "skiff-compiler-projection-input",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2319,7 +2486,7 @@ dependencies = [
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
  "skiff-syntax",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2332,7 +2499,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection-input",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2343,7 +2510,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-compiler-core",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2362,7 +2529,7 @@ dependencies = [
  "skiff-compiler-input-model",
  "skiff-compiler-projection-input",
  "skiff-syntax",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2375,7 +2542,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-runtime-config-snapshot",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2390,7 +2557,16 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "thiserror",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "skiff-profiling"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "pprof",
 ]
 
 [[package]]
@@ -2413,11 +2589,12 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-canonical-json",
  "skiff-deployment",
+ "skiff-profiling",
  "skiff-runtime-config-snapshot",
  "skiff-runtime-request-contract",
  "skiff-runtime-transport",
  "skiff-task-control",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
  "unsafe-libyaml",
@@ -2431,7 +2608,7 @@ dependencies = [
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",
  "skiff-runtime-model",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2444,7 +2621,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-model",
- "thiserror",
+ "thiserror 2.0.18",
  "time",
 ]
 
@@ -2472,7 +2649,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "thiserror",
+ "thiserror 2.0.18",
  "uuid",
 ]
 
@@ -2503,7 +2680,7 @@ dependencies = [
  "skiff-runtime-native-contract",
  "skiff-runtime-request",
  "skiff-test-runner",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
 ]
@@ -2545,7 +2722,7 @@ dependencies = [
  "skiff-runtime-service-db",
  "skiff-runtime-transport",
  "skiff-test-runner",
- "thiserror",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-tungstenite",
@@ -2571,12 +2748,13 @@ name = "skiff-runtime-linked-type-plan"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-boundary",
  "skiff-runtime-linked-program",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2596,7 +2774,7 @@ dependencies = [
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
  "skiff-test-runner",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2625,7 +2803,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-runtime-request-contract",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2644,7 +2822,7 @@ dependencies = [
  "skiff-runtime-capability-context",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
 ]
@@ -2684,7 +2862,7 @@ dependencies = [
  "skiff-runtime-linker",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
- "thiserror",
+ "thiserror 2.0.18",
  "time",
 ]
 
@@ -2718,7 +2896,7 @@ dependencies = [
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
  "skiff-runtime-model",
- "thiserror",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "uuid",
@@ -2746,7 +2924,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2760,7 +2938,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-deployment",
- "thiserror",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
 ]
@@ -2785,7 +2963,7 @@ dependencies = [
  "skiff-runtime-config-snapshot",
  "skiff-runtime-model",
  "skiff-syntax",
- "thiserror",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2808,6 +2986,15 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spin"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]
@@ -2838,6 +3025,29 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "symbolic-common"
+version = "12.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "332615d90111d8eeaf86a84dc9bbe9f65d0d8c5cf11b4caccedc37754eb0dcfd"
+dependencies = [
+ "debugid",
+ "memmap2",
+ "stable_deref_trait",
+ "uuid",
+]
+
+[[package]]
+name = "symbolic-demangle"
+version = "12.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "912017718eb4d21930546245af9a3475c9dccf15675a5c215664e76621afc471"
+dependencies = [
+ "cpp_demangle",
+ "rustc-demangle",
+ "symbolic-common",
+]
 
 [[package]]
 name = "syn"
@@ -2903,11 +3113,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.18",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -3089,7 +3319,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "bytes",
  "futures-util",
  "http",
@@ -3206,7 +3436,7 @@ dependencies = [
  "log",
  "rand",
  "sha1",
- "thiserror",
+ "thiserror 2.0.18",
  "utf-8",
 ]
 
@@ -3477,7 +3707,7 @@ version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.1",
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
@@ -3804,7 +4034,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
 dependencies = [
  "anyhow",
- "bitflags",
+ "bitflags 2.11.1",
  "indexmap",
  "log",
  "serde",

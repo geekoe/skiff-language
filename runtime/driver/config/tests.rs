@@ -505,6 +505,99 @@ fn config_rejects_runtime_http_egress_proxy_with_non_string_value() {
 }
 
 #[test]
+fn config_reads_profile_block_with_defaults() {
+    let temp = TempDir::new("config-profile");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "profile:",
+            "  enabled: true",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    let profile = config.profile.expect("profile block should parse");
+    assert_eq!(profile.sampling_hz, 1000);
+    assert_eq!(profile.export_interval_ms, 60_000);
+}
+
+#[test]
+fn config_reads_profile_block_with_explicit_values() {
+    let temp = TempDir::new("config-profile-values");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "profile:",
+            "  enabled: true",
+            "  samplingHz: 250",
+            "  exportIntervalMs: 120000",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    let profile = config.profile.expect("profile block should parse");
+    assert_eq!(profile.sampling_hz, 250);
+    assert_eq!(profile.export_interval_ms, 120_000);
+}
+
+#[test]
+fn config_disables_profile_when_enabled_false_or_missing() {
+    let temp = TempDir::new("config-profile-disabled");
+    for (name, text) in [
+        (
+            "absent",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\n",
+        ),
+        (
+            "disabled",
+            "router: ws://127.0.0.1:4001/runtime\nruntime-home: .runtime-home\nprofile:\n  enabled: false\n",
+        ),
+    ] {
+        let config_path = temp.path.join(format!("{name}.yml"));
+        write(&config_path, text).expect("config should be written");
+
+        let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+        assert_eq!(config.profile, None, "{name} should not enable profile");
+    }
+}
+
+#[test]
+fn config_rejects_unknown_profile_field() {
+    let temp = TempDir::new("config-profile-unknown");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "profile:",
+            "  enabled: true",
+            "  maxStacks: 100",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let error = RuntimeFileConfig::load(&config_path).expect_err("maxStacks should be rejected");
+    assert!(error.to_string().contains("unknown field `maxStacks`"));
+}
+
+#[test]
 fn config_reads_relative_run_dir() {
     let temp = TempDir::new("config-run-dir-relative");
     let config_path = temp.path.join("runtime.yml");

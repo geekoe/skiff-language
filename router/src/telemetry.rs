@@ -649,6 +649,113 @@ pub fn telemetry_timestamp_now() -> String {
     crate::health::time::format_iso_millis(SystemTime::now())
 }
 
+/// rust.profile sampling producer wiring (rust.profile contract §2): the
+/// `skiff-profiling` sampler runs on a background thread; this loop polls
+/// `take_window` on the Tokio runtime and emits one PlatformEvent per
+/// completed window through the task telemetry sink (no-op when telemetry is
+/// disabled). Shutdown signals the loop, which drains the remaining windows
+/// and calls `handle.stop()`.
+pub struct ProfileSamplingHandle {
+    shutdown_tx: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+impl ProfileSamplingHandle {
+    pub async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(true);
+        // The loop drains the pending windows and joins the sampling thread
+        // (bounded: the sampler checks its stop flag at least every 200ms).
+        let _ = timeout(Duration::from_secs(1), self.task).await;
+    }
+}
+
+/// Starts the rust.profile sampler when the `profileSampling` config block is
+/// enabled. Fail-soft: a sampler start error (e.g. bad frequency) only logs on
+/// stderr and the router keeps running.
+pub fn start_profile_sampling(
+    config: &RouterConfig,
+    sink: Arc<dyn TaskTelemetrySink>,
+) -> Option<ProfileSamplingHandle> {
+    let sampling = config.profile_sampling.as_ref()?;
+    if !sampling.enabled {
+        return None;
+    }
+    let profiling_config = skiff_profiling::ProfileConfig {
+        enabled: true,
+        sampling_hz: sampling.sampling_hz,
+        export_interval_ms: sampling.export_interval_ms,
+        ..skiff_profiling::ProfileConfig::default()
+    };
+    let handle = match skiff_profiling::start(profiling_config) {
+        Ok(handle) => handle,
+        Err(error) => {
+            eprintln!("[router-profile] failed to start sampling: {error}");
+            return None;
+        }
+    };
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let task = tokio::spawn(profile_window_loop(handle, sink, shutdown_rx));
+    Some(ProfileSamplingHandle { shutdown_tx, task })
+}
+
+/// Polls `take_window` on a 1s cadence and emits a PlatformEvent per window.
+/// Windows land at most once per export interval; a while-loop drain keeps up
+/// after process suspension or a long sampling stall.
+async fn profile_window_loop(
+    mut handle: skiff_profiling::ProfileHandle,
+    sink: Arc<dyn TaskTelemetrySink>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = interval.tick() => {
+                while let Some(window) = handle.take_window() {
+                    sink.emit(profile_window_event(&window));
+                }
+            }
+        }
+    }
+    // Best-effort final drain before stopping the sampler; a partial window
+    // that never completed a full export interval is dropped by skiff-profiling.
+    while let Some(window) = handle.take_window() {
+        sink.emit(profile_window_event(&window));
+    }
+    handle.stop();
+}
+
+/// `rust.profile` PlatformEvent for one completed sampling window (contract
+/// §2): producer is explicitly `"router"`, numeric fields are JSON numbers.
+pub fn profile_window_event(window: &skiff_profiling::ProfileWindow) -> TelemetryEvent {
+    let mut attrs = Map::new();
+    attrs.insert("producer".to_string(), json!("router"));
+    attrs.insert("intervalStartMs".to_string(), json!(window.interval_start_ms));
+    attrs.insert("intervalMs".to_string(), json!(window.interval_ms));
+    attrs.insert("wallMs".to_string(), json!(window.wall_ms));
+    attrs.insert("cpuMs".to_string(), json!(window.cpu_ms));
+    attrs.insert(
+        "threads".to_string(),
+        json!(window
+            .threads
+            .iter()
+            .map(|thread| json!({ "name": thread.name, "cpuMs": thread.cpu_ms }))
+            .collect::<Vec<_>>()),
+    );
+    attrs.insert(
+        "stacks".to_string(),
+        json!(window
+            .stacks
+            .iter()
+            .map(|stack| json!({ "folded": stack.folded, "samples": stack.samples }))
+            .collect::<Vec<_>>()),
+    );
+    PlatformEvent::new("rust.profile")
+        .with_attrs(Some(attrs))
+        .into_event(telemetry_timestamp_now(), TelemetrySource::Router)
+}
+
 fn build_batches(
     producer_id: &str,
     next_seq: &AtomicU64,

@@ -70,6 +70,7 @@ pub struct RuntimeFileConfig {
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
     pub telemetry: Option<RuntimeTelemetryConfig>,
+    pub profile: Option<RuntimeProfileConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,6 +87,8 @@ struct RawRuntimeFileConfig {
     services: Option<serde_yaml::Value>,
     #[serde(default)]
     telemetry: Option<RawRuntimeTelemetryConfig>,
+    #[serde(default)]
+    profile: Option<RawRuntimeProfileConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,6 +111,29 @@ struct RawRuntimeTelemetryConfig {
 struct RawRuntimeServiceDbConfig {
     #[serde(default)]
     encryption: Option<RawRuntimeServiceDbEncryptionConfig>,
+}
+
+/// Runtime sampling (`rust.profile`) configuration (driver-parsed,
+/// driver-consumed).
+///
+/// `None` (absent block or `enabled: false`) disables sampling entirely, mirroring
+/// the telemetry block. Defaults follow the `rust.profile` contract: sampling at
+/// 1000 Hz and a 60s export window aligned to wall-clock minute boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProfileConfig {
+    pub sampling_hz: u64,
+    pub export_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeProfileConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    sampling_hz: Option<u64>,
+    #[serde(default)]
+    export_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +182,7 @@ impl RuntimeFileConfig {
             http_response_max_bytes: runtime_http_response_max_bytes_from_value(&value)?,
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
             telemetry: runtime_telemetry(raw.telemetry)?,
+            profile: runtime_profile(raw.profile)?,
         })
     }
 }
@@ -187,6 +214,26 @@ fn runtime_telemetry(
         file_path: telemetry.file_path.map(PathBuf::from),
         file_max_bytes: telemetry.file_max_bytes,
         file_max_files: telemetry.file_max_files,
+    }))
+}
+
+/// Parses the profile block into the runtime sampling configuration.
+///
+/// `enabled: false` or an absent block disables sampling entirely (`None`).
+/// `samplingHz` defaults to 1000 and `exportIntervalMs` to 60_000 per the
+/// `rust.profile` contract.
+fn runtime_profile(
+    profile: Option<RawRuntimeProfileConfig>,
+) -> anyhow::Result<Option<RuntimeProfileConfig>> {
+    if profile.as_ref().is_some_and(|p| p.enabled == Some(false)) {
+        return Ok(None);
+    }
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    Ok(Some(RuntimeProfileConfig {
+        sampling_hz: profile.sampling_hz.unwrap_or(1000),
+        export_interval_ms: profile.export_interval_ms.unwrap_or(60_000),
     }))
 }
 

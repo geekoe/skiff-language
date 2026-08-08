@@ -35,9 +35,11 @@ futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9"
 sha1 = "0.10"
 sha2 = "0.10"
+skiff-profiling = { path = "../profiling" }
 skiff-runtime-loader = { path = "loader" }
 skiff-runtime-linked-type-plan = { path = "linked-type-plan" }
 skiff-runtime-linked-program = { path = "linked-program" }

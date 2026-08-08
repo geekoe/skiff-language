@@ -29,8 +29,8 @@ pub use bootstrap::{
 };
 pub use config::{
     load_router_config, redact_router_config, FileBackendConfig, FileBackendLocalConfig,
-    FileBackendOssConfig, RouterConfig, RouterConfigError, RouterRewriteRule, ServiceDbConfig,
-    TelemetryConfig, ROUTER_CONFIG_REDACTED_VALUE,
+    FileBackendOssConfig, ProfileConfig, RouterConfig, RouterConfigError, RouterRewriteRule,
+    ServiceDbConfig, TelemetryConfig, ROUTER_CONFIG_REDACTED_VALUE,
 };
 pub use dispatch::{
     candidate_query_from_request, capabilities_from_wire_names, dispatch_mode_as_str,
@@ -73,9 +73,10 @@ pub use session::{
 };
 pub use supervisor::{RouterComponents, RouterSupervisor, SupervisorError, SupervisorListeners};
 pub use telemetry::{
-    task_event, telemetry_timestamp_now, NoopTaskTelemetrySink, RouterTelemetryExporter,
-    RouterTelemetryExporterHandle, RouterTelemetryFileSink, RouterTelemetryFileSinkHandle,
-    RouterTelemetryProducer, TaskTelemetrySink, EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
+    profile_window_event, task_event, telemetry_timestamp_now, NoopTaskTelemetrySink,
+    ProfileSamplingHandle, RouterTelemetryExporter, RouterTelemetryExporterHandle,
+    RouterTelemetryFileSink, RouterTelemetryFileSinkHandle, RouterTelemetryProducer,
+    TaskTelemetrySink, EXPORTER_SHUTDOWN_FLUSH_TIMEOUT,
 };
 pub use test_dispatch::{
     TestDispatchHttpHandler, TestDispatchHttpHandlerOptions, TestDispatchHttpResponse,

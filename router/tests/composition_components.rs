@@ -632,6 +632,7 @@ mod tests {
                     mongo_url: "mongodb://127.0.0.1:27017/?replicaSet=rs0".to_string(),
                 },
                 telemetry: None,
+                profile_sampling: None,
                 websocket_path: "/ws".to_string(),
             }
         }

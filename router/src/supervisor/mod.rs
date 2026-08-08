@@ -68,9 +68,9 @@ use crate::task::{
     TaskControlCounters,
 };
 use crate::telemetry::{
-    NoopTaskTelemetrySink, RouterTelemetryExporter, RouterTelemetryExporterHandle,
-    RouterTelemetryFileSink, RouterTelemetryFileSinkHandle, RouterTelemetryProducer,
-    TaskTelemetrySink,
+    NoopTaskTelemetrySink, ProfileSamplingHandle, RouterTelemetryExporter,
+    RouterTelemetryExporterHandle, RouterTelemetryFileSink, RouterTelemetryFileSinkHandle,
+    RouterTelemetryProducer, TaskTelemetrySink,
 };
 
 /// Fail-closed supervisor assembly errors; no listener is started and owned
@@ -121,6 +121,9 @@ pub struct RouterComponents {
     /// Optional telemetry file sink task (default when endpoint is empty);
     /// shut down with the control plane.
     pub telemetry_file_sink: Mutex<Option<RouterTelemetryFileSinkHandle>>,
+    /// Optional rust.profile sampling task (enabled via the `profileSampling`
+    /// config block); shut down with the control plane.
+    pub profile_sampling: Mutex<Option<ProfileSamplingHandle>>,
     /// Task worker joins; aborted on supervisor shutdown.
     pub task_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -144,6 +147,14 @@ impl RouterComponents {
     pub async fn shutdown_task_control(&self) {
         for handle in &self.task_tasks {
             handle.abort();
+        }
+        if let Some(profile_sampling) = self
+            .profile_sampling
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            profile_sampling.shutdown().await;
         }
         if let Some(exporter) = self
             .telemetry_exporter
@@ -243,6 +254,10 @@ impl RouterComponents {
             Some(producer) => Arc::new(producer.clone()),
             None => Arc::new(NoopTaskTelemetrySink),
         };
+        // rust.profile sampling (contract §2): starts the skiff-profiling
+        // sampler and spawns the take_window -> PlatformEvent loop when the
+        // `profileSampling` block is enabled; fail-soft on start errors.
+        let profile_sampling = crate::telemetry::start_profile_sampling(config, task_telemetry.clone());
         let task_clock: Arc<dyn skiff_task_control::TaskClock> =
             Arc::new(skiff_task_control::SystemClock);
         let ws_clock: Arc<dyn crate::ws::Clock> = Arc::new(WsSystemClock);
@@ -519,6 +534,7 @@ impl RouterComponents {
             task_telemetry,
             telemetry_exporter: Mutex::new(telemetry_exporter),
             telemetry_file_sink: Mutex::new(telemetry_file_sink),
+            profile_sampling: Mutex::new(profile_sampling),
             task_tasks,
         }))
     }

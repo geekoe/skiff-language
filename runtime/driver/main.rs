@@ -94,6 +94,23 @@ async fn run() -> anyhow::Result<()> {
     })
     .await?;
 
+    // rust.profile sampling: enabled by the `profile:` block; the sampler runs
+    // on the host tokio runtime and emits one PlatformEvent per minute window
+    // through the host telemetry producer.
+    let profile_emitter = match &file_config.profile {
+        Some(profile) => {
+            let emitter =
+                runtime::profiling::start_profile_emitter(profile, host.telemetry_producer())?;
+            tracing::info!(
+                event = "rust_profile.sampling_started",
+                samplingHz = profile.sampling_hz,
+                exportIntervalMs = profile.export_interval_ms,
+            );
+            Some(emitter)
+        }
+        None => None,
+    };
+
     let runner = host.clone();
     tokio::select! {
         result = runner.run_forever() => {
@@ -103,6 +120,11 @@ async fn run() -> anyhow::Result<()> {
             result?;
             tracing::info!(event = "runtime.shutdown_requested");
         }
+    }
+    // Stop the sampler before flushing telemetry so a pending window (if any)
+    // is still enqueued when the producer drains on shutdown.
+    if let Some(emitter) = profile_emitter {
+        emitter.shutdown().await;
     }
     host.shutdown_actor_instances();
     host.shutdown_telemetry().await;

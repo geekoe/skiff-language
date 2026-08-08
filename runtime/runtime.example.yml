@@ -7,6 +7,15 @@ runtime-home: .runtime-home
 telemetry:
   enabled: true
   endpoint: ws://127.0.0.1:4002/telemetry
+# profile:
+#   Rust sampling (rust.profile PlatformEvent, one per wall-clock minute
+#   covering the previous minute). Disabled by default; only enable in
+#   dedicated profiling runs.
+#   enabled: true
+#   samplingHz: 1000        # SIGPROF sample frequency (default 1000 = 1ms)
+#   exportIntervalMs: 60000 # export window length (default 60000, must be a
+#                           # multiple of 60000; windows align to minute
+#                           # boundaries)
 serviceDb:
   encryption:
     keyringFile: /run/secrets/skiff-service-db-keyring.json
