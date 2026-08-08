@@ -566,10 +566,16 @@ async function authorAgineStack({
     throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
   }
 
+  // Config snapshot authoring must use the 'dev' profile, not PROFILE:
+  // agine/aihub/codex-relay services only ship config.dev.yml (+ config.dev.secret.yml),
+  // so load_service_config fails with "missing required config path" for any other
+  // profile. This matches the E-chat PASS precedent (c5463fda) where
+  // runConfigSnapshotAuthoring was explicitly called with profile: 'dev'; package and
+  // assembly authoring above keep PROFILE for release pointer directories.
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
-    profile,
+    profile: 'dev',
     assemblyRecord: assemblyRecordPath,
     sources: serviceSources,
   });
