@@ -2771,6 +2771,7 @@ dependencies = [
  "skiff-compiler",
  "skiff-deployment",
  "skiff-runtime-linked-program",
+ "skiff-runtime-linked-type-plan",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
  "skiff-test-runner",
