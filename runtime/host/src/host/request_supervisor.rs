@@ -189,6 +189,7 @@ impl RequestSupervisor {
             None,
             request.budget_attrs(duration_ms, trace),
         );
+        emit_request_duration_metric(&request.active, duration_ms, "ok");
         true
     }
 
@@ -224,6 +225,7 @@ impl RequestSupervisor {
             Some(response_error_to_telemetry_map(error)),
             request.budget_attrs(duration_ms, trace),
         );
+        emit_request_duration_metric(&request.active, duration_ms, "error");
         true
     }
 
@@ -256,6 +258,7 @@ impl RequestSupervisor {
             request.budget_attrs(duration_ms, trace),
             &correlation,
         );
+        emit_request_duration_metric(&request.active, duration_ms, "error");
         true
     }
 
@@ -290,6 +293,7 @@ impl RequestSupervisor {
             active
                 .telemetry
                 .emit_trace("request.cancel", Some(duration_ms), None, Some(attrs));
+            emit_request_duration_metric(active, duration_ms, "cancel");
         }
         true
     }
@@ -344,6 +348,16 @@ fn finish_cancelled_request(request: &SupervisedRequest, trace: CompletionTrace)
         None,
         request.budget_attrs(duration_ms, trace),
     );
+    emit_request_duration_metric(&request.active, duration_ms, "cancel");
+}
+
+fn emit_request_duration_metric(active: &ActiveRequest, duration_ms: f64, outcome: &str) {
+    let mut attrs = Map::new();
+    attrs.insert("durationMs".to_string(), Value::from(duration_ms));
+    attrs.insert("outcome".to_string(), Value::String(outcome.to_string()));
+    active
+        .telemetry
+        .emit_duration_metric("request.duration", Some(attrs));
 }
 
 impl SupervisedRequest {

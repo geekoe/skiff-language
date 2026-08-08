@@ -8,7 +8,10 @@ use std::sync::OnceLock;
 
 use base64::Engine as _;
 use skiff_runtime_eval::{
-    actor_executor::{ActorMethodExecutionRequest, ActorMethodExecutor, ActorMethodExecutorError},
+    actor_executor::{
+        actor_method_symbol, ActorMethodExecutionRequest, ActorMethodExecutor,
+        ActorMethodExecutorError,
+    },
     actor_instance::{
         ActorIncarnationKey, ActorInstanceFence, ActorInstanceStoreError, ActorLogicalKey,
         ACTOR_BOOTSTRAP_ENCODING_V1,
@@ -28,8 +31,9 @@ use skiff_runtime_transport::{
         ActorOwnerFailureFrameHeader, ActorOwnerFailureReasonFrameHeader,
         ActorOwnerInvokeFrameHeader, ACTOR_OWNER_FAILURE_FRAME_TYPE,
     },
-    protocol::RUNTIME_FRAME_SCHEMA_VERSION,
+    protocol::{RUNTIME_FRAME_SCHEMA_VERSION, TelemetrySource},
 };
+use serde_json::{Map, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use tracing::error;
@@ -37,6 +41,7 @@ use tracing::error;
 use crate::{
     eval_capability_adapter::{ActorMethodEvalExecution, ActorMethodEvalExecutionInput},
     host::actor_owner_invocations::ActorOwnerCancellationReason,
+    telemetry::{telemetry_event, telemetry_timestamp_now},
 };
 
 use super::{
@@ -417,6 +422,8 @@ impl RuntimeHost {
         let invocation_id = header.invoke.invocation_id.clone();
         let cancellation_correlation = header.invoke.cancellation_correlation.clone();
         let effective_deadline = effective_deadline(&header.invoke.deadline);
+        let started_at = Instant::now();
+        let method_symbol_cell = Arc::new(Mutex::new(None::<(String, String)>));
         let (result, terminal_fallback, deadline_at) = if let Some(timeout) = effective_deadline {
             let deadline_at = Instant::now() + timeout;
             let mut deadline = Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
@@ -430,6 +437,7 @@ impl RuntimeHost {
                 cancellation.clone(),
                 test_effect_context,
                 Arc::clone(&route_hold_cell),
+                Arc::clone(&method_symbol_cell),
             ));
             let (result, terminal_fallback) = tokio::select! {
                 biased;
@@ -488,6 +496,15 @@ impl RuntimeHost {
             expired_actor_owner_terminal_barrier().wait().await;
         }
         if let Some(reason) = cancellation_reason {
+            self.emit_actor_method_duration_metric(
+                &header,
+                &method_symbol_from_cell(&method_symbol_cell, &header),
+                started_at,
+                match reason {
+                    ActorOwnerCancellationReason::Cancelled => "cancel",
+                    ActorOwnerCancellationReason::DeadlineExceeded => "deadline",
+                },
+            );
             return Err(ActorOwnerExecutionFailure::cancelled(
                 &invocation_id,
                 &cancellation_correlation,
@@ -499,8 +516,21 @@ impl RuntimeHost {
                 },
             ));
         }
-        let payload =
-            result.expect("Actor owner execution result must exist without cancellation")?;
+        let Some(result) = result else {
+            panic!("Actor owner execution result must exist without cancellation");
+        };
+        let payload = match result {
+            Ok(payload) => payload,
+            Err(failure) => {
+                self.emit_actor_method_duration_metric(
+                    &header,
+                    &method_symbol_from_cell(&method_symbol_cell, &header),
+                    started_at,
+                    "error",
+                );
+                return Err(failure);
+            }
+        };
         let frame = ActorMethodFrame::Return(
             ActorMethodReturnFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.into(),
@@ -514,7 +544,14 @@ impl RuntimeHost {
             .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?;
         sender
             .send(RouterWriterMessage::Binary(bytes))
-            .map_err(|_| ActorOwnerExecutionFailure::new("Router writer is closed"))
+            .map_err(|_| ActorOwnerExecutionFailure::new("Router writer is closed"))?;
+        self.emit_actor_method_duration_metric(
+            &header,
+            &method_symbol_from_cell(&method_symbol_cell, &header),
+            started_at,
+            "ok",
+        );
+        Ok(())
     }
 
     async fn execute_actor_owner_invoke_inner(
@@ -526,6 +563,7 @@ impl RuntimeHost {
         cancellation: skiff_runtime_capability_context::CancellationToken,
         test_effect_context: Option<crate::capability_context::ActorMethodTestEffectContext>,
         route_hold_cell: Arc<Mutex<Option<ActorRouteHoldGuard>>>,
+        method_symbol_cell: Arc<Mutex<Option<(String, String)>>>,
     ) -> Result<Vec<u8>, ActorOwnerExecutionFailure> {
         let router_session_id = actor_session.router_session_id();
         let route = self
@@ -593,6 +631,21 @@ impl RuntimeHost {
             .map_err(|error| ActorOwnerExecutionFailure::new(error.to_string()))?;
         let input = admitted_input(header.clone(), arguments_payload)?;
         let fence = actor_instance_fence(&input)?;
+        let method_symbol = match actor_method_symbol(
+            execution.interpreter(),
+            &context,
+            &fence.declaration_owner,
+            &input.invoke.method_identity,
+        ) {
+            Ok(symbol) => (symbol.method, symbol.actor_type),
+            Err(_) => (
+                input.invoke.method_identity.as_str().to_string(),
+                input.invoke.actor_ref.actor_type_identity.clone(),
+            ),
+        };
+        *method_symbol_cell
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(method_symbol);
         let bootstrap = input.activation_bootstrap.as_ref();
         let executor = ActorMethodExecutor::new(self.actor_instances.store());
         let handle = executor
@@ -640,6 +693,50 @@ impl RuntimeHost {
                 )
             })
     }
+
+    /// Emits the `actor.method.duration` metric event for one settled owner
+    /// method invocation (metric, not span: no `spanId`, duration in attrs).
+    /// `target` is the qualified actor type name (`<modulePath>.<symbol>`);
+    /// the method symbol stays in attrs.
+    fn emit_actor_method_duration_metric(
+        &self,
+        header: &ActorOwnerInvokeFrameHeader,
+        symbol: &(String, String),
+        started_at: Instant,
+        outcome: &str,
+    ) {
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        event.service_id = Some(header.invoke.actor_ref.service_id.clone());
+        event.runtime_id = Some(self.base_runtime_id.clone());
+        event.trace_id = header.invoke.trace_id.clone();
+        event.request_id = Some(header.invoke.invocation_id.clone());
+        event.target = Some(symbol.1.clone());
+        event.name = Some("actor.method.duration".to_string());
+        event.attrs = Some(Map::from_iter([
+            (
+                "durationMs".to_string(),
+                Value::from(started_at.elapsed().as_secs_f64() * 1000.0),
+            ),
+            ("method".to_string(), Value::String(symbol.0.clone())),
+            ("outcome".to_string(), Value::String(outcome.to_string())),
+        ]));
+        self.telemetry.emit(event);
+    }
+}
+
+fn method_symbol_from_cell(
+    cell: &Mutex<Option<(String, String)>>,
+    header: &ActorOwnerInvokeFrameHeader,
+) -> (String, String) {
+    cell.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_else(|| {
+            (
+                header.invoke.method_identity.as_str().to_string(),
+                header.invoke.actor_ref.actor_type_identity.clone(),
+            )
+        })
 }
 
 fn bounded_failure_message(message: &str) -> String {

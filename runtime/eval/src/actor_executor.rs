@@ -17,8 +17,8 @@ use skiff_runtime_boundary::{
     runtime_value::RuntimeValue,
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, LinkedActorCreateMethod, LinkedActorMethodImplementation,
-    LinkedActorPublicMethod, LinkedTypeRef,
+    ExecutableAddr, LinkedActorCreateMethod, LinkedActorDeclarationOwner,
+    LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedTypeRef,
 };
 use skiff_runtime_linked_type_plan::{
     PlanContext, ProgramTypeView, RuntimeTypePlan, RuntimeTypePlanLinkedExt,
@@ -41,6 +41,42 @@ use crate::{
 mod actor_concurrent_continuation;
 
 pub(crate) use actor_concurrent_continuation::ActorExecutionFrame;
+
+/// One actor method's resolved names: the method symbol and the qualified
+/// actor type name (`<modulePath>.<symbol>`). Host-side telemetry uses them to
+/// label actor method duration metrics instead of identity hashes / JSON
+/// serviceSymbol strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorMethodSymbol {
+    pub method: String,
+    pub actor_type: String,
+}
+
+/// Resolves the declared symbol names for one actor method identity, using the
+/// same declaration/method lookup as `ActorMethodExecutor::execute`.
+pub fn actor_method_symbol(
+    interpreter: &Interpreter,
+    context: &ProgramExecutionContext<'_>,
+    declaration_owner: &LinkedActorDeclarationOwner,
+    method_identity: &ActorMethodIdentity,
+) -> Result<ActorMethodSymbol, ActorMethodExecutorError> {
+    let legacy_program;
+    let program = if let Some(target) = context.runtime_assembly_target_if_present() {
+        target.execution_projection().type_view()
+    } else {
+        legacy_program = interpreter.program_projection()?;
+        legacy_program.type_view()
+    };
+    let declaration = resolve_actor_declaration(program, declaration_owner)?;
+    let method = exact_method(declaration.public_methods.as_slice(), method_identity)?;
+    Ok(ActorMethodSymbol {
+        method: method.name.clone(),
+        actor_type: format!(
+            "{}.{}",
+            declaration.actor_type.module_path, declaration.actor_type.symbol
+        ),
+    })
+}
 
 pub struct ActorMethodExecutionRequest<'a> {
     pub instance: &'a ActorInstanceHandle,

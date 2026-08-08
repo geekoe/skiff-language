@@ -81,6 +81,24 @@ impl RequestTelemetryContext {
         self.emit_trace_event(name.into(), duration_ms, error, attrs, Some(correlation));
     }
 
+    /// Emits a duration metric event (not a span: no `spanId`, duration is a
+    /// numeric attr) so the consumer aggregates it into per-bucket
+    /// count/sum/avg/min/max/p95 series keyed by `name` + `serviceId`.
+    pub fn emit_duration_metric(&self, name: impl Into<String>, attrs: Option<Map<String, Value>>) {
+        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        event.service_id = self.service_id.clone();
+        event.revision_id = self.revision_id.clone();
+        event.build_id = self.build_id.clone();
+        event.activation_identity = self.activation_identity.clone();
+        event.runtime_id = self.runtime_id.clone();
+        event.request_id = self.request_id.clone();
+        event.trace_id = self.trace_id.clone();
+        event.target = self.target.clone();
+        event.name = Some(name.into());
+        event.attrs = attrs;
+        self.emit(event);
+    }
+
     fn emit_trace_event(
         &self,
         name: String,

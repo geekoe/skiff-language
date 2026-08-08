@@ -1000,6 +1000,33 @@ async fn execute(
         .await
 }
 
+#[test]
+fn actor_method_symbol_resolves_declared_name() {
+    let fixture = fixture(integer(), false);
+    let symbol = actor_method_symbol(
+        &fixture.interpreter,
+        &context(&fixture.interpreter),
+        &fixture.handle.fence().declaration_owner,
+        &fixture.method,
+    );
+    let symbol = symbol.expect("declared method must resolve");
+    assert_eq!(symbol.method, "set");
+    assert_eq!(symbol.actor_type, "actors.Counter");
+}
+
+#[test]
+fn actor_method_symbol_rejects_unknown_identity() {
+    let fixture = fixture(integer(), false);
+    let unknown = ActorMethodIdentity::new("skiff-actor-method-v1:sha256:missing");
+    let result = actor_method_symbol(
+        &fixture.interpreter,
+        &context(&fixture.interpreter),
+        &fixture.handle.fence().declaration_owner,
+        &unknown,
+    );
+    assert!(result.is_err());
+}
+
 async fn execution_frame(fixture: &Fixture) -> (ActorExecutionFrame, HeapAccess) {
     execution_frame_with_activation(fixture, false).await
 }
