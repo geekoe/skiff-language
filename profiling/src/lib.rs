@@ -294,8 +294,13 @@ fn function_name(key: u64) -> String {
 
 /// 后台采样主循环：每轮「睡到下一个对齐窗口起点 → 起 ProfilerGuard 采样 →
 /// 睡满窗口 → 停止、算 cpu/wall、构建窗口入队」。
+///
+/// 窗口起点从「首个对齐分钟边界」开始，之后每次按 `interval_ms` 向前推进，
+/// 保证窗口连续覆盖每个分钟（不能从停止时刻重新对齐——停止时刻已越过起点，
+/// 重新对齐会跳过整个分钟）。
 fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<VecDeque<ProfileWindow>>>) {
     let interval_ms = config.export_interval_ms;
+    let mut next_start_ms = (unix_now_ms() / interval_ms + 1) * interval_ms;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -304,7 +309,6 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
 
         // 睡到下一个对齐的窗口起点（壁钟分钟边界）。
         let now_ms = unix_now_ms();
-        let next_start_ms = (now_ms / interval_ms + 1) * interval_ms;
         let wait_ms = next_start_ms.saturating_sub(now_ms);
         if !sleep_until_stop(wait_ms, &stop) {
             break;
@@ -381,6 +385,10 @@ fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<
                 stacks,
                 functions,
             });
+
+        // 下一个窗口起点：从当前窗口起点推进一个窗口（不能从停止时刻
+        // 重新对齐，否则会跳过整个窗口期）。
+        next_start_ms += interval_ms;
     }
 }
 
