@@ -307,6 +307,32 @@ export const LIVE_REGISTRY = deepFreeze([
     ],
   },
   {
+    key: 'router-rust-agine-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-router-agine-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'router-live:agine',
+        description:
+          'Phase 0 combined managed Live selector on one isolated stack (real compiler artifact + temporary Mongo + real Rust Router/Runtime binaries + local ingress): `npm run e2e:chat-smoke`, host-tools `--check`, then strict full host-tools with explicit runtime PID, read-only narrowed workspace and no host.shell.run; provenance manifest pins three repository commits/trees/dirty states, compiler/router/runtime binary SHA-256, every deployment/package identity and engine legacy-tree',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:router-rust-agine',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'npm', 'mongod', 'mongosh', 'git', 'pgrep'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
     key: 'router-rust-clean-host-live',
     source: {
       type: 'script',
