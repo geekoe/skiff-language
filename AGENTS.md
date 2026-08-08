@@ -44,7 +44,10 @@ node scripts/skiff.mjs router status --dir .skiff-dev/router
 - 二进制：`cargo build` 走共享缓存（`~/.skiff-cargo-target`）；`skiff build` 把最终
   二进制拷贝到本 checkout 的 `build/bin/`——谁构建谁拥有，跨 worktree 不互相覆盖，
   重启永远不会加载别人的二进制。
-- launchd（可选）只做开机拉起（RunAtLoad），日常由开发 agent 手动管理。
+- launchd：`run.skiff.supervise`（`scripts/skiff-supervise.mjs`）巡检拉起 router/runtime
+  daemon（等 mongo 后按 pidfile 确保存活、崩溃自动重启），`run.skiff.watch` 开机拉起
+  watch（RunAtLoad）；日常重建后仍用 `skiff <component> restart --dir`，supervise 不会与
+  手动 restart 抢跑。
 - 端口：4000（service HTTP）、4001（router control/runtime WS）、4002（telemetry
   消费端独立仓库 `skiff-telemetry` 自管，复用本端口）。
 - 无 `telemetry.endpoint` 时，router / runtime 默认把事件落文件
