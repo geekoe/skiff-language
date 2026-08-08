@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use skiff_runtime_transport::protocol::TelemetryLevel;
 use skiff_task_control::model::{DurableUtcTimestamp, LeaseId, TaskId, TaskOutcome, TaskTerminal};
 use skiff_task_control::scheduler::AdmissionDecision;
 use skiff_task_control::scheduler::Scheduler;
@@ -365,13 +364,8 @@ impl DurableTaskControl {
                         TaskOutcome::Canceled => "canceled",
                     })
                     .unwrap_or("unknown");
-                let level = match outcome {
-                    "succeeded" => TelemetryLevel::Info,
-                    _ => TelemetryLevel::Warn,
-                };
                 let mut event = task_event(
                     "task.settled",
-                    level,
                     Some(record.task_id.as_str()),
                     json!({
                         "outcome": outcome,
@@ -411,7 +405,6 @@ impl DurableTaskControl {
                 );
                 let mut event = task_event(
                     "task.settle.uncertain",
-                    TelemetryLevel::Warn,
                     Some(task_id.as_str()),
                     attrs,
                 );
@@ -426,7 +419,6 @@ impl DurableTaskControl {
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
         let mut event = task_event(
             "task.settle.stale",
-            TelemetryLevel::Warn,
             Some(task_id.as_str()),
             attrs,
         );
@@ -439,7 +431,6 @@ impl DurableTaskControl {
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
         let mut event = task_event(
             "task.attempt.uncertain",
-            TelemetryLevel::Warn,
             Some(task_id.as_str()),
             attrs,
         );
@@ -456,7 +447,6 @@ impl DurableTaskControl {
         attrs.insert("retryAfterMs".to_string(), json!(retry_after_ms));
         self.telemetry.emit(task_event(
             "task.lease.released",
-            TelemetryLevel::Info,
             Some(task_id.as_str()),
             attrs,
         ));

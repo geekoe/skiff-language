@@ -33,7 +33,6 @@ use skiff_runtime_transport::actor_owner::{
     encode_actor_owner_invoke_frame, ActorOwnerFenceFrameHeader, ActorOwnerInvokeFrameHeader,
     ActorOwnerRouteAuthorityFrameHeader,
 };
-use skiff_runtime_transport::protocol::TelemetryLevel;
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
@@ -278,7 +277,6 @@ impl RouterTaskAttemptAdmission {
             AdmissionDecision::Accepted => {
                 self.telemetry.emit(task_event(
                     "task.admission.accepted",
-                    TelemetryLevel::Info,
                     Some(record.task_id.as_str()),
                     attrs,
                 ));
@@ -287,7 +285,6 @@ impl RouterTaskAttemptAdmission {
                 attrs.insert("reason".to_string(), Value::String(reason.clone()));
                 self.telemetry.emit(task_event(
                     "task.admission.rejected",
-                    TelemetryLevel::Warn,
                     Some(record.task_id.as_str()),
                     attrs,
                 ));
@@ -296,7 +293,6 @@ impl RouterTaskAttemptAdmission {
                 attrs.insert("reason".to_string(), Value::String(reason.clone()));
                 self.telemetry.emit(task_event(
                     "task.admission.uncertain",
-                    TelemetryLevel::Warn,
                     Some(record.task_id.as_str()),
                     attrs,
                 ));
@@ -305,7 +301,6 @@ impl RouterTaskAttemptAdmission {
                 attrs.insert("reason".to_string(), Value::String(reason.clone()));
                 self.telemetry.emit(task_event(
                     "task.platform.failed",
-                    TelemetryLevel::Error,
                     Some(record.task_id.as_str()),
                     attrs,
                 ));
@@ -339,7 +334,6 @@ impl RouterTaskAttemptAdmission {
         }
         let mut event = task_event(
             "task.admission.selection",
-            TelemetryLevel::Info,
             Some(record.task_id.as_str()),
             attrs,
         );
@@ -353,7 +347,6 @@ impl RouterTaskAttemptAdmission {
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
         self.telemetry.emit(task_event(
             name,
-            TelemetryLevel::Warn,
             Some(record.task_id.as_str()),
             attrs,
         ));

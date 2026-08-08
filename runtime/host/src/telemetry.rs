@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use skiff_runtime_model::service_error::ErrorCorrelation;
 use skiff_runtime_transport::protocol::{
-    TelemetryEvent, TelemetrySource, TelemetryVisibility,
+    PlatformEvent, TelemetryEvent, TelemetrySource, TelemetryVisibility,
 };
 
 pub trait TelemetryEmitter: std::fmt::Debug + Send + Sync {
@@ -85,17 +85,10 @@ impl RequestTelemetryContext {
     /// numeric attr) so the consumer aggregates it into per-bucket
     /// count/sum/avg/min/max/p95 series keyed by `name` + `serviceId`.
     pub fn emit_duration_metric(&self, name: impl Into<String>, attrs: Option<Map<String, Value>>) {
-        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
-        event.service_id = self.service_id.clone();
-        event.revision_id = self.revision_id.clone();
-        event.build_id = self.build_id.clone();
-        event.activation_identity = self.activation_identity.clone();
-        event.runtime_id = self.runtime_id.clone();
-        event.request_id = self.request_id.clone();
-        event.trace_id = self.trace_id.clone();
-        event.target = self.target.clone();
-        event.name = Some(name.into());
-        event.attrs = attrs;
+        let mut event = PlatformEvent::new(name)
+            .with_attrs(attrs)
+            .into_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        self.apply_correlation(&mut event);
         self.emit(event);
     }
 
@@ -107,25 +100,29 @@ impl RequestTelemetryContext {
         attrs: Option<Map<String, Value>>,
         correlation: Option<&ErrorCorrelation>,
     ) {
-        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        let mut event = PlatformEvent::new(name)
+            .with_duration_ms(duration_ms)
+            .with_error(error)
+            .with_attrs(attrs)
+            .into_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        event.trace_id = correlation
+            .map(|correlation| correlation.trace_id.clone())
+            .or_else(|| self.trace_id.clone());
+        event.error_id = correlation.map(|correlation| correlation.error_id.clone());
+        self.apply_correlation(&mut event);
+        self.emit(event);
+    }
+
+    fn apply_correlation(&self, event: &mut TelemetryEvent) {
         event.service_id = self.service_id.clone();
         event.revision_id = self.revision_id.clone();
         event.build_id = self.build_id.clone();
         event.activation_identity = self.activation_identity.clone();
         event.runtime_id = self.runtime_id.clone();
         event.request_id = self.request_id.clone();
-        event.trace_id = correlation
-            .map(|correlation| correlation.trace_id.clone())
-            .or_else(|| self.trace_id.clone());
-        event.error_id = correlation.map(|correlation| correlation.error_id.clone());
         event.span_id = self.span_id.clone();
         event.parent_span_id = self.parent_span_id.clone();
         event.target = self.target.clone();
-        event.name = Some(name);
-        event.duration_ms = duration_ms;
-        event.error = error;
-        event.attrs = attrs;
-        self.emit(event);
     }
 }
 

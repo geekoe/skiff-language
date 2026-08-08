@@ -26,8 +26,8 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use skiff_runtime_transport::protocol::{
-    TelemetryBatchEnvelope, TelemetryEvent, TelemetryLevel, TelemetryProtocol,
-    TelemetryRegisterEnvelope, TelemetrySource, TelemetryVisibility,
+    PlatformEvent, TelemetryBatchEnvelope, TelemetryEvent, TelemetryProtocol,
+    TelemetryRegisterEnvelope, TelemetrySource,
 };
 
 use crate::config::RouterConfig;
@@ -238,10 +238,9 @@ impl RouterTelemetryProducer {
         if !dropped.is_empty() {
             events.insert(
                 0,
-                router_telemetry_event(TelemetryLevel::Warn, |event| {
-                    event.name = Some("telemetry.dropped".to_string());
-                    event.attrs = Some(dropped);
-                }),
+                PlatformEvent::new("telemetry.dropped")
+                    .with_attrs(Some(dropped))
+                    .into_event(telemetry_timestamp_now(), TelemetrySource::Router),
             );
         }
         build_batches(
@@ -589,58 +588,18 @@ where
         .map_err(|error| error.to_string())
 }
 
-/// Base router task event with Router source.
-pub fn router_telemetry_event(
-    level: TelemetryLevel,
-    configure: impl FnOnce(&mut TelemetryEvent),
-) -> TelemetryEvent {
-    let mut event = TelemetryEvent {
-        ts: telemetry_timestamp_now(),
-        source: TelemetrySource::Router,
-        visibility: TelemetryVisibility::Operational,
-        service_id: None,
-        revision_id: None,
-        build_id: None,
-        activation_identity: None,
-        runtime_id: None,
-        provider_id: None,
-        provider_revision: None,
-        provider_capability: None,
-        provider_target: None,
-        request_id: None,
-        client_request_id: None,
-        trace_id: None,
-        error_id: None,
-        span_id: None,
-        parent_span_id: None,
-        target: None,
-        level: Some(level),
-        name: None,
-        message: None,
-        attrs: None,
-        error: None,
-        duration_ms: None,
-        dropped: None,
-    };
-    configure(&mut event);
-    event
-}
-
 pub fn task_event(
     name: &str,
-    level: TelemetryLevel,
     task_id: Option<&str>,
     attrs: Map<String, Value>,
 ) -> TelemetryEvent {
-    let mut event = router_telemetry_event(level, |event| {
-        event.name = Some(name.to_string());
-    });
     let mut attrs = attrs;
     if let Some(task_id) = task_id {
         attrs.insert("taskId".to_string(), Value::String(task_id.to_string()));
     }
-    event.attrs = Some(attrs);
-    event
+    PlatformEvent::new(name)
+        .with_attrs(Some(attrs))
+        .into_event(telemetry_timestamp_now(), TelemetrySource::Router)
 }
 
 /// Backlog gauge event (authoritative design "Observability And Retention":
@@ -681,10 +640,9 @@ pub fn backlog_metric_event(
     if let Some(observed_at) = observation.observed_at {
         attrs.insert("observedAtMs".to_string(), json!(observed_at.millis()));
     }
-    router_telemetry_event(TelemetryLevel::Info, |event| {
-        event.name = Some("task.backlog".to_string());
-        event.attrs = Some(attrs);
-    })
+    PlatformEvent::new("task.backlog")
+        .with_attrs(Some(attrs))
+        .into_event(telemetry_timestamp_now(), TelemetrySource::Router)
 }
 
 pub fn telemetry_timestamp_now() -> String {

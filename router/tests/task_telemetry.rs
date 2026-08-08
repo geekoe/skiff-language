@@ -25,7 +25,7 @@ use skiff_runtime_transport::protocol::{
     encode_task_cancel_request_frame, encode_task_submit_request_frame,
     ActivationIdentityFrameMetadata, TaskCancelRequestFrameHeader, TaskRef,
     TaskSubmitRequestFrameHeaderV2, TaskSubmitTiming, TaskTargetKind, TelemetryEvent,
-    TelemetryLevel, RUNTIME_FRAME_SCHEMA_VERSION,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_task_control::model::{
     DetachedCallTarget, DurableUtcTimestamp, LeaseId, RecoverablePayload, ServiceOwner,
@@ -464,7 +464,6 @@ fn producer_batches_and_backlog_metric_shape() {
     let producer = RouterTelemetryProducer::new(&config).expect("producer");
     let event = task_event(
         "task.submit.accepted",
-        TelemetryLevel::Info,
         Some(TASK_ID),
         Default::default(),
     );
@@ -506,7 +505,6 @@ fn noop_sink_accepts_any_event() {
     let sink = NoopTaskTelemetrySink;
     assert!(!sink.emit(task_event(
         "task.submit.accepted",
-        TelemetryLevel::Info,
         Some(TASK_ID),
         Default::default(),
     )));
@@ -562,7 +560,6 @@ fn telemetry_config(
 fn sample_event() -> TelemetryEvent {
     task_event(
         "task.submit.accepted",
-        TelemetryLevel::Info,
         Some(TASK_ID),
         Default::default(),
     )

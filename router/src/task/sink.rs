@@ -26,7 +26,7 @@ use skiff_runtime_transport::protocol::{
     TaskCancelResultKindWire, TaskCancelResultWire, TaskControlRejectionCode, TaskRef,
     TaskStatusKindWire, TaskStatusRequestFrameHeader, TaskStatusResponseFrameHeader,
     TaskStatusWire, TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
-    TaskSubmitResponseFrameHeader, TaskTargetKind, TelemetryLevel, RUNTIME_FRAME_SCHEMA_VERSION,
+    TaskSubmitResponseFrameHeader, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
     TASK_CANCEL_ERROR_FRAME_TYPE, TASK_STATUS_ERROR_FRAME_TYPE,
     TASK_SUBMIT_RESPONSE_STATUS_SUBMITTED,
 };
@@ -274,12 +274,11 @@ impl DurableTaskFrameSink {
     fn emit_submit_event(
         &self,
         name: &str,
-        level: TelemetryLevel,
         header: &TaskSubmitRequestFrameHeaderV2,
         task_id: Option<&str>,
         attrs: Map<String, Value>,
     ) {
-        let mut event = task_event(name, level, task_id, attrs);
+        let mut event = task_event(name, task_id, attrs);
         event.request_id =
             (!header.caller_request_id.is_empty()).then(|| header.caller_request_id.clone());
         event.trace_id = header.trace_id.clone();
@@ -292,12 +291,11 @@ impl DurableTaskFrameSink {
     fn emit_cancel_event(
         &self,
         name: &str,
-        level: TelemetryLevel,
         request: &TaskCancelRequestFrameHeader,
         attrs: Map<String, Value>,
     ) {
         let task_id = request.task_ref.task_id();
-        let mut event = task_event(name, level, Some(task_id), attrs);
+        let mut event = task_event(name, Some(task_id), attrs);
         event.request_id = Some(request.rpc_id.clone());
         self.telemetry.emit(event);
     }
@@ -324,8 +322,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.rejected",
-                    TelemetryLevel::Warn,
-                    &header,
+                                                &header,
                     header.task_id.as_deref(),
                     Self::attrs(json!({ "reason": message })),
                 );
@@ -340,8 +337,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                TelemetryLevel::Warn,
-                &header,
+                                        &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({
                     "reason": "task activation identity does not match the active routing epoch",
@@ -360,8 +356,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.uncertain",
-                TelemetryLevel::Warn,
-                &header,
+                                        &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "storeUnavailable" })),
             );
@@ -378,8 +373,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                TelemetryLevel::Warn,
-                &header,
+                                        &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "invalidTiming" })),
             );
@@ -396,8 +390,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                TelemetryLevel::Warn,
-                &header,
+                                        &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "quotaExceeded" })),
             );
@@ -462,8 +455,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.accepted",
-                    TelemetryLevel::Info,
-                    &header,
+                                                            &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "dueAtMs": due_at.millis() })),
                 );
@@ -497,8 +489,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.uncertain",
-                    TelemetryLevel::Warn,
-                    &header,
+                                                &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "code": "storeUnavailable" })),
                 );
@@ -517,8 +508,7 @@ impl DurableTaskFrameSink {
                         .fetch_add(1, Ordering::Relaxed);
                     self.emit_submit_event(
                         "task.submit.accepted",
-                        TelemetryLevel::Info,
-                        &header,
+                                                                    &header,
                         Some(task_id.as_str()),
                         Self::attrs(json!({ "dueAtMs": due_at.millis(), "recovered": true })),
                     );
@@ -541,8 +531,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.rejected",
-                    TelemetryLevel::Warn,
-                    &header,
+                                                &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "reason": "durable task store rejected the submission" })),
                 );
@@ -651,8 +640,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_cancel_event(
                 "task.cancel.notFound",
-                TelemetryLevel::Warn,
-                &request,
+                                        &request,
                 Self::attrs(json!({
                     "reason": "owner scope is not a service of the active routing epoch",
                 })),
@@ -683,8 +671,7 @@ impl DurableTaskFrameSink {
                             .fetch_add(1, Ordering::Relaxed);
                         self.emit_cancel_event(
                             "task.cancel.canceled",
-                            TelemetryLevel::Info,
-                            &request,
+                                                                            &request,
                             Map::new(),
                         );
                     }
@@ -694,8 +681,7 @@ impl DurableTaskFrameSink {
                             .fetch_add(1, Ordering::Relaxed);
                         self.emit_cancel_event(
                             "task.cancel.alreadyStarted",
-                            TelemetryLevel::Info,
-                            &request,
+                                                                            &request,
                             Map::new(),
                         );
                     }
@@ -705,8 +691,7 @@ impl DurableTaskFrameSink {
                             .fetch_add(1, Ordering::Relaxed);
                         self.emit_cancel_event(
                             "task.cancel.alreadyTerminal",
-                            TelemetryLevel::Info,
-                            &request,
+                                                                            &request,
                             Map::new(),
                         );
                     }
@@ -714,8 +699,7 @@ impl DurableTaskFrameSink {
                         self.counters.cancel_expired.fetch_add(1, Ordering::Relaxed);
                         self.emit_cancel_event(
                             "task.cancel.expired",
-                            TelemetryLevel::Info,
-                            &request,
+                                                                            &request,
                             Map::new(),
                         );
                     }
@@ -737,8 +721,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_cancel_event(
                     "task.cancel.notFound",
-                    TelemetryLevel::Warn,
-                    &request,
+                                                &request,
                     Self::attrs(json!({
                         "reason": "task record is not found in the durable task store",
                     })),
@@ -757,8 +740,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_cancel_event(
                     "task.cancel.unavailable",
-                    TelemetryLevel::Warn,
-                    &request,
+                                                &request,
                     Self::attrs(json!({ "reason": "task store is unavailable" })),
                 );
                 let bytes = Self::control_error_frame(

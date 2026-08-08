@@ -178,6 +178,79 @@ pub struct TelemetryEvent {
     pub dropped: Option<serde_json::Map<String, Value>>,
 }
 
+/// Platform-only telemetry event interface.
+///
+/// Business logs produced by `std.log` are the only events that carry
+/// `level`/`message`; platform code (router control plane, runtime host
+/// request machinery) emits through this interface, which has no log-level or
+/// message surface, so a platform event can never be mistaken for a business
+/// log by shape. The consumer identifies business logs as `level` + `message`
+/// (without `name`) and platform events as `name` (without `level`/`message`).
+#[derive(Debug, Clone)]
+pub struct PlatformEvent {
+    name: String,
+    attrs: Option<serde_json::Map<String, Value>>,
+    error: Option<serde_json::Map<String, Value>>,
+    duration_ms: Option<f64>,
+}
+
+impl PlatformEvent {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            attrs: None,
+            error: None,
+            duration_ms: None,
+        }
+    }
+
+    pub fn with_attrs(mut self, attrs: Option<serde_json::Map<String, Value>>) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
+    pub fn with_error(mut self, error: Option<serde_json::Map<String, Value>>) -> Self {
+        self.error = error;
+        self
+    }
+
+    pub fn with_duration_ms(mut self, duration_ms: Option<f64>) -> Self {
+        self.duration_ms = duration_ms;
+        self
+    }
+
+    pub fn into_event(self, ts: impl Into<String>, source: TelemetrySource) -> TelemetryEvent {
+        TelemetryEvent {
+            ts: ts.into(),
+            source,
+            visibility: TelemetryVisibility::Operational,
+            service_id: None,
+            revision_id: None,
+            build_id: None,
+            activation_identity: None,
+            runtime_id: None,
+            provider_id: None,
+            provider_revision: None,
+            provider_capability: None,
+            provider_target: None,
+            request_id: None,
+            client_request_id: None,
+            trace_id: None,
+            error_id: None,
+            span_id: None,
+            parent_span_id: None,
+            target: None,
+            level: None,
+            name: Some(self.name),
+            message: None,
+            attrs: self.attrs,
+            error: self.error,
+            duration_ms: self.duration_ms,
+            dropped: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawTelemetryEvent {

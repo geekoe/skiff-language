@@ -16,15 +16,15 @@ use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, Of
 use tokio::sync::mpsc;
 
 use crate::error::{Result, RuntimeError};
-use crate::telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext};
+use crate::telemetry::{telemetry_timestamp_now, RequestTelemetryContext};
 use skiff_runtime_boundary::value::decode_base64;
 use skiff_runtime_model::runtime_value::ActorRef;
 use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
-    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, TaskCancelResponseFrameHeader,
-    TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader, TaskSubmitRejectionCode,
-    TaskSubmitResponseFrameHeader, TelemetryLevel, TelemetrySource,
+    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader, PlatformEvent,
+    TaskCancelResponseFrameHeader, TaskControlRejectionCode, TaskRef, TaskStatusResponseFrameHeader,
+    TaskSubmitRejectionCode, TaskSubmitResponseFrameHeader, TelemetrySource,
 };
 
 const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
@@ -269,7 +269,6 @@ impl<'a> RequestClient<'a> {
                     RuntimeError::TaskSubmitRejected { code, message } => {
                         self.context.emit_task_submit_event(
                             "task.submit.rejected",
-                            TelemetryLevel::Warn,
                             task_id.as_deref(),
                             Some(code),
                             Some(message),
@@ -278,7 +277,6 @@ impl<'a> RequestClient<'a> {
                     _ => {
                         self.context.emit_task_submit_event(
                             "task.submit.uncertain",
-                            TelemetryLevel::Warn,
                             task_id.as_deref(),
                             None,
                             Some(&error.to_string()),
@@ -291,7 +289,6 @@ impl<'a> RequestClient<'a> {
         validate_task_submit_response(&response, &rpc_id)?;
         self.context.emit_task_submit_event(
             "task.submit.accepted",
-            TelemetryLevel::Info,
             task_id.as_deref().or(Some(response.task_id.as_str())),
             None,
             None,
@@ -580,7 +577,6 @@ impl<'a> RequestClientContext<'a> {
     fn emit_task_submit_event(
         &self,
         name: &str,
-        level: TelemetryLevel,
         task_id: Option<&str>,
         code: Option<&str>,
         message: Option<&str>,
@@ -588,14 +584,6 @@ impl<'a> RequestClientContext<'a> {
         let Some(telemetry) = self.telemetry.as_ref() else {
             return;
         };
-        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
-        event.name = Some(name.to_string());
-        event.level = Some(level);
-        event.service_id = Some(self.service_id.to_string());
-        event.runtime_id = Some(self.runtime_id.to_string());
-        event.request_id = Some(self.request_id.to_string());
-        event.trace_id = self.trace_id.map(str::to_string);
-        event.target = Some(TASK_SUBMIT_TARGET.to_string());
         let mut attrs = Map::new();
         if let Some(task_id) = task_id {
             attrs.insert("taskId".to_string(), Value::String(task_id.to_string()));
@@ -606,7 +594,14 @@ impl<'a> RequestClientContext<'a> {
         if let Some(message) = message {
             attrs.insert("reason".to_string(), Value::String(message.to_string()));
         }
-        event.attrs = Some(attrs);
+        let mut event = PlatformEvent::new(name)
+            .with_attrs(Some(attrs))
+            .into_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        event.service_id = Some(self.service_id.to_string());
+        event.runtime_id = Some(self.runtime_id.to_string());
+        event.request_id = Some(self.request_id.to_string());
+        event.trace_id = self.trace_id.map(str::to_string);
+        event.target = Some(TASK_SUBMIT_TARGET.to_string());
         let _ = telemetry.emit(event);
     }
 }

@@ -13,8 +13,24 @@ use crate::{
     telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext},
 };
 use skiff_runtime_transport::protocol::{
-    TelemetryEvent, TelemetryLevel, TelemetrySource, TelemetryVisibility,
+    PlatformEvent, TelemetryEvent, TelemetryLevel, TelemetrySource, TelemetryVisibility,
 };
+
+/// The only constructor for business log events (`level` + `message`, no
+/// `name`). `std.log.*` is a business-code surface; platform code emits
+/// through `PlatformEvent` instead, so platform events never carry a
+/// log level or message and can never be mistaken for business logs.
+fn business_log_event(
+    level: TelemetryLevel,
+    message: impl Into<String>,
+    attrs: Option<Map<String, Value>>,
+) -> TelemetryEvent {
+    let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+    event.level = Some(level);
+    event.message = Some(message.into());
+    event.attrs = attrs;
+    event
+}
 
 #[derive(Clone)]
 pub struct TelemetryCapabilityContext {
@@ -46,7 +62,36 @@ impl TelemetryCapabilityContext {
         let Some(request) = self.request.as_ref() else {
             return false;
         };
-        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        let mut event = PlatformEvent::new("service.error.restricted")
+            .with_attrs(Some(Map::from_iter([(
+                "requestGeneration".to_string(),
+                Value::Number(diagnostic.owner.request_generation.into()),
+            )])))
+            .with_error(Some(Map::from_iter([
+                (
+                    "kind".to_string(),
+                    Value::String("restrictedServiceDiagnostic".to_string()),
+                ),
+                (
+                    "causeKind".to_string(),
+                    Value::String(restricted_cause_kind(diagnostic.cause_kind).to_string()),
+                ),
+                (
+                    "source".to_string(),
+                    instruction_source_site_value(&diagnostic.source),
+                ),
+                (
+                    "stack".to_string(),
+                    Value::Array(
+                        diagnostic
+                            .stack
+                            .iter()
+                            .map(exception_stack_frame_value)
+                            .collect(),
+                    ),
+                ),
+            ])))
+            .into_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
         event.visibility = TelemetryVisibility::Restricted;
         event.service_id = Some(diagnostic.owner.provider_service_id.clone());
         event.activation_identity = Some(diagnostic.owner.provider_activation_id.clone());
@@ -57,39 +102,13 @@ impl TelemetryCapabilityContext {
         event.span_id = request.span_id.clone();
         event.parent_span_id = request.parent_span_id.clone();
         event.target = Some(diagnostic.owner.operation_id.clone());
-        event.level = Some(TelemetryLevel::Error);
-        event.name = Some("service.error.restricted".to_string());
-        event.attrs = Some(Map::from_iter([(
-            "requestGeneration".to_string(),
-            Value::Number(diagnostic.owner.request_generation.into()),
-        )]));
-        event.error = Some(Map::from_iter([
-            (
-                "kind".to_string(),
-                Value::String("restrictedServiceDiagnostic".to_string()),
-            ),
-            (
-                "causeKind".to_string(),
-                Value::String(restricted_cause_kind(diagnostic.cause_kind).to_string()),
-            ),
-            (
-                "source".to_string(),
-                instruction_source_site_value(&diagnostic.source),
-            ),
-            (
-                "stack".to_string(),
-                Value::Array(
-                    diagnostic
-                        .stack
-                        .iter()
-                        .map(exception_stack_frame_value)
-                        .collect(),
-                ),
-            ),
-        ]));
         request.emit(event)
     }
 
+    /// Business-log construction for `std.log.*` (reached only through the
+    /// `std.telemetry.emit` native bridge). This is the only place that
+    /// produces business log events (`level` + `message`, no `name`); platform
+    /// code emits through `PlatformEvent` and must not use this surface.
     fn emit_log_args(&self, target: &str, args: &[Value]) -> Result<Value> {
         let level = args
             .first()
@@ -116,11 +135,8 @@ impl TelemetryCapabilityContext {
             }
         };
 
-        let mut event = telemetry_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        let mut event = business_log_event(level, message, attrs);
         self.apply_request_context(&mut event);
-        event.level = Some(level);
-        event.message = Some(message.to_string());
-        event.attrs = attrs;
 
         self.emit(event);
         Ok(Value::Null)

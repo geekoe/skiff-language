@@ -10,7 +10,6 @@
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
-use skiff_runtime_transport::protocol::TelemetryLevel;
 use skiff_task_control::model::{DurableUtcTimestamp, LeaseId, TaskId, TaskRecord};
 use skiff_task_control::scheduler::SchedulerObservation;
 use skiff_task_control::store::{ClaimRejection, RenewRejection};
@@ -55,14 +54,13 @@ fn lease_attrs(task_id: &TaskId, lease_id: &LeaseId) -> Map<String, Value> {
 fn emit_lease_event(
     telemetry: &Arc<dyn TaskTelemetrySink>,
     name: &str,
-    level: TelemetryLevel,
     task_id: &TaskId,
     lease_id: &LeaseId,
     extra: Map<String, Value>,
 ) {
     let mut attrs = lease_attrs(task_id, lease_id);
     attrs.extend(extra);
-    telemetry.emit(task_event(name, level, Some(task_id.as_str()), attrs));
+    telemetry.emit(task_event(name, Some(task_id.as_str()), attrs));
 }
 
 impl SchedulerObservation for RouterTaskSchedulerObservation {
@@ -76,7 +74,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         );
         let mut event = task_event(
             "task.ready",
-            TelemetryLevel::Info,
             Some(record.task_id.as_str()),
             attrs,
         );
@@ -104,7 +101,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         );
         let mut event = task_event(
             "task.claim",
-            TelemetryLevel::Info,
             Some(record.task_id.as_str()),
             attrs,
         );
@@ -117,7 +113,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         attrs.insert("reason".to_string(), Value::String(format!("{reason:?}")));
         self.telemetry.emit(task_event(
             "task.duplicate.absorbed",
-            TelemetryLevel::Debug,
             Some(task_id.as_str()),
             attrs,
         ));
@@ -129,7 +124,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         emit_lease_event(
             &self.telemetry,
             "task.lease.renewed",
-            TelemetryLevel::Info,
             task_id,
             lease_id,
             extra,
@@ -145,7 +139,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         emit_lease_event(
             &self.telemetry,
             "task.lease.lost",
-            TelemetryLevel::Warn,
             task_id,
             lease_id,
             extra,
@@ -156,7 +149,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         emit_lease_event(
             &self.telemetry,
             "task.recovered",
-            TelemetryLevel::Warn,
             task_id,
             lease_id,
             Map::new(),
@@ -177,7 +169,6 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
         emit_lease_event(
             &self.telemetry,
             "task.lease.released",
-            TelemetryLevel::Info,
             task_id,
             lease_id,
             extra,

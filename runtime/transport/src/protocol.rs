@@ -13,7 +13,7 @@ pub use actor::{
 };
 pub use control::{
     ConnectionSendEnvelope, FileBackendControlConfig, FileBackendLocalConfig, FileBackendOssConfig,
-    RouterControlEnvelope, RouterControlFrameHeader, RouterControlPackageConfig,
+    PlatformEvent, RouterControlEnvelope, RouterControlFrameHeader, RouterControlPackageConfig,
     RouterControlServiceConfig, RouterControlServiceDb, TelemetryBatchEnvelope,
     TelemetryControlConfig, TelemetryEvent, TelemetryLevel, TelemetryProtocol,
     TelemetryRegisterEnvelope, TelemetrySource, TelemetryVisibility, TypedEnvelope,

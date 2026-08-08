@@ -52,6 +52,13 @@ router / gateway 是自身运行事件源，也负责转发或下发 telemetry �
 - durable queue 也不是 telemetry；telemetry queue 是 lossy 观测通道。
 - 事件字段固定，业务代码不能扩展字段（协议拒绝未知字段）。
 - 事件 schema 见共享协议 fixture（`../architecture/fixtures/observability-minimal.json`），生产端（router / runtime）测试与消费端仓库复用。
+- **事件形态由两个生产端接口约束，互不混淆**：
+  - 业务日志：`std.log.*`（`level` + `message`，无 `name`）。唯一构造入口是 runtime 的
+    `std.telemetry.emit` 原生桥接（`business_log_event`），平台 Rust 代码不可达。
+  - 平台事件：router 控制面 / runtime host 等平台代码统一走 `PlatformEvent` 接口
+    （`name`，可带 `attrs` / `error` / `durationMs`），**不得携带 `level` / `message`**。
+  - 底层共用同一 `TelemetryEvent` 管线，但消费端按形态分流：`level` + `message` 存在即业务日志
+    （`/logs`），`name` 存在即平台事件（`/records`）。平台事件带 `level` 是协议违约，消费端拒绝入库。
 
 ## Event Shape
 
@@ -104,8 +111,10 @@ remote-boundary诊断。
 
 语义：
 
-- `std.log.*` 是 runtime telemetry intrinsic。
+- `std.log.*` 是 runtime telemetry intrinsic，也是业务日志（`level` + `message`）的唯一入口。
 - 它产生 best-effort 日志事件（`message` / `level` 形态由消费端识别，不声明 topic）。
+- `level` / `message` 是 `std.log` 专属字段：平台事件不得携带（见「Event Model」），平台代码
+  没有构造业务日志的接口。
 - runtime 自动补充 request frame、trace、span、service、runtime 和 target context。
 - attrs 应是可脱敏、可限长的结构化数据。
 - telemetry 不可用、队列满或发送失败不能影响业务返回值。
