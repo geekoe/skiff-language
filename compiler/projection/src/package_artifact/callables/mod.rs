@@ -1,3 +1,4 @@
+mod implementation_manifests;
 mod normalization;
 mod signatures;
 mod surface;
@@ -7,17 +8,19 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, ConstExport, ExecutableExport,
     ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
-    InterfaceMethodSignature, OperationCallableKind, OperationTargetRef, PackageCallableId,
-    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageImplementationLinks, PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
-    ParamModeIr, TypeExport,
+    InterfaceMethodSignature, OperationCallableKind, OperationTargetRef,
+    PackageActorImplementation, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableParameter, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageImplementationLinks, PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
+    PackageRequirement, PackageRuntimeRequirements, PackageTypeRef, ParamModeIr, TypeExport,
 };
 use skiff_compiler_core::{
     canonical_implementation_callable_source_path, implementation_package_callable_id,
     ImplementationCallableKind,
 };
 use skiff_compiler_projection_input::{
-    ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts, ResolvedPackageSchema,
+    ProjectionExecutableKey, ProjectionLocalInterfaceConformanceFacts,
+    ProjectionPackageCallableSignatureFacts, ResolvedPackageSchema,
 };
 
 use crate::{
@@ -32,8 +35,15 @@ pub(super) struct ProjectedPackageCallableSurface {
     pub implementation_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
     pub implementation_links: PackageImplementationLinks,
     pub callable_links: BTreeMap<PackageCallableId, PackageCallableLinkFact>,
+    pub actor_implementations: Vec<PackageActorImplementation>,
+    pub local_interface_conformances: Vec<PackageLocalInterfaceConformance>,
     pub semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     pub boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,
+}
+
+struct ProjectedImplementationSymbols {
+    symbols: BTreeMap<String, PackageLocalAbiSymbol>,
+    callables: BTreeMap<PackageExecutableCoordinate, PackageCallableId>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -43,6 +53,8 @@ pub(super) fn project_package_callable_surface(
     exports: &ProjectedPackageExportLinks,
     file_ir_units: &[FileIrUnit],
     semantic_facts_by_executable: &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
+    local_interface_conformances: &ProjectionLocalInterfaceConformanceFacts,
+    package_requirements: &[PackageRequirement],
     signatures: &ProjectionPackageCallableSignatureFacts,
     runtime_requirements: &PackageRuntimeRequirements,
     package_schema_refs: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
@@ -128,7 +140,7 @@ pub(super) fn project_package_callable_surface(
             "boundary projection",
         )?;
     }
-    let implementation_symbols = project_implementation_symbols(
+    let implementation = project_implementation_symbols(
         package_id,
         file_ir_units,
         semantic_facts_by_executable,
@@ -136,11 +148,20 @@ pub(super) fn project_package_callable_surface(
         &mut callable_links,
         &mut semantic_facts,
     )?;
+    let manifests = implementation_manifests::project_implementation_manifests(
+        package_id,
+        file_ir_units,
+        local_interface_conformances,
+        package_requirements,
+        &implementation.callables,
+    )?;
     Ok(ProjectedPackageCallableSurface {
         public_symbols: local_surface.public_symbols,
-        implementation_symbols,
+        implementation_symbols: implementation.symbols,
         implementation_links: local_surface.implementation_links,
         callable_links,
+        actor_implementations: manifests.actor_implementations,
+        local_interface_conformances: manifests.local_interface_conformances,
         semantic_facts,
         boundary_projections,
     })
@@ -153,8 +174,9 @@ fn project_implementation_symbols(
     implementation_links: &mut PackageImplementationLinks,
     callable_links: &mut BTreeMap<PackageCallableId, PackageCallableLinkFact>,
     semantic_facts: &mut BTreeMap<PackageCallableId, CallableSemanticFacts>,
-) -> Result<BTreeMap<String, PackageLocalAbiSymbol>, ProjectionError> {
+) -> Result<ProjectedImplementationSymbols, ProjectionError> {
     let mut symbols = BTreeMap::new();
+    let mut implementation_callables = BTreeMap::new();
     for unit in units {
         project_implementation_types(package_id, unit, units, &mut symbols, implementation_links)?;
         project_implementation_constants(
@@ -372,6 +394,22 @@ fn project_implementation_symbols(
                 callable_abi_id: callable_id.to_string(),
                 callable_kind,
             };
+            let coordinate = PackageExecutableCoordinate {
+                file_ir_identity: unit.file_ir_identity.clone(),
+                module_path: unit.module_path.clone(),
+                executable_index: declaration.executable_index,
+            };
+            if implementation_callables
+                .insert(coordinate.clone(), callable_id.clone())
+                .is_some()
+            {
+                return Err(projection_error(
+                    package_id,
+                    format!(
+                        "implementation executable coordinate {coordinate:?} has more than one canonical callable"
+                    ),
+                ));
+            }
             insert_callable_entry(
                 callable_links,
                 callable_id.clone(),
@@ -401,7 +439,10 @@ fn project_implementation_symbols(
             )?;
         }
     }
-    Ok(symbols)
+    Ok(ProjectedImplementationSymbols {
+        symbols,
+        callables: implementation_callables,
+    })
 }
 
 fn project_implementation_types(

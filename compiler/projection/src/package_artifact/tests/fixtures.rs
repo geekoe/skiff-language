@@ -15,7 +15,9 @@ use skiff_artifact_model::{
     ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_projection_input::{
-    ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
+    ProjectionExecutableKey, ProjectionLocalInterfaceConformance,
+    ProjectionLocalInterfaceConformanceFacts, ProjectionPackageCallableKey,
+    ProjectionPackageCallableSignatureFacts, ProjectionSourceSymbolKey,
 };
 
 use crate::package_artifact::{
@@ -46,6 +48,19 @@ pub(super) fn project_fixture(
 pub(super) fn project_fixture_with_runtime_requirements(
     signature_set: SignatureSet,
     runtime_requirements: PackageRuntimeRequirements,
+) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+    project_fixture_with_conformance_facts(signature_set, runtime_requirements, true)
+}
+
+pub(super) fn project_fixture_without_local_conformance_facts(
+) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+    project_fixture_with_conformance_facts(SignatureSet::Complete, runtime_requirements(), false)
+}
+
+fn project_fixture_with_conformance_facts(
+    signature_set: SignatureSet,
+    runtime_requirements: PackageRuntimeRequirements,
+    include_local_conformance_facts: bool,
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
     let file_ref = file_ref();
     let export_index = PackageExportIndex {
@@ -79,6 +94,10 @@ pub(super) fn project_fixture_with_runtime_requirements(
                 executable_export(&file_ref, 1, "mutate"),
             ),
             ("run".to_string(), executable_export(&file_ref, 0, "run")),
+            (
+                "runAlias".to_string(),
+                executable_export(&file_ref, 0, "run"),
+            ),
         ]),
         impl_methods: BTreeMap::from([("Worker.handle".to_string(), receiver_export(&file_ref))]),
         ..PackageExportIndex::default()
@@ -114,6 +133,13 @@ pub(super) fn project_fixture_with_runtime_requirements(
                     symbol: "run".to_string(),
                 },
             ),
+            (
+                "runAlias".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "run".to_string(),
+                },
+            ),
         ]),
         public_instances: vec![PackageExportPublicInstance {
             public_path: "worker".to_string(),
@@ -135,6 +161,10 @@ pub(super) fn project_fixture_with_runtime_requirements(
         ),
         (
             callable_key("worker.handle", 2),
+            signature(TypeRefIr::builtin("string")),
+        ),
+        (
+            callable_key("runAlias", 0),
             signature(TypeRefIr::builtin("string")),
         ),
     ];
@@ -172,7 +202,12 @@ pub(super) fn project_fixture_with_runtime_requirements(
                 fields: BTreeMap::new(),
             },
             type_params: Vec::new(),
-            implements: Vec::new(),
+            implements: vec![TypeRefIr::AnyInterface {
+                interface: skiff_artifact_identity::interface_instantiation_ref(
+                    TypeRefIr::LocalType { type_index: 1 },
+                    Vec::new(),
+                ),
+            }],
             source_span: None,
         },
         TypeDeclIr {
@@ -313,6 +348,28 @@ pub(super) fn project_fixture_with_runtime_requirements(
         }],
         runtime_requirements,
         callable_semantic_facts: semantic_facts,
+        local_interface_conformances: if include_local_conformance_facts {
+            ProjectionLocalInterfaceConformanceFacts::try_from_entries([
+                ProjectionLocalInterfaceConformance::try_new(
+                    Vec::new(),
+                    ProjectionSourceSymbolKey::new("api", "Worker"),
+                    skiff_artifact_identity::interface_instantiation_ref(
+                        TypeRefIr::ServiceSymbol {
+                            symbol: ServiceSymbolRef {
+                                module_path: "api".to_string(),
+                                symbol: "WorkerInterface".to_string(),
+                            },
+                        },
+                        Vec::new(),
+                    ),
+                    vec![ProjectionExecutableKey::new("api", 2)],
+                )
+                .unwrap(),
+            ])
+            .unwrap()
+        } else {
+            ProjectionLocalInterfaceConformanceFacts::default()
+        },
         callable_signatures: signatures,
         package_schema_index: schema_index,
         package_schema_type_records: BTreeMap::new(),
@@ -598,6 +655,38 @@ pub(super) fn project_actor_fixture(
             executable_index: 1,
         }),
     });
+    let mut read = fixture_executable(
+        ExecutableKind::ImplMethod,
+        "thread_actor.ThreadActor.read",
+        Some(TypeRefIr::LocalType { type_index: 0 }),
+    );
+    read.params.clear();
+    unit.executables.extend([
+        read,
+        fixture_executable(
+            ExecutableKind::ImplMethod,
+            "thread_actor.ThreadActor.create",
+            Some(TypeRefIr::LocalType { type_index: 0 }),
+        ),
+    ]);
+    unit.declarations.executables.extend([
+        (
+            "ThreadActor.read".to_string(),
+            ExecutableDeclarationIr {
+                executable_index: 0,
+                symbol: "thread_actor.ThreadActor.read".to_string(),
+                source_span: None,
+            },
+        ),
+        (
+            "ThreadActor.create".to_string(),
+            ExecutableDeclarationIr {
+                executable_index: 1,
+                symbol: "thread_actor.ThreadActor.create".to_string(),
+                source_span: None,
+            },
+        ),
+    ]);
     let api_exports = PackageExports {
         entries: Vec::new(),
         symbols: BTreeMap::from([(
@@ -640,7 +729,17 @@ pub(super) fn project_actor_fixture(
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
-        callable_semantic_facts: BTreeMap::new(),
+        callable_semantic_facts: BTreeMap::from([
+            (
+                ProjectionExecutableKey::new("thread_actor", 0),
+                safe_facts(),
+            ),
+            (
+                ProjectionExecutableKey::new("thread_actor", 1),
+                safe_facts(),
+            ),
+        ]),
+        local_interface_conformances: ProjectionLocalInterfaceConformanceFacts::default(),
         callable_signatures: signatures,
         package_schema_index: schema_index,
         package_schema_type_records: BTreeMap::new(),

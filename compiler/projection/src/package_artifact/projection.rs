@@ -8,7 +8,8 @@ use skiff_artifact_model::{
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::{
-    ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
+    ProjectionExecutableKey, ProjectionLocalInterfaceConformanceFacts,
+    ProjectionPackageCallableSignatureFacts,
 };
 
 use crate::error::ProjectionError;
@@ -75,6 +76,11 @@ pub fn project_compiled_package_artifact(
         service_requirements: input.service_requirements,
         runtime_requirements,
         callable_semantic_facts: input.projection.source().callable_semantic_facts().clone(),
+        local_interface_conformances: input
+            .projection
+            .source()
+            .local_interface_conformances()
+            .clone(),
         callable_signatures,
         package_schema_index: schema.index,
         package_schema_type_records: schema.records,
@@ -98,6 +104,7 @@ pub(super) struct ProjectedPackageFacts<'a> {
     pub service_requirements: Vec<ServiceRequirement>,
     pub runtime_requirements: PackageRuntimeRequirements,
     pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
+    pub local_interface_conformances: ProjectionLocalInterfaceConformanceFacts,
     pub callable_signatures: ProjectionPackageCallableSignatureFacts,
     pub package_schema_index: skiff_artifact_model::PackageSchemaIndex,
     pub package_schema_type_records: BTreeMap<
@@ -123,6 +130,8 @@ pub(super) fn project_package_artifact_facts(
         &input.export_links,
         &input.file_ir_units,
         &input.callable_semantic_facts,
+        &input.local_interface_conformances,
+        &input.package_requirements,
         &input.callable_signatures,
         &input.runtime_requirements,
         &input.package_schema_refs_by_source,
@@ -167,6 +176,8 @@ pub(super) fn project_package_artifact_facts(
             .collect(),
         implementation_links: callables.implementation_links,
         callable_links: callables.callable_links,
+        actor_implementations: callables.actor_implementations,
+        local_interface_conformances: callables.local_interface_conformances,
         package_requirements: std::mem::take(&mut input.package_requirements),
         contract_requirements: std::mem::take(&mut input.contract_requirements),
         service_requirements: std::mem::take(&mut input.service_requirements),
