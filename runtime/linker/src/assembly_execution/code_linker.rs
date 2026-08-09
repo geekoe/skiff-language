@@ -531,7 +531,7 @@ impl<'a> AssemblyCodeLinker<'a> {
                     if let Some(step_expect) = step_expect {
                         self.link_type_ref(code_slot, file_index, &mut step_expect.request_type)?;
                     }
-                    match outcome {
+                    match outcome.as_mut() {
                         skiff_runtime_linked_program::LinkedTestEffectOutcomeIr::Respond {
                             value_type,
                             ..

@@ -839,7 +839,7 @@ fn linked_stmt(
                 })?,
             };
             LinkedStmtIr::TestEffectRegister {
-                target,
+                target: Box::new(target),
                 expect: expect.as_ref().map(|expected| LinkedTestEffectExpectedIr {
                     value: linked_expr_ref(&expected.value),
                     request_type: linked_type_ref(&expected.request_type),
@@ -850,7 +850,7 @@ fn linked_stmt(
                         value: linked_expr_ref(&expected.value),
                         request_type: linked_type_ref(&expected.request_type),
                     }),
-                outcome: match outcome {
+                outcome: Box::new(match outcome {
                     artifact::TestEffectOutcomeIr::Respond { value, value_type } => {
                         LinkedTestEffectOutcomeIr::Respond {
                             value: linked_expr_ref(value),
@@ -870,7 +870,7 @@ fn linked_stmt(
                             item_type: linked_type_ref(item_type),
                         }
                     }
-                },
+                }),
             }
         }
         artifact::StmtIr::Expr { value } => LinkedStmtIr::Expr {

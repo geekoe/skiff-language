@@ -272,7 +272,7 @@ fn validate_root(
                     ServiceErrorExecutionContext::NamedUnionBranch {
                         union_addr: root.addr.clone(),
                         branch_index,
-                        branch: branch.clone(),
+                        branch: Box::new(branch.clone()),
                         representation_owner: representation_owner(types, branch),
                     },
                 )?);
