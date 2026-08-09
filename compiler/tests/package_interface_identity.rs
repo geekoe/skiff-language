@@ -317,13 +317,11 @@ function generic(handler: any provider.GenericHandler<string>) -> string {
             provider.artifact, standalone.package.artifact,
             "consumer comparison must not alter provider artifact bytes"
         );
-        assert!(
-            provider
-                .artifact
-                .package_build_id
-                .as_str()
-                .starts_with(DIRECT_PROVIDER_BUILD_ID_PREFIX)
-        );
+        assert!(provider
+            .artifact
+            .package_build_id
+            .as_str()
+            .starts_with(DIRECT_PROVIDER_BUILD_ID_PREFIX));
         assert_eq!(
             provider
                 .artifact

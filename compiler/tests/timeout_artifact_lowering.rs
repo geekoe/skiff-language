@@ -81,7 +81,9 @@ function sequentialValue() -> string {
         // meaningful assertion is that the recorded identity equals a fresh
         // computation over the same unit (computed below) and carries the
         // current schema prefix.
-        assert!(file.file_ir_identity.starts_with("skiff-file-ir-v12:sha256:"));
+        assert!(file
+            .file_ir_identity
+            .starts_with("skiff-file-ir-v12:sha256:"));
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity
