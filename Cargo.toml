@@ -26,6 +26,7 @@ members = [
   "runtime/activation",
   "runtime/boundary",
   "runtime/capability-context",
+  "runtime/deployment-image",
   "runtime/eval",
   "runtime/host",
   "runtime/linked-type-plan",

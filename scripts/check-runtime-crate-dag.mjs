@@ -38,6 +38,7 @@ const runtimeDag = new Map([
     ],
   ],
   ['skiff-runtime-config-snapshot', []],
+  ['skiff-runtime-deployment-image', []],
   [
     'skiff-runtime-transport',
     ['skiff-runtime-request-contract', 'skiff-runtime-model'],
@@ -138,6 +139,7 @@ const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-boundary',
   'skiff-runtime-capability-context',
   'skiff-runtime-config-snapshot',
+  'skiff-runtime-deployment-image',
   'skiff-runtime-eval',
   'skiff-runtime-host',
   'skiff-runtime-linked-program',

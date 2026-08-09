@@ -40,6 +40,7 @@ const rustImplementationSubjects = [
       rustPackage('runtime/activation', 'skiff-runtime-activation'),
       rustPackage('runtime/boundary', 'skiff-runtime-boundary'),
       rustPackage('runtime/capability-context', 'skiff-runtime-capability-context'),
+      rustPackage('runtime/deployment-image', 'skiff-runtime-deployment-image'),
       rustPackage('runtime/eval', 'skiff-runtime-eval'),
       rustPackage('runtime/host', 'skiff-runtime-host'),
       rustPackage('runtime/linked-type-plan', 'skiff-runtime-linked-type-plan'),
