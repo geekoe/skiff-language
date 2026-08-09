@@ -332,11 +332,11 @@ function run(callback: any Handler) -> string {
             );
             temp.write(
                 "api.yml",
-                &format!("run: main.run\n{reserved}: main.{reserved}\n"),
+                format!("run: main.run\n{reserved}: main.{reserved}\n"),
             );
             temp.write(
                 "main.skiff",
-                &format!("type {reserved} {{}}\nfunction run() -> void {{}}\n"),
+                format!("type {reserved} {{}}\nfunction run() -> void {{}}\n"),
             );
 
             let project = compile_package_project(temp.path())

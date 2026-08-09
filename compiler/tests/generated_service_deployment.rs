@@ -74,7 +74,7 @@ fn compile_fixture(
     root.write("api.yml", "read: main.read\n");
     root.write(
         "main.skiff",
-        &format!(
+        format!(
             "function read() -> string {{ return {response} }}\nfunction configured() -> string {{ return config.require<string>(\"registry.token\") }}\n"
         ),
     );
@@ -296,7 +296,9 @@ db object PackageSecret {
                 .file_ir_units
                 .iter()
                 .flat_map(|file| file.unit.declarations.db.values())
-                .any(|declaration| declaration.collection_name.as_deref() == Some("package_secret")));
+                .any(
+                    |declaration| declaration.collection_name.as_deref() == Some("package_secret")
+                ));
         }
 
         let service = ServiceManifestAuthoring {

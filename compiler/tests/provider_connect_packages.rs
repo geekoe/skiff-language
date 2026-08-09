@@ -92,7 +92,7 @@ mod tests {
             let temp = package_with_source(name, "function run() -> string { return \"ok\" }\n");
             temp.write(
                 "package.yml",
-                &format!("id: example.com/provider-fixture\nversion: 1.0.0\n{field}"),
+                format!("id: example.com/provider-fixture\nversion: 1.0.0\n{field}"),
             );
             let error = compile_package_project(temp.path())
                 .expect_err("deployment/provider package field should fail")

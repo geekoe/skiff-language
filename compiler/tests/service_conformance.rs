@@ -7,11 +7,11 @@ use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
     file_ir_service_call_sites, validate_file_ir_service_calls, BoundaryCallableProjection,
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    ContractRequirement, ContractTypeRef, PackageLocalAbiSymbol, PackageSchemaTypeId,
-    PackageTypeRef, PackageTypeRequirement, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, ContractRequirement,
+    ContractTypeRef, PackageLocalAbiSymbol, PackageSchemaTypeId, PackageTypeRef,
+    PackageTypeRequirement, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
     definition_contract_operation_id, ContractDefinitionError, ServiceContractDefinition,
@@ -119,10 +119,7 @@ fn validate_runtime_server_stream_item_plan(plan: &BoundaryValuePlan) -> Result<
 }
 
 fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
-    temp.write(
-        "package.yml",
-        &format!("id: {package_id}\nversion: 1.0.0\n"),
-    );
+    temp.write("package.yml", format!("id: {package_id}\nversion: 1.0.0\n"));
     temp.write("api.yml", api);
     temp.write("main.skiff", source);
 }
@@ -155,28 +152,28 @@ fn write_schema_package_dependency(
     let encoded = schema_package_id.replace('.', "~").replace('/', "~~");
     let root = format!(".skiff-packages/{encoded}/1.0.0");
     temp.write(
-        &format!("{root}/package.yml"),
+        format!("{root}/package.yml"),
         format!("id: {schema_package_id}\nversion: 1.0.0\n"),
     );
-    temp.write(&format!("{root}/api.yml"), api);
-    temp.write(&format!("{root}/main.skiff"), source);
+    temp.write(format!("{root}/api.yml"), api);
+    temp.write(format!("{root}/main.skiff"), source);
     if let Some(model_source) = model_source {
-        temp.write(&format!("{root}/model.skiff"), model_source);
+        temp.write(format!("{root}/model.skiff"), model_source);
     }
 }
 
 fn write_stream_dependency(consumer: &TestDir) {
     let root = ".skiff-packages/example~com~~package-stream-expression-provider/1.0.0";
     consumer.write(
-        &format!("{root}/package.yml"),
+        format!("{root}/package.yml"),
         "id: example.com/package-stream-expression-provider\nversion: 1.0.0\n",
     );
     consumer.write(
-        &format!("{root}/api.yml"),
+        format!("{root}/api.yml"),
         "events: feed.events\none: feed.one\n",
     );
     consumer.write(
-        &format!("{root}/feed.skiff"),
+        format!("{root}/feed.skiff"),
         r#"function events() -> Stream<string> {
   emit("event")
   return null
@@ -966,7 +963,7 @@ function mutate(input: Box) -> void {
                     may_pending: false,
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
-}
+                }
             }
         );
         assert!(matches!(

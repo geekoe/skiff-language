@@ -179,15 +179,15 @@ fn write_schema_package_dependency(temp: &TestDir) {
     let encoded = SCHEMA_PACKAGE_ID.replace('.', "~").replace('/', "~~");
     let root = format!(".skiff-packages/{encoded}/{VERSION}");
     temp.write(
-        &format!("{root}/package.yml"),
+        format!("{root}/package.yml"),
         format!("id: {SCHEMA_PACKAGE_ID}\nversion: {VERSION}\n"),
     );
     temp.write(
-        &format!("{root}/api.yml"),
+        format!("{root}/api.yml"),
         format!("{REQUEST_SCHEMA_KEY}: main.Request\n"),
     );
     temp.write(
-        &format!("{root}/main.skiff"),
+        format!("{root}/main.skiff"),
         "type Request { message: string }\n",
     );
 }

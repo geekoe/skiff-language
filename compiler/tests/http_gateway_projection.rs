@@ -150,9 +150,11 @@ fn compile_fixture_with_service_calls(
         "service.yml",
         format!(
             "id: {SERVICE_ID}\n{}",
-            (!calls.is_empty())
-                .then(|| format!("serviceCalls:\n{calls}"))
-                .unwrap_or_default()
+            if calls.is_empty() {
+                String::new()
+            } else {
+                format!("serviceCalls:\n{calls}")
+            }
         ),
     );
     root.write("http.yml", http_yml.as_ref());

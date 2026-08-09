@@ -16,11 +16,7 @@ fn compile_package_file_ir(
     module_path: impl AsRef<str>,
 ) -> Result<PublishedFileIrArtifact, PackageProjectCompileError> {
     let temp = TestDir::new("skiff-compiler", "runtime-slots-package");
-    let package_manifest = if source.contains("db object ") {
-        "id: example.com/runtime-slots\nversion: 1.0.0\n"
-    } else {
-        "id: example.com/runtime-slots\nversion: 1.0.0\n"
-    };
+    let package_manifest = "id: example.com/runtime-slots\nversion: 1.0.0\n";
     fs::write(temp.path().join("package.yml"), package_manifest)
         .expect("package manifest should be written");
     fs::write(temp.path().join("api.yml"), "{}\n").expect("api.yml should be written");
