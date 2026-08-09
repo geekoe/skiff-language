@@ -43,6 +43,5 @@ pub(super) fn collect_package_std_type_root_violations(
         } else if registry.known_type_symbol(ty).is_none() {
             violations.push(format!("{path}: unknown standard_library type {ty}"));
         }
-        return;
     }
 }

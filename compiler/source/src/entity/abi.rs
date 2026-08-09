@@ -53,13 +53,7 @@ pub fn project_source_anchor(anchor: &SourceDeclarationAnchor) -> AbiSourceDecla
     AbiSourceDeclarationAnchor {
         publication_id: anchor.publication().id().as_str().to_string(),
         abi_epoch: anchor.publication().abi_epoch().value(),
-        module_path: anchor
-            .selector()
-            .module_path()
-            .segments()
-            .iter()
-            .cloned()
-            .collect(),
+        module_path: anchor.selector().module_path().segments().to_vec(),
         symbol: anchor.selector().symbol().as_str().to_string(),
         kind: project_kind(anchor.kind()),
     }
