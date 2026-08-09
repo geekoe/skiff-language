@@ -412,7 +412,10 @@ fn snapshot_release_counts_owners_and_failed_release_is_retryable() {
     let value = request_ref(3, 10);
     let mut heap = FakeHeap::new(3);
     heap.register(&value);
-    assert_eq!(heap.snapshot_share(&value), Ok(value));
+    assert!(matches!(
+        heap.snapshot_share(&value),
+        Ok(snapshot) if snapshot == value
+    ));
 
     heap.arm_failure(VmHeapOperation::ReleaseSnapshot);
     assert!(matches!(
@@ -514,7 +517,7 @@ fn root_sources_preserve_value_slot_boundaries_and_propagate_errors() {
         visited: Vec::new(),
     };
     assert_eq!(walk_roots(&roots, &mut visitor), Ok(()));
-    assert_eq!(visitor.visited, roots.0);
+    assert!(visitor.visited == roots.0);
 
     let stale_roots = FakeRoots(vec![stale]);
     assert_eq!(
