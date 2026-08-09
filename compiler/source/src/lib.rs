@@ -42,6 +42,7 @@ mod test_rules;
 pub(crate) mod type_projection;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
+mod value_transfer;
 mod writable_places;
 
 use std::collections::BTreeMap;
@@ -119,6 +120,13 @@ pub use type_resolution_model::{
     TypeResolutionPackageFacts, TypeResolutionPackageSchemaTypeFact,
 };
 pub use type_symbol_index::{publication_type_symbols, PublicationTypeSymbolIndex};
+pub use value_transfer::{
+    classify_source_value_transfer, SourceValueTransferError, SourceValueTransferFacts,
+    SourceValueTransferKind, SourceValueTransferNativeCategory, SourceValueTransferNativeTypeId,
+    SourceValueTransferNominalFact, SourceValueTransferNominalId,
+    SourceValueTransferNominalSemantics, SourceValueTransferPackageRef,
+    SourceValueTransferPosition,
+};
 
 pub fn validate_source_execution_semantics(
     model: &PackageSourceModel,
