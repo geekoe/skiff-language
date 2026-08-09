@@ -25,7 +25,7 @@ pub(super) fn collect_emit_expression_call_violations(
         Expr::Call { callee, args } => {
             collect_emit_expression_call_violations(path, callee, violations);
             for arg in args {
-                collect_emit_expression_call_violations(path, arg, violations);
+                collect_emit_expression_call_violations(path, arg.expr(), violations);
             }
         }
         Expr::Generic { callee, .. } | Expr::Unary { expr: callee, .. } => {

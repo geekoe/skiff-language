@@ -167,7 +167,7 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
         Expr::Call { callee, args } => {
             collect_expr_function_type_violations(path, callee, violations);
             for arg in args {
-                collect_expr_function_type_violations(path, arg, violations);
+                collect_expr_function_type_violations(path, arg.expr(), violations);
             }
         }
         Expr::Generic { callee, type_args } => {

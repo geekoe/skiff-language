@@ -139,7 +139,7 @@ pub(super) fn collect_package_expr_std_type_violations(
             for arg in args {
                 collect_package_expr_std_type_violations(
                     path,
-                    arg,
+                    arg.expr(),
                     imported_std_roots,
                     dependency_roots,
                     package_type_names,

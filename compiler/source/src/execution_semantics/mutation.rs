@@ -79,7 +79,12 @@ impl OwnerAnalyzer<'_> {
         if mutates {
             if let Some((object, _)) = receiver_field {
                 self.validate_mutation_target(object, scope, context);
-                self.taint_lane_local_root_from_payloads(object, args.iter(), scope, context);
+                self.taint_lane_local_root_from_payloads(
+                    object,
+                    args.iter().map(|arg| arg.expr()),
+                    scope,
+                    context,
+                );
             }
         } else if receiver_field
             .is_some_and(|(_, field)| matches!(field, "push" | "pop" | "set" | "delete"))
@@ -88,7 +93,12 @@ impl OwnerAnalyzer<'_> {
             // mutating spelling remains fail closed.
             if let Some((object, _)) = receiver_field {
                 self.validate_mutation_target(object, scope, context);
-                self.taint_lane_local_root_from_payloads(object, args.iter(), scope, context);
+                self.taint_lane_local_root_from_payloads(
+                    object,
+                    args.iter().map(|arg| arg.expr()),
+                    scope,
+                    context,
+                );
             }
         }
 

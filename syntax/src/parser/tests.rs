@@ -413,9 +413,9 @@ fn parses_db_declaration_with_key_indexes_and_contextual_keywords() {
             }
 
             function useContextualNames() -> number {
-              const key = 1
-              const index = 2
-              const activate = 3
+              let key = 1
+              let index = 2
+              let activate = 3
               return key + index + activate
             }
         "#;
@@ -552,7 +552,7 @@ fn parses_db_object_with_contract_keyword_in_bodies() {
             }
 
             function useContractName() -> string {
-              const contract = "ok"
+              let contract = "ok"
               contract
             }
         "#,
@@ -974,7 +974,7 @@ fn parses_impl_method_bodies_tolerantly_without_fixture() {
           }
 
           function receive(self: ClubService, connectionId: string, frame: string) -> void {
-            const accepted = true
+            let accepted = true
             if accepted {
               return
             }
@@ -1392,7 +1392,7 @@ fn parses_function_type_in_native_method_signature() {
 fn parses_throw_rethrow_and_catch_expressions() {
     let source = r#"
             function run(error: LoginError, exception: Exception<LoginError>) -> CatchResult<number, LoginError> {
-                const result = catch<LoginError>(compute(throw error))
+                let result = catch<LoginError>(compute(throw error))
                 rethrow exception
             }
         "#;
@@ -1415,7 +1415,7 @@ fn parses_throw_rethrow_and_catch_expressions() {
     let crate::ast::Expr::Call { args, .. } = try_expr.as_ref() else {
         panic!("expected catch try call expression");
     };
-    assert!(matches!(args.first(), Some(crate::ast::Expr::Throw { .. })));
+    assert!(matches!(args.first(), Some(crate::ast::CallArg::Value(crate::ast::Expr::Throw { .. }))));
 
     assert!(matches!(statements[1], crate::ast::Stmt::Rethrow { .. }));
 }
@@ -1824,10 +1824,10 @@ fn parses_db_transaction_expressions() {
     let source = r#"
             function run(id: string) -> string {
               db transaction {
-                const user = db require User(id)
+                let user = db require User(id)
                 db insert User { id = id name = "Ada" }
               }
-              const committed = db transaction value { id }
+              let committed = db transaction value { id }
               return id
             }
         "#;
@@ -1899,7 +1899,7 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
         let source = format!(
             r#"
                 function run(id: string) -> string {{
-                  const old = db.{operation}
+                  let old = db.{operation}
                   return id
                 }}
             "#
@@ -1913,7 +1913,7 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
 
     let source = r#"
             function run(db: DbFactory) -> string {
-              const collection = db.Collection("thread")
+              let collection = db.Collection("thread")
               return "ok"
             }
         "#;
@@ -1924,9 +1924,9 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
 fn parses_object_db_operation_surface() {
     let source = r#"
             function run(threadId: string, rows: Array<Message>) -> string {
-              const one = db require Thread(threadId) { fields { title, status } }
-              const many = db find many Message { fields { id, body, where, profile.displayName; profile.avatar.url } offset 5 where threadId == threadId order createdAt desc limit 50 }
-              const inserted = db insert many Message values rows
+              let one = db require Thread(threadId) { fields { title, status } }
+              let many = db find many Message { fields { id, body, where, profile.displayName; profile.avatar.url } offset 5 where threadId == threadId order createdAt desc limit 50 }
+              let inserted = db insert many Message values rows
               db update Thread(threadId) { title = "Updated" messageCount += 1 }
               db delete many Message { where threadId == threadId }
               return threadId
@@ -1990,7 +1990,7 @@ fn parses_object_db_operation_surface() {
 fn rejects_old_unbounded_db_projection_syntax() {
     let source = r#"
             function run(id: string) -> string {
-              const user = db require User(id) { fields name visits }
+              let user = db require User(id) { fields name visits }
               return id
             }
         "#;
@@ -2006,7 +2006,7 @@ fn rejects_old_unbounded_db_projection_syntax() {
 fn rejects_query_entries_after_key_read_projection() {
     let source = r#"
             function run(id: string, active: bool) -> string {
-              const user = db require User(id) { fields { name } where active }
+              let user = db require User(id) { fields { name } where active }
               return id
             }
         "#;
@@ -2022,7 +2022,7 @@ fn rejects_query_entries_after_key_read_projection() {
 fn parses_db_query_value_and_conditional_where() {
     let source = r#"
             function run(enabled: bool, owner: string) -> string {
-              const query = db query Thread {
+              let query = db query Thread {
                 where ownerId == owner
                 where if enabled { archived == false }
                 order updatedAt desc
@@ -2061,8 +2061,8 @@ fn parses_db_query_value_and_conditional_where() {
 fn parses_dotted_db_operation_targets() {
     let source = r#"
             function run(id: string) -> string {
-              const one = db require root.prompt_model.PromptDocument(id)
-              const many = db find many prompt_model.PromptDocument { limit 1 }
+              let one = db require root.prompt_model.PromptDocument(id)
+              let many = db find many prompt_model.PromptDocument { limit 1 }
               return one.id
             }
         "#;
@@ -2090,7 +2090,7 @@ fn parses_dotted_db_operation_targets() {
 fn rejects_object_db_query_after_with_offset_hint() {
     let source = r#"
             function run(previous: Array<Message>) -> string {
-              const many = db find many Message { after previous }
+              let many = db find many Message { after previous }
               return "ok"
             }
         "#;
@@ -2107,7 +2107,7 @@ fn rejects_many_db_operations_with_key_selectors() {
     for source in [
         r#"
             function run(id: string) -> bool {
-              const row = db find many Thread(id)
+              let row = db find many Thread(id)
               return true
             }
         "#,
@@ -2136,7 +2136,7 @@ fn rejects_many_db_operations_with_key_selectors() {
 fn rejects_db_key_read_query_entries_after_selector() {
     let source = r#"
             function run(id: string) -> bool {
-              const one = db require Thread(id) { where status == "open" fields { title } }
+              let one = db require Thread(id) { where status == "open" fields { title } }
               return true
             }
         "#;
@@ -2152,7 +2152,7 @@ fn rejects_db_key_read_query_entries_after_selector() {
 fn rejects_query_upsert_first_version() {
     let source = r#"
             function run(id: string) -> bool {
-              const result = db upsert Thread { where id == id } { id = id } { title = "x" }
+              let result = db upsert Thread { where id == id } { id = id } { title = "x" }
               return true
             }
         "#;
@@ -2288,7 +2288,7 @@ interface Repository<T, U> {
   function load(self: Self, id: T) -> U
 }
 function make() -> void {
-  const provider = RepoImpl {} as Repository<string, User>
+  let provider = RepoImpl {} as Repository<string, User>
 }
 "#,
     )
@@ -2312,9 +2312,9 @@ fn parses_record_construct_regardless_of_identifier_case() {
     let ast = parse_source(
         r#"
 function make() -> void {
-  const upper = RepoImpl { name: "a" }
-  const lower = repoImpl { name: "b" }
-  const dotted = user.repoImpl { name: "c" }
+  let upper = RepoImpl { name: "a" }
+  let lower = repoImpl { name: "b" }
+  let dotted = user.repoImpl { name: "c" }
   return
 }
 "#,
@@ -2506,7 +2506,8 @@ function run(flag: bool) -> void {
     };
     assert!(matches!(
         &args[0],
-        crate::ast::Expr::Record { type_name, .. } if type_name == "Point"
+        crate::ast::CallArg::Value(crate::ast::Expr::Record { type_name, .. })
+            if type_name == "Point"
     ));
 
     let crate::ast::Stmt::If { condition, .. } = &statements[1] else {
@@ -2526,7 +2527,7 @@ fn parses_ternary_expression() {
     let ast = parse_source(
         r#"
 function pick(flag: bool, a: string, b: string) -> string {
-  const value = flag ? a : b
+  let value = flag ? a : b
   return value
 }
 "#,
@@ -2554,10 +2555,10 @@ fn ternary_precedence_is_below_all_binary_operators_and_right_associative() {
     let ast = parse_source(
         r#"
 function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
-  const left = a || b ? c : d
-  const right = a ? c : d || e
-  const nestedElse = a ? c : d ? e : c
-  const nestedThen = a ? c ? d : e : c
+  let left = a || b ? c : d
+  let right = a ? c : d || e
+  let nestedElse = a ? c : d ? e : c
+  let nestedThen = a ? c ? d : e : c
   return c
 }
 "#,
@@ -2657,7 +2658,7 @@ fn ternary_branches_in_expression_slots_still_parse_constructs() {
     let ast = parse_source(
         r#"
 function run(flag: bool) -> void {
-  const value = flag ? Point { x: 1 } : point { x: 2 }
+  let value = flag ? Point { x: 1 } : point { x: 2 }
   return
 }
 "#,
@@ -2687,7 +2688,7 @@ function run(flag: bool) -> void {
 
 #[test]
 fn ternary_requires_colon_separator() {
-    let error = parse_source("function run(flag: bool) -> void { const x = flag ? 1\n}")
+    let error = parse_source("function run(flag: bool) -> void { let x = flag ? 1\n}")
         .unwrap_err()
         .to_string();
     assert!(
@@ -2704,8 +2705,8 @@ interface LlmClient {
   function send(self: Self, input: string) -> string
 }
 function make() -> void {
-  const response = remoteLlm/managedLlm.send("hi")
-  const boxed = remoteLlm/managedLlm as LlmClient
+  let response = remoteLlm/managedLlm.send("hi")
+  let boxed = remoteLlm/managedLlm as LlmClient
 }
 "#,
     )
@@ -2796,7 +2797,7 @@ fn slash_with_whitespace_remains_binary_division() {
     let ast = parse_source(
         r#"
 function make(a: number, b: number) -> void {
-  const value = a / b
+  let value = a / b
 }
 "#,
     )
@@ -2822,7 +2823,7 @@ interface ToolProvider {
   function list(self: Self) -> Array<string>
 }
 function make() -> void {
-  const provider = a + b as ToolProvider
+  let provider = a + b as ToolProvider
 }
 "#,
     )
@@ -2849,7 +2850,7 @@ fn interface_box_rejects_any_interface_rhs_in_parser() {
     let error = parse_source(
         r#"
 function make() -> void {
-  const provider = value as any ToolProvider
+  let provider = value as any ToolProvider
 }
 "#,
     )
@@ -2929,23 +2930,23 @@ function run() -> void {
   serial {
     standaloneSerialWork()
   }
-  const plain = value {
-    const seed = prepare()
+  let plain = value {
+    let seed = prepare()
     finish(seed)
   }
-  const joined = concurrent value {
-    const left = leftWork()
+  let joined = concurrent value {
+    let left = leftWork()
     serial {
       serialValueWork()
     }
     join(left)
   }
-  const timed = timeout(2s) value {
-    const item = timedWork()
+  let timed = timeout(2s) value {
+    let item = timedWork()
     item
   }
-  const timedJoined = timeout(3m) concurrent value {
-    const item = concurrentTimedWork()
+  let timedJoined = timeout(3m) concurrent value {
+    let item = concurrentTimedWork()
     item
   }
 }
@@ -3039,8 +3040,8 @@ function run() -> void {
 fn timeout_value_spans_and_ast_round_trip_preserve_wrapper_body_tail_and_duration() {
     let source = r#"
 function run() -> void {
-  const result = timeout(15s) concurrent value {
-    const first = root.alpha.first()
+  let result = timeout(15s) concurrent value {
+    let first = root.alpha.first()
     serial {
       root.beta.second()
     }
@@ -3079,7 +3080,7 @@ function run() -> void {
     let expression_spans = &ast.source_spans.functions[0].body.statements[0].expressions[0];
     assert_eq!(
         &source[expression_spans.span.start.offset..expression_spans.span.end.offset],
-        "timeout(15s) concurrent value {\n    const first = root.alpha.first()\n    serial {\n      root.beta.second()\n    }\n    root.gamma.finish(first)\n  }"
+        "timeout(15s) concurrent value {\n    let first = root.alpha.first()\n    serial {\n      root.beta.second()\n    }\n    root.gamma.finish(first)\n  }"
     );
     assert_eq!(expression_spans.children.len(), 1);
     let concurrent_spans = &expression_spans.children[0];
@@ -3102,33 +3103,33 @@ fn value_tail_accepts_canonical_value_modifiers_and_parenthesized_timeout_catch(
     let ast = parse_source(
         r#"
 function run() -> void {
-  const nestedValue = value {
+  let nestedValue = value {
     value {
       plainTail
     }
   }
-  const nestedConcurrent = value {
+  let nestedConcurrent = value {
     concurrent value {
       concurrentTail
     }
   }
-  const nestedTimeout = value {
+  let nestedTimeout = value {
     timeout(4s) concurrent value {
       timeoutTail
     }
   }
-  const caught = catch<TimeoutError>(
+  let caught = catch<TimeoutError>(
     timeout(5s) value {
       caughtTail
     }
   )
-  const thrown = value {
+  let thrown = value {
     throw problem
   }
-  const rethrown = value {
+  let rethrown = value {
     rethrow exception
   }
-  const object = value {
+  let object = value {
     ({ name: caughtTail })
   }
 }
@@ -3252,44 +3253,44 @@ fn rejects_invalid_duration_literals_and_timeout_shapes() {
 fn rejects_duration_outside_timeout_missing_value_tails_and_noncanonical_modifiers() {
     let cases = [
         (
-            "const invalid = 15s",
+            "let invalid = 15s",
             "duration literal is only allowed as a timeout duration",
         ),
-        ("const invalid = value {}", "requires a tail expression"),
+        ("let invalid = value {}", "requires a tail expression"),
         (
-            "const invalid = value { const item = work() }",
+            "let invalid = value { let item = work() }",
             "requires a tail expression",
         ),
         (
-            "const invalid = concurrent value { const item = work() }",
+            "let invalid = concurrent value { let item = work() }",
             "requires a tail expression",
         ),
         (
-            "const invalid = timeout(1s) value { const item = work() }",
+            "let invalid = timeout(1s) value { let item = work() }",
             "requires a tail expression",
         ),
         (
-            "const invalid = value { { name: item } }",
+            "let invalid = value { { name: item } }",
             "object literal tail must be parenthesized",
         ),
         (
-            "const invalid = concurrent timeout(1s) value { work() }",
+            "let invalid = concurrent timeout(1s) value { work() }",
             "canonical modifier order",
         ),
         (
-            "const invalid = value concurrent { work() }",
+            "let invalid = value concurrent { work() }",
             "canonical modifier order",
         ),
         (
-            "const invalid = timeout(1s) value concurrent { work() }",
+            "let invalid = timeout(1s) value concurrent { work() }",
             "canonical modifier order",
         ),
         (
-            "const invalid = timeout(1s) serial value { work() }",
+            "let invalid = timeout(1s) serial value { work() }",
             "canonical modifier order",
         ),
         (
-            "const invalid = serial value { work() }",
+            "let invalid = serial value { work() }",
             "canonical modifier order",
         ),
     ];
@@ -3302,4 +3303,106 @@ fn rejects_duration_outside_timeout_missing_value_tails_and_noncanonical_modifie
             "expected {expected:?} for {body:?}, got {error:?}"
         );
     }
+}
+
+#[test]
+fn parses_let_and_var_local_bindings_with_kinds() {
+    let ast = parse_source(
+        r#"
+        function run() -> void {
+          let immutable = 1
+          var mutable = 2
+          let typed: number = 3
+          var labeled: string = "x"
+          return
+        }
+        "#,
+    )
+    .unwrap();
+    let statements = &ast.functions[0].body.statements;
+    let crate::ast::Stmt::Let { kind, name, .. } = &statements[0] else {
+        panic!("expected let statement");
+    };
+    assert_eq!(*kind, crate::ast::LetKind::Let);
+    assert_eq!(name, "immutable");
+    let crate::ast::Stmt::Let { kind, name, .. } = &statements[1] else {
+        panic!("expected var statement");
+    };
+    assert_eq!(*kind, crate::ast::LetKind::Var);
+    assert_eq!(name, "mutable");
+}
+
+#[test]
+fn rejects_local_const_and_top_level_let_var() {
+    let error = parse_source("function run() -> void {\n  const x = 1\n}\n").unwrap_err();
+    assert!(
+        error.to_string().contains("local const is not syntax; use let or var"),
+        "got {error:?}"
+    );
+
+    let error = parse_source("let x = 1\n").unwrap_err();
+    assert!(
+        error.to_string().contains("let/var are only allowed inside blocks"),
+        "got {error:?}"
+    );
+    let error = parse_source("var x = 1\n").unwrap_err();
+    assert!(
+        error.to_string().contains("let/var are only allowed inside blocks"),
+        "got {error:?}"
+    );
+
+    // Top-level const declarations are unchanged.
+    let ast = parse_source("const x: number = 1\n").unwrap();
+    assert_eq!(ast.consts.len(), 1);
+}
+
+#[test]
+fn parses_inout_parameter_mode_and_inout_place_arguments() {
+    let ast = parse_source(
+        r#"
+        type Counter { value: number }
+
+        function bump(counter: Counter, inout total: number, delta: number) -> void {
+          total = total + delta
+        }
+
+        function run(counter: Counter) -> void {
+          var total = 0
+          bump(counter, inout total, 1)
+          bump(counter, inout counter.value, 2)
+          return
+        }
+        "#,
+    )
+    .unwrap();
+    let function = &ast.functions[0];
+    let params = &function.params;
+    assert_eq!(params[1].name, "total");
+    assert_eq!(params[1].mode, crate::ast::ParamMode::InOut);
+    assert_eq!(params[0].mode, crate::ast::ParamMode::Value);
+    assert_eq!(params[2].mode, crate::ast::ParamMode::Value);
+
+    let statements = &ast.functions[1].body.statements;
+    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { args, .. }) = &statements[1] else {
+        panic!("expected call statement");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [
+            crate::ast::CallArg::Value(crate::ast::Expr::Identifier(_)),
+            crate::ast::CallArg::InOutPlace { expr },
+            crate::ast::CallArg::Value(crate::ast::Expr::Literal(_)),
+        ] if matches!(expr, crate::ast::Expr::Identifier(name) if name == "total")
+    ));
+    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { args, .. }) = &statements[2] else {
+        panic!("expected call statement");
+    };
+    assert!(matches!(
+        args.as_slice(),
+        [
+            crate::ast::CallArg::Value(_),
+            crate::ast::CallArg::InOutPlace { expr },
+            crate::ast::CallArg::Value(_),
+        ] if matches!(expr, crate::ast::Expr::Field { field, .. } if field == "value")
+    ));
 }

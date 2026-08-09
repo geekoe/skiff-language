@@ -167,7 +167,7 @@ fn resolves_root_path_in_db_query_target() {
     let mut consumer = parse_source(
         r#"
             function run(enabled: bool) -> string {
-              const query = db query root.internal.models.Thread {
+              let query = db query root.internal.models.Thread {
                 where if enabled { title == "x" }
               }
               return "ok"
@@ -578,7 +578,7 @@ fn lexical_package_local_is_not_treated_as_legacy_root() {
             }
 
             function run() -> string {
-              const package = Parcel { id: "p1" }
+              let package = Parcel { id: "p1" }
               accept(package)
               return package.id
             }
@@ -623,7 +623,7 @@ fn package_shadowing_is_limited_to_its_nested_lexical_scope() {
 
             function run() -> string {
               if true {
-                const package = Parcel { id: "p1" }
+                let package = Parcel { id: "p1" }
                 package.id
               }
               return package.api.user.UserDoc

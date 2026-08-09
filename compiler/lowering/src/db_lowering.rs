@@ -21,10 +21,10 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind, DbIndexDirection,
-        DbLeaseClaim, DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock,
-        DbRetentionUnit, DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef,
-        UnaryOp,
+        BinaryOp, CallArg, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind,
+        DbIndexDirection, DbLeaseClaim, DbLeaseRead, DbOperation, DbOperationKind, DbQuery,
+        DbQueryBlock, DbRetentionUnit, DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath,
+        Stmt, TypeRef, UnaryOp,
     },
     ast_utils::db_collection_name,
     error::{CompileError, Result},
@@ -1814,7 +1814,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_db_query_regex(
         &mut self,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
         db: &DbMetadataIr,
     ) -> Result<DbPredicateIr> {
         self.consume_db_query_field_path_expression_keys(callee)?;
@@ -1824,17 +1824,17 @@ impl<'a> FunctionLowerer<'a> {
                     .to_string(),
             ));
         }
-        let Some(path) = ast_field_path(&args[0]) else {
+        let Some(path) = ast_field_path(args[0].expr()) else {
             return Err(CompileError::Semantic(
                 "db query regex first argument must be a db field path".to_string(),
             ));
         };
         self.validate_db_query_field_path(&path, db)?;
-        self.consume_db_query_field_path_expression_keys(&args[0])?;
-        let pattern = self.lower_expr(&args[1])?;
+        self.consume_db_query_field_path_expression_keys(args[0].expr())?;
+        let pattern = self.lower_expr(args[1].expr())?;
         let options = args
             .get(2)
-            .map(|options| self.lower_expr(options))
+            .map(|options| self.lower_expr(options.expr()))
             .transpose()?;
         Ok(DbPredicateIr::Regex {
             field: FieldPathIr {
@@ -2028,7 +2028,7 @@ impl<'a> FunctionLowerer<'a> {
         op: &str,
         type_args: &[TypeRef],
         first_type_arg_key: Option<&str>,
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Result<BTreeMap<String, MetadataValue>> {
         let operation = op.strip_prefix("db.").unwrap_or(op);
         let call_type = self.db_call_type(operation, type_args, args)?;
@@ -2084,7 +2084,7 @@ impl<'a> FunctionLowerer<'a> {
         &self,
         operation: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Result<Option<(String, TypeRefIr)>> {
         let explicit_type = |ty: &TypeRef| {
             Ok(Some((
@@ -2135,7 +2135,7 @@ impl<'a> FunctionLowerer<'a> {
                 if self.expression_types.is_none() {
                     return args
                         .first()
-                        .and_then(|arg| self.infer_expr_type_text(arg))
+                        .and_then(|arg| self.infer_expr_type_text(arg.expr()))
                         .map(legacy_type)
                         .transpose()
                         .map(|ty| ty.flatten());
@@ -2155,7 +2155,7 @@ impl<'a> FunctionLowerer<'a> {
                 if self.expression_types.is_none() {
                     return args
                         .first()
-                        .and_then(|arg| self.infer_array_item_type_text(arg))
+                        .and_then(|arg| self.infer_array_item_type_text(arg.expr()))
                         .map(legacy_type)
                         .transpose()
                         .map(|ty| ty.flatten());

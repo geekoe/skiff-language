@@ -505,11 +505,17 @@ impl Parser {
         let mut params = Vec::new();
         if !self.check_symbol(")") {
             loop {
+                let mode = if self.match_ident("inout") {
+                    ParamMode::InOut
+                } else {
+                    ParamMode::Value
+                };
                 let param_name = self.expect_ident("expected parameter name")?;
                 self.expect_symbol(":")?;
                 let ty = self.parse_type()?;
                 params.push(Param {
                     name: param_name,
+                    mode,
                     ty,
                 });
                 if !self.match_symbol(",") {

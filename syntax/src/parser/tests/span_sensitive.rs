@@ -12,7 +12,7 @@ fn slice<'a>(source: &'a str, span: &SourceSpan) -> &'a str {
 #[test]
 fn source_spans_functions_impl_methods_and_consts_are_collected() {
     let source = r#"function add(a: number, b: number) -> number {
-  const sum = a + b
+  let sum = a + b
   return sum
 }
 
@@ -33,13 +33,13 @@ const offset: number = 1 + 2
     assert!(function_spans.effects.is_empty());
     assert_eq!(
         slice(source, &function_spans.body.span),
-        "{\n  const sum = a + b\n  return sum\n}"
+        "{\n  let sum = a + b\n  return sum\n}"
     );
     assert_eq!(function_spans.body.statements.len(), 2);
     let [let_stmt, return_stmt] = function_spans.body.statements.as_slice() else {
         panic!("expected two function statement spans");
     };
-    assert_eq!(slice(source, &let_stmt.span), "const sum = a + b");
+    assert_eq!(slice(source, &let_stmt.span), "let sum = a + b");
     assert_eq!(let_stmt.expressions.len(), 1);
     assert_eq!(slice(source, &let_stmt.expressions[0].span), "a + b");
     assert_eq!(let_stmt.expressions[0].children.len(), 2);

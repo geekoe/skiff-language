@@ -5,7 +5,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (callee, type_args) = match callee {
@@ -70,7 +70,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         callee: &Expr,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         if let Some(return_type) = self.runtime_receiver_call_type(key, callee, args, arg_types) {
@@ -145,7 +145,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         path: &str,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         let signature = self.dependency_analysis.and_then(|dependency_analysis| {
@@ -240,7 +240,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         path: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         match self.type_resolution.resolve_representation_constructor(
@@ -281,7 +281,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         path: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         let Some(return_type) = prelude_registry().native_return_type(path) else {
@@ -334,7 +334,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         path: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         let Some(signature) = self.local_callable_signature(path).cloned() else {
@@ -439,7 +439,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         path: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         let Some(signature) = self.type_resolution.resolve_package_callable(path).cloned() else {
@@ -741,7 +741,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         callable: &str,
         expected: Vec<(String, ResolvedTypeRef)>,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         self.validate_resolved_call_params_with_projections(
@@ -758,7 +758,7 @@ impl<'a> OwnerChecker<'a> {
         callable: &str,
         expected: Vec<(String, ResolvedTypeRef)>,
         exact_expected: &[Option<PackageTypeRef>],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         if expected.len() != args.len() {
@@ -779,7 +779,7 @@ impl<'a> OwnerChecker<'a> {
             let context = format!("call `{callable}` argument {}", index + 1);
             self.check_value_assignable_to_expected(
                 None,
-                &args[index],
+                args[index].expr(),
                 key,
                 actual,
                 expected,
@@ -795,7 +795,7 @@ impl<'a> OwnerChecker<'a> {
         call_key: &ExpressionKey,
         callable: &str,
         expected: &[(String, Result<(ResolvedTypeRef, PackageTypeRef), String>)],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         if expected.len() != args.len() {
@@ -831,7 +831,7 @@ impl<'a> OwnerChecker<'a> {
             let context = format!("call `{callable}` argument {}", index + 1);
             self.check_value_assignable_to_expected(
                 None,
-                &args[index],
+                args[index].expr(),
                 key,
                 actual,
                 expected,
@@ -870,7 +870,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
@@ -948,7 +948,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         callee: &Expr,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
@@ -987,7 +987,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         path: &str,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         if type_args.len() != 1 {
@@ -1041,7 +1041,7 @@ impl<'a> OwnerChecker<'a> {
     pub(super) fn validate_array_push_args(
         &mut self,
         receiver_ty: &ResolvedTypeRef,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         let Some(expected) =
@@ -1062,7 +1062,7 @@ impl<'a> OwnerChecker<'a> {
         };
         self.check_value_assignable_to_expected(
             None,
-            &args[0],
+            args[0].expr(),
             key,
             actual,
             &expected,
@@ -1076,7 +1076,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         receiver_ty: &ResolvedTypeRef,
         method_name: &str,
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
         let Some(key_ty) = map_key_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
@@ -1100,7 +1100,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         callee: &Expr,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
@@ -1142,7 +1142,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         callee: &Expr,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
@@ -1187,7 +1187,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         callee: &Expr,
         type_args: &[TypeRef],
-        args: &[Expr],
+        args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;

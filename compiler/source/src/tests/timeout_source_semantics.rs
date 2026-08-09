@@ -69,6 +69,13 @@ fn callable_effects(
             panic!("{name} effects must be analyzed, found {reason:?}")
         }
     }
+
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
 }
 
 #[test]

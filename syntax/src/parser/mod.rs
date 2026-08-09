@@ -3,16 +3,16 @@ pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use crate::{
     ast::{
         ActorCreateDecl, ActorDecl, AliasDecl, BinaryOp, Block, BlockSourceSpans, BuiltinPackage,
-        ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind, DbIndexDirection,
-        DbIndexEntry, DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl,
-        DbLeaseRead, DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry,
-        DbProjection, DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector,
-        DbStorageCodec, DbStorageDecl, DbTransaction, DbWhereClause, DependencySourceAddress,
-        DispatchTiming, DurationLiteral, ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl,
-        FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl,
-        InterfaceOperation, Literal, MatchArm, PackageId, Param, Pattern, PatternField,
-        RecordFieldSourceSpans, SourceFile, SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl,
-        TypeRef, UnaryOp, ValueBlock,
+        CallArg, ConstDecl, DbBlockMode, DbBody, DbChange, DbChangeOp, DbDecl, DbDeclKind,
+        DbIndexDirection, DbIndexEntry, DbIndexField, DbIndexWhereSourceSpans, DbLeaseClaim,
+        DbLeaseDecl, DbLeaseRead, DbObjectFieldValue, DbObjectKey, DbOperation, DbOperationKind,
+        DbOrderEntry, DbProjection, DbQuery, DbQueryBlock, DbRetention, DbRetentionUnit,
+        DbSelector, DbStorageCodec, DbStorageDecl, DbTransaction, DbWhereClause,
+        DependencySourceAddress, DispatchTiming, DurationLiteral, ExecutableSourceSpans, Expr,
+        ExprSourceSpans, FieldDecl, FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl,
+        InterfaceDecl, InterfaceOperation, LetKind, Literal, MatchArm, PackageId, Param,
+        ParamMode, Pattern, PatternField, RecordFieldSourceSpans, SourceFile, SourceSpanTable,
+        Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp, ValueBlock,
     },
     ast_utils::{expr_path, without_generic},
     error::{CompileError, Result, SourceLocation, SourceSpan},
@@ -195,6 +195,11 @@ impl Parser {
             } else if self.check_ident("const") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 consts.push(self.parse_const_decl(exported)?);
+            } else if self.check_ident("let") || self.check_ident("var") {
+                return Err(CompileError::syntax(
+                    "let/var are only allowed inside blocks",
+                    self.peek().span.start,
+                ));
             } else if self.check_ident("type") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 types.push(self.parse_type_decl(exported)?);

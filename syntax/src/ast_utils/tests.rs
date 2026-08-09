@@ -458,19 +458,19 @@ function run() -> void {
       serialBody()
     }
   }
-  const plain = value {
+  let plain = value {
     plainBody()
     plainTail
   }
-  const joined = concurrent value {
+  let joined = concurrent value {
     concurrentValueBody()
     concurrentValueTail
   }
-  const timed = timeout(2s) value {
+  let timed = timeout(2s) value {
     timedBody()
     timedTail
   }
-  const timedJoined = timeout(3m) concurrent value {
+  let timedJoined = timeout(3m) concurrent value {
     timedConcurrentBody()
     timedConcurrentTail
   }
@@ -572,11 +572,11 @@ function run() -> void {
       root.serial_body.run()
     }
   }
-  const plain = value {
+  let plain = value {
     root.value_body.run()
     root.value_tail.finish()
   }
-  const joined = timeout(2s) concurrent value {
+  let joined = timeout(2s) concurrent value {
     root.concurrent_value_body.run()
     root.concurrent_value_tail.finish()
   }

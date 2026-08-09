@@ -357,7 +357,7 @@ impl StreamEmitTypeChecker<'_> {
             Expr::Call { callee, args } => {
                 self.check_expr(callee);
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_expr(arg.expr());
                 }
             }
             Expr::Field { object, .. } => {

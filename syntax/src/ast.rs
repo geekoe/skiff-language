@@ -393,9 +393,19 @@ pub struct FunctionDecl {
     pub span: SourceSpan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ParamMode {
+    #[default]
+    Value,
+    InOut,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Param {
     pub name: String,
+    #[serde(default)]
+    pub mode: ParamMode,
     pub ty: TypeRef,
 }
 
@@ -533,6 +543,13 @@ pub enum ForBinding {
     Entry { key: String, value: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LetKind {
+    Let,
+    Var,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
     /// Compiler-owned test-service statement. The parser never produces this
@@ -550,7 +567,7 @@ pub enum Stmt {
         message: Option<String>,
     },
     Let {
-        mutable: bool,
+        kind: LetKind,
         name: String,
         ty: Option<TypeRef>,
         value: Expr,
@@ -943,6 +960,37 @@ pub struct PatternField {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CallArg {
+    /// Ordinary by-value argument: the expression itself.
+    Value(Expr),
+    /// `inout <place>`: a writable place passed by reference. The grammar
+    /// accepts a path-shaped expression; writable-place validation is a
+    /// later work package.
+    InOutPlace { expr: Expr },
+}
+
+impl CallArg {
+    pub fn expr(&self) -> &Expr {
+        match self {
+            Self::Value(expr) | Self::InOutPlace { expr } => expr,
+        }
+    }
+
+    pub fn expr_mut(&mut self) -> &mut Expr {
+        match self {
+            Self::Value(expr) | Self::InOutPlace { expr } => expr,
+        }
+    }
+
+    pub fn into_expr(self) -> Expr {
+        match self {
+            Self::Value(expr) | Self::InOutPlace { expr } => expr,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Literal(Literal),
     Identifier(String),
@@ -963,7 +1011,7 @@ pub enum Expr {
     },
     Call {
         callee: Box<Expr>,
-        args: Vec<Expr>,
+        args: Vec<CallArg>,
     },
     Generic {
         callee: Box<Expr>,

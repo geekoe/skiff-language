@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     CallableProvenanceUnknownReason, PendingEffectCategory, ValueProjectionPath,
 };
 
-use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
+use crate::{shared::ast::{CallArg, Expr}, ExpressionKey, ResolvedCallTarget};
 
 use super::{
     super::provenance::{AbstractValue, CallableState, EscapeLane, Origin},
@@ -18,7 +18,7 @@ impl Evaluator<'_, '_> {
         &mut self,
         call_key: &ExpressionKey,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
         env: &mut Environment,
     ) -> AbstractValue {
         let target = self.resolved_call_targets.target(call_key).cloned();
@@ -39,7 +39,7 @@ impl Evaluator<'_, '_> {
             .and_then(|index| self.value_at(index).cloned());
         let mut actuals = args
             .iter()
-            .map(|arg| self.eval_expr(arg, env))
+            .map(|arg| self.eval_expr(arg.expr(), env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
         let result = match target {
@@ -632,7 +632,7 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
 
 fn receiver_mutates_receiver(op: BuiltinReceiverOp) -> bool {
     skiff_artifact_model::validate_supported_receiver_builtin_op(&op)
-        .map(BuiltinReceiverOpSpec::mutates_receiver)
+        .map(|spec| spec.mutates_receiver)
         .unwrap_or(false)
 }
 

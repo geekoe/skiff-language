@@ -16,9 +16,9 @@ use crate::{
     parsed_sources::ParsedCompilerSource,
     semantic::impl_method_declaration_name,
     shared::ast::{
-        BinaryOp, Block, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector, DbWhereClause,
-        DispatchTiming, Expr, ForBinding, FunctionDecl, Literal, Param, SourceFile, Stmt, TypeRef,
-        UnaryOp,
+        BinaryOp, Block, CallArg, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector,
+        DbWhereClause, DispatchTiming, Expr, ForBinding, FunctionDecl, LetKind, Literal, Param,
+        SourceFile, Stmt, TypeRef, UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
@@ -1287,7 +1287,7 @@ impl<'a> OwnerChecker<'a> {
             self.check_stmt(statement);
 
             if let Stmt::Let {
-                mutable: false,
+                kind: LetKind::Let,
                 name,
                 ..
             } = statement
@@ -1427,7 +1427,18 @@ impl<'a> OwnerChecker<'a> {
                     then_expr,
                     else_expr,
                 } => self.check_ternary_expr(&key, condition, then_expr, else_expr),
-                Expr::Call { callee, args } => self.check_call_expr(&key, callee, args),
+                Expr::Call { callee, args } => {
+                    if args
+                        .iter()
+                        .any(|arg| matches!(arg, CallArg::InOutPlace { .. }))
+                    {
+                        self.outputs.diagnostics.push(format!(
+                            "{}: inout arguments are parsed but not yet supported",
+                            self.module_path
+                        ));
+                    }
+                    self.check_call_expr(&key, callee, args)
+                }
                 Expr::Generic { callee, .. } => {
                     if diagnose_unknown_field {
                         self.check_expr(callee)
@@ -1614,14 +1625,14 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Option<ResolvedTypeRef> {
         self.check_callee_expr(callee);
         let arg_types = args
             .iter()
             .map(|arg| {
                 let key = self.peek_key();
-                (key, self.check_expr(arg))
+                (key, self.check_expr(arg.expr()))
             })
             .collect::<Vec<_>>();
         self.call_type(&key, callee, args, &arg_types)

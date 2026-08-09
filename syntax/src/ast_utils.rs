@@ -228,7 +228,7 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
         Expr::Call { callee, args } => {
             visitor.visit_expr(callee);
             for arg in args {
-                visitor.visit_expr(arg);
+                visitor.visit_expr(arg.expr());
             }
         }
         Expr::Dispatch { call, timing } => {
@@ -711,7 +711,7 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
         Expr::Call { callee, args } => {
             visitor.visit_expr(callee);
             for arg in args {
-                visitor.visit_expr(arg);
+                visitor.visit_expr(arg.expr_mut());
             }
         }
         Expr::Dispatch { call, timing } => {
@@ -891,7 +891,7 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
         }
         Expr::Call { callee, args } => {
             expr_contains_with(callee, predicate)
-                || args.iter().any(|arg| expr_contains_with(arg, predicate))
+                || args.iter().any(|arg| expr_contains_with(arg.expr(), predicate))
         }
         Expr::Dispatch { call, timing } => {
             expr_contains_with(call, predicate)
@@ -1434,7 +1434,7 @@ fn collect_expr_type_ref_dotted_root_imports(
         Expr::Call { callee, args } => {
             collect_expr_type_ref_dotted_root_imports(callee, root, imports);
             for arg in args {
-                collect_expr_type_ref_dotted_root_imports(arg, root, imports);
+                collect_expr_type_ref_dotted_root_imports(arg.expr(), root, imports);
             }
         }
         Expr::Dispatch { call, timing } => {

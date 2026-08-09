@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::shared::ast::{
-    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, SourceFile, Stmt,
+    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, LetKind, SourceFile, Stmt,
 };
 
 use super::validation::{
@@ -164,7 +164,7 @@ fn collect_config_uses_in_block(
                 }
             }
             Stmt::Let {
-                mutable,
+                kind,
                 name,
                 value,
                 ..
@@ -179,7 +179,7 @@ fn collect_config_uses_in_block(
                     presence_uses,
                     violations,
                 );
-                if !*mutable {
+                if *kind == LetKind::Let {
                     if let Some(const_value) = const_string_expr(value, &const_strings) {
                         const_strings.insert(name.clone(), const_value);
                     } else {
@@ -423,12 +423,13 @@ fn collect_config_uses_in_expr(
     match expr {
         Expr::Call { callee, args } => {
             if let Some((intrinsic, type_args)) = config_intrinsic_callee(callee) {
+                let plain_args: Vec<&Expr> = args.iter().map(|arg| arg.expr()).collect();
                 collect_direct_config_intrinsic_call(
                     diagnostic_path,
                     source_path,
                     intrinsic,
                     type_args,
-                    args,
+                    &plain_args,
                     expr_spans.map(|spans| ConfigSourceSpan::from(spans.span)),
                     const_strings,
                     uses,
@@ -439,7 +440,7 @@ fn collect_config_uses_in_expr(
                     collect_config_uses_in_expr(
                         diagnostic_path,
                         source_path,
-                        arg,
+                        arg.expr(),
                         child_span(expr_spans, arg_index + 1),
                         const_strings,
                         uses,
@@ -455,7 +456,7 @@ fn collect_config_uses_in_expr(
                     collect_config_uses_in_expr(
                         diagnostic_path,
                         source_path,
-                        arg,
+                        arg.expr(),
                         child_span(expr_spans, arg_index + 1),
                         const_strings,
                         uses,
@@ -469,7 +470,7 @@ fn collect_config_uses_in_expr(
                 diagnostic_path,
                 source_path,
                 callee,
-                child_span(expr_spans, 0),
+                expr_spans.map(|spans| ConfigSourceSpan::from(spans.span)),
                 const_strings,
                 uses,
                 presence_uses,
@@ -479,7 +480,7 @@ fn collect_config_uses_in_expr(
                 collect_config_uses_in_expr(
                     diagnostic_path,
                     source_path,
-                    arg,
+                    arg.expr(),
                     child_span(expr_spans, arg_index + 1),
                     const_strings,
                     uses,
@@ -647,7 +648,7 @@ fn collect_config_uses_in_expr(
             let mut tail_const_strings = const_strings.clone();
             for statement in &value.body.statements {
                 if let Stmt::Let {
-                    mutable: false,
+                    kind: LetKind::Let,
                     name,
                     value,
                     ..
@@ -1047,7 +1048,7 @@ fn collect_direct_config_intrinsic_call(
     source_path: &str,
     intrinsic: ConfigIntrinsic,
     type_args: &[crate::shared::ast::TypeRef],
-    args: &[Expr],
+    args: &[&Expr],
     source_span: Option<ConfigSourceSpan>,
     const_strings: &BTreeMap<String, String>,
     uses: &mut Vec<ConfigUse>,

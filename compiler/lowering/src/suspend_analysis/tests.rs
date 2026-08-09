@@ -6,11 +6,11 @@ fn missing_expression_facts_do_not_invent_full_type_for_projected_db_read() {
     let ast = parse_source(
         r#"
               function projected(id: string) -> void {
-                const credential = db require Credential(id) { fields { label } }
+                let credential = db require Credential(id) { fields { label } }
               }
 
               function full(id: string) -> void {
-                const credential = db require Credential(id)
+                let credential = db require Credential(id)
               }
             "#,
     )

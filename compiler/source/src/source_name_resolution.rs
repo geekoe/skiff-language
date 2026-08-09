@@ -19,7 +19,7 @@ use crate::{
         resolve::{intrinsic_resolver_root_id, ResolutionEnv},
         EntityNamespace, PublicationEntityTable, ResolvedPath,
     },
-    shared::ast::{Block, Expr, ForBinding, Pattern, SourceFile, Stmt},
+    shared::ast::{Block, Expr, ForBinding, LetKind, Pattern, SourceFile, Stmt},
     shared::ast_utils::{expr_path, walk_expr, walk_stmt, AstVisitor},
 };
 
@@ -448,7 +448,7 @@ impl<'a, 'env> ResolvedPathCollector<'a, 'env> {
             self.scope = sibling_scope.clone();
             self.visit_stmt(statement);
             if let Stmt::Let {
-                mutable: false,
+                kind: LetKind::Let,
                 name,
                 ..
             } = statement

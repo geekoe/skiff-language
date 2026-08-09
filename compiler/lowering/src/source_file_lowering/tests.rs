@@ -298,8 +298,8 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
                 token: Token<string>,
                 choice: Choice<string>
               ) -> Box<string> {
-                const constructed = Box<string> { value: stringBox.value }
-                const empty = Array.empty<Box<string>>()
+                let constructed = Box<string> { value: stringBox.value }
+                let empty = Array.empty<Box<string>>()
                 return constructed
               }
 
@@ -308,7 +308,7 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
 
               function caught(value: Box<string>) -> void {
-                const attempted = catch<Box<string>>(throw value)
+                let attempted = catch<Box<string>>(throw value)
               }
 
               function inspected(boxed: Box<string>) -> void {
@@ -1595,7 +1595,7 @@ fn actor_create_self_method_dispatch_stays_rejected() {
               impl Counter {
                 function create(self: Counter) -> void {
                   self.count = 0
-                  const current = self
+                  let current = self
                   current.increment()
                 }
 
@@ -1625,8 +1625,8 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
             }
 
             function start(input: string, instant: Instant) -> void {
-              const afterRef = dispatch run(input) after(200ms)
-              const atRef = dispatch run(input) at(instant)
+              let afterRef = dispatch run(input) after(200ms)
+              let atRef = dispatch run(input) at(instant)
               dispatch run(input)
             }
         "#,
@@ -1765,7 +1765,7 @@ fn actor_create_dispatch_self_method_stays_rejected() {
               impl Counter {
                 function create(self: Counter) -> void {
                   self.count = 0
-                  const current = self
+                  let current = self
                   dispatch current.increment()
                 }
 
@@ -2244,12 +2244,12 @@ fn rethrow_statement_keeps_following_local_recursive_call_target_aligned() {
               }
 
               function retry(remainingAttempts: integer) -> void {
-                const result = catch<std.db.ConflictError>(attempt())
+                let result = catch<std.db.ConflictError>(attempt())
                 if result.tag == "ok" {
                   return null
                 }
                 if remainingAttempts == 0 {
-                  const exception = result.exception
+                  let exception = result.exception
                   rethrow exception
                 }
                 return retry(remainingAttempts)

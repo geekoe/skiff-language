@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     shared::{
-        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, Stmt, ValueBlock},
+        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, LetKind, Stmt, ValueBlock},
         ast_utils::{walk_expr, AstVisitor},
         error::SourceSpan,
     },
@@ -128,7 +128,7 @@ impl<'a> OwnerAnalyzer<'a> {
             }
             Stmt::Assert { condition, .. } => self.validate_expr(condition, scope, context),
             Stmt::Let {
-                mutable,
+                kind,
                 name,
                 value,
                 ..
@@ -136,7 +136,7 @@ impl<'a> OwnerAnalyzer<'a> {
                 self.validate_expr(value, scope, context);
                 scope.insert(
                     name.clone(),
-                    binding_root_for_value(value, scope, context.in_lane, *mutable),
+                    binding_root_for_value(value, scope, context.in_lane, matches!(kind, LetKind::Var)),
                 );
             }
             Stmt::Assign { target, value } => {
@@ -268,7 +268,7 @@ impl<'a> OwnerAnalyzer<'a> {
             Expr::Call { callee, args } => {
                 self.validate_expr(callee, scope, context);
                 for argument in args {
-                    self.validate_expr(argument, scope, context);
+                    self.validate_expr(argument.expr(), scope, context);
                 }
                 self.validate_mutating_call(expression, scope, context);
             }

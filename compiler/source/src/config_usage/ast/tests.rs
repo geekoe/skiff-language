@@ -11,9 +11,9 @@ fn compiler_test_effect_config_spans_skip_the_target_probe() {
     let parsed = parse_source(
         r#"
 function values() -> void {
-  const common = config.require<string>("effect.common")
-  const step = config.require<string>("effect.step")
-  const outcome = config.require<string>("effect.outcome")
+  let common = config.require<string>("effect.common")
+  let step = config.require<string>("effect.step")
+  let outcome = config.require<string>("effect.outcome")
 }
 "#,
     )

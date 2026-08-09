@@ -1,5 +1,5 @@
 use crate::{
-    ast::{DispatchTiming, Expr, Stmt},
+    ast::{CallArg, DispatchTiming, Expr, Stmt},
     parser::parse_source,
 };
 
@@ -36,7 +36,7 @@ fn parses_dispatch_call_statement() {
         panic!("expected dispatch call, got {call:?}");
     };
     assert_eq!(callee.as_ref(), &Expr::Identifier("runDrain".to_string()));
-    assert_eq!(args, &vec![Expr::Identifier("threadId".to_string())]);
+    assert_eq!(args, &vec![CallArg::Value(Expr::Identifier("threadId".to_string()))]);
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn parses_dispatch_in_assignment_and_argument_positions() {
         }
 
         function start(threadId: ThreadId) -> void {
-          const first = dispatch runDrain(threadId)
+          let first = dispatch runDrain(threadId)
           consume(dispatch runDrain(threadId))
         }
     "#;
@@ -67,7 +67,10 @@ fn parses_dispatch_in_assignment_and_argument_positions() {
         panic!("expected consume call statement, got {second:?}");
     };
     assert!(
-        matches!(args.as_slice(), [Expr::Dispatch { timing: None, .. }]),
+        matches!(
+            args.as_slice(),
+            [CallArg::Value(Expr::Dispatch { timing: None, .. })]
+        ),
         "unexpected call args {args:?}"
     );
 }
@@ -82,7 +85,7 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
         function start(threadId: ThreadId, instant: Instant) -> void {
           dispatch runDrain(threadId) after(200ms)
           dispatch runDrain(threadId) at(instant)
-          const zero = dispatch runDrain(threadId) after(0ms)
+          let zero = dispatch runDrain(threadId) after(0ms)
         }
     "#;
 
@@ -108,7 +111,7 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     assert_eq!(field, "milliseconds");
     assert_eq!(
         args,
-        &vec![Expr::Literal(crate::ast::Literal::Number(200.0))]
+        &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(200.0)))]
     );
 
     let Stmt::Expr(Expr::Dispatch {
@@ -134,7 +137,7 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     let Expr::Call { args, .. } = value.as_ref() else {
         panic!("expected zero-duration desugar, got {value:?}");
     };
-    assert_eq!(args, &vec![Expr::Literal(crate::ast::Literal::Number(0.0))]);
+    assert_eq!(args, &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(0.0)))]);
 }
 
 #[test]

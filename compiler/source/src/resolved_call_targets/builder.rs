@@ -8,7 +8,7 @@ use crate::{
     prelude_registry::prelude_registry,
     semantic::{ExecutableIndex, SemanticSource},
     shared::{
-        ast::{Block, Expr, ForBinding, FunctionDecl, Pattern, Stmt},
+        ast::{Block, Expr, ForBinding, FunctionDecl, LetKind, Pattern, Stmt},
         ast_utils::{dependency_source_address_parts, expr_path, walk_expr, walk_stmt, AstVisitor},
         type_syntax::generic_parts,
     },
@@ -357,7 +357,7 @@ impl TargetCollector<'_> {
             self.value_scope = sibling_scope.clone();
             self.visit_stmt(statement);
             if let Stmt::Let {
-                mutable: false,
+                kind: LetKind::Let,
                 name,
                 ..
             } = statement

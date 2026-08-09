@@ -278,7 +278,7 @@ fn collect_call_targets_in_expr(
         Expr::Call { callee, args } => {
             collect_call_targets_in_expr(callee, known, targets);
             for arg in args {
-                collect_call_targets_in_expr(arg, known, targets);
+                collect_call_targets_in_expr(arg.expr(), known, targets);
             }
         }
         Expr::Generic { callee, .. } | Expr::Unary { expr: callee, .. } => {

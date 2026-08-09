@@ -364,7 +364,7 @@ impl CreateValidator<'_> {
             Expr::Call { callee, args } => {
                 self.check_reads(callee, assigned)?;
                 for arg in args {
-                    self.check_reads(arg, assigned)?;
+                    self.check_reads(arg.expr(), assigned)?;
                 }
             }
             Expr::Generic { callee, .. } => self.check_reads(callee, assigned)?,
@@ -454,7 +454,7 @@ impl CreateValidator<'_> {
                 }
                 self.check_self_calls(callee)?;
                 for arg in args {
-                    self.check_self_calls(arg)?;
+                    self.check_self_calls(arg.expr())?;
                 }
             }
             Expr::Binary { left, right, .. } => {

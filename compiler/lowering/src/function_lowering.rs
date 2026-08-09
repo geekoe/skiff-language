@@ -16,8 +16,9 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, Literal,
-        ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
+        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding,
+        LetKind, Literal, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef,
+        UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -505,7 +506,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Stmt::Let {
-                mutable,
+                kind,
                 name,
                 ty,
                 value,
@@ -520,7 +521,7 @@ impl<'a> FunctionLowerer<'a> {
                 let slot = self.declare_slot_with_type(
                     name,
                     SlotKind::Local,
-                    *mutable,
+                    matches!(kind, LetKind::Var),
                     readonly,
                     type_text,
                 )?;
@@ -1467,6 +1468,14 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Expr::Call { callee, args } => {
+                if args
+                    .iter()
+                    .any(|arg| matches!(arg, CallArg::InOutPlace { .. }))
+                {
+                    return Err(CompileError::Semantic(
+                        "inout arguments are parsed but not yet supported".to_string(),
+                    ));
+                }
                 if let Some(payload) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?
                 {
@@ -1601,7 +1610,7 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         expression_key: Option<&ExpressionKey>,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Result<ExprIr> {
         let (callee, type_arg_refs) = match callee {
             Expr::Generic { callee, type_args } => {
@@ -1687,7 +1696,7 @@ impl<'a> FunctionLowerer<'a> {
             _ => BTreeMap::new(),
         };
         for arg in args {
-            lowered_args.push(self.lower_expr(arg)?);
+            lowered_args.push(self.lower_expr(arg.expr())?);
         }
         Ok(ExprIr::Call {
             call: CallIr {
@@ -2059,7 +2068,7 @@ impl<'a> FunctionLowerer<'a> {
         &self,
         target: &CallTargetIr,
         type_args: &mut BTreeMap<String, TypeRefIr>,
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Result<()> {
         let CallTargetIr::Native { target } = target else {
             // The std actor registry entry is also reachable through the std
@@ -2145,15 +2154,19 @@ impl<'a> FunctionLowerer<'a> {
         Ok(())
     }
 
-    fn native_http_json_payload_type(&self, args: &[Expr]) -> Option<TypeRefIr> {
+    fn native_http_json_payload_type(&self, args: &[CallArg]) -> Option<TypeRefIr> {
         let payload_index = 1;
-        let payload = args.get(payload_index)?;
+        let payload = args.get(payload_index)?.expr();
         self.call_argument_type_at_index(args, payload_index)
             .or_else(|| self.infer_expr_type_ir(payload))
     }
 
-    fn call_argument_type_at_index(&self, args: &[Expr], index: usize) -> Option<TypeRefIr> {
-        let offset = args.iter().take(index).map(expr_preorder_node_count).sum();
+    fn call_argument_type_at_index(&self, args: &[CallArg], index: usize) -> Option<TypeRefIr> {
+        let offset = args
+            .iter()
+            .take(index)
+            .map(|arg| expr_preorder_node_count(arg.expr()))
+            .sum();
         self.expression_type_at_offset(offset).map(|(_, ty)| ty)
     }
 
@@ -2161,7 +2174,7 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         expression_key: Option<&ExpressionKey>,
         callee: &Expr,
-        args: &[Expr],
+        args: &[CallArg],
     ) -> Result<Option<ExprRefIr>> {
         let representation_validation = expression_key
             .and_then(|key| {
@@ -2198,7 +2211,7 @@ impl<'a> FunctionLowerer<'a> {
                     payload_key
                 )));
             }
-            let payload = self.lower_expr(payload)?;
+            let payload = self.lower_expr(payload.expr())?;
             return Ok(Some(self.push_expr(ExprIr::RepresentationWrap {
                 value: payload,
                 type_ref: wrapper_type,
@@ -2853,7 +2866,10 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
         }
         Expr::Call { callee, args } => {
             1 + expr_preorder_node_count(callee)
-                + args.iter().map(expr_preorder_node_count).sum::<u32>()
+                + args
+                    .iter()
+                    .map(|arg| expr_preorder_node_count(arg.expr()))
+                    .sum::<u32>()
         }
         Expr::Dispatch { call, timing } => {
             1 + expr_preorder_node_count(call)

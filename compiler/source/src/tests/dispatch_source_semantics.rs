@@ -82,7 +82,7 @@ fn dispatch_expression_compiles_in_statement_assignment_and_argument_positions()
 
             function start(input: string) -> void {
               dispatch run(input)
-              const ref = dispatch run(input)
+              let ref = dispatch run(input)
               consume(dispatch run(input))
             }
         "#,
@@ -103,7 +103,7 @@ fn dispatch_after_and_at_timing_compile() {
               dispatch run(input) after(200ms)
               dispatch run(input) after(Duration.milliseconds(1))
               dispatch run(input) at(instant)
-              const ref = dispatch run(input) after(0ms)
+              let ref = dispatch run(input) after(0ms)
             }
         "#,
     );
@@ -140,7 +140,7 @@ fn dispatch_expression_inside_db_transaction_is_rejected() {
 
             function start() -> void {
               db transaction {
-                const ref = dispatch run()
+                let ref = dispatch run()
               }
             }
         "#,
@@ -257,7 +257,7 @@ fn dispatch_keyword_is_rejected_for_local_bindings() {
     init_prelude();
     let source = r#"
         function start() -> void {
-          const dispatch = 1
+          let dispatch = 1
         }
     "#;
     let ast = parse_source(source).expect("binding should parse syntactically");
@@ -281,12 +281,12 @@ fn std_task_status_and_cancel_compile_with_task_ref_argument() {
             }
 
             function start() -> std.task.TaskStatus {
-              const ref = dispatch run()
+              let ref = dispatch run()
               return std.task.status(ref)
             }
 
             function stop() -> std.task.TaskCancelResult {
-              const ref = dispatch run()
+              let ref = dispatch run()
               return std.task.cancel(ref)
             }
         "#,
@@ -335,7 +335,7 @@ fn std_task_status_rejects_extra_arguments() {
             }
 
             function start() -> std.task.TaskStatus {
-              const ref = dispatch run()
+              let ref = dispatch run()
               return std.task.status(ref, ref)
             }
         "#,

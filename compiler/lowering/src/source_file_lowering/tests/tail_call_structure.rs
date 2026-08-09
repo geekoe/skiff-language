@@ -97,7 +97,7 @@ fn return_value_selects_exact_local_recursive_call_shapes() {
           }
 
           function staged(value: integer) -> integer {
-            const next = staged(value)
+            let next = staged(value)
             return next
           }
         "#,

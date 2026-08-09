@@ -522,7 +522,7 @@ impl SuspendContext<'_, '_> {
             Expr::Call { callee, args } => {
                 let receiver_type = self.receiver_type_for_call_callee(callee);
                 let callee_may_suspend = self.expr_may_suspend(callee);
-                let args_may_suspend = args.iter().any(|arg| self.expr_may_suspend(arg));
+                let args_may_suspend = args.iter().any(|arg| self.expr_may_suspend(arg.expr()));
                 let (callee, type_args) = unpack_generic_callee(callee);
                 callee_may_suspend
                     || args_may_suspend

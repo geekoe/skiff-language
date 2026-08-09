@@ -168,7 +168,7 @@ impl OwnerCollector<'_> {
                 self.visit_expr(callee, next_expr_child(&mut children, "call callee")?)?;
                 for (index, arg) in args.iter().enumerate() {
                     self.visit_expr(
-                        arg,
+                        arg.expr(),
                         next_expr_child(&mut children, &format!("call arg {index}"))?,
                     )?;
                 }

@@ -147,9 +147,16 @@ impl Parser {
                 let mut children = vec![expr.spans];
                 if !self.check_symbol(")") {
                     loop {
-                        let arg = self.parse_slot_expression()?;
-                        children.push(arg.spans);
-                        args.push(arg.expr);
+                        if self.match_ident("inout") {
+                            let (place_expr, place_spans) =
+                                self.parse_slot_expression()?.into_parts();
+                            children.push(place_spans);
+                            args.push(CallArg::InOutPlace { expr: place_expr });
+                        } else {
+                            let arg = self.parse_slot_expression()?;
+                            children.push(arg.spans);
+                            args.push(CallArg::Value(arg.expr));
+                        }
                         if !self.match_symbol(",") {
                             break;
                         }
@@ -539,7 +546,7 @@ impl Parser {
             let call = ParsedExpr::new(
                 Expr::Call {
                     callee: Box::new(callee.expr),
-                    args: vec![argument.expr],
+                    args: vec![CallArg::Value(argument.expr)],
                 },
                 span,
                 vec![callee.spans, argument.spans],

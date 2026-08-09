@@ -317,7 +317,7 @@ fn generic_callable_concrete_return_types_plain_bindings_and_object_fields() {
           }
 
           function plainBinding(value: string) -> Json {
-            const encoded = encodeJson(value)
+            let encoded = encodeJson(value)
             return encoded
           }
 
@@ -362,7 +362,7 @@ fn generic_callable_type_param_dependent_returns_remain_unresolved() {
         (
             r#"
               function singleton<T>(value: T) -> Array<T> {
-                const items = Array.empty<T>()
+                let items = Array.empty<T>()
                 items.push(value)
                 return items
               }
@@ -565,7 +565,7 @@ fn object_literal_negatives_fail_closed() {
         (
             r#"
               function targetless() -> void {
-                const value = { label: "missing-target" }
+                let value = { label: "missing-target" }
               }
             "#,
             "requires an explicit target type",
