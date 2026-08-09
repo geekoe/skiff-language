@@ -22,11 +22,11 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
     PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef,
-    PublicationResourceRef, RuntimeAssembly, ServiceCallRef, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement,
-    ServiceRequirementKey, ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason,
-    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ParamModeIr, PublicationResourceRef, RuntimeAssembly, ServiceCallRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding, SlotLayout,
+    SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
@@ -581,6 +581,7 @@ fn implementation_package(
                     ty: PackageTypeRef::Local {
                         local_type: TypeRefIr::builtin("string"),
                     },
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("string"),
