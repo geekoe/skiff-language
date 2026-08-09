@@ -260,6 +260,7 @@ fn provider_package_with_actor(
                                 ty: PackageTypeRef::Local {
                                     local_type: actor_type_ref(),
                                 },
+                                mode: ParamModeIr::Value,
                             }],
                             return_type: PackageTypeRef::Local {
                                 local_type: TypeRefIr::builtin("string"),

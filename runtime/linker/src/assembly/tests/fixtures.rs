@@ -1236,6 +1236,7 @@ fn add_private_gateway_callable(
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
