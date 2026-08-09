@@ -202,6 +202,80 @@ fn local_constant_types_are_qualified_by_their_exact_module_owner() {
 }
 
 #[test]
+fn record_shapes_are_relocated_after_module_owned_type_qualification() {
+    fn owner(module_path: &str) -> (MirUnit, FrozenConstantBundle) {
+        let mut file_ir = FileIrUnit::empty(module_path, "source-hash");
+        file_ir.type_table = vec![
+            TypeDeclIr {
+                name: "Inner".to_string(),
+                descriptor: TypeDescriptorIr::Representation {
+                    representation: TypeRefIr::builtin("string"),
+                },
+                type_params: Vec::new(),
+                implements: Vec::new(),
+                source_span: None,
+            },
+            TypeDeclIr {
+                name: "Container".to_string(),
+                descriptor: TypeDescriptorIr::Record {
+                    fields: BTreeMap::from([(
+                        "value".to_string(),
+                        TypeRefIr::LocalType { type_index: 0 },
+                    )]),
+                },
+                type_params: Vec::new(),
+                implements: Vec::new(),
+                source_span: None,
+            },
+        ];
+        file_ir.constants.push(constant(
+            "container",
+            TypeRefIr::LocalType { type_index: 1 },
+            vec![
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "payload".to_string(),
+                    },
+                },
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::LocalType { type_index: 1 },
+                    fields: BTreeMap::from([("value".to_string(), expression(0))]),
+                },
+            ],
+        ));
+        mir_and_bundle(&file_ir)
+    }
+
+    let (alpha_mir, alpha_bundle) = owner("alpha_shape");
+    let (zeta_mir, zeta_bundle) = owner("zeta_shape");
+    let artifact = emit_constants(&[zeta_mir, alpha_mir], &[zeta_bundle, alpha_bundle]);
+
+    let field_type_rows = artifact
+        .image
+        .pools
+        .shapes
+        .iter()
+        .map(|entry| match entry {
+            BytecodePoolEntry::ShapeRef { shape } => shape.field_types.clone(),
+            _ => panic!("shapes pool is homogeneous"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(field_type_rows, vec![vec![0], vec![1]]);
+
+    let graph_shape_refs = artifact
+        .image
+        .frozen_constant_graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            FrozenConstantNode::Record { shape_index, .. } => Some(*shape_index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(graph_shape_refs, vec![0, 1]);
+}
+
+#[test]
 fn constant_declaration_order_does_not_change_the_image_identity() {
     fn owner(constants: Vec<ConstIr>) -> (MirUnit, FrozenConstantBundle) {
         let mut file_ir = FileIrUnit::empty("stable", "source-hash");
