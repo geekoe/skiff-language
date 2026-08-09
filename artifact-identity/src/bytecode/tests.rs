@@ -5,21 +5,19 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
-    BytecodeRelocation, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
-    FrozenConstantNode, LiteralIr, PackageCallableId, RelocatableBytecodeFunction, TypeRefIr,
-    ValueTransferPlan, ValueTransferPlanKind, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeConstantRef, BytecodeImage, BytecodePoolEntry,
+    BytecodePools, BytecodeRelocation, BytecodeSpecialization, DebugBinding, DebugTable,
+    FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr, PackageCallableId,
+    RelocatableBytecodeFunction, StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
 
-fn plan(kind: ValueTransferPlanKind) -> ValueTransferPlan {
-    ValueTransferPlan { kind }
-}
-
 fn snapshot_share() -> ValueTransferPlan {
-    plan(ValueTransferPlanKind::SnapshotShare)
+    ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::Trivial,
+    }
 }
 
 /// Hand-built structurally valid artifact (passes C1–C8). Not encoder or
@@ -35,6 +33,10 @@ fn fixture() -> BytecodeArtifact {
             words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
             relocations: vec![BytecodeRelocation::LocalExecutableRef {
                 function_key: "module::main".to_string(),
+                specialization: BytecodeSpecialization {
+                    type_arguments: Vec::new(),
+                    concrete_receiver: None,
+                },
             }],
             frame_layout: FrameLayout {
                 slot_count: 1,
@@ -48,8 +50,13 @@ fn fixture() -> BytecodeArtifact {
             max_operand_depth: 2,
             effect_summary_ref: PackageCallableId::new("operation:module:main"),
             exception_regions: Vec::new(),
+            active_regions: Vec::new(),
             switch_tables: Vec::new(),
-            statement_entries: Vec::new(),
+            statement_entries: vec![StatementEntry {
+                pc: 0,
+                statement_id: "s:main:entry".to_string(),
+                charge_kind: StatementChargeKind::FunctionEntry,
+            }],
             source_map: Vec::new(),
         },
     );
@@ -63,7 +70,11 @@ fn fixture() -> BytecodeArtifact {
         image: BytecodeImage {
             functions,
             pools: BytecodePools {
-                constants: vec![BytecodePoolEntry::FrozenConstantRef { node_index: 0 }],
+                constants: vec![BytecodePoolEntry::ConstantRef {
+                    reference: BytecodeConstantRef::LocalNode { node_index: 0 },
+                    type_ref: 1,
+                    plan: snapshot_share(),
+                }],
                 types: vec![
                     BytecodePoolEntry::TypeRef {
                         ty: TypeRefIr::builtin("string"),
@@ -76,7 +87,9 @@ fn fixture() -> BytecodeArtifact {
                 effects: Vec::new(),
                 resume: Vec::new(),
                 callback_capture: Vec::new(),
+                writable_paths: Vec::new(),
             },
+            constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph {
                 nodes: vec![FrozenConstantNode::Literal {
                     literal: LiteralIr::Number {
@@ -124,7 +137,7 @@ fn schema_isa_and_fingerprint_participate_in_the_preimage() {
     let base_hash = bytecode_identity_after_structural(&base).unwrap();
 
     let mutations: [fn(&mut BytecodeArtifact); 3] = [
-        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v1".to_string(),
+        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v2".to_string(),
         |artifact: &mut BytecodeArtifact| {
             artifact.isa_version = "skiff-bytecode-isa-v2".to_string()
         },
@@ -197,7 +210,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&slot_type_changed).unwrap(),
         base_identity,
-        "schema v2 frame slot types must participate in the identity"
+        "schema v3 frame slot types must participate in the identity"
     );
 
     let mut result_type_changed = base.clone();
@@ -211,7 +224,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&result_type_changed).unwrap(),
         base_identity,
-        "schema v2 frame result types must participate in the identity"
+        "schema v3 frame result types must participate in the identity"
     );
 
     let mut graph_changed = base.clone();
@@ -242,6 +255,16 @@ fn every_image_mutation_changes_the_identity() {
         .get_mut("module::renamed")
         .unwrap()
         .function_key = "module::renamed".to_string();
+    let BytecodeRelocation::LocalExecutableRef { function_key, .. } = &mut key_changed
+        .image
+        .functions
+        .get_mut("module::renamed")
+        .unwrap()
+        .relocations[0]
+    else {
+        unreachable!()
+    };
+    *function_key = "module::renamed".to_string();
     key_changed.image.debug_table.as_mut().unwrap().bindings[0].function_key =
         "module::renamed".to_string();
     assert_ne!(bytecode_identity(&key_changed).unwrap(), base_identity);
