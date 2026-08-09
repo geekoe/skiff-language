@@ -197,63 +197,64 @@ fn project_implementation_symbols(
                     ),
                 ));
             };
-            let (callable_kind, identity_kind, self_type, explicit_parameters) =
-                match executable.kind {
-                    ExecutableKind::Function => (
-                        OperationCallableKind::InternalFunction,
-                        ImplementationCallableKind::Function,
-                        None,
-                        executable.params.as_slice(),
-                    ),
-                    ExecutableKind::ImplMethod => {
-                        let explicit_self = executable
-                            .params
-                            .first()
-                            .filter(|parameter| parameter.name == "self");
-                        let self_type = match (executable.self_type.as_ref(), explicit_self) {
-                            (Some(_), Some(_)) => {
-                                return Err(projection_error(
-                                    package_id,
-                                    format!(
-                                        "implementation method {} declares two receivers",
-                                        declaration.symbol
-                                    ),
-                                ));
-                            }
-                            (Some(self_type), None) => self_type,
-                            (None, Some(self_parameter)) => &self_parameter.ty,
-                            (None, None) => {
-                                return Err(projection_error(
-                                    package_id,
-                                    format!(
-                                        "implementation method {} has no exact receiver type",
-                                        declaration.symbol
-                                    ),
-                                ));
-                            }
-                        };
-                        let explicit_parameters =
-                            &executable.params[usize::from(explicit_self.is_some())..];
-                        if explicit_parameters
-                            .iter()
-                            .any(|parameter| parameter.name == "self")
+            let (callable_kind, identity_kind, self_type, explicit_parameters) = match executable
+                .kind
+            {
+                ExecutableKind::Function => (
+                    OperationCallableKind::InternalFunction,
+                    ImplementationCallableKind::Function,
+                    None,
+                    executable.params.as_slice(),
+                ),
+                ExecutableKind::ImplMethod => {
+                    let explicit_self = executable
+                        .params
+                        .first()
+                        .filter(|parameter| parameter.name == "self");
+                    let self_type = executable.self_type.as_ref().ok_or_else(|| {
+                        projection_error(
+                            package_id,
+                            format!(
+                                "implementation method {} has no exact receiver type",
+                                declaration.symbol
+                            ),
+                        )
+                    })?;
+                    if let Some(self_parameter) = explicit_self {
+                        if self_parameter.mode != ParamModeIr::Value
+                            || &self_parameter.ty != self_type
                         {
                             return Err(projection_error(
-                                package_id,
-                                format!(
-                                    "implementation method {} has a non-leading receiver",
-                                    declaration.symbol
-                                ),
-                            ));
+                                    package_id,
+                                    format!(
+                                        "implementation method {} explicit receiver does not exactly match selfType",
+                                        declaration.symbol
+                                    ),
+                                ));
                         }
-                        (
-                            OperationCallableKind::ImplMethod,
-                            ImplementationCallableKind::ImplMethod,
-                            Some(self_type),
-                            explicit_parameters,
-                        )
                     }
-                };
+                    let explicit_parameters =
+                        &executable.params[usize::from(explicit_self.is_some())..];
+                    if explicit_parameters
+                        .iter()
+                        .any(|parameter| parameter.name == "self")
+                    {
+                        return Err(projection_error(
+                            package_id,
+                            format!(
+                                "implementation method {} has a non-leading receiver",
+                                declaration.symbol
+                            ),
+                        ));
+                    }
+                    (
+                        OperationCallableKind::ImplMethod,
+                        ImplementationCallableKind::ImplMethod,
+                        Some(self_type),
+                        explicit_parameters,
+                    )
+                }
+            };
             let (source_path, callable_id) = project_implementation_callable_identity(
                 package_id,
                 &unit.module_path,

@@ -142,11 +142,11 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v11:sha256:"));
+        .starts_with("skiff-package-build-v12:sha256:"));
     assert_eq!(
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
             .unwrap()["schema"],
-        "skiff-package-artifact-build-identity-v10"
+        "skiff-package-artifact-build-identity-v11"
     );
     assert_eq!(
         serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
@@ -404,8 +404,8 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
     let mut stale_build = base;
     stale_build.package_build_id =
         skiff_artifact_model::PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
+            "skiff-package-build-v12:sha256",
             "skiff-package-build-v11:sha256",
-            "skiff-package-build-v10:sha256",
             1,
         ));
     assert!(validate_package_artifact_identities(&stale_build).is_err());

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ExecutableExport, ExecutableKind, FileIrRef, FileIrUnit, PackageExportIndex,
+    ExecutableExport, ExecutableKind, FileIrRef, FileIrUnit, PackageExportIndex, ParamModeIr,
 };
 
 use crate::{
@@ -125,30 +125,30 @@ pub(super) fn project_operations(
                 .params
                 .first()
                 .filter(|parameter| parameter.name == "self");
-            let implementation_receiver = match (executable.self_type.as_ref(), explicit_self) {
-                (Some(_), Some(_)) => {
+            let implementation_receiver = executable.self_type.as_ref().ok_or_else(|| {
+                public_instance_error(
+                    package,
+                    public_path,
+                    format!(
+                        "source-validated method {} target {}.{} has no receiver",
+                        method.name, method.executable_module, method.executable_symbol
+                    ),
+                )
+            })?;
+            if let Some(self_parameter) = explicit_self {
+                if self_parameter.mode != ParamModeIr::Value
+                    || &self_parameter.ty != implementation_receiver
+                {
                     return Err(public_instance_error(
                         package,
                         public_path,
                         format!(
-                            "source-validated method {} target {}.{} declares two receivers",
+                            "source-validated method {} target {}.{} explicit receiver does not exactly match selfType",
                             method.name, method.executable_module, method.executable_symbol
                         ),
                     ));
                 }
-                (Some(self_type), None) => self_type,
-                (None, Some(self_parameter)) => &self_parameter.ty,
-                (None, None) => {
-                    return Err(public_instance_error(
-                        package,
-                        public_path,
-                        format!(
-                            "source-validated method {} target {}.{} has no receiver",
-                            method.name, method.executable_module, method.executable_symbol
-                        ),
-                    ));
-                }
-            };
+            }
             if executable
                 .params
                 .iter()
