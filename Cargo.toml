@@ -42,6 +42,7 @@ members = [
   "runtime/request-contract",
   "runtime/service-db",
   "runtime/request",
+  "runtime/scheduler",
   "runtime/transport",
   "runtime/vm",
   "test-runner",

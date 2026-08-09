@@ -54,6 +54,7 @@ const rustImplementationSubjects = [
       rustPackage('runtime/native-contract', 'skiff-runtime-native-contract'),
       rustPackage('runtime/package-test', 'skiff-runtime-package-test'),
       rustPackage('runtime/request-contract', 'skiff-runtime-request-contract'),
+      rustPackage('runtime/scheduler', 'skiff-runtime-scheduler'),
       rustPackage('runtime/service-db', 'skiff-runtime-service-db'),
       rustPackage('runtime/request', 'skiff-runtime-request'),
       rustPackage('runtime/transport', 'skiff-runtime-transport'),
