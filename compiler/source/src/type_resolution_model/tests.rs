@@ -605,6 +605,8 @@ fn signature_rehydration_artifact() -> PackageArtifact {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -2480,6 +2482,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -3126,6 +3130,8 @@ fn actor_artifact() -> PackageArtifact {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),

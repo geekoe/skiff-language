@@ -214,6 +214,7 @@ fn contract_and_schema_from_records(
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, operation)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: vec![PackageTypeRequirement {
             package_id,
             required_type_ids,
