@@ -15,8 +15,9 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
-    admission::prove_admission, VerificationError, VerificationLimits, VerificationLocation,
-    VerificationObligation,
+    admission::prove_admission,
+    concrete_values::{prove_types_and_plans, ConcreteValueFacts},
+    VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
 /// Opaque proof token stored in every verified image.
@@ -402,7 +403,7 @@ fn establish_verification_seal(
     limits: &VerificationLimits,
 ) -> Result<SealedDeploymentFacts, VerificationError> {
     prove_admission(hydrated, candidate, limits)?;
-    prove_candidate_semantics(candidate, limits)?;
+    prove_hydrated_candidate_semantics(hydrated, candidate, limits)?;
     let entry_maps = distill_verified_entry_maps(candidate)?;
     let constant_heap = build_verified_constant_heap(candidate, limits)?;
 
@@ -415,17 +416,21 @@ fn establish_verification_seal(
     })
 }
 
-pub(super) fn prove_candidate_semantics(
+fn prove_hydrated_candidate_semantics(
+    hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
     limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
-    prove_concrete_types_and_shapes(candidate, limits)?;
-    prove_control_flow_and_stack(candidate, limits)?;
-    prove_value_transfer_plans(candidate, limits)?;
+    let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
+    prove_control_flow_and_stack(candidate, &concrete_values, limits)?;
     prove_frozen_constant_safety(candidate, limits)
 }
 
-fn prove_concrete_types_and_shapes(
+/// A candidate alone can never enter P2 because concrete type resolution
+/// requires the exact admitted hydration. This narrow test seam preserves the
+/// fail-closed candidate-only invariant without becoming a verification path.
+#[cfg(test)]
+pub(super) fn prove_candidate_semantics(
     _candidate: &LinkedBytecodeCandidate,
     _limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
@@ -437,20 +442,11 @@ fn prove_concrete_types_and_shapes(
 
 fn prove_control_flow_and_stack(
     _candidate: &LinkedBytecodeCandidate,
+    _concrete_values: &ConcreteValueFacts,
     _limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
     Err(VerificationError::ProofUnavailable {
         obligation: VerificationObligation::ControlFlow,
-        location: VerificationLocation::Image,
-    })
-}
-
-fn prove_value_transfer_plans(
-    _candidate: &LinkedBytecodeCandidate,
-    _limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
-    Err(VerificationError::ProofUnavailable {
-        obligation: VerificationObligation::ValueTransferAndDrop,
         location: VerificationLocation::Image,
     })
 }

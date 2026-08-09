@@ -287,6 +287,8 @@ fn generous_limits() -> VerificationLimits {
         max_arity: u64::MAX,
         max_callback_captures_per_callback: u64::MAX,
         max_type_nesting_depth: u64::MAX,
+        max_value_lifecycle_nodes: u64::MAX,
+        max_value_lifecycle_canonical_bytes: u64::MAX,
         max_constant_graph_edges: u64::MAX,
     }
 }

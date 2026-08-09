@@ -18,6 +18,8 @@ pub enum VerificationLimit {
     Arity,
     CallbackCapturesPerCallback,
     TypeNestingDepth,
+    ValueLifecycleNodes,
+    ValueLifecycleCanonicalBytes,
     ConstantGraphEdges,
 }
 
@@ -37,6 +39,8 @@ impl VerificationLimit {
             Self::Arity => "arity",
             Self::CallbackCapturesPerCallback => "callback captures per callback",
             Self::TypeNestingDepth => "type nesting depth",
+            Self::ValueLifecycleNodes => "value lifecycle nodes",
+            Self::ValueLifecycleCanonicalBytes => "value lifecycle canonical bytes",
             Self::ConstantGraphEdges => "constant graph edges",
         }
     }

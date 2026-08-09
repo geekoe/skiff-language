@@ -27,6 +27,8 @@ fn limits() -> VerificationLimits {
         max_arity: 0,
         max_callback_captures_per_callback: 0,
         max_type_nesting_depth: 0,
+        max_value_lifecycle_nodes: 0,
+        max_value_lifecycle_canonical_bytes: 0,
         max_constant_graph_edges: 0,
     }
 }

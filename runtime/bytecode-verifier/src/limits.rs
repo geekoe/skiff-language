@@ -31,6 +31,10 @@ pub struct VerificationLimits {
     pub max_callback_captures_per_callback: u64,
     /// Maximum nesting depth of one concrete linked type.
     pub max_type_nesting_depth: u64,
+    /// Maximum nodes expanded by concrete value-lifecycle classification.
+    pub max_value_lifecycle_nodes: u64,
+    /// Maximum canonical bytes charged by value-lifecycle classification.
+    pub max_value_lifecycle_canonical_bytes: u64,
     /// Maximum edges in the complete linked constant graph.
     pub max_constant_graph_edges: u64,
 }
