@@ -51,6 +51,10 @@ pub enum ContractDefinitionError {
         callable_id: String,
     },
     #[error(
+        "service API projection lacks exact provider-free public-instance contract facts for selected roots {public_instances:?}"
+    )]
+    MissingPublicInstanceContractFacts { public_instances: Vec<String> },
+    #[error(
         "service API projection maps callable {callable_id} to multiple public paths: {first}, {second}"
     )]
     DuplicatePublicCallable {

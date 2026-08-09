@@ -13,6 +13,7 @@ use crate::{ContractDefinitionError, Result};
 pub(crate) struct ServiceCallSelection {
     pub(crate) roots: Vec<String>,
     pub(crate) operations: BTreeMap<String, PackageCallableId>,
+    pub(crate) public_instances: Vec<String>,
 }
 
 pub(crate) fn select_service_calls(
@@ -24,6 +25,7 @@ pub(crate) fn select_service_calls(
     let method_paths_by_callable = method_paths_by_callable(&methods);
     let mut operations = BTreeMap::new();
     let mut callable_paths = BTreeMap::new();
+    let mut public_instances = Vec::new();
 
     for root in &roots {
         if let Some((public_instance, _)) = methods.get(root) {
@@ -50,6 +52,7 @@ pub(crate) fn select_service_calls(
                 )?;
             }
             Some(PackageLocalAbiSymbol::PublicInstance { methods, .. }) => {
+                public_instances.push(root.clone());
                 for (method, callable_id) in methods {
                     let method_path = format!("{root}.{method}");
                     let Some(PackageLocalAbiSymbol::Callable {
@@ -90,7 +93,11 @@ pub(crate) fn select_service_calls(
         }
     }
 
-    Ok(ServiceCallSelection { roots, operations })
+    Ok(ServiceCallSelection {
+        roots,
+        operations,
+        public_instances,
+    })
 }
 
 fn canonical_roots(selection_paths: &[String]) -> Result<Vec<String>> {

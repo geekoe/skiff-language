@@ -89,6 +89,8 @@ fn package_owned_type_identity_is_independent_of_service_and_version() {
     };
     let first = compile("service.one", "1.0.0");
     let second = compile("service.two", "9.0.0");
+    assert!(first.public_instances.is_empty());
+    assert!(second.public_instances.is_empty());
     assert_eq!(
         first.package_type_requirements[0].required_type_ids,
         second.package_type_requirements[0].required_type_ids

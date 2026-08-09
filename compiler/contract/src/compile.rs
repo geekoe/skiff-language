@@ -71,6 +71,7 @@ fn compile_service_contract_definition_with_policy(
         contract_version: definition.contract_version,
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations,
+        public_instances: BTreeMap::new(),
         package_type_requirements: definition.package_type_requirements,
         diagnostic_text,
     };

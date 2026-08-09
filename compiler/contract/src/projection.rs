@@ -14,7 +14,7 @@ use crate::{
     ServiceContractDefinitionDiagnosticText,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceApiProjection {
     pub service_calls: Vec<String>,
@@ -68,6 +68,13 @@ pub fn project_service_api(
 ) -> Result<ServiceApiProjection> {
     let service_id = service_id.into();
     let selection = select_service_calls(package, selection_paths)?;
+    if !selection.public_instances.is_empty() {
+        return Err(
+            ContractDefinitionError::MissingPublicInstanceContractFacts {
+                public_instances: selection.public_instances,
+            },
+        );
+    }
     let selected_operations = selection.operations;
     let mut available = BTreeMap::new();
     let mut unavailable = BTreeMap::new();

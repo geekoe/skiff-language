@@ -63,9 +63,9 @@ fn operation_schema_roots_are_only_parameter_return_stream_and_callback_types() 
 }
 
 #[test]
-fn manifest_selection_projection_selects_function_and_complete_instance_methods() {
+fn manifest_selection_projection_selects_function() {
     let package = package_fixture();
-    let selected = selection(&["worker", "selected"]);
+    let selected = selection(&["selected"]);
     let projected =
         project_service_api("example.service", &selected, &package, &BTreeMap::new()).unwrap();
 
@@ -75,10 +75,11 @@ fn manifest_selection_projection_selects_function_and_complete_instance_methods(
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        vec!["selected", "worker.run", "worker.stop"]
+        vec!["selected"]
     );
     assert!(projected.unavailable.is_empty());
-    assert_eq!(projected.contract.operations.len(), 3);
+    assert_eq!(projected.contract.operations.len(), 1);
+    assert!(projected.contract.public_instances.is_empty());
     assert!(projected.contract.package_type_requirements.is_empty());
     let operation_paths = projected
         .contract
@@ -87,10 +88,7 @@ fn manifest_selection_projection_selects_function_and_complete_instance_methods(
         .values()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        operation_paths,
-        BTreeSet::from(["selected", "worker.run", "worker.stop"])
-    );
+    assert_eq!(operation_paths, BTreeSet::from(["selected"]));
 
     let status = |path: &str| {
         &projected
@@ -130,6 +128,19 @@ fn manifest_selection_projection_selects_function_and_complete_instance_methods(
 }
 
 #[test]
+fn manifest_selection_projection_fails_closed_without_exact_public_instance_facts() {
+    let package = package_fixture();
+    let selected = selection(&["worker", "selected"]);
+
+    let ContractDefinitionError::MissingPublicInstanceContractFacts { public_instances } =
+        project_service_api("example.service", &selected, &package, &BTreeMap::new()).unwrap_err()
+    else {
+        panic!("selected public instances must not project an empty contract table")
+    };
+    assert_eq!(public_instances, vec!["worker"]);
+}
+
+#[test]
 fn manifest_selection_projection_reports_all_unavailable_callables_and_reasons() {
     let package = package_fixture();
     let selected = selection(&["blockedTwo", "blocked"]);
@@ -163,6 +174,7 @@ fn manifest_selection_projection_allows_stable_zero_operation_contract() {
     let first = project_service_api("example.empty", &[], &package, &BTreeMap::new()).unwrap();
     let second = project_service_api("example.empty", &[], &package, &BTreeMap::new()).unwrap();
     assert!(first.contract.operations.is_empty());
+    assert!(first.contract.public_instances.is_empty());
     assert!(first.contract.package_type_requirements.is_empty());
     assert!(first.available.is_empty());
     assert!(first.unavailable.is_empty());
@@ -241,7 +253,7 @@ fn package_fixture() -> PackageArtifact {
                                 may_pending: false,
                                 pending_effect_categories: Vec::new(),
                                 inout_path_effects: Vec::new(),
-},
+                            },
                             provenance: skiff_artifact_model::CallableProvenanceSummary::Analyzed {
                                 return_origins: Vec::new(),
                                 direct_return_origins: Vec::new(),
@@ -272,7 +284,7 @@ fn package_fixture() -> PackageArtifact {
                     may_pending: false,
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
-},
+                },
                 provenance: skiff_artifact_model::CallableProvenanceSummary::Analyzed {
                     return_origins: Vec::new(),
                     direct_return_origins: Vec::new(),
@@ -317,6 +329,8 @@ fn package_fixture() -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
