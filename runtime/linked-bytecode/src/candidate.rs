@@ -19,8 +19,9 @@ use crate::{
 use crate::BytecodePackageIndex;
 
 /// Exact package bytecode/header provenance retained beside all linked rows.
-/// The schema string is intentionally data: current production input is the
-/// authority-pinned `skiff-bytecode-v5`, and unknown values fail hydration.
+/// The schema string remains untrusted data here: artifact admission and
+/// hydration accept the current authority-pinned `skiff-bytecode-v5`, while
+/// verifier exact package binding rejects any candidate/header divergence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedPackageBytecodeProvenance {
     index: BytecodePackageIndex,
