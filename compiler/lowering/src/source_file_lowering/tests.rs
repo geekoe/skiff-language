@@ -2485,6 +2485,63 @@ fn lowers_interface_box_to_local_method_table() {
 }
 
 #[test]
+fn marker_conformance_lowers_but_dynamic_interface_boxing_is_rejected() {
+    let unit = lowered_unit(
+        r#"
+          interface Marker {}
+
+          type Tagged implements Marker {
+            label: string,
+          }
+        "#,
+    );
+    let marker_type_index = unit
+        .declarations
+        .types
+        .get("Marker")
+        .expect("marker interface declaration")
+        .type_index;
+    let tagged = unit
+        .type_table
+        .iter()
+        .find(|declaration| declaration.name == "Tagged")
+        .expect("tagged declaration");
+    let [TypeRefIr::AnyInterface { interface }] = tagged.implements.as_slice() else {
+        panic!("marker conformance must remain an exact interface instantiation");
+    };
+    assert!(interface.canonical_type_args.is_empty());
+    assert_eq!(
+        serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+            .expect("marker interface ABI identity should decode"),
+        TypeRefIr::PublicationType {
+            module_path: MODULE.to_string(),
+            type_index: marker_type_index,
+        }
+    );
+
+    let error = lowered_unit_result(
+        r#"
+          interface Marker {}
+
+          type Tagged implements Marker {
+            label: string,
+          }
+
+          function box_marker() -> void {
+            let marker = Tagged { label: "tagged" } as Marker
+          }
+        "#,
+    )
+    .expect_err("marker interface must not be dynamically boxed");
+    assert!(
+        error.contains("interface boxing selector `Marker`")
+            && error.contains("not object-safe")
+            && error.contains("marker interface"),
+        "unexpected marker boxing diagnostic: {error}"
+    );
+}
+
+#[test]
 fn lowers_package_interface_box_to_local_method_table() {
     let unit = lowered_unit_with_package_facts(package_interface_box_source());
     let make_box = executable(&unit, "make_package_box");

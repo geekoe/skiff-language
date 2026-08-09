@@ -1488,10 +1488,10 @@ impl<'a> FunctionLowerer<'a> {
         let context = self.type_resolution_context();
         let selector = self
             .type_resolution
-            .resolve_canonical_interface_selector_type_ref(interface, &context)
+            .resolve_object_safe_interface_selector_type_ref(interface, &context)
             .map_err(|error| {
                 CompileError::Semantic(format!(
-                    "interface boxing selector `{}` at ExpressionKey {:?} is missing or invalid canonical selector fact: {error}",
+                    "interface boxing selector `{}` at ExpressionKey {:?} is missing or invalid object-safe selector fact: {error}",
                     interface.name, box_key
                 ))
             })?;
