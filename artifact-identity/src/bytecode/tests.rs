@@ -43,7 +43,7 @@ fn fixture() -> BytecodeArtifact {
             },
             type_parameters: Vec::new(),
             self_type_ref: None,
-            words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
+            words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0, 0x25],
             relocations: vec![BytecodeRelocation::LocalExecutableRef {
                 function_key: "module::main".to_string(),
                 specialization: BytecodeSpecialization {
