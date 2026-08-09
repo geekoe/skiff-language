@@ -297,6 +297,8 @@ mod tests {
 
     use super::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle, RESERVED_MASK};
 
+    type ReferenceCase = (ValueKind, ValueSlot, fn(&ValueSlot) -> Option<VmHandle>);
+
     #[test]
     fn value_slot_layout_is_two_words() {
         assert_eq!(size_of::<ValueSlot>(), 16);
@@ -333,7 +335,7 @@ mod tests {
         let handle = VmHandle::new(0xfedc_ba98_7654_3210);
         let tag = CompactTypeTag::new(0x89ab_cdef);
         let flags = ValueFlags::new(0xa5);
-        let cases: [(ValueKind, ValueSlot, fn(&ValueSlot) -> Option<VmHandle>); 5] = [
+        let cases: [ReferenceCase; 5] = [
             (
                 ValueKind::RequestHeapRef,
                 ValueSlot::request_heap_ref(handle, tag, flags),

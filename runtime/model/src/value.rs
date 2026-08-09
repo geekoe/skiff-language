@@ -525,6 +525,9 @@ impl From<HeapHandle> for RuntimeValue {
 pub use skiff_runtime_request_contract::ActorRef;
 
 #[derive(Clone, Debug, PartialEq)]
+// Boxing a variant of this public heap representation would change both its
+// construction/matching API and its per-node allocation and indirection semantics.
+#[allow(clippy::large_enum_variant)]
 pub enum HeapNode {
     Bytes(RuntimeBytes),
     Array(Vec<RuntimeValue>),
