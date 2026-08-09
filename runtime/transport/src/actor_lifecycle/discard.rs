@@ -66,11 +66,14 @@ impl ActorIdleDiscardRequestFrameHeader {
         &self.fence
     }
 
-    /// Validate exact request/ACK correlation before an owner may be cleared.
-    pub fn validate_ack(
+    /// Confirm that the exact fenced arena is absent before clearing its owner.
+    ///
+    /// Exact correlation is necessary but not sufficient: a correlated
+    /// `fenceMismatch` wire outcome remains a diagnostic rejection.
+    pub fn confirm_absence(
         &self,
         ack: &ActorIdleDiscardAckFrameHeader,
-    ) -> Result<ActorIdleDiscardAckOutcome, ActorLifecycleContractError> {
+    ) -> Result<ActorIdleDiscardConfirmation, ActorLifecycleContractError> {
         self.validate()?;
         ack.validate()?;
         if self.request_id != ack.request_id {
@@ -82,7 +85,15 @@ impl ActorIdleDiscardRequestFrameHeader {
         if self.fence != ack.fence {
             return Err(ActorLifecycleContractError::DiscardAckFenceMismatch);
         }
-        Ok(ack.outcome)
+        match ack.outcome {
+            ActorIdleDiscardAckOutcome::Discarded => Ok(ActorIdleDiscardConfirmation::Discarded),
+            ActorIdleDiscardAckOutcome::AlreadyAbsent => {
+                Ok(ActorIdleDiscardConfirmation::AlreadyAbsent)
+            }
+            ActorIdleDiscardAckOutcome::FenceMismatch => {
+                Err(ActorLifecycleContractError::DiscardAckDidNotConfirmAbsence)
+            }
+        }
     }
 
     pub fn validate(&self) -> Result<(), ActorLifecycleContractError> {
@@ -132,10 +143,11 @@ pub enum ActorIdleDiscardAckOutcome {
     FenceMismatch,
 }
 
-impl ActorIdleDiscardAckOutcome {
-    pub const fn confirms_absence(self) -> bool {
-        matches!(self, Self::Discarded | Self::AlreadyAbsent)
-    }
+/// Positive proof returned only after exact request/ACK correlation succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorIdleDiscardConfirmation {
+    Discarded,
+    AlreadyAbsent,
 }
 
 /// Runtime-to-Router acknowledgement. The exact fence is echoed so a request

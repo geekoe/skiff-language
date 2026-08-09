@@ -222,11 +222,21 @@ fn idle_discard_request_and_ack_round_trip_the_same_exact_fence() {
     assert_eq!(decoded_ack.request_id(), request.request_id());
     assert_eq!(decoded_ack.fence(), request.fence());
     assert_eq!(
-        request.validate_ack(&decoded_ack).unwrap(),
-        ActorIdleDiscardAckOutcome::Discarded
+        request.confirm_absence(&decoded_ack).unwrap(),
+        ActorIdleDiscardConfirmation::Discarded
     );
-    assert!(decoded_ack.outcome().confirms_absence());
-    assert!(!ActorIdleDiscardAckOutcome::FenceMismatch.confirms_absence());
+
+    let absent_ack = ActorIdleDiscardAckFrameHeader::new(
+        request.request_id(),
+        request.target_runtime_id(),
+        request.fence().clone(),
+        ActorIdleDiscardAckOutcome::AlreadyAbsent,
+    )
+    .unwrap();
+    assert_eq!(
+        request.confirm_absence(&absent_ack).unwrap(),
+        ActorIdleDiscardConfirmation::AlreadyAbsent
+    );
 }
 
 #[test]
@@ -241,7 +251,7 @@ fn idle_discard_ack_cannot_clear_a_different_request_or_fence() {
     )
     .unwrap();
     assert!(matches!(
-        request.validate_ack(&wrong_request),
+        request.confirm_absence(&wrong_request),
         Err(ActorLifecycleContractError::DiscardAckRequestMismatch { .. })
     ));
 
@@ -253,9 +263,32 @@ fn idle_discard_ack_cannot_clear_a_different_request_or_fence() {
     )
     .unwrap();
     assert_eq!(
-        request.validate_ack(&wrong_fence),
+        request.confirm_absence(&wrong_fence),
         Err(ActorLifecycleContractError::DiscardAckFenceMismatch)
     );
+}
+
+#[test]
+fn fence_mismatch_outcome_cannot_pass_the_clear_owner_gate_with_is_ok() {
+    let request =
+        ActorIdleDiscardRequestFrameHeader::new("discard-1", "runtime-1", fence('d')).unwrap();
+    let rejected = ActorIdleDiscardAckFrameHeader::new(
+        "discard-1",
+        "runtime-1",
+        fence('d'),
+        ActorIdleDiscardAckOutcome::FenceMismatch,
+    )
+    .unwrap();
+
+    assert_eq!(
+        rejected.outcome(),
+        ActorIdleDiscardAckOutcome::FenceMismatch
+    );
+    assert_eq!(
+        request.confirm_absence(&rejected),
+        Err(ActorLifecycleContractError::DiscardAckDidNotConfirmAbsence)
+    );
+    assert!(!request.confirm_absence(&rejected).is_ok());
 }
 
 #[test]

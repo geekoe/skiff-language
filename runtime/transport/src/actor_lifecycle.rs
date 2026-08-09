@@ -14,8 +14,9 @@ mod validation;
 pub use discard::{
     decode_actor_idle_discard_ack_frame, decode_actor_idle_discard_request_frame,
     encode_actor_idle_discard_ack_frame, encode_actor_idle_discard_request_frame,
-    ActorIdleDiscardAckFrameHeader, ActorIdleDiscardAckOutcome, ActorIdleDiscardRequestFrameHeader,
-    ACTOR_IDLE_DISCARD_ACK_FRAME_TYPE, ACTOR_IDLE_DISCARD_REQUEST_FRAME_TYPE,
+    ActorIdleDiscardAckFrameHeader, ActorIdleDiscardAckOutcome, ActorIdleDiscardConfirmation,
+    ActorIdleDiscardRequestFrameHeader, ACTOR_IDLE_DISCARD_ACK_FRAME_TYPE,
+    ACTOR_IDLE_DISCARD_REQUEST_FRAME_TYPE,
 };
 pub use error::ActorLifecycleContractError;
 pub use identity::{

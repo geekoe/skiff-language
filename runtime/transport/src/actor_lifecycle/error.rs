@@ -42,6 +42,7 @@ pub enum ActorLifecycleContractError {
         ack_request_id: String,
     },
     DiscardAckFenceMismatch,
+    DiscardAckDidNotConfirmAbsence,
     UnexpectedSchemaVersion {
         actual: String,
     },
@@ -108,6 +109,9 @@ impl fmt::Display for ActorLifecycleContractError {
             Self::DiscardAckFenceMismatch => {
                 formatter.write_str("discard ACK does not echo the requested exact owner fence")
             }
+            Self::DiscardAckDidNotConfirmAbsence => formatter.write_str(
+                "discard ACK reported fenceMismatch and did not confirm owner absence",
+            ),
             Self::UnexpectedSchemaVersion { actual } => write!(
                 formatter,
                 "schemaVersion must be {RUNTIME_FRAME_SCHEMA_VERSION}, got {actual:?}"
