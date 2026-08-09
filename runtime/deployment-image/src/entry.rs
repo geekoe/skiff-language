@@ -4,6 +4,8 @@ use crate::{DeploymentImage, DeploymentOwnerIdentity};
 
 /// Read-only proof that an entry belongs to one immutable program allocation.
 pub trait DeploymentProgramEntry<P> {
+    fn owner(&self) -> &DeploymentOwnerIdentity;
+
     fn program(&self) -> &Arc<P>;
 }
 
@@ -22,6 +24,9 @@ where
         image: Arc<DeploymentImage<P>>,
         entry: E,
     ) -> Result<Self, PinnedDeploymentEntryError> {
+        if image.owner() != entry.owner() {
+            return Err(PinnedDeploymentEntryError::OwnerMismatch);
+        }
         if !Arc::ptr_eq(image.program(), entry.program()) {
             return Err(PinnedDeploymentEntryError::ProgramMismatch);
         }
@@ -43,12 +48,16 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinnedDeploymentEntryError {
+    OwnerMismatch,
     ProgramMismatch,
 }
 
 impl fmt::Display for PinnedDeploymentEntryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OwnerMismatch => {
+                formatter.write_str("deployment entry belongs to a different exact owner")
+            }
             Self::ProgramMismatch => {
                 formatter.write_str("deployment entry belongs to a different program allocation")
             }
