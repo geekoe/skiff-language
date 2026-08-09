@@ -24,7 +24,7 @@ resources:
 type Agent { label: string }
 
 function run(input: base.Input) -> Agent {
-  const token = config.require<string>("agent.token")
+  let token = config.require<string>("agent.token")
   return Agent { label: token }
 }
 "#,

@@ -79,7 +79,7 @@ impl CreateOnly {
 }
 
 function ping() -> string {
-  const counter = std.actor.get<Counter>("shared")
+  let counter = std.actor.get<Counter>("shared")
   return counter.increment()
 }
 "#;
@@ -109,7 +109,7 @@ impl Thing {
 }
 
 function ping() -> string {
-  const thing = std.actor.get<Thing>("t")
+  let thing = std.actor.get<Thing>("t")
   return thing.read()
 }
 "#;

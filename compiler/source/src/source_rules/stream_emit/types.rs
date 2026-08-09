@@ -5,6 +5,7 @@ use crate::{shared::ast::Expr, shared::ast_utils::expr_path};
 
 #[cfg(test)]
 use crate::{
+    shared::ast::LetKind,
     shared::prelude_registry::prelude_registry,
     shared::type_syntax::{generic_inner, generic_parts, split_top_level},
 };
@@ -384,7 +385,7 @@ fn infer_concurrent_value_type(
     let mut sibling_scope = env.clone();
     for statement in &value.body.statements {
         if let crate::shared::ast::Stmt::Let {
-            mutable: false,
+            kind: LetKind::Let,
             name,
             value: initializer,
             ..

@@ -36,8 +36,8 @@ fn dispatch_expressions_compile_through_the_full_package_pipeline() {
 
             function start(input: string, instant: Instant) -> std.task.TaskRef {
               dispatch run(input)
-              const ref = dispatch run(input) after(200ms)
-              const scheduled = dispatch run(input) at(instant)
+              let ref = dispatch run(input) after(200ms)
+              let scheduled = dispatch run(input) at(instant)
               consume(dispatch run(input) after(0ms))
               return ref
             }
@@ -90,7 +90,7 @@ fn dispatch_keyword_is_reserved_for_local_and_pattern_bindings() {
             "reserved-local-binding",
             r#"
                 function start() -> void {
-                  const dispatch = 1
+                  let dispatch = 1
                 }
             "#,
         ),
@@ -125,12 +125,12 @@ fn std_task_status_and_cancel_compile_through_the_full_package_pipeline() {
             }
 
             function start() -> std.task.TaskStatus {
-              const ref = dispatch run()
+              let ref = dispatch run()
               return std.task.status(ref)
             }
 
             function stop() -> std.task.TaskCancelResult {
-              const ref = dispatch run()
+              let ref = dispatch run()
               return std.task.cancel(ref)
             }
 
@@ -264,7 +264,7 @@ fn std_task_status_and_cancel_reject_non_task_ref_arguments() {
                 }
 
                 function start() -> std.task.TaskStatus {
-                  const ref = dispatch run()
+                  let ref = dispatch run()
                   return std.task.status(ref, ref)
                 }
             "#,

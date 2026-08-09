@@ -1,7 +1,7 @@
 use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
 use skiff_syntax::ast::{
     Block, BlockSourceSpans, DependencySourceAddress, ExecutableSourceSpans, Expr, ExprSourceSpans,
-    FunctionDecl, Literal, Param, SourceFile, Stmt, StmtSourceSpans, TestDeclaration,
+    FunctionDecl, Literal, Param, ParamMode, SourceFile, Stmt, StmtSourceSpans, TestDeclaration,
     TestEffectOutcome, TestEffectOutcomeSourceSpans, TestEffectStepOutcome,
     TestEffectStepOutcomeSourceSpans, TypeRef,
 };
@@ -309,6 +309,7 @@ fn test_gateway(
         type_params: Vec::new(),
         params: vec![Param {
             name: "body".to_string(),
+            mode: ParamMode::Value,
             ty: TypeRef {
                 name: "null".to_string(),
             },

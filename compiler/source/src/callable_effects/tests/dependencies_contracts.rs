@@ -14,7 +14,7 @@ fn exact_dependency_callee_does_not_poison_known_target() {
         PackageCallableId::new("pkg-callable:dep-run"),
         CallableSemanticFacts {
             effects: CallableEffectSummary::Analyzed {
-                effects: dependency_effects,
+                effects: dependency_effects.clone(),
             },
             provenance: CallableProvenanceSummary::Analyzed {
                 return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],

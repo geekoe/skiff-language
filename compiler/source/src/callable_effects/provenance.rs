@@ -454,6 +454,10 @@ impl CallableState {
             .extend(value.direct_origins.iter().cloned());
         if value.unknown {
             self.mark_unknown_value_if_unowned();
+            let fail_closed = Self::fail_closed(CallableProvenanceUnknownReason::UnknownCallTarget);
+            join_effects(&mut self.effects, &fail_closed.effects);
+            self.escape_lanes
+                .extend(fail_closed.escape_lanes.iter().cloned());
         }
     }
 

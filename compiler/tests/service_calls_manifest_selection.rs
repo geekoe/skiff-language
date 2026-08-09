@@ -381,7 +381,7 @@ mod tests {
                 "selected",
                 vec![
                     BoundaryUnavailableReason::AnalysisPending,
-                    BoundaryUnavailableReason::WritesCallerReachable,
+                    BoundaryUnavailableReason::UnknownCallTarget,
                 ],
             ),
             (
@@ -409,7 +409,7 @@ mod tests {
             reported["selected"],
             [
                 BoundaryUnavailableReason::AnalysisPending,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::UnknownCallTarget,
             ]
         );
     }

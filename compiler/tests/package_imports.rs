@@ -190,7 +190,7 @@ packages:
             r#"
 import gcloud
 function run() -> string {
-  const stored = gcloud/storage.upload()
+  let stored = gcloud/storage.upload()
   return gcloud/compute.start()
 }
 "#,
@@ -341,10 +341,10 @@ import widget
 import widgetImpl
 
 function run() -> string {
-  const publicValue = widget/internal.codec.reveal()
-  const seed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.PRIVATE_VALUE
-  const revealed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal(seed)
-  const contextual: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal({ value: "contextual" })
+  let publicValue = widget/internal.codec.reveal()
+  let seed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.PRIVATE_VALUE
+  let revealed: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal(seed)
+  let contextual: widgetImpl/internal.codec.PrivateValue = widgetImpl/internal.codec.reveal({ value: "contextual" })
   return publicValue + revealed.value + contextual.value
 }
 
@@ -593,7 +593,7 @@ packages:
 import subjectImpl
 
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.read()
 }
 "#,
@@ -747,7 +747,7 @@ import std
 import subjectImpl
 
 function run() -> string {
-  const actor = std.actor.get<subjectImpl/thread_actor.ThreadActor>("id")
+  let actor = std.actor.get<subjectImpl/thread_actor.ThreadActor>("id")
   return actor.read()
 }
 "#,
@@ -953,7 +953,7 @@ impl Box {
             r#"
 import subjectImpl
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.append("!")
 }
 "#,
@@ -968,7 +968,7 @@ function run() -> string {
                 r#"
 import subject
 function run() -> string {
-  const box = subject/makeBox("ok")
+  let box = subject/makeBox("ok")
   return box.read()
 }
 "#,
@@ -979,7 +979,7 @@ function run() -> string {
                 r#"
 import subjectImpl
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.missing()
 }
 "#,
@@ -990,7 +990,7 @@ function run() -> string {
                 r#"
 import subjectImpl
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.append()
 }
 "#,
@@ -1001,7 +1001,7 @@ function run() -> string {
                 r#"
 import subjectImpl
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.read(box)
 }
 "#,
@@ -1012,7 +1012,7 @@ function run() -> string {
                 r#"
 import subjectImpl
 function run() -> string {
-  const box = subjectImpl/internal.makeBox("ok")
+  let box = subjectImpl/internal.makeBox("ok")
   return box.append(1)
 }
 "#,
@@ -1076,7 +1076,7 @@ packages:
 import subjectImpl
 
 function run() -> string {
-  const box = subjectImpl/internal.Box<string> { value: "ok" }
+  let box = subjectImpl/internal.Box<string> { value: "ok" }
   return box.read()
 }
 "#,
@@ -1185,40 +1185,40 @@ packages:
 import providerImpl
 
 function matrix(rows: Array<providerImpl/model.Session>) -> bool {
-  const inserted = db insert providerImpl/model.Session {
+  let inserted = db insert providerImpl/model.Session {
     id = "one"
     value = "first"
     visits = 0
   }
-  const found = db find many providerImpl/model.Session {
+  let found = db find many providerImpl/model.Session {
     where value != null
     order id asc
     limit 10
   }
-  const optional = db optional providerImpl/model.Session("one")
-  const required = db require providerImpl/model.Session("one")
-  const updated = db update providerImpl/model.Session("one") { visits += 1 }
-  const replaced = db replace providerImpl/model.Session("one") {
+  let optional = db optional providerImpl/model.Session("one")
+  let required = db require providerImpl/model.Session("one")
+  let updated = db update providerImpl/model.Session("one") { visits += 1 }
+  let replaced = db replace providerImpl/model.Session("one") {
     value = "replacement"
     visits = 2
   }
-  const upserted = db upsert providerImpl/model.Session("two") {
+  let upserted = db upsert providerImpl/model.Session("two") {
     value = "created"
     visits = 0
   } { visits += 1 }
-  const count = db count providerImpl/model.Session { where id != null }
-  const exists = db exists providerImpl/model.Session("one")
-  const query = db query providerImpl/model.Session { where visits >= 0 }
-  const insertedMany = db insert many providerImpl/model.Session values rows
-  const updatedMany = db update many providerImpl/model.Session {
+  let count = db count providerImpl/model.Session { where id != null }
+  let exists = db exists providerImpl/model.Session("one")
+  let query = db query providerImpl/model.Session { where visits >= 0 }
+  let insertedMany = db insert many providerImpl/model.Session values rows
+  let updatedMany = db update many providerImpl/model.Session {
     where visits >= 0
   } { visits += 1 }
-  const deleted = db delete providerImpl/model.Session("two")
-  const deletedMany = db delete many providerImpl/model.Session { where visits > 10 }
-  const claimed = db claim providerImpl/model.Session("one").worker as locked {
+  let deleted = db delete providerImpl/model.Session("two")
+  let deletedMany = db delete many providerImpl/model.Session { where visits > 10 }
+  let claimed = db claim providerImpl/model.Session("one").worker as locked {
     db update providerImpl/model.Session("one") { visits += 1 }
   }
-  const lease = db lease providerImpl/model.Session("one").worker
+  let lease = db lease providerImpl/model.Session("one").worker
   db transaction {
     db update providerImpl/model.Session("one") { value = "transaction" }
     db require providerImpl/model.Session("one")
@@ -1558,9 +1558,9 @@ function run(
   handler: any provider.PublicHandler,
   envelope: provider.PublicEnvelope<provider.PublicInput>
 ) -> provider.PublicOutput {
-  const echoed: provider.PublicEnvelope<provider.PublicInput> =
+  let echoed: provider.PublicEnvelope<provider.PublicInput> =
     providerImpl/internal.echoEnvelope(envelope)
-  const result: provider.PublicOutput =
+  let result: provider.PublicOutput =
     providerImpl/internal.run(echoed.value, values, handler)
   return result
 }
@@ -1858,7 +1858,7 @@ function run(bindings: root.tools.Bindings) -> Result {
 import provider
 
 function throughLocal(bindings: provider.Bindings) -> JsonObject {
-  const result = provider/run(bindings)
+  let result = provider/run(bindings)
   return {
     ok: result.ok,
     note: result.note,

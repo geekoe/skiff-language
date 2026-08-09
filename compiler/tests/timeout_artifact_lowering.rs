@@ -52,14 +52,14 @@ mod tests {
             r#"
 function statementTimeout() -> number {
   timeout(20ms) {
-    const ignored = 1
+    let ignored = 1
   }
   return 2
 }
 
 function sequentialValue() -> string {
   return timeout(30ms) value {
-    const value = "ok"
+    let value = "ok"
     value
   }
 }

@@ -309,11 +309,11 @@ function run() -> Stream<string> {
   for event in feed/events() {
     emit(event)
   }
-  const inferred = feed/events()
+  let inferred = feed/events()
   for event in inferred {
     emit(event)
   }
-  const events: Stream<string> = feed/events()
+  let events: Stream<string> = feed/events()
   for event in events {
     emit(event)
   }
@@ -911,7 +911,7 @@ packages:
             r#"import helper
 
 function run() -> string {
-  const box: helper.Box = { value: "consumer" }
+  let box: helper.Box = { value: "consumer" }
   helper/tools.mutate(box)
   return payments/echo(box.value)
 }
@@ -998,7 +998,7 @@ db object Stored {
 }
 
 function read(id: string) -> string {
-  const stored = db require Stored(id)
+  let stored = db require Stored(id)
   return stored.value
 }
 

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::shared::ast::{
     AliasDecl, Block, BuiltinPackage, ConstDecl, Expr, FieldDecl, FunctionDecl, ImportDecl,
-    InterfaceDecl, PackageId, Param, SourceFile, Stmt, TypeDecl, TypeRef,
+    InterfaceDecl, LetKind, PackageId, Param, ParamMode, SourceFile, Stmt, TypeDecl, TypeRef,
 };
 use crate::shared::error::SourceSpan;
 use crate::shared::parser::parse_source;
@@ -84,6 +84,7 @@ fn resolves_root_path_in_type_ref_to_canonical_path() {
             type_params: vec![],
             params: vec![Param {
                 name: "doc".to_string(),
+                mode: ParamMode::Value,
                 ty: type_ref("root.api.user.UserDoc"),
             }],
             return_type: type_ref("Bool"),
@@ -259,13 +260,14 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
             type_params: vec![],
             params: vec![Param {
                 name: "doc".to_string(),
+                mode: ParamMode::Value,
                 ty: type_ref("root.a.b.Foo"),
             }],
             return_type: type_ref("Array<root.a.b.Foo>"),
             body: Block {
                 statements: vec![
                     Stmt::Let {
-                        mutable: false,
+                        kind: LetKind::Let,
                         name: "local".to_string(),
                         ty: Some(type_ref("root.a.b.Foo")),
                         value: dotted_expr(&["root", "a", "b", "Foo"]),
@@ -531,6 +533,7 @@ fn package_spelling_is_rejected() {
             type_params: vec![],
             params: vec![Param {
                 name: "doc".to_string(),
+                mode: ParamMode::Value,
                 ty: type_ref("package.api.user.UserDoc"),
             }],
             return_type: type_ref("Bool"),

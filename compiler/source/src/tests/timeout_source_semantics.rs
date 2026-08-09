@@ -99,7 +99,7 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
         "#,
         r#"
             function run() -> string {
-              let value = value { const local = "ok" local }
+              let value = value { let local = "ok" local }
               return local
             }
         "#,
@@ -184,12 +184,12 @@ fn concurrent_serial_and_concurrent_value_are_rejected_in_v1() {
     let cases = [
         (
             "concurrent statement",
-            "function run() -> void {\n  concurrent { const value = 1 }\n}\n",
+            "function run() -> void {\n  concurrent { let value = 1 }\n}\n",
             "concurrent is not supported in v1",
         ),
         (
             "serial",
-            "function run() -> void {\n  serial { const value = 1 }\n}\n",
+            "function run() -> void {\n  serial { let value = 1 }\n}\n",
             "serial is not supported in v1",
         ),
         (

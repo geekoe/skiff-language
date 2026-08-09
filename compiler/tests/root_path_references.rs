@@ -197,7 +197,7 @@ db object Thread { name "thread" primary key(id) }
             ignored.path().join("broken.test.skiff"),
             r#"
 test "test-only root reference" {
-  const missing: root.internal.missing.Helper = root.internal.missing.Helper { value: "hi" }
+  let missing: root.internal.missing.Helper = root.internal.missing.Helper { value: "hi" }
   assert true
 }
 "#,

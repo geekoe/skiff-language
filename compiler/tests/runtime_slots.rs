@@ -327,10 +327,10 @@ mod tests {
         let artifact = compile_package_file_ir(
             r#"
             function run(input: number) -> number {
-                const total = input
+                let total = input
                 if true {
-                    const total = 2
-                    const copied = total
+                    let total = 2
+                    let copied = total
                 }
                 return total
             }
@@ -422,8 +422,8 @@ mod tests {
         let error = compile_package_file_ir(
             r#"
             function run() -> number {
-                const value = 1
-                const value = 2
+                let value = 1
+                let value = 2
                 return value
             }
         "#,
@@ -460,7 +460,7 @@ mod tests {
             }
 
             function run() -> string {
-              const provider = Host{} as Provider
+              let provider = Host{} as Provider
               return provider.name()
             }
         "#,
@@ -497,9 +497,9 @@ mod tests {
             }
 
             function run() -> number {
-                const result = addOne(1)
-                const second = internal.callees.addOne(result)
-                const list: Array<number> = Array.empty<number>()
+                let result = addOne(1)
+                let second = internal.callees.addOne(result)
+                let list: Array<number> = Array.empty<number>()
                 list.push(second)
                 return list.length()
             }
@@ -539,11 +539,11 @@ mod tests {
         let artifact = compile_package_file_ir(
             r#"
             function run() -> number {
-                const items: Array<string> = Array.empty<string>()
+                let items: Array<string> = Array.empty<string>()
                 items.push("ok")
-                const joined = string.join(items, ",")
-                const parsed = number.parse("1")
-                const body: bytes = bytes.fromUtf8(joined)
+                let joined = string.join(items, ",")
+                let parsed = number.parse("1")
+                let body: bytes = bytes.fromUtf8(joined)
                 return body.length()
             }
         "#,
@@ -804,7 +804,7 @@ mod tests {
             }
 
             function withHeaders() -> std.http.HttpResponse {
-                const headers = Array.empty<std.http.HttpHeader>()
+                let headers = Array.empty<std.http.HttpHeader>()
                 return std.http.jsonWithHeaders(200, JsonOutput {
                   marker: "ok",
                   count: 2
@@ -1306,7 +1306,7 @@ mod tests {
 
             function run(runId: string, sourceRunId: string) -> void {
                 db transaction {
-                    const successorMetadata: Metadata = {
+                    let successorMetadata: Metadata = {
                       successorOf: runId,
                       reason: "failed-with-new-input",
                     }
@@ -1388,9 +1388,9 @@ version: 1.0.0
             }
 
             function run() -> bool {
-                const marker = config.require<string>("runtimeLive.db")
-                const prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
-                const firstId = prefix.concat("-a")
+                let marker = config.require<string>("runtimeLive.db")
+                let prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+                let firstId = prefix.concat("-a")
                 db insert RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
                 return firstId.contains(marker)
             }
@@ -1494,7 +1494,7 @@ version: 1.0.0
             }
 
             function run(event: Event) -> Array<Event> {
-                const events = Array.empty<Event>()
+                let events = Array.empty<Event>()
                 events.push(event)
                 return events
             }
@@ -1517,7 +1517,7 @@ version: 1.0.0
         let project = compile_root_alias_array_push(
             r#"
             function run() -> Array<root.types.Modality> {
-                const items = Array.empty<root.types.Modality>()
+                let items = Array.empty<root.types.Modality>()
                 items.push("text")
                 items.push("image")
                 return items
@@ -1544,7 +1544,7 @@ version: 1.0.0
         let nonmember = compile_root_alias_array_push(
             r#"
             function run() -> Array<root.types.Modality> {
-                const items = Array.empty<root.types.Modality>()
+                let items = Array.empty<root.types.Modality>()
                 items.push("document")
                 return items
             }
@@ -1562,7 +1562,7 @@ version: 1.0.0
         let wrong_receiver = compile_root_alias_array_push(
             r#"
             function run() -> number {
-                const value: number = 1
+                let value: number = 1
                 value.push("text")
                 return value
             }
@@ -1632,7 +1632,7 @@ version: 1.0.0
 
             function run(chunks: Stream<Chunk>) -> bool {
                 for chunk in chunks {
-                    const text = chunk.value.toUtf8String()
+                    let text = chunk.value.toUtf8String()
                     if text.contains("data:") {
                         return true
                     }
@@ -1828,13 +1828,13 @@ version: 1.0.0
             }
 
             function run(rows: Array<User>) -> bool {
-                const inserted = db insert User { id = "u1" name = "Ada" visits = 0 }
-                const updated = db update User("u1") { visits += 1 }
-                const replaced = db replace User("u1") { name = "Grace" visits = 2 }
-                const upserted = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
-                const insertedMany = db insert many User values rows
-                const updatedMany = db update many User { where name != null } { visits += 1 }
-                const deletedMany = db delete many User { where name == "Ada" }
+                let inserted = db insert User { id = "u1" name = "Ada" visits = 0 }
+                let updated = db update User("u1") { visits += 1 }
+                let replaced = db replace User("u1") { name = "Grace" visits = 2 }
+                let upserted = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                let insertedMany = db insert many User values rows
+                let updatedMany = db update many User { where name != null } { visits += 1 }
+                let deletedMany = db delete many User { where name == "Ada" }
                 return true
             }
         "#,
@@ -1899,12 +1899,12 @@ version: 1.0.0
             }
 
             function projected(id: string) -> { id: string, apiKey: string } {
-              const row = db require Credential(id) { fields { apiKey } }
+              let row = db require Credential(id) { fields { apiKey } }
               return { id: row.id, apiKey: row.apiKey }
             }
 
             function encoded(id: string) -> string {
-              const row = db require Credential(id) { fields { apiKey } }
+              let row = db require Credential(id) { fields { apiKey } }
               return std.json.encode(row)
             }
 
@@ -1960,10 +1960,10 @@ version: 1.0.0
             }
 
             function run() -> bool {
-                const result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
-                const inserted = result.inserted
-                const name = result.value.name
-                const visits = result.value.visits
+                let result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                let inserted = result.inserted
+                let name = result.value.name
+                let visits = result.value.visits
                 if inserted {
                     return name == "Ada"
                 }
@@ -2019,7 +2019,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    const user = db insert User { id = "u1" name = "Ada" visits = 0 }
+                    let user = db insert User { id = "u1" name = "Ada" visits = 0 }
                     user.name = "Grace"
                     return true
                 }
@@ -2041,7 +2041,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    const user = db update User("u1") { visits += 1 }
+                    let user = db update User("u1") { visits += 1 }
                     user.name = "Grace"
                     return true
                 }
@@ -2063,7 +2063,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    const user = db replace User("u1") { name = "Grace" visits = 2 }
+                    let user = db replace User("u1") { name = "Grace" visits = 2 }
                     user.name = "Ada"
                     return true
                 }
@@ -2085,7 +2085,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    const result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                    let result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
                     result.value.name = "Grace"
                     return true
                 }
@@ -2124,13 +2124,13 @@ version: 1.0.0
             }
 
             function run(users: Map<UserId, User>) -> Array<UserId> {
-                const ids: Array<UserId> = users.keys()
+                let ids: Array<UserId> = users.keys()
                 for id in users {
-                    const copy: UserId = keepUserId(id)
+                    let copy: UserId = keepUserId(id)
                 }
                 for id, user in users {
-                    const copy: UserId = keepUserId(id)
-                    const name: string = keepUser(user)
+                    let copy: UserId = keepUserId(id)
+                    let name: string = keepUser(user)
                 }
                 return ids
             }

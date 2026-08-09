@@ -274,7 +274,7 @@ function direct(handler: any provider.Handler) -> string {
 }
 
 function roundTrip(handler: any provider.Handler) -> any provider.Handler {
-  const echoed: any provider.Handler = provider/echo(handler)
+  let echoed: any provider.Handler = provider/echo(handler)
   return echoed
 }
 
@@ -354,7 +354,7 @@ function direct(handler: any interfaces.Handler) -> string {
 }
 
 function roundTrip(handler: any interfaces.Handler) -> any interfaces.Handler {
-  const echoed: any interfaces.Handler = gateway/echo(handler)
+  let echoed: any interfaces.Handler = gateway/echo(handler)
   return echoed
 }
 

@@ -186,7 +186,7 @@ mod tests {
                 return input
               }
             }
-            const handler: Handler = Handler {}
+            let handler: Handler = Handler {}
         "#
             .to_string(),
             "api.skiff",

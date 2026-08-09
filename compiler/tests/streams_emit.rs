@@ -118,7 +118,7 @@ function flatEvents() -> Stream<GoodChunk> {
 }
 
 function nestedEvents() -> Stream<GoodChunk> {
-  const chunk: GoodChunk = { value: "ok", profile: { nickname: "Grace" } }
+  let chunk: GoodChunk = { value: "ok", profile: { nickname: "Grace" } }
   emit(chunk)
   return
 }

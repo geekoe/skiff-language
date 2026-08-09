@@ -109,7 +109,7 @@ type Envelope { request: models.ModelRequest }
                 "request: schema.request\n",
                 r#"import models
 
-const request: models.ModelRequest = {}
+let request: models.ModelRequest = {}
 "#,
             ),
             (
@@ -117,7 +117,7 @@ const request: models.ModelRequest = {}
                 "make: schema.make\n",
                 r#"import models
 
-const make = models.make
+let make = models.make
 "#,
             ),
             (
@@ -313,7 +313,7 @@ function eventStatus(event: std.http.HttpSseEvent) -> integer? {
     return event.status
   }
   if event.tag == "event" {
-    const data = event.data
+    let data = event.data
     if data == "" {
       return null
     }

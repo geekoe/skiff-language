@@ -661,12 +661,12 @@ impl SuspendContext<'_, '_> {
         match self.analyzer.resolved_call_targets.target(call_key) {
             Some(ResolvedCallTarget::NativeFunction { binding_key }) => {
                 return native_callable_semantics(binding_key)
-                    .map(|semantics| semantics.effects.may_suspend)
+                    .map(|semantics| semantics.effects.may_pending)
                     .unwrap_or(true);
             }
             Some(ResolvedCallTarget::ReceiverBuiltin { op }) => {
                 return builtin_receiver_callable_semantics(*op)
-                    .map(|semantics| semantics.effects.may_suspend)
+                    .map(|semantics| semantics.effects.may_pending)
                     .unwrap_or(true);
             }
             Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => return false,

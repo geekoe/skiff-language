@@ -296,7 +296,26 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             CallableProvenanceSummary::Analyzed { .. }
         ));
     }
-    assert_heap_store_fail_closed(&model, "intoDatabase");
+    assert_eq!(
+        effects(&model, "intoDatabase"),
+        CallableMayEffects {
+            escapes_caller_value: true,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: true,
+            may_pending: true,
+            pending_effect_categories: vec![
+                PendingEffectCategory::Unknown,
+                PendingEffectCategory::HostEffect
+            ],
+            inout_path_effects: Vec::new(),
+        }
+    );
+    assert_eq!(
+        provenance(&model, "intoDatabase"),
+        &CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnsupportedHeapStore,
+        }
+    );
 }
 
 #[test]

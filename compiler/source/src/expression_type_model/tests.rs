@@ -403,7 +403,7 @@ fn catch_leaves_reject_every_non_nominal_shape_at_throw_and_catch() {
                     valid: RecordFailure
                   ) -> void {{
                     throw value
-                    const attempted = catch<{invalid_type}>(valid)
+                    let attempted = catch<{invalid_type}>(valid)
                   }}
                 "#,
         );
@@ -572,25 +572,25 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               }
 
               function equalBranch() -> Payload? {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 if attempted.tag == "ok" { return attempted.value }
                 return null
               }
 
               function reverseComparison() -> Payload? {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 if "ok" != attempted.tag { return null }
                 return attempted.value
               }
 
               function earlyReturn() -> Payload? {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 if attempted.tag != "ok" { return null }
                 return attempted.value
               }
 
               function nestedCatch() -> Payload? {
-                const outer = catch<Failure>(equalBranch())
+                let outer = catch<Failure>(equalBranch())
                 if outer.tag != "ok" { return null }
                 return outer.value
               }
@@ -604,7 +604,7 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 return attempted.value
               }
             "#,
@@ -622,7 +622,7 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload? {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 if attempted.tag == "err" { return attempted.value }
                 return null
               }
@@ -652,26 +652,26 @@ fn test_assertion_true_flow_narrows_stable_bindings() {
               }
 
               test "nullable local" {
-                const value: Payload? = maybe()
+                let value: Payload? = maybe()
                 assert value != null
                 assert value.value == "ok"
               }
 
               test "tagged catch result" {
-                const attempted = catch<Failure>(make())
+                let attempted = catch<Failure>(make())
                 assert attempted.tag == "ok"
                 assert attempted.value.value == "ok"
               }
 
               test "conjunction" {
-                const value: Payload? = maybe()
-                const attempted = catch<Failure>(make())
+                let value: Payload? = maybe()
+                let attempted = catch<Failure>(make())
                 assert value != null && attempted.tag == "ok"
                 assert value.value == attempted.value.value
               }
 
               test "nested test block" {
-                const value: Payload? = maybe()
+                let value: Payload? = maybe()
                 if true {
                   assert value != null
                   assert value.value == "ok"
@@ -690,7 +690,7 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
                   type Payload { value: string }
                   function maybe() -> Payload? { return Payload { value: "ok" } }
                   test "opposite null assertion" {
-                    const value: Payload? = maybe()
+                    let value: Payload? = maybe()
                     assert value == null
                     assert value.value == "ok"
                   }
@@ -726,7 +726,7 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
                   type Payload { value: string }
                   function maybe() -> Payload? { return Payload { value: "ok" } }
                   test "branch merge" {
-                    const value: Payload? = maybe()
+                    let value: Payload? = maybe()
                     if true {
                       assert value != null
                     }

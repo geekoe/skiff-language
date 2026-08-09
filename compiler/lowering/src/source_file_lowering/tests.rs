@@ -749,7 +749,7 @@ fn source_calls_and_throws_keep_real_sites_and_catch_type_is_required() {
               }
 
               function caught(value: string) -> void {
-                const attempted = catch<Failure>(callee(value))
+                let attempted = catch<Failure>(callee(value))
               }
             "#,
     );
