@@ -36,8 +36,6 @@
 2. **契约 = 代码**：跨 crate 接口（类型、函数签名、DTO 字段、serde 形状）不是设计文档里的文字，
    而是**已合入 main 的接口代码**（§4 接口工兵产出）。实现工兵只消费接口代码，
    不得自行设计跨 crate 契约；发现契约缺口 → 上报，不自己补。
-3. **同 crate 内多工兵**：按文件界拆分（如 `src/mir/**` vs `src/const_evaluator.rs`），
-   `lib.rs`/`mod` 接线归主 agent 合流时做，工兵不碰。
 4. **主 agent 唯一合流写者**：`cargo check --workspace`、git 提交顺序、跨 crate 集成由主 agent
    串行处理；工兵只提交自己写界内文件的里程碑 commit。
 
@@ -105,7 +103,7 @@ crate → verify subject 的唯一归属声明在 `scripts/lib/verify-rust-subje
 | --- | --- | --- |
 | L0 | `cargo test -p <自己crate>` + `cargo clippy -p <包名> --all-targets -- -D warnings`（工兵自验收，必跑） | 工兵 |
 | L1 | `cargo check --workspace`（跨 crate 接口）+ git 写界/提交核对 | 主 agent（每次合流） |
-| L2 | `node scripts/verify.mjs --only <subject>`、`--only rust-quality`、`git diff --check` | 主 agent（每 wave 结束） |
+
 
 **触发时机**：`cargo test`/`cargo build` 不执行 clippy lint。workspace `[lints]` 里的
 `clippy::too_many_lines`（deny，阈值 534）、`clippy::tests_outside_test_module`、`clippy::disallowed_methods`
@@ -114,7 +112,6 @@ crate → verify subject 的唯一归属声明在 `scripts/lib/verify-rust-subje
 
 - 工兵只跑 `cargo test -p` 不能证明 clippy 规则通过，**clippy 自验收是必须项**（L0）；
 - `cargo clippy -p <包名> --all-targets -- -D warnings` 覆盖自己 crate 的 lib+bin+测试；
-- L2 的 `--only rust-quality` 是权威 gate，行数/测试位置违规在合流时暴露。
 
 ## 8. 纪律（任务书未重复时也默认生效）
 
