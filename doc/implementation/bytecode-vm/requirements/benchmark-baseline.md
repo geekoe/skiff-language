@@ -58,6 +58,11 @@ harness 入口（含输入 fixture 与固定 seed），Phase 9 只执行不新�
 | W15 | `agine_chat_smoke` | 真实 Agine LLM SSE reducer/chat smoke | 固定 prompt × 固定轮数 | real Agine chat |
 | W16 | `host_tools_profiling` | strict full host-tools profiling（sample 非空校验） | 固定工具调用 × 固定轮数 | strict host-tools profiling |
 
+W16 运行约束：只跑正常流程。同一候选上 host-tools 正常流程各跑一次，不多跑角度/注入的
+CLI 级对话；注入与多角度验证由 host-tools 单元测试（`client/e2e/host-tools-strict.test.mjs`）
+覆盖同一 strict 断言路径。host-tools 单实例串行：每个实例 spawn 独立 agine-host 并以固定
+host name 注册 provider，同一 gateway 上并行会互相干扰，且真实对话打外部 LLM。
+
 Phase 0 注册要求：每个 workload 至少固定输入 fixture（文件路径 + content hash）、固定迭代/样本
 计划与可复现 seed；harness 必须能够输出 per-sample 原始数据（不只输出聚合值）。
 

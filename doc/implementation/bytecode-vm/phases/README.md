@@ -107,6 +107,10 @@ node scripts/verify.mjs --only router-live:agine
   `host.file.*` tool call；
 - full host-tools 不允许 `host.shell.run`，workspace 收窄到本阶段声明的只读测试根；
 - host-tools 使用 harness 显式传入的 runtime PID；profiling 阶段还要求 sample 文件非空；
+- host-tools 验证只运行正常流程：同一候选上 chat-smoke、`host-tools --check`、strict full
+  `host-tools` 各一次，不多跑角度/注入的 CLI 级对话；注入与多角度验证
+  （terminal error、stopped、空答案、零 tool call、错 PID、缺 sample）由 host-tools 单元测试
+  （`client/e2e/host-tools-strict.test.mjs`）覆盖同一 strict 断言路径，不是 CLI gate 要求；
 - manifest pin 三仓 commits、compiler/router/runtime SHA、全部 deployment/package identities；
 - 从 Phase 4 开始，manifest 还必须证明阶段要求的请求进入 VM，不能只看到成功响应。
 

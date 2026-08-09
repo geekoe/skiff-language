@@ -94,7 +94,10 @@ Status: complete（见下方 Known residual risks 的两项 deferred 证据）
    执行完整对话）。不影响 gate 正确性（完整对话 + strict 断言 PASS），但 phase 2 意图的快速
    check 未生效；Phase 1 若继续使用该 selector，需改为直接 `node e2e/host-tools.mjs --check`。
 2. 注入 CLI 级证明剩余 3 项（empty-answer / zero-tool-calls / missing-sample）与重复生成
-   manifest 一致性未在本阶段完成 CLI 级验证（单元级已覆盖）；Phase 1 首轮 evidence epoch 补齐。
+   manifest 一致性不再逐项跑 CLI 级验证（单元级已覆盖）：host-tools 验证按决定只运行正常
+   流程（同一候选三段各一次），注入/多角度由 `host-tools-strict.test.mjs` 覆盖同一 strict
+   断言路径；该决定已写入 phases/README.md §3.4 G3、requirements/benchmark-baseline.md W16
+   与 host-tools.mjs 文件头。
 3. actor idle/lease ordering 与 exact-build fence 失败测试保持 FAIL（README §5.8，
    Phase 3A/7 修复后转绿）；Phase 0 合流后 `cargo test router` 存在这两个已知失败，不属于本阶段 gate。
 
