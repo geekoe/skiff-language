@@ -1,9 +1,10 @@
 use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
+use super::worklist::CanonicalWorklist;
 use super::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
-    BytecodeLinkObligation, LinkLimits,
+    limits::LinkLimitTracker, link_deployment, BytecodeLinkError, BytecodeLinkLimit,
+    BytecodeLinkLocation, BytecodeLinkObligation, LinkLimits,
 };
 
 #[test]
@@ -79,4 +80,134 @@ fn unavailable_work_is_an_explicit_obligation_at_a_typed_location() {
         "bytecode constant initialization plan linking is unavailable at package build:example constant node 7"
     );
     assert_eq!(BytecodeLinkLimit::Specializations.name(), "specializations");
+}
+
+fn generous_limits() -> LinkLimits {
+    LinkLimits {
+        max_packages: u64::MAX,
+        max_root_specializations: u64::MAX,
+        max_specializations: u64::MAX,
+        max_code_words_per_function: u64::MAX,
+        max_total_code_words: u64::MAX,
+        max_relocations_per_function: u64::MAX,
+        max_total_relocations: u64::MAX,
+        max_image_table_entries: u64::MAX,
+        max_total_image_table_entries: u64::MAX,
+        max_total_function_table_entries: u64::MAX,
+        max_type_nesting_depth: u64::MAX,
+        max_constant_graph_nodes: u64::MAX,
+        max_constant_graph_edges: u64::MAX,
+    }
+}
+
+fn deployment_location() -> BytecodeLinkLocation {
+    BytecodeLinkLocation::Deployment {
+        deployment: skiff_artifact_model::ServiceDeploymentRef {
+            service_id: "example.service".to_string(),
+            contract_version: "1.0.0".to_string(),
+            deployment_revision: skiff_artifact_model::DeploymentRevision::new("revision:one"),
+            deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
+                "deployment:one",
+            ),
+        },
+    }
+}
+
+#[test]
+fn canonical_worklist_sorts_roots_and_call_site_discoveries() {
+    let limits = generous_limits();
+    let location = deployment_location();
+    let mut worklist = CanonicalWorklist::try_from_roots(
+        ["root:z", "root:a", "root:z"],
+        &limits,
+        location.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(worklist.len(), 2);
+    assert_eq!(worklist.pop_next().unwrap().1, "root:a");
+    worklist
+        .enqueue_discovered(
+            [(9, "call:z"), (3, "call:m"), (3, "call:a"), (1, "root:a")],
+            &limits,
+            location,
+        )
+        .unwrap();
+
+    assert_eq!(worklist.pop_next().unwrap().1, "root:z");
+    assert_eq!(worklist.pop_next().unwrap().1, "call:a");
+    assert_eq!(worklist.pop_next().unwrap().1, "call:m");
+    assert_eq!(worklist.pop_next().unwrap().1, "call:z");
+    assert!(worklist.pop_next().is_none());
+}
+
+#[test]
+fn canonical_worklist_reuses_recursive_specializations() {
+    let limits = generous_limits();
+    let location = deployment_location();
+    let mut worklist =
+        CanonicalWorklist::try_from_roots(["recursive"], &limits, location.clone()).unwrap();
+    let original = worklist.index_of(&"recursive").unwrap();
+
+    worklist
+        .enqueue_discovered([(7, "recursive")], &limits, location)
+        .unwrap();
+
+    assert_eq!(worklist.len(), 1);
+    assert_eq!(worklist.index_of(&"recursive"), Some(original));
+    assert_eq!(worklist.pop_next(), Some((original, "recursive")));
+    assert!(worklist.pop_next().is_none());
+}
+
+#[test]
+fn canonical_worklist_enforces_root_and_expansion_limits() {
+    let mut limits = generous_limits();
+    limits.max_root_specializations = 1;
+    let location = deployment_location();
+    assert!(matches!(
+        CanonicalWorklist::try_from_roots(["a", "b"], &limits, location.clone()),
+        Err(BytecodeLinkError::LimitExceeded {
+            limit: BytecodeLinkLimit::RootSpecializations,
+            actual: 2,
+            max: 1,
+            ..
+        })
+    ));
+
+    limits.max_root_specializations = 2;
+    limits.max_specializations = 2;
+    let mut worklist =
+        CanonicalWorklist::try_from_roots(["a", "b"], &limits, location.clone()).unwrap();
+    assert!(matches!(
+        worklist.enqueue_discovered([(0, "c")], &limits, location),
+        Err(BytecodeLinkError::LimitExceeded {
+            limit: BytecodeLinkLimit::Specializations,
+            actual: 3,
+            max: 2,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn limit_tracker_checks_per_function_and_aggregate_totals() {
+    let mut limits = generous_limits();
+    limits.max_code_words_per_function = 5;
+    limits.max_total_code_words = 8;
+    limits.max_relocations_per_function = 3;
+    limits.max_total_relocations = 4;
+    limits.max_total_function_table_entries = 6;
+    let location = deployment_location();
+    let mut tracker = LinkLimitTracker::new(&limits);
+
+    tracker.add_function(4, 2, 3, location.clone()).unwrap();
+    assert!(matches!(
+        tracker.add_function(5, 2, 3, location),
+        Err(BytecodeLinkError::LimitExceeded {
+            limit: BytecodeLinkLimit::TotalCodeWords,
+            actual: 9,
+            max: 8,
+            ..
+        })
+    ));
 }

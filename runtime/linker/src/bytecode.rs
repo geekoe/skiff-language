@@ -13,6 +13,11 @@
 mod entry;
 mod error;
 mod limits;
+// The v3 artifact seam is landing in parallel. Keep the schema-neutral
+// scheduler compiled now; relocation wiring will consume it immediately after
+// that public DTO is stable.
+#[allow(dead_code)]
+mod worklist;
 
 pub use entry::link_deployment;
 pub use error::{
