@@ -256,10 +256,10 @@ pub fn opcode_table_fingerprint() -> String;  // sha256(canonical json of table 
 
 ### 2.6 ISA/schema version 语义
 
-| 常量 | 值（v1） | 用途 |
+| 常量 | 当前值 | 用途 |
 | --- | --- | --- |
 | `BYTECODE_MAGIC` | `"skiff-bytecode"` | 首层 magic 字符串，DTO 头字段 |
-| `BYTECODE_SCHEMA_VERSION` | `"skiff-bytecode-v1"` | schema 版本：DTO 形状/字段/表布局 |
+| `BYTECODE_SCHEMA_VERSION` | `"skiff-bytecode-v2"` | schema 版本：DTO 形状/字段/表布局 |
 | `BYTECODE_ISA_VERSION` | `"skiff-bytecode-isa-v1"` | ISA 版本：opcode 语义 + operand 布局 + stack 签名 |
 
 升级规则：
@@ -273,6 +273,13 @@ pub fn opcode_table_fingerprint() -> String;  // sha256(canonical json of table 
 4. 版本参与 identity preimage（§6.1），因此 schema/ISA 变化必然产生新 bytecode identity 与新
    PackageArtifact build identity；旧 store record 是 immutable 孤儿记录，从不改写（§6.3）。
 5. `opcode_table_fingerprint` 与 ISA version 双保险：即使版本字符串被误写，指纹不一致同样拒绝。
+
+2026-08-10 的 v2 schema contract 在不改变 ISA 的前提下，为 `FrameLayout` 增加必填
+`slotTypeRefs`（长度必须等于 `slotCount`）与 `resultTypeRefs`（长度必须等于 `resultCount`）；每项均为
+`BytecodePools.types` 中 `TypeRef` entry 的已校验索引。同时，`effectSummaryRef` 的 Rust DTO 类型收紧为
+`PackageCallableId`（透明 wire string）。缺字段、长度不一致、越界或非 type entry 一律在 structural
+validation 阶段 fail closed。因为这改变 DTO 形状，schema 从 v1 升到 v2；opcode 编号、operand 与 stack
+语义未变，所以 ISA 仍为 v1。语言尚未发布，不保留 v1 reader。
 
 ---
 
@@ -500,7 +507,7 @@ impl ValidatedBytecodeArtifact {
 #[serde(rename_all = "camelCase")]
 struct BytecodeIdentityPayload<'a> {
     schema: &'static str,            // "skiff-bytecode-artifact-v1"（schema marker）
-    schema_version: &'a str,         // "skiff-bytecode-v1"
+    schema_version: &'a str,         // "skiff-bytecode-v2"
     isa_version: &'a str,            // "skiff-bytecode-isa-v1"
     opcode_table_fingerprint: &'a str,
     image: &'a BytecodeImage,        // functions + pools + frozen_constant_graph + debug_table
@@ -662,8 +669,8 @@ D1–D19 全部按本文取值确认采纳，无变更。
 | D13 | `enter_region`/`leave_region` 的 pc 归属规则 | 指令自身 pc 必须在所引用 region 的 `[start_pc, end_pc)` 内 | C6 / §13 |
 | D14 | `tail_call_local` 允许的 relocation | 允许 `LocalExecutableRef` 与 `PackageCallableRef`（“exact-local kind”含 package-direct）；eligibility 证明归 3B | §2.3 |
 | D15 | `interface_box_remote` 布局 | `[serviceOp: Reloc, interfaceReq: Reloc]`，stack `[] -> [boxed]`（无参数入栈） | §2.3 |
-| D16 | `ValueTransferPlan` v1 形态 | `{ kind: SnapshotShare|MoveOnly|AffineResource|ExplicitCloneLease }`，挂在 frame 参数/结果/slot 与 capture/容器类型声明上；drop/transfer 细节归 6B | §5.1 / R-220 |
-| D17 | identity 前缀与版本字符串 | `"skiff-bytecode-image-v1:sha256"` / `"skiff-bytecode-v1"` / `"skiff-bytecode-isa-v1"` / magic `"skiff-bytecode"` | §2.6 / §6.1 |
+| D16 | `ValueTransferPlan` + typed frame 形态 | `{ kind: SnapshotShare|MoveOnly|AffineResource|ExplicitCloneLease }`，挂在 frame 参数/结果/slot 与 capture/容器类型声明上；v2 frame 另以必填 `slotTypeRefs`/`resultTypeRefs` 对齐 types pool；drop/transfer 细节归 6B | §2.6 / §5.1 / R-220 |
+| D17 | identity 前缀与版本字符串 | `"skiff-bytecode-image-v1:sha256"` / `"skiff-bytecode-v2"` / `"skiff-bytecode-isa-v1"` / magic `"skiff-bytecode"` | §2.6 / §6.1 |
 | D18 | build projection 的 bytecode 字段序列化 | `skip_serializing_if = "Option::is_none"`：无 bytecode 的既有包 build identity 不变 | §6.2 |
 | D19 | store 写入顺序 | bytecode record 先于引用它的 package record 写入；实现时核对现有 file-ir 顺序保持同一约定 | §6.3 |
 
