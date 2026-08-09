@@ -237,7 +237,7 @@ fn validate_service_calls_yaml_shape(
 
 fn validate_service_calls(
     path: &Path,
-    service_calls: &mut Vec<String>,
+    service_calls: &mut [String],
 ) -> Result<(), ServiceSourceConfigError> {
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();

@@ -186,7 +186,7 @@ impl<'a> PackageExportResolver<'a> {
             if target_root.is_empty() {
                 return rest.to_string();
             }
-            if rest == target_root || rest.starts_with(&format!("{}.", target_root)) {
+            if rest == target_root || rest.starts_with(&format!("{target_root}.")) {
                 return rest.to_string();
             }
         }

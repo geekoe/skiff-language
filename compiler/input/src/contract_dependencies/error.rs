@@ -24,13 +24,13 @@ pub enum ContractDependencyError {
     InvalidContract {
         alias: String,
         #[source]
-        source: skiff_artifact_identity::ArtifactIdentityError,
+        source: Box<skiff_artifact_identity::ArtifactIdentityError>,
     },
     #[error("ServiceContract dependency `{alias}` package schema records failed canonical validation: {source}")]
     InvalidSchemaRecords {
         alias: String,
         #[source]
-        source: skiff_artifact_identity::ArtifactIdentityError,
+        source: Box<skiff_artifact_identity::ArtifactIdentityError>,
     },
     #[error(
         "ServiceContract dependency `{alias}` requires Package schema owner `{package_id}` without a validated public schema bundle"

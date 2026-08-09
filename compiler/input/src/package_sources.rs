@@ -183,8 +183,8 @@ fn read_package_sources_with_module_path_and_extra_sources(
                 (
                     source_path.relative_path,
                     (
-                        module_path_for_api_source(&entry),
-                        package_module_path_for_api_entry(manifest, &entry),
+                        module_path_for_api_source(entry),
+                        package_module_path_for_api_entry(manifest, entry),
                     ),
                 )
             })

@@ -32,7 +32,7 @@ impl ResolvedContractDependency {
         validate_service_contract_identities(&contract).map_err(|source| {
             ContractDependencyError::InvalidContract {
                 alias: requirement.alias.clone(),
-                source,
+                source: Box::new(source),
             }
         })?;
         if contract.service_id != requirement.service_id
@@ -169,7 +169,7 @@ fn validated_schema_records(
     validate_package_schema_records(&records).map_err(|source| {
         ContractDependencyError::InvalidSchemaRecords {
             alias: alias.to_string(),
-            source,
+            source: Box::new(source),
         }
     })?;
 
