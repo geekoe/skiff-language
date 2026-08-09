@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     AbiInterfaceId, ActorAbiIdentity, ActorMethodIdentity, CallableEffectSummary,
-    ContractOperationId, LiteralIr, NativeTarget, Opcode, PackageBuildId, PackageCallableId,
-    ServiceRequirementKey, TypeRefIr, ValueTransferPlanKind,
+    ContractOperationId, GatewayEntryKey, LiteralIr, NativeTarget, Opcode, PackageBuildId,
+    PackageCallableId, ServiceRequirementKey, TypeRefIr, ValueTransferPlanKind,
 };
 
 use crate::{
@@ -13,11 +13,11 @@ use crate::{
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedCallableEffectDeclaration,
     LinkedCallableSignature, LinkedCallableSignatureError, LinkedCallbackCapture,
     LinkedConstantEntry, LinkedConstantValue, LinkedExactLocalTarget, LinkedFrameLayout,
-    LinkedFrameLayoutError, LinkedFunction, LinkedFunctionTables, LinkedHostEffectAdapterTarget,
-    LinkedInstruction, LinkedInterfaceMethod, LinkedInterfaceTable, LinkedResumeSite,
-    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
-    ResumeSiteIndex, ServiceOperationIndex, ShapeIndex, SpecializationKey, SyntheticCallbackIndex,
-    TypeIndex,
+    LinkedFrameLayoutError, LinkedFunction, LinkedFunctionTables, LinkedGatewayEntry,
+    LinkedHostEffectAdapterTarget, LinkedInstruction, LinkedInterfaceMethod, LinkedInterfaceTable,
+    LinkedOperationEntry, LinkedResumeSite, LinkedServiceOperationTarget, LinkedShapeEntry,
+    LinkedSyntheticCallbackTarget, LinkedTypeEntry, ResumeSiteIndex, ServiceOperationIndex,
+    ShapeIndex, SpecializationKey, SyntheticCallbackIndex, TypeIndex,
 };
 
 fn specialization(name: &str) -> SpecializationKey {
@@ -46,6 +46,10 @@ fn signature() -> LinkedCallableSignature {
     .expect("fixture signature has one plan for each concrete type")
 }
 
+fn gateway_key(value: &str) -> GatewayEntryKey {
+    GatewayEntryKey::parse(value).expect("fixture gateway key is lexically valid")
+}
+
 fn function(index: u32, name: &str) -> LinkedFunction {
     LinkedFunction::new(
         FunctionIndex::new(index),
@@ -68,6 +72,8 @@ fn function(index: u32, name: &str) -> LinkedFunction {
 fn minimal_parts(functions: Vec<LinkedFunction>) -> LinkedBytecodeCandidateParts {
     LinkedBytecodeCandidateParts {
         functions,
+        operation_entries: Vec::new(),
+        gateway_entries: Vec::new(),
         exact_local_targets: Vec::new(),
         service_operations: Vec::new(),
         actor_methods: Vec::new(),
@@ -183,6 +189,88 @@ fn candidate_rejects_non_dense_function_indices() {
 }
 
 #[test]
+fn candidate_rejects_duplicate_deployment_entry_identities() {
+    let mut operation_parts = minimal_parts(vec![function(0, "callable:root")]);
+    operation_parts.operation_entries = vec![
+        LinkedOperationEntry::new(
+            ContractOperationId::new("operation:duplicate"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+        LinkedOperationEntry::new(
+            ContractOperationId::new("operation:duplicate"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+    ];
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(operation_parts),
+        Err(LinkedBytecodeCandidateError::DuplicateOperationEntry { .. })
+    ));
+
+    let mut gateway_parts = minimal_parts(vec![function(0, "callable:root")]);
+    gateway_parts.gateway_entries = vec![
+        LinkedGatewayEntry::new(
+            gateway_key("gateway:duplicate"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+        LinkedGatewayEntry::new(
+            gateway_key("gateway:duplicate"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+    ];
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(gateway_parts),
+        Err(LinkedBytecodeCandidateError::DuplicateGatewayEntry { .. })
+    ));
+}
+
+#[test]
+fn candidate_rejects_noncanonical_deployment_entry_order() {
+    let mut parts = minimal_parts(vec![function(0, "callable:root")]);
+    parts.operation_entries = vec![
+        LinkedOperationEntry::new(
+            ContractOperationId::new("operation:z"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+        LinkedOperationEntry::new(
+            ContractOperationId::new("operation:a"),
+            FunctionIndex::new(0),
+            signature(),
+        ),
+    ];
+
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(parts),
+        Err(LinkedBytecodeCandidateError::NonCanonicalOperationEntryOrder { .. })
+    ));
+}
+
+#[test]
+fn candidate_rejects_out_of_bounds_deployment_entry_function() {
+    let mut parts = minimal_parts(vec![function(0, "callable:root")]);
+    parts.gateway_entries = vec![LinkedGatewayEntry::new(
+        gateway_key("gateway:chat"),
+        FunctionIndex::new(1),
+        signature(),
+    )];
+
+    assert_eq!(
+        LinkedBytecodeCandidate::try_from_parts(parts)
+            .expect_err("gateway entry function must be in the candidate function table"),
+        LinkedBytecodeCandidateError::RootFunctionOutOfBounds {
+            source_table: CandidateTable::GatewayEntries,
+            source_index: 0,
+            function_index: 1,
+            function_len: 1,
+        }
+    );
+}
+
+#[test]
 fn service_target_remains_symbolic_and_provider_free() {
     let requirement = ServiceRequirementKey {
         caller_package_build_id: PackageBuildId::new("package-build:caller"),
@@ -225,6 +313,16 @@ fn candidate_exposes_read_only_component_views() {
         service_requirement_slot: 0,
     };
     let mut parts = minimal_parts(vec![function(0, "callable:root")]);
+    parts.operation_entries = vec![LinkedOperationEntry::new(
+        ContractOperationId::new("operation:chat"),
+        FunctionIndex::new(0),
+        signature(),
+    )];
+    parts.gateway_entries = vec![LinkedGatewayEntry::new(
+        gateway_key("gateway:chat"),
+        FunctionIndex::new(0),
+        signature(),
+    )];
     parts.exact_local_targets = vec![LinkedExactLocalTarget::new(
         key.clone(),
         FunctionIndex::new(0),
@@ -287,6 +385,26 @@ fn candidate_exposes_read_only_component_views() {
 
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.functions()[0].key(), &key);
+    assert_eq!(candidate.operation_entries().len(), 1);
+    assert_eq!(
+        candidate.operation_entries()[0].contract_operation_id(),
+        &ContractOperationId::new("operation:chat")
+    );
+    assert_eq!(
+        candidate.operation_entries()[0]
+            .signature()
+            .parameter_types(),
+        [TypeIndex::new(0)]
+    );
+    assert_eq!(candidate.gateway_entries().len(), 1);
+    assert_eq!(
+        candidate.gateway_entries()[0].gateway_entry_key(),
+        &gateway_key("gateway:chat")
+    );
+    assert_eq!(
+        candidate.gateway_entries()[0].function(),
+        FunctionIndex::new(0)
+    );
     assert_eq!(candidate.exact_local_targets().len(), 1);
     assert_eq!(candidate.service_operations().len(), 1);
     assert_eq!(candidate.actor_methods().len(), 1);

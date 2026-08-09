@@ -3,13 +3,13 @@ mod validation;
 use std::fmt;
 
 use skiff_artifact_model::{
-    AbiInterfaceId, ActorAbiIdentity, ActorMethodIdentity, ContractOperationId,
+    AbiInterfaceId, ActorAbiIdentity, ActorMethodIdentity, ContractOperationId, GatewayEntryKey,
     ServiceRequirementKey,
 };
 
 use crate::{
-    LinkedActorMethodTarget, LinkedConstantEntry, LinkedExactLocalTarget,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedResumeSite,
+    LinkedActorMethodTarget, LinkedConstantEntry, LinkedExactLocalTarget, LinkedGatewayEntry,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedOperationEntry, LinkedResumeSite,
     LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
     SpecializationKey,
 };
@@ -19,6 +19,8 @@ use crate::{
 #[derive(Debug)]
 pub struct LinkedBytecodeCandidateParts {
     pub functions: Vec<crate::LinkedFunction>,
+    pub operation_entries: Vec<LinkedOperationEntry>,
+    pub gateway_entries: Vec<LinkedGatewayEntry>,
     pub exact_local_targets: Vec<LinkedExactLocalTarget>,
     pub service_operations: Vec<LinkedServiceOperationTarget>,
     pub actor_methods: Vec<LinkedActorMethodTarget>,
@@ -36,6 +38,8 @@ pub struct LinkedBytecodeCandidateParts {
 #[derive(Debug)]
 pub struct LinkedBytecodeCandidate {
     functions: Box<[crate::LinkedFunction]>,
+    operation_entries: Box<[LinkedOperationEntry]>,
+    gateway_entries: Box<[LinkedGatewayEntry]>,
     exact_local_targets: Box<[LinkedExactLocalTarget]>,
     service_operations: Box<[LinkedServiceOperationTarget]>,
     actor_methods: Box<[LinkedActorMethodTarget]>,
@@ -55,6 +59,8 @@ impl LinkedBytecodeCandidate {
         validation::validate_parts(&parts)?;
         Ok(Self {
             functions: parts.functions.into_boxed_slice(),
+            operation_entries: parts.operation_entries.into_boxed_slice(),
+            gateway_entries: parts.gateway_entries.into_boxed_slice(),
             exact_local_targets: parts.exact_local_targets.into_boxed_slice(),
             service_operations: parts.service_operations.into_boxed_slice(),
             actor_methods: parts.actor_methods.into_boxed_slice(),
@@ -70,6 +76,14 @@ impl LinkedBytecodeCandidate {
 
     pub fn functions(&self) -> &[crate::LinkedFunction] {
         &self.functions
+    }
+
+    pub fn operation_entries(&self) -> &[LinkedOperationEntry] {
+        &self.operation_entries
+    }
+
+    pub fn gateway_entries(&self) -> &[LinkedGatewayEntry] {
+        &self.gateway_entries
     }
 
     pub fn exact_local_targets(&self) -> &[LinkedExactLocalTarget] {
@@ -116,6 +130,8 @@ impl LinkedBytecodeCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateTable {
     Functions,
+    OperationEntries,
+    GatewayEntries,
     ExactLocalTargets,
     ServiceOperations,
     ActorMethods,
@@ -132,6 +148,8 @@ impl CandidateTable {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Functions => "functions",
+            Self::OperationEntries => "operation entries",
+            Self::GatewayEntries => "gateway entries",
             Self::ExactLocalTargets => "exact local targets",
             Self::ServiceOperations => "service operations",
             Self::ActorMethods => "actor methods",
@@ -167,6 +185,20 @@ pub enum LinkedBytecodeCandidateError {
     },
     DuplicateExactLocalTarget {
         key: SpecializationKey,
+    },
+    DuplicateOperationEntry {
+        contract_operation_id: ContractOperationId,
+    },
+    NonCanonicalOperationEntryOrder {
+        previous: ContractOperationId,
+        current: ContractOperationId,
+    },
+    DuplicateGatewayEntry {
+        gateway_entry_key: GatewayEntryKey,
+    },
+    NonCanonicalGatewayEntryOrder {
+        previous: GatewayEntryKey,
+        current: GatewayEntryKey,
     },
     DuplicateServiceOperation {
         service_requirement_key: ServiceRequirementKey,
@@ -213,6 +245,24 @@ impl fmt::Display for LinkedBytecodeCandidateError {
             Self::DuplicateExactLocalTarget { key } => write!(
                 formatter,
                 "exact local specialization {key:?} appears more than once"
+            ),
+            Self::DuplicateOperationEntry {
+                contract_operation_id,
+            } => write!(
+                formatter,
+                "operation entry {contract_operation_id} appears more than once"
+            ),
+            Self::NonCanonicalOperationEntryOrder { previous, current } => write!(
+                formatter,
+                "operation entry {current} must sort after {previous}"
+            ),
+            Self::DuplicateGatewayEntry { gateway_entry_key } => write!(
+                formatter,
+                "gateway entry {gateway_entry_key} appears more than once"
+            ),
+            Self::NonCanonicalGatewayEntryOrder { previous, current } => write!(
+                formatter,
+                "gateway entry {current} must sort after {previous}"
             ),
             Self::DuplicateServiceOperation {
                 service_requirement_key,

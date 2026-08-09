@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use crate::{
@@ -105,6 +106,9 @@ fn validate_unique_keys(
         }
     }
 
+    validate_operation_entry_order(parts)?;
+    validate_gateway_entry_order(parts)?;
+
     let mut service_operations = BTreeSet::new();
     for target in &parts.service_operations {
         let key = (
@@ -144,9 +148,91 @@ fn validate_unique_keys(
     Ok(())
 }
 
+fn validate_operation_entry_order(
+    parts: &LinkedBytecodeCandidateParts,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    let mut previous = None;
+    for entry in &parts.operation_entries {
+        let current = entry.contract_operation_id();
+        if let Some(previous) = previous {
+            match current.cmp(previous) {
+                Ordering::Equal => {
+                    return Err(LinkedBytecodeCandidateError::DuplicateOperationEntry {
+                        contract_operation_id: current.clone(),
+                    });
+                }
+                Ordering::Less => {
+                    return Err(
+                        LinkedBytecodeCandidateError::NonCanonicalOperationEntryOrder {
+                            previous: previous.clone(),
+                            current: current.clone(),
+                        },
+                    );
+                }
+                Ordering::Greater => {}
+            }
+        }
+        previous = Some(current);
+    }
+    Ok(())
+}
+
+fn validate_gateway_entry_order(
+    parts: &LinkedBytecodeCandidateParts,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    let mut previous = None;
+    for entry in &parts.gateway_entries {
+        let current = entry.gateway_entry_key();
+        if let Some(previous) = previous {
+            match current.cmp(previous) {
+                Ordering::Equal => {
+                    return Err(LinkedBytecodeCandidateError::DuplicateGatewayEntry {
+                        gateway_entry_key: current.clone(),
+                    });
+                }
+                Ordering::Less => {
+                    return Err(
+                        LinkedBytecodeCandidateError::NonCanonicalGatewayEntryOrder {
+                            previous: previous.clone(),
+                            current: current.clone(),
+                        },
+                    );
+                }
+                Ordering::Greater => {}
+            }
+        }
+        previous = Some(current);
+    }
+    Ok(())
+}
+
 fn validate_root_function_bounds(
     parts: &LinkedBytecodeCandidateParts,
 ) -> Result<(), LinkedBytecodeCandidateError> {
+    for (position, entry) in parts.operation_entries.iter().enumerate() {
+        check_root_function(
+            CandidateTable::OperationEntries,
+            position_index(
+                CandidateTable::OperationEntries,
+                position,
+                parts.operation_entries.len(),
+            )?,
+            entry.function().get(),
+            parts.functions.len(),
+        )?;
+    }
+    for (position, entry) in parts.gateway_entries.iter().enumerate() {
+        check_root_function(
+            CandidateTable::GatewayEntries,
+            position_index(
+                CandidateTable::GatewayEntries,
+                position,
+                parts.gateway_entries.len(),
+            )?,
+            entry.function().get(),
+            parts.functions.len(),
+        )?;
+    }
     for (position, target) in parts.exact_local_targets.iter().enumerate() {
         check_root_function(
             CandidateTable::ExactLocalTargets,

@@ -36,9 +36,9 @@ pub use tables::{
 };
 pub use targets::{
     LinkedActorMethodTarget, LinkedCallbackCapture, LinkedConstantEntry, LinkedConstantValue,
-    LinkedExactLocalTarget, LinkedHostEffectAdapterTarget, LinkedInterfaceMethod,
-    LinkedInterfaceTable, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedExactLocalTarget, LinkedGatewayEntry, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceMethod, LinkedInterfaceTable, LinkedOperationEntry,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
 };
 
 #[cfg(test)]

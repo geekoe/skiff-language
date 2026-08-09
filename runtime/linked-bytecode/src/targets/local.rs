@@ -7,8 +7,8 @@ use crate::{
     SpecializationKey,
 };
 
-/// Exact concrete local target. The key and function remain visible so the
-/// verifier can independently compare target specialization and code.
+/// Exact concrete local or package-direct target. The key and function remain
+/// visible so the verifier can independently compare specialization and code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedExactLocalTarget {
     key: SpecializationKey,
