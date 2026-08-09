@@ -33,8 +33,8 @@ type ScanInput {
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<PackageSecretInput>(request)
-  const row = db insert PackageSecret {
+  let input = std.http.decodeJson<PackageSecretInput>(request)
+  let row = db insert PackageSecret {
     id = input.id
     token = input.token
     label = input.label
@@ -44,24 +44,24 @@ function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<IdInput>(request)
+  let input = std.http.decodeJson<IdInput>(request)
   return std.http.json(200, db require PackageSecret(input.id))
 }
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<ScanInput>(request)
-  const rows = db find many PackageSecret { where id > input.lastId order id asc limit 100 }
+  let input = std.http.decodeJson<ScanInput>(request)
+  let rows = db find many PackageSecret { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
 function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<PackageSecretInput>(request)
-  const row = db update PackageSecret(input.id) { token = input.token }
+  let input = std.http.decodeJson<PackageSecretInput>(request)
+  let row = db update PackageSecret(input.id) { token = input.token }
   return std.http.json(200, row)
 }
 
 function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<PackageSecretBatchInput>(request)
+  let input = std.http.decodeJson<PackageSecretBatchInput>(request)
   db transaction {
     for row in input.rows {
       db update PackageSecret(row.id) { token = row.token }

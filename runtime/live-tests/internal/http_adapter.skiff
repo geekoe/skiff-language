@@ -12,7 +12,7 @@ type RuntimeLiveJsonOutput {
 }
 
 function textResponse(status: integer, body: string) -> std.http.HttpResponse {
-  const headers = Array.empty<std.http.HttpHeader>()
+  let headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   return std.http.HttpResponse {
     status: status,
@@ -26,13 +26,13 @@ function marker() -> string {
 }
 
 function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const marker = marker()
-  const header = std.http.header(request, "x-runtime-live-marker")
+  let marker = marker()
+  let header = std.http.header(request, "x-runtime-live-marker")
   if header == null {
     return textResponse(400, "missing x-runtime-live-marker")
   }
 
-  const bodyText = request.body.toUtf8String()
+  let bodyText = request.body.toUtf8String()
   return textResponse(
     200,
     "runtime-live-http:".concat(marker).concat(":").concat(header).concat(":").concat(request.path).concat(":").concat(bodyText)
@@ -40,7 +40,7 @@ function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function typedJsonEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const input = std.http.decodeJson<RuntimeLiveJsonInput>(request)
+  let input = std.http.decodeJson<RuntimeLiveJsonInput>(request)
   return std.http.json(200, RuntimeLiveJsonOutput {
     marker: input.marker,
     count: input.count + 1,
@@ -49,9 +49,9 @@ function typedJsonEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function binaryEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const headers = Array.empty<std.http.HttpHeader>()
+  let headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "application/octet-stream" })
-  const parts = Array.empty<bytes>()
+  let parts = Array.empty<bytes>()
   parts.push(bytes.fromUtf8("runtime-live-binary:"))
   parts.push(request.body)
   return std.http.HttpResponse {
@@ -62,7 +62,7 @@ function binaryEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function guardedPost(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const guard = std.http.requireMethod(request, "POST")
+  let guard = std.http.requireMethod(request, "POST")
   if guard != null {
     return guard
   }
@@ -70,7 +70,7 @@ function guardedPost(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function streamEcho(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  const headers = Array.empty<std.http.HttpHeader>()
+  let headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   emit(std.http.streamStart(200, headers))
   emit(std.http.streamChunk(bytes.fromUtf8("runtime-live-stream:")))

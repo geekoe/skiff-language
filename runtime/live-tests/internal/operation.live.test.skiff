@@ -1,6 +1,6 @@
 test defaultRun false
 
 test "live operation dispatch executes runtime-owned fixture" {
-  const marker = root.internal.operation.marker()
+  let marker = root.internal.operation.marker()
   assert root.internal.operation.echo(marker) == "runtime-live:".concat(marker)
 }

@@ -11,7 +11,7 @@ function liveFileChunks(marker: string) -> Stream<bytes> {
 }
 
 function liveFileDoubleBytes(value: bytes) -> bytes {
-  const parts = Array.empty<bytes>()
+  let parts = Array.empty<bytes>()
   parts.push(value)
   parts.push(value)
   return bytes.concat(parts)
@@ -39,7 +39,7 @@ function liveFileOneMiBChunk() -> bytes {
 }
 
 function liveFileStagedChunks(marker: string) -> Stream<bytes> {
-  const chunk = liveFileOneMiBChunk()
+  let chunk = liveFileOneMiBChunk()
   emit(chunk)
   emit(bytes.fromUtf8(marker))
   emit(chunk)

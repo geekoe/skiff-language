@@ -3,9 +3,9 @@ import std
 test defaultRun false
 
 test "live file runtime creates reads infos and deletes immutable file" {
-  const marker = root.internal.file_live.marker()
-  const text = "runtime-live-file:".concat(marker)
-  const file = std.file.createText(text, std.file.CreateOptions {
+  let marker = root.internal.file_live.marker()
+  let text = "runtime-live-file:".concat(marker)
+  let file = std.file.createText(text, std.file.CreateOptions {
     contentType: "text/plain",
     purpose: "runtime-live",
   })
@@ -16,7 +16,7 @@ test "live file runtime creates reads infos and deletes immutable file" {
   assert file.contentType == "text/plain"
   assert std.file.readText(file) == text
 
-  const info = std.file.info(file)
+  let info = std.file.info(file)
   assert info.id == file.id
   assert info.size == file.size
   assert info.sha256 == file.sha256
@@ -28,8 +28,8 @@ test "live file runtime creates reads infos and deletes immutable file" {
 }
 
 test "live file runtime writes chunks from stream and reports deleted file as missing" {
-  const marker = root.internal.file_live.marker()
-  const file = std.file.createFromStream(root.internal.file_live.liveFileChunks(marker), std.file.CreateOptions {
+  let marker = root.internal.file_live.marker()
+  let file = std.file.createFromStream(root.internal.file_live.liveFileChunks(marker), std.file.CreateOptions {
     contentType: "text/plain",
     purpose: "runtime-live-stream",
   })
@@ -37,17 +37,17 @@ test "live file runtime writes chunks from stream and reports deleted file as mi
   assert file.size > 0
   assert std.file.readText(file) == "runtime-live-file-stream:".concat(marker)
 
-  const info = std.file.info(file)
+  let info = std.file.info(file)
   assert info.purpose == "runtime-live-stream"
 
   std.file.delete(file)
-  const missing = catch<std.file.FileError>(std.file.readText(file))
+  let missing = catch<std.file.FileError>(std.file.readText(file))
   assert missing.tag == "err"
 }
 
 test "live file runtime writes generated chunks through staged file path" {
-  const marker = root.internal.file_live.marker()
-  const file = std.file.createFromStream(root.internal.file_live.liveFileStagedChunks(marker), std.file.CreateOptions {
+  let marker = root.internal.file_live.marker()
+  let file = std.file.createFromStream(root.internal.file_live.liveFileStagedChunks(marker), std.file.CreateOptions {
     contentType: "application/octet-stream",
     purpose: "runtime-live-staged-stream",
   })
@@ -55,11 +55,11 @@ test "live file runtime writes generated chunks through staged file path" {
   assert file.size > 2097152
   assert std.file.read(file).length() == file.size
 
-  const info = std.file.info(file)
+  let info = std.file.info(file)
   assert info.size == file.size
   assert info.purpose == "runtime-live-staged-stream"
 
   std.file.delete(file)
-  const missing = catch<std.file.FileError>(std.file.info(file))
+  let missing = catch<std.file.FileError>(std.file.info(file))
   assert missing.tag == "err"
 }

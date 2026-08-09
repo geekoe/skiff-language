@@ -13,11 +13,11 @@ db object TestRunnerEncryptedDoc {
 }
 
 test "live test runner uses outer runtime keyring" {
-  const secret = root.internal.live.testRunnerSecret()
-  const id = "encrypted-live-test-runner"
-  const inserted = db insert TestRunnerEncryptedDoc { id = id secret = secret }
+  let secret = root.internal.live.testRunnerSecret()
+  let id = "encrypted-live-test-runner"
+  let inserted = db insert TestRunnerEncryptedDoc { id = id secret = secret }
   assert inserted.secret == secret
-  const read = db require TestRunnerEncryptedDoc(id)
+  let read = db require TestRunnerEncryptedDoc(id)
   assert read.secret == secret
   std.time.sleep(Duration.milliseconds(750))
 }
