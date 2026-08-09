@@ -7,7 +7,52 @@ use tokio::sync::Notify;
 
 use crate::{DeploymentImageCache, DeploymentLoadError, DeploymentLoadFailureReason};
 
-use super::{attempt_failure, image, join, owner, owner_with, within, TestProviderError};
+use super::{
+    attempt_failure, image, join, owner, owner_with, ready_without_runtime, within,
+    TestProviderError,
+};
+
+#[test]
+fn runtime_unavailable_is_attempt_scoped_and_retryable() {
+    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let requested_owner = owner("build:no-runtime");
+    let loader_calls = Arc::new(AtomicUsize::new(0));
+
+    let first = ready_without_runtime(cache.get_or_load(requested_owner.clone(), {
+        let loader_calls = Arc::clone(&loader_calls);
+        move |_, _| async move {
+            loader_calls.fetch_add(1, Ordering::SeqCst);
+            Err(TestProviderError("loader must not run"))
+        }
+    }))
+    .expect_err("starting without a runtime must fail closed");
+    let first = attempt_failure(first);
+    assert!(matches!(
+        first.reason(),
+        DeploymentLoadFailureReason::RuntimeUnavailable
+    ));
+    assert!(ready_without_runtime(cache.loaded(&requested_owner))
+        .expect("the exact owner remains valid")
+        .is_none());
+
+    let second = ready_without_runtime(cache.get_or_load(requested_owner, {
+        let loader_calls = Arc::clone(&loader_calls);
+        move |_, _| async move {
+            loader_calls.fetch_add(1, Ordering::SeqCst);
+            Err(TestProviderError("loader must not run"))
+        }
+    }))
+    .expect_err("a retry without a runtime is a new failed attempt");
+    let second = attempt_failure(second);
+
+    assert!(matches!(
+        second.reason(),
+        DeploymentLoadFailureReason::RuntimeUnavailable
+    ));
+    assert_eq!(second.attempt_id().get(), first.attempt_id().get() + 1);
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert_eq!(loader_calls.load(Ordering::SeqCst), 0);
+}
 
 #[tokio::test]
 async fn concurrent_failure_waiters_share_one_failure_arc() {

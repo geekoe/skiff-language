@@ -2,7 +2,13 @@ mod cache_failure;
 mod cache_success;
 mod contracts;
 
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+    time::Duration,
+};
 
 use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use tokio::task::JoinHandle;
@@ -59,4 +65,20 @@ async fn within<T>(future: impl Future<Output = T>) -> T {
 
 async fn join<T>(handle: JoinHandle<T>) -> T {
     within(handle).await.expect("spawned caller must not panic")
+}
+
+struct NoopWake;
+
+impl Wake for NoopWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn ready_without_runtime<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("no-runtime fixture unexpectedly became pending"),
+    }
 }

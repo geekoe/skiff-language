@@ -31,6 +31,7 @@ pub enum DeploymentLoadFailureReason<E> {
     },
     LoaderTaskPanicked,
     LoaderTaskCancelled,
+    RuntimeUnavailable,
     AttemptStateUnavailable,
 }
 
@@ -84,6 +85,13 @@ impl<E> DeploymentLoadFailure<E> {
         })
     }
 
+    pub(crate) fn runtime_unavailable(attempt_id: LoadAttemptId) -> Arc<Self> {
+        Arc::new(Self {
+            attempt_id,
+            reason: DeploymentLoadFailureReason::RuntimeUnavailable,
+        })
+    }
+
     pub(crate) fn attempt_state_unavailable(attempt_id: LoadAttemptId) -> Arc<Self> {
         Arc::new(Self {
             attempt_id,
@@ -110,6 +118,9 @@ impl<E: fmt::Display> fmt::Display for DeploymentLoadFailure<E> {
             }
             DeploymentLoadFailureReason::LoaderTaskCancelled => {
                 formatter.write_str("loader task was cancelled")
+            }
+            DeploymentLoadFailureReason::RuntimeUnavailable => {
+                formatter.write_str("deployment loading requires a Tokio runtime")
             }
             DeploymentLoadFailureReason::AttemptStateUnavailable => {
                 formatter.write_str("attempt state became unavailable")
@@ -182,7 +193,6 @@ pub enum DeploymentLoadError<E> {
     OwnerConflict(DeploymentOwnerConflict),
     Attempt(Arc<DeploymentLoadFailure<E>>),
     AttemptIdExhausted,
-    RuntimeUnavailable,
 }
 
 impl<E> Clone for DeploymentLoadError<E> {
@@ -191,7 +201,6 @@ impl<E> Clone for DeploymentLoadError<E> {
             Self::OwnerConflict(conflict) => Self::OwnerConflict(conflict.clone()),
             Self::Attempt(failure) => Self::Attempt(Arc::clone(failure)),
             Self::AttemptIdExhausted => Self::AttemptIdExhausted,
-            Self::RuntimeUnavailable => Self::RuntimeUnavailable,
         }
     }
 }
@@ -203,9 +212,6 @@ impl<E: fmt::Display> fmt::Display for DeploymentLoadError<E> {
             Self::Attempt(failure) => fmt::Display::fmt(failure, formatter),
             Self::AttemptIdExhausted => {
                 formatter.write_str("deployment load attempt ids exhausted")
-            }
-            Self::RuntimeUnavailable => {
-                formatter.write_str("deployment loading requires a Tokio runtime")
             }
         }
     }
@@ -219,7 +225,7 @@ where
         match self {
             Self::OwnerConflict(conflict) => Some(conflict),
             Self::Attempt(failure) => Some(failure.as_ref()),
-            Self::AttemptIdExhausted | Self::RuntimeUnavailable => None,
+            Self::AttemptIdExhausted => None,
         }
     }
 }

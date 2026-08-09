@@ -72,15 +72,12 @@ where
             BeginLoad::Join(attempt) => attempt,
             BeginLoad::Start(attempt) => {
                 let Some(runtime) = runtime else {
-                    self.inner
-                        .finish_attempt(
-                            Arc::clone(&attempt),
-                            Err(DeploymentLoadFailure::attempt_state_unavailable(
-                                attempt.id(),
-                            )),
-                        )
-                        .await;
-                    return Err(DeploymentLoadError::RuntimeUnavailable);
+                    let failure = DeploymentLoadFailure::runtime_unavailable(attempt.id());
+                    return self
+                        .inner
+                        .finish_attempt(attempt, Err(failure))
+                        .await
+                        .map_err(DeploymentLoadError::Attempt);
                 };
                 spawn_loader(
                     runtime,
@@ -109,7 +106,7 @@ impl<P, E> CacheInner<P, E> {
         &self,
         attempt: Arc<LoadAttempt<P, E>>,
         result: SharedAttemptResult<P, E>,
-    ) {
+    ) -> SharedAttemptResult<P, E> {
         let mut state = self.state.lock().await;
         let result = if state.is_current(&attempt) {
             result
@@ -122,6 +119,7 @@ impl<P, E> CacheInner<P, E> {
         state.publish_attempt(&attempt, &stored);
         drop(state);
         attempt.notify_waiters();
+        stored
     }
 }
 
@@ -142,7 +140,7 @@ fn spawn_loader<P, E, L, F>(
     let load_task = runtime.spawn(async move { loader(attempt_id, loader_owner).await });
     drop(runtime.spawn(async move {
         let result = loader_result(attempt_id, expected_owner, load_task.await);
-        cache.finish_attempt(attempt, result).await;
+        drop(cache.finish_attempt(attempt, result).await);
     }));
 }
 
