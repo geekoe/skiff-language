@@ -8,7 +8,9 @@ impl ProjectionFixture {
             .callable_semantic_facts
             .get_mut(&self.callable_id)
             .unwrap()
-            .effects = CallableEffectSummary::Analyzed { effects };
+            .effects = CallableEffectSummary::Analyzed {
+                effects: effects.clone(),
+            };
         let BoundaryCallableProjection::Available {
             implementation_requirements,
             ..
@@ -20,7 +22,7 @@ impl ProjectionFixture {
         else {
             unreachable!()
         };
-        implementation_requirements.complete_may_effects = effects;
+        implementation_requirements.complete_may_effects = effects.clone();
     }
 
     fn synchronize_provenance(&mut self, provenance: CallableProvenanceSummary) {
@@ -106,19 +108,10 @@ fn rehashed_forged_plan_passes_identity_but_not_deployment_admission() {
 
 #[test]
 fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
+    // The three aggregate alias flags were retired (R-084): ordinary aggregate
+    // mutation/returns/throws are logical snapshots and cannot forge an
+    // availability claim. The remaining unsafe effect mutations still reject.
     let cases: &[(fn(&mut CallableMayEffects), BoundaryUnavailableReason)] = &[
-        (
-            |effects| effects.writes_caller_reachable = true,
-            BoundaryUnavailableReason::WritesCallerReachable,
-        ),
-        (
-            |effects| effects.returns_caller_alias = true,
-            BoundaryUnavailableReason::ReturnsCallerAlias,
-        ),
-        (
-            |effects| effects.throws_caller_alias = true,
-            BoundaryUnavailableReason::ThrowsCallerAlias,
-        ),
         (
             |effects| effects.requires_same_heap_identity = true,
             BoundaryUnavailableReason::RequiresSameHeapIdentity,
@@ -194,66 +187,56 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
         },
     );
 
-    for (provenance, expected) in [
-        (
-            CallableProvenanceSummary::Analyzed {
-                return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
-                direct_return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
-                throw_origins: Vec::new(),
-                escape_lanes: Vec::new(),
-            },
-            BoundaryUnavailableReason::ReturnsCallerAlias,
-        ),
-        (
-            CallableProvenanceSummary::Analyzed {
-                return_origins: Vec::new(),
-                direct_return_origins: Vec::new(),
-                throw_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
-                escape_lanes: Vec::new(),
-            },
-            BoundaryUnavailableReason::ThrowsCallerAlias,
-        ),
-        (
-            CallableProvenanceSummary::Analyzed {
-                return_origins: vec![ValueProvenance::CallerParameterProjection {
-                    index: 0,
-                    path: ValueProjectionPath::container_element(),
-                }],
-                direct_return_origins: vec![ValueProvenance::CallerParameterProjection {
-                    index: 0,
-                    path: ValueProjectionPath::container_element(),
-                }],
-                throw_origins: Vec::new(),
-                escape_lanes: Vec::new(),
-            },
-            BoundaryUnavailableReason::ReturnsCallerAlias,
-        ),
-        (
-            CallableProvenanceSummary::Analyzed {
-                return_origins: Vec::new(),
-                direct_return_origins: Vec::new(),
-                throw_origins: vec![ValueProvenance::CallerParameterProjection {
-                    index: 0,
-                    path: ValueProjectionPath::field("error").unwrap(),
-                }],
-                escape_lanes: Vec::new(),
-            },
-            BoundaryUnavailableReason::ThrowsCallerAlias,
-        ),
+    // R-084: caller-origin return/throw aggregates are logical snapshots and
+    // no longer produce alias unavailability reasons.
+    for provenance in [
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+            direct_return_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        },
+        CallableProvenanceSummary::Analyzed {
+            return_origins: Vec::new(),
+            direct_return_origins: Vec::new(),
+            throw_origins: vec![ValueProvenance::CallerParameter { index: 0 }],
+            escape_lanes: Vec::new(),
+        },
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::CallerParameterProjection {
+                index: 0,
+                path: ValueProjectionPath::container_element(),
+            }],
+            direct_return_origins: vec![ValueProvenance::CallerParameterProjection {
+                index: 0,
+                path: ValueProjectionPath::container_element(),
+            }],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        },
+        CallableProvenanceSummary::Analyzed {
+            return_origins: Vec::new(),
+            direct_return_origins: Vec::new(),
+            throw_origins: vec![ValueProvenance::CallerParameterProjection {
+                index: 0,
+                path: ValueProjectionPath::field("error").unwrap(),
+            }],
+            escape_lanes: Vec::new(),
+        },
     ] {
         let mut fixture = ProjectionFixture::new();
         fixture.synchronize_provenance(provenance);
         fixture.refresh_implementation_ref();
-        assert_eligibility_reason(&fixture, expected);
+        fixture
+            .project()
+            .expect("caller-origin return/throw aggregates stay boundary-available (R-084)");
     }
 }
 
 #[test]
 fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
     let mut fixture = ProjectionFixture::new();
-    let mut effects = no_effects();
-    effects.returns_caller_alias = true;
-    fixture.synchronize_effects(effects);
+    fixture.synchronize_effects(no_effects());
     fixture.synchronize_provenance(CallableProvenanceSummary::Analyzed {
         return_origins: vec![
             ValueProvenance::Fresh,
@@ -270,7 +253,6 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
 
     let mut escaping = ProjectionFixture::new();
     let mut effects = no_effects();
-    effects.returns_caller_alias = true;
     effects.escapes_caller_value = true;
     escaping.synchronize_effects(effects);
     escaping.synchronize_provenance(CallableProvenanceSummary::Analyzed {
@@ -290,10 +272,10 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
         },
     );
 
+    // A fresh wrapper whose direct root may be the caller value is still a
+    // logical snapshot at the boundary under R-084.
     let mut conditional_root = ProjectionFixture::new();
-    let mut effects = no_effects();
-    effects.returns_caller_alias = true;
-    conditional_root.synchronize_effects(effects);
+    conditional_root.synchronize_effects(no_effects());
     conditional_root.synchronize_provenance(CallableProvenanceSummary::Analyzed {
         return_origins: vec![
             ValueProvenance::Fresh,
@@ -307,10 +289,9 @@ fn canonical_return_materializes_only_a_fresh_wrapper_around_a_caller_value() {
         escape_lanes: Vec::new(),
     });
     conditional_root.refresh_implementation_ref();
-    assert_eligibility_reason(
-        &conditional_root,
-        BoundaryUnavailableReason::ReturnsCallerAlias,
-    );
+    conditional_root
+        .project()
+        .expect("conditional caller-root return stays boundary-available (R-084)");
 }
 
 #[test]

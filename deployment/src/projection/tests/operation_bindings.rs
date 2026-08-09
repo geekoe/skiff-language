@@ -63,7 +63,10 @@ fn callable_facts_requirements_and_link_target_mismatches_fail_closed() {
     else {
         unreachable!()
     };
-    implementation_requirements.complete_may_effects.may_suspend = false;
+    implementation_requirements.complete_may_effects.may_pending = false;
+    implementation_requirements
+        .complete_may_effects
+        .pending_effect_categories = Vec::new();
     facts_mismatch.refresh_implementation_ref();
     assert!(matches!(
         facts_mismatch.project(),
