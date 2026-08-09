@@ -131,6 +131,8 @@ fn image(
                 "packageSchemaTypeRecords": {},
                 "implementationLinks": {},
                 "callableLinks": {},
+                "actorImplementations": [],
+                "localInterfaceConformances": [],
                 "packageRequirements": [],
                 "contractRequirements": [],
                 "serviceRequirements": [],
@@ -142,6 +144,8 @@ fn image(
                 "serviceCallRefs": []
             }))
             .unwrap();
+            assert!(artifact.actor_implementations.is_empty());
+            assert!(artifact.local_interface_conformances.is_empty());
             RuntimeExecutionPackage::try_new(
                 PackageCodeSlotIndex::new(slot),
                 Arc::new(artifact),
