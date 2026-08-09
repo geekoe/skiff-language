@@ -11,6 +11,22 @@ use crate::bytecode::dto::{
 
 use super::*;
 
+/// The pre-role table fingerprint must fail closed: operand roles are part of
+/// the canonical ISA projection even though numeric encodings are unchanged.
+#[test]
+fn corpus_rejects_opcode_fingerprint_without_operand_roles() {
+    let mut artifact = canonical_artifact();
+    artifact.opcode_table_fingerprint =
+        "3571e40bfccfa802ffa603356326a7699f2ec358561ff20bef7a7abfe1d6b322".to_string();
+
+    let error = assert_rejected(&artifact);
+    assert!(matches!(error, StructuralValidationError::Header { .. }));
+    assert!(
+        error.to_string().contains("opcodeTableFingerprint"),
+        "{error}"
+    );
+}
+
 /// Class 1: unknown opcode (C1 high bits / C4 table lookup).
 #[test]
 fn corpus_unknown_opcode_negative_and_positive() {

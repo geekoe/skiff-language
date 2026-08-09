@@ -20,7 +20,7 @@ use crate::bytecode::dto::{
 };
 use crate::bytecode::opcodes::{
     opcode_table_fingerprint, pool_operand_category, table_operand_category, OperandKind,
-    PoolCategory, TableCategory,
+    OperandRole, PoolCategory, TableCategory,
 };
 use crate::types::TypeRefIr;
 
@@ -739,9 +739,7 @@ fn validate_frame_type_refs(
             if !entry_is_kind(entry, PoolCategory::Types) {
                 return Err(table_error(
                     key,
-                    format!(
-                        "frameLayout.{field}[{index}] must reference a TypeRef entry"
-                    ),
+                    format!("frameLayout.{field}[{index}] must reference a TypeRef entry"),
                 ));
             }
         }
@@ -909,8 +907,10 @@ fn validate_targets(
                 });
             }
         }
-        if matches!(descriptor.opcode, 0x72 | 0x73) {
-            let region_index = instruction.operand_words[0] as usize;
+        if let Some(region_index) =
+            descriptor.operand_word(OperandRole::Region, &instruction.operand_words)
+        {
+            let region_index = region_index as usize;
             let region = &function.exception_regions[region_index];
             if !(region.start_pc <= instruction.pc && instruction.pc < region.end_pc) {
                 return Err(StructuralValidationError::Target {

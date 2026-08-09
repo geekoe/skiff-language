@@ -7,7 +7,10 @@ use crate::bytecode::decode::{decode_branch_target, BoundedDecoder};
 use crate::bytecode::encode::{
     assemble_artifact, assemble_function, encode_instruction, EncodeError, EncodedInstruction,
 };
-use crate::bytecode::opcodes::{opcode_for, opcode_kind, OPCODE_TABLE};
+use crate::bytecode::opcodes::{
+    descriptor_for_opcode, opcode_for, opcode_kind, opcode_table_fingerprint, Arity, Opcode,
+    OperandRole, OPCODE_TABLE,
+};
 
 use super::*;
 
@@ -255,11 +258,88 @@ fn opcode_numeric_and_semantic_descriptors_are_one_to_one() {
             opcode_for(descriptor.opcode).map(|resolved| resolved.kind),
             Some(descriptor.kind)
         );
+        assert_eq!(descriptor_for_opcode(descriptor.kind), descriptor);
     }
 
     assert_eq!(encoded.len(), 42);
     assert_eq!(semantic.len(), 42);
     assert_eq!(opcode_kind(0xFF), None);
+}
+
+/// The canonical table owns one role for every operand position, and the
+/// public role APIs resolve all positions without opcode-specific matching.
+#[test]
+fn opcode_operand_roles_are_complete_unique_and_readable() {
+    for descriptor in OPCODE_TABLE {
+        assert_eq!(
+            descriptor.operand_roles.len(),
+            descriptor.operand_layout.len(),
+            "{} must name every operand position",
+            descriptor
+        );
+
+        let mut unique_roles = HashSet::new();
+        let operand_words: Vec<u32> = (0..descriptor.operand_roles.len())
+            .map(|position| 0xA000_0000 | position as u32)
+            .collect();
+        for (position, (&role, &kind)) in descriptor
+            .operand_roles
+            .iter()
+            .zip(descriptor.operand_layout)
+            .enumerate()
+        {
+            assert!(
+                unique_roles.insert(role),
+                "{} assigns {role:?} to multiple operands",
+                descriptor
+            );
+            assert_eq!(
+                role.operand_kind(),
+                kind,
+                "{} role kind mismatch",
+                descriptor
+            );
+            assert_eq!(descriptor.operand_position(role), Some(position));
+            assert_eq!(
+                descriptor.operand_word(role, &operand_words),
+                Some(operand_words[position])
+            );
+            assert_eq!(
+                descriptor.operand_word(role, &operand_words[..position]),
+                None
+            );
+        }
+
+        for effect in descriptor.stack_in.iter().chain(descriptor.stack_out) {
+            if let Arity::Declared(role) = effect.arity {
+                assert!(
+                    descriptor.operand_position(role).is_some(),
+                    "{} stack effect names absent role {role:?}",
+                    descriptor
+                );
+                assert_eq!(role.operand_kind(), OperandKind::Immediate);
+            }
+        }
+    }
+
+    let call = descriptor_for_opcode(Opcode::CallInterface);
+    assert_eq!(call.operand_position(OperandRole::InterfaceTarget), Some(0));
+    assert_eq!(call.operand_position(OperandRole::MethodOrdinal), Some(1));
+    assert_eq!(call.operand_position(OperandRole::ArgCount), Some(2));
+    assert_eq!(
+        call.operand_word(OperandRole::ArgCount, &[7, 11, 3]),
+        Some(3)
+    );
+    assert_eq!(call.operand_position(OperandRole::BranchTarget), None);
+}
+
+/// Operand roles are an immutable part of the canonical opcode projection.
+#[test]
+fn opcode_table_fingerprint_with_operand_roles_is_frozen() {
+    assert_eq!(
+        opcode_table_fingerprint(),
+        "b63a4be7788fb88fd3894aba390b6063fb1718c291c2c6d661f75c37b507a8f6"
+    );
 }
 
 /// The opaque validated view owns every linker fact copied across the checked

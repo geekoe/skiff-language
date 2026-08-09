@@ -43,13 +43,95 @@ impl OperandKind {
     }
 }
 
+/// Semantic role of one operand word. Roles are unique within an opcode and
+/// are ordered exactly like [`OpcodeDescriptor::operand_layout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperandRole {
+    SourceSlot,
+    DestinationSlot,
+    Slot,
+    BranchTarget,
+    SwitchTable,
+    Region,
+    LocalTarget,
+    ServiceTarget,
+    ActorTarget,
+    InterfaceTarget,
+    CallbackTarget,
+    HostTarget,
+    ArgCount,
+    CaptureCount,
+    FieldCount,
+    MethodOrdinal,
+    FieldOrdinal,
+    ConstantRef,
+    TypeRef,
+    ElementTypeRef,
+    KeyTypeRef,
+    ValueTypeRef,
+    ShapeRef,
+    ResumeRef,
+}
+
+impl OperandRole {
+    /// Encoding kind required by this semantic role.
+    pub const fn operand_kind(self) -> OperandKind {
+        match self {
+            Self::SourceSlot | Self::DestinationSlot | Self::Slot => OperandKind::Slot,
+            Self::BranchTarget => OperandKind::Branch,
+            Self::SwitchTable | Self::Region => OperandKind::Table,
+            Self::LocalTarget
+            | Self::ServiceTarget
+            | Self::ActorTarget
+            | Self::InterfaceTarget
+            | Self::CallbackTarget
+            | Self::HostTarget => OperandKind::Reloc,
+            Self::ArgCount
+            | Self::CaptureCount
+            | Self::FieldCount
+            | Self::MethodOrdinal
+            | Self::FieldOrdinal => OperandKind::Immediate,
+            Self::ConstantRef
+            | Self::TypeRef
+            | Self::ElementTypeRef
+            | Self::KeyTypeRef
+            | Self::ValueTypeRef
+            | Self::ShapeRef
+            | Self::ResumeRef => OperandKind::Pool,
+        }
+    }
+
+    /// Artifact pool category selected by this role, when it is a pool role.
+    pub const fn pool_category(self) -> Option<PoolCategory> {
+        match self {
+            Self::ConstantRef => Some(PoolCategory::Constants),
+            Self::TypeRef | Self::ElementTypeRef | Self::KeyTypeRef | Self::ValueTypeRef => {
+                Some(PoolCategory::Types)
+            }
+            Self::ShapeRef => Some(PoolCategory::Shapes),
+            Self::ResumeRef => Some(PoolCategory::Resume),
+            _ => None,
+        }
+    }
+
+    /// Function table category selected by this role, when it is a table role.
+    pub const fn table_category(self) -> Option<TableCategory> {
+        match self {
+            Self::SwitchTable => Some(TableCategory::SwitchTables),
+            Self::Region => Some(TableCategory::ExceptionRegions),
+            _ => None,
+        }
+    }
+}
+
 /// Stack-effect arity source (§2.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arity {
     /// Fixed count.
     Fixed(u16),
-    /// Count taken from the named count-class immediate operand.
-    Declared(&'static str),
+    /// Count taken from the identified count-class immediate operand.
+    Declared(OperandRole),
     /// Count taken from `frameLayout.result_count` (`return`).
     FunctionResultCount,
 }
@@ -66,7 +148,7 @@ const fn fixed_effect(n: u16) -> StackEffect {
     }
 }
 
-const fn declared_effect(operand: &'static str) -> StackEffect {
+const fn declared_effect(operand: OperandRole) -> StackEffect {
     StackEffect {
         arity: Arity::Declared(operand),
     }
@@ -170,6 +252,8 @@ pub struct OpcodeDescriptor {
     pub mnemonic: &'static str,
     /// Operand word kinds in word order; length = operand word count.
     pub operand_layout: &'static [OperandKind],
+    /// Semantic roles in word order; length equals `operand_layout.len()`.
+    pub operand_roles: &'static [OperandRole],
     /// Stack effects consumed (bottom to top), schema declaration only.
     pub stack_in: &'static [StackEffect],
     /// Stack effects produced (bottom to top), schema declaration only.
@@ -185,6 +269,20 @@ impl OpcodeDescriptor {
 
     pub const fn instruction_word_count(&self) -> u32 {
         self.operand_word_count() + 1
+    }
+
+    /// Finds the unique operand position carrying `role`.
+    pub fn operand_position(&self, role: OperandRole) -> Option<usize> {
+        self.operand_roles
+            .iter()
+            .position(|candidate| *candidate == role)
+    }
+
+    /// Reads an operand word by semantic role. `operand_words` excludes the
+    /// instruction header; malformed/short inputs return `None`.
+    pub fn operand_word(&self, role: OperandRole, operand_words: &[u32]) -> Option<u32> {
+        self.operand_position(role)
+            .and_then(|position| operand_words.get(position).copied())
     }
 }
 
@@ -262,41 +360,27 @@ impl TableCategory {
 /// Which artifact-level pool category a `Pool` operand at `position` of
 /// `opcode` refers to (pool category is fixed by operand position, §2.3).
 pub const fn pool_operand_category(opcode: u8, position: usize) -> Option<PoolCategory> {
-    match (opcode, position) {
-        // const: constRef -> constants
-        (0x00, 0) => Some(PoolCategory::Constants),
-        // call_service/call_actor: resumeRef -> resume
-        (0x22, 2) | (0x23, 2) => Some(PoolCategory::Resume),
-        // new_record/get_dense_field: shapeRef -> shapes
-        (0x40, 0) | (0x41, 0) => Some(PoolCategory::Shapes),
-        // set_writable_path: shapeRef -> shapes
-        (0x42, 1) => Some(PoolCategory::Shapes),
-        // representation_wrap: typeRef -> types
-        (0x43, 0) => Some(PoolCategory::Types),
-        // throw: typeRef -> types
-        (0x70, 0) => Some(PoolCategory::Types),
-        // new_array_builder: elementTypeRef -> types
-        (0x50, 0) => Some(PoolCategory::Types),
-        // new_map_builder: keyTypeRef, valueTypeRef -> types
-        (0x55, 0) | (0x55, 1) => Some(PoolCategory::Types),
-        // stream_next: resumeRef -> resume
-        (0x60, 1) => Some(PoolCategory::Resume),
-        // emit_stream: resumeRef -> resume
-        (0x61, 0) => Some(PoolCategory::Resume),
-        // invoke_host: resumeRef -> resume
-        (0x80, 2) => Some(PoolCategory::Resume),
-        _ => None,
+    let descriptor = match opcode_for(opcode) {
+        Some(descriptor) => descriptor,
+        None => return None,
+    };
+    if position >= descriptor.operand_roles.len() {
+        return None;
     }
+    descriptor.operand_roles[position].pool_category()
 }
 
 /// Which function auxiliary table a `Table` operand at `position` of `opcode`
 /// refers to.
 pub const fn table_operand_category(opcode: u8, position: usize) -> Option<TableCategory> {
-    match (opcode, position) {
-        (0x13, 0) => Some(TableCategory::SwitchTables),
-        (0x72, 0) | (0x73, 0) => Some(TableCategory::ExceptionRegions),
-        _ => None,
+    let descriptor = match opcode_for(opcode) {
+        Some(descriptor) => descriptor,
+        None => return None,
+    };
+    if position >= descriptor.operand_roles.len() {
+        return None;
     }
+    descriptor.operand_roles[position].table_category()
 }
 
 /// The 42-instruction opcode table (§2.3), in ascending opcode order.
@@ -307,6 +391,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x00,
         "const",
         &[OperandKind::Pool],
+        &[OperandRole::ConstantRef],
         &[],
         &[fixed_effect(1)],
         &[],
@@ -316,6 +401,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x01,
         "copy_slot",
         &[OperandKind::Slot, OperandKind::Slot],
+        &[OperandRole::SourceSlot, OperandRole::DestinationSlot],
         &[],
         &[],
         &[],
@@ -325,6 +411,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x02,
         "move_slot",
         &[OperandKind::Slot, OperandKind::Slot],
+        &[OperandRole::SourceSlot, OperandRole::DestinationSlot],
         &[],
         &[],
         &[],
@@ -334,6 +421,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x03,
         "store_slot",
         &[OperandKind::Slot],
+        &[OperandRole::DestinationSlot],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -343,6 +431,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x04,
         "drop",
         &[OperandKind::Slot],
+        &[OperandRole::Slot],
         &[],
         &[],
         &[],
@@ -351,6 +440,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::Dup,
         0x05,
         "dup",
+        &[],
         &[],
         &[fixed_effect(1)],
         &[fixed_effect(2)],
@@ -362,6 +452,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x10,
         "jump",
         &[OperandKind::Branch],
+        &[OperandRole::BranchTarget],
         &[],
         &[],
         &[],
@@ -371,6 +462,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x11,
         "jump_if_true",
         &[OperandKind::Branch],
+        &[OperandRole::BranchTarget],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -380,6 +472,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x12,
         "jump_if_false",
         &[OperandKind::Branch],
+        &[OperandRole::BranchTarget],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -389,6 +482,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x13,
         "switch_tag",
         &[OperandKind::Table, OperandKind::Branch],
+        &[OperandRole::SwitchTable, OperandRole::BranchTarget],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -401,6 +495,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
         &[],
+        &[],
     ),
     // Call (0x20–0x2F)
     descriptor(
@@ -408,7 +503,8 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x20,
         "call_local",
         &[OperandKind::Reloc, OperandKind::Immediate],
-        &[declared_effect("argCount")],
+        &[OperandRole::LocalTarget, OperandRole::ArgCount],
+        &[declared_effect(OperandRole::ArgCount)],
         &[],
         &[
             RelocationKind::LocalExecutableRef,
@@ -420,7 +516,8 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x21,
         "tail_call_local",
         &[OperandKind::Reloc, OperandKind::Immediate],
-        &[declared_effect("argCount")],
+        &[OperandRole::LocalTarget, OperandRole::ArgCount],
+        &[declared_effect(OperandRole::ArgCount)],
         &[],
         &[
             RelocationKind::LocalExecutableRef,
@@ -436,7 +533,12 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Immediate,
             OperandKind::Pool,
         ],
-        &[declared_effect("argCount")],
+        &[
+            OperandRole::ServiceTarget,
+            OperandRole::ArgCount,
+            OperandRole::ResumeRef,
+        ],
+        &[declared_effect(OperandRole::ArgCount)],
         &[],
         &[RelocationKind::ServiceOperationRef],
     ),
@@ -449,7 +551,12 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Immediate,
             OperandKind::Pool,
         ],
-        &[declared_effect("argCount")],
+        &[
+            OperandRole::ActorTarget,
+            OperandRole::ArgCount,
+            OperandRole::ResumeRef,
+        ],
+        &[declared_effect(OperandRole::ArgCount)],
         &[],
         &[RelocationKind::ActorMethodRef],
     ),
@@ -462,7 +569,12 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Immediate,
             OperandKind::Immediate,
         ],
-        &[fixed_effect(1), declared_effect("argCount")],
+        &[
+            OperandRole::InterfaceTarget,
+            OperandRole::MethodOrdinal,
+            OperandRole::ArgCount,
+        ],
+        &[fixed_effect(1), declared_effect(OperandRole::ArgCount)],
         &[],
         &[RelocationKind::InterfaceRequirementRef],
     ),
@@ -470,6 +582,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::Return,
         0x25,
         "return",
+        &[],
         &[],
         &[result_count_effect()],
         &[],
@@ -481,6 +594,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x30,
         "interface_box_local",
         &[OperandKind::Reloc],
+        &[OperandRole::InterfaceTarget],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
         &[RelocationKind::InterfaceRequirementRef],
@@ -490,6 +604,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x31,
         "interface_box_remote",
         &[OperandKind::Reloc, OperandKind::Reloc],
+        &[OperandRole::ServiceTarget, OperandRole::InterfaceTarget],
         &[],
         &[fixed_effect(1)],
         &[
@@ -502,7 +617,8 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x32,
         "make_callback",
         &[OperandKind::Reloc, OperandKind::Immediate],
-        &[declared_effect("captureCount")],
+        &[OperandRole::CallbackTarget, OperandRole::CaptureCount],
+        &[declared_effect(OperandRole::CaptureCount)],
         &[fixed_effect(1)],
         &[RelocationKind::SyntheticCallbackRef],
     ),
@@ -515,7 +631,12 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Immediate,
             OperandKind::Immediate,
         ],
-        &[fixed_effect(1), declared_effect("argCount")],
+        &[
+            OperandRole::InterfaceTarget,
+            OperandRole::MethodOrdinal,
+            OperandRole::ArgCount,
+        ],
+        &[fixed_effect(1), declared_effect(OperandRole::ArgCount)],
         &[],
         &[RelocationKind::InterfaceRequirementRef],
     ),
@@ -525,7 +646,8 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x40,
         "new_record",
         &[OperandKind::Pool, OperandKind::Immediate],
-        &[declared_effect("fieldCount")],
+        &[OperandRole::ShapeRef, OperandRole::FieldCount],
+        &[declared_effect(OperandRole::FieldCount)],
         &[fixed_effect(1)],
         &[],
     ),
@@ -534,6 +656,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x41,
         "get_dense_field",
         &[OperandKind::Pool, OperandKind::Immediate],
+        &[OperandRole::ShapeRef, OperandRole::FieldOrdinal],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
         &[],
@@ -543,6 +666,11 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x42,
         "set_writable_path",
         &[OperandKind::Slot, OperandKind::Pool, OperandKind::Immediate],
+        &[
+            OperandRole::Slot,
+            OperandRole::ShapeRef,
+            OperandRole::FieldOrdinal,
+        ],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -552,6 +680,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x43,
         "representation_wrap",
         &[OperandKind::Pool],
+        &[OperandRole::TypeRef],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
         &[],
@@ -562,6 +691,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x50,
         "new_array_builder",
         &[OperandKind::Pool],
+        &[OperandRole::ElementTypeRef],
         &[],
         &[fixed_effect(1)],
         &[],
@@ -570,6 +700,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::ArrayBuilderPush,
         0x51,
         "array_builder_push",
+        &[],
         &[],
         &[fixed_effect(2)],
         &[fixed_effect(1)],
@@ -580,6 +711,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x52,
         "freeze_array",
         &[],
+        &[],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
         &[],
@@ -588,6 +720,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::ArrayGet,
         0x53,
         "array_get",
+        &[],
         &[],
         &[fixed_effect(2)],
         &[fixed_effect(1)],
@@ -598,6 +731,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x54,
         "array_push_owned",
         &[OperandKind::Slot],
+        &[OperandRole::Slot],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -607,6 +741,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x55,
         "new_map_builder",
         &[OperandKind::Pool, OperandKind::Pool],
+        &[OperandRole::KeyTypeRef, OperandRole::ValueTypeRef],
         &[],
         &[fixed_effect(1)],
         &[],
@@ -615,6 +750,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::MapBuilderPut,
         0x56,
         "map_builder_put",
+        &[],
         &[],
         &[fixed_effect(3)],
         &[fixed_effect(1)],
@@ -625,6 +761,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x57,
         "freeze_map",
         &[],
+        &[],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
         &[],
@@ -633,6 +770,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::MapGet,
         0x58,
         "map_get",
+        &[],
         &[],
         &[fixed_effect(2)],
         &[fixed_effect(1)],
@@ -643,6 +781,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x59,
         "map_put_owned",
         &[OperandKind::Slot],
+        &[OperandRole::Slot],
         &[fixed_effect(2)],
         &[],
         &[],
@@ -653,6 +792,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x60,
         "stream_next",
         &[OperandKind::Slot, OperandKind::Pool],
+        &[OperandRole::Slot, OperandRole::ResumeRef],
         &[],
         &[fixed_effect(1)],
         &[],
@@ -662,6 +802,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x61,
         "emit_stream",
         &[OperandKind::Pool],
+        &[OperandRole::ResumeRef],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -672,16 +813,18 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x70,
         "throw",
         &[OperandKind::Pool],
+        &[OperandRole::TypeRef],
         &[fixed_effect(1)],
         &[],
         &[],
     ),
-    descriptor(Opcode::Rethrow, 0x71, "rethrow", &[], &[], &[], &[]),
+    descriptor(Opcode::Rethrow, 0x71, "rethrow", &[], &[], &[], &[], &[]),
     descriptor(
         Opcode::EnterRegion,
         0x72,
         "enter_region",
         &[OperandKind::Table],
+        &[OperandRole::Region],
         &[],
         &[],
         &[],
@@ -691,6 +834,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x73,
         "leave_region",
         &[OperandKind::Table],
+        &[OperandRole::Region],
         &[],
         &[],
         &[],
@@ -705,7 +849,12 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Immediate,
             OperandKind::Pool,
         ],
-        &[declared_effect("argCount")],
+        &[
+            OperandRole::HostTarget,
+            OperandRole::ArgCount,
+            OperandRole::ResumeRef,
+        ],
+        &[declared_effect(OperandRole::ArgCount)],
         &[fixed_effect(1)],
         &[RelocationKind::HostEffectRef],
     ),
@@ -716,15 +865,21 @@ const fn descriptor(
     opcode: u8,
     mnemonic: &'static str,
     operand_layout: &'static [OperandKind],
+    operand_roles: &'static [OperandRole],
     stack_in: &'static [StackEffect],
     stack_out: &'static [StackEffect],
     allowed_relocations: &'static [RelocationKind],
 ) -> OpcodeDescriptor {
+    assert!(
+        operand_layout.len() == operand_roles.len(),
+        "operand layout and role lengths must match"
+    );
     OpcodeDescriptor {
         kind,
         opcode,
         mnemonic,
         operand_layout,
+        operand_roles,
         stack_in,
         stack_out,
         allowed_relocations,
@@ -733,11 +888,16 @@ const fn descriptor(
 
 /// Looks up the descriptor for a numeric opcode. Returns `None` for `0xFF`
 /// (permanent invalid sentinel) and any unknown value.
-pub fn opcode_for(value: u8) -> Option<&'static OpcodeDescriptor> {
-    OPCODE_TABLE
-        .binary_search_by_key(&value, |descriptor| descriptor.opcode)
-        .ok()
-        .map(|index| &OPCODE_TABLE[index])
+pub const fn opcode_for(value: u8) -> Option<&'static OpcodeDescriptor> {
+    let mut index = 0;
+    while index < OPCODE_TABLE.len() {
+        let descriptor = &OPCODE_TABLE[index];
+        if descriptor.opcode == value {
+            return Some(descriptor);
+        }
+        index += 1;
+    }
+    None
 }
 
 /// Resolves a numeric opcode to its semantic identity through the canonical
@@ -746,11 +906,20 @@ pub fn opcode_kind(encoded: u8) -> Option<Opcode> {
     opcode_for(encoded).map(|descriptor| descriptor.kind)
 }
 
+/// Returns the canonical descriptor for a semantic opcode.
+pub fn descriptor_for_opcode(kind: Opcode) -> &'static OpcodeDescriptor {
+    OPCODE_TABLE
+        .iter()
+        .find(|descriptor| descriptor.kind == kind)
+        .expect("every semantic Opcode has one canonical descriptor")
+}
+
 /// Fingerprint of the table projection (D12):
-/// sha256(canonical JSON of `[{kind, opcode, mnemonic, operandKinds, stackIn,
-/// stackOut, relocKinds}]`). Every artifact carries it and validation compares
-/// it against the compile-time built-in (C1); combined with the ISA version
-/// string this is the double check that artifact and reader share one table.
+/// sha256(canonical JSON of `[{kind, opcode, mnemonic, operandKinds,
+/// operandRoles, stackIn, stackOut, relocKinds}]`). Every artifact carries it
+/// and validation compares it against the compile-time built-in (C1); combined
+/// with the ISA version string this is the double check that artifact and
+/// reader share one table.
 pub fn opcode_table_fingerprint() -> String {
     let projection: Vec<TableProjectionEntry> = OPCODE_TABLE
         .iter()
@@ -763,6 +932,7 @@ pub fn opcode_table_fingerprint() -> String {
                 .iter()
                 .map(|kind| kind.name())
                 .collect(),
+            operand_roles: descriptor.operand_roles,
             stack_in: descriptor
                 .stack_in
                 .iter()
@@ -794,27 +964,28 @@ struct TableProjectionEntry<'a> {
     opcode: u8,
     mnemonic: &'a str,
     operand_kinds: Vec<&'a str>,
-    stack_in: Vec<StackEffectProjection<'a>>,
-    stack_out: Vec<StackEffectProjection<'a>>,
+    operand_roles: &'a [OperandRole],
+    stack_in: Vec<StackEffectProjection>,
+    stack_out: Vec<StackEffectProjection>,
     reloc_kinds: Vec<&'a str>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StackEffectProjection<'a> {
-    arity: ArityProjection<'a>,
+struct StackEffectProjection {
+    arity: ArityProjection,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-enum ArityProjection<'a> {
+enum ArityProjection {
     Fixed { value: u16 },
-    Declared { operand: &'a str },
+    Declared { operand: OperandRole },
     FunctionResultCount,
 }
 
-impl<'a> From<&'a StackEffect> for StackEffectProjection<'a> {
-    fn from(effect: &'a StackEffect) -> Self {
+impl From<&StackEffect> for StackEffectProjection {
+    fn from(effect: &StackEffect) -> Self {
         Self {
             arity: match effect.arity {
                 Arity::Fixed(value) => ArityProjection::Fixed { value },
