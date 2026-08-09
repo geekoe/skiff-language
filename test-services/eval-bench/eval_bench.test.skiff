@@ -25,7 +25,7 @@ function benchSumTail(remaining: number, accumulator: number) -> number {
 }
 
 function benchArraySum(size: number) -> number {
-  let items = Array.empty<number>()
+  var items = Array.empty<number>()
   var i = 0
   while i < size {
     items.push(i)
