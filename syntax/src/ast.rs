@@ -1033,6 +1033,10 @@ pub enum Expr {
         object: Box<Expr>,
         field: String,
     },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
     Record {
         type_name: String,
         #[serde(default)]

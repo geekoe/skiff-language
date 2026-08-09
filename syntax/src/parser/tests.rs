@@ -11,6 +11,7 @@ use super::{
 
 mod binary_precedence;
 mod dispatch;
+mod index_expressions;
 mod parse_output_carrier;
 mod span_sensitive;
 mod tolerant_recovery;
@@ -1415,7 +1416,10 @@ fn parses_throw_rethrow_and_catch_expressions() {
     let crate::ast::Expr::Call { args, .. } = try_expr.as_ref() else {
         panic!("expected catch try call expression");
     };
-    assert!(matches!(args.first(), Some(crate::ast::CallArg::Value(crate::ast::Expr::Throw { .. }))));
+    assert!(matches!(
+        args.first(),
+        Some(crate::ast::CallArg::Value(crate::ast::Expr::Throw { .. }))
+    ));
 
     assert!(matches!(statements[1], crate::ast::Stmt::Rethrow { .. }));
 }
@@ -3336,18 +3340,24 @@ fn parses_let_and_var_local_bindings_with_kinds() {
 fn rejects_local_const_and_top_level_let_var() {
     let error = parse_source("function run() -> void {\n  const x = 1\n}\n").unwrap_err();
     assert!(
-        error.to_string().contains("local const is not syntax; use let or var"),
+        error
+            .to_string()
+            .contains("local const is not syntax; use let or var"),
         "got {error:?}"
     );
 
     let error = parse_source("let x = 1\n").unwrap_err();
     assert!(
-        error.to_string().contains("let/var are only allowed inside blocks"),
+        error
+            .to_string()
+            .contains("let/var are only allowed inside blocks"),
         "got {error:?}"
     );
     let error = parse_source("var x = 1\n").unwrap_err();
     assert!(
-        error.to_string().contains("let/var are only allowed inside blocks"),
+        error
+            .to_string()
+            .contains("let/var are only allowed inside blocks"),
         "got {error:?}"
     );
 

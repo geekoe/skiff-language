@@ -126,6 +126,23 @@ impl Parser {
                 );
                 continue;
             }
+            if self.match_symbol("[") {
+                let index = self.parse_slot_expression()?;
+                self.expect_symbol("]")?;
+                let span = SourceSpan {
+                    start: expr.spans.span.start,
+                    end: self.previous().span.end,
+                };
+                expr = ParsedExpr::new(
+                    Expr::Index {
+                        object: Box::new(expr.expr),
+                        index: Box::new(index.expr),
+                    },
+                    span,
+                    vec![expr.spans, index.spans],
+                );
+                continue;
+            }
             if self.check_symbol("<") && self.looks_like_generic_call_suffix() {
                 let type_args = self.parse_generic_args()?;
                 let span = SourceSpan {

@@ -248,6 +248,10 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
             visitor.visit_type_ref(interface);
         }
         Expr::Field { object, .. } => visitor.visit_expr(object),
+        Expr::Index { object, index } => {
+            visitor.visit_expr(object);
+            visitor.visit_expr(index);
+        }
         Expr::Record {
             type_args, fields, ..
         } => {
@@ -731,6 +735,10 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
             visitor.visit_type_ref(interface);
         }
         Expr::Field { object, .. } => visitor.visit_expr(object),
+        Expr::Index { object, index } => {
+            visitor.visit_expr(object);
+            visitor.visit_expr(index);
+        }
         Expr::Record {
             type_args, fields, ..
         } => {
@@ -891,7 +899,9 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
         }
         Expr::Call { callee, args } => {
             expr_contains_with(callee, predicate)
-                || args.iter().any(|arg| expr_contains_with(arg.expr(), predicate))
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_with(arg.expr(), predicate))
         }
         Expr::Dispatch { call, timing } => {
             expr_contains_with(call, predicate)
@@ -904,6 +914,9 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
         Expr::Generic { callee, .. } => expr_contains_with(callee, predicate),
         Expr::InterfaceBox { value, .. } => expr_contains_with(value, predicate),
         Expr::Field { object, .. } => expr_contains_with(object, predicate),
+        Expr::Index { object, index } => {
+            expr_contains_with(object, predicate) || expr_contains_with(index, predicate)
+        }
         Expr::Record { fields, .. } => fields
             .iter()
             .any(|(_, value)| expr_contains_with(value, predicate)),
@@ -1430,6 +1443,10 @@ fn collect_expr_type_ref_dotted_root_imports(
         }
         Expr::Unary { expr, .. } | Expr::Field { object: expr, .. } => {
             collect_expr_type_ref_dotted_root_imports(expr, root, imports);
+        }
+        Expr::Index { object, index } => {
+            collect_expr_type_ref_dotted_root_imports(object, root, imports);
+            collect_expr_type_ref_dotted_root_imports(index, root, imports);
         }
         Expr::Call { callee, args } => {
             collect_expr_type_ref_dotted_root_imports(callee, root, imports);

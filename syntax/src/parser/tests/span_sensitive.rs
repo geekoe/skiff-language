@@ -118,6 +118,39 @@ db object Message {
 }
 
 #[test]
+fn index_source_spans_visit_object_before_selector() {
+    let source = r#"function read(
+  items: Array<number>,
+  selectors: Map<string, integer>,
+  key: string,
+) -> number {
+  return items[selectors[key]].value
+}
+"#;
+    let ast = parse_source(source).unwrap();
+    let expression = &ast.source_spans.functions[0].body.statements[0].expressions[0];
+
+    assert_eq!(
+        slice(source, &expression.span),
+        "items[selectors[key]].value"
+    );
+    let [indexed_object] = expression.children.as_slice() else {
+        panic!("expected field object span");
+    };
+    assert_eq!(slice(source, &indexed_object.span), "items[selectors[key]]");
+    let [items, selector] = indexed_object.children.as_slice() else {
+        panic!("expected index object and selector spans");
+    };
+    assert_eq!(slice(source, &items.span), "items");
+    assert_eq!(slice(source, &selector.span), "selectors[key]");
+    let [selectors, key] = selector.children.as_slice() else {
+        panic!("expected nested index object and selector spans");
+    };
+    assert_eq!(slice(source, &selectors.span), "selectors");
+    assert_eq!(slice(source, &key.span), "key");
+}
+
+#[test]
 fn test_default_run_span_is_collected_locally_and_skipped_by_serde() {
     let source = "test defaultRun false";
     let ast = parse_source(source).unwrap();

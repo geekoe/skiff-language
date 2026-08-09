@@ -35,6 +35,70 @@ fn block_contains_expr_traverses_nested_blocks() {
 }
 
 #[test]
+fn index_walkers_visit_object_before_selector_and_reach_both_children() {
+    #[derive(Default)]
+    struct Names(Vec<String>);
+
+    impl AstVisitor for Names {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Identifier(name) = expr {
+                self.0.push(name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut expression = Expr::Index {
+        object: Box::new(Expr::Identifier("object".to_string())),
+        index: Box::new(Expr::Identifier("selector".to_string())),
+    };
+    let mut names = Names::default();
+    names.visit_expr(&expression);
+    assert_eq!(names.0, ["object", "selector"]);
+    assert!(expr_contains(&expression, |expr| {
+        matches!(expr, Expr::Identifier(name) if name == "selector")
+    }));
+
+    struct Rename;
+
+    impl AstVisitorMut for Rename {
+        fn visit_expr(&mut self, expr: &mut Expr) {
+            if let Expr::Identifier(name) = expr {
+                name.push_str("_seen");
+            } else {
+                walk_expr_mut(self, expr);
+            }
+        }
+    }
+
+    Rename.visit_expr(&mut expression);
+    let Expr::Index { object, index } = expression else {
+        panic!("expected index expression");
+    };
+    assert!(matches!(object.as_ref(), Expr::Identifier(name) if name == "object_seen"));
+    assert!(matches!(index.as_ref(), Expr::Identifier(name) if name == "selector_seen"));
+}
+
+#[test]
+fn dotted_root_collection_reaches_index_selectors() {
+    let source = crate::parser::parse_source(
+        r#"
+function read(values: Map<string, string>) -> string {
+  return values[root.keys.primary]
+}
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        source_referenced_dotted_root_expression_imports(&source, "root"),
+        [vec!["root".to_string(), "keys".to_string()]]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[test]
 fn pattern_contains_traverses_nested_patterns() {
     let pattern = Pattern::Nominal {
         name: "Root".to_string(),
