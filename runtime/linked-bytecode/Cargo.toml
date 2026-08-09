@@ -1,0 +1,11 @@
+[package]
+name = "skiff-runtime-linked-bytecode"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+skiff-artifact-model = { path = "../../artifact-model" }
+
+[lints]
+workspace = true
