@@ -132,7 +132,7 @@ fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
 #[test]
 fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     let value = json!({
-        "schemaVersion": "skiff-package-artifact-v12",
+        "schemaVersion": "skiff-package-artifact-v13",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
@@ -146,6 +146,8 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "syntheticCallbackOwners": [],
+        "bytecodeSchemaRecords": {},
         "actorImplementations": [],
         "localInterfaceConformances": [],
         "packageRequirements": [],
@@ -216,7 +218,12 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         .remove("serviceCallRefs");
     assert!(serde_json::from_value::<PackageArtifact>(missing_service_call_refs).is_err());
 
-    for field in ["actorImplementations", "localInterfaceConformances"] {
+    for field in [
+        "syntheticCallbackOwners",
+        "bytecodeSchemaRecords",
+        "actorImplementations",
+        "localInterfaceConformances",
+    ] {
         let mut missing = value.clone();
         missing.as_object_mut().unwrap().remove(field);
         assert!(
@@ -305,7 +312,7 @@ fn package_build_authority_vectors_reject_duplicate_or_noncanonical_rows() {
     ] {
         let wire = serde_json::to_value(rows).unwrap();
         let wrapper = json!({
-            "schemaVersion": "skiff-package-artifact-v12",
+            "schemaVersion": "skiff-package-artifact-v13",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",
@@ -319,6 +326,8 @@ fn package_build_authority_vectors_reject_duplicate_or_noncanonical_rows() {
             "packageSchemaTypeRecords": {},
             "implementationLinks": {},
             "callableLinks": {},
+            "syntheticCallbackOwners": [],
+            "bytecodeSchemaRecords": {},
             "actorImplementations": wire,
             "localInterfaceConformances": [],
             "packageRequirements": [],
@@ -344,7 +353,7 @@ fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
         })
     };
     let base = json!({
-        "schemaVersion": "skiff-package-artifact-v12",
+        "schemaVersion": "skiff-package-artifact-v13",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
@@ -358,6 +367,8 @@ fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "syntheticCallbackOwners": [],
+        "bytecodeSchemaRecords": {},
         "actorImplementations": [],
         "localInterfaceConformances": [],
         "packageRequirements": [],
@@ -383,3 +394,5 @@ fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
     let decoded: PackageArtifact = serde_json::from_value(canonical.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
 }
+
+mod authority;

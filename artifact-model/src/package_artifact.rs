@@ -14,7 +14,9 @@ use crate::{
         ContractRequirement, PackageRequirement, PackageRuntimeRequirements, ServiceCallRef,
         ServiceRequirement,
     },
-    contract_types::{PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PackageTypeRef},
+    contract_types::{
+        PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageTypeRef,
+    },
     executable::ParamModeIr,
     executable_target::OperationTargetRef,
     package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
@@ -23,6 +25,22 @@ use crate::{
     resources::PublicationResourceRef,
     symbols::ServiceSymbolRef,
     types::{TypeDescriptorIr, TypeRefIr},
+};
+
+mod authority;
+mod schema_records;
+
+pub use authority::{
+    derive_synthetic_callback_callable_id, validate_package_build_authority,
+    PackageBuildAuthorityValidationError, PackageSyntheticCallbackOwner,
+    MAX_PACKAGE_SYNTHETIC_CALLBACK_OWNERS, PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_PREFIX,
+    PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_SCHEMA_MARKER,
+};
+pub use schema_records::{
+    derive_package_schema_type_id, validate_bytecode_schema_records,
+    MAX_BYTECODE_SCHEMA_CANONICAL_BYTES, MAX_BYTECODE_SCHEMA_DEPTH, MAX_BYTECODE_SCHEMA_RECORDS,
+    MAX_BYTECODE_SCHEMA_STRING_BYTES, MAX_BYTECODE_SCHEMA_TYPE_NODES,
+    PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX, PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -233,6 +251,17 @@ pub struct PackageArtifact {
     pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     pub implementation_links: PackageImplementationLinks,
     pub callable_links: BTreeMap<PackageCallableId, PackageCallableLinkFact>,
+    /// Canonical synthetic callback owners. The owning ordinary executable is
+    /// path-free; the canonical callable id is derived from its exact
+    /// implementation callable id plus `siteOrdinal`.
+    #[serde(deserialize_with = "authority::deserialize_synthetic_callback_owners")]
+    pub synthetic_callback_owners: Vec<PackageSyntheticCallbackOwner>,
+    /// Owner-local PackageSchema descriptor closure used only by linked
+    /// bytecode. Cross-package children remain references and are hydrated
+    /// from the target owner's PackageArtifact. Required even when empty and
+    /// included in PackageBuild identity, never PackageLocalAbi identity.
+    #[serde(deserialize_with = "schema_records::deserialize_bytecode_schema_records")]
+    pub bytecode_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     #[serde(deserialize_with = "deserialize_canonical_actor_implementations")]
     pub actor_implementations: Vec<PackageActorImplementation>,
     #[serde(deserialize_with = "deserialize_canonical_local_interface_conformances")]

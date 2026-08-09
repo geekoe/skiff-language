@@ -187,9 +187,18 @@ pub use native_value_lifecycle::{
     NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
 };
 pub use package_artifact::{
-    PackageActorAbi, PackageActorCreateBinding, PackageActorImplementation, PackageArtifact,
-    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature, PackageLocalAbi,
-    PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
+    derive_package_schema_type_id, derive_synthetic_callback_callable_id,
+    validate_bytecode_schema_records, validate_package_build_authority, PackageActorAbi,
+    PackageActorCreateBinding, PackageActorImplementation, PackageArtifact,
+    PackageBuildAuthorityValidationError, PackageCallableLinkFact, PackageCallableParameter,
+    PackageCallableSignature, PackageLocalAbi, PackageLocalAbiSymbol,
+    PackageLocalInterfaceConformance, PackageSyntheticCallbackOwner,
+    MAX_BYTECODE_SCHEMA_CANONICAL_BYTES, MAX_BYTECODE_SCHEMA_DEPTH, MAX_BYTECODE_SCHEMA_RECORDS,
+    MAX_BYTECODE_SCHEMA_STRING_BYTES, MAX_BYTECODE_SCHEMA_TYPE_NODES,
+    MAX_PACKAGE_SYNTHETIC_CALLBACK_OWNERS, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
+    PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_PREFIX,
+    PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_SCHEMA_MARKER,
 };
 pub use package_unit::{
     ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,
