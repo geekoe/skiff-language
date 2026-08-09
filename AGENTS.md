@@ -25,6 +25,12 @@ Skiff 是面向后端服务的语言和 runtime stack。这个仓库包含语言
 
 ## 本地开发（每进程独立运行目录）
 
+> **稳定 dev profiler 约定**：`.skiff-dev/runtime/runtime.yml` 的 `profile.enabled` 必须保持
+> `false`。开启后（pprof 1000Hz）会导致稳定栈 chat/host-tools 全断（dispatchThreadActorTickUnsafe
+> 失败循环、模型调用不发起；Phase 1 evidence 记录，见
+> `doc/implementation/bytecode-vm/results/phase-1.md` residual 1）。需要 profiling 时用隔离
+> 实例（独立 run dir / harness），不要改稳定 dev 配置。
+
 开发 compiler、runtime 或 router 时，进程由各自的 run dir 管理；`instance` 与
 `stack build` 编排已移除：
 

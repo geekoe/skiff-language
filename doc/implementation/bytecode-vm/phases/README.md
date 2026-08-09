@@ -168,6 +168,29 @@ Verdict
 
 不得把不同 commits、不同 artifact roots 或修复前后的日志拼成一次阶段 PASS。
 
+## 5.5 阶段执行流程要求（Phase 1 复盘沉淀）
+
+以下要求来自 Phase 0/1 实际踩坑，各阶段实施与 Live 验收必须遵守：
+
+1. **Live 前置基线健康检查**：跑隔离 Live 前，先在稳定 dev 上跑一次 `npm run e2e:chat-smoke`（约 1 分钟）确认基线健康。
+   基线坏（模型不响应、chat 卡住）时先修环境，不要直接跑隔离 Live——否则 Live 失败难以判别是候选问题还是环境问题。
+   Phase 1 的稳定栈故障（dev profiler 开启导致 chat 全断）就是靠这条才快速定位的。
+2. **host-tools 失败先重跑判别**：strict full host-tools 依赖真实 LLM，存在模型行为波动（同候选一次 46 次工具调用空回复、
+   一次 10 次调用正常）。失败时先在**同一候选**重跑一次判别，不要直接深挖日志/链路。
+3. **改 public 结构（字段/序列化）前先全局审计**：先 `rg "TypeName {"` 全仓找构造点，再用
+   `cargo check --workspace --all-targets` 一次暴露全部编译错误；批量脚本改代码前先验证匹配规则
+   （负向后行断言排除复合类型名与函数签名，`-> TypeName {` 不匹配），并抽查 diff 后再提交。
+   Phase 1 的 `PackageArtifact.bytecode` 接线有 36 处构造点，脚本曾两次误伤无关类型。
+4. **共享 cargo target 陷阱**：多 worktree 共用 `~/.skiff-cargo-target`，cargo 对 fingerprint 相同的源码复用
+   编译产物，`env!("CARGO_MANIFEST_DIR")` 会指向**最近编译该 crate 的 worktree**。任何"写文件"类操作
+   （如 `UPDATE_*` 重生成 fixture）执行前确认目标文件在预期 worktree。
+5. **工兵任务原子化**：派发的实现任务必须有界、可独立提交（单文件集、自验证）；任务被中止后立即派收尾工兵，
+   不要留半成品工作区。
+6. **诊断先确认数据源**：telemetry 可能走 4002（存 `skiff_telemetry` 库）、旧 JSONL 落盘或 mongo 加密存储
+   （`mongosh` 直读只见 `_id`）；诊断前先确认事件实际写入哪，避免看错日志。
+7. **稳定 dev profiler 约定**：稳定 `runtime.yml` 的 `profile.enabled` 必须保持 `false`（见 skiff `AGENTS.md`
+   "本地开发"节）；需要 profiling 时用隔离实例，不在稳定 dev 上开启。
+
 ## 6. Migration-only 双路径规则
 
 Phase 2–8 可以存在迁移期旧路径，但必须满足：
