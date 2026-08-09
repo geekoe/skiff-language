@@ -157,7 +157,7 @@ function sequentialValue() -> string {
             PACKAGE_ARTIFACT_SCHEMA_VERSION,
             "skiff-package-artifact-v11"
         );
-        assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v5");
+        assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v6");
         assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
     }
 
