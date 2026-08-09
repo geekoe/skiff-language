@@ -268,22 +268,43 @@ bytecode 生成证明。
 
 ## 6. 工兵任务包（DAG 与写界）
 
+> 执行方式（用户已确认，2026-08-09）：不用 worktree/分支，直接在 main 上开发；**一 crate 一工兵**，
+> 跨 crate 接口先在设计文档冻结（§2 契约），工兵按契约实现并以 `cargo test -p <自己crate>` 自我验收；
+> 主 agent 合流时跑 `cargo check --workspace` 验证跨 crate 接口。同 crate 内多工兵按文件界拆分，
+> `lib.rs`/`mod` 接线归主 agent。cargo 全局串行（共享 target 锁），禁 clean。
+
 ```text
-Wave 1: WP1 语法(语法仓 syntax/**, 与 WP2 并行) ‖ WP2 effects(artifact-model effects/executable.rs 之外的
-        effects.rs + compiler/source/callable_effects/** + contract_type_resolution + projection boundary
-        eligibility/requirements + artifact-model boundary validation + 相关测试)
-Wave 2: WP3 binding 语义(compiler/source: writable_places/inout/narrowing/const purity + lowering
-        function_lowering 检查 + projection inout gate + CallIr.inout_args)  [依赖 WP1]
-Wave 3: WP4 MIR + File IR 增量(compiler/lowering/src/mir/** + executable.rs/function_lowering 记录 types)  [依赖 WP3]
-Wave 4: WP5 const evaluator(compiler/lowering/src/const_evaluator.rs) ‖ WP6 emitter + pipeline
-        (compiler/emission/src/bytecode/** + driver pipeline + CLI + emission Cargo.toml + 依赖)  [WP6 依赖 WP4/WP5 接口]
-Wave 5: WP7 三仓迁移（三个工兵：internals / skiff-packages / skiff 仓内 fixtures）  [依赖 WP1/WP3 合流后的 compiler]
-Wave 6: WP8 证明与测试（确定性/golden/负例/closure manifest bytecode-verify）
-Wave 7: WP9 rebuild + router-live:agine + results 文档
+Wave 1 ✅（已合入 main）：WP1 语法(46bcddf9,d19ef3bc) ‖ WP2 effects(8bb53b04,ff38c31e,d99e254f,791cbb59)
+Wave 2 ✅（已合入 main）：WP3 binding 语义(fe4854c7,bb755531)  [依赖 WP1]
+Wave 3（并行 5 工兵，写界完全分离）：
+  WP4  MIR + File IR 增量字段（crate: compiler/lowering）
+       写界：artifact-model/src/executable.rs(SlotIr.ty/expression_types/statement_spans) +
+             compiler/lowering/src/mir/** + function_lowering 类型/span 记录 + lowered.rs 携带 mir_units
+       自验收：cargo test -p skiff-artifact-model -p skiff-compiler-lowering
+  WP5  const evaluator（crate: compiler/lowering，文件界：src/const_evaluator.rs，不碰 mir/** 与 lib.rs）
+       写界：compiler/lowering/src/const_evaluator.rs + 其测试；lib.rs 接线归主 agent
+       自验收：cargo test -p skiff-compiler-lowering（const 测试）
+  WP7a 迁移 internals（仓库：/Users/geek/workspace/internals，写界：全部 .skiff 源码）
+  WP7b 迁移 skiff-packages（仓库：/Users/geek/workspace/skiff-packages）
+  WP7c 迁移 skiff 仓内剩余 fixtures（写界：test-runner/fixtures/**, runtime/** live fixtures,
+        compiler/tests 未迁移部分；std/prelude 无 binding）
+       自验收（WP7x 共用）：隔离 artifact root 上按依赖序 skiff package publish 至零错误
+Wave 4：
+  WP6  emitter（crate: compiler/emission + compiler/driver + compiler/compiled）
+       写界：compiler/emission/src/bytecode/** + Cargo.toml(新依赖 lowering) + driver pipeline/CLI(--emit-bytecode
+       /bytecode-verify) + compiled projection_input(bytecode 标志透传) + emission 测试
+       依赖接口：§2.4 MirUnit/§2.5 const graph/§2.6 emitter 入口（WP4/WP5 合流后启动）
+       自验收：cargo test -p skiff-compiler-emission；合流后 cargo test -p skiff-compiler
+  WP8  证明与测试（确定性/golden/负例/closure manifest bytecode-verify）[依赖 WP6]
+Wave 5：
+  WP9  rebuild + router-live:agine（legacy lane）+ 隔离 Agine bytecode 生成证明 + results 文档
 ```
 
-- 写界纪律：同一文件只允许一个工兵写；cargo 串行（共享 target 锁，排队执行）；工兵完成任务即提交
-  （里程碑点），不合并他人未提交改动；涉及设计/契约发现一律上报，不自行扩大。
+- 写界纪律：同一文件只允许一个工兵写；工兵提交前 `git status` 核对；涉及设计/契约发现一律上报。
+- 三仓迁移规则（WP7x）：规则 1 机械脚本（block 内 `const`→`let`，顶层保留）；规则 2 编译器驱动
+  （"cannot assign to immutable binding"/"cannot mutate through immutable binding"/writable-place
+  错误 → 该 binding 改 `var`）；迁移不引入 inout 用法；隔离 artifact root 按依赖序
+  `node scripts/skiff.mjs package publish <root> --artifact-root <tmp> --profile dev` 迭代至零错误。
 - 返回格式统一：`{完成了什么, 意外点, 尝试过什么, 需要什么}`。
 
 ## 7. 风险与残余（Phase 3 承接）
