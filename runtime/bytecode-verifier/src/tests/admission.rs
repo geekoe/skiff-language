@@ -12,8 +12,8 @@ use skiff_artifact_model::{
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    BytecodePackageIndex, LinkedBytecodeCandidate, LinkedBytecodeCandidateParts,
-    LinkedPackageBytecodeProvenance,
+    BytecodePackageIndex, CandidateTable, LinkedBytecodeAuthorityPins, LinkedBytecodeCandidate,
+    LinkedBytecodeCandidateParts, LinkedPackageBytecodeProvenance,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
@@ -30,6 +30,14 @@ struct ExactResolver {
     contract: Arc<ServiceContract>,
     package: Arc<PackageArtifact>,
     bytecode: Arc<ValidatedBytecodeArtifact>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AuthorityPinCorruption {
+    NativeValueLifecycleRegistry,
+    ValueLifecyclePolicy,
+    HostEffectRegistry,
+    IntrinsicRegistry,
 }
 
 impl DeploymentBytecodeContentResolver for ExactResolver {
@@ -104,6 +112,9 @@ fn empty_bytecode() -> Arc<ValidatedBytecodeArtifact> {
         opcode_table_fingerprint: opcode_table_fingerprint(),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::new(),
@@ -181,6 +192,14 @@ fn candidate_for(
     hydrated: &HydratedDeploymentBytecode,
     schema_override: Option<&str>,
 ) -> LinkedBytecodeCandidate {
+    candidate_for_with_authority_corruption(hydrated, schema_override, None)
+}
+
+fn candidate_for_with_authority_corruption(
+    hydrated: &HydratedDeploymentBytecode,
+    schema_override: Option<&str>,
+    authority_corruption: Option<AuthorityPinCorruption>,
+) -> LinkedBytecodeCandidate {
     let packages = hydrated
         .packages()
         .values()
@@ -189,6 +208,25 @@ fn candidate_for(
             let index = u32::try_from(index).unwrap();
             let artifact = package.bytecode().artifact();
             let view = package.bytecode().view();
+            let mut native_registry = view.native_value_lifecycle_registry().clone();
+            let mut policy = view.value_lifecycle_policy().clone();
+            let mut host_registry = view.host_effect_registry().clone();
+            let mut intrinsic_registry = view.intrinsic_registry().clone();
+            match authority_corruption {
+                Some(AuthorityPinCorruption::NativeValueLifecycleRegistry) => {
+                    native_registry.fingerprint.push_str(":corrupt");
+                }
+                Some(AuthorityPinCorruption::ValueLifecyclePolicy) => {
+                    policy.fingerprint.push_str(":corrupt");
+                }
+                Some(AuthorityPinCorruption::HostEffectRegistry) => {
+                    host_registry.fingerprint.push_str(":corrupt");
+                }
+                Some(AuthorityPinCorruption::IntrinsicRegistry) => {
+                    intrinsic_registry.fingerprint.push_str(":corrupt");
+                }
+                None => {}
+            }
             LinkedPackageBytecodeProvenance::new(
                 BytecodePackageIndex::new(index),
                 package.reference().package_build_id.clone(),
@@ -198,7 +236,13 @@ fn candidate_for(
                 schema_override.unwrap_or_else(|| view.schema_version()),
                 view.isa_version(),
                 view.opcode_table_fingerprint(),
-                view.native_value_lifecycle_registry().clone(),
+                LinkedBytecodeAuthorityPins::new(
+                    native_registry,
+                    policy,
+                    host_registry,
+                    intrinsic_registry,
+                )
+                .unwrap(),
             )
             .unwrap()
         })
@@ -317,6 +361,70 @@ fn corrupt_candidate_schema_pin_is_rejected() {
             ..
         }
     ));
+}
+
+fn assert_authority_pin_corruption_is_rejected_before_p2(
+    corruption: AuthorityPinCorruption,
+    authority: &str,
+) {
+    let hydrated = exact_hydration();
+    let candidate = candidate_for_with_authority_corruption(&hydrated, None, Some(corruption));
+    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+
+    let (obligation, location, detail) = match error {
+        VerificationError::SemanticViolation {
+            obligation,
+            location,
+            detail,
+        } => (obligation, location, detail),
+        other => {
+            panic!("corrupt {authority} pin reached P2 instead of failing P1: {other:?}")
+        }
+    };
+    assert_eq!(obligation, VerificationObligation::ExactHydrationBinding);
+    assert_eq!(
+        location,
+        VerificationLocation::Table {
+            table: CandidateTable::Packages,
+            row: 0,
+        }
+    );
+    assert!(
+        detail.contains(authority),
+        "P1 rejection did not identify the corrupt {authority} pin: {detail}"
+    );
+}
+
+#[test]
+fn corrupt_native_value_lifecycle_registry_pin_is_rejected_before_p2() {
+    assert_authority_pin_corruption_is_rejected_before_p2(
+        AuthorityPinCorruption::NativeValueLifecycleRegistry,
+        "native value lifecycle registry",
+    );
+}
+
+#[test]
+fn corrupt_value_lifecycle_policy_pin_is_rejected_before_p2() {
+    assert_authority_pin_corruption_is_rejected_before_p2(
+        AuthorityPinCorruption::ValueLifecyclePolicy,
+        "value lifecycle policy",
+    );
+}
+
+#[test]
+fn corrupt_host_effect_registry_pin_is_rejected_before_p2() {
+    assert_authority_pin_corruption_is_rejected_before_p2(
+        AuthorityPinCorruption::HostEffectRegistry,
+        "host effect registry",
+    );
+}
+
+#[test]
+fn corrupt_intrinsic_registry_pin_is_rejected_before_p2() {
+    assert_authority_pin_corruption_is_rejected_before_p2(
+        AuthorityPinCorruption::IntrinsicRegistry,
+        "intrinsic registry",
+    );
 }
 
 #[test]

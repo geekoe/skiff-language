@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, native_value_lifecycle_registry_identity,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    bytecode::opcodes::opcode_table_fingerprint, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    value_lifecycle_policy_identity, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate};
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
@@ -84,10 +85,13 @@ fn prove_package_header(
     let artifact = admitted.artifact();
     let view = admitted.view();
     let expected_fingerprint = opcode_table_fingerprint();
-    let expected_registry = native_value_lifecycle_registry_identity();
+    let expected_native_registry = native_value_lifecycle_registry_identity();
+    let expected_policy = value_lifecycle_policy_identity();
+    let expected_host_registry = host_effect_registry_identity();
+    let expected_intrinsic_registry = intrinsic_registry_identity();
     let package_bytecode_ref = package.artifact().bytecode.as_ref();
 
-    let exact = candidate.artifact_ref() == admitted.reference()
+    let exact_header = candidate.artifact_ref() == admitted.reference()
         && package_bytecode_ref == Some(admitted.reference())
         && candidate.declared_bytecode_identity()
             == admitted.reference().bytecode_identity.as_str()
@@ -103,19 +107,52 @@ fn prove_package_header(
         && candidate.isa_version() == view.isa_version()
         && candidate.opcode_table_fingerprint() == expected_fingerprint.as_str()
         && candidate.opcode_table_fingerprint() == artifact.opcode_table_fingerprint.as_str()
-        && candidate.opcode_table_fingerprint() == view.opcode_table_fingerprint()
-        && candidate.lifecycle_registry() == expected_registry
-        && candidate.lifecycle_registry() == &artifact.native_value_lifecycle_registry
-        && candidate.lifecycle_registry() == view.native_value_lifecycle_registry();
-    if !exact {
+        && candidate.opcode_table_fingerprint() == view.opcode_table_fingerprint();
+    if !exact_header {
         return Err(semantic_violation(
             location,
             format!(
-                "package {} candidate header is not the exact admitted v4 header/reference",
+                "package {} candidate header is not the exact admitted v5 header/reference",
                 package.reference().package_build_id
             ),
         ));
     }
+    prove_authority_pin(
+        package.reference().package_build_id.as_str(),
+        "native value lifecycle registry",
+        candidate.authorities().native_value_lifecycle_registry(),
+        &artifact.native_value_lifecycle_registry,
+        view.native_value_lifecycle_registry(),
+        expected_native_registry,
+        location,
+    )?;
+    prove_authority_pin(
+        package.reference().package_build_id.as_str(),
+        "value lifecycle policy",
+        candidate.authorities().value_lifecycle_policy(),
+        &artifact.value_lifecycle_policy,
+        view.value_lifecycle_policy(),
+        expected_policy,
+        location,
+    )?;
+    prove_authority_pin(
+        package.reference().package_build_id.as_str(),
+        "host effect registry",
+        candidate.authorities().host_effect_registry(),
+        &artifact.host_effect_registry,
+        view.host_effect_registry(),
+        expected_host_registry,
+        location,
+    )?;
+    prove_authority_pin(
+        package.reference().package_build_id.as_str(),
+        "intrinsic registry",
+        candidate.authorities().intrinsic_registry(),
+        &artifact.intrinsic_registry,
+        view.intrinsic_registry(),
+        expected_intrinsic_registry,
+        location,
+    )?;
     if candidate.artifact_ref().artifact_path.is_some() {
         return Err(semantic_violation(
             location,
@@ -123,4 +160,27 @@ fn prove_package_header(
         ));
     }
     Ok(())
+}
+
+fn prove_authority_pin<T: Eq>(
+    package_build_id: &str,
+    authority: &str,
+    candidate: &T,
+    artifact: &T,
+    validated_view: &T,
+    compile_time: &T,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let exact =
+        candidate == artifact && artifact == validated_view && validated_view == compile_time;
+    if exact {
+        return Ok(());
+    }
+
+    Err(semantic_violation(
+        location,
+        format!(
+            "package {package_build_id} {authority} pin is not exact across candidate, admitted artifact, validated view, and compile-time authority"
+        ),
+    ))
 }
