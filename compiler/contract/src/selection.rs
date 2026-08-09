@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{PackageArtifact, PackageCallableId, PackageLocalAbiSymbol};
 
-use crate::{ContractDefinitionError, Result};
+use crate::{
+    public_instances::ServicePublicInstanceOperationFacts, ContractDefinitionError, Result,
+};
 
 /// Canonical typed interpretation of `service.yml.serviceCalls`.
 ///
@@ -13,35 +15,59 @@ use crate::{ContractDefinitionError, Result};
 pub(crate) struct ServiceCallSelection {
     pub(crate) roots: Vec<String>,
     pub(crate) operations: BTreeMap<String, PackageCallableId>,
-    pub(crate) public_instances: Vec<String>,
+    pub(crate) public_instances: BTreeMap<String, BTreeSet<String>>,
 }
 
 pub(crate) fn select_service_calls(
     package: &PackageArtifact,
     selection_paths: &[String],
+    public_instance_facts: Option<&ServicePublicInstanceOperationFacts>,
 ) -> Result<ServiceCallSelection> {
     let roots = canonical_roots(selection_paths)?;
-    let methods = public_instance_methods(package);
-    let method_paths_by_callable = method_paths_by_callable(&methods);
+    if public_instance_facts.is_none() {
+        let public_instances = roots
+            .iter()
+            .filter(|root| {
+                matches!(
+                    package.package_local_abi.public_symbols.get(*root),
+                    Some(PackageLocalAbiSymbol::PublicInstance { .. })
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !public_instances.is_empty() {
+            return Err(
+                ContractDefinitionError::MissingPublicInstanceContractFacts { public_instances },
+            );
+        }
+    }
+    let public_instance_roots_by_callable = public_instance_roots_by_callable(package);
     let mut operations = BTreeMap::new();
     let mut callable_paths = BTreeMap::new();
-    let mut public_instances = Vec::new();
+    let mut public_instances = BTreeMap::new();
 
     for root in &roots {
-        if let Some((public_instance, _)) = methods.get(root) {
+        if let Some(public_instance) =
+            public_instance_facts.and_then(|facts| facts.public_root_for_operation(root))
+        {
             return Err(ContractDefinitionError::PublicInstanceMethodSelection {
                 path: root.clone(),
-                public_instance: public_instance.clone(),
+                public_instance: public_instance.to_string(),
             });
         }
 
         match package.package_local_abi.public_symbols.get(root) {
             Some(PackageLocalAbiSymbol::Callable { callable_id, .. }) => {
-                if let Some(method_paths) = method_paths_by_callable.get(callable_id) {
+                if public_instance_roots_by_callable.contains_key(callable_id) {
+                    let method_paths = public_instance_facts
+                        .map(|facts| {
+                            exact_operation_paths_for_callable(package, facts, callable_id)
+                        })
+                        .unwrap_or_default();
                     return Err(ContractDefinitionError::PublicInstanceMethodAlias {
                         path: root.clone(),
                         callable_id: callable_id.to_string(),
-                        method_paths: method_paths.clone(),
+                        method_paths,
                     });
                 }
                 insert_operation(
@@ -51,34 +77,86 @@ pub(crate) fn select_service_calls(
                     callable_id.clone(),
                 )?;
             }
-            Some(PackageLocalAbiSymbol::PublicInstance { methods, .. }) => {
-                public_instances.push(root.clone());
-                for (method, callable_id) in methods {
-                    let method_path = format!("{root}.{method}");
-                    let Some(PackageLocalAbiSymbol::Callable {
-                        callable_id: public_callable_id,
-                        ..
-                    }) = package.package_local_abi.public_symbols.get(&method_path)
-                    else {
-                        return Err(ContractDefinitionError::InvalidPublicInstanceMethod {
+            Some(PackageLocalAbiSymbol::PublicInstance {
+                instance_id,
+                methods,
+                ..
+            }) => {
+                if instance_id != root {
+                    return Err(
+                        ContractDefinitionError::PublicInstanceRootIdentityMismatch {
+                            public_path: root.clone(),
+                            instance_id: instance_id.clone(),
+                        },
+                    );
+                }
+                let Some(facts) = public_instance_facts else {
+                    return Err(
+                        ContractDefinitionError::MissingPublicInstanceContractFacts {
+                            public_instances: vec![root.clone()],
+                        },
+                    );
+                };
+                let rows = facts.interfaces_for_root(root).collect::<Vec<_>>();
+                if rows.is_empty() {
+                    return Err(
+                        ContractDefinitionError::MissingSelectedPublicInstanceOperationFacts {
                             public_instance: root.clone(),
-                            method_path,
-                            callable_id: callable_id.to_string(),
-                        });
-                    };
-                    if public_callable_id != callable_id {
-                        return Err(ContractDefinitionError::InvalidPublicInstanceMethod {
-                            public_instance: root.clone(),
-                            method_path,
-                            callable_id: callable_id.to_string(),
-                        });
+                        },
+                    );
+                }
+
+                let package_method_ids = methods.values().cloned().collect::<BTreeSet<_>>();
+                if package_method_ids.len() != methods.len() {
+                    return Err(ContractDefinitionError::PublicInstanceOperationCoverage {
+                        public_instance: root.clone(),
+                    });
+                }
+                let mut fact_method_ids = BTreeSet::new();
+                let mut operation_stable_keys = BTreeSet::new();
+                for row in rows {
+                    for slot in row.slots() {
+                        let operation_stable_key = slot.operation_stable_key();
+                        if !operation_stable_keys.insert(operation_stable_key.to_string()) {
+                            return Err(
+                                ContractDefinitionError::DuplicatePublicInstanceOperation {
+                                    operation_stable_key: operation_stable_key.to_string(),
+                                },
+                            );
+                        }
+                        let Some(PackageLocalAbiSymbol::Callable { callable_id, .. }) = package
+                            .package_local_abi
+                            .public_symbols
+                            .get(operation_stable_key)
+                        else {
+                            return Err(
+                                ContractDefinitionError::InvalidPublicInstanceOperationFact {
+                                    public_instance: root.clone(),
+                                    operation_stable_key: operation_stable_key.to_string(),
+                                },
+                            );
+                        };
+                        fact_method_ids.insert(callable_id.clone());
+                        insert_operation(
+                            &mut operations,
+                            &mut callable_paths,
+                            operation_stable_key.to_string(),
+                            callable_id.clone(),
+                        )?;
                     }
-                    insert_operation(
-                        &mut operations,
-                        &mut callable_paths,
-                        method_path,
-                        callable_id.clone(),
-                    )?;
+                }
+                if fact_method_ids != package_method_ids {
+                    return Err(ContractDefinitionError::PublicInstanceOperationCoverage {
+                        public_instance: root.clone(),
+                    });
+                }
+                if public_instances
+                    .insert(root.clone(), operation_stable_keys)
+                    .is_some()
+                {
+                    return Err(ContractDefinitionError::DuplicateServiceCallPath {
+                        path: root.clone(),
+                    });
                 }
             }
             Some(symbol) => {
@@ -110,39 +188,44 @@ fn canonical_roots(selection_paths: &[String]) -> Result<Vec<String>> {
     Ok(seen.into_iter().collect())
 }
 
-fn public_instance_methods(
+fn public_instance_roots_by_callable(
     package: &PackageArtifact,
-) -> BTreeMap<String, (String, PackageCallableId)> {
-    package
-        .package_local_abi
-        .public_symbols
-        .iter()
-        .filter_map(|(public_instance, symbol)| {
-            let PackageLocalAbiSymbol::PublicInstance { methods, .. } = symbol else {
-                return None;
-            };
-            Some(methods.iter().map(move |(method, callable_id)| {
-                (
-                    format!("{public_instance}.{method}"),
-                    (public_instance.clone(), callable_id.clone()),
-                )
-            }))
-        })
-        .flatten()
-        .collect()
+) -> BTreeMap<PackageCallableId, Vec<String>> {
+    let mut roots = BTreeMap::<PackageCallableId, Vec<String>>::new();
+    for (public_instance, symbol) in &package.package_local_abi.public_symbols {
+        let PackageLocalAbiSymbol::PublicInstance { methods, .. } = symbol else {
+            continue;
+        };
+        for callable_id in methods.values() {
+            roots
+                .entry(callable_id.clone())
+                .or_default()
+                .push(public_instance.clone());
+        }
+    }
+    roots
 }
 
-fn method_paths_by_callable(
-    methods: &BTreeMap<String, (String, PackageCallableId)>,
-) -> BTreeMap<PackageCallableId, Vec<String>> {
-    let mut paths = BTreeMap::<PackageCallableId, Vec<String>>::new();
-    for (path, (_, callable_id)) in methods {
-        paths
-            .entry(callable_id.clone())
-            .or_default()
-            .push(path.clone());
-    }
-    paths
+fn exact_operation_paths_for_callable(
+    package: &PackageArtifact,
+    facts: &ServicePublicInstanceOperationFacts,
+    expected_callable_id: &PackageCallableId,
+) -> Vec<String> {
+    facts
+        .interfaces()
+        .iter()
+        .flat_map(|row| row.slots())
+        .filter_map(|slot| {
+            let PackageLocalAbiSymbol::Callable { callable_id, .. } = package
+                .package_local_abi
+                .public_symbols
+                .get(slot.operation_stable_key())?
+            else {
+                return None;
+            };
+            (callable_id == expected_callable_id).then(|| slot.operation_stable_key().to_string())
+        })
+        .collect()
 }
 
 fn insert_operation(
@@ -151,6 +234,13 @@ fn insert_operation(
     operation_path: String,
     callable_id: PackageCallableId,
 ) -> Result<()> {
+    if operations.contains_key(&operation_path) {
+        return Err(
+            ContractDefinitionError::DuplicateServiceOperationStableKey {
+                operation_stable_key: operation_path,
+            },
+        );
+    }
     if let Some(first) = callable_paths.insert(callable_id.clone(), operation_path.clone()) {
         return Err(ContractDefinitionError::DuplicatePublicCallable {
             callable_id: callable_id.to_string(),

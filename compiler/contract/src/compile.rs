@@ -10,6 +10,7 @@ use skiff_artifact_model::{
 };
 
 use crate::{
+    public_instances::{bind_contract_operation_ids, ProjectedPublicInstances},
     ContractDefinitionError, Result, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText,
 };
@@ -17,18 +18,24 @@ use crate::{
 pub fn compile_service_contract_definition(
     definition: ServiceContractDefinition,
 ) -> Result<ServiceContract> {
-    compile_service_contract_definition_with_policy(definition, false)
+    compile_service_contract_definition_with_policy(
+        definition,
+        false,
+        ProjectedPublicInstances::default(),
+    )
 }
 
 pub(crate) fn compile_projected_service_contract_definition(
     definition: ServiceContractDefinition,
+    public_instances: ProjectedPublicInstances,
 ) -> Result<ServiceContract> {
-    compile_service_contract_definition_with_policy(definition, true)
+    compile_service_contract_definition_with_policy(definition, true, public_instances)
 }
 
 fn compile_service_contract_definition_with_policy(
     mut definition: ServiceContractDefinition,
     allow_zero_operations: bool,
+    public_instances: ProjectedPublicInstances,
 ) -> Result<ServiceContract> {
     validate_definition(&definition, allow_zero_operations)?;
     let operation_ids = definition
@@ -41,6 +48,7 @@ fn compile_service_contract_definition_with_policy(
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let public_instances = bind_contract_operation_ids(public_instances, &operation_ids)?;
     let operations = definition
         .operations
         .into_iter()
@@ -71,7 +79,7 @@ fn compile_service_contract_definition_with_policy(
         contract_version: definition.contract_version,
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations,
-        public_instances: BTreeMap::new(),
+        public_instances,
         package_type_requirements: definition.package_type_requirements,
         diagnostic_text,
     };

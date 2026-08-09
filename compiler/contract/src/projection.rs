@@ -9,9 +9,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    compile::compile_projected_service_contract_definition, selection::select_service_calls,
+    compile::compile_projected_service_contract_definition,
+    public_instances::{project_public_instances, ProjectedPublicInstances},
+    selection::select_service_calls,
     ContractDefinitionError, Result, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
+    ServiceContractDefinitionDiagnosticText, ServicePublicInstanceOperationFacts,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,15 +68,41 @@ pub fn project_service_api(
     package: &PackageArtifact,
     records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> Result<ServiceApiProjection> {
+    project_service_api_with_facts(service_id, selection_paths, package, records, None)
+}
+
+/// Projects a service API with exact, source-owned public-instance operation
+/// facts. The caller must adapt source facts into the contract-owned DTO; this
+/// crate deliberately has no dependency on source analysis.
+pub fn project_service_api_with_public_instance_operations(
+    service_id: impl Into<String>,
+    selection_paths: &[String],
+    package: &PackageArtifact,
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    public_instance_operations: &ServicePublicInstanceOperationFacts,
+) -> Result<ServiceApiProjection> {
+    project_service_api_with_facts(
+        service_id,
+        selection_paths,
+        package,
+        records,
+        Some(public_instance_operations),
+    )
+}
+
+fn project_service_api_with_facts(
+    service_id: impl Into<String>,
+    selection_paths: &[String],
+    package: &PackageArtifact,
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    public_instance_operations: Option<&ServicePublicInstanceOperationFacts>,
+) -> Result<ServiceApiProjection> {
     let service_id = service_id.into();
-    let selection = select_service_calls(package, selection_paths)?;
-    if !selection.public_instances.is_empty() {
-        return Err(
-            ContractDefinitionError::MissingPublicInstanceContractFacts {
-                public_instances: selection.public_instances,
-            },
-        );
-    }
+    let selection = select_service_calls(package, selection_paths, public_instance_operations)?;
+    let public_instances = public_instance_operations
+        .map(|facts| project_public_instances(&selection, facts))
+        .transpose()?
+        .unwrap_or_else(ProjectedPublicInstances::default);
     let selected_operations = selection.operations;
     let mut available = BTreeMap::new();
     let mut unavailable = BTreeMap::new();
@@ -126,17 +154,20 @@ pub fn project_service_api(
             }
         })
         .collect();
-    let contract = compile_projected_service_contract_definition(ServiceContractDefinition {
-        service_id: service_id.clone(),
-        contract_version: package.package_version.clone(),
-        operations,
-        package_type_requirements,
-        diagnostic_text: ServiceContractDefinitionDiagnosticText {
-            service: service_id,
-            operations: operation_text,
-            types: diagnostic_types,
+    let contract = compile_projected_service_contract_definition(
+        ServiceContractDefinition {
+            service_id: service_id.clone(),
+            contract_version: package.package_version.clone(),
+            operations,
+            package_type_requirements,
+            diagnostic_text: ServiceContractDefinitionDiagnosticText {
+                service: service_id,
+                operations: operation_text,
+                types: diagnostic_types,
+            },
         },
-    })?;
+        public_instances,
+    )?;
     let visibility = project_api_visibility(package, Some(&contract))?;
     Ok(ServiceApiProjection {
         service_calls: selection.roots,

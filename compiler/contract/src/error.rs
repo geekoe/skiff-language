@@ -54,6 +54,83 @@ pub enum ContractDefinitionError {
         "service API projection lacks exact provider-free public-instance contract facts for selected roots {public_instances:?}"
     )]
     MissingPublicInstanceContractFacts { public_instances: Vec<String> },
+    #[error("public-instance operation facts contain invalid public root `{public_instance}`")]
+    InvalidPublicInstanceRoot { public_instance: String },
+    #[error("public instance {public_instance} has an empty interface ABI id")]
+    EmptyPublicInstanceInterfaceAbi { public_instance: String },
+    #[error(
+        "public instance {public_instance} interface {canonical_interface} retains an open type parameter"
+    )]
+    OpenPublicInstanceInterface {
+        public_instance: String,
+        canonical_interface: String,
+    },
+    #[error("public-instance operation facts contain an empty method ABI id")]
+    EmptyPublicInstanceMethodAbi,
+    #[error("public-instance operation facts contain an empty operation stable key")]
+    EmptyPublicInstanceOperationStableKey,
+    #[error("public instance {public_instance} repeats exact interface {canonical_interface}")]
+    DuplicatePublicInstanceInterface {
+        public_instance: String,
+        canonical_interface: String,
+    },
+    #[error(
+        "public instance {public_instance} interface {canonical_interface} has duplicate or empty method ABI id `{method_abi_id}`"
+    )]
+    DuplicateOrEmptyPublicInstanceMethodAbi {
+        public_instance: String,
+        canonical_interface: String,
+        method_abi_id: String,
+    },
+    #[error("public-instance operation facts repeat operation stable key {operation_stable_key}")]
+    DuplicatePublicInstanceOperation { operation_stable_key: String },
+    #[error("selected public instance {public_instance} has no exact operation facts")]
+    MissingSelectedPublicInstanceOperationFacts { public_instance: String },
+    #[error(
+        "public instance {public_instance} operation facts include unselected operation {operation_stable_key}"
+    )]
+    UnexpectedPublicInstanceOperation {
+        public_instance: String,
+        operation_stable_key: String,
+    },
+    #[error(
+        "public instance {public_instance} operation facts omit selected operations {operation_stable_keys:?}"
+    )]
+    MissingPublicInstanceOperations {
+        public_instance: String,
+        operation_stable_keys: Vec<String>,
+    },
+    #[error(
+        "public instance {public_instance} references unknown contract operation stable key {operation_stable_key}"
+    )]
+    UnknownPublicInstanceOperation {
+        public_instance: String,
+        operation_stable_key: String,
+    },
+    #[error(
+        "public-instance operation tables repeat contract operation id {contract_operation_id}"
+    )]
+    DuplicatePublicInstanceOperationId { contract_operation_id: String },
+    #[error(
+        "Package Local ABI public instance {public_path} declares nested instance id {instance_id}"
+    )]
+    PublicInstanceRootIdentityMismatch {
+        public_path: String,
+        instance_id: String,
+    },
+    #[error(
+        "public instance {public_instance} exact operation facts do not all-and-only cover its Package Local ABI methods"
+    )]
+    PublicInstanceOperationCoverage { public_instance: String },
+    #[error(
+        "public instance {public_instance} exact operation key {operation_stable_key} is not a Package Local ABI callable"
+    )]
+    InvalidPublicInstanceOperationFact {
+        public_instance: String,
+        operation_stable_key: String,
+    },
+    #[error("service API projection repeats operation stable key {operation_stable_key}")]
+    DuplicateServiceOperationStableKey { operation_stable_key: String },
     #[error(
         "service API projection maps callable {callable_id} to multiple public paths: {first}, {second}"
     )]

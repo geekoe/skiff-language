@@ -128,6 +128,81 @@ fn manifest_selection_projection_selects_function() {
 }
 
 #[test]
+fn manifest_selection_projects_exact_public_instance_operation_facts() {
+    let package = package_fixture();
+    let selected = selection(&["worker", "selected"]);
+    let interface = skiff_artifact_model::InterfaceInstantiationRef {
+        interface_abi_id: "interface:worker-api".to_string(),
+        canonical_type_args: vec![TypeRefIr::builtin("string")],
+    };
+    let facts = ServicePublicInstanceOperationFacts::try_from_interfaces([
+        ServicePublicInstanceInterfaceOperations::try_new(
+            "worker",
+            interface.clone(),
+            vec![
+                ServicePublicInstanceOperationSlot::try_new(
+                    "method:worker-api:stop",
+                    "worker.stop",
+                )
+                .unwrap(),
+                ServicePublicInstanceOperationSlot::try_new("method:worker-api:run", "worker.run")
+                    .unwrap(),
+            ],
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+
+    let projected = project_service_api_with_public_instance_operations(
+        "example.service",
+        &selected,
+        &package,
+        &BTreeMap::new(),
+        &facts,
+    )
+    .unwrap();
+
+    assert_eq!(
+        projected
+            .available
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["selected", "worker.run", "worker.stop"]
+    );
+    let instance = &projected.contract.public_instances["worker"];
+    assert_eq!(instance.interfaces.len(), 1);
+    assert_eq!(instance.interfaces[0].interface, interface);
+    assert_eq!(
+        instance.interfaces[0]
+            .methods
+            .iter()
+            .map(|method| method.method_abi_id.as_str())
+            .collect::<Vec<_>>(),
+        ["method:worker-api:stop", "method:worker-api:run"]
+    );
+    let operation_paths = projected
+        .contract
+        .diagnostic_text
+        .operations
+        .iter()
+        .map(|(operation_id, path)| (operation_id.clone(), path.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        instance.interfaces[0]
+            .methods
+            .iter()
+            .map(|method| operation_paths[&method.contract_operation_id])
+            .collect::<Vec<_>>(),
+        ["worker.stop", "worker.run"]
+    );
+    assert!(instance.interfaces[0]
+        .methods
+        .iter()
+        .all(|method| operation_paths[&method.contract_operation_id] != "selected"));
+}
+
+#[test]
 fn manifest_selection_projection_fails_closed_without_exact_public_instance_facts() {
     let package = package_fixture();
     let selected = selection(&["worker", "selected"]);
@@ -138,6 +213,53 @@ fn manifest_selection_projection_fails_closed_without_exact_public_instance_fact
         panic!("selected public instances must not project an empty contract table")
     };
     assert_eq!(public_instances, vec!["worker"]);
+}
+
+#[test]
+fn manifest_selection_rejects_non_exact_public_instance_operation_coverage() {
+    let package = package_fixture();
+    let selected = selection(&["worker"]);
+    let facts = |operation_stable_keys: &[&str]| {
+        ServicePublicInstanceOperationFacts::try_from_interfaces([
+            ServicePublicInstanceInterfaceOperations::try_new(
+                "worker",
+                skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: "interface:worker-api".to_string(),
+                    canonical_type_args: Vec::new(),
+                },
+                operation_stable_keys
+                    .iter()
+                    .map(|operation_stable_key| {
+                        ServicePublicInstanceOperationSlot::try_new(
+                            format!("abi:{operation_stable_key}"),
+                            *operation_stable_key,
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        ])
+        .unwrap()
+    };
+
+    for invalid in [
+        facts(&["worker.run"]),
+        facts(&["worker.run", "worker.stop", "worker.helper"]),
+    ] {
+        assert!(matches!(
+            project_service_api_with_public_instance_operations(
+                "example.service",
+                &selected,
+                &package,
+                &BTreeMap::new(),
+                &invalid,
+            ),
+            Err(ContractDefinitionError::PublicInstanceOperationCoverage {
+                public_instance,
+            }) if public_instance == "worker"
+        ));
+    }
 }
 
 #[test]
