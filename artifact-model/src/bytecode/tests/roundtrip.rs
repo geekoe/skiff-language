@@ -465,7 +465,7 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
     assert_eq!(view.isa_version(), BYTECODE_ISA_VERSION);
     assert_eq!(
         view.bytecode_identity(),
-        "skiff-bytecode-image-v1:sha256:fixture"
+        "opaque-structural-bytecode-identity"
     );
     assert_eq!(view.opcode_table_fingerprint(), opcode_table_fingerprint());
     assert_eq!(
