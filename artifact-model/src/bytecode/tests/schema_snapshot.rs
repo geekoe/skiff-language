@@ -147,7 +147,7 @@ fn schema_requires_specialization_and_its_positional_payload() {
             concrete_receiver: None,
         },
     };
-    let value = serde_json::to_value(relocation).expect("relocation JSON");
+    let value = serde_json::to_value(&relocation).expect("relocation JSON");
     for path in ["specialization", "typeArguments", "concreteReceiver"] {
         let mut missing = value.clone();
         if path == "specialization" {
@@ -163,6 +163,10 @@ fn schema_requires_specialization_and_its_positional_payload() {
             "{path} must be required"
         );
     }
+
+    let decoded: BytecodeRelocation =
+        serde_json::from_value(value).expect("explicit null concreteReceiver remains valid");
+    assert_eq!(decoded, relocation);
 }
 
 #[test]

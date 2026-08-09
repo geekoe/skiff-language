@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::TypeRefIr;
 
@@ -376,7 +376,18 @@ pub struct BytecodeSpecialization {
     pub type_arguments: Vec<TypeRefIr>,
     /// Concrete receiver/Self instantiation when the target is receiver-bound.
     /// This field is required and serializes as `null` when absent.
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub concrete_receiver: Option<TypeRefIr>,
+}
+
+/// Unlike Serde's default `Option<T>` handling, attaching this decoder makes
+/// the field itself required while preserving JSON `null` as `None`.
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 /// Exact native signature carried beside a host effect relocation. Generic
