@@ -10,6 +10,8 @@ use crate::{
     VerifiedCodeEntry, VerifiedConstantHeap, VerifiedLinkedBytecodeImage,
 };
 
+mod admission;
+
 fn limits() -> VerificationLimits {
     VerificationLimits {
         max_functions: 0,
@@ -31,19 +33,26 @@ fn limits() -> VerificationLimits {
 
 fn empty_candidate() -> LinkedBytecodeCandidate {
     LinkedBytecodeCandidate::try_from_parts(LinkedBytecodeCandidateParts {
+        packages: Vec::new(),
         functions: Vec::new(),
         operation_entries: Vec::new(),
         gateway_entries: Vec::new(),
         exact_local_targets: Vec::new(),
         service_operations: Vec::new(),
+        actor_creates: Vec::new(),
         actor_methods: Vec::new(),
         interface_tables: Vec::new(),
         synthetic_callbacks: Vec::new(),
+        callback_capture_layouts: Vec::new(),
         host_effect_adapters: Vec::new(),
+        intrinsics: Vec::new(),
         types: Vec::new(),
         shapes: Vec::new(),
         constants: Vec::new(),
+        constant_roots: Vec::new(),
+        frozen_constant_nodes: Vec::new(),
         resume_sites: Vec::new(),
+        writable_paths: Vec::new(),
     })
     .expect("empty candidate passes only local shape checks")
 }
@@ -84,7 +93,7 @@ fn empty_candidate_alone_cannot_mint_a_verified_seal() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ControlFlow,
+            obligation: VerificationObligation::ConcreteTypeAndShape,
             location: VerificationLocation::Image,
         }
     );

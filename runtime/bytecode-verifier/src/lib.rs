@@ -5,6 +5,7 @@
 //! public transition to [`VerifiedLinkedBytecodeImage`] is [`verify`], which
 //! consumes the exact opaque deployment hydration and candidate together.
 
+mod admission;
 mod error;
 mod limits;
 mod verifier;

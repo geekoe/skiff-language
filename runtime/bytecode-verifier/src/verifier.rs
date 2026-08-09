@@ -14,7 +14,10 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
 
-use crate::{VerificationError, VerificationLimits, VerificationLocation, VerificationObligation};
+use crate::{
+    admission::prove_admission, VerificationError, VerificationLimits, VerificationLocation,
+    VerificationObligation,
+};
 
 /// Opaque proof token stored in every verified image.
 ///
@@ -361,9 +364,9 @@ impl std::error::Error for CodeEntryLookupError {}
 /// candidate as a single immutable program.
 ///
 /// Both inputs are consumed so a successful result owns the exact facts that
-/// were cross-checked. At the C2 interface checkpoint the complete hydration
-/// correspondence and semantic proofs are intentionally unavailable, so every
-/// input returns [`VerificationError::ProofUnavailable`] and no seal is minted.
+/// were cross-checked. Admission independently proves bounded exact hydration,
+/// artifact and candidate correspondence before the still-unimplemented
+/// semantic proof families fail closed. No partial admission can mint a seal.
 ///
 /// ```compile_fail
 /// use skiff_runtime_bytecode_verifier::{verify, VerificationLimits};
@@ -398,7 +401,7 @@ fn establish_verification_seal(
     candidate: &LinkedBytecodeCandidate,
     limits: &VerificationLimits,
 ) -> Result<SealedDeploymentFacts, VerificationError> {
-    prove_exact_hydration_binding(hydrated, candidate)?;
+    prove_admission(hydrated, candidate, limits)?;
     prove_candidate_semantics(candidate, limits)?;
     let entry_maps = distill_verified_entry_maps(candidate)?;
     let constant_heap = build_verified_constant_heap(candidate, limits)?;
@@ -412,22 +415,52 @@ fn establish_verification_seal(
     })
 }
 
-fn prove_exact_hydration_binding(
-    _hydrated: &HydratedDeploymentBytecode,
+pub(super) fn prove_candidate_semantics(
+    candidate: &LinkedBytecodeCandidate,
+    limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    prove_concrete_types_and_shapes(candidate, limits)?;
+    prove_control_flow_and_stack(candidate, limits)?;
+    prove_value_transfer_plans(candidate, limits)?;
+    prove_frozen_constant_safety(candidate, limits)
+}
+
+fn prove_concrete_types_and_shapes(
     _candidate: &LinkedBytecodeCandidate,
+    _limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
     Err(VerificationError::ProofUnavailable {
-        obligation: VerificationObligation::ExactHydrationBinding,
+        obligation: VerificationObligation::ConcreteTypeAndShape,
         location: VerificationLocation::Image,
     })
 }
 
-pub(super) fn prove_candidate_semantics(
+fn prove_control_flow_and_stack(
     _candidate: &LinkedBytecodeCandidate,
     _limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
     Err(VerificationError::ProofUnavailable {
         obligation: VerificationObligation::ControlFlow,
+        location: VerificationLocation::Image,
+    })
+}
+
+fn prove_value_transfer_plans(
+    _candidate: &LinkedBytecodeCandidate,
+    _limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    Err(VerificationError::ProofUnavailable {
+        obligation: VerificationObligation::ValueTransferAndDrop,
+        location: VerificationLocation::Image,
+    })
+}
+
+fn prove_frozen_constant_safety(
+    _candidate: &LinkedBytecodeCandidate,
+    _limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    Err(VerificationError::ProofUnavailable {
+        obligation: VerificationObligation::FrozenConstantSafety,
         location: VerificationLocation::Image,
     })
 }

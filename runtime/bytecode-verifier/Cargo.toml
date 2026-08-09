@@ -11,5 +11,9 @@ skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-loader = { path = "../loader" }
 skiff-runtime-model = { path = "../model" }
 
+[dev-dependencies]
+anyhow = "1.0"
+skiff-artifact-identity = { path = "../../artifact-identity" }
+
 [lints]
 workspace = true
