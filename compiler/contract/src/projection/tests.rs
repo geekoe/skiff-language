@@ -8,6 +8,8 @@ use skiff_artifact_model::{
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
+use crate::{ServicePublicInstanceInterfaceOperations, ServicePublicInstanceOperationSlot};
+
 use super::*;
 
 #[test]
