@@ -6,30 +6,22 @@ use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 pub(crate) struct VmFrame {
     function: FunctionIndex,
     instruction: InstructionIndex,
-    slot_base: usize,
-    slot_count: usize,
     operand_base: usize,
     operand_capacity: usize,
-    operand_depth: usize,
     function_entry_pending: bool,
 }
 
 impl VmFrame {
     pub(crate) const fn root(
         function: FunctionIndex,
-        slot_base: usize,
-        slot_count: usize,
         operand_base: usize,
         operand_capacity: usize,
     ) -> Self {
         Self {
             function,
             instruction: InstructionIndex::new(0),
-            slot_base,
-            slot_count,
             operand_base,
             operand_capacity,
-            operand_depth: 0,
             function_entry_pending: true,
         }
     }
@@ -40,26 +32,6 @@ impl VmFrame {
 
     pub(crate) const fn instruction(&self) -> InstructionIndex {
         self.instruction
-    }
-
-    pub(crate) const fn slot_base(&self) -> usize {
-        self.slot_base
-    }
-
-    pub(crate) const fn slot_count(&self) -> usize {
-        self.slot_count
-    }
-
-    pub(crate) const fn operand_base(&self) -> usize {
-        self.operand_base
-    }
-
-    pub(crate) const fn operand_capacity(&self) -> usize {
-        self.operand_capacity
-    }
-
-    pub(crate) const fn operand_depth(&self) -> usize {
-        self.operand_depth
     }
 
     pub(crate) const fn function_entry_pending(&self) -> bool {
@@ -76,10 +48,6 @@ impl VmFrame {
         };
         self.instruction = InstructionIndex::new(next);
         true
-    }
-
-    pub(crate) fn set_operand_depth(&mut self, depth: usize) {
-        self.operand_depth = depth;
     }
 
     pub(crate) fn segment_end(&self) -> Option<usize> {

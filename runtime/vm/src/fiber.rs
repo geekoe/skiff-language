@@ -110,14 +110,12 @@ impl VmFiber {
         }
 
         let operand_base = slot_count;
-        let frame = VmFrame::root(
-            function_index,
-            0,
-            slot_count,
-            operand_base,
-            operand_capacity,
-        );
-        debug_assert_eq!(frame.segment_end(), Some(segment_len));
+        let frame = VmFrame::root(function_index, operand_base, operand_capacity);
+        if frame.segment_end() != Some(segment_len) {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            });
+        }
         let mut values = vec![ValueSlot::null(); segment_len];
         let mut live_values = vec![false; segment_len];
         for (argument, parameter) in arguments
@@ -417,11 +415,7 @@ fn validate_signature_shape(
             actual: argument_count,
         });
     }
-    if signature
-        .parameter_modes()
-        .iter()
-        .any(|mode| *mode == ParamModeIr::InOut)
-    {
+    if signature.parameter_modes().contains(&ParamModeIr::InOut) {
         return Err(VmError::VerifiedEntryInvariant {
             invariant: VmVerifiedInvariant::ExternalInOutParameter,
         });
@@ -576,6 +570,8 @@ mod tests {
     };
     use crate::{VmBudget, VmError, VmLimits, VmVerifiedInvariant};
 
+    type VmStartFn = fn(VerifiedVmEntry, Box<[ValueSlot]>, VmLimits) -> Result<VmFiber, VmError>;
+
     fn snapshot_plan(drop: LinkedValueDropPlan) -> LinkedValueTransferPlan {
         LinkedValueTransferPlan::SnapshotShare { drop }
     }
@@ -610,8 +606,7 @@ mod tests {
 
     #[test]
     fn production_start_signature_requires_the_concrete_pinned_entry() {
-        let entry: fn(VerifiedVmEntry, Box<[ValueSlot]>, VmLimits) -> Result<VmFiber, VmError> =
-            Vm::start;
+        let entry: VmStartFn = Vm::start;
 
         let _ = entry;
     }
