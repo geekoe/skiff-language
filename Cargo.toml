@@ -43,6 +43,7 @@ members = [
   "runtime/service-db",
   "runtime/request",
   "runtime/transport",
+  "runtime/vm",
   "test-runner",
 ]
 

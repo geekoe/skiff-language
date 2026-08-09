@@ -57,6 +57,7 @@ const rustImplementationSubjects = [
       rustPackage('runtime/service-db', 'skiff-runtime-service-db'),
       rustPackage('runtime/request', 'skiff-runtime-request'),
       rustPackage('runtime/transport', 'skiff-runtime-transport'),
+      rustPackage('runtime/vm', 'skiff-runtime-vm'),
       rustPackage('profiling', 'skiff-profiling'),
     ],
   },

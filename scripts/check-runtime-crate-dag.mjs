@@ -46,6 +46,15 @@ const runtimeDag = new Map([
       'skiff-runtime-model',
     ],
   ],
+  [
+    'skiff-runtime-vm',
+    [
+      'skiff-runtime-bytecode-verifier',
+      'skiff-runtime-deployment-image',
+      'skiff-runtime-linked-bytecode',
+      'skiff-runtime-model',
+    ],
+  ],
   ['skiff-runtime-config-snapshot', []],
   ['skiff-runtime-deployment-image', []],
   ['skiff-runtime-linked-bytecode', []],
@@ -167,6 +176,7 @@ const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-request-contract',
   'skiff-runtime-service-db',
   'skiff-runtime-transport',
+  'skiff-runtime-vm',
 ]);
 
 const hostBoundaryTarget = {
