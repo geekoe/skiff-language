@@ -5,8 +5,12 @@ use skiff_artifact_model::ValueTransferPlan;
 /// Explicit source-owned transfer facts for every bytecode function.
 ///
 /// The emitter never derives a plan from a MIR slot kind or type. Function
-/// keys use the canonical `"{module_path}::{symbol}"` image key, and the
-/// emitter requires this map to cover the MIR function set exactly.
+/// Keys use the canonical `"{module_path}::{declaration}"` image spelling:
+/// the emitter first requires MIR `symbol` to start with the exact
+/// `"{module_path}."` owner prefix, strips that prefix once, and rejects an
+/// empty declaration. It never appends the still-qualified MIR symbol to the
+/// module a second time. This map must cover that canonical MIR function set
+/// exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BytecodeValueTransferPlans {
     pub functions: BTreeMap<String, FunctionValueTransferPlans>,
