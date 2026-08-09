@@ -1,0 +1,12 @@
+[package]
+name = "skiff-runtime-scheduler"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+skiff-runtime-model = { path = "../model" }
+skiff-runtime-vm = { path = "../vm" }
+
+[lints]
+workspace = true
