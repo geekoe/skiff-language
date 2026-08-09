@@ -37,7 +37,15 @@ const runtimeDag = new Map([
       'skiff-runtime-model',
     ],
   ],
-  ['skiff-runtime-bytecode-verifier', ['skiff-runtime-linked-bytecode']],
+  [
+    'skiff-runtime-bytecode-verifier',
+    [
+      'skiff-runtime-deployment-image',
+      'skiff-runtime-linked-bytecode',
+      'skiff-runtime-loader',
+      'skiff-runtime-model',
+    ],
+  ],
   ['skiff-runtime-config-snapshot', []],
   ['skiff-runtime-deployment-image', []],
   ['skiff-runtime-linked-bytecode', []],
