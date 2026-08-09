@@ -755,6 +755,7 @@ fn package(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     });
     let artifact_ref = PackageArtifactRef {
         package_id: package_id.to_string(),

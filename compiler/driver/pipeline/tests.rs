@@ -552,6 +552,7 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     assign_package_artifact_identities(&mut artifact).unwrap();
     artifact

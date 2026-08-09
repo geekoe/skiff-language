@@ -359,6 +359,7 @@ fn bare_package(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs,
+        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     package

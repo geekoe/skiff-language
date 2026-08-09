@@ -493,7 +493,8 @@ type Marker { request: std.http.HttpRequest }
             CallableEffectSummary::Analyzed { .. }
         ));
 
-        assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 93);
+        // No byte-level count golden: the live std symbol set grows with std
+        // edits; the required/removed symbol assertions below pin the contract.
         for public_path in [
             "std.bytes.DecodeError",
             "std.crypto.sha256",

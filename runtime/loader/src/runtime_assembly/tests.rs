@@ -392,6 +392,7 @@ impl Fixture {
                 },
             )]),
             service_call_refs: Vec::new(),
+            bytecode: None,
         };
         skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
         let package_ref = package_ref(&package);

@@ -174,6 +174,7 @@ pub(super) fn project_package_artifact_facts(
         callable_semantic_facts: callables.semantic_facts,
         boundary_projections: callables.boundary_projections,
         service_call_refs: std::mem::take(&mut input.service_call_refs),
+        bytecode: None,
     };
     normalize_artifact_lists(&mut artifact);
     assign_package_artifact_identities(&mut artifact).map_err(|error| {

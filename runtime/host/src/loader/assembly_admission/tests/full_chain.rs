@@ -1258,6 +1258,7 @@ fn implementation_package(
             },
         )]),
         service_call_refs,
+        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     package

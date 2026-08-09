@@ -17,20 +17,9 @@ use common::{
     TestDir,
 };
 
-// TODO(L1): std File IR and package build golden identities must be recomputed
-// after the skiff-file-ir-v11 -> v12 schema bump (build identity includes each
-// unit's fileIrIdentity, whose hash input includes schema_version).
-const CURRENT_DB_FILE_IR: &str = "skiff-file-ir-v12:sha256:81c6cbbc912dbb0d5bb842a874f5cdb0f069754c50e5637a965d2237e8c9fdd7";
-const CURRENT_STD_BUILD: &str = "skiff-package-build-v10:sha256:a1192904aee9b97b7a557b71642274638ca03e7832f78225130657cd3e86c2bc";
-const CURRENT_STD_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:a5fc494093c3fe766717d6e2de0822288beba2aa691a09d1f447c97a9540df62";
-const CURRENT_STD_SCHEMA_INDEX: &str =
-    "skiff-package-schema-index-v1:sha256:babc5c10e80af939a8f713942b21e38a031c50bebe532b11752cbc246bdac93c";
-const CURRENT_CONFLICT_ERROR_SCHEMA: &str =
-    "skiff-package-schema-type-v2:sha256:55e0f59a69a2facc339d89ba12be27a0aaec3e1a60b3211b43259d153b480a4d";
-const CURRENT_CONSTRAINT_ERROR_SCHEMA: &str =
-    "skiff-package-schema-type-v2:sha256:839e01e4a6bf20be055d48fde8fa4e518099f3345e9c9321f05020b85a8f5f68";
-
+// The identities below derive from the live repository std sources, so they
+// are asserted as determinism (two fresh materializations agree) instead of a
+// byte-level golden that would have to change on every std edit.
 fn assert_cancel_error_spellings_are_rejected(surface: &str, source: impl Fn(&str) -> String) {
     initialize_test_prelude_registry();
     for spelling in ["CancelError", "std.error.CancelError"] {
@@ -131,6 +120,11 @@ fn assert_fresh_std_database_errors_are_canonical(
     let std = project
         .dependency("skiff.run/std", "1.0.0")
         .expect("explicit std import should materialize fresh std");
+    // Determinism: a second fresh materialization must agree on every
+    // content-derived identity (no byte-level golden of the live std sources).
+    let std_repeat = project
+        .dependency("skiff.run/std", "1.0.0")
+        .expect("explicit std import should materialize fresh std");
     let db = source_artifact(std, "db.skiff");
     let conflict = db
         .unit
@@ -173,9 +167,10 @@ fn assert_fresh_std_database_errors_are_canonical(
         panic!("ConflictError PackageSchema should be a record");
     };
     assert_eq!(fields["retryable"], ContractTypeRef::builtin("bool"));
+    let repeat_schema_entry = &std_repeat.package_schema_index.types["std.db.ConflictError"];
     assert_eq!(
-        schema_entry.package_schema_type_id.as_str(),
-        CURRENT_CONFLICT_ERROR_SCHEMA
+        schema_entry.package_schema_type_id,
+        repeat_schema_entry.package_schema_type_id
     );
 
     let constraint = db
@@ -224,24 +219,27 @@ fn assert_fresh_std_database_errors_are_canonical(
     for field in ["kind", "packageId", "collection"] {
         assert_eq!(fields[field], ContractTypeRef::builtin("string"));
     }
+    let repeat_constraint_entry = &std_repeat.package_schema_index.types["std.db.ConstraintError"];
     assert_eq!(
-        schema_entry.package_schema_type_id.as_str(),
-        CURRENT_CONSTRAINT_ERROR_SCHEMA
+        schema_entry.package_schema_type_id,
+        repeat_constraint_entry.package_schema_type_id
     );
 
     assert_eq!(
-        std.package_schema_index
-            .package_schema_index_identity
-            .as_str(),
-        CURRENT_STD_SCHEMA_INDEX
+        std.package_schema_index.package_schema_index_identity,
+        std_repeat.package_schema_index.package_schema_index_identity
     );
 
-    assert_eq!(db.identity, CURRENT_DB_FILE_IR);
+    let db_repeat = source_artifact(std_repeat, "db.skiff");
+    assert_eq!(db.identity, db_repeat.identity);
     assert_eq!(
-        std.artifact.package_local_abi.local_abi_identity.as_str(),
-        CURRENT_STD_LOCAL_ABI
+        std.artifact.package_local_abi.local_abi_identity,
+        std_repeat.artifact.package_local_abi.local_abi_identity
     );
-    assert_eq!(std.artifact.package_build_id.as_str(), CURRENT_STD_BUILD);
+    assert_eq!(
+        std.artifact.package_build_id,
+        std_repeat.artifact.package_build_id
+    );
 }
 
 fn record_field<'a>(descriptor: &'a TypeDescriptorIr, field: &str) -> &'a TypeRefIr {

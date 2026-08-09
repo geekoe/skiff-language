@@ -240,6 +240,7 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     artifact.package_schema_index.package_schema_index_identity =
         package_schema_index_identity(package_id, &BTreeMap::new()).unwrap();

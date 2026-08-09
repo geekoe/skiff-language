@@ -345,6 +345,7 @@ fn provider_package_with_actor(
         callable_semantic_facts: BTreeMap::from([(read_callable.clone(), semantic_facts())]),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     (file, package, abi)
@@ -521,6 +522,7 @@ fn consumer_package(file: &FileIrUnit, provider: &PackageArtifact) -> PackageArt
             },
         )]),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     package
