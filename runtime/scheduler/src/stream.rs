@@ -601,7 +601,8 @@ mod tests {
 
     #[test]
     fn terminal_error_is_delivered_once_then_end_is_stable() {
-        let (_supervisor, mut producer, mut consumer) = StreamSupervisor::open("build");
+        let (_supervisor, mut producer, mut consumer) =
+            StreamSupervisor::<_, u64, &'static str>::open("build");
         producer.finish_error("failed").unwrap();
 
         assert_eq!(
