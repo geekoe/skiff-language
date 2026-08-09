@@ -58,12 +58,15 @@ mod tests {
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
+                "actorImplementations",
                 "boundaryProjections",
+                "bytecodeSchemaRecords",
                 "callableLinks",
                 "callableSemanticFacts",
                 "contractRequirements",
                 "files",
                 "implementationLinks",
+                "localInterfaceConformances",
                 "packageBuildId",
                 "packageId",
                 "packageLocalAbi",
@@ -76,6 +79,7 @@ mod tests {
                 "serviceCallRefs",
                 "serviceRequirements",
                 "staticResources",
+                "syntheticCallbackOwners",
             ])
         );
     }
