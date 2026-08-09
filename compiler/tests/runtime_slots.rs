@@ -2234,7 +2234,7 @@ version: 1.0.0
                     return 1
                 }
             "#,
-                "cannot assign to immutable binding `key`",
+                "assignment target derives from immutable binding `key`",
             ),
             (
                 "entry_assignment",
@@ -2248,7 +2248,7 @@ version: 1.0.0
                     return 1
                 }
             "#,
-                "cannot assign to immutable binding `value`",
+                "assignment target derives from immutable binding `value`",
             ),
             (
                 "duplicate_entry",

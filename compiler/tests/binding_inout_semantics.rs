@@ -300,7 +300,7 @@ fn let_direct_and_member_assignment_are_rejected() {
                   return x
                 }
             "#,
-            "cannot assign to immutable binding `x`",
+            "assignment target derives from immutable binding `x`",
         ),
         (
             "member assignment through a let binding",
@@ -313,7 +313,7 @@ fn let_direct_and_member_assignment_are_rejected() {
                   return doc.title
                 }
             "#,
-            "cannot assign to field of immutable binding `doc`",
+            "assignment target derives from immutable binding `doc`",
         ),
         (
             "member assignment through an ordinary parameter",
@@ -325,7 +325,7 @@ fn let_direct_and_member_assignment_are_rejected() {
                   return doc.title
                 }
             "#,
-            "cannot assign to field of immutable binding `doc`",
+            "assignment target derives from immutable binding `doc`",
         ),
     ] {
         let error = compile_error(source, "internal/binding_inout.skiff");
