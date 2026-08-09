@@ -25,7 +25,7 @@ pub(crate) fn program_db_object_type_addr(
 ) -> Result<Option<TypeAddr>> {
     match unit {
         UnitAddr::Service => {
-            let local = program_local_type_addr(&program.service_files, unit, symbol)?;
+            let local = program_local_type_addr(program.service_files, unit, symbol)?;
             Ok(local.or_else(|| {
                 program
                     .types

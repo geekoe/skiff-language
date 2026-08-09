@@ -33,7 +33,7 @@ fn linked_type_plan_boundary_delegates_payload_and_catch_projection() {
     let boundary = skiff_runtime_boundary::error::RuntimeError::file_error("std.file denied");
     let expected_payload = boundary.payload();
     let expected_catch_projection = boundary.catch_projection();
-    let error = Error::Boundary(boundary);
+    let error = Error::from(boundary);
 
     assert_eq!(error.payload(), expected_payload);
     assert_eq!(error.catch_projection(), expected_catch_projection);
@@ -44,7 +44,7 @@ fn linked_type_plan_diagnostics_remain_uncatchable() {
     let invalid_artifact = Error::InvalidArtifact("missing linked type".to_string());
     assert_eq!(invalid_artifact.catch_projection(), None);
 
-    let diagnostic = Error::Boundary(skiff_runtime_boundary::error::RuntimeError::Decode(
+    let diagnostic = Error::from(skiff_runtime_boundary::error::RuntimeError::Decode(
         "ordinary boundary diagnostic".to_string(),
     ));
     assert_eq!(diagnostic.catch_projection(), None);

@@ -539,8 +539,7 @@ mod applied_nominal_type_plan_tests {
                 ),
             ] {
                 let error = RuntimeTypePlan::from_linked(&ty, ctx)
-                    .err()
-                    .expect("invalid applied nominal must fail closed");
+                    .expect_err("invalid applied nominal must fail closed");
                 assert!(error.to_string().contains(expected), "{error}");
             }
         });
@@ -1038,7 +1037,9 @@ mod builtin_catalog_tests {
 
     #[test]
     fn leaf_node_maps_only_leaf_shapes() {
-        let cases: [(&str, fn(&RuntimeTypeNode) -> bool); 13] = [
+        type RuntimeNodePredicate = fn(&RuntimeTypeNode) -> bool;
+
+        let cases: [(&str, RuntimeNodePredicate); 13] = [
             ("Json", |n: &RuntimeTypeNode| {
                 matches!(n, RuntimeTypeNode::Json)
             }),

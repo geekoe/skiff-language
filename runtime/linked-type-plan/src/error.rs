@@ -1,4 +1,5 @@
 use serde_json::json;
+use skiff_runtime_boundary::error::RuntimeError as BoundaryRuntimeError;
 use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
     service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
@@ -11,10 +12,16 @@ pub enum Error {
     #[error("protocol error for {target}: {message}")]
     Protocol { target: String, message: String },
     #[error(transparent)]
-    Boundary(#[from] skiff_runtime_boundary::error::RuntimeError),
+    Boundary(#[from] Box<BoundaryRuntimeError>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<BoundaryRuntimeError> for Error {
+    fn from(error: BoundaryRuntimeError) -> Self {
+        Self::Boundary(Box::new(error))
+    }
+}
 
 impl WirePayload for Error {
     fn payload(&self) -> RuntimeErrorPayload {

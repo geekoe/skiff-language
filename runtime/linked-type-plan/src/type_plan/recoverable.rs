@@ -36,7 +36,7 @@ pub fn linked_interface_instantiation_runtime_id(
     if interface.canonical_type_args.is_empty() {
         return interface.interface_abi_id.clone();
     }
-    sorted_json_string(serde_json::to_value(interface).unwrap_or_else(|_| serde_json::Value::Null))
+    sorted_json_string(serde_json::to_value(interface).unwrap_or(serde_json::Value::Null))
 }
 
 pub fn linked_type_ref_runtime_key(type_ref: &LinkedTypeRef) -> String {
@@ -56,9 +56,7 @@ pub fn recoverable_interface_projection_identity(
     }
     format!(
         "interface:{}",
-        sorted_json_string(
-            serde_json::to_value(interface).unwrap_or_else(|_| serde_json::Value::Null),
-        )
+        sorted_json_string(serde_json::to_value(interface).unwrap_or(serde_json::Value::Null))
     )
 }
 

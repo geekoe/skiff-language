@@ -511,11 +511,11 @@ mod tests {
             schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
             package_id: package_id.to_string(),
             package_version: "1.0.0".to_string(),
-            package_build_id: PackageBuildId::new(&format!("{package_id}:build")),
+            package_build_id: PackageBuildId::new(format!("{package_id}:build")),
             files: Vec::new(),
             static_resources: Vec::new(),
             package_local_abi: PackageLocalAbi {
-                local_abi_identity: PackageLocalAbiIdentity::new(&format!("{package_id}:abi")),
+                local_abi_identity: PackageLocalAbiIdentity::new(format!("{package_id}:abi")),
                 public_symbols: BTreeMap::new(),
                 implementation_symbols: BTreeMap::new(),
             },
