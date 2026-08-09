@@ -338,7 +338,7 @@ fn load_rejects_missing_bytecode_before_publication() {
     assert!(matches!(
         DeploymentBytecodeLoader::new(&fixture.resolver).load(&fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::MissingBytecode { package })
-            if package == fixture.implementation_reference
+            if package.as_ref() == &fixture.implementation_reference
     ));
 
     let mut fixture = LoadFixture::new(true, true);
@@ -350,9 +350,13 @@ fn load_rejects_missing_bytecode_before_publication() {
     assert!(matches!(
         DeploymentBytecodeLoader::new(&fixture.resolver).load(&fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::ContentResolution {
-            reference: DeploymentBytecodeReference::PackageBytecode { package, .. },
+            reference,
             ..
-        }) if package == fixture.implementation_reference
+        }) if matches!(
+            reference.as_ref(),
+            DeploymentBytecodeReference::PackageBytecode { package, .. }
+                if package == &fixture.implementation_reference
+        )
     ));
 }
 
@@ -374,9 +378,10 @@ fn load_rejects_package_and_bytecode_reference_tampering() {
         DeploymentBytecodeLoader::new(&package_fixture.resolver)
             .load(&package_fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-            expected: DeploymentBytecodeReference::Package(_),
-            actual: DeploymentBytecodeReference::Package(_),
-        })
+            expected,
+            actual,
+        }) if matches!(expected.as_ref(), DeploymentBytecodeReference::Package(_))
+            && matches!(actual.as_ref(), DeploymentBytecodeReference::Package(_))
     ));
 
     let mut bytecode_fixture = LoadFixture::new(true, true);
@@ -400,9 +405,15 @@ fn load_rejects_package_and_bytecode_reference_tampering() {
         DeploymentBytecodeLoader::new(&bytecode_fixture.resolver)
             .load(&bytecode_fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-            expected: DeploymentBytecodeReference::PackageBytecode { .. },
-            actual: DeploymentBytecodeReference::PackageBytecode { .. },
-        })
+            expected,
+            actual,
+        }) if matches!(
+            expected.as_ref(),
+            DeploymentBytecodeReference::PackageBytecode { .. }
+        ) && matches!(
+            actual.as_ref(),
+            DeploymentBytecodeReference::PackageBytecode { .. }
+        )
     ));
 }
 
@@ -488,9 +499,9 @@ fn load_fails_closed_for_missing_package_and_contract_records() {
         DeploymentBytecodeLoader::new(&package_fixture.resolver)
             .load(&package_fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::ContentResolution {
-            reference: DeploymentBytecodeReference::Package(_),
+            reference,
             ..
-        })
+        }) if matches!(reference.as_ref(), DeploymentBytecodeReference::Package(_))
     ));
 
     let mut contract_fixture = LoadFixture::new(true, true);
@@ -502,9 +513,12 @@ fn load_fails_closed_for_missing_package_and_contract_records() {
         DeploymentBytecodeLoader::new(&contract_fixture.resolver)
             .load(&contract_fixture.deployment_reference),
         Err(DeploymentBytecodeHydrationError::ContentResolution {
-            reference: DeploymentBytecodeReference::ServiceContract(_),
+            reference,
             ..
-        })
+        }) if matches!(
+            reference.as_ref(),
+            DeploymentBytecodeReference::ServiceContract(_)
+        )
     ));
 }
 

@@ -41,24 +41,24 @@ pub enum DeploymentBytecodeReference {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentBytecodeHydrationError {
     ContentResolution {
-        reference: DeploymentBytecodeReference,
+        reference: Box<DeploymentBytecodeReference>,
         message: String,
     },
     InvalidContent {
-        reference: DeploymentBytecodeReference,
+        reference: Box<DeploymentBytecodeReference>,
         message: String,
     },
     MissingBytecode {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
     },
     ReferenceMismatch {
-        expected: DeploymentBytecodeReference,
-        actual: DeploymentBytecodeReference,
+        expected: Box<DeploymentBytecodeReference>,
+        actual: Box<DeploymentBytecodeReference>,
     },
     DuplicatePackage {
         package_build_id: PackageBuildId,
-        first: PackageArtifactRef,
-        duplicate: PackageArtifactRef,
+        first: Box<PackageArtifactRef>,
+        duplicate: Box<PackageArtifactRef>,
     },
     DuplicatePackageBinding {
         key: PackageRequirementKey,
@@ -71,8 +71,8 @@ pub enum DeploymentBytecodeHydrationError {
     },
     PackageRequirementMismatch {
         key: PackageRequirementKey,
-        requirement: PackageRequirement,
-        selected: PackageArtifactRef,
+        requirement: Box<PackageRequirement>,
+        selected: Box<PackageArtifactRef>,
     },
     ConflictingPackageOwner {
         package_id: String,
@@ -84,16 +84,16 @@ pub enum DeploymentBytecodeHydrationError {
     },
     ContractMismatch {
         key: Option<ServiceRequirementKey>,
-        expected: Option<ServiceContractRef>,
-        actual: Option<ServiceContractRef>,
+        expected: Option<Box<ServiceContractRef>>,
+        actual: Option<Box<ServiceContractRef>>,
     },
     MissingOperation {
         key: ServiceRequirementKey,
-        contract: ServiceContractRef,
+        contract: Box<ServiceContractRef>,
         operation: ContractOperationId,
     },
     OperationCoverageMismatch {
-        contract: ServiceContractRef,
+        contract: Box<ServiceContractRef>,
         expected: BTreeSet<ContractOperationId>,
         actual: BTreeSet<ContractOperationId>,
     },
@@ -200,25 +200,25 @@ impl HydratedBytecodePackage {
         let actual_reference = exact_package_reference(&artifact);
         if reference != actual_reference {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-                expected: DeploymentBytecodeReference::Package(reference),
-                actual: DeploymentBytecodeReference::Package(actual_reference),
+                expected: Box::new(DeploymentBytecodeReference::Package(reference)),
+                actual: Box::new(DeploymentBytecodeReference::Package(actual_reference)),
             });
         }
         let declared_bytecode = artifact.bytecode.clone().ok_or_else(|| {
             DeploymentBytecodeHydrationError::MissingBytecode {
-                package: reference.clone(),
+                package: Box::new(reference.clone()),
             }
         })?;
         if &declared_bytecode != bytecode.reference() {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-                expected: DeploymentBytecodeReference::PackageBytecode {
+                expected: Box::new(DeploymentBytecodeReference::PackageBytecode {
                     package: reference.clone(),
                     bytecode: declared_bytecode,
-                },
-                actual: DeploymentBytecodeReference::PackageBytecode {
+                }),
+                actual: Box::new(DeploymentBytecodeReference::PackageBytecode {
                     package: reference,
                     bytecode: bytecode.reference().clone(),
-                },
+                }),
             });
         }
         Ok(Self {
@@ -299,8 +299,10 @@ impl HydratedDeploymentBytecode {
         let actual_reference = exact_deployment_reference(&deployment);
         if reference != actual_reference {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-                expected: DeploymentBytecodeReference::ServiceDeployment(reference),
-                actual: DeploymentBytecodeReference::ServiceDeployment(actual_reference),
+                expected: Box::new(DeploymentBytecodeReference::ServiceDeployment(reference)),
+                actual: Box::new(DeploymentBytecodeReference::ServiceDeployment(
+                    actual_reference,
+                )),
             });
         }
         validate_contract_store(&contract_store)?;
@@ -368,21 +370,29 @@ where
             .resolve_deployment(reference)
             .map_err(
                 |error| DeploymentBytecodeHydrationError::ContentResolution {
-                    reference: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
+                    reference: Box::new(DeploymentBytecodeReference::ServiceDeployment(
+                        reference.clone(),
+                    )),
                     message: error.to_string(),
                 },
             )?;
         let actual_reference = exact_deployment_reference(&deployment);
         if reference != &actual_reference {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-                expected: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
-                actual: DeploymentBytecodeReference::ServiceDeployment(actual_reference),
+                expected: Box::new(DeploymentBytecodeReference::ServiceDeployment(
+                    reference.clone(),
+                )),
+                actual: Box::new(DeploymentBytecodeReference::ServiceDeployment(
+                    actual_reference,
+                )),
             });
         }
         validate_deployment_binding_uniqueness(&deployment)?;
         skiff_artifact_identity::validate_service_deployment_ref(reference, &deployment).map_err(
             |error| DeploymentBytecodeHydrationError::InvalidContent {
-                reference: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
+                reference: Box::new(DeploymentBytecodeReference::ServiceDeployment(
+                    reference.clone(),
+                )),
                 message: error.to_string(),
             },
         )?;
@@ -423,8 +433,8 @@ where
                 Entry::Occupied(entry) if entry.get() != &package_reference => {
                     return Err(DeploymentBytecodeHydrationError::DuplicatePackage {
                         package_build_id: package_reference.package_build_id.clone(),
-                        first: entry.get().clone(),
-                        duplicate: package_reference,
+                        first: Box::new(entry.get().clone()),
+                        duplicate: Box::new(package_reference),
                     });
                 }
                 Entry::Occupied(_) => continue,
@@ -450,7 +460,7 @@ where
             let requirements = artifact.package_requirements.clone();
             let bytecode_reference = artifact.bytecode.clone().ok_or_else(|| {
                 DeploymentBytecodeHydrationError::MissingBytecode {
-                    package: package_reference.clone(),
+                    package: Box::new(package_reference.clone()),
                 }
             })?;
             let bytecode = self
@@ -458,10 +468,10 @@ where
                 .resolve_package_bytecode(&package_reference, &bytecode_reference)
                 .map_err(
                     |error| DeploymentBytecodeHydrationError::ContentResolution {
-                        reference: DeploymentBytecodeReference::PackageBytecode {
+                        reference: Box::new(DeploymentBytecodeReference::PackageBytecode {
                             package: package_reference.clone(),
                             bytecode: bytecode_reference,
-                        },
+                        }),
                         message: error.to_string(),
                     },
                 )?;
@@ -497,20 +507,20 @@ where
     ) -> Result<Arc<PackageArtifact>, DeploymentBytecodeHydrationError> {
         let artifact = self.resolver.resolve_package(reference).map_err(|error| {
             DeploymentBytecodeHydrationError::ContentResolution {
-                reference: DeploymentBytecodeReference::Package(reference.clone()),
+                reference: Box::new(DeploymentBytecodeReference::Package(reference.clone())),
                 message: error.to_string(),
             }
         })?;
         let actual_reference = exact_package_reference(&artifact);
         if reference != &actual_reference {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-                expected: DeploymentBytecodeReference::Package(reference.clone()),
-                actual: DeploymentBytecodeReference::Package(actual_reference),
+                expected: Box::new(DeploymentBytecodeReference::Package(reference.clone())),
+                actual: Box::new(DeploymentBytecodeReference::Package(actual_reference)),
             });
         }
         skiff_artifact_identity::validate_package_artifact_identities(&artifact).map_err(
             |error| DeploymentBytecodeHydrationError::InvalidContent {
-                reference: DeploymentBytecodeReference::Package(reference.clone()),
+                reference: Box::new(DeploymentBytecodeReference::Package(reference.clone())),
                 message: error.to_string(),
             },
         )?;
@@ -546,15 +556,15 @@ where
                 let selected_contract = selectors.get(&key).ok_or_else(|| {
                     DeploymentBytecodeHydrationError::ContractMismatch {
                         key: Some(key.clone()),
-                        expected: Some(expected_contract.clone()),
+                        expected: Some(Box::new(expected_contract.clone())),
                         actual: None,
                     }
                 })?;
                 if selected_contract != &expected_contract {
                     return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                         key: Some(key),
-                        expected: Some(expected_contract),
-                        actual: Some(selected_contract.clone()),
+                        expected: Some(Box::new(expected_contract)),
+                        actual: Some(Box::new(selected_contract.clone())),
                     });
                 }
                 let contract = if let Some(contract) = contracts.get(selected_contract) {
@@ -568,7 +578,7 @@ where
                     if !contract.operations.contains_key(operation) {
                         return Err(DeploymentBytecodeHydrationError::MissingOperation {
                             key: key.clone(),
-                            contract: selected_contract.clone(),
+                            contract: Box::new(selected_contract.clone()),
                             operation: operation.clone(),
                         });
                     }
@@ -590,7 +600,9 @@ where
     ) -> Result<Arc<ServiceContract>, DeploymentBytecodeHydrationError> {
         let contract = self.resolver.resolve_contract(reference).map_err(|error| {
             DeploymentBytecodeHydrationError::ContentResolution {
-                reference: DeploymentBytecodeReference::ServiceContract(reference.clone()),
+                reference: Box::new(DeploymentBytecodeReference::ServiceContract(
+                    reference.clone(),
+                )),
                 message: error.to_string(),
             }
         })?;
@@ -598,13 +610,15 @@ where
         if reference != &actual_reference {
             return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                 key: key.cloned(),
-                expected: Some(reference.clone()),
-                actual: Some(actual_reference),
+                expected: Some(Box::new(reference.clone())),
+                actual: Some(Box::new(actual_reference)),
             });
         }
         skiff_artifact_identity::validate_service_contract_identities(&contract).map_err(
             |error| DeploymentBytecodeHydrationError::InvalidContent {
-                reference: DeploymentBytecodeReference::ServiceContract(reference.clone()),
+                reference: Box::new(DeploymentBytecodeReference::ServiceContract(
+                    reference.clone(),
+                )),
                 message: error.to_string(),
             },
         )?;
@@ -647,7 +661,7 @@ fn validate_deployment_operation_coverage(
     if actual != expected {
         return Err(
             DeploymentBytecodeHydrationError::OperationCoverageMismatch {
-                contract: deployment.contract.clone(),
+                contract: Box::new(deployment.contract.clone()),
                 expected,
                 actual,
             },
@@ -690,8 +704,8 @@ fn validate_package_requirement(
         return Err(
             DeploymentBytecodeHydrationError::PackageRequirementMismatch {
                 key: key.clone(),
-                requirement: requirement.clone(),
-                selected: binding.package.clone(),
+                requirement: Box::new(requirement.clone()),
+                selected: Box::new(binding.package.clone()),
             },
         );
     }
@@ -732,8 +746,8 @@ fn validate_contract_store(
         if expected != &actual {
             return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                 key: None,
-                expected: Some(expected.clone()),
-                actual: Some(actual),
+                expected: Some(Box::new(expected.clone())),
+                actual: Some(Box::new(actual)),
             });
         }
     }
@@ -753,8 +767,8 @@ fn canonical_packages(
             Entry::Occupied(entry) => {
                 return Err(DeploymentBytecodeHydrationError::DuplicatePackage {
                     package_build_id: build_id,
-                    first: entry.get().reference.clone(),
-                    duplicate: package.reference,
+                    first: Box::new(entry.get().reference.clone()),
+                    duplicate: Box::new(package.reference),
                 });
             }
         }
@@ -793,15 +807,15 @@ fn canonical_service_dependencies(
                     Some(expected) if expected != &dependency.contract => {
                         return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                             key: Some(key),
-                            expected: Some(expected.clone()),
-                            actual: Some(dependency.contract),
+                            expected: Some(Box::new(expected.clone())),
+                            actual: Some(Box::new(dependency.contract)),
                         });
                     }
                     None => {
                         return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                             key: Some(key),
                             expected: None,
-                            actual: Some(dependency.contract),
+                            actual: Some(Box::new(dependency.contract)),
                         });
                     }
                     Some(_) => {}
@@ -817,7 +831,7 @@ fn canonical_service_dependencies(
     {
         return Err(DeploymentBytecodeHydrationError::ContractMismatch {
             key: Some((*key).clone()),
-            expected: Some((*contract).clone()),
+            expected: Some(Box::new((*contract).clone())),
             actual: None,
         });
     }
@@ -832,7 +846,7 @@ fn validate_required_contracts(
     if !contracts.contains_key(&deployment.contract) {
         return Err(DeploymentBytecodeHydrationError::ContractMismatch {
             key: None,
-            expected: Some(deployment.contract.clone()),
+            expected: Some(Box::new(deployment.contract.clone())),
             actual: None,
         });
     }
@@ -840,7 +854,7 @@ fn validate_required_contracts(
         if !contracts.contains_key(&dependency.contract) {
             return Err(DeploymentBytecodeHydrationError::ContractMismatch {
                 key: Some(dependency.key.clone()),
-                expected: Some(dependency.contract.clone()),
+                expected: Some(Box::new(dependency.contract.clone())),
                 actual: None,
             });
         }

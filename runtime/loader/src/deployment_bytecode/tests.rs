@@ -193,7 +193,7 @@ fn package_checked_constructor_classifies_missing_and_mismatched_bytecode() {
             Arc::clone(&bytecode)
         ),
         Err(DeploymentBytecodeHydrationError::MissingBytecode { package })
-            if package == missing_reference
+            if package.as_ref() == &missing_reference
     ));
 
     let other = admitted_bytecode("other");
@@ -206,9 +206,15 @@ fn package_checked_constructor_classifies_missing_and_mismatched_bytecode() {
     assert!(matches!(
         HydratedBytecodePackage::checked(mismatched_reference, mismatched, other),
         Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
-            expected: DeploymentBytecodeReference::PackageBytecode { .. },
-            actual: DeploymentBytecodeReference::PackageBytecode { .. },
-        })
+            expected,
+            actual,
+        }) if matches!(
+            expected.as_ref(),
+            DeploymentBytecodeReference::PackageBytecode { .. }
+        ) && matches!(
+            actual.as_ref(),
+            DeploymentBytecodeReference::PackageBytecode { .. }
+        )
     ));
 }
 
@@ -371,7 +377,9 @@ fn deployment_checked_constructor_rejects_contract_mismatch() {
             key: Some(mismatch_key),
             expected: Some(expected),
             actual: Some(actual),
-        }) if mismatch_key == key && expected == expected_contract && actual == actual_contract
+        }) if mismatch_key == key
+            && expected.as_ref() == &expected_contract
+            && actual.as_ref() == &actual_contract
     ));
 }
 

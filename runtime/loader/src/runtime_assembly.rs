@@ -185,6 +185,8 @@ pub struct HydratedStaticResource {
     bytes: Arc<[u8]>,
 }
 
+type LoadedPackageFiles = (Vec<Arc<FileIrUnit>>, BTreeMap<String, usize>);
+
 impl HydratedStaticResource {
     pub fn reference(&self) -> &PublicationResourceRef {
         &self.reference
@@ -453,8 +455,7 @@ where
                         .resolve_package_schema_type(&record_ref)
                         .with_context(|| {
                             format!(
-                                "failed to resolve package schema type {} for contract {reference:?}",
-                                type_id
+                                "failed to resolve package schema type {type_id} for contract {reference:?}"
                             )
                         })?;
                     shared_records.insert(type_id.clone(), Arc::clone(&record));
@@ -739,7 +740,7 @@ where
         package_ref: &PackageArtifactRef,
         package: &PackageArtifact,
         shared_files: &mut BTreeMap<String, Arc<FileIrUnit>>,
-    ) -> anyhow::Result<(Vec<Arc<FileIrUnit>>, BTreeMap<String, usize>)> {
+    ) -> anyhow::Result<LoadedPackageFiles> {
         let mut references = package.files.clone();
         references.sort_by(|left, right| {
             (&left.file_ir_identity, &left.module_path)
