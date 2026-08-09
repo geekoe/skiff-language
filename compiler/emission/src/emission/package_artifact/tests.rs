@@ -42,6 +42,14 @@ fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity()
         materialized.published.identity,
         projected.package_build_id.to_string()
     );
+    assert_eq!(
+        materialized.published.value["syntheticCallbackOwners"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        materialized.published.value["bytecodeSchemaRecords"],
+        serde_json::json!({})
+    );
     assert!(materialized
         .published
         .path
@@ -257,6 +265,8 @@ fn fixture() -> (
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
