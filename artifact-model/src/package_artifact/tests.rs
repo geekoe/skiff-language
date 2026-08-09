@@ -43,6 +43,35 @@ fn package_callable_signature_rejects_closed_throw_set_field() {
 }
 
 #[test]
+fn package_callable_parameter_mode_is_required_and_round_trips() {
+    for mode in [crate::ParamModeIr::Value, crate::ParamModeIr::InOut] {
+        let parameter = PackageCallableParameter {
+            name: "input".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            mode,
+        };
+        let wire = serde_json::to_value(&parameter).unwrap();
+        assert_eq!(
+            wire["mode"]["kind"],
+            match mode {
+                crate::ParamModeIr::Value => "value",
+                crate::ParamModeIr::InOut => "inOut",
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<PackageCallableParameter>(wire.clone()).unwrap(),
+            parameter
+        );
+
+        let mut missing = wire;
+        missing.as_object_mut().unwrap().remove("mode");
+        assert!(serde_json::from_value::<PackageCallableParameter>(missing).is_err());
+    }
+}
+
+#[test]
 fn any_interface_wire_preserves_exact_nested_package_identity() {
     let ty = PackageTypeRef::Nullable {
         inner: Box::new(PackageTypeRef::Container {

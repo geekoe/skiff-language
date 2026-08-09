@@ -13,6 +13,7 @@ use crate::{
         ServiceRequirement,
     },
     contract_types::{PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PackageTypeRef},
+    executable::ParamModeIr,
     executable_target::OperationTargetRef,
     package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
     refs::{BytecodeArtifactRef, FileIrRef},
@@ -25,6 +26,9 @@ use crate::{
 pub struct PackageCallableParameter {
     pub name: String,
     pub ty: PackageTypeRef,
+    /// Calling convention is part of the package-local ABI and is required
+    /// on the wire even for ordinary value parameters.
+    pub mode: ParamModeIr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -209,21 +209,6 @@ fn validate_boundary_callable_projection(
             return Ok(());
         }
     }
-    // The inout parameter mode lives in File IR `ParamIr.mode`; the wire
-    // Package Local ABI signature cannot carry it, so the validator's own
-    // derivation stays `Available` for a callable the compiler must mark
-    // `Unavailable(InOutNotAllowedAtServiceBoundary)`. The compiler
-    // projection is the source of truth for this single reason (design
-    // §2.2/§3.1); any other divergence still fails closed below.
-    if let (
-        BoundaryCallableProjection::Available { .. },
-        BoundaryCallableProjection::Unavailable { reasons },
-    ) = (&expected, projection)
-    {
-        if reasons == &[BoundaryUnavailableReason::InOutNotAllowedAtServiceBoundary] {
-            return Ok(());
-        }
-    }
     Err(BoundaryProjectionValidationError::new(format!(
         "boundary projection {callable_id} is not canonical for its signature, semantic facts, and runtime requirements; expected={expected:?}, actual={projection:?}"
     )))
@@ -234,12 +219,6 @@ fn validate_boundary_callable_projection(
 /// require every locally derivable reason but cannot reconstruct those extra
 /// closure facts. Keep this whitelist aligned with compiler boundary type
 /// projection; semantic/effect reasons must remain exactly derivable here.
-///
-/// `InOutNotAllowedAtServiceBoundary` belongs here for the same reason: the
-/// inout parameter mode lives in File IR `ParamIr.mode`, and the Package
-/// Local ABI signature wire does not yet carry parameter modes, so the
-/// validator cannot re-derive the reason; the compiler projection is the
-/// source of truth for it.
 fn is_type_closure_unavailable_reason(reason: &BoundaryUnavailableReason) -> bool {
     matches!(
         reason,
@@ -247,7 +226,6 @@ fn is_type_closure_unavailable_reason(reason: &BoundaryUnavailableReason) -> boo
             | BoundaryUnavailableReason::NativeAdapterUnavailable
             | BoundaryUnavailableReason::UnsupportedBoundaryType
             | BoundaryUnavailableReason::UnsupportedStream
-            | BoundaryUnavailableReason::InOutNotAllowedAtServiceBoundary
     )
 }
 
@@ -407,7 +385,7 @@ fn project_operation_contract(
         .parameters
         .iter()
         .filter_map(|parameter| {
-            project_package_type(&parameter.ty)
+            let projected = project_package_type(&parameter.ty)
                 .and_then(|ty| {
                     let value_plan = canonical_projected_plan(
                         &ty,
@@ -423,7 +401,15 @@ fn project_operation_contract(
                     })
                 })
                 .map_err(|reason| push_reason(reasons, reason))
-                .ok()
+                .ok();
+            if !parameter.mode.is_value() {
+                push_reason(
+                    reasons,
+                    BoundaryUnavailableReason::InOutNotAllowedAtServiceBoundary,
+                );
+                return None;
+            }
+            projected
         })
         .collect::<Vec<_>>();
     let return_projection = project_return(&signature.return_type)

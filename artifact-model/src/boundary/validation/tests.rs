@@ -223,6 +223,50 @@ fn unary_signature_and_all_value_plan_axes_are_validated() {
 }
 
 #[test]
+fn package_callable_parameter_mode_is_part_of_exact_boundary_validation() {
+    let value_signature = unary_signature();
+    let facts = safe_facts();
+    let runtime = empty_runtime_requirements();
+    let callable_id = PackageCallableId::new("pkg-callable:example.pkg:run");
+    let available = canonical_boundary_callable_projection(&value_signature, &facts, &runtime);
+
+    let mut inout_signature = value_signature.clone();
+    inout_signature.parameters[0].mode = crate::ParamModeIr::InOut;
+    let unavailable = canonical_boundary_callable_projection(&inout_signature, &facts, &runtime);
+    assert_eq!(
+        unavailable,
+        BoundaryCallableProjection::Unavailable {
+            reasons: vec![BoundaryUnavailableReason::InOutNotAllowedAtServiceBoundary]
+        }
+    );
+    assert!(validate_boundary_callable_projection(
+        &callable_id,
+        &inout_signature,
+        &facts,
+        &runtime,
+        &unavailable,
+    )
+    .is_ok());
+
+    assert!(validate_boundary_callable_projection(
+        &callable_id,
+        &inout_signature,
+        &facts,
+        &runtime,
+        &available,
+    )
+    .is_err());
+    assert!(validate_boundary_callable_projection(
+        &callable_id,
+        &value_signature,
+        &facts,
+        &runtime,
+        &unavailable,
+    )
+    .is_err());
+}
+
+#[test]
 fn server_stream_is_derived_only_from_exact_stream_signature() {
     let mut signature = unary_signature();
     signature.return_type = PackageTypeRef::Container {
@@ -458,6 +502,7 @@ fn server_stream_extends_every_exact_callback_position_to_stream_lifetime() {
         parameters: vec![PackageCallableParameter {
             name: "callback".to_string(),
             ty: callback.clone(),
+            mode: crate::ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Container {
             name: "Stream".to_string(),
@@ -737,6 +782,7 @@ fn unary_signature() -> PackageCallableSignature {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: crate::ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::PackageSchema {
             package_id: "example.pkg".to_string(),
@@ -753,6 +799,7 @@ fn callback_signature(return_type: PackageTypeRef) -> PackageCallableSignature {
         parameters: vec![PackageCallableParameter {
             name: "callback".to_string(),
             ty: callback_package_type(),
+            mode: crate::ParamModeIr::Value,
         }],
         return_type,
         may_suspend: true,
@@ -788,7 +835,7 @@ fn safe_facts() -> CallableSemanticFacts {
                 may_pending: false,
                 pending_effect_categories: Vec::new(),
                 inout_path_effects: Vec::new(),
-},
+            },
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],
