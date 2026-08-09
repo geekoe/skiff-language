@@ -34,6 +34,6 @@ pub use intrinsic::{
     LinkedIntrinsicTargetError, LinkedStaticIntrinsicTarget,
 };
 pub use local::{
-    LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedExactLocalTarget,
-    LinkedServiceOperationTarget,
+    LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
+    LinkedExactLocalTarget, LinkedServiceOperationTarget,
 };

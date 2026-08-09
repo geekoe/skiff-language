@@ -56,10 +56,10 @@ pub use tables::{
     LinkedWritablePathEntry, LinkedWritablePathError, LinkedWritablePathSegment,
 };
 pub use targets::{
-    LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedArtifactPoolOrigin,
-    LinkedArtifactPoolOriginError, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
-    LinkedCallbackCaptureLayoutError, LinkedCallbackInterfaceMethod, LinkedConstantEntry,
-    LinkedConstantReference, LinkedConstantRoot, LinkedConstantSymbolPath,
+    LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
+    LinkedArtifactPoolOrigin, LinkedArtifactPoolOriginError, LinkedCallbackCapture,
+    LinkedCallbackCaptureLayout, LinkedCallbackCaptureLayoutError, LinkedCallbackInterfaceMethod,
+    LinkedConstantEntry, LinkedConstantReference, LinkedConstantRoot, LinkedConstantSymbolPath,
     LinkedConstantSymbolPathParseError, LinkedContainerLayout, LinkedContainerLayoutKind,
     LinkedContainerPosition, LinkedContainerPositionKind, LinkedExactLocalTarget,
     LinkedFrozenBehaviorBinding, LinkedFrozenConstantNode, LinkedFrozenConstantValue,

@@ -79,44 +79,30 @@ impl LinkedServiceOperationTarget {
     }
 }
 
-/// Actor entry target inside the exact owner image.
+/// Exact build-owned actor implementation facts shared by method and create
+/// targets. The verifier must still compare these untrusted linked facts with
+/// the owning package's actor authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkedActorMethodTarget {
-    index: ActorMethodIndex,
+pub struct LinkedActorImplementationRef {
     owner_package_build_id: PackageBuildId,
     actor: ServiceSymbolRef,
     actor_abi_identity: ActorAbiIdentity,
     actor_implementation_identity: ActorImplementationIdentity,
-    method_identity: ActorMethodIdentity,
-    function: FunctionIndex,
-    signature: LinkedCallableSignature,
 }
 
-impl LinkedActorMethodTarget {
+impl LinkedActorImplementationRef {
     pub fn new(
-        index: ActorMethodIndex,
         owner_package_build_id: PackageBuildId,
         actor: ServiceSymbolRef,
         actor_abi_identity: ActorAbiIdentity,
         actor_implementation_identity: ActorImplementationIdentity,
-        method_identity: ActorMethodIdentity,
-        function: FunctionIndex,
-        signature: LinkedCallableSignature,
     ) -> Self {
         Self {
-            index,
             owner_package_build_id,
             actor,
             actor_abi_identity,
             actor_implementation_identity,
-            method_identity,
-            function,
-            signature,
         }
-    }
-
-    pub const fn index(&self) -> ActorMethodIndex {
-        self.index
     }
 
     pub const fn owner_package_build_id(&self) -> &PackageBuildId {
@@ -133,6 +119,58 @@ impl LinkedActorMethodTarget {
 
     pub const fn actor_implementation_identity(&self) -> &ActorImplementationIdentity {
         &self.actor_implementation_identity
+    }
+}
+
+/// Actor entry target inside the exact owner image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedActorMethodTarget {
+    index: ActorMethodIndex,
+    actor_implementation: LinkedActorImplementationRef,
+    method_identity: ActorMethodIdentity,
+    function: FunctionIndex,
+    signature: LinkedCallableSignature,
+}
+
+impl LinkedActorMethodTarget {
+    pub fn new(
+        index: ActorMethodIndex,
+        actor_implementation: LinkedActorImplementationRef,
+        method_identity: ActorMethodIdentity,
+        function: FunctionIndex,
+        signature: LinkedCallableSignature,
+    ) -> Self {
+        Self {
+            index,
+            actor_implementation,
+            method_identity,
+            function,
+            signature,
+        }
+    }
+
+    pub const fn index(&self) -> ActorMethodIndex {
+        self.index
+    }
+
+    pub const fn actor_implementation(&self) -> &LinkedActorImplementationRef {
+        &self.actor_implementation
+    }
+
+    pub const fn owner_package_build_id(&self) -> &PackageBuildId {
+        self.actor_implementation.owner_package_build_id()
+    }
+
+    pub const fn actor(&self) -> &ServiceSymbolRef {
+        self.actor_implementation.actor()
+    }
+
+    pub const fn actor_abi_identity(&self) -> &ActorAbiIdentity {
+        self.actor_implementation.actor_abi_identity()
+    }
+
+    pub const fn actor_implementation_identity(&self) -> &ActorImplementationIdentity {
+        self.actor_implementation.actor_implementation_identity()
     }
 
     pub const fn method_identity(&self) -> &ActorMethodIdentity {
@@ -154,33 +192,23 @@ impl LinkedActorMethodTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedActorCreateTarget {
     index: ActorCreateIndex,
-    owner_package_build_id: PackageBuildId,
-    actor: ServiceSymbolRef,
-    actor_abi_identity: ActorAbiIdentity,
-    actor_implementation_identity: ActorImplementationIdentity,
+    actor_implementation: LinkedActorImplementationRef,
     create_identity: ActorMethodIdentity,
     function: FunctionIndex,
     signature: LinkedCallableSignature,
 }
 
 impl LinkedActorCreateTarget {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         index: ActorCreateIndex,
-        owner_package_build_id: PackageBuildId,
-        actor: ServiceSymbolRef,
-        actor_abi_identity: ActorAbiIdentity,
-        actor_implementation_identity: ActorImplementationIdentity,
+        actor_implementation: LinkedActorImplementationRef,
         create_identity: ActorMethodIdentity,
         function: FunctionIndex,
         signature: LinkedCallableSignature,
     ) -> Self {
         Self {
             index,
-            owner_package_build_id,
-            actor,
-            actor_abi_identity,
-            actor_implementation_identity,
+            actor_implementation,
             create_identity,
             function,
             signature,
@@ -191,20 +219,24 @@ impl LinkedActorCreateTarget {
         self.index
     }
 
+    pub const fn actor_implementation(&self) -> &LinkedActorImplementationRef {
+        &self.actor_implementation
+    }
+
     pub const fn owner_package_build_id(&self) -> &PackageBuildId {
-        &self.owner_package_build_id
+        self.actor_implementation.owner_package_build_id()
     }
 
     pub const fn actor(&self) -> &ServiceSymbolRef {
-        &self.actor
+        self.actor_implementation.actor()
     }
 
     pub const fn actor_abi_identity(&self) -> &ActorAbiIdentity {
-        &self.actor_abi_identity
+        self.actor_implementation.actor_abi_identity()
     }
 
     pub const fn actor_implementation_identity(&self) -> &ActorImplementationIdentity {
-        &self.actor_implementation_identity
+        self.actor_implementation.actor_implementation_identity()
     }
 
     pub const fn create_identity(&self) -> &ActorMethodIdentity {

@@ -12,16 +12,16 @@ use crate::{
     ActorCreateIndex, ActorMethodIndex, ArtifactCallbackCaptureIndex, ArtifactFunctionKey,
     ArtifactFunctionKeyParseError, CallbackCaptureLayoutIndex, FrameSlotIndex, FunctionIndex,
     HostEffectAdapterIndex, InterfaceTableIndex, IntrinsicIndex, LinkedActorCreateTarget,
-    LinkedActorMethodTarget, LinkedArtifactPoolOrigin, LinkedCallbackCapture,
-    LinkedCallbackCaptureLayout, LinkedCallbackInterfaceMethod, LinkedGatewayCallableRole,
-    LinkedGatewayEntry, LinkedHostBindingKey, LinkedHostEffectAdapterTarget,
-    LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
-    LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
-    LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind, LinkedIntrinsicTarget,
-    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
-    LinkedResourceDropPlan, LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget,
-    LinkedSyntheticCallbackTarget, LinkedValueTransferPlan, ServiceOperationIndex,
-    SpecializationKey, SyntheticCallbackIndex, TypeIndex,
+    LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedArtifactPoolOrigin,
+    LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedCallbackInterfaceMethod,
+    LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedHostBindingKey,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
+    LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
+    LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
+    LinkedIntrinsicTarget, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceOperationTarget,
+    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedValueTransferPlan,
+    ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex, TypeIndex,
 };
 
 use super::fixtures::{
@@ -155,12 +155,15 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
         module_path: "actors".to_string(),
         symbol: "Worker".to_string(),
     };
-    let target = LinkedActorMethodTarget::new(
-        ActorMethodIndex::new(0),
+    let actor_implementation = LinkedActorImplementationRef::new(
         build_id(),
         actor.clone(),
         ActorAbiIdentity::new("actor-abi:worker"),
         ActorImplementationIdentity::new("actor-implementation:worker"),
+    );
+    let target = LinkedActorMethodTarget::new(
+        ActorMethodIndex::new(0),
+        actor_implementation.clone(),
         ActorMethodIdentity::new("actor-method:run"),
         FunctionIndex::new(0),
         signature(),
@@ -175,10 +178,7 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
 
     let create = LinkedActorCreateTarget::new(
         ActorCreateIndex::new(0),
-        build_id(),
-        actor,
-        ActorAbiIdentity::new("actor-abi:worker"),
-        ActorImplementationIdentity::new("actor-implementation:worker"),
+        actor_implementation,
         ActorMethodIdentity::new("actor-create:worker"),
         FunctionIndex::new(1),
         signature(),

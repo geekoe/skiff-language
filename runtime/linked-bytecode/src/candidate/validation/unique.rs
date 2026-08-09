@@ -24,8 +24,8 @@ pub(super) fn validate_unique_keys(
         if let Some(previous) = previous_function_key {
             if previous > function.key() {
                 return Err(LinkedBytecodeCandidateError::NonCanonicalFunctionOrder {
-                    previous: previous.clone(),
-                    current: function.key().clone(),
+                    previous: Box::new(previous.clone()),
+                    current: Box::new(function.key().clone()),
                 });
             }
         }
@@ -44,8 +44,8 @@ pub(super) fn validate_unique_keys(
             if previous > target.key() {
                 return Err(
                     LinkedBytecodeCandidateError::NonCanonicalExactLocalTargetOrder {
-                        previous: previous.clone(),
-                        current: target.key().clone(),
+                        previous: Box::new(previous.clone()),
+                        current: Box::new(target.key().clone()),
                     },
                 );
             }

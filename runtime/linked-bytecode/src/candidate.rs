@@ -596,8 +596,8 @@ pub enum LinkedBytecodeCandidateError {
         key: SpecializationKey,
     },
     NonCanonicalFunctionOrder {
-        previous: SpecializationKey,
-        current: SpecializationKey,
+        previous: Box<SpecializationKey>,
+        current: Box<SpecializationKey>,
     },
     DuplicatePackage {
         package_build_id: PackageBuildId,
@@ -646,8 +646,8 @@ pub enum LinkedBytecodeCandidateError {
         key: SpecializationKey,
     },
     NonCanonicalExactLocalTargetOrder {
-        previous: SpecializationKey,
-        current: SpecializationKey,
+        previous: Box<SpecializationKey>,
+        current: Box<SpecializationKey>,
     },
     ExactLocalTargetFunctionMismatch {
         row: u32,
