@@ -22,6 +22,22 @@ pub enum PackageCompileError {
     ProjectionInput {
         source: skiff_compiler_compiled::ProjectionInputBuildError,
     },
+    #[error(
+        "bytecode emission was explicitly enabled after source lowering produced {mir_unit_count} typed MIR unit(s), but this compiler build has no canonical emitter entrypoint or source-owned value-transfer plan bundle"
+    )]
+    BytecodeEmitterUnavailable { mir_unit_count: usize },
+    #[error("bytecode emission failed: {source}")]
+    BytecodeEmission {
+        #[source]
+        source: skiff_compiler_emission::BytecodeEmissionError,
+    },
+    #[error("emitted bytecode handoff admission failed: {source}")]
+    BytecodeHandoff {
+        #[source]
+        source: skiff_compiler_compiled::BytecodeCompilationHandoffError,
+    },
+    #[error("bytecode package projection is invalid:\n{message}")]
+    BytecodeProjection { message: String },
     #[error("resolved package schema input is invalid:\n{message}")]
     PackageSchemaInput { message: String },
 }
@@ -70,5 +86,17 @@ impl From<skiff_compiler_emission::error::EmissionError> for PackageCompileError
                 }
             }
         }
+    }
+}
+
+impl From<skiff_compiler_emission::BytecodeEmissionError> for PackageCompileError {
+    fn from(source: skiff_compiler_emission::BytecodeEmissionError) -> Self {
+        Self::BytecodeEmission { source }
+    }
+}
+
+impl From<skiff_compiler_compiled::BytecodeCompilationHandoffError> for PackageCompileError {
+    fn from(source: skiff_compiler_compiled::BytecodeCompilationHandoffError) -> Self {
+        Self::BytecodeHandoff { source }
     }
 }

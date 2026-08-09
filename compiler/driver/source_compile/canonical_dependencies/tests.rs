@@ -274,7 +274,10 @@ fn implements_referenced_dependency_aliases_scan_production_sources() {
         &package,
         &package_aliases,
         "example.com/consumer",
+        false,
     );
+
+    assert!(!input.emit_bytecode());
 
     assert_eq!(
         implements_referenced_dependency_aliases(&input),

@@ -160,6 +160,7 @@ impl<'a> PackageGraphCompiler<'a> {
         self.published.insert(key.clone(), package.clone());
         Ok(CompiledServicePackage {
             package,
+            bytecode: skiff_compiler::PackageBytecodeLane::Disabled,
             service_api,
         })
     }
@@ -225,11 +226,16 @@ impl<'a> PackageGraphCompiler<'a> {
             .get(&(package_id.clone(), manifest.version.clone()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let mut input =
-            PackageCompileInput::new(self.platform_sources, &package, &aliases, &package_id)
-                .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
-                .with_available_canonical_packages(&available_artifacts)
-                .with_canonical_artifact_root(self.artifact_store.root());
+        let mut input = PackageCompileInput::new(
+            self.platform_sources,
+            &package,
+            &aliases,
+            &package_id,
+            false,
+        )
+        .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
+        .with_available_canonical_packages(&available_artifacts)
+        .with_canonical_artifact_root(self.artifact_store.root());
         if service_root.is_some_and(|root| root.service.kind == ServiceAuthoringKind::Test)
             || manifest
                 .dependencies
@@ -241,9 +247,18 @@ impl<'a> PackageGraphCompiler<'a> {
         match service_root {
             Some(service_root) => {
                 let compiled = compile_service_package(input, service_root)?;
+                assert!(matches!(
+                    &compiled.bytecode,
+                    skiff_compiler::PackageBytecodeLane::Disabled
+                ));
                 Ok((compiled.package, Some(compiled.service_api)))
             }
-            None => Ok((compile_package(input)?, None)),
+            None => Ok((
+                compile_package(input)?
+                    .into_disabled_package()
+                    .expect("test package graph explicitly disables bytecode"),
+                None,
+            )),
         }
     }
 }

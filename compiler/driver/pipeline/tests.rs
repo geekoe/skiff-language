@@ -10,6 +10,59 @@ use skiff_artifact_model::{
 use super::*;
 
 #[test]
+fn explicitly_enabled_bytecode_fails_closed_after_source_lowering() {
+    let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler manifest must have a repository parent")
+        .to_path_buf();
+    let platform_sources =
+        crate::CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
+    let package_id =
+        skiff_compiler_core::id::PublicationId::parse("example.com/bytecode-enabled-contract")
+            .unwrap();
+    let package = crate::PackageSourceInput::new(
+        crate::PublicationManifest::new(
+            package_id,
+            "1.0.0".to_string(),
+            skiff_compiler_input::PublicationApiSpec::empty(),
+            Vec::new(),
+            crate::ManifestProvenance {
+                owner: crate::ManifestOwner::UserOrBuiltinPackage,
+                path: std::path::PathBuf::new(),
+                synthetic: true,
+            },
+        ),
+        crate::SourceTree {
+            root: repository_root,
+            sources: Vec::new(),
+        },
+        crate::PublicationSourceGraph::from_compiler_sources(Vec::new()),
+        Vec::new(),
+    );
+    let aliases = BTreeMap::new();
+    let input = PackageCompileInput::new(
+        &platform_sources,
+        &package,
+        &aliases,
+        "example.com/bytecode-enabled-contract",
+        true,
+    );
+
+    crate::source_compile::reset_test_compile_count();
+    let error = compile_package(input).unwrap_err();
+
+    assert!(matches!(
+        error,
+        PackageCompileError::BytecodeEmitterUnavailable { .. }
+    ));
+    assert_eq!(
+        crate::source_compile::test_compile_count(),
+        1,
+        "enabled bytecode selection must reach the ordinary source/lowering pipeline"
+    );
+}
+
+#[test]
 fn canonical_dependency_root_is_opened_without_creation() {
     let root = std::env::temp_dir().join(format!(
         "skiff-compiler-canonical-open-{}-{}",

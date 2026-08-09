@@ -61,6 +61,7 @@ fn run_real_compiler_probe() {
         &package,
         &aliases,
         "example.com/p5-f18a-probe",
+        false,
     );
 
     reset_test_compile_count();

@@ -20,25 +20,41 @@ pub struct PackageCompileInput<'a> {
     canonical: CanonicalPackageCompileInput<'a>,
     canonical_artifact_root: Option<&'a Path>,
     test_service: bool,
+    emit_bytecode: bool,
 }
 
 impl<'a> PackageCompileInput<'a> {
+    /// Creates one package request with an explicit bytecode-lane decision.
+    ///
+    /// Callers must pass `false` for the legacy-only migration lane or `true`
+    /// for fail-closed bytecode emission; there is no ambient/default policy.
     pub fn new(
         platform_sources: &'a CompilerPlatformSources,
         package: &'a PackageSourceInput,
         package_aliases: &'a BTreeMap<String, Vec<String>>,
         package_id: &'a str,
+        emit_bytecode: bool,
     ) -> Self {
         Self {
             platform_sources,
             canonical: CanonicalPackageCompileInput::new(package, package_aliases, package_id),
             canonical_artifact_root: None,
             test_service: false,
+            emit_bytecode,
         }
     }
 
     pub fn platform_sources(&self) -> &CompilerPlatformSources {
         self.platform_sources
+    }
+
+    /// Whether this exact compile request selected the bytecode lane.
+    ///
+    /// The value is a required constructor argument. The driver never reads
+    /// an environment variable or silently changes an enabled request into a
+    /// legacy-only compilation.
+    pub fn emit_bytecode(&self) -> bool {
+        self.emit_bytecode
     }
 
     pub fn with_canonical_dependencies(

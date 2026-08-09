@@ -82,10 +82,13 @@ fn author_official_std_package_after_platform_context_guard(
         &package,
         &aliases,
         SKIFF_STD_PUBLICATION_ID,
+        false,
     )
     .with_canonical_dependencies(&[], &[])
     .with_available_canonical_packages(&[]);
-    Ok(compile_package(input)?)
+    compile_package(input)?
+        .into_disabled_package()
+        .map_err(|_| invalid_input("official std compilation unexpectedly enabled bytecode"))
 }
 
 /// The sole compiler-side writer for canonical PackageArtifact records.

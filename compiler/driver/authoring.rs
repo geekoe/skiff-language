@@ -132,7 +132,7 @@ fn build_package_after_platform_context_guard(
     let mut available = dependencies.clone();
     read_contract_provider_packages(store, &contracts, &mut available)?;
     read_optional_platform_std(store, &mut available)?;
-    let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id)
+    let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id, false)
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available)
         .with_canonical_artifact_root(store.root());
@@ -145,6 +145,11 @@ fn build_package_after_platform_context_guard(
             )));
         }
         let compiled = compile_service_package(input, &service)?;
+        if !matches!(&compiled.bytecode, crate::PackageBytecodeLane::Disabled) {
+            return Err(invalid_input(
+                "legacy package authoring received an enabled bytecode compilation",
+            ));
+        }
         let receipt = json!({
             "serviceId": &compiled.service_api.contract.service_id,
             "serviceProtocolIdentity": &compiled.service_api.contract.service_protocol_identity,
@@ -156,7 +161,11 @@ fn build_package_after_platform_context_guard(
             Some(receipt),
         )
     } else {
-        let published = compile_package(input)?;
+        let published = compile_package(input)?
+            .into_disabled_package()
+            .map_err(|_| {
+                invalid_input("legacy package authoring received an enabled bytecode compilation")
+            })?;
         (published, None, None)
     };
     let receipt = publish_package_artifact_records_to_store(store, &published)?;

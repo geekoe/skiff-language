@@ -33,16 +33,22 @@ use crate::{
     source_compile,
 };
 
-/// Compiles one independent package all the way to its canonical artifact.
+mod bytecode_lane;
+
+pub use bytecode_lane::{PackageBytecodeLane, PackageCompileOutput};
+
+/// Compiles one independent package into one complete in-memory candidate.
 ///
 /// The driver supplies only coordinates, typed dependency requirements and the
 /// compiled ProjectionView. Export resolution, exact links, callable
 /// coverage validation, runtime requirements, File IR projection and resource
 /// projection remain owned by the PackageArtifact projection leaf. Exact
-/// callable signatures arrive through the compiled ProjectionView.
+/// callable signatures arrive through the compiled ProjectionView. The
+/// caller-selected bytecode lane remains paired with the package candidate so
+/// a publication owner can enforce bytecode-record-before-package ordering.
 pub fn compile_package(
     input: PackageCompileInput<'_>,
-) -> Result<PublishedPackageArtifact, PackageCompileError> {
+) -> Result<PackageCompileOutput, PackageCompileError> {
     skiff_compiler_source::prelude_registry::initialize_prelude_registry(input.platform_sources())
         .map_err(|error| PackageCompileError::ContractValidation {
             message: error.to_string(),
@@ -60,6 +66,7 @@ pub fn compile_package(
         canonical_artifact_store.as_ref(),
     )?;
     skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())?;
+    let bytecode = bytecode_lane::compile_bytecode_lane(input.emit_bytecode(), &compiled)?;
     let service_requirements = compiled
         .lowered()
         .service_calls()
@@ -86,7 +93,7 @@ pub fn compile_package(
         &pre_source_package_schemas,
         canonical_artifact_store.as_ref(),
     )?;
-    let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
+    let mut projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: &package_id,
         package_version: &package_version,
         projection: projection.view(),
@@ -97,11 +104,10 @@ pub fn compile_package(
         service_call_refs,
     })
     .map_err(package_projection_error)?;
+    bytecode_lane::attach_bytecode_reference(&mut projected, &bytecode)?;
     let file_ir_units = publish_file_ir_artifacts(projection.view())?;
-    Ok(publish_projected_package_artifact(
-        &projected,
-        &file_ir_units,
-    )?)
+    let package = publish_projected_package_artifact(&projected, &file_ir_units)?;
+    PackageCompileOutput::try_new(package, bytecode)
 }
 
 /// Resolves the exact canonical schema owners needed while validating service
@@ -405,6 +411,7 @@ fn package_schema_input_error(message: String) -> PackageCompileError {
 #[derive(Debug)]
 pub struct CompiledServicePackage {
     pub package: PublishedPackageArtifact,
+    pub bytecode: PackageBytecodeLane,
     pub service_api: ServiceApiProjection,
 }
 
@@ -429,15 +436,17 @@ pub fn compile_service_package(
         }
         .into());
     }
-    let package = compile_package(input)?;
+    let compilation = compile_package(input)?;
     let service_api = project_service_api(
         &service_root.service.id,
         &service_root.service.service_calls,
-        &package.artifact,
-        &package.resolved_package_schema_type_records,
+        &compilation.package().artifact,
+        &compilation.package().resolved_package_schema_type_records,
     )?;
+    let (package, bytecode) = compilation.into_parts();
     Ok(CompiledServicePackage {
         package,
+        bytecode,
         service_api,
     })
 }

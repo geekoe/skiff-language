@@ -20,7 +20,7 @@ pub use input::{
 };
 pub use pipeline::{
     compile_contract, compile_package, compile_service_package, CompiledServicePackage,
-    ServicePackageCompileError,
+    PackageBytecodeLane, PackageCompileOutput, ServicePackageCompileError,
 };
 pub use shared::package_compile_error::PackageCompileError;
 
