@@ -3,6 +3,7 @@ use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
     CompiledPackage,
 };
+use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
 use skiff_compiler_projection::package_artifact::ProjectedPackageArtifact;
 
@@ -39,23 +40,25 @@ impl PackageBytecodeLane {
 
 /// Complete in-memory output of one package compilation.
 ///
-/// The package candidate and bytecode lane are intentionally kept together.
-/// A bytecode-aware publication owner consumes [`Self::into_parts`], writes
-/// the handoff's bytecode record first, attaches the canonical returned path,
-/// and writes the PackageArtifact record last. This type performs no store
-/// I/O and keeps ownership of both halves paired until an explicit
-/// [`Self::into_parts`] call.
+/// The package candidate, bytecode lane, and checked source-owned service
+/// contract facts are intentionally kept together. Service compilation
+/// consumes the exact public-instance facts before a bytecode-aware
+/// publication owner consumes [`Self::into_parts`], writes the handoff's
+/// bytecode record first, attaches the canonical returned path, and writes the
+/// PackageArtifact record last. This type performs no store I/O.
 #[must_use = "an enabled handoff must be published before its PackageArtifact record"]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageCompileOutput {
     package: PublishedPackageArtifact,
     bytecode: PackageBytecodeLane,
+    public_instance_operations: ServicePublicInstanceOperationFacts,
 }
 
 impl PackageCompileOutput {
     pub(super) fn try_new(
         package: PublishedPackageArtifact,
         bytecode: PackageBytecodeLane,
+        public_instance_operations: ServicePublicInstanceOperationFacts,
     ) -> Result<Self, PackageCompileError> {
         match (&bytecode, package.artifact.bytecode.as_ref()) {
             (PackageBytecodeLane::Disabled, None) => {}
@@ -87,7 +90,11 @@ impl PackageCompileOutput {
                 });
             }
         }
-        Ok(Self { package, bytecode })
+        Ok(Self {
+            package,
+            bytecode,
+            public_instance_operations,
+        })
     }
 
     pub fn package(&self) -> &PublishedPackageArtifact {
@@ -104,6 +111,10 @@ impl PackageCompileOutput {
 
     pub fn bytecode_receipt(&self) -> Option<&BytecodeCompilationReceipt> {
         self.bytecode.receipt()
+    }
+
+    pub(super) fn public_instance_operations(&self) -> &ServicePublicInstanceOperationFacts {
+        &self.public_instance_operations
     }
 
     /// Splits the complete candidate for bytecode-aware publication planning.

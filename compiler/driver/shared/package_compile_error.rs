@@ -22,6 +22,11 @@ pub enum PackageCompileError {
     ProjectionInput {
         source: skiff_compiler_compiled::ProjectionInputBuildError,
     },
+    #[error("public-instance operation fact handoff failed: {source}")]
+    PublicInstanceOperationFacts {
+        #[source]
+        source: skiff_compiler_contract::ContractDefinitionError,
+    },
     #[error(
         "bytecode emission was explicitly enabled after source lowering produced {mir_unit_count} typed MIR unit(s), but this compiler build has no canonical emitter entrypoint or source-owned value-transfer plan bundle"
     )]
@@ -55,6 +60,12 @@ impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {
                 Self::RootPathReference { path, message }
             }
         }
+    }
+}
+
+impl From<skiff_compiler_contract::ContractDefinitionError> for PackageCompileError {
+    fn from(source: skiff_compiler_contract::ContractDefinitionError) -> Self {
+        Self::PublicInstanceOperationFacts { source }
     }
 }
 

@@ -6,8 +6,8 @@ use skiff_artifact_model::{
     PackageRefIr, PackageRequirement, ServiceContract, STD_NATIVE_SIGNATURES,
 };
 use skiff_compiler_contract::{
-    compile_service_contract_definition, project_service_api, ContractDefinitionError,
-    ServiceApiProjection, ServiceContractDefinition,
+    compile_service_contract_definition, project_service_api_with_public_instance_operations,
+    ContractDefinitionError, ServiceApiProjection, ServiceContractDefinition,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::{
@@ -66,6 +66,10 @@ pub fn compile_package(
         canonical_artifact_store.as_ref(),
     )?;
     skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())?;
+    let public_instance_operations =
+        skiff_compiler_compiled::service_contract::build_public_instance_operation_facts(
+            compiled.compile_model(),
+        )?;
     let bytecode = bytecode_lane::compile_bytecode_lane(input.emit_bytecode(), &compiled)?;
     let service_requirements = compiled
         .lowered()
@@ -107,7 +111,7 @@ pub fn compile_package(
     bytecode_lane::attach_bytecode_reference(&mut projected, &bytecode)?;
     let file_ir_units = publish_file_ir_artifacts(projection.view())?;
     let package = publish_projected_package_artifact(&projected, &file_ir_units)?;
-    PackageCompileOutput::try_new(package, bytecode)
+    PackageCompileOutput::try_new(package, bytecode, public_instance_operations)
 }
 
 /// Resolves the exact canonical schema owners needed while validating service
@@ -437,18 +441,26 @@ pub fn compile_service_package(
         .into());
     }
     let compilation = compile_package(input)?;
-    let service_api = project_service_api(
-        &service_root.service.id,
-        &service_root.service.service_calls,
-        &compilation.package().artifact,
-        &compilation.package().resolved_package_schema_type_records,
-    )?;
+    let service_api = project_compiled_service_api(&compilation, service_root)?;
     let (package, bytecode) = compilation.into_parts();
     Ok(CompiledServicePackage {
         package,
         bytecode,
         service_api,
     })
+}
+
+fn project_compiled_service_api(
+    compilation: &PackageCompileOutput,
+    service_root: &ServicePackageRoot,
+) -> Result<ServiceApiProjection, ServicePackageCompileError> {
+    Ok(project_service_api_with_public_instance_operations(
+        &service_root.service.id,
+        &service_root.service.service_calls,
+        &compilation.package().artifact,
+        &compilation.package().resolved_package_schema_type_records,
+        compilation.public_instance_operations(),
+    )?)
 }
 
 /// The code-free contract pipeline. No package/provider source is accepted.

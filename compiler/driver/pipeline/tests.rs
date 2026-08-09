@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
+use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
     PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
-
-use super::*;
 
 #[test]
 fn explicitly_enabled_bytecode_fails_closed_after_source_lowering() {
@@ -119,6 +118,7 @@ fn canonical_dependency_root_rejects_files_and_preserves_the_exact_root() {
 
 #[cfg(unix)]
 mod p5_f18a;
+mod public_instance_facts;
 
 #[test]
 fn type_only_std_reference_adds_exact_requirement_from_validated_canonical_artifact() {
