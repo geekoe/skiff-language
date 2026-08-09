@@ -18,6 +18,7 @@ mod activation_lexical;
 pub mod boundary;
 pub mod builtin_receiver_ops;
 pub mod bytecode;
+pub mod callable_registry;
 pub mod compile_identity;
 pub mod compile_requirements;
 pub mod config;
@@ -29,7 +30,9 @@ pub mod executable;
 pub mod executable_target;
 pub mod file_ir;
 pub mod gateway;
+pub mod host_effect_registry;
 pub mod http_boundary;
+pub mod intrinsic_registry;
 pub mod metadata;
 pub mod native_signature;
 pub mod native_value_lifecycle;
@@ -47,6 +50,7 @@ pub mod service_unit;
 pub mod symbols;
 pub mod targets;
 pub mod types;
+pub mod value_lifecycle_policy;
 
 pub use activation_lexical::{
     deserialize_activation_generation, runtime_assembly_identity_hash,
@@ -81,6 +85,11 @@ pub use builtin_receiver_ops::{
     SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
 pub use bytecode::*;
+pub use callable_registry::{
+    callable_signature_from_native, match_callable_registry_signature, CallableRegistryMatch,
+    CallableRegistryMatchError, CallableRegistryPlanExpression, CallableRegistrySignature,
+    CallableRegistryTypeExpression,
+};
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,
     GatewayEntryIdentity, GatewayEntryIdentityParseError, GatewayEntryKey,
@@ -143,6 +152,21 @@ pub use gateway::{
     WEBSOCKET_CONNECTION_POLICY_V1_TYPE, WEBSOCKET_CONNECT_REQUEST_V1_TYPE,
     WEBSOCKET_CONNECT_RESULT_V1_TYPE, WEBSOCKET_ENTRY_ID_PREFIX, WEBSOCKET_GATEWAY_ENTRY_KEY,
     WEBSOCKET_JSON_RPC_TEXT_PROFILE,
+};
+pub use host_effect_registry::{
+    host_effect_registry, host_effect_registry_identity, HostEffectMetadataMatcher,
+    HostEffectMetadataShape, HostEffectReceiverSemantics, HostEffectRegistry,
+    HostEffectRegistryBuildError, HostEffectRegistryEntry, HostEffectRegistryIdentity,
+    HostEffectRegistryMatch, HostEffectRegistryMatchError, HostEffectRequiredContext,
+    HOST_EFFECT_REGISTRY, HOST_EFFECT_REGISTRY_FINGERPRINT, HOST_EFFECT_REGISTRY_ID,
+    HOST_EFFECT_REGISTRY_VERSION,
+};
+pub use intrinsic_registry::{
+    intrinsic_registry, intrinsic_registry_identity, IntrinsicPublicReturnType,
+    IntrinsicReceiverSemantics, IntrinsicRegistry, IntrinsicRegistryEntry,
+    IntrinsicRegistryIdentity, IntrinsicRegistryMatch, IntrinsicRegistryMatchError,
+    INTRINSIC_REGISTRY, INTRINSIC_REGISTRY_FINGERPRINT, INTRINSIC_REGISTRY_ID,
+    INTRINSIC_REGISTRY_VERSION, UNSUPPORTED_INTRINSIC_RECEIVER_KEYS,
 };
 pub use metadata::MetadataValue;
 pub use native_signature::{
@@ -230,6 +254,13 @@ pub use targets::NativeTarget;
 pub use types::{
     FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LiteralIr, NamedUnionBranchIr,
     NominalTypeRefBaseIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+};
+pub use value_lifecycle_policy::{
+    classify_value_lifecycle, normalize_value_lifecycle_type, value_lifecycle_policy_identity,
+    verify_value_transfer_plan, PositionalTypeEnvironment, ResolvedPackageValueType,
+    ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecyclePolicyError,
+    ValueLifecyclePolicyIdentity, ValueLifecycleResolverError, VALUE_LIFECYCLE_POLICY_FINGERPRINT,
+    VALUE_LIFECYCLE_POLICY_VERSION,
 };
 #[cfg(test)]
 mod tests;
