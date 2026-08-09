@@ -508,7 +508,7 @@ fn inout_index_selector_and_type_are_owned_and_missing_selector_is_rejected() {
             crate::mir::MirInOutPathSegment::Field { .. } => None,
         })
         .expect("typed selector segment");
-    assert_eq!(segment.1, &TypeRefIr::builtin("number"));
+    assert_eq!(segment.1, &TypeRefIr::builtin("integer"));
     assert_eq!(&segment.2.selector_type, segment.1);
     assert_eq!(segment.2.result_type, TypeRefIr::builtin("number"));
     assert_eq!(segment.2.policy, crate::mir::MirIndexPolicy::LoanMustExist);
