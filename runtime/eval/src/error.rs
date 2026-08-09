@@ -217,7 +217,7 @@ impl From<skiff_runtime_linked_type_plan::Error> for RuntimeError {
             skiff_runtime_linked_type_plan::Error::Protocol { target, message } => {
                 RuntimeError::Protocol { target, message }
             }
-            skiff_runtime_linked_type_plan::Error::Boundary(error) => RuntimeError::from(error),
+            skiff_runtime_linked_type_plan::Error::Boundary(error) => RuntimeError::from(*error),
         }
     }
 }
