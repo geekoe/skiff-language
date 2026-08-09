@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::LazyLock};
 
+use serde::Serialize;
 use sha2::Digest;
 
 use crate::{PackageRefIr, TypeRefIr};
