@@ -1733,7 +1733,7 @@ fn implementation_only_impl_callable_fixture(
             is_interface: true,
             descriptor: Some(TypeDescriptorIr::Interface),
             type_params: Vec::new(),
-            interface_methods: interface_methods,
+            interface_methods,
             actor: None,
         },
     );

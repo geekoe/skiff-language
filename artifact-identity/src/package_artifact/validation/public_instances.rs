@@ -106,8 +106,7 @@ pub(super) fn validate_public_instance_surface(
                 .is_some()
             {
                 return invalid_artifact(format!(
-                    "public instance {public_path} derives conflicting method {} from its interfaces",
-                    method_name
+                    "public instance {public_path} derives conflicting method {method_name} from its interfaces"
                 ));
             }
         }
