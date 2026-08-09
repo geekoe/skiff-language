@@ -238,6 +238,24 @@ pub enum SourceLocalInterfaceConformanceFactsError {
         type_index: u32,
     },
     #[error(
+        "local interface conformance service schema `{module_path}.{symbol}` at {location} failed exact authority lookup: {message}"
+    )]
+    ServiceSchemaAuthorityLookup {
+        location: String,
+        module_path: String,
+        symbol: String,
+        message: String,
+    },
+    #[error(
+        "local interface conformance package schema `{package_id}:{stable_schema_key}` at {location} has ambiguous exact type identities {package_schema_type_ids:?}"
+    )]
+    AmbiguousServiceSchemaAuthority {
+        location: String,
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_ids: Vec<String>,
+    },
+    #[error(
         "local interface conformance package symbol `{symbol_path}` at {location} has no selected exact package owner"
     )]
     MissingPackageOwner {

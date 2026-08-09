@@ -10,8 +10,9 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorCreateSignatureIr, ActorFieldEncodingIr, ActorFieldIr,
     ActorMethodIdentity, ActorPublicMethodIr, FileIrRef, InterfaceDeclIr, InterfaceOperationIr,
     PackageImplementationLinks, PackageLocalAbi, PackageRuntimeRequirements,
-    PackageSchemaIndexIdentity, PackageSchemaIndexRef, TypeDeclIr, TypeDeclarationIr, TypeExport,
-    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    TypeDeclIr, TypeDeclarationIr, TypeExport, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -1434,6 +1435,70 @@ fn local_interface_conformance_facts_preserve_source_declaration_slot_order() {
         .expect("marker conformance should be present")
         .implementation_methods()
         .is_empty());
+}
+
+#[test]
+fn canonical_interface_selectors_and_conformance_facts_use_exact_service_schema_arguments() {
+    let (parsed_sources, mut model) = type_resolution(
+        r#"
+          interface PublicApi<T> {
+            function submit(self: Self, input: T) -> T
+          }
+
+          type Handler implements PublicApi<payments.User> {}
+
+          impl Handler {
+            function submit(input: payments.User) -> payments.User { return input }
+          }
+        "#,
+    );
+    let schema_type_id = "schema:user".into();
+    model.service_api_schemas.insert(
+        "payments".to_string(),
+        BTreeMap::from([(
+            "User".to_string(),
+            PackageSchemaTypeRecord {
+                package_id: "example.com/payments-schema".to_string(),
+                stable_schema_key: "User".to_string(),
+                package_schema_type_id: schema_type_id.clone(),
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::Alias {
+                        target: ContractTypeRef::builtin("string"),
+                    },
+                },
+            },
+        )]),
+    );
+    let expected = TypeRefIr::PackageSchema {
+        package_id: "example.com/payments-schema".to_string(),
+        stable_schema_key: "User".to_string(),
+        package_schema_type_id: schema_type_id,
+    };
+    let implemented = &parsed_sources[0].ast().types[0].implements[0];
+
+    let selector = model
+        .resolve_canonical_interface_selector_type_ref(implemented, &context())
+        .expect("nominal selector should resolve exact schema arguments");
+    assert_eq!(selector.args, [expected.clone()]);
+    assert_eq!(
+        selector.instantiation_ref.canonical_type_args,
+        selector.args
+    );
+    let object_safe = model
+        .resolve_object_safe_interface_selector_type_ref(implemented, &context())
+        .expect("object-safe selector should reuse exact nominal normalization");
+    assert_eq!(object_safe.args, selector.args);
+    assert_eq!(object_safe.instantiation_ref, selector.instantiation_ref);
+
+    let facts = model
+        .local_interface_conformance_facts()
+        .expect("source conformance facts should retain the exact schema identity");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(
+        facts.conformances()[0].interface().canonical_type_args,
+        [expected]
+    );
 }
 
 #[test]

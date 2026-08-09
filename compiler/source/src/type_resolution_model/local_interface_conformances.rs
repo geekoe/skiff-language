@@ -3,6 +3,7 @@ use crate::{
     SourceLocalInterfaceConformance, SourceLocalInterfaceConformanceFacts,
     SourceLocalInterfaceConformanceFactsError as Error,
 };
+use skiff_compiler_core::type_ref::package_type_ref_to_ir_exact;
 
 impl TypeResolutionModel {
     pub(crate) fn public_instance_receiver_instantiation(
@@ -242,7 +243,7 @@ impl TypeResolutionModel {
         .map_err(|source| Error::InvalidEntry { index, source })
     }
 
-    fn owner_stable_conformance_type_ref(
+    pub(super) fn owner_stable_conformance_type_ref(
         &self,
         owner_module: &str,
         ty: &TypeRefIr,
@@ -294,19 +295,50 @@ impl TypeResolutionModel {
                     },
                 })
             }
-            TypeRefIr::ServiceSymbol { symbol } => Ok(TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let normalized = ServiceSymbolRef {
                     module_path: symbol
                         .module_path
                         .strip_prefix("root.")
                         .unwrap_or(&symbol.module_path)
                         .to_string(),
                     symbol: symbol.symbol.clone(),
-                },
-            }),
-            TypeRefIr::PackageSymbol { symbol } => Ok(TypeRefIr::PackageSymbol {
-                symbol: self.owner_stable_package_symbol(symbol, location)?,
-            }),
+                };
+                let qualified_name = source_path(&normalized.module_path, &normalized.symbol);
+                let schema = match self.service_api_type(&qualified_name) {
+                    Ok(Some((_, schema))) => schema,
+                    Ok(None) => return Ok(TypeRefIr::ServiceSymbol { symbol: normalized }),
+                    Err(message) => {
+                        return Err(Error::ServiceSchemaAuthorityLookup {
+                            location: location.to_string(),
+                            module_path: normalized.module_path,
+                            symbol: normalized.symbol,
+                            message,
+                        });
+                    }
+                };
+                Ok(package_type_ref_to_ir_exact(
+                    &PackageTypeRef::PackageSchema {
+                        package_id: schema.package_id.clone(),
+                        stable_schema_key: schema.stable_schema_key.clone(),
+                        package_schema_type_id: schema.package_schema_type_id.clone(),
+                    },
+                ))
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                if let Some(schema) = self.service_schema_for_package_symbol(symbol, location)? {
+                    return Ok(package_type_ref_to_ir_exact(
+                        &PackageTypeRef::PackageSchema {
+                            package_id: schema.package_id.clone(),
+                            stable_schema_key: schema.stable_schema_key.clone(),
+                            package_schema_type_id: schema.package_schema_type_id.clone(),
+                        },
+                    ));
+                }
+                Ok(TypeRefIr::PackageSymbol {
+                    symbol: self.owner_stable_package_symbol(symbol, location)?,
+                })
+            }
             TypeRefIr::PackageSchema {
                 package_id,
                 stable_schema_key,
@@ -413,6 +445,38 @@ impl TypeResolutionModel {
         }
     }
 
+    fn service_schema_for_package_symbol(
+        &self,
+        symbol: &PackageSymbolRef,
+        location: &str,
+    ) -> Result<Option<&PackageSchemaTypeRecord>, Error> {
+        let PackageRefIr::PackageId { package_id } = &symbol.package else {
+            return Ok(None);
+        };
+        if symbol.abi_expectation.is_some() {
+            return Ok(None);
+        }
+        let candidates = self
+            .service_api_schemas
+            .values()
+            .filter_map(|records| records.get(&symbol.symbol_path))
+            .filter(|record| &record.package_id == package_id)
+            .collect::<Vec<_>>();
+        let type_ids = candidates
+            .iter()
+            .map(|record| record.package_schema_type_id.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        if type_ids.len() > 1 {
+            return Err(Error::AmbiguousServiceSchemaAuthority {
+                location: location.to_string(),
+                package_id: package_id.clone(),
+                stable_schema_key: symbol.symbol_path.clone(),
+                package_schema_type_ids: type_ids.into_iter().collect(),
+            });
+        }
+        Ok(candidates.into_iter().next())
+    }
+
     fn owner_stable_package_symbol(
         &self,
         symbol: &PackageSymbolRef,
@@ -492,3 +556,6 @@ impl TypeResolutionModel {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

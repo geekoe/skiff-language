@@ -430,7 +430,8 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<CanonicalInterfaceSelectorResolution, String> {
         let expr = TypeExpr::parse(&interface.name);
-        self.resolve_canonical_interface_selector_expr(&expr, context)
+        let selector = self.resolve_canonical_interface_selector_expr(&expr, context)?;
+        self.owner_stable_interface_selector_args(selector, context.module_path)
     }
 
     /// Resolves an exact interface selector for dynamic boxing or invocation.
@@ -455,10 +456,11 @@ impl TypeResolutionModel {
                 "resolved type `{resolved}` is not an interface instantiation"
             ));
         };
-        self.canonical_interface_selector_from_instantiation_resolution(
+        let selector = self.canonical_interface_selector_from_instantiation_resolution(
             resolved.to_string(),
             interface,
-        )
+        )?;
+        self.owner_stable_interface_selector_args(selector, context.module_path)
     }
 
     pub fn concrete_nominal_record_symbol(
@@ -1733,6 +1735,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_expr(interface, context)?;
+        let selector = self.owner_stable_interface_selector_args(selector, context.module_path)?;
         self.require_canonical_interface_selector_object_safe(&selector)?;
         Ok(ResolvedTypeRef::with_text(
             TypeRefIr::AnyInterface {
@@ -2036,6 +2039,35 @@ impl TypeResolutionModel {
             identity: interface.identity,
             args: interface.args,
         })
+    }
+
+    fn owner_stable_interface_selector_args(
+        &self,
+        mut selector: CanonicalInterfaceSelectorResolution,
+        owner_module: &str,
+    ) -> Result<CanonicalInterfaceSelectorResolution, String> {
+        let args = selector
+            .args
+            .iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                self.owner_stable_conformance_type_ref(
+                    owner_module,
+                    argument,
+                    &format!("interface selector type argument {index}"),
+                )
+                .map_err(|error| {
+                    format!(
+                        "interface selector `{}` exact owner normalization failed: {error}",
+                        selector.source_text
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        selector.instantiation_ref =
+            interface_instantiation_ref(selector.identity.clone(), args.clone());
+        selector.args = args;
+        Ok(selector)
     }
 
     fn require_canonical_interface_selector_object_safe(
