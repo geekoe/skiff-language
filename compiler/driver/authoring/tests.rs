@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::BTreeMap, fs, path::PathBuf};
+use std::{cell::Cell, fs, path::PathBuf};
 
 use super::{
     build_authoring_object, project_runtime_assembly,

@@ -47,7 +47,7 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
     assert_eq!(published.artifact.package_version, "1.0.0");
     assert_framed_sha256_identity(
         published.artifact.package_build_id.as_str(),
-        "skiff-package-build-v10:sha256",
+        "skiff-package-build-v12:sha256",
     );
     assert_framed_sha256_identity(&prelude_identity(), "skiff-prelude-v1:sha256");
     assert!(published

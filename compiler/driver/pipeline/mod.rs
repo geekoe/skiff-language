@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{

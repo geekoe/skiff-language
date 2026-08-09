@@ -478,11 +478,12 @@ fn pre_source_schema_binding_is_exact_direct_or_compiler_owned_std_only() {
 fn pre_source_schema_binding_accepts_service_provider_package_owner() {
     let provider = canonical_artifact("example.service", "2.0.0");
     let contract: ServiceContract = serde_json::from_value(serde_json::json!({
-        "schemaVersion": "skiff-service-contract-v5",
+        "schemaVersion": "skiff-service-contract-v6",
         "serviceId": "example.service",
         "contractVersion": "2.0.0",
-        "serviceProtocolIdentity": "skiff-service-protocol-v5:sha256:test",
+        "serviceProtocolIdentity": "skiff-service-protocol-v6:sha256:test",
         "operations": {},
+        "publicInstances": {},
         "packageTypeRequirements": [],
         "diagnosticText": { "service": "", "operations": {}, "types": {} }
     }))
