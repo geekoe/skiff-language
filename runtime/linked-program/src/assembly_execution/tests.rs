@@ -21,7 +21,7 @@ const FORGED_PACKAGE_BUILD: &str =
 const PACKAGE_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FILE_ID: &str =
-    "skiff-file-ir-v12:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    "skiff-file-ir-v13:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[test]
@@ -42,6 +42,16 @@ fn assembly_task_routes_are_exact_and_unknown_targets_do_not_fallback() {
     assert_eq!(image.task_route("function:model.entry"), Some(&addr));
     assert_eq!(image.task_route("model.entry"), None);
     assert_eq!(image.task_route("function:model.missing"), None);
+}
+
+#[test]
+fn index_expression_is_not_a_db_target_carrier() {
+    let expression = LinkedExprIr::Index {
+        object: crate::ExprRefIr { expression: 2 },
+        index: crate::ExprRefIr { expression: 3 },
+    };
+
+    assert_eq!(db_target_in_expression(&expression), None);
 }
 
 #[test]

@@ -471,6 +471,7 @@ fn db_target_in_expression(expression: &LinkedExprIr) -> Option<&DbTargetIr> {
         | LinkedExprIr::LoadConstAddress { .. }
         | LinkedExprIr::ActorSelfField { .. }
         | LinkedExprIr::Field { .. }
+        | LinkedExprIr::Index { .. }
         | LinkedExprIr::Construct { .. }
         | LinkedExprIr::RepresentationWrap { .. }
         | LinkedExprIr::InterfaceBox { .. }

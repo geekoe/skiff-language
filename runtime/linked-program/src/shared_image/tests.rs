@@ -1361,6 +1361,8 @@ fn file(identity: &str, module_path: &str) -> FileIrUnit {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file
@@ -1382,10 +1384,12 @@ fn add_package_call(file: &mut FileIrUnit, alias: &str, callable: PackageCallabl
                 package_ref,
                 package_callable_id: callable,
             },
+            concrete_receiver: None,
             site: InstructionSourceSite::Synthetic {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },
@@ -1400,10 +1404,12 @@ fn add_service_call(file: &mut FileIrUnit, service_call: ServiceCallRef) {
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: index,
             },
+            concrete_receiver: None,
             site: InstructionSourceSite::Synthetic {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },

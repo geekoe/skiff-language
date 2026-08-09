@@ -5,8 +5,8 @@ use serde_json::Value;
 pub use skiff_artifact_model::{
     ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
     BuiltinReceiverOp, FileIrRef, InstructionSourceSite, LiteralIr, MetadataValue, NativeTarget,
-    OperationAbiRef, PackageArtifactRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
-    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+    OperationAbiRef, PackageArtifactRef, PackageRefIr, PackageSymbolRef, ParamModeIr,
+    ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
     RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
@@ -470,6 +470,10 @@ pub struct ParamIr {
     pub name: String,
     pub slot: usize,
     pub ty: LinkedTypeRef,
+    /// Artifact-owned parameter mode retained for linked consumers. The
+    /// legacy evaluator must not infer `InOut` from slot or call shape.
+    #[serde(default, skip_serializing_if = "ParamModeIr::is_value")]
+    pub mode: ParamModeIr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -720,6 +724,9 @@ pub struct SlotIr {
     pub index: usize,
     pub name: String,
     pub kind: String,
+    /// Producer-owned source `var` fact. This is carrier metadata only; it
+    /// does not grant the legacy evaluator writable-loan semantics.
+    pub writable_local: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -957,6 +964,12 @@ pub enum LinkedExprIr {
     Field {
         object: ExprRefIr,
         field: String,
+    },
+    /// Strict collection bracket access. Runtime semantics remain owned by
+    /// the bytecode path; the legacy linked form only retains both operands.
+    Index {
+        object: ExprRefIr,
+        index: ExprRefIr,
     },
     Construct {
         type_ref: LinkedTypeRef,
@@ -1276,15 +1289,57 @@ pub enum BinaryOpIr {
 #[serde(rename_all = "camelCase")]
 pub struct CallIr {
     pub target: LinkedCallTarget,
+    /// Exact instantiated Self type for receiver-bound direct targets. This
+    /// is a required-nullable linked fact and does not trigger specialization
+    /// or legacy evaluator inference.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub concrete_receiver: Option<LinkedTypeRef>,
     pub site: InstructionSourceSite,
     #[serde(default)]
     pub args: Vec<ExprRefIr>,
+    /// Exact writable places supplied to `InOut` parameters. The legacy
+    /// evaluator does not execute these loans; retaining them prevents the
+    /// artifact fact from being silently projected away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inout_args: Vec<InOutArgIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub type_args: BTreeMap<String, LinkedTypeRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_metadata: Option<LinkedActorNativeMetadata>,
+}
+
+/// One source-order `inout <place>` argument retained from File IR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InOutArgIr {
+    pub parameter_ordinal: u32,
+    pub root_slot: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<InOutPathSegmentIr>,
+}
+
+/// Exact selector path inside an [`InOutArgIr`]. Dynamic selectors reference
+/// the same linked expression table as ordinary expression operands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum InOutPathSegmentIr {
+    Field { name: String },
+    Index { selector: ExprRefIr },
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1652,6 +1707,147 @@ where
     Err(E::custom(format!(
         "expected link target object with numeric {index_key}"
     )))
+}
+
+#[cfg(test)]
+mod file_ir_v13_execution_fact_tests {
+    use super::*;
+
+    fn builtin(name: &str) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: name.to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    fn synthetic_site() -> InstructionSourceSite {
+        InstructionSourceSite::Synthetic {
+            reason:
+                skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+        }
+    }
+
+    #[test]
+    fn index_expression_round_trips_both_expression_operands() {
+        let expected = LinkedExprIr::Index {
+            object: ExprRefIr { expression: 7 },
+            index: ExprRefIr { expression: 11 },
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "index",
+                "object": { "expression": 7 },
+                "index": { "expression": 11 }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<LinkedExprIr>(value).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn index_expression_requires_exact_object_and_index_shape() {
+        let valid = serde_json::json!({
+            "kind": "index",
+            "object": { "expression": 1 },
+            "index": { "expression": 2 }
+        });
+        for missing in ["object", "index"] {
+            let mut candidate = valid.clone();
+            candidate.as_object_mut().unwrap().remove(missing);
+            assert!(serde_json::from_value::<LinkedExprIr>(candidate).is_err());
+        }
+
+        let mut extra = valid;
+        extra["field"] = serde_json::json!("legacy-fallback");
+        assert!(serde_json::from_value::<LinkedExprIr>(extra).is_err());
+    }
+
+    #[test]
+    fn linked_call_retains_receiver_and_exact_inout_path() {
+        let expected = CallIr {
+            target: LinkedCallTarget::LocalExecutable {
+                executable_index: 3,
+            },
+            concrete_receiver: Some(LinkedTypeRef::LocalType { type_index: 5 }),
+            site: synthetic_site(),
+            args: vec![ExprRefIr { expression: 13 }],
+            inout_args: vec![InOutArgIr {
+                parameter_ordinal: 2,
+                root_slot: 17,
+                path: vec![
+                    InOutPathSegmentIr::Field {
+                        name: "items".to_string(),
+                    },
+                    InOutPathSegmentIr::Index {
+                        selector: ExprRefIr { expression: 19 },
+                    },
+                ],
+            }],
+            type_args: BTreeMap::from([("T".to_string(), builtin("string"))]),
+            metadata: BTreeMap::new(),
+            actor_metadata: None,
+        };
+
+        let value = serde_json::to_value(&expected).unwrap();
+        assert_eq!(value["concreteReceiver"]["kind"], "localType");
+        assert_eq!(value["inoutArgs"][0]["parameterOrdinal"], 2);
+        assert_eq!(value["inoutArgs"][0]["rootSlot"], 17);
+        assert_eq!(value["inoutArgs"][0]["path"][0]["kind"], "field");
+        assert_eq!(value["inoutArgs"][0]["path"][1]["kind"], "index");
+        assert_eq!(
+            value["inoutArgs"][0]["path"][1]["selector"]["expression"],
+            19
+        );
+        assert_eq!(serde_json::from_value::<CallIr>(value).unwrap(), expected);
+    }
+
+    #[test]
+    fn linked_call_requires_nullable_concrete_receiver_fact() {
+        let value = serde_json::json!({
+            "target": {
+                "kind": "localExecutable",
+                "executableIndex": 0
+            },
+            "site": {
+                "kind": "synthetic",
+                "reason": "compilerGeneratedTestHarness"
+            },
+            "args": []
+        });
+
+        assert!(serde_json::from_value::<CallIr>(value).is_err());
+    }
+
+    #[test]
+    fn linked_params_and_slots_retain_inout_and_writable_local_facts() {
+        let parameter = ParamIr {
+            name: "value".to_string(),
+            slot: 1,
+            ty: builtin("number"),
+            mode: ParamModeIr::InOut,
+        };
+        let slot = SlotIr {
+            index: 1,
+            name: "value".to_string(),
+            kind: "local".to_string(),
+            writable_local: true,
+        };
+
+        let parameter_value = serde_json::to_value(&parameter).unwrap();
+        let slot_value = serde_json::to_value(&slot).unwrap();
+        assert_eq!(parameter_value["mode"]["kind"], "inOut");
+        assert_eq!(slot_value["writableLocal"], true);
+        assert_eq!(
+            serde_json::from_value::<ParamIr>(parameter_value).unwrap(),
+            parameter
+        );
+        assert_eq!(serde_json::from_value::<SlotIr>(slot_value).unwrap(), slot);
+    }
 }
 
 #[cfg(test)]

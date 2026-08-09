@@ -90,11 +90,13 @@ fn executable_type_param_names_deduplicates_in_first_seen_order() {
             name: "first".to_string(),
             slot: 0,
             ty: type_param("U"),
+            mode: crate::ParamModeIr::Value,
         },
         ParamIr {
             name: "second".to_string(),
             slot: 1,
             ty: type_param("V"),
+            mode: crate::ParamModeIr::Value,
         },
     ];
     executable.return_type = Some(LinkedTypeRef::Record {
