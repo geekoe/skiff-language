@@ -89,10 +89,8 @@ impl<'a> MirPackageCatalog<'a> {
                 .parameters
                 .iter()
                 .enumerate()
-                .filter_map(|(index, parameter)| {
-                    (parameter.mode == ParamModeIr::InOut)
-                        .then(|| index.checked_sub(receiver_offset))
-                })
+                .filter(|(_, parameter)| parameter.mode == ParamModeIr::InOut)
+                .map(|(index, _)| index.checked_sub(receiver_offset))
                 .collect::<Option<BTreeSet<_>>>()
                 .ok_or_else(|| MirBuildError::InvalidPackageCallableAbi {
                     package_callable_id: package_callable_id.clone(),

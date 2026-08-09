@@ -126,9 +126,8 @@ impl FunctionLowerer<'_> {
                 let exact_inout = modes
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, mode)| {
-                        (*mode == ParamModeIr::InOut).then(|| index.checked_sub(receiver_offset))
-                    })
+                    .filter(|(_, mode)| **mode == ParamModeIr::InOut)
+                    .map(|(index, _)| index.checked_sub(receiver_offset))
                     .collect::<Option<BTreeSet<_>>>()
                     .ok_or_else(|| {
                         CompileError::Semantic(format!(

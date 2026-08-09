@@ -8,6 +8,11 @@ use skiff_compiler_source::{ExpressionKey, ResolvedCallTarget, ResolvedCallTarge
 
 use crate::ServiceCallLoweringError;
 
+type IndexedServiceCallRefs = (
+    BTreeMap<String, Vec<ServiceCallRef>>,
+    BTreeMap<ExpressionKey, ServiceCallRefIndex>,
+);
+
 /// Call-site association retained until canonical File IR materialization. It
 /// deliberately carries ServiceCallRef rather than a legacy OperationAbiRef or
 /// provider executable target.
@@ -156,13 +161,7 @@ pub fn lower_service_calls(
 
 fn index_file_service_call_refs(
     call_sites: &[LoweredServiceCallSite],
-) -> Result<
-    (
-        BTreeMap<String, Vec<ServiceCallRef>>,
-        BTreeMap<ExpressionKey, ServiceCallRefIndex>,
-    ),
-    ServiceCallLoweringError,
-> {
+) -> Result<IndexedServiceCallRefs, ServiceCallLoweringError> {
     let refs_by_module = call_sites.iter().fold(
         BTreeMap::<String, BTreeSet<ServiceCallRef>>::new(),
         |mut by_module, site| {

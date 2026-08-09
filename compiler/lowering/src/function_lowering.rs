@@ -1159,11 +1159,8 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
         let mut chain = object;
-        loop {
-            match chain {
-                Expr::Field { object, .. } | Expr::Index { object, .. } => chain = object,
-                _ => break,
-            }
+        while let Expr::Field { object, .. } | Expr::Index { object, .. } = chain {
+            chain = object;
         }
         let Expr::Identifier(name) = chain else {
             return Ok(());
@@ -1300,20 +1297,17 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<(String, TypeRefIr)> {
         let expression_types = self.expression_types.ok_or_else(|| {
             CompileError::Semantic(format!(
-                "{purpose} lowering requires expression type facts; missing model while looking up ExpressionKey {:?}",
-                key
+                "{purpose} lowering requires expression type facts; missing model while looking up ExpressionKey {key:?}"
             ))
         })?;
         let fact = expression_types.fact(key).ok_or_else(|| {
             CompileError::Semantic(format!(
-                "{purpose} lowering requires expression type fact for ExpressionKey {:?}",
-                key
+                "{purpose} lowering requires expression type fact for ExpressionKey {key:?}"
             ))
         })?;
         let ty = fact.ty.as_ref().ok_or_else(|| {
             CompileError::Semantic(format!(
-                "{purpose} lowering requires concrete expression type for ExpressionKey {:?}",
-                key
+                "{purpose} lowering requires concrete expression type for ExpressionKey {key:?}"
             ))
         })?;
         Ok((ty.to_string(), ty.ir.clone()))
@@ -1423,12 +1417,10 @@ impl<'a> FunctionLowerer<'a> {
                         .is_some_and(|actual_key| actual_key != &expression)
                     {
                         return Err(CompileError::Semantic(format!(
-                            "constructor validation for `{type_name}` field `{field_name}` points to expression {:?}, but lowering reached {:?}",
-                            expression,
-                            actual_key
+                            "constructor validation for `{type_name}` field `{field_name}` points to expression {expression:?}, but lowering reached {actual_key:?}"
                         )));
                     }
-                    value.clone()
+                    *value
                 }
                 ConstructorFieldValueSource::SyntheticNull => self.push_expr(
                     ExprIr::Literal {
@@ -1499,8 +1491,7 @@ impl<'a> FunctionLowerer<'a> {
             .is_none()
         {
             return Err(CompileError::Semantic(format!(
-                "interface boxing value at ExpressionKey {:?} must be a concrete nominal record, found {}",
-                value_key, value_source_text
+                "interface boxing value at ExpressionKey {value_key:?} must be a concrete nominal record, found {value_source_text}"
             )));
         }
         let expected = ResolvedTypeRef::with_text(
@@ -2548,8 +2539,7 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<()> {
         let actor_ty = type_args.get("T0").cloned().ok_or_else(|| {
             unsupported(format!(
-                "actor registry intrinsic `{}` requires exact actor type argument T0",
-                diagnostic_target
+                "actor registry intrinsic `{diagnostic_target}` requires exact actor type argument T0"
             ))
         })?;
         let actor_ty_text = type_ref_ir_type_text(&actor_ty);
@@ -2559,8 +2549,7 @@ impl<'a> FunctionLowerer<'a> {
             .actor_type_resolution(&resolved_actor_ty, &self.type_resolution_context())
             .ok_or_else(|| {
                 unsupported(format!(
-                    "actor registry intrinsic `{}` T0 is not an actor declaration",
-                    diagnostic_target
+                    "actor registry intrinsic `{diagnostic_target}` T0 is not an actor declaration"
                 ))
             })?;
         // The source-level actor nominal resolves to its attached record type;
@@ -2578,8 +2567,7 @@ impl<'a> FunctionLowerer<'a> {
         insert_exact_native_type_arg(type_args, "T1", actor.id_type.ir)?;
         if type_args.contains_key("T2") {
             return Err(unsupported(format!(
-                "actor registry intrinsic `{}` must not carry bootstrap type argument T2",
-                diagnostic_target
+                "actor registry intrinsic `{diagnostic_target}` must not carry bootstrap type argument T2"
             )));
         }
         Ok(())
@@ -2637,9 +2625,7 @@ impl<'a> FunctionLowerer<'a> {
                 .is_some_and(|payload_key| payload_key != &payload_expression)
             {
                 return Err(CompileError::Semantic(format!(
-                    "representation constructor validation points to expression {:?}, but lowering reached {:?}",
-                    payload_expression,
-                    payload_key
+                    "representation constructor validation points to expression {payload_expression:?}, but lowering reached {payload_key:?}"
                 )));
             }
             let payload = self.lower_expr(payload.expr())?;
@@ -3278,8 +3264,7 @@ fn unsupported(message: impl Into<String>) -> CompileError {
 fn expression_key_offset(key: &ExpressionKey, offset: u32, purpose: &str) -> Result<ExpressionKey> {
     let preorder_index = key.preorder_index().checked_add(offset).ok_or_else(|| {
         CompileError::Semantic(format!(
-            "{purpose} lowering cannot derive child ExpressionKey from {:?}: preorder index overflow",
-            key
+            "{purpose} lowering cannot derive child ExpressionKey from {key:?}: preorder index overflow"
         ))
     })?;
     Ok(ExpressionKey::new(

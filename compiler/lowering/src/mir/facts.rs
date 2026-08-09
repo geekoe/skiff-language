@@ -36,7 +36,7 @@ pub enum MirWritablePathSegment {
     Index {
         index: ExprRefIr,
         index_type: TypeRefIr,
-        access: MirIndexAccessFacts,
+        access: Box<MirIndexAccessFacts>,
     },
 }
 
@@ -56,7 +56,7 @@ pub enum MirInOutPathSegment {
     Index {
         selector: ExprRefIr,
         selector_type: TypeRefIr,
-        access: MirIndexAccessFacts,
+        access: Box<MirIndexAccessFacts>,
     },
 }
 
@@ -146,7 +146,7 @@ pub(super) fn assignment_place(
             place.path.push(MirWritablePathSegment::Index {
                 index: *index,
                 index_type,
-                access,
+                access: Box::new(access),
             });
             Ok(place)
         }
@@ -232,7 +232,7 @@ pub(super) fn call_writable_facts(
                     Ok(MirInOutPathSegment::Index {
                         selector: *selector,
                         selector_type,
-                        access,
+                        access: Box::new(access),
                     })
                 }
             })
@@ -460,7 +460,7 @@ fn expression_place_inner(
             place.path.push(MirWritablePathSegment::Index {
                 index: *index,
                 index_type,
-                access,
+                access: Box::new(access),
             });
             place
         }
@@ -595,7 +595,7 @@ mod tests {
                 expression: selector,
             },
             selector_type: selector_type.clone(),
-            access: MirIndexAccessFacts {
+            access: Box::new(MirIndexAccessFacts {
                 receiver_kind: MirIndexReceiverKind::Array,
                 receiver_type: TypeRefIr::Builtin {
                     name: "Array".to_string(),
@@ -617,7 +617,7 @@ mod tests {
                         offset: Some(1),
                     },
                 },
-            },
+            }),
         }
     }
 

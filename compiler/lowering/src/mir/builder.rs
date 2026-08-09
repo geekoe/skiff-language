@@ -219,7 +219,7 @@ fn build_mir_unit_with_catalog(
         .and_then(|()| mir.validate_constants())
         .map_err(|source| MirBuildError::InvalidUnitContract {
             module_path: unit.module_path.clone(),
-            source,
+            source: Box::new(source),
         })?;
     Ok(mir)
 }
@@ -351,13 +351,13 @@ fn build_mir_function(
         MirBuildError::InvalidFunctionContract {
             module_path: unit.module_path.clone(),
             symbol: executable.symbol.clone(),
-            source,
+            source: Box::new(source),
         }
     })?;
     function.liveness = compute_liveness(&function).map_err(|source| MirBuildError::Liveness {
         module_path: unit.module_path.clone(),
         symbol: executable.symbol.clone(),
-        source,
+        source: Box::new(source),
     })?;
     Ok(function)
 }
@@ -831,7 +831,7 @@ impl<'a> FunctionCfg<'a> {
     /// ids, then compute the complete successor edge set of every fragment.
     fn convert_and_resolve(&mut self) -> Result<(), String> {
         let labels = self.blocks_by_label.clone();
-        for (_label, fragments) in &labels {
+        for fragments in labels.values() {
             for (index, fragment) in fragments.iter().enumerate() {
                 let pending = self.pending_statements.remove(fragment).unwrap_or_default();
                 // The continuation fragment is created eagerly right after a
@@ -1286,10 +1286,11 @@ fn db_query_child_expressions_into(
     for predicate in &query.where_clauses {
         db_predicate_child_expressions(predicate, children);
     }
-    for entry in [&query.limit, &query.offset, &query.after] {
-        if let Some(expression) = entry {
-            children.push(expression.expression);
-        }
+    for expression in [&query.limit, &query.offset, &query.after]
+        .into_iter()
+        .flatten()
+    {
+        children.push(expression.expression);
     }
 }
 

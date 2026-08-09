@@ -5,9 +5,9 @@ use std::{
 
 use crate::file_ir::{
     AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
-    DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
-    FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr, TestEffectOutcomeIr,
-    TypeDescriptorIr, TypeRefIr,
+    DbOperationIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr, FileIrUnit,
+    InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr, TestEffectOutcomeIr, TypeDescriptorIr,
+    TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
 use skiff_artifact_model::{
@@ -610,28 +610,7 @@ fn rewrite_db_selector(
     }
 }
 
-fn rewrite_db_query(index: &PublicationLocalRefIndex, module_path: &str, query: &mut DbQueryIr) {
-    for predicate in &mut query.where_clauses {
-        rewrite_db_predicate(index, module_path, predicate);
-    }
-}
-
-fn rewrite_db_predicate(
-    index: &PublicationLocalRefIndex,
-    module_path: &str,
-    predicate: &mut DbPredicateIr,
-) {
-    match predicate {
-        DbPredicateIr::And { predicates } | DbPredicateIr::Or { predicates } => {
-            for predicate in predicates {
-                rewrite_db_predicate(index, module_path, predicate);
-            }
-        }
-        DbPredicateIr::Not { predicate } | DbPredicateIr::Conditional { predicate, .. } => {
-            rewrite_db_predicate(index, module_path, predicate);
-        }
-        DbPredicateIr::Compare { .. } | DbPredicateIr::Regex { .. } => {}
-    }
+fn rewrite_db_query(_index: &PublicationLocalRefIndex, _module_path: &str, _query: &mut DbQueryIr) {
 }
 
 fn rewrite_db_body(_index: &PublicationLocalRefIndex, _module_path: &str, _body: &mut DbBodyIr) {}

@@ -514,7 +514,7 @@ fn inout_index_selector_and_type_are_owned_and_missing_selector_is_rejected() {
     assert_eq!(segment.2.policy, crate::mir::MirIndexPolicy::LoanMustExist);
     assert_eq!(
         run.index_access(segment.0).expect("checked source fact"),
-        segment.2
+        segment.2.as_ref()
     );
 
     let mut missing_fact = run.clone();

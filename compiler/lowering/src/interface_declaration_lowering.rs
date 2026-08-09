@@ -89,10 +89,11 @@ fn lower_interface_operation(
         }
         SourceExecutableReceiver::Implicit { ty } => Some(interface_execution_type_ref(ty)),
         SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 } => {
-            if !signature
+            if signature
                 .parameters
                 .first()
-                .is_some_and(|parameter| parameter.name == "self")
+                .map(|parameter| parameter.name.as_str())
+                != Some("self")
             {
                 return Err(CompileError::Semantic(format!(
                     "interface operation `{operation_name}` exact receiver points to parameter 0, but that parameter is not `self`"

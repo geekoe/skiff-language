@@ -576,9 +576,8 @@ fn resolve_implements_contract<'a>(
         .trim()
         .strip_prefix("root.")
         .unwrap_or_else(|| implements.name.trim());
-    let mut lookup_name = String::new();
     let target = if name.contains('/') {
-        name
+        name.to_string()
     } else if let Some((alias, rest)) = name.split_once('.') {
         if !package_aliases.contains_key(alias) {
             return Err(CompileError::Semantic(format!(
@@ -586,8 +585,7 @@ fn resolve_implements_contract<'a>(
                 implements.name
             )));
         }
-        lookup_name = format!("{alias}/{rest}");
-        lookup_name.as_str()
+        format!("{alias}/{rest}")
     } else {
         return Err(CompileError::Semantic(format!(
             "db object implements target `{}` must be a cross-package contract reference (for example `engine.package.Type` or `engine/package.Type`)",
@@ -595,7 +593,7 @@ fn resolve_implements_contract<'a>(
         )));
     };
     publication_db_metadata
-        .resolve_qualified(target)
+        .resolve_qualified(&target)
         .ok_or_else(|| {
             CompileError::Semantic(format!(
                 "db object implements target `{target}` does not resolve to a db contract declaration in a dependency package"
@@ -665,11 +663,11 @@ fn validate_implements_coverage(
 /// nominal identity. The contract facts carry the contract's own symbol
 /// references resolved into the host's dependency view (same dependency alias
 /// + symbol path as the host's cross-package references), so a host reference
-/// to a contract-package symbol matches the contract's own symbol while host
-/// local nominals (LocalType / PublicationType on either side) never match a
-/// contract symbol. Forms without nominal identity (builtin, anonymous record
-/// / union / literal, applied nominals whose base resolves nominally) compare
-/// structurally; everything else is false.
+///   to a contract-package symbol matches the contract's own symbol while host
+///   local nominals (LocalType / PublicationType on either side) never match a
+///   contract symbol. Forms without nominal identity (builtin, anonymous record
+///   / union / literal, applied nominals whose base resolves nominally) compare
+///   structurally; everything else is false.
 fn db_field_type_identity_matches(host: &TypeRefIr, contract: &TypeRefIr) -> bool {
     match (host, contract) {
         (
@@ -2139,7 +2137,7 @@ impl<'a> FunctionLowerer<'a> {
                 if let Some(ty) = type_args.first() {
                     return explicit_type(ty);
                 }
-                if args.first().is_none() {
+                if args.is_empty() {
                     return Ok(None);
                 }
                 if let Some(resolved) = self.next_expression_type() {
@@ -2159,7 +2157,7 @@ impl<'a> FunctionLowerer<'a> {
                 if let Some(ty) = type_args.first() {
                     return explicit_type(ty);
                 }
-                if args.first().is_none() {
+                if args.is_empty() {
                     return Ok(None);
                 }
                 if let Some(resolved) = self.next_expression_array_item_type() {

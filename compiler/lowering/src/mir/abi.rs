@@ -78,7 +78,7 @@ pub(super) fn direct_call_facts(
     }
 
     if call.concrete_receiver.is_some()
-        && (parameter_modes.first() != Some(&MirParamMode::Value) || call.args.first().is_none())
+        && (parameter_modes.first() != Some(&MirParamMode::Value) || call.args.is_empty())
     {
         return Err(
             "direct receiver call requires a leading Value argument at parameter zero".to_string(),

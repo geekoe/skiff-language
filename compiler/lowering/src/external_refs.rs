@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::file_ir::{
     validate_file_ir_service_calls, AssignTargetIr, BoxSourceIr, CallIr, CallTargetIr,
     ExecutableBody, ExprIr, ExternalRefTable, FileIrServiceCallValidationError, FileIrUnit,
-    InterfaceDeclIr, MetadataValue, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
+    InterfaceDeclIr, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
     TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_model::{
@@ -274,9 +274,6 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
             for ty in call.type_args.values() {
                 collect_type_ref_external_refs(ty, refs);
             }
-            for metadata in call.metadata.values() {
-                collect_metadata_external_refs(metadata, refs);
-            }
         }
         ExprIr::Catch { catch_type, .. } => {
             collect_type_ref_external_refs(catch_type, refs);
@@ -320,25 +317,6 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         | ExprIr::Timeout { .. }
         | ExprIr::ValueBlock { .. }
         | ExprIr::ConcurrentValue { .. } => {}
-    }
-}
-
-fn collect_metadata_external_refs(metadata: &MetadataValue, refs: &mut ExternalRefTable) {
-    match metadata {
-        MetadataValue::Array(items) => {
-            for item in items {
-                collect_metadata_external_refs(item, refs);
-            }
-        }
-        MetadataValue::Object(entries) => {
-            for value in entries.values() {
-                collect_metadata_external_refs(value, refs);
-            }
-        }
-        MetadataValue::Null
-        | MetadataValue::Bool(_)
-        | MetadataValue::Number(_)
-        | MetadataValue::String(_) => {}
     }
 }
 

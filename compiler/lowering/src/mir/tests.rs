@@ -572,7 +572,7 @@ fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
         .blocks
         .iter()
         .filter(|block| block.label.starts_with("while_body"))
-        .last()
+        .next_back()
         .expect("last while fragment");
     assert!(
         last_while_fragment.successors.contains(&entry.id),

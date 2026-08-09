@@ -647,8 +647,7 @@ fn validate_transaction_block(
             Stmt::Assign { target, .. } if in_transaction => {
                 if let Some(field) = self_field_root(target) {
                     return Err(CompileError::Semantic(format!(
-                        "db transaction bodies cannot write actor field {} in v1 (DB-only rollback)",
-                        field
+                        "db transaction bodies cannot write actor field {field} in v1 (DB-only rollback)"
                     )));
                 }
             }
@@ -692,9 +691,10 @@ fn validate_transaction_expr(actor: &ActorDecl, expression: &Expr) -> Result<()>
             // `self.<field>.<method>(...)` — but allow plain `self.method()`.
             if let Expr::Field { object, .. } = callee.as_ref() {
                 if self_field_root(object).is_some() {
-                    return Err(CompileError::Semantic(format!(
+                    return Err(CompileError::Semantic(
                         "db transaction bodies cannot mutate actor fields through field receivers in v1 (DB-only rollback)"
-                    )));
+                            .to_string(),
+                    ));
                 }
             }
         }

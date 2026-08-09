@@ -67,26 +67,6 @@ pub fn service_task_targets_with_packages(
     })
 }
 
-#[cfg(test)]
-mod task_tests {
-    use super::*;
-
-    #[test]
-    fn task_wrapper_matches_shared_core_for_empty_projection() {
-        let wrapper_targets = service_task_targets_with_packages(&[], &[], "proto")
-            .expect("wrapper should accept empty input");
-        let core_targets =
-            skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
-                &[],
-                &[],
-                "proto",
-            )
-            .expect("core should accept empty input");
-
-        assert_eq!(wrapper_targets, core_targets);
-    }
-}
-
 fn service_db_metadata(
     parsed_sources: &[ParsedCompilerSource],
     file_ir_units: &[FileIrUnit],
@@ -131,7 +111,7 @@ fn service_db_entry(source_role: &str, unit: &FileIrUnit, db: &DbDeclarationIr) 
         package_id: None,
         package_version: None,
         file_ir_identity: None,
-        kind: db.kind.clone(),
+        kind: db.kind,
         ty: db.type_ref.clone(),
         type_name: db.type_name.clone(),
         collection_name: db.collection_name.clone(),
@@ -158,5 +138,25 @@ fn db_metadata_index(index: &DbIndexIr) -> DbMetadataIndexIr {
         name: index.name.clone(),
         unique: index.unique,
         fields: index.fields.clone(),
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    #[test]
+    fn task_wrapper_matches_shared_core_for_empty_projection() {
+        let wrapper_targets = service_task_targets_with_packages(&[], &[], "proto")
+            .expect("wrapper should accept empty input");
+        let core_targets =
+            skiff_compiler_core::dispatch_targets::service_task_targets_with_packages(
+                &[],
+                &[],
+                "proto",
+            )
+            .expect("core should accept empty input");
+
+        assert_eq!(wrapper_targets, core_targets);
     }
 }

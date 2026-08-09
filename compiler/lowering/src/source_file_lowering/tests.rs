@@ -1727,7 +1727,7 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
     );
 }
 
-fn task_submit_call<'a>(executable: &'a ExecutableIr, call_ref: ExprRefIr) -> &'a CallIr {
+fn task_submit_call(executable: &ExecutableIr, call_ref: ExprRefIr) -> &CallIr {
     let ExprIr::Call { call } = &executable.body.expressions[call_ref.expression as usize] else {
         panic!("dispatch must reference a call expression");
     };

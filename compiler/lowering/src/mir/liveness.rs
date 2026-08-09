@@ -22,6 +22,8 @@ use skiff_artifact_model::{AssignTargetIr, ExprIr, ExprRefIr, PatternIr};
 
 use super::{MirBlockLiveness, MirContractError, MirFunction, MirLiveness, MirStmtKind};
 
+type BlockSlotSets = BTreeMap<u32, BTreeSet<u32>>;
+
 /// May-liveness for one function, backed only by its owned MIR expressions.
 pub fn compute_liveness(function: &MirFunction) -> Result<MirLiveness, MirContractError> {
     function.validate_expression_indices()?;
@@ -114,7 +116,7 @@ fn validate_cfg(function: &MirFunction) -> Result<(), MirContractError> {
 
 fn block_use_def_sets(
     function: &MirFunction,
-) -> Result<(BTreeMap<u32, BTreeSet<u32>>, BTreeMap<u32, BTreeSet<u32>>), MirContractError> {
+) -> Result<(BlockSlotSets, BlockSlotSets), MirContractError> {
     let mut uses = BTreeMap::new();
     let mut defs = BTreeMap::new();
     for block in &function.blocks {

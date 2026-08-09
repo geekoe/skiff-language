@@ -717,7 +717,7 @@ impl SuspendContext<'_, '_> {
             if let Some(receiver_type) = receiver_type {
                 if let Some(key) = self
                     .analyzer
-                    .local_receiver_method_key(&receiver_type, field)
+                    .local_receiver_method_key(receiver_type, field)
                 {
                     return self.values.get(key).copied().unwrap_or(true);
                 }

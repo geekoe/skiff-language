@@ -927,8 +927,7 @@ fn validate_actor_key_type(ty: &TypeRefIr, actor_name: &str) -> Result<()> {
     };
     if let Some(reason) = unsupported {
         return Err(CompileError::Semantic(format!(
-            "actor {} key field type must support stable canonical encoding; {reason} does not",
-            actor_name
+            "actor {actor_name} key field type must support stable canonical encoding; {reason} does not"
         )));
     }
     Ok(())

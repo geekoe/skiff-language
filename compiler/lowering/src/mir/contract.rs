@@ -1009,19 +1009,19 @@ pub enum MirBuildError {
         module_path: String,
         symbol: String,
         #[source]
-        source: MirContractError,
+        source: Box<MirContractError>,
     },
     #[error("invalid owned MIR function contract for `{symbol}` in `{module_path}`: {source}")]
     InvalidFunctionContract {
         module_path: String,
         symbol: String,
         #[source]
-        source: MirContractError,
+        source: Box<MirContractError>,
     },
     #[error("invalid owned MIR unit contract for `{module_path}`: {source}")]
     InvalidUnitContract {
         module_path: String,
         #[source]
-        source: MirContractError,
+        source: Box<MirContractError>,
     },
 }

@@ -139,9 +139,9 @@ pub fn package_public_schema_type_names_for_module(
         .public_schema_types()
         .values()
         .filter(|public_type| public_type.source_module == module_path)
-        .filter_map(|public_type| match public_type.kind {
+        .map(|public_type| match public_type.kind {
             PublicTypeKind::Type | PublicTypeKind::Alias | PublicTypeKind::Interface => {
-                Some(public_type.source_symbol.clone())
+                public_type.source_symbol.clone()
             }
         })
         .collect()
