@@ -1,8 +1,8 @@
 use super::*;
 
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
-    BytecodeImage, BytecodePoolEntry, BytecodePools, CallableEffectSummary,
+    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeConstantRef,
+    BytecodeFunctionOrigin, BytecodeImage, BytecodePoolEntry, BytecodePools, CallableEffectSummary,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
     ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
@@ -29,8 +29,16 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
         image: BytecodeImage {
             functions: BTreeMap::new(),
             pools: BytecodePools {
-                constants: Vec::new(),
-                types: Vec::new(),
+                constants: vec![BytecodePoolEntry::ConstantRef {
+                    reference: BytecodeConstantRef::LocalNode { node_index: 0 },
+                    type_ref: 0,
+                    plan: ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::Trivial,
+                    },
+                }],
+                types: vec![BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                }],
                 shapes: Vec::new(),
                 effects: Vec::new(),
                 resume: Vec::new(),
