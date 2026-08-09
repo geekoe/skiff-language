@@ -120,12 +120,12 @@ impl VmFiber {
         debug_assert_eq!(frame.segment_end(), Some(segment_len));
         let mut values = vec![ValueSlot::null(); segment_len];
         let mut live_values = vec![false; segment_len];
-        for (argument, parameter_slot) in arguments
+        for (argument, parameter) in arguments
             .into_vec()
             .into_iter()
-            .zip(function.frame().parameter_slots().iter().copied())
+            .zip(function.frame().parameters())
         {
-            let index = usize::try_from(parameter_slot.get()).map_err(|_| {
+            let index = usize::try_from(parameter.slot().get()).map_err(|_| {
                 VmError::VerifiedEntryInvariant {
                     invariant: VmVerifiedInvariant::FrameLayoutOverflow,
                 }
@@ -443,14 +443,14 @@ fn validate_frame_shape(
             invariant: VmVerifiedInvariant::ResultTransferPlan,
         });
     }
-    if frame.parameter_slots().len() != signature.parameter_types().len() {
+    if frame.parameters().len() != signature.parameter_types().len() {
         return Err(VmError::VerifiedEntryInvariant {
             invariant: VmVerifiedInvariant::ParameterSlotCount,
         });
     }
     let mut seen_parameter_slots = vec![false; frame.slot_types().len()];
-    for (ordinal, slot) in frame.parameter_slots().iter().copied().enumerate() {
-        let slot = index_to_usize(slot);
+    for (ordinal, parameter) in frame.parameters().iter().enumerate() {
+        let slot = index_to_usize(parameter.slot());
         let Some(seen) = seen_parameter_slots.get_mut(slot) else {
             return Err(VmError::VerifiedEntryInvariant {
                 invariant: VmVerifiedInvariant::ParameterType,
@@ -467,10 +467,34 @@ fn validate_frame_shape(
                 invariant: VmVerifiedInvariant::ParameterType,
             });
         }
+        if parameter.mode() == ParamModeIr::InOut {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ExternalInOutParameter,
+            });
+        }
+        if signature.parameter_modes().get(ordinal).copied() != Some(parameter.mode()) {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ParameterMode,
+            });
+        }
+        // Equality is a sealed-fact consistency check only. Execution never
+        // reduces a complete lifecycle plan to a coarse kind.
+        if frame.slot_plans().get(slot) != Some(parameter.plan())
+            || signature.parameter_plans().get(ordinal) != Some(parameter.plan())
+        {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ParameterTransferPlan,
+            });
+        }
     }
     if frame.result_types() != signature.result_types() {
         return Err(VmError::VerifiedEntryInvariant {
             invariant: VmVerifiedInvariant::ResultType,
+        });
+    }
+    if frame.result_plans() != signature.result_plans() {
+        return Err(VmError::VerifiedEntryInvariant {
+            invariant: VmVerifiedInvariant::ResultTransferPlan,
         });
     }
     Ok(())
@@ -539,11 +563,50 @@ impl ImageIndex for FrameSlotIndex {
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_model::Opcode;
+    use skiff_artifact_model::{CallableEffectSummary, Opcode, ParamModeIr};
+    use skiff_runtime_linked_bytecode::{
+        FrameSlotIndex, LinkedCallableSignature, LinkedFrameLayout, LinkedParameterSlot,
+        LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    };
     use skiff_runtime_model::vm_value::ValueSlot;
 
-    use super::{opcode_execution_class, VerifiedVmEntry, Vm, VmFiber, VmOpcodeExecutionClass};
-    use crate::{VmBudget, VmError, VmLimits};
+    use super::{
+        opcode_execution_class, validate_frame_shape, validate_signature_shape, VerifiedVmEntry,
+        Vm, VmFiber, VmOpcodeExecutionClass,
+    };
+    use crate::{VmBudget, VmError, VmLimits, VmVerifiedInvariant};
+
+    fn snapshot_plan(drop: LinkedValueDropPlan) -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::SnapshotShare { drop }
+    }
+
+    fn signature(mode: ParamModeIr, plan: LinkedValueTransferPlan) -> LinkedCallableSignature {
+        LinkedCallableSignature::new(
+            Box::new([TypeIndex::new(0)]),
+            Box::new([mode]),
+            Box::new([plan]),
+            Box::new([]),
+            Box::new([]),
+            CallableEffectSummary::analysis_pending(),
+        )
+        .expect("test signature has one mode and plan per parameter")
+    }
+
+    fn frame(mode: ParamModeIr, plan: LinkedValueTransferPlan) -> LinkedFrameLayout {
+        LinkedFrameLayout::new(
+            Box::new([TypeIndex::new(0)]),
+            Box::new([LinkedParameterSlot::new(
+                FrameSlotIndex::new(0),
+                mode,
+                plan.clone(),
+            )]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([plan]),
+            Box::new([]),
+        )
+        .expect("test frame is locally well-shaped")
+    }
 
     #[test]
     fn production_start_signature_requires_the_concrete_pinned_entry() {
@@ -586,5 +649,55 @@ mod tests {
                 VmOpcodeExecutionClass::RequiresFullValueLifecyclePlan
             );
         }
+    }
+
+    #[test]
+    fn v4_parameter_admission_compares_the_complete_plan() {
+        let frame = frame(
+            ParamModeIr::Value,
+            snapshot_plan(LinkedValueDropPlan::Trivial),
+        );
+        let signature = signature(
+            ParamModeIr::Value,
+            snapshot_plan(LinkedValueDropPlan::SnapshotRelease),
+        );
+
+        assert_eq!(
+            validate_frame_shape(&frame, &signature),
+            Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ParameterTransferPlan,
+            })
+        );
+    }
+
+    #[test]
+    fn v4_parameter_admission_accepts_exact_value_facts() {
+        let plan = snapshot_plan(LinkedValueDropPlan::SnapshotRelease);
+        let frame = frame(ParamModeIr::Value, plan.clone());
+        let signature = signature(ParamModeIr::Value, plan);
+
+        assert_eq!(validate_signature_shape(&signature, 1), Ok(()));
+        assert_eq!(validate_frame_shape(&frame, &signature), Ok(()));
+    }
+
+    #[test]
+    fn v4_root_entry_rejects_inout_from_signature_or_frame() {
+        let plan = snapshot_plan(LinkedValueDropPlan::Trivial);
+        let inout_signature = signature(ParamModeIr::InOut, plan.clone());
+        assert_eq!(
+            validate_signature_shape(&inout_signature, 1),
+            Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ExternalInOutParameter,
+            })
+        );
+
+        let inout_frame = frame(ParamModeIr::InOut, plan.clone());
+        let value_signature = signature(ParamModeIr::Value, plan);
+        assert_eq!(
+            validate_frame_shape(&inout_frame, &value_signature),
+            Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::ExternalInOutParameter,
+            })
+        );
     }
 }

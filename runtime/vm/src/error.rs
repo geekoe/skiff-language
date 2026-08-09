@@ -24,6 +24,7 @@ pub enum VmVerifiedInvariant {
     ParameterSlotCount,
     DuplicateParameterSlot,
     FrameSlotPlanCount,
+    ParameterMode,
     ParameterTransferPlan,
     ParameterType,
     ResultType,
