@@ -169,6 +169,7 @@ impl ProjectionFixture {
                                     stable_schema_key: "payload".to_string(),
                                     package_schema_type_id: payload_id.clone(),
                                 },
+                                mode: ParamModeIr::Value,
                             }],
                             return_type: TypeRefIr::PackageSchema {
                                 package_id: package_id.to_string(),
@@ -351,6 +352,13 @@ impl ProjectionFixture {
 #[test]
 fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
     let fixture = ProjectionFixture::new();
+    assert_eq!(
+        fixture.implementation.implementation_links.functions["handle"]
+            .signature
+            .params[0]
+            .mode,
+        ParamModeIr::default()
+    );
     assert_eq!(
         fixture.input.schema_version,
         "skiff-service-deployment-input-v5"
