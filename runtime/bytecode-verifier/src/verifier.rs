@@ -1,6 +1,9 @@
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use skiff_artifact_model::{ContractOperationId, GatewayEntryIdentity, GatewayEntryKey};
+use skiff_artifact_model::{
+    ContractOperationId, GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayEntryProtocolSurface, PackageCallableId,
+};
 use skiff_runtime_deployment_image::{
     DeploymentOwnerIdentity, DeploymentProgramEntry, DeploymentProgramFacts, ServiceDependencySlot,
 };
@@ -24,8 +27,37 @@ struct VerificationSeal;
 struct SealedDeploymentFacts {
     owner: DeploymentOwnerIdentity,
     dependency_slots: Box<[ServiceDependencySlot]>,
+    entry_maps: VerifiedEntryMaps,
     constant_heap: VerifiedConstantHeap,
     seal: VerificationSeal,
+}
+
+#[derive(Debug)]
+struct VerifiedEntryMaps {
+    operations: BTreeMap<ContractOperationId, VerifiedCallableEntryFacts>,
+    gateways: BTreeMap<GatewayEntryKey, VerifiedGatewayEntryFacts>,
+}
+
+#[derive(Debug)]
+struct VerifiedCallableEntryFacts {
+    function: FunctionIndex,
+    signature: LinkedCallableSignature,
+}
+
+#[derive(Debug)]
+struct VerifiedGatewayCallableFacts {
+    _package_callable_id: PackageCallableId,
+    function: FunctionIndex,
+    signature: LinkedCallableSignature,
+}
+
+#[derive(Debug)]
+struct VerifiedGatewayEntryFacts {
+    identity: GatewayEntryIdentity,
+    _protocol_surface: GatewayEntryProtocolSurface,
+    callables: BTreeMap<LinkedGatewayCallableRole, VerifiedGatewayCallableFacts>,
+    _adapter_plan: GatewayAdapterPlan,
+    _close_adapter_plan: Option<GatewayAdapterPlan>,
 }
 
 /// A linked candidate sealed against one exact, opaque deployment hydration.
@@ -66,6 +98,7 @@ pub struct VerifiedLinkedBytecodeImage {
     candidate: LinkedBytecodeCandidate,
     owner: DeploymentOwnerIdentity,
     dependency_slots: Box<[ServiceDependencySlot]>,
+    entry_maps: VerifiedEntryMaps,
     constant_heap: VerifiedConstantHeap,
     _seal: VerificationSeal,
 }
@@ -102,16 +135,13 @@ impl VerifiedLinkedBytecodeImage {
         self: &Arc<Self>,
         operation: &ContractOperationId,
     ) -> Result<VerifiedCodeEntry, CodeEntryLookupError> {
-        let entry = self
-            .candidate
-            .operation_entries()
-            .binary_search_by(|entry| entry.contract_operation_id().cmp(operation))
-            .map(|index| &self.candidate.operation_entries()[index])
-            .map_err(|_| CodeEntryLookupError::OperationNotFound {
+        let entry = self.entry_maps.operations.get(operation).ok_or_else(|| {
+            CodeEntryLookupError::OperationNotFound {
                 contract_operation_id: operation.clone(),
-            })?;
-        let function = entry.function();
-        let signature = entry.signature().clone();
+            }
+        })?;
+        let function = entry.function;
+        let signature = entry.signature.clone();
 
         Ok(VerifiedCodeEntry {
             program: Arc::clone(self),
@@ -131,30 +161,26 @@ impl VerifiedLinkedBytecodeImage {
         key: &GatewayEntryKey,
         role: LinkedGatewayCallableRole,
     ) -> Result<VerifiedCodeEntry, CodeEntryLookupError> {
-        let entry = self
-            .candidate
-            .gateway_entries()
-            .binary_search_by(|entry| entry.gateway_entry_key().cmp(key))
-            .map(|index| &self.candidate.gateway_entries()[index])
-            .map_err(|_| CodeEntryLookupError::GatewayNotFound {
+        let entry = self.entry_maps.gateways.get(key).ok_or_else(|| {
+            CodeEntryLookupError::GatewayNotFound {
                 gateway_entry_key: key.clone(),
-            })?;
-        let callable =
-            entry
-                .callable(role)
-                .ok_or_else(|| CodeEntryLookupError::GatewayCallableNotFound {
-                    gateway_entry_key: key.clone(),
-                    gateway_entry_identity: entry.gateway_entry_identity().clone(),
-                    role,
-                })?;
-        let function = callable.function();
-        let signature = callable.signature().clone();
+            }
+        })?;
+        let callable = entry.callables.get(&role).ok_or_else(|| {
+            CodeEntryLookupError::GatewayCallableNotFound {
+                gateway_entry_key: key.clone(),
+                gateway_entry_identity: entry.identity.clone(),
+                role,
+            }
+        })?;
+        let function = callable.function;
+        let signature = callable.signature.clone();
 
         Ok(VerifiedCodeEntry {
             program: Arc::clone(self),
             kind: VerifiedCodeEntryKind::Gateway {
                 gateway_entry_key: key.clone(),
-                gateway_entry_identity: entry.gateway_entry_identity().clone(),
+                gateway_entry_identity: entry.identity.clone(),
                 role,
             },
             function,
@@ -361,6 +387,7 @@ pub fn verify(
         candidate,
         owner: facts.owner,
         dependency_slots: facts.dependency_slots,
+        entry_maps: facts.entry_maps,
         constant_heap: facts.constant_heap,
         _seal: facts.seal,
     })
@@ -373,11 +400,13 @@ fn establish_verification_seal(
 ) -> Result<SealedDeploymentFacts, VerificationError> {
     prove_exact_hydration_binding(hydrated, candidate)?;
     prove_candidate_semantics(candidate, limits)?;
+    let entry_maps = distill_verified_entry_maps(candidate)?;
     let constant_heap = build_verified_constant_heap(candidate, limits)?;
 
     Ok(SealedDeploymentFacts {
         owner: DeploymentOwnerIdentity::new(hydrated.reference().clone()),
         dependency_slots: dependency_slots_from_hydration(hydrated)?,
+        entry_maps,
         constant_heap,
         seal: VerificationSeal,
     })
@@ -414,6 +443,70 @@ pub(super) fn build_verified_constant_heap(
     Err(VerificationError::ProofUnavailable {
         obligation: VerificationObligation::FrozenConstantSafety,
         location: VerificationLocation::Image,
+    })
+}
+
+fn distill_verified_entry_maps(
+    candidate: &LinkedBytecodeCandidate,
+) -> Result<VerifiedEntryMaps, VerificationError> {
+    let mut operations = BTreeMap::new();
+    for entry in candidate.operation_entries() {
+        let operation = entry.contract_operation_id().clone();
+        let facts = VerifiedCallableEntryFacts {
+            function: entry.function(),
+            signature: entry.signature().clone(),
+        };
+        if operations.insert(operation.clone(), facts).is_some() {
+            return Err(VerificationError::SemanticViolation {
+                obligation: VerificationObligation::ExactHydrationBinding,
+                location: VerificationLocation::Image,
+                detail: format!(
+                    "verified operation entry {operation} appears more than once after proof"
+                ),
+            });
+        }
+    }
+
+    let mut gateways = BTreeMap::new();
+    for entry in candidate.gateway_entries() {
+        let key = entry.gateway_entry_key().clone();
+        let mut callables = BTreeMap::new();
+        for callable in entry.callables() {
+            let role = callable.role();
+            let facts = VerifiedGatewayCallableFacts {
+                _package_callable_id: callable.package_callable_id().clone(),
+                function: callable.function(),
+                signature: callable.signature().clone(),
+            };
+            if callables.insert(role, facts).is_some() {
+                return Err(VerificationError::SemanticViolation {
+                    obligation: VerificationObligation::ExactHydrationBinding,
+                    location: VerificationLocation::Image,
+                    detail: format!(
+                        "verified gateway entry {key} role {role:?} appears more than once after proof"
+                    ),
+                });
+            }
+        }
+        let facts = VerifiedGatewayEntryFacts {
+            identity: entry.gateway_entry_identity().clone(),
+            _protocol_surface: entry.protocol_surface().clone(),
+            callables,
+            _adapter_plan: entry.adapter_plan().clone(),
+            _close_adapter_plan: entry.close_adapter_plan().cloned(),
+        };
+        if gateways.insert(key.clone(), facts).is_some() {
+            return Err(VerificationError::SemanticViolation {
+                obligation: VerificationObligation::ExactHydrationBinding,
+                location: VerificationLocation::Image,
+                detail: format!("verified gateway entry {key} appears more than once after proof"),
+            });
+        }
+    }
+
+    Ok(VerifiedEntryMaps {
+        operations,
+        gateways,
     })
 }
 
