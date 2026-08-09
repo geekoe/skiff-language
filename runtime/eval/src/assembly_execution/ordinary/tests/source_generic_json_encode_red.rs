@@ -542,9 +542,7 @@ const right: Named<boolean> = Named<boolean> { payload: true, valueLabel: "right
 "#,
     )
     .expect("model package source");
-}
-
-fn write_consumer_package(root: &Path) {
+}fn write_consumer_package(root: &Path) {
     fs::create_dir_all(root).expect("consumer package root");
     fs::write(
         root.join("package.yml"),
@@ -600,7 +598,7 @@ function encodePackage() -> Json {
 }
 
 function encodeNested() -> Json {
-  const items = Array.empty<LocalPayload>()
+  let items = Array.empty<LocalPayload>()
   items.push(LocalPayload { label: "nested", count: 3 })
   return encodeJson<Array<LocalPayload>>(items)
 }
@@ -614,7 +612,7 @@ function genericDecodeControl() -> Json {
 }
 
 function resourceCatch() -> string {
-  const result = catch<std.resource.ResourceError>(std.resource.text("missing-package-resource.txt"))
+  let result = catch<std.resource.ResourceError>(std.resource.text("missing-package-resource.txt"))
   if result.tag == "ok" {
     return "resource-error-was-not-caught"
   }
@@ -634,7 +632,7 @@ function leftTag() -> string {
 }
 
 function leftItems() -> string {
-  let output = ""
+  var output = ""
   for item in models/left.items() {
     output = output.concat(item)
   }
@@ -642,9 +640,9 @@ function leftItems() -> string {
 }
 
 function leftItemsDeferred() -> string {
-  const value: any LocalStreamSource = LocalStreamValue { label: "left" } as LocalStreamSource
-  const source: Stream<string> = value.items()
-  let output = ""
+  let value: any LocalStreamSource = LocalStreamValue { label: "left" } as LocalStreamSource
+  let source: Stream<string> = value.items()
+  var output = ""
   for item in source {
     output = output.concat(item)
   }

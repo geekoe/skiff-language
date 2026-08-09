@@ -1463,7 +1463,7 @@ services:
         r#"import errors
 
 function exercise() -> string {
-  const first = catch<errors.Failure>(payments/echo("first"))
+  let first = catch<errors.Failure>(payments/echo("first"))
   if first.tag == "ok" {
     return "typed-throw-was-not-caught"
   }
@@ -1511,7 +1511,7 @@ fn write_std_effect_consumer_package(root: &Path) {
         r#"import std
 
 function fetchStatus() -> integer {
-  const response = std.http.request(std.http.HttpClientRequest {
+  let response = std.http.request(std.http.HttpClientRequest {
     method: "GET",
     url: "https://must-not-run.invalid/resource",
     headers: Array.empty<std.http.HttpHeader>(),
