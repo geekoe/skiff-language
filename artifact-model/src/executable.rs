@@ -200,6 +200,9 @@ pub enum SyntheticInstructionSiteReason {
     deny_unknown_fields,
     tag = "kind"
 )]
+// This is a cold-path typed artifact DTO; boxing a variant would change its
+// public construction API solely to optimize a non-hot representation.
+#[allow(clippy::large_enum_variant)]
 pub enum StmtIr {
     Let {
         slot: u32,

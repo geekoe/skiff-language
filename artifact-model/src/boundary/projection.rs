@@ -215,6 +215,9 @@ pub struct BoundaryImplementationRequirements {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+// This is a cold-path typed artifact DTO; boxing a variant would change its
+// public construction API solely to optimize a non-hot representation.
+#[allow(clippy::large_enum_variant)]
 pub enum BoundaryCallableProjection {
     Available {
         operation_contract: BoundaryOperationContract,
@@ -236,7 +239,9 @@ pub enum BoundaryUnavailableReason {
     AnalysisPending,
     UnknownEffect,
     UnknownCallTarget,
-    EscapesCallerValue { lane: ValueEscapeLane },
+    EscapesCallerValue {
+        lane: ValueEscapeLane,
+    },
     RequiresSameHeapIdentity,
     CallbackAdapterUnavailable,
     NativeAdapterUnavailable,

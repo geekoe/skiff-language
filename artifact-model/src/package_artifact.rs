@@ -54,6 +54,9 @@ pub struct PackageActorAbi {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+// This is a cold-path typed artifact DTO; boxing a variant would change its
+// public construction API solely to optimize a non-hot representation.
+#[allow(clippy::large_enum_variant)]
 pub enum PackageLocalAbiSymbol {
     Type {
         local_type_id: String,
