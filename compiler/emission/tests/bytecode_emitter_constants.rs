@@ -1,14 +1,17 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_identity::validate_bytecode_identity;
 use skiff_artifact_model::{
-    opcode_table_fingerprint, BlockIr, BytecodePoolEntry, ConstIr, ExecutableBody, ExprIr,
-    ExprRefIr, FileIrUnit, FrozenConstantNode, LiteralIr, StmtIr, StmtRefIr, TypeDeclIr,
-    TypeDescriptorIr, TypeRefIr,
+    opcode_table_fingerprint, BlockIr, BytecodePoolEntry, CallableEffectSummary, ConstIr,
+    ExecutableBody, ExprIr, ExprRefIr, FileIrUnit, FrozenConstantNode, LiteralIr,
+    PackageCallableId, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_emission::{
     emit_bytecode_artifact, BytecodeEmissionError, BytecodeValueTransferPlans,
+    FunctionValueTransferPlans,
 };
 use skiff_compiler_lowering::{
-    mir::{MirConst, MirUnit},
+    mir::{MirConst, MirExecutableKind, MirFunction, MirLiveness, MirUnit},
     Bounds, ConstEvaluator, FrozenConstantBundle,
 };
 
@@ -72,6 +75,27 @@ fn emit_constants(
         &opcode_table_fingerprint(),
     )
     .expect("constant-only image emits")
+}
+
+fn empty_function(module_path: &str, declaration: &str) -> MirFunction {
+    MirFunction {
+        executable_index: 0,
+        symbol: format!("{module_path}.{declaration}"),
+        kind: MirExecutableKind::Function,
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: Vec::new(),
+        expressions: Vec::new(),
+        blocks: Vec::new(),
+        regions: Vec::new(),
+        statements: Vec::new(),
+        liveness: MirLiveness::default(),
+        effect_summary_ref: PackageCallableId::new(format!("callable:{module_path}:{declaration}")),
+        effect_summary: CallableEffectSummary::analysis_pending(),
+        source_span: None,
+    }
 }
 
 #[test]
@@ -227,5 +251,54 @@ fn a_mir_unit_without_its_owned_bundle_fails_closed() {
         error,
         BytecodeEmissionError::MissingConstantBundle { module_path }
             if module_path == "missing"
+    ));
+}
+
+#[test]
+fn a_function_without_explicit_transfer_plans_fails_before_body_emission() {
+    let file_ir = FileIrUnit::empty("planned", "source-hash");
+    let (mut mir, bundle) = mir_and_bundle(&file_ir);
+    mir.functions.push(empty_function("planned", "run"));
+
+    let error = emit_bytecode_artifact(
+        &[mir],
+        &[bundle],
+        &BytecodeValueTransferPlans::default(),
+        &opcode_table_fingerprint(),
+    )
+    .expect_err("the emitter cannot infer transfer plans");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::MissingValueTransferPlans { function_key }
+            if function_key == "planned::run"
+    ));
+}
+
+#[test]
+fn an_empty_function_cannot_bypass_the_fail_closed_body_gate() {
+    let file_ir = FileIrUnit::empty("gated", "source-hash");
+    let (mut mir, bundle) = mir_and_bundle(&file_ir);
+    mir.functions.push(empty_function("gated", "run"));
+    let transfer_plans = BytecodeValueTransferPlans {
+        functions: BTreeMap::from([(
+            "gated::run".to_string(),
+            FunctionValueTransferPlans {
+                slot_plans: Vec::new(),
+                result_plans: Vec::new(),
+            },
+        )]),
+    };
+
+    let error = emit_bytecode_artifact(
+        &[mir],
+        &[bundle],
+        &transfer_plans,
+        &opcode_table_fingerprint(),
+    )
+    .expect_err("no MIR function is silently omitted");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstruct { function_key, .. }
+            if function_key == "gated::run"
     ));
 }
