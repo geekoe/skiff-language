@@ -1,6 +1,6 @@
 # Phase 1 result: artifact schema and structural validator
 
-Status: candidate-pass（隔离 Live 与 focused gates 全绿；待合并 main 后完成 stable closure 标 complete）
+Status: complete
 
 ## Candidate commits/trees
 
@@ -49,8 +49,11 @@ Status: candidate-pass（隔离 Live 与 focused gates 全绿；待合并 main �
 
 ## Stable merge commits and Live receipt
 
-- 待合流：三仓 main merge commits（本阶段仅 skiff 有代码改动；internals/skiff-packages 无变更）。
-- 合流后 stable closure：`internals/agine` main 上 chat-smoke + host-tools（strict 断言，normal-flow-only 约定）。
+- 三仓 main merge commits：skiff `3ea47f43`（merge bcvm/p1-design：Phase 1 artifact schema and structural validator）；internals、skiff-packages 本阶段无变更。
+- 合流后 stable closure（`internals/agine` main，稳定 dev）：
+  - chat-smoke PASS（reply 12 chars，status idle）；
+  - host-tools strict full PASS（strict assertions ok，terminal=completed，29 tool calls，1679 chars，sample 60.8MB 非空，normal-flow-only 约定）。
+- 合流前稳定 dev 曾因 `profile.enabled: true`（pprof）导致 chat/host-tools 全断；关闭 profiler 后恢复（见 Known residual risks 1）。stable closure 在 profiler 关闭状态下完成。
 
 ## Known residual risks owned by the next phase
 
