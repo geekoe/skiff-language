@@ -2,20 +2,20 @@
 //!
 //! [`ValueSlot`] is `Copy` so the VM can move its fixed-width physical bits
 //! efficiently. Copying those bits does not create another semantic owner.
-//! Verified slot liveness and [`ValueTransferPlanKind`] select the operation,
-//! while the heap keeps all generation, domain, share, edit, and affine
-//! ownership state private. No ownership token is exposed for callers to forge.
-
-pub use skiff_artifact_model::ValueTransferPlanKind;
+//! The verified VM interprets image-local lifecycle plans and selects one of
+//! the synchronous physical primitives below. The heap keeps all generation,
+//! domain, share, edit, and affine ownership state private. No artifact plan,
+//! native adapter, callback, future, or ownership token crosses this port.
 
 use crate::vm_value::{ValueKind, ValueSlot, VmHandle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VmHeapOperation {
     ValidateLive,
-    Snapshot,
-    Transfer,
-    Drop,
+    SnapshotShare,
+    TransferOwner,
+    ReleaseSnapshot,
+    ReleaseResource,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
@@ -36,13 +36,12 @@ pub enum VmHeapError {
         handle: VmHandle,
         reason: VmHandleInvalidReason,
     },
-    #[error("{operation:?} is not permitted for {kind:?} under {plan:?}")]
-    TransferPlanViolation {
+    #[error("{operation:?} is not a valid physical operation for {kind:?}")]
+    OperationKindMismatch {
         operation: VmHeapOperation,
-        plan: ValueTransferPlanKind,
         kind: ValueKind,
     },
-    #[error("{kind:?} handle {handle:?} does not own the required affine token")]
+    #[error("{kind:?} handle {handle:?} does not own the required physical state")]
     OwnershipViolation { kind: ValueKind, handle: VmHandle },
     #[error(
         "heap resource limit exceeded during {operation:?}: limit {limit}, current {current}, requested delta {requested_delta}"
@@ -59,45 +58,46 @@ pub enum VmHeapError {
 ///
 /// Implementations own stable-handle domain and generation checks. Every
 /// method must fail closed for foreign or stale handles even when bytecode has
-/// already passed semantic verification.
+/// already passed semantic verification. An error from a mutating method must
+/// leave logical ownership, liveness, and share state unchanged.
 pub trait VmHeap {
     /// Validates metadata and the liveness/domain of any referenced handle.
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError>;
 
-    /// Produces a logical snapshot or an explicitly cloned lease.
+    /// Performs the heap-local share transition for an ordinary snapshot.
     ///
-    /// `SnapshotShare` may return identical slot bits after recording the
-    /// semantic share transition. `ExplicitCloneLease` may return a new handle.
-    /// `MoveOnly` and `AffineResource` must fail closed on this copy path.
-    fn snapshot(
-        &mut self,
-        value: &ValueSlot,
-        plan: ValueTransferPlanKind,
-    ) -> Result<ValueSlot, VmHeapError>;
+    /// The returned slot may have identical bits, but represents a second
+    /// semantic snapshot only after this method succeeds. This method never
+    /// invokes an explicit clone adapter; immediate values are an unchanged
+    /// physical no-op. On error it must not change heap state, and `source`
+    /// remains the sole caller-owned value.
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError>;
 
-    /// Transfers the logical owner represented by `value`.
+    /// Performs the heap-local transition for a logical owner move.
     ///
-    /// On success the verified VM must mark the source slot dead and clear its
-    /// storage as part of the same instruction. Passing this `Copy` type by
-    /// value does not perform that source mutation and does not authorize a
-    /// second owner. On error the caller retains the original logical owner.
-    fn transfer(
-        &mut self,
-        value: ValueSlot,
-        plan: ValueTransferPlanKind,
-    ) -> Result<ValueSlot, VmHeapError>;
+    /// On success the verified VM must atomically install the returned slot and
+    /// mark its source storage dead. Borrowing this `Copy` type does not perform
+    /// that commit or authorize a second owner. Immediate values require no heap
+    /// mutation. On error heap state is unchanged and the caller retains
+    /// `source` as its logical owner.
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError>;
 
-    /// Executes the linked drop plan for one logical owner.
+    /// Releases one ordinary snapshot owner from heap-local share accounting.
     ///
-    /// Resource release must be exact and idempotent; tracing collection is not
-    /// a substitute for this operation. On success the caller must clear the
-    /// dropped slot. An error leaves the logical owner with the caller and must
-    /// be safe to retry.
-    fn drop_value(
-        &mut self,
-        value: ValueSlot,
-        plan: ValueTransferPlanKind,
-    ) -> Result<(), VmHeapError>;
+    /// Each successful call releases exactly one logical owner; the verified VM
+    /// must call it once per live owner even when multiple slots contain the
+    /// same bits. The caller clears its slot only after success. On error heap
+    /// state is unchanged, the caller retains `owner`, and retrying the same
+    /// operation is safe.
+    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError>;
+
+    /// Releases one exact ResourceTable owner without relying on GC finalizers.
+    ///
+    /// Release is exact and idempotent. The caller clears its slot only after
+    /// success. On error heap/resource state is unchanged, the caller retains
+    /// `owner`, and retrying the same operation is safe. Native lifecycle
+    /// adapters are scheduled outside this port and outside any heap lock.
+    fn release_resource(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError>;
 }
 
 #[cfg(test)]
