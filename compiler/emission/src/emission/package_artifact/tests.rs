@@ -257,6 +257,8 @@ fn fixture() -> (
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),

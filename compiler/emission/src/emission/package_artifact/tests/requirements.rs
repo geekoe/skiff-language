@@ -179,6 +179,7 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
                 package_ref,
                 package_callable_id: callable.package_callable_id,
             },
+            concrete_receiver: None,
             site: InstructionSourceSite::Synthetic {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
