@@ -574,6 +574,89 @@ fn link_identity_valid_execution_image(
 }
 
 #[test]
+fn assembly_code_linker_resolves_call_concrete_receiver_through_type_linker() {
+    use skiff_artifact_model::{
+        CallIr, CallTargetIr, ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, ExprRefIr,
+        ParamIr, ParamModeIr, SlotIr, SlotKind, SlotLayout, TypeRefIr,
+    };
+    use skiff_runtime_linked_program::{LinkedExprIr, LinkedTypeRef};
+
+    let image = link_identity_valid_execution_image(|file| {
+        file.executables.push(ExecutableIr {
+            kind: ExecutableKind::ImplMethod,
+            symbol: "shared.main.LocalRecord.read".to_string(),
+            type_params: Vec::new(),
+            params: vec![ParamIr {
+                name: "self".to_string(),
+                slot: 0,
+                ty: TypeRefIr::LocalType { type_index: 0 },
+                mode: ParamModeIr::Value,
+            }],
+            return_type: TypeRefIr::builtin("bool"),
+            self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
+            slots: SlotLayout {
+                slots: vec![SlotIr {
+                    index: 0,
+                    name: "self".to_string(),
+                    kind: SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(TypeRefIr::LocalType { type_index: 0 }),
+                }],
+                frame_size: 1,
+            },
+            may_suspend: false,
+            body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
+            source_span: None,
+        });
+        file.executables[0].body.expressions.extend([
+            ExprIr::Construct {
+                type_ref: TypeRefIr::LocalType { type_index: 0 },
+                fields: BTreeMap::new(),
+            },
+            ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::LocalExecutable {
+                        executable_index: 1,
+                    },
+                    concrete_receiver: Some(TypeRefIr::LocalType { type_index: 0 }),
+                    site: test_instruction_site(),
+                    args: vec![ExprRefIr { expression: 0 }],
+                    inout_args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            },
+        ]);
+        file.executables[0].expression_types.extend([
+            TypeRefIr::LocalType { type_index: 0 },
+            TypeRefIr::builtin("bool"),
+        ]);
+    })
+    .expect("receiver-bound local call should link");
+
+    let file = image
+        .execution_packages()
+        .iter()
+        .flat_map(|package| package.files())
+        .find(|file| file.module_path == "shared.main")
+        .expect("shared fixture file");
+    let LinkedExprIr::Call { call } = file.executables[0]
+        .body
+        .expressions
+        .last()
+        .expect("receiver call")
+    else {
+        panic!("last expression must be receiver call")
+    };
+    assert!(matches!(
+        call.concrete_receiver.as_ref(),
+        Some(LinkedTypeRef::Address { .. })
+    ));
+}
+
+#[test]
 fn assembly_linker_attaches_exact_identity_to_local_db_target() {
     let image = link_identity_valid_execution_image(|file| {
         attach_local_db_target(file, true);
@@ -972,12 +1055,14 @@ fn linked_call(
 
     skiff_runtime_linked_program::CallIr {
         target,
+        concrete_receiver: None,
         site: test_instruction_site(),
         args: (0..arg_count)
             .map(|expression| ExprRefIr {
                 expression: expression as u32,
             })
             .collect(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,
@@ -1120,6 +1205,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
                         metadata: BTreeMap::new(),
                     },
                 },
+                concrete_receiver: None,
                 site: test_instruction_site(),
                 args: vec![ExprRefIr { expression: 0 }],
                 inout_args: Vec::new(),
@@ -1204,6 +1290,7 @@ fn append_actor_registry_call(
                     metadata: BTreeMap::new(),
                 },
             },
+            concrete_receiver: None,
             site: test_instruction_site(),
             args: vec![ExprRefIr { expression: 0 }],
             inout_args: Vec::new(),
@@ -1391,6 +1478,7 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                     method_abi_id: "method:tampered".to_string(),
                     slot: 1,
                 },
+                concrete_receiver: None,
                 site: test_instruction_site(),
                 args: Vec::new(),
                 inout_args: Vec::new(),

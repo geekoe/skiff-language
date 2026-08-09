@@ -113,12 +113,131 @@ fn artifact_call(
 ) -> artifact::CallIr {
     artifact::CallIr {
         target,
+        concrete_receiver: None,
         site,
         args: Vec::new(),
         inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
     }
+}
+
+#[test]
+fn linked_file_ir_v13_execution_facts_are_preserved_exactly() {
+    let executable = artifact::ExecutableIr {
+        kind: artifact::ExecutableKind::Function,
+        symbol: "mutate".to_string(),
+        type_params: Vec::new(),
+        params: vec![artifact::ParamIr {
+            name: "value".to_string(),
+            slot: 0,
+            ty: artifact::TypeRefIr::builtin("string"),
+            mode: artifact::ParamModeIr::InOut,
+        }],
+        return_type: artifact::TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: artifact::SlotLayout {
+            slots: vec![
+                artifact::SlotIr {
+                    index: 0,
+                    name: "value".to_string(),
+                    kind: artifact::SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(artifact::TypeRefIr::builtin("string")),
+                },
+                artifact::SlotIr {
+                    index: 1,
+                    name: "scratch".to_string(),
+                    kind: artifact::SlotKind::Local,
+                    writable_local: true,
+                    ty: Some(artifact::TypeRefIr::builtin("string")),
+                },
+            ],
+            frame_size: 2,
+        },
+        may_suspend: false,
+        body: artifact::ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
+        source_span: None,
+    };
+    let linked = linked_executable(&executable, &|_| unreachable!(), &|_| unreachable!())
+        .expect("File IR v13 executable facts should convert");
+    assert_eq!(linked.params[0].mode, ParamModeIr::InOut);
+    assert!(!linked.slots.slots[0].writable_local);
+    assert!(linked.slots.slots[1].writable_local);
+
+    let index = linked_expr(
+        &artifact::ExprIr::Index {
+            object: artifact::ExprRefIr { expression: 7 },
+            index: artifact::ExprRefIr { expression: 11 },
+        },
+        &|_| unreachable!(),
+        &|_| unreachable!(),
+    )
+    .expect("index expression should remain a carrier");
+    assert_eq!(
+        index,
+        LinkedExprIr::Index {
+            object: ExprRefIr { expression: 7 },
+            index: ExprRefIr { expression: 11 },
+        }
+    );
+
+    let call = linked_call(
+        &artifact::CallIr {
+            target: artifact::CallTargetIr::LocalExecutable {
+                executable_index: 3,
+            },
+            concrete_receiver: Some(artifact::TypeRefIr::AppliedNominal {
+                base: artifact::NominalTypeRefBaseIr::LocalType { type_index: 5 },
+                arguments: vec![artifact::TypeRefIr::builtin("string")],
+            }),
+            site: source_site(83),
+            args: vec![artifact::ExprRefIr { expression: 13 }],
+            inout_args: vec![artifact::InOutArgIr {
+                parameter_ordinal: 2,
+                root_slot: 17,
+                path: vec![
+                    artifact::InOutPathSegmentIr::Field {
+                        name: "items".to_string(),
+                    },
+                    artifact::InOutPathSegmentIr::Index {
+                        selector: artifact::ExprRefIr { expression: 19 },
+                    },
+                ],
+            }],
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+        &|_| unreachable!(),
+    )
+    .expect("direct call facts should convert");
+    assert!(matches!(
+        call.concrete_receiver.as_ref(),
+        Some(LinkedTypeRef::AppliedNominal {
+            base: LinkedNominalTypeRefBase::LocalType { type_index: 5 },
+            arguments,
+        }) if arguments.as_slice() == [LinkedTypeRef::Native {
+            name: "string".to_string(),
+            args: Vec::new(),
+        }]
+    ));
+    assert_eq!(
+        call.inout_args,
+        vec![InOutArgIr {
+            parameter_ordinal: 2,
+            root_slot: 17,
+            path: vec![
+                InOutPathSegmentIr::Field {
+                    name: "items".to_string(),
+                },
+                InOutPathSegmentIr::Index {
+                    selector: ExprRefIr { expression: 19 },
+                },
+            ],
+        }]
+    );
 }
 
 #[test]
@@ -666,6 +785,7 @@ fn linked_call_preserves_actor_dispatch_identities_without_executable_address() 
             ),
             method_identity: artifact::ActorMethodIdentity::new("actor-method:submit"),
         },
+        concrete_receiver: None,
         site: artifact::InstructionSourceSite::Synthetic {
             reason: artifact::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
         },

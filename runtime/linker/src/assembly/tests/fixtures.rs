@@ -305,6 +305,7 @@ impl CycleFixture {
                         },
                         package_callable_id: helper_callable.clone(),
                     },
+                    concrete_receiver: None,
                     site: test_instruction_site(),
                     args: Vec::new(),
                     inout_args: Vec::new(),
@@ -334,6 +335,7 @@ impl CycleFixture {
                     target: CallTargetIr::LocalExecutable {
                         executable_index: 1,
                     },
+                    concrete_receiver: None,
                     site: test_instruction_site(),
                     args: Vec::new(),
                     inout_args: Vec::new(),
@@ -349,6 +351,7 @@ impl CycleFixture {
                     target: CallTargetIr::ServiceCall {
                         service_call_ref_index: skiff_artifact_model::ServiceCallRefIndex::new(0),
                     },
+                    concrete_receiver: None,
                     site: test_instruction_site(),
                     args: Vec::new(),
                     inout_args: Vec::new(),
@@ -407,6 +410,7 @@ impl CycleFixture {
                         actor_implementation_identity,
                         method_identity,
                     },
+                    concrete_receiver: None,
                     site: test_instruction_site(),
                     args: vec![ExprRefIr { expression: 1 }],
                     inout_args: Vec::new(),

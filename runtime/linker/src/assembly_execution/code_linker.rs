@@ -578,6 +578,9 @@ impl<'a> AssemblyCodeLinker<'a> {
                 }
                 LinkedExprIr::Call { call } => {
                     self.link_call_target(code_slot, file_index, &mut call.target)?;
+                    if let Some(concrete_receiver) = &mut call.concrete_receiver {
+                        self.link_type_ref(code_slot, file_index, concrete_receiver)?;
+                    }
                     self.validate_actor_dispatch_call(call)?;
                     let is_actor_registry = actor_registry_target_name(&call.target).is_some();
                     for (name, type_arg) in &mut call.type_args {

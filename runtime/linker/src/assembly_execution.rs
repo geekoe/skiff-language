@@ -350,6 +350,7 @@ mod task_route_tests {
                         target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                             executable_index: 1,
                         },
+                        concrete_receiver: None,
                         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },

@@ -88,6 +88,7 @@ impl CallSemanticValidationDelegate for FakeDelegate {
 fn call(target: LinkedCallTarget, arg_count: usize) -> CallIr {
     CallIr {
         target,
+        concrete_receiver: None,
         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
             reason:
                 skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
@@ -97,6 +98,7 @@ fn call(target: LinkedCallTarget, arg_count: usize) -> CallIr {
                 expression: expression as u32,
             })
             .collect(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,

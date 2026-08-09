@@ -671,6 +671,7 @@ fn linked_executable(
                 name: param.name.clone(),
                 slot: param.slot as usize,
                 ty: linked_type_ref(&param.ty),
+                mode: param.mode,
             })
             .collect(),
         return_type: Some(linked_type_ref(&executable.return_type)),
@@ -684,6 +685,7 @@ fn linked_executable(
                     index: slot.index as usize,
                     name: slot.name.clone(),
                     kind: linked_slot_kind(slot.kind).to_string(),
+                    writable_local: slot.writable_local,
                 })
                 .collect(),
             frame_size: executable.slots.frame_size as usize,
@@ -957,6 +959,10 @@ fn linked_expr(
         artifact::ExprIr::Field { object, field } => LinkedExprIr::Field {
             object: linked_expr_ref(object),
             field: field.clone(),
+        },
+        artifact::ExprIr::Index { object, index } => LinkedExprIr::Index {
+            object: linked_expr_ref(object),
+            index: linked_expr_ref(index),
         },
         artifact::ExprIr::Construct { type_ref, fields } => LinkedExprIr::Construct {
             type_ref: linked_type_ref(type_ref),
@@ -1393,8 +1399,10 @@ fn linked_call(
                 slot: *slot,
             },
         },
+        concrete_receiver: call.concrete_receiver.as_ref().map(linked_type_ref),
         site: call.site.clone(),
         args: call.args.iter().map(linked_expr_ref).collect(),
+        inout_args: call.inout_args.iter().map(linked_inout_arg).collect(),
         type_args: call
             .type_args
             .iter()
@@ -1403,6 +1411,25 @@ fn linked_call(
         metadata: call.metadata.clone(),
         actor_metadata: None,
     })
+}
+
+fn linked_inout_arg(argument: &artifact::InOutArgIr) -> InOutArgIr {
+    InOutArgIr {
+        parameter_ordinal: argument.parameter_ordinal,
+        root_slot: argument.root_slot,
+        path: argument
+            .path
+            .iter()
+            .map(|segment| match segment {
+                artifact::InOutPathSegmentIr::Field { name } => {
+                    InOutPathSegmentIr::Field { name: name.clone() }
+                }
+                artifact::InOutPathSegmentIr::Index { selector } => InOutPathSegmentIr::Index {
+                    selector: linked_expr_ref(selector),
+                },
+            })
+            .collect(),
+    }
 }
 
 fn linked_field_path(path: &artifact::FieldPathIr) -> FieldPathIr {
