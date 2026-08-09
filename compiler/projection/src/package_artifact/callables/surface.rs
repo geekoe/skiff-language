@@ -58,13 +58,13 @@ pub(super) fn project_local_surface(
         }
     }
     let mut public_symbols = project_non_callable_symbols(exports)?;
-    let mut callable_targets = signatures::package_callable_targets(package_id, exports);
+    let mut callable_targets = signatures::package_callable_targets(package_id, exports)?;
     signatures::add_direct_impl_method_targets(
         package_id,
         api_exports,
         &exports.exports,
         &mut callable_targets,
-    );
+    )?;
     let callables =
         signatures::attach_canonical_signatures(package_id, signatures, callable_targets)?;
     add_public_instance_symbols(exports, &callables, &mut public_symbols)?;

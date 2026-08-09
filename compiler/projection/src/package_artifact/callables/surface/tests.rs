@@ -4,8 +4,65 @@ use skiff_artifact_model::{
     FileIrRef, LiteralIr, NamedUnionBranchIr, PackageExportIndex, TypeDescriptorIr, TypeExport,
     TypeRefIr,
 };
+use skiff_compiler_core::{
+    canonical_implementation_callable_source_path, implementation_package_callable_id,
+    public_package_callable_id, ImplementationCallableKind,
+};
 
 use super::*;
+
+#[test]
+fn callable_identity_projection_stays_aligned_with_core_helpers(
+) -> Result<(), crate::error::ProjectionError> {
+    let package_id = "example.pkg";
+    let module_path = "api";
+    let executable_symbol = "api.Worker<T>.handle";
+    let kind = ImplementationCallableKind::ImplMethod;
+    let (source_path, implementation_id) = super::super::project_implementation_callable_identity(
+        package_id,
+        module_path,
+        executable_symbol,
+        kind,
+    )?;
+    assert_eq!(
+        canonical_implementation_callable_source_path(module_path, executable_symbol, kind),
+        Ok(source_path.clone())
+    );
+    assert_eq!(source_path, "api.Worker.handle");
+    assert_eq!(
+        implementation_package_callable_id(package_id, module_path, executable_symbol, kind),
+        Ok(implementation_id.clone())
+    );
+    assert_eq!(
+        implementation_id.as_str(),
+        "pkg-callable:example.pkg:top-level:api.Worker.handle"
+    );
+
+    for (public_path, expected_bytes) in [
+        ("run", "pkg-callable:example.pkg:run"),
+        ("worker.handle", "pkg-callable:example.pkg:worker.handle"),
+    ] {
+        let projected_id =
+            super::super::signatures::project_public_callable_id(package_id, public_path)?;
+        assert_eq!(
+            public_package_callable_id(package_id, public_path),
+            Ok(projected_id.clone())
+        );
+        assert_eq!(projected_id.as_str(), expected_bytes);
+        assert_ne!(projected_id, implementation_id);
+    }
+
+    match super::super::signatures::project_public_callable_id(package_id, "") {
+        Err(crate::error::ProjectionError::InvalidPackageArtifact { message }) => {
+            assert_eq!(
+                message,
+                "package example.pkg artifact projection: package callable public path must not be empty"
+            );
+        }
+        Ok(_) => panic!("an empty public path must fail projection"),
+    }
+    Ok(())
+}
 
 #[test]
 fn package_schema_public_generic_local_abi_keeps_declaration_kinds_and_named_branches() {
