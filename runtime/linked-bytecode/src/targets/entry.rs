@@ -105,6 +105,10 @@ pub enum LinkedGatewayEntryError {
         previous: LinkedGatewayCallableRole,
         current: LinkedGatewayCallableRole,
     },
+    CloseHandlerPlanMismatch {
+        has_close_handler: bool,
+        has_close_adapter_plan: bool,
+    },
 }
 
 impl fmt::Display for LinkedGatewayEntryError {
@@ -119,6 +123,13 @@ impl fmt::Display for LinkedGatewayEntryError {
             Self::NonCanonicalCallableRoleOrder { previous, current } => write!(
                 formatter,
                 "gateway callable role {current:?} must sort after {previous:?}"
+            ),
+            Self::CloseHandlerPlanMismatch {
+                has_close_handler,
+                has_close_adapter_plan,
+            } => write!(
+                formatter,
+                "gateway close handler presence ({has_close_handler}) does not match close adapter plan presence ({has_close_adapter_plan})"
             ),
         }
     }
@@ -150,6 +161,15 @@ impl LinkedGatewayEntry {
         close_adapter_plan: Option<GatewayAdapterPlan>,
     ) -> Result<Self, LinkedGatewayEntryError> {
         validate_callable_order(&callables)?;
+        let has_close_handler = callables
+            .iter()
+            .any(|callable| callable.role() == LinkedGatewayCallableRole::CloseHandler);
+        if has_close_handler != close_adapter_plan.is_some() {
+            return Err(LinkedGatewayEntryError::CloseHandlerPlanMismatch {
+                has_close_handler,
+                has_close_adapter_plan: close_adapter_plan.is_some(),
+            });
+        }
         Ok(Self {
             gateway_entry_key,
             gateway_entry_identity,

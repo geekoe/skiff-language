@@ -1,8 +1,8 @@
 //! Public vocabulary for an unverified, concrete linked-bytecode candidate.
 //!
 //! A [`LinkedBytecodeCandidate`] is linker output and verifier input. Its
-//! constructors enforce only local container shape, dense table indices and
-//! root-to-function bounds;
+//! constructors enforce only local container shape, canonical table keys and
+//! image-local reference bounds;
 //! possession of a candidate never implies semantic verification or VM
 //! executability.
 
@@ -11,35 +11,68 @@ mod frame;
 mod function;
 mod index;
 mod instruction;
+mod loan;
+mod plan;
 mod signature;
 mod specialization;
+mod stack_map;
 mod tables;
 mod targets;
 
 pub use candidate::{
-    CandidateTable, LinkedBytecodeCandidate, LinkedBytecodeCandidateError,
-    LinkedBytecodeCandidateParts,
+    CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidate,
+    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedBytecodeHeaderField,
+    LinkedLifecycleRegistryField, LinkedPackageBytecodeProvenance,
+    LinkedPackageBytecodeProvenanceError,
 };
-pub use frame::{LinkedFrameLayout, LinkedFrameLayoutError};
+pub use frame::{LinkedFrameLayout, LinkedFrameLayoutError, LinkedParameterSlot};
 pub use function::{LinkedCallableEffectDeclaration, LinkedFunction, LinkedFunctionTables};
 pub use index::{
-    ActorMethodIndex, ConstantIndex, FrameSlotIndex, FunctionIndex, HostEffectAdapterIndex,
-    InstructionIndex, InterfaceTableIndex, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
-    SyntheticCallbackIndex, TypeIndex,
+    ActiveRegionIndex, ActorCreateIndex, ActorMethodIndex, ArtifactCallbackCaptureIndex,
+    ArtifactConstantIndex, ArtifactConstantNodeIndex, ArtifactShapeIndex, ArtifactTypeIndex,
+    ArtifactWritablePathIndex, BytecodePackageIndex, CallLoanLayoutIndex,
+    CallbackCaptureLayoutIndex, ConstantIndex, ExceptionRegionIndex, FrameSlotIndex,
+    FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex, InstructionBoundaryIndex,
+    InstructionIndex, InterfaceTableIndex, IntrinsicIndex, ResumeSiteIndex, ServiceOperationIndex,
+    ShapeIndex, SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
 };
-pub use instruction::LinkedInstruction;
-pub use signature::{LinkedCallableSignature, LinkedCallableSignatureError};
+pub use instruction::{
+    LinkedInstruction, LinkedInstructionError, LinkedInstructionTarget, LinkedResolvedOperand,
+};
+pub use loan::{LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCallLoanLayoutError};
+pub use plan::{LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan};
+pub use signature::{
+    LinkedCallableSignature, LinkedCallableSignatureError, LinkedNativeCallableSignature,
+};
 pub use specialization::{ArtifactFunctionKey, ArtifactFunctionKeyParseError, SpecializationKey};
+pub use stack_map::{
+    LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate,
+    LinkedStackMapCandidateError, LinkedStackValue, LinkedWritableLoanState,
+};
 pub use tables::{
-    LinkedCatchMatcher, LinkedExceptionRegion, LinkedResumeSite, LinkedSourceMapEntry,
-    LinkedStatementEntry, LinkedSwitchTable,
+    LinkedActiveRegion, LinkedActiveRegionKind, LinkedCatchMatcher, LinkedExceptionRegion,
+    LinkedResumeSite, LinkedResumeSiteError, LinkedSourceMapEntry, LinkedStatementEntry,
+    LinkedStatementEntryError, LinkedSwitchCase, LinkedSwitchTable, LinkedSwitchTableError,
+    LinkedWritablePathEntry, LinkedWritablePathError, LinkedWritablePathSegment,
 };
 pub use targets::{
-    LinkedActorMethodTarget, LinkedCallbackCapture, LinkedConstantEntry, LinkedConstantValue,
-    LinkedExactLocalTarget, LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedGatewayEntry,
-    LinkedGatewayEntryError, LinkedHostEffectAdapterTarget, LinkedInterfaceMethod,
-    LinkedInterfaceTable, LinkedOperationEntry, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedArtifactPoolOrigin,
+    LinkedArtifactPoolOriginError, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
+    LinkedCallbackCaptureLayoutError, LinkedCallbackInterfaceMethod, LinkedConstantEntry,
+    LinkedConstantReference, LinkedConstantRoot, LinkedConstantSymbolPath,
+    LinkedConstantSymbolPathParseError, LinkedContainerLayout, LinkedContainerLayoutKind,
+    LinkedContainerPosition, LinkedContainerPositionKind, LinkedExactLocalTarget,
+    LinkedFrozenBehaviorBinding, LinkedFrozenConstantNode, LinkedFrozenConstantValue,
+    LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedGatewayEntryError,
+    LinkedHostBindingKey, LinkedHostEffectAdapterTarget, LinkedHostTargetError,
+    LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
+    LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableError,
+    LinkedInterfaceTableKind, LinkedInterfaceTextError, LinkedInterfaceTextKind,
+    LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind, LinkedIntrinsicTarget,
+    LinkedIntrinsicTargetError, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
+    LinkedOperationEntry, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedServiceOperationTarget, LinkedShapeEntry, LinkedShapeError,
+    LinkedShapeField, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
 };
 
 #[cfg(test)]

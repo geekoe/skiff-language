@@ -1,8 +1,9 @@
 use skiff_artifact_model::{CallableEffectSummary, PackageCallableId};
 
 use crate::{
-    LinkedExceptionRegion, LinkedFrameLayout, LinkedInstruction, LinkedSourceMapEntry,
-    LinkedStatementEntry, LinkedSwitchTable, SpecializationKey,
+    LinkedActiveRegion, LinkedCallLoanLayout, LinkedExceptionRegion, LinkedFrameLayout,
+    LinkedInstruction, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStatementEntry,
+    LinkedSwitchTable, SpecializationKey,
 };
 
 /// Linker-declared effect facts. The summary remains untrusted until the
@@ -33,12 +34,14 @@ impl LinkedCallableEffectDeclaration {
     }
 }
 
-/// Function-local candidate tables. Their ordering and semantic validity are
-/// deliberately left for the independent verifier.
+/// Function-local candidate tables. Their semantic validity is deliberately
+/// left for the independent verifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedFunctionTables {
     exception_regions: Box<[LinkedExceptionRegion]>,
+    active_regions: Box<[LinkedActiveRegion]>,
     switch_tables: Box<[LinkedSwitchTable]>,
+    call_loan_layouts: Box<[LinkedCallLoanLayout]>,
     statement_entries: Box<[LinkedStatementEntry]>,
     source_map: Box<[LinkedSourceMapEntry]>,
 }
@@ -46,13 +49,17 @@ pub struct LinkedFunctionTables {
 impl LinkedFunctionTables {
     pub fn new(
         exception_regions: Box<[LinkedExceptionRegion]>,
+        active_regions: Box<[LinkedActiveRegion]>,
         switch_tables: Box<[LinkedSwitchTable]>,
+        call_loan_layouts: Box<[LinkedCallLoanLayout]>,
         statement_entries: Box<[LinkedStatementEntry]>,
         source_map: Box<[LinkedSourceMapEntry]>,
     ) -> Self {
         Self {
             exception_regions,
+            active_regions,
             switch_tables,
+            call_loan_layouts,
             statement_entries,
             source_map,
         }
@@ -62,8 +69,16 @@ impl LinkedFunctionTables {
         &self.exception_regions
     }
 
+    pub fn active_regions(&self) -> &[LinkedActiveRegion] {
+        &self.active_regions
+    }
+
     pub fn switch_tables(&self) -> &[LinkedSwitchTable] {
         &self.switch_tables
+    }
+
+    pub fn call_loan_layouts(&self) -> &[LinkedCallLoanLayout] {
+        &self.call_loan_layouts
     }
 
     pub fn statement_entries(&self) -> &[LinkedStatementEntry] {
@@ -76,6 +91,12 @@ impl LinkedFunctionTables {
 }
 
 /// One concrete but unverified linked function candidate.
+///
+/// [`SpecializationKey`] carries the exact package build and artifact function
+/// key. Candidate validation requires that build to have exactly one package
+/// bytecode provenance row, so the verifier can return to the v4 validated
+/// function (including its function origin and `self_type_ref`) without a
+/// duplicate FileIR-origin or address field here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedFunction {
     index: crate::FunctionIndex,
@@ -85,9 +106,11 @@ pub struct LinkedFunction {
     max_operand_depth: u32,
     effect: LinkedCallableEffectDeclaration,
     tables: LinkedFunctionTables,
+    stack_map: LinkedStackMapCandidate,
 }
 
 impl LinkedFunction {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         index: crate::FunctionIndex,
         key: SpecializationKey,
@@ -96,6 +119,7 @@ impl LinkedFunction {
         max_operand_depth: u32,
         effect: LinkedCallableEffectDeclaration,
         tables: LinkedFunctionTables,
+        stack_map: LinkedStackMapCandidate,
     ) -> Self {
         Self {
             index,
@@ -105,6 +129,7 @@ impl LinkedFunction {
             max_operand_depth,
             effect,
             tables,
+            stack_map,
         }
     }
 
@@ -148,8 +173,16 @@ impl LinkedFunction {
         self.tables.exception_regions()
     }
 
+    pub fn active_regions(&self) -> &[LinkedActiveRegion] {
+        self.tables.active_regions()
+    }
+
     pub fn switch_tables(&self) -> &[LinkedSwitchTable] {
         self.tables.switch_tables()
+    }
+
+    pub fn call_loan_layouts(&self) -> &[LinkedCallLoanLayout] {
+        self.tables.call_loan_layouts()
     }
 
     pub fn statement_entries(&self) -> &[LinkedStatementEntry] {
@@ -158,5 +191,9 @@ impl LinkedFunction {
 
     pub fn source_map(&self) -> &[LinkedSourceMapEntry] {
         self.tables.source_map()
+    }
+
+    pub const fn stack_map(&self) -> &LinkedStackMapCandidate {
+        &self.stack_map
     }
 }

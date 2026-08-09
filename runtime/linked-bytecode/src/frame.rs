@@ -1,27 +1,55 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use skiff_artifact_model::ValueTransferPlanKind;
+use skiff_artifact_model::ParamModeIr;
 
-use crate::{FrameSlotIndex, TypeIndex};
+use crate::{FrameSlotIndex, LinkedValueTransferPlan, TypeIndex};
 
-/// Concrete frame types and declarative transfer plans.
+/// One parameter's exact frame slot, calling mode and concrete lifecycle plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedParameterSlot {
+    slot: FrameSlotIndex,
+    mode: ParamModeIr,
+    plan: LinkedValueTransferPlan,
+}
+
+impl LinkedParameterSlot {
+    pub fn new(slot: FrameSlotIndex, mode: ParamModeIr, plan: LinkedValueTransferPlan) -> Self {
+        Self { slot, mode, plan }
+    }
+
+    pub const fn slot(&self) -> FrameSlotIndex {
+        self.slot
+    }
+
+    pub const fn mode(&self) -> ParamModeIr {
+        self.mode
+    }
+
+    pub const fn plan(&self) -> &LinkedValueTransferPlan {
+        &self.plan
+    }
+}
+
+/// Concrete frame types and complete declarative lifecycle plans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedFrameLayout {
     slot_types: Box<[TypeIndex]>,
-    parameter_slots: Box<[FrameSlotIndex]>,
+    parameters: Box<[LinkedParameterSlot]>,
+    writable_local_slots: Box<[FrameSlotIndex]>,
     result_types: Box<[TypeIndex]>,
-    slot_plans: Box<[ValueTransferPlanKind]>,
-    result_plans: Box<[ValueTransferPlanKind]>,
+    slot_plans: Box<[LinkedValueTransferPlan]>,
+    result_plans: Box<[LinkedValueTransferPlan]>,
 }
 
 impl LinkedFrameLayout {
     pub fn new(
         slot_types: Box<[TypeIndex]>,
-        parameter_slots: Box<[FrameSlotIndex]>,
+        parameters: Box<[LinkedParameterSlot]>,
+        writable_local_slots: Box<[FrameSlotIndex]>,
         result_types: Box<[TypeIndex]>,
-        slot_plans: Box<[ValueTransferPlanKind]>,
-        result_plans: Box<[ValueTransferPlanKind]>,
+        slot_plans: Box<[LinkedValueTransferPlan]>,
+        result_plans: Box<[LinkedValueTransferPlan]>,
     ) -> Result<Self, LinkedFrameLayoutError> {
         if slot_types.len() != slot_plans.len() {
             return Err(LinkedFrameLayoutError::SlotPlanCountMismatch {
@@ -37,7 +65,8 @@ impl LinkedFrameLayout {
         }
 
         let mut seen = BTreeSet::new();
-        for (parameter_ordinal, slot) in parameter_slots.iter().copied().enumerate() {
+        for (parameter_ordinal, parameter) in parameters.iter().enumerate() {
+            let slot = parameter.slot();
             if slot.get() as usize >= slot_types.len() {
                 return Err(LinkedFrameLayoutError::ParameterSlotOutOfBounds {
                     parameter_ordinal,
@@ -48,11 +77,40 @@ impl LinkedFrameLayout {
             if !seen.insert(slot) {
                 return Err(LinkedFrameLayoutError::DuplicateParameterSlot { slot });
             }
+            if &slot_plans[slot.get() as usize] != parameter.plan() {
+                return Err(LinkedFrameLayoutError::ParameterPlanMismatch {
+                    parameter_ordinal,
+                    slot,
+                });
+            }
+        }
+
+        let mut previous = None;
+        for slot in &writable_local_slots {
+            if slot.get() as usize >= slot_types.len() {
+                return Err(LinkedFrameLayoutError::WritableLocalSlotOutOfBounds {
+                    slot: *slot,
+                    slot_count: slot_types.len(),
+                });
+            }
+            if seen.contains(slot) {
+                return Err(LinkedFrameLayoutError::WritableLocalIsParameter { slot: *slot });
+            }
+            if let Some(previous) = previous {
+                if previous >= *slot {
+                    return Err(LinkedFrameLayoutError::NonCanonicalWritableLocalSlotOrder {
+                        previous,
+                        current: *slot,
+                    });
+                }
+            }
+            previous = Some(*slot);
         }
 
         Ok(Self {
             slot_types,
-            parameter_slots,
+            parameters,
+            writable_local_slots,
             result_types,
             slot_plans,
             result_plans,
@@ -63,19 +121,23 @@ impl LinkedFrameLayout {
         &self.slot_types
     }
 
-    pub fn parameter_slots(&self) -> &[FrameSlotIndex] {
-        &self.parameter_slots
+    pub fn parameters(&self) -> &[LinkedParameterSlot] {
+        &self.parameters
+    }
+
+    pub fn writable_local_slots(&self) -> &[FrameSlotIndex] {
+        &self.writable_local_slots
     }
 
     pub fn result_types(&self) -> &[TypeIndex] {
         &self.result_types
     }
 
-    pub fn slot_plans(&self) -> &[ValueTransferPlanKind] {
+    pub fn slot_plans(&self) -> &[LinkedValueTransferPlan] {
         &self.slot_plans
     }
 
-    pub fn result_plans(&self) -> &[ValueTransferPlanKind] {
+    pub fn result_plans(&self) -> &[LinkedValueTransferPlan] {
         &self.result_plans
     }
 }
@@ -97,6 +159,21 @@ pub enum LinkedFrameLayoutError {
     },
     DuplicateParameterSlot {
         slot: FrameSlotIndex,
+    },
+    ParameterPlanMismatch {
+        parameter_ordinal: usize,
+        slot: FrameSlotIndex,
+    },
+    WritableLocalSlotOutOfBounds {
+        slot: FrameSlotIndex,
+        slot_count: usize,
+    },
+    WritableLocalIsParameter {
+        slot: FrameSlotIndex,
+    },
+    NonCanonicalWritableLocalSlotOrder {
+        previous: FrameSlotIndex,
+        current: FrameSlotIndex,
     },
 }
 
@@ -129,6 +206,30 @@ impl fmt::Display for LinkedFrameLayoutError {
             Self::DuplicateParameterSlot { slot } => {
                 write!(formatter, "parameter slot {} is declared twice", slot.get())
             }
+            Self::ParameterPlanMismatch {
+                parameter_ordinal,
+                slot,
+            } => write!(
+                formatter,
+                "parameter {parameter_ordinal} plan does not match slot {} plan",
+                slot.get()
+            ),
+            Self::WritableLocalSlotOutOfBounds { slot, slot_count } => write!(
+                formatter,
+                "writable local slot {} is outside a frame with {slot_count} slots",
+                slot.get()
+            ),
+            Self::WritableLocalIsParameter { slot } => write!(
+                formatter,
+                "writable local slot {} is also an incoming parameter slot",
+                slot.get()
+            ),
+            Self::NonCanonicalWritableLocalSlotOrder { previous, current } => write!(
+                formatter,
+                "writable local slot {} must sort after {}",
+                current.get(),
+                previous.get()
+            ),
         }
     }
 }
