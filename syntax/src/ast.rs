@@ -551,6 +551,10 @@ pub enum LetKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the compiler AST is a cold path, and direct typed variants keep its structure explicit"
+)]
 pub enum Stmt {
     /// Compiler-owned test-service statement. The parser never produces this
     /// variant from source text.
@@ -721,6 +725,10 @@ pub struct DbQueryBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the compiler AST is a cold path, and direct typed variants keep its structure explicit"
+)]
 pub enum DbWhereClause {
     Predicate { predicate: Expr },
     Conditional { condition: Expr, predicate: Expr },

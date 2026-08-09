@@ -808,6 +808,10 @@ impl Parser {
         ))
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "the tuple keeps the three parallel field and source-span vectors synchronized"
+    )]
     pub(super) fn parse_record_construct_fields(
         &mut self,
     ) -> Result<(
