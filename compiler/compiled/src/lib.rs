@@ -5,9 +5,14 @@ use skiff_compiler_source::{
     PackageSourceModel, PublicationApiSeed, SourceCompileError,
 };
 
+pub mod bytecode_handoff;
 mod package_callable_signatures;
 pub mod projection_input;
 
+pub use bytecode_handoff::{
+    BytecodeCompilationHandoff, BytecodeCompilationHandoffError, BytecodeCompilationOutcome,
+    BytecodeCompilationReceipt,
+};
 pub use package_callable_signatures::ProjectionInputBuildError;
 
 #[cfg(feature = "test-support")]
