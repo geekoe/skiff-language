@@ -1,0 +1,267 @@
+//! Roundtrip and determinism: encode → decode equivalence, canonical bytes
+//! stability, BTreeMap insertion-order insensitivity (阶段页 §4.2 验收).
+
+use std::collections::BTreeMap;
+
+use crate::bytecode::decode::{decode_branch_target, BoundedDecoder};
+use crate::bytecode::encode::{
+    assemble_artifact, assemble_function, encode_instruction, EncodeError, EncodedInstruction,
+};
+use crate::bytecode::opcodes::{opcode_for, OPCODE_TABLE};
+
+use super::*;
+
+/// Every opcode of the table: encode_instruction → decode_function yields the
+/// same opcode with the same operand words.
+#[test]
+fn every_opcode_round_trips_through_encode_and_decode() {
+    let decoder = BoundedDecoder::new();
+    for descriptor in OPCODE_TABLE {
+        let operand_count = descriptor.operand_word_count() as usize;
+        let operands: Vec<u32> = (0..operand_count as u32).collect();
+        let words = encode_instruction(descriptor.opcode, &operands).expect("encode");
+        assert_eq!(words.len(), descriptor.instruction_word_count() as usize);
+        let decoded = decoder
+            .decode_function(&words)
+            .expect("decode of encoded instruction must succeed");
+        assert_eq!(decoded.instructions.len(), 1);
+        let instruction = &decoded.instructions[0];
+        assert_eq!(instruction.pc, 0);
+        assert_eq!(instruction.descriptor.opcode, descriptor.opcode);
+        assert_eq!(instruction.operand_words, operands);
+    }
+}
+
+/// assemble_function produces exactly the hand-written canonical wordcode,
+/// and decoding it reproduces the encoded instructions.
+#[test]
+fn assemble_function_matches_hand_written_wordcode() {
+    let instructions = vec![
+        EncodedInstruction::new(0x00, vec![0]),
+        EncodedInstruction::new(0x03, vec![0]),
+        EncodedInstruction::new(0x11, vec![0]),
+        EncodedInstruction::new(0x20, vec![0, 0]),
+        EncodedInstruction::new(0x14, vec![]),
+        EncodedInstruction::new(0x13, vec![0, 0]),
+        EncodedInstruction::new(0x10, vec![0]),
+        EncodedInstruction::new(0x72, vec![0]),
+        EncodedInstruction::new(0x14, vec![]),
+        EncodedInstruction::new(0x73, vec![0]),
+        EncodedInstruction::new(0x22, vec![2, 0, 0]),
+        EncodedInstruction::new(0x11, vec![0xFFFF_FFEC]),
+        EncodedInstruction::new(0x25, vec![]),
+    ];
+    let words = assemble_function(&instructions).expect("assemble");
+    assert_eq!(words, main_function_words());
+
+    let decoded = BoundedDecoder::new()
+        .decode_function(&words)
+        .expect("decode");
+    assert_eq!(
+        decoded
+            .instructions
+            .iter()
+            .map(|instruction| (
+                instruction.descriptor.opcode,
+                instruction.operand_words.clone()
+            ))
+            .collect::<Vec<_>>(),
+        instructions
+            .iter()
+            .map(|instruction| (instruction.opcode, instruction.operands.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        decoded.header_pcs,
+        vec![0, 2, 4, 6, 9, 10, 13, 15, 17, 18, 20, 24, 26]
+    );
+}
+
+/// encode_instruction rejects unknown opcodes and wrong operand counts.
+#[test]
+fn encode_rejects_unknown_opcode_and_operand_count_mismatch() {
+    assert_eq!(
+        encode_instruction(0xFF, &[]),
+        Err(EncodeError::UnknownOpcode(0xFF))
+    );
+    assert_eq!(
+        encode_instruction(0x90, &[]),
+        Err(EncodeError::UnknownOpcode(0x90))
+    );
+    assert_eq!(
+        encode_instruction(0x10, &[0, 1]),
+        Err(EncodeError::OperandCountMismatch {
+            opcode: 0x10,
+            expected: 1,
+            actual: 2
+        })
+    );
+    assert_eq!(
+        encode_instruction(0x14, &[0]),
+        Err(EncodeError::OperandCountMismatch {
+            opcode: 0x14,
+            expected: 0,
+            actual: 1
+        })
+    );
+}
+
+/// Canonical bytes round trip through JSON back to the identical artifact.
+#[test]
+fn assemble_artifact_round_trips_through_json() {
+    let artifact = canonical_artifact();
+    let bytes = assemble_artifact(&artifact).expect("canonical bytes");
+    let decoded: BytecodeArtifact =
+        serde_json::from_slice(&bytes).expect("canonical bytes must be valid artifact JSON");
+    assert_eq!(decoded, artifact);
+}
+
+/// Same typed input built with different map insertion orders yields the same
+/// canonical bytes (BTreeMap ordering).
+#[test]
+fn canonical_bytes_are_insertion_order_insensitive() {
+    let mut first = BTreeMap::new();
+    first.insert("module::main".to_string(), main_function());
+    first.insert("module::helper".to_string(), helper_function());
+    let mut second = BTreeMap::new();
+    second.insert("module::helper".to_string(), helper_function());
+    second.insert("module::main".to_string(), main_function());
+
+    let bytes_of = |functions: BTreeMap<String, RelocatableBytecodeFunction>| {
+        let mut artifact = canonical_artifact();
+        artifact.image.functions = functions;
+        assemble_artifact(&artifact).expect("canonical bytes")
+    };
+    assert_eq!(bytes_of(first), bytes_of(second));
+}
+
+/// Building the same artifact twice yields identical bytes.
+#[test]
+fn identical_inputs_produce_identical_bytes() {
+    assert_eq!(
+        assemble_artifact(&canonical_artifact()).expect("first build"),
+        assemble_artifact(&canonical_artifact()).expect("second build")
+    );
+}
+
+/// Decode is total on word sequences (bounded length): any failure is one of
+/// the four structured error kinds, never a panic.
+#[test]
+fn decode_never_panics_and_always_reports_structured_errors() {
+    let decoder = BoundedDecoder::new();
+    let mut state = 0x1234_5678u32;
+    let word = |state: &mut u32| {
+        *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*state >> 8) & 0xFFFF_FFFF
+    };
+    for _ in 0..500 {
+        let length = (state % 64) as usize;
+        let words: Vec<u32> = (0..length).map(|_| word(&mut state)).collect();
+        match decoder.decode_function(&words) {
+            Ok(decoded) => {
+                assert_eq!(decoded.instructions.len(), decoded.header_pcs.len());
+                for instruction in &decoded.instructions {
+                    assert_eq!(
+                        instruction.operand_words.len(),
+                        instruction.descriptor.operand_word_count() as usize
+                    );
+                }
+            }
+            Err(error) => {
+                let text = error.to_string();
+                assert!(
+                    text.contains("unknown opcode")
+                        || text.contains("truncated instruction")
+                        || text.contains("arithmetic overflow")
+                        || text.contains("limit"),
+                    "unexpected decode error: {text}"
+                );
+            }
+        }
+    }
+}
+
+/// decode_branch_target is overflow-safe in both directions.
+#[test]
+fn branch_target_decode_is_overflow_safe() {
+    assert_eq!(decode_branch_target(0, 1, 0), Some(2));
+    assert_eq!(decode_branch_target(4, 1, 0xFFFF_FFFF), Some(5));
+    assert_eq!(decode_branch_target(0, 1, 0x7FFF_FFFF), Some(0x8000_0001));
+    assert_eq!(decode_branch_target(0, 1, 0x8000_0000), None);
+    assert_eq!(decode_branch_target(u32::MAX, 3, 0x7FFF_FFFF), None);
+}
+
+/// The table is ascending, complete (42 rows) and lookup-consistent.
+#[test]
+fn opcode_table_is_complete_sorted_and_lookup_consistent() {
+    let expected: Vec<u8> = vec![
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23,
+        0x24, 0x25, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50, 0x51, 0x52, 0x53, 0x54,
+        0x55, 0x56, 0x57, 0x58, 0x59, 0x60, 0x61, 0x70, 0x71, 0x72, 0x73, 0x80,
+    ];
+    assert_eq!(OPCODE_TABLE.len(), 42);
+    assert_eq!(
+        OPCODE_TABLE
+            .iter()
+            .map(|descriptor| descriptor.opcode)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    for &opcode in &expected {
+        assert_eq!(
+            opcode_for(opcode).map(|descriptor| descriptor.opcode),
+            Some(opcode)
+        );
+    }
+    for forbidden in [
+        0x06, 0x0F, 0x15, 0x1F, 0x26, 0x34, 0x44, 0x5A, 0x62, 0x74, 0x81, 0x8F, 0x90, 0xFF,
+    ] {
+        assert_eq!(
+            opcode_for(forbidden),
+            None,
+            "0x{forbidden:02x} must be unassigned"
+        );
+    }
+    // Every instruction is at least one word.
+    for descriptor in OPCODE_TABLE {
+        assert!(descriptor.instruction_word_count() >= 1);
+    }
+}
+
+/// Every descriptor operand position expectation is covered by the
+/// position-class tables (Pool/Table positions never fall through).
+#[test]
+fn operand_expectation_tables_cover_all_pool_and_table_positions() {
+    for descriptor in OPCODE_TABLE {
+        for (position, kind) in descriptor.operand_layout.iter().enumerate() {
+            match kind {
+                OperandKind::Pool => assert!(
+                    pool_operand_category(descriptor.opcode, position).is_some(),
+                    "opcode 0x{:02x} pool operand at position {position} lacks an expectation",
+                    descriptor.opcode
+                ),
+                OperandKind::Table => assert!(
+                    table_operand_category(descriptor.opcode, position).is_some(),
+                    "opcode 0x{:02x} table operand at position {position} lacks an expectation",
+                    descriptor.opcode
+                ),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// DecodedFunction headers are strictly ascending.
+#[test]
+fn decoded_headers_are_strictly_ascending() {
+    let decoded = BoundedDecoder::new()
+        .decode_function(&main_function_words())
+        .expect("canonical wordcode decodes");
+    let mut previous: Option<u32> = None;
+    for pc in decoded.header_pcs {
+        if let Some(previous) = previous {
+            assert!(previous < pc);
+        }
+        previous = Some(pc);
+    }
+}

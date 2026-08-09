@@ -17,6 +17,7 @@ pub use actor_declaration::{
 mod activation_lexical;
 pub mod boundary;
 pub mod builtin_receiver_ops;
+pub mod bytecode;
 pub mod compile_identity;
 pub mod compile_requirements;pub mod config;
 pub mod contract_types;
@@ -77,6 +78,7 @@ pub use builtin_receiver_ops::{
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, RECEIVER_BUILTIN_CAPABILITY_VERSION,
     SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
+pub use bytecode::*;
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision,
     GatewayEntryIdentity, GatewayEntryIdentityParseError, GatewayEntryKey,
@@ -175,7 +177,7 @@ pub use recoverable::{
     RecoverableTrustBoundary, RecoverableTypeIdentityFact, RecoverableTypeIdentityRef,
     RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
 };
-pub use refs::{FileIrRef, SourcePosition, SourceSpanRef};
+pub use refs::{BytecodeArtifactRef, FileIrRef, SourcePosition, SourceSpanRef};
 pub use resources::PublicationResourceRef;
 pub use runtime_assembly::{
     ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
