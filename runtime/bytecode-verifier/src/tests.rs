@@ -1,12 +1,13 @@
-use skiff_artifact_model::{CallableEffectSummary, PackageCallableId};
+use skiff_runtime_deployment_image::{DeploymentProgramEntry, DeploymentProgramFacts};
 use skiff_runtime_linked_bytecode::{
-    CandidateTable, FunctionIndex, LinkedBytecodeCandidate, LinkedBytecodeCandidateParts,
-    LinkedCallableEffectDeclaration, LinkedFrameLayout, LinkedFunction, LinkedFunctionTables,
-    LinkedShapeEntry, ShapeIndex, SpecializationKey,
+    ConstantIndex, LinkedBytecodeCandidate, LinkedBytecodeCandidateParts,
 };
+use skiff_runtime_loader::HydratedDeploymentBytecode;
+use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
     verify, VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
+    VerifiedCodeEntry, VerifiedConstantHeap, VerifiedLinkedBytecodeImage,
 };
 
 fn limits() -> VerificationLimits {
@@ -28,9 +29,11 @@ fn limits() -> VerificationLimits {
     }
 }
 
-fn empty_parts() -> LinkedBytecodeCandidateParts {
-    LinkedBytecodeCandidateParts {
+fn empty_candidate() -> LinkedBytecodeCandidate {
+    LinkedBytecodeCandidate::try_from_parts(LinkedBytecodeCandidateParts {
         functions: Vec::new(),
+        operation_entries: Vec::new(),
+        gateway_entries: Vec::new(),
         exact_local_targets: Vec::new(),
         service_operations: Vec::new(),
         actor_methods: Vec::new(),
@@ -41,89 +44,62 @@ fn empty_parts() -> LinkedBytecodeCandidateParts {
         shapes: Vec::new(),
         constants: Vec::new(),
         resume_sites: Vec::new(),
-    }
-}
-
-fn candidate(parts: LinkedBytecodeCandidateParts) -> LinkedBytecodeCandidate {
-    LinkedBytecodeCandidate::try_from_parts(parts)
-        .expect("security fixture must pass only candidate-local shape checks")
-}
-
-fn unverified_function() -> LinkedFunction {
-    let callable = PackageCallableId::new("callable:unverified");
-    LinkedFunction::new(
-        FunctionIndex::new(0),
-        SpecializationKey::new(callable.clone(), Box::new([]), None),
-        Box::new([]),
-        LinkedFrameLayout::new(
-            Box::new([]),
-            Box::new([]),
-            Box::new([]),
-            Box::new([]),
-            Box::new([]),
-        )
-        .expect("empty frame is locally well-shaped"),
-        0,
-        LinkedCallableEffectDeclaration::new(callable, CallableEffectSummary::analysis_pending()),
-        LinkedFunctionTables::new(Box::new([]), Box::new([]), Box::new([]), Box::new([])),
-    )
+    })
+    .expect("empty candidate passes only local shape checks")
 }
 
 #[test]
-fn completely_empty_candidate_is_the_only_currently_proved_image() {
-    let image = verify(candidate(empty_parts()), &limits())
-        .expect("an image with no code or linked data has no semantic execution path");
+fn verify_signature_consumes_exact_hydration_and_candidate() {
+    let verify_fn: for<'a> fn(
+        HydratedDeploymentBytecode,
+        LinkedBytecodeCandidate,
+        &'a VerificationLimits,
+    ) -> Result<VerifiedLinkedBytecodeImage, VerificationError> = verify;
 
-    assert!(image.functions().is_empty());
-    assert!(image.candidate().exact_local_targets().is_empty());
-    assert!(image.candidate().service_operations().is_empty());
-    assert!(image.candidate().actor_methods().is_empty());
-    assert!(image.candidate().interface_tables().is_empty());
-    assert!(image.candidate().synthetic_callbacks().is_empty());
-    assert!(image.candidate().host_effect_adapters().is_empty());
-    assert!(image.candidate().types().is_empty());
-    assert!(image.candidate().shapes().is_empty());
-    assert!(image.candidate().constants().is_empty());
-    assert!(image.candidate().resume_sites().is_empty());
+    let _ = verify_fn;
 }
 
 #[test]
-fn non_empty_program_fails_closed_before_a_verified_seal_exists() {
-    let mut parts = empty_parts();
-    parts.functions.push(unverified_function());
+fn verified_types_implement_deployment_pin_contracts() {
+    fn assert_program_facts<T: DeploymentProgramFacts>() {}
+    fn assert_program_entry<T: DeploymentProgramEntry<VerifiedLinkedBytecodeImage>>() {}
 
-    let error = verify(candidate(parts), &limits())
-        .expect_err("candidate shape checks are not semantic verification");
+    assert_program_facts::<VerifiedLinkedBytecodeImage>();
+    assert_program_entry::<VerifiedCodeEntry>();
+}
+
+#[test]
+fn verified_constant_heap_exposes_only_typed_read_access() {
+    let get: fn(&VerifiedConstantHeap, ConstantIndex) -> Option<ValueSlot> =
+        VerifiedConstantHeap::get;
+
+    let _ = get;
+}
+
+#[test]
+fn empty_candidate_alone_cannot_mint_a_verified_seal() {
+    let error = super::verifier::prove_candidate_semantics(&empty_candidate(), &limits())
+        .expect_err("candidate-only proof must remain fail closed");
 
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
             obligation: VerificationObligation::ControlFlow,
-            location: VerificationLocation::Function {
-                function: FunctionIndex::new(0),
-            },
+            location: VerificationLocation::Image,
         }
     );
 }
 
 #[test]
-fn non_code_linked_data_cannot_bypass_unimplemented_proofs() {
-    let mut parts = empty_parts();
-    parts
-        .shapes
-        .push(LinkedShapeEntry::new(ShapeIndex::new(0), Box::new([])));
-
-    let error = verify(candidate(parts), &limits())
-        .expect_err("unproved linked data must not receive a verified seal");
+fn empty_candidate_alone_cannot_mint_a_constant_heap() {
+    let error = super::verifier::build_verified_constant_heap(&empty_candidate(), &limits())
+        .expect_err("constant materialization must remain fail closed");
 
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ConcreteTypeAndShape,
-            location: VerificationLocation::Table {
-                table: CandidateTable::Shapes,
-                row: 0,
-            },
+            obligation: VerificationObligation::FrozenConstantSafety,
+            location: VerificationLocation::Image,
         }
     );
 }

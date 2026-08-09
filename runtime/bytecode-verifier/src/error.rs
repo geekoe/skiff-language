@@ -45,6 +45,7 @@ impl VerificationLimit {
 /// Independent proof family owned by the semantic verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerificationObligation {
+    ExactHydrationBinding,
     ExactTargetAndCallPlan,
     ControlFlow,
     StackAndSlotState,
@@ -66,6 +67,7 @@ pub enum VerificationObligation {
 impl VerificationObligation {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::ExactHydrationBinding => "exact hydration binding",
             Self::ExactTargetAndCallPlan => "exact target and call plan",
             Self::ControlFlow => "control flow",
             Self::StackAndSlotState => "stack and slot state",

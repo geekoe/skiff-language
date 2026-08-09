@@ -5,10 +5,11 @@ edition = "2021"
 publish = false
 
 [dependencies]
-skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
-
-[dev-dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-deployment-image = { path = "../deployment-image" }
+skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+skiff-runtime-loader = { path = "../loader" }
+skiff-runtime-model = { path = "../model" }
 
 [lints]
 workspace = true
