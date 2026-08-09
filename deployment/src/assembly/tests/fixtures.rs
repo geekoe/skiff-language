@@ -60,6 +60,7 @@ pub fn contract_with_stable_key(service_id: &str, stable_key: &str) -> ServiceCo
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, descriptor)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
@@ -149,6 +150,8 @@ pub fn package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements,
         contract_requirements,
         service_requirements,

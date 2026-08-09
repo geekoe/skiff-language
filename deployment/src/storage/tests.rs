@@ -17,15 +17,16 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
-    BytecodeRelocation, ContractDiagnosticText, DebugBinding, DebugTable,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin, BytecodeImage,
+    BytecodePoolEntry, BytecodePools, ContractDiagnosticText, DebugBinding, DebugTable,
     DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit, FrameLayout,
-    FrozenConstantGraph, FrozenConstantNode, LiteralIr, PackageArtifact, PackageBuildId,
-    PackageCallableId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, TypeRefIr,
-    ValueTransferPlan, ValueTransferPlanKind, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    FrozenConstantGraph, PackageArtifact, PackageBuildId, PackageCallableId,
+    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, StatementChargeKind,
+    StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -88,6 +89,8 @@ fn package_fixture() -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -348,6 +351,7 @@ fn contract_fixture() -> ServiceContract {
         contract_version: version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id.clone(), descriptor)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "Checkpoint".to_string(),
@@ -752,27 +756,40 @@ fn bytecode_fixture() -> BytecodeArtifact {
         "module::main".to_string(),
         RelocatableBytecodeFunction {
             function_key: "module::main".to_string(),
+            origin: BytecodeFunctionOrigin::Executable {
+                executable: PackageExecutableCoordinate {
+                    file_ir_identity: "file-ir:module".to_string(),
+                    module_path: "module".to_string(),
+                    executable_index: 0,
+                },
+            },
             type_parameters: Vec::new(),
-            words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
-            relocations: vec![BytecodeRelocation::LocalExecutableRef {
-                function_key: "module::main".to_string(),
-            }],
+            self_type_ref: None,
+            words: vec![0x14, 0x25],
+            relocations: Vec::new(),
+            call_loan_layouts: Vec::new(),
             frame_layout: FrameLayout {
                 slot_count: 1,
                 slot_type_refs: vec![0],
                 parameter_slots: Vec::new(),
+                writable_local_slots: Vec::new(),
                 result_count: 0,
                 result_type_refs: Vec::new(),
                 result_plans: Vec::new(),
-                slot_plans: vec![ValueTransferPlan {
-                    kind: ValueTransferPlanKind::SnapshotShare,
+                slot_plans: vec![ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
                 }],
             },
             max_operand_depth: 2,
             effect_summary_ref: PackageCallableId::new("operation:module:main"),
             exception_regions: Vec::new(),
+            active_regions: Vec::new(),
             switch_tables: Vec::new(),
-            statement_entries: Vec::new(),
+            statement_entries: vec![StatementEntry {
+                pc: 0,
+                statement_id: "s:main:entry".to_string(),
+                charge_kind: StatementChargeKind::FunctionEntry,
+            }],
             source_map: Vec::new(),
         },
     );
@@ -782,26 +799,19 @@ fn bytecode_fixture() -> BytecodeArtifact {
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: skiff_artifact_model::bytecode::opcodes::opcode_table_fingerprint(
         ),
-        bytecode_identity: "skiff-bytecode-image-v1:sha256:fixture".to_string(),
+        native_value_lifecycle_registry:
+            skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        bytecode_identity: bytecode_identity_leaf('0'),
         image: BytecodeImage {
             functions,
             pools: BytecodePools {
-                constants: vec![BytecodePoolEntry::FrozenConstantRef { node_index: 0 }],
                 types: vec![BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
                 }],
-                shapes: Vec::new(),
-                effects: Vec::new(),
-                resume: Vec::new(),
-                callback_capture: Vec::new(),
+                ..BytecodePools::default()
             },
-            frozen_constant_graph: FrozenConstantGraph {
-                nodes: vec![FrozenConstantNode::Literal {
-                    literal: LiteralIr::Number {
-                        value: serde_json::Number::from(42),
-                    },
-                }],
-            },
+            constant_roots: BTreeMap::new(),
+            frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: Some(DebugTable {
                 bindings: vec![DebugBinding {
                     function_key: "module::main".to_string(),
@@ -844,16 +854,52 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
         store.root().join(canonical.as_relative_path().as_path())
     );
     store.write_package_artifact(&package).unwrap();
+    assert_eq!(
+        store
+            .read_package_artifact(&package_ref)
+            .unwrap()
+            .bytecode
+            .as_ref(),
+        Some(&reference)
+    );
 
     let validated = store
         .read_package_bytecode(&package_ref, &reference)
         .unwrap();
     assert_eq!(validated.artifact(), &bytecode);
+    assert!(validated.exactly_matches(&bytecode));
     assert_eq!(validated.reference(), &reference);
+    assert_eq!(
+        PackageBytecodeRecordPath::new(&package_ref, validated.reference())
+            .unwrap()
+            .as_str(),
+        canonical.as_str()
+    );
+    assert_eq!(
+        validated.artifact().bytecode_identity,
+        validated.reference().bytecode_identity
+    );
+    assert_eq!(
+        validated.view().native_value_lifecycle_registry(),
+        skiff_artifact_model::native_value_lifecycle_registry_identity()
+    );
     assert_eq!(validated.view().functions().len(), 1);
     let stored_function = &validated.view().functions()[0];
+    assert_eq!(
+        stored_function.origin,
+        BytecodeFunctionOrigin::Executable {
+            executable: PackageExecutableCoordinate {
+                file_ir_identity: "file-ir:module".to_string(),
+                module_path: "module".to_string(),
+                executable_index: 0,
+            },
+        }
+    );
+    assert_eq!(stored_function.self_type_ref, None);
     assert_eq!(stored_function.frame_layout.slot_type_refs, vec![0]);
+    assert!(stored_function.frame_layout.writable_local_slots.is_empty());
     assert!(stored_function.frame_layout.result_type_refs.is_empty());
+    assert!(stored_function.call_loan_layouts.is_empty());
     assert_eq!(
         stored_function.effect_summary_ref,
         PackageCallableId::new("operation:module:main")
@@ -891,12 +937,16 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
 
     // Writes never touch an existing immutable record (content-addressed).
     let mut changed = bytecode.clone();
-    changed
+    let BytecodeFunctionOrigin::Executable { executable } = &mut changed
         .image
         .functions
         .get_mut("module::main")
         .unwrap()
-        .words[5] = 0xFFFF_FFFE;
+        .origin
+    else {
+        unreachable!()
+    };
+    executable.executable_index = 1;
     assign_bytecode_identity(&mut changed).unwrap();
     assert_ne!(changed.bytecode_identity, bytecode.bytecode_identity);
     let changed_ref = BytecodeArtifactRef::new(changed.bytecode_identity.clone());
