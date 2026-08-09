@@ -3304,6 +3304,8 @@ fn provider_contract_artifact() -> (
             ..skiff_artifact_model::PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -3424,6 +3426,8 @@ fn provider_object_artifact() -> (
             ..skiff_artifact_model::PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
