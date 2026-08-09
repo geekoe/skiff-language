@@ -119,18 +119,20 @@ fn var_writes_rebinding_and_member_mutation_compile_and_lower() {
         .iter()
         .filter(|stmt| stmt["kind"] == "assign")
         .collect::<Vec<_>>();
-    assert_eq!(assigns.len(), 2, "title rebind and doc.title write should assign");
+    assert_eq!(
+        assigns.len(),
+        2,
+        "title rebind and doc.title write should assign"
+    );
     let rebind = &assigns[0];
     assert_eq!(
-        rebind["target"]["kind"],
-        "slot",
+        rebind["target"]["kind"], "slot",
         "bare var rebind must assign the root slot"
     );
     assert_eq!(rebind["target"]["slot"].as_u64(), Some(title_slot));
     let member = &assigns[1];
     assert_eq!(
-        member["target"]["kind"],
-        "field",
+        member["target"]["kind"], "field",
         "member write must lower to a field assignment target"
     );
     assert_eq!(member["target"]["field"], "title");
@@ -568,8 +570,8 @@ fn value_callables_stay_available_at_the_boundary() {
         "#,
     )
     .expect("projection fixture should be written");
-    let project = compile_package_project(temp.path())
-        .expect("a value callable must compile as a package");
+    let project =
+        compile_package_project(temp.path()).expect("a value callable must compile as a package");
     let callable_id = project
         .package
         .artifact
