@@ -56,6 +56,7 @@ pub use session::{
     RuntimeRegisteredFrameHeader, StatelessRuntimeBootstrapProvider, ROUTER_BOOTSTRAP_FRAME_TYPE,
     RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
+pub(crate) use task::validate_task_actor_activation_snapshot;
 pub use task::{
     decode_task_cancel_error_frame, decode_task_cancel_request_frame,
     decode_task_cancel_response_frame, decode_task_status_error_frame,

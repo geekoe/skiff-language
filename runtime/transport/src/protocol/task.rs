@@ -858,13 +858,13 @@ fn validate_task_submit_request(header: &TaskSubmitRequestFrameHeaderV2) -> Resu
                 actor_method.method_identity.as_str(),
                 "skiff-actor-method-v1:sha256",
             )?;
-            validate_activation_snapshot(&actor_method.activation)?;
+            validate_task_actor_activation_snapshot(&actor_method.activation)?;
         }
     }
     Ok(())
 }
 
-fn validate_activation_snapshot(
+pub(crate) fn validate_task_actor_activation_snapshot(
     snapshot: &TaskActorActivationSnapshotFrameMetadata,
 ) -> Result<(), String> {
     for (value, label) in [
