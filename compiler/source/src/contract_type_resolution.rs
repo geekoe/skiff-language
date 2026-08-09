@@ -269,7 +269,6 @@ impl SourceCallableSignatureFacts {
         exports: &ExportBindingModel,
         type_resolution: &TypeResolutionModel,
         executable_signatures: &SourceExecutableSignatureFacts,
-        interface_signatures: &SourceInterfaceSignatureFacts,
     ) -> Result<Self, String> {
         let mut by_public_path = BTreeMap::new();
         let mut callable_exports = exports
@@ -282,7 +281,6 @@ impl SourceCallableSignatureFacts {
                 parsed_sources,
                 instance,
                 type_resolution,
-                interface_signatures,
             )?);
         }
         for export in callable_exports {

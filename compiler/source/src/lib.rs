@@ -26,6 +26,7 @@ pub mod package_rules;
 pub mod parsed_sources;
 pub mod prelude_registry;
 pub mod provider_rules;
+mod public_instance_operations;
 pub mod reserved_names;
 pub mod resolved_call_targets;
 pub mod root_projection_validation;
@@ -108,6 +109,10 @@ pub use local_interface_conformances::{
 };
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
+pub use public_instance_operations::{
+    SourcePublicInstanceInterfaceOperations, SourcePublicInstanceOperationFacts,
+    SourcePublicInstanceOperationFactsError, SourcePublicInstanceOperationSlot,
+};
 pub use resolved_call_targets::{
     ConfigIntrinsic, ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };

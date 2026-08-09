@@ -292,5 +292,11 @@ fn canonical_sort_key(
     )
 }
 
+pub(crate) fn validate_closed_interface_instantiation(
+    interface: &InterfaceInstantiationRef,
+) -> Result<(), SourceLocalInterfaceConformanceError> {
+    validation::validate_closed_interface(interface)
+}
+
 #[cfg(test)]
 mod tests;

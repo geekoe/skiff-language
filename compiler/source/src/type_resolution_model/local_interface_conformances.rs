@@ -5,6 +5,96 @@ use crate::{
 };
 
 impl TypeResolutionModel {
+    pub(crate) fn public_instance_receiver_instantiation(
+        &self,
+        resolved: &ResolvedTypeRef,
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<Option<(SourceSymbolKey, Vec<TypeRefIr>)>, Error> {
+        let Some(receiver) = self.actual_receiver_symbol(resolved, context) else {
+            return Ok(None);
+        };
+        let arguments = match &resolved.ir {
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments.clone(),
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            self.owner_stable_conformance_type_ref(
+                context.module_path,
+                &argument,
+                &format!("public-instance receiver type argument {index}"),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some((receiver, arguments)))
+    }
+
+    pub(crate) fn public_instance_interface_selector_identities(
+        &self,
+        selector: &SourceSymbolKey,
+    ) -> Result<Vec<TypeRefIr>, String> {
+        let mut identities = Vec::new();
+        if matches!(
+            self.interface_semantics.interface_owner_kind(selector),
+            Some(InterfaceOwnerKind::Source | InterfaceOwnerKind::CompilerKnown)
+        ) {
+            identities.push(interface_symbol_type_ref(selector));
+        }
+
+        let selector_text = selector.to_source_symbol();
+        if let Some(interface) = self.resolve_package_interface(&selector_text) {
+            if !identities.contains(&interface.identity) {
+                identities.push(interface.identity);
+            }
+        }
+        if let Some((alias, schema_type)) = self.service_api_type(&selector_text)? {
+            if let Some(interface) =
+                self.service_api_interface(alias, &schema_type.stable_schema_key)
+            {
+                if !identities.contains(&interface.identity) {
+                    identities.push(interface.identity);
+                }
+            }
+        }
+        Ok(identities)
+    }
+
+    pub(crate) fn public_instance_interface_method_slots(
+        &self,
+        receiver: &SourceSymbolKey,
+        receiver_type_parameters: &[String],
+        receiver_arguments: &[TypeRefIr],
+        interface: &InterfaceInstantiationRef,
+    ) -> Result<Vec<InterfaceMethodSlotFact>, String> {
+        let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+            .map_err(|error| format!("interface ABI id is not a TypeRefIr: {error}"))?;
+        if let TypeRefIr::ServiceSymbol { symbol } = identity {
+            let conformance = crate::semantic::interface::InterfaceConformanceFact {
+                receiver_type_params: receiver_type_parameters.to_vec(),
+                receiver: TypeInstantiationPattern {
+                    symbol: receiver.clone(),
+                    args: receiver_arguments.to_vec(),
+                },
+                interface: InterfaceInstantiation {
+                    symbol: SourceSymbolKey::new(
+                        symbol
+                            .module_path
+                            .strip_prefix("root.")
+                            .unwrap_or(&symbol.module_path),
+                        symbol.symbol,
+                    ),
+                    args: interface.canonical_type_args.clone(),
+                },
+            };
+            return self
+                .interface_semantics
+                .method_slots_for_local_conformance(&conformance)
+                .map_err(|error| error.to_string());
+        }
+        self.interface_method_slots_for_instantiation(interface)
+    }
+
     /// Builds the canonical, source-authoritative handoff for every local
     /// `implements` declaration.
     ///

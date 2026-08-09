@@ -415,7 +415,7 @@ impl TypeResolutionModel {
         interface: &TypeRef,
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
-        let selector = self.resolve_canonical_interface_selector_type_ref(interface, context)?;
+        let selector = self.resolve_object_safe_interface_selector_type_ref(interface, context)?;
         Ok(ResolvedTypeRef::with_text(
             TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
@@ -424,6 +424,9 @@ impl TypeResolutionModel {
         ))
     }
 
+    /// Resolves an exact interface declaration selector for nominal
+    /// conformance. Marker interfaces are valid here; this does not grant
+    /// dynamic `AnyInterface` object safety.
     pub fn resolve_canonical_interface_selector_type_ref(
         &self,
         interface: &TypeRef,
@@ -431,6 +434,18 @@ impl TypeResolutionModel {
     ) -> Result<CanonicalInterfaceSelectorResolution, String> {
         let expr = TypeExpr::parse(&interface.name);
         self.resolve_canonical_interface_selector_expr(&expr, context)
+    }
+
+    /// Resolves an exact interface selector for dynamic boxing or invocation.
+    /// Unlike nominal conformance selection, this enforces object safety.
+    pub fn resolve_object_safe_interface_selector_type_ref(
+        &self,
+        interface: &TypeRef,
+        context: &TypeResolutionContext<'_>,
+    ) -> Result<CanonicalInterfaceSelectorResolution, String> {
+        let selector = self.resolve_canonical_interface_selector_type_ref(interface, context)?;
+        self.require_canonical_interface_selector_object_safe(&selector)?;
+        Ok(selector)
     }
 
     pub fn resolve_canonical_interface_selector_resolved_type_ref(
@@ -1736,6 +1751,7 @@ impl TypeResolutionModel {
         context: &TypeResolutionContext<'_>,
     ) -> Result<ResolvedTypeRef, String> {
         let selector = self.resolve_canonical_interface_selector_expr(interface, context)?;
+        self.require_canonical_interface_selector_object_safe(&selector)?;
         Ok(ResolvedTypeRef::with_text(
             TypeRefIr::AnyInterface {
                 interface: selector.instantiation_ref,
@@ -1886,7 +1902,6 @@ impl TypeResolutionModel {
             };
             let args = self.resolve_interface_selector_args(args, context)?;
             self.require_package_interface_type_args(selector_text, &interface.type_params, &args)?;
-            self.require_package_interface_object_safe(selector_text, &interface.methods)?;
             return Ok(CanonicalInterfaceSelectorResolution {
                 source_text: selector_text.to_string(),
                 identity: interface.identity.clone(),
@@ -1902,7 +1917,6 @@ impl TypeResolutionModel {
                     &interface.type_params,
                     &args,
                 )?;
-                self.require_package_interface_object_safe(selector_text, &interface.methods)?;
                 return Ok(CanonicalInterfaceSelectorResolution {
                     source_text: selector_text.to_string(),
                     identity: interface.identity.clone(),
@@ -1994,16 +2008,6 @@ impl TypeResolutionModel {
             symbol: key,
             args: args.clone(),
         };
-        let diagnostics = self
-            .interface_semantics
-            .object_safety_diagnostics(&interface)
-            .map_err(|error| error.to_string())?;
-        if !diagnostics.is_empty() {
-            return Err(format!(
-                "interface selector `{selector_text}` is not object-safe: {}",
-                object_safety_diagnostics_display(&diagnostics)
-            ));
-        }
         let identity = interface_symbol_type_ref(&interface.symbol);
         Ok(CanonicalInterfaceSelectorResolution {
             source_text: selector_text.to_string(),
@@ -2033,52 +2037,13 @@ impl TypeResolutionModel {
         source_text: String,
         interface: InterfaceInstantiationResolution,
     ) -> Result<CanonicalInterfaceSelectorResolution, String> {
-        match &interface.identity {
-            TypeRefIr::ServiceSymbol { symbol } => {
-                let source_interface = InterfaceInstantiation {
-                    symbol: SourceSymbolKey::new(
-                        symbol
-                            .module_path
-                            .strip_prefix("root.")
-                            .unwrap_or(&symbol.module_path),
-                        &symbol.symbol,
-                    ),
-                    args: interface.args.clone(),
-                };
-                let diagnostics = self
-                    .interface_semantics
-                    .object_safety_diagnostics(&source_interface)
-                    .map_err(|error| error.to_string())?;
-                if !diagnostics.is_empty() {
-                    return Err(format!(
-                        "interface selector `{source_text}` is not object-safe: {}",
-                        object_safety_diagnostics_display(&diagnostics)
-                    ));
-                }
-            }
-            TypeRefIr::PackageSymbol { .. } => {
-                let package_interface = self
-                    .package_interface_for_type_ref(&interface.identity)
-                    .ok_or_else(|| {
-                        format!(
-                            "interface selector `{source_text}` does not resolve to a package interface"
-                        )
-                    })?;
-                self.require_package_interface_type_args(
-                    &source_text,
-                    &package_interface.type_params,
-                    &interface.args,
-                )?;
-                self.require_package_interface_object_safe(
-                    &source_text,
-                    &package_interface.methods,
-                )?;
-            }
-            _ => {
-                return Err(format!(
-                    "resolved type `{source_text}` is not an interface instantiation"
-                ));
-            }
+        if !matches!(
+            &interface.identity,
+            TypeRefIr::ServiceSymbol { .. } | TypeRefIr::PackageSymbol { .. }
+        ) {
+            return Err(format!(
+                "resolved type `{source_text}` is not an interface instantiation"
+            ));
         }
         Ok(CanonicalInterfaceSelectorResolution {
             source_text,
@@ -2089,6 +2054,61 @@ impl TypeResolutionModel {
             identity: interface.identity,
             args: interface.args,
         })
+    }
+
+    fn require_canonical_interface_selector_object_safe(
+        &self,
+        selector: &CanonicalInterfaceSelectorResolution,
+    ) -> Result<(), String> {
+        match &selector.identity {
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let source_interface = InterfaceInstantiation {
+                    symbol: SourceSymbolKey::new(
+                        symbol
+                            .module_path
+                            .strip_prefix("root.")
+                            .unwrap_or(&symbol.module_path),
+                        &symbol.symbol,
+                    ),
+                    args: selector.args.clone(),
+                };
+                let diagnostics = self
+                    .interface_semantics
+                    .object_safety_diagnostics(&source_interface)
+                    .map_err(|error| error.to_string())?;
+                if diagnostics.is_empty() {
+                    return Ok(());
+                }
+                Err(format!(
+                    "interface selector `{}` is not object-safe: {}",
+                    selector.source_text,
+                    object_safety_diagnostics_display(&diagnostics)
+                ))
+            }
+            TypeRefIr::PackageSymbol { .. } => {
+                let package_interface = self
+                    .package_interface_for_type_ref(&selector.identity)
+                    .ok_or_else(|| {
+                        format!(
+                            "interface selector `{}` does not resolve to a package interface",
+                            selector.source_text
+                        )
+                    })?;
+                self.require_package_interface_type_args(
+                    &selector.source_text,
+                    &package_interface.type_params,
+                    &selector.args,
+                )?;
+                self.require_package_interface_object_safe(
+                    &selector.source_text,
+                    &package_interface.methods,
+                )
+            }
+            _ => Err(format!(
+                "resolved type `{}` is not an interface instantiation",
+                selector.source_text
+            )),
+        }
     }
 
     pub(super) fn require_package_interface_object_safe(

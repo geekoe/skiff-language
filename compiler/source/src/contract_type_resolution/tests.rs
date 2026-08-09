@@ -4,10 +4,10 @@ use compiler_input_model::{
     PackageCompilePolicy, PackageDependency, PublicationApiEntry,
     PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
-use skiff_artifact_identity::package_schema_type_id;
+use skiff_artifact_identity::{canonical_interface_method_abi_id, package_schema_type_id};
 use skiff_artifact_model::{
     ContractLiteral, ContractTypeRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
-    InterfaceOperationIr, PackageTypeRef, TypeRefIr,
+    InterfaceOperationIr, PackageTypeRef, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 
@@ -363,6 +363,26 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
     )
     .expect("public instance signatures build from source facts");
 
+    let operation_facts = model.public_instance_operations();
+    assert_eq!(operation_facts.len(), 1);
+    let operation_row = &operation_facts.interfaces()[0];
+    assert_eq!(operation_row.public_root(), "handler");
+    assert!(matches!(
+        serde_json::from_str::<TypeRefIr>(&operation_row.interface().interface_abi_id)
+            .expect("source interface identity should decode"),
+        TypeRefIr::ServiceSymbol { symbol }
+            if symbol.module_path == "api" && symbol.symbol == "PublicApi"
+    ));
+    assert_eq!(operation_row.slots().len(), 1);
+    assert_eq!(
+        operation_row.slots()[0].operation_stable_key(),
+        "handler.submit"
+    );
+    assert_eq!(
+        operation_row.slots()[0].method_abi_id(),
+        canonical_interface_method_abi_id(operation_row.interface(), "submit")
+    );
+
     let signatures = model.callable_signatures();
     assert_eq!(signatures.iter().count(), 1);
     let signature = signatures
@@ -397,6 +417,141 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
         }
     ));
     assert_eq!(executable.parameters.len(), 2);
+}
+
+#[test]
+fn public_instance_operation_facts_close_generic_receiver_substitutions() {
+    let publication_api = PublicationApiSpec::from_public_instances(vec![
+        PublicationApiPublicInstanceEntry::for_source(
+            "v1.box",
+            "root.api.box",
+            ["root.api.BoxApi"],
+        )
+        .unwrap(),
+    ]);
+    let model = build_model_with_publication_api(
+        r#"
+            interface BoxApi<T> {
+              function zeta(self: Self) -> T
+              function alpha(self: Self) -> string
+            }
+            type Payload {
+              value: string,
+            }
+            type Box<T> implements BoxApi<T> {
+              value: T,
+            }
+            impl Box<T> {
+              function alpha() -> string { return "alpha" }
+              function zeta() -> T { return self.value }
+            }
+            const box: Box<Payload> = Box<Payload> {
+              value: Payload { value: "value" },
+            }
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect("generic public-instance facts should close receiver substitutions");
+
+    let row = &model.public_instance_operations().interfaces()[0];
+    assert_eq!(row.public_root(), "v1.box");
+    assert_eq!(
+        row.interface().canonical_type_args,
+        vec![TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: "api".to_string(),
+                symbol: "Payload".to_string(),
+            }
+        }],
+        "receiver substitutions must externalize pool-local type slots"
+    );
+    assert_eq!(
+        row.slots()
+            .iter()
+            .map(|slot| slot.operation_stable_key())
+            .collect::<Vec<_>>(),
+        vec!["v1.box.zeta", "v1.box.alpha"],
+        "operation rows must retain interface declaration order"
+    );
+    assert_eq!(
+        row.slots()[0].method_abi_id(),
+        canonical_interface_method_abi_id(row.interface(), "zeta")
+    );
+    assert_eq!(
+        row.slots()[1].method_abi_id(),
+        canonical_interface_method_abi_id(row.interface(), "alpha")
+    );
+}
+
+#[test]
+fn public_instance_marker_conformance_projects_an_empty_slot_row() {
+    let publication_api = PublicationApiSpec::from_public_instances(vec![
+        PublicationApiPublicInstanceEntry::for_source(
+            "tagged",
+            "root.api.tagged",
+            ["root.api.Marker"],
+        )
+        .unwrap(),
+    ]);
+    let model = build_model_with_publication_api(
+        r#"
+            interface Marker {}
+            type Tagged implements Marker {}
+            const tagged: Tagged = Tagged {}
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect("marker conformance should remain valid outside dynamic interface boxing");
+
+    let rows = model.public_instance_operations().interfaces();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].public_root(), "tagged");
+    assert!(rows[0].slots().is_empty());
+    assert_eq!(model.callable_signatures().iter().count(), 0);
+}
+
+#[test]
+fn public_instance_operation_facts_reject_cross_interface_key_collisions() {
+    let publication_api = PublicationApiSpec::from_public_instances(vec![
+        PublicationApiPublicInstanceEntry::for_source(
+            "handler",
+            "root.api.handler",
+            ["root.api.First", "root.api.Second"],
+        )
+        .unwrap(),
+    ]);
+    let error = build_model_with_publication_api(
+        r#"
+            interface First {
+              function run(self: Self) -> string
+            }
+            interface Second {
+              function run(self: Self) -> string
+            }
+            type Handler implements First, Second {}
+            impl Handler {
+              function run() -> string { return "ok" }
+            }
+            const handler: Handler = Handler {}
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect_err("two declaration slots under one root must not derive the same operation key")
+    .to_string();
+
+    assert!(
+        error.contains("duplicate operation stable key `handler.run`"),
+        "unexpected collision diagnostic: {error}"
+    );
 }
 
 #[test]

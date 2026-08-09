@@ -127,6 +127,7 @@ pub struct PackageSourceModel {
     callable_provenance: SourceCallableProvenanceFacts,
     executable_signatures: super::SourceExecutableSignatureFacts,
     interface_signatures: super::SourceInterfaceSignatureFacts,
+    public_instance_operations: super::SourcePublicInstanceOperationFacts,
     callable_signatures: super::SourceCallableSignatureFacts,
     resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
@@ -268,12 +269,19 @@ impl PackageSourceModel {
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source interface signature resolution failed:\n- {message}"),
         })?;
+        let public_instance_operations = super::SourcePublicInstanceOperationFacts::build(
+            &input.parsed_sources,
+            export_bindings.public_instances().values(),
+            &type_resolution,
+        )
+        .map_err(|source| PublicationError::ContractValidation {
+            message: format!("source public-instance operation facts failed:\n- {source}"),
+        })?;
         let callable_signatures = super::SourceCallableSignatureFacts::build(
             &input.parsed_sources,
             &export_bindings,
             &type_resolution,
             &executable_signatures,
-            &interface_signatures,
         )
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source callable signature resolution failed:\n- {message}"),
@@ -296,6 +304,7 @@ impl PackageSourceModel {
             callable_provenance,
             executable_signatures,
             interface_signatures,
+            public_instance_operations,
             callable_signatures,
             resolved_call_targets,
             source_identity: input.source_identity,
@@ -384,6 +393,10 @@ impl PackageSourceModel {
 
     pub fn interface_signatures(&self) -> &super::SourceInterfaceSignatureFacts {
         &self.interface_signatures
+    }
+
+    pub fn public_instance_operations(&self) -> &super::SourcePublicInstanceOperationFacts {
+        &self.public_instance_operations
     }
 
     pub fn callable_signatures(&self) -> &super::SourceCallableSignatureFacts {

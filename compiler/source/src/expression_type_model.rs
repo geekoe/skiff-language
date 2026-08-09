@@ -1767,7 +1767,7 @@ impl<'a> OwnerChecker<'a> {
         let value_ty = self.check_expr(value);
         let selector = match self
             .type_resolution
-            .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
+            .resolve_object_safe_interface_selector_type_ref(interface, &self.type_context)
         {
             Ok(selector) => selector,
             Err(error) => {

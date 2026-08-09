@@ -1487,6 +1487,29 @@ fn any_interface_selector_resolution_rejects_non_interface_targets() {
 }
 
 #[test]
+fn marker_selector_is_valid_for_nominal_conformance_but_not_dynamic_interface_values() {
+    let (parsed_sources, type_resolution) = type_resolution(
+        r#"
+          interface Marker {}
+          type Tagged implements Marker {}
+        "#,
+    );
+    let marker = &parsed_sources[0].ast().types[0].implements[0];
+    let selector = type_resolution
+        .resolve_canonical_interface_selector_type_ref(marker, &context())
+        .expect("nominal conformance may select a marker interface");
+    assert!(matches!(selector.identity, TypeRefIr::ServiceSymbol { .. }));
+
+    let error = type_resolution
+        .resolve_type_text("any Marker", &context())
+        .expect_err("marker interface must remain invalid as a dynamic interface value");
+    assert!(
+        error.contains("not object-safe") && error.contains("marker interface"),
+        "unexpected marker interface diagnostic: {error}"
+    );
+}
+
+#[test]
 fn externalized_any_interface_source_text_remains_parseable() {
     let (_parsed_sources, type_resolution) = type_resolution(object_safe_interface_source());
     let context = context();
@@ -2630,6 +2653,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
                   return null
                 }
               }
+
+              const client: LocalClient = LocalClient {}
             "#,
     );
     let mut dependency = PackageDependency::id("llm-api");
@@ -2709,6 +2734,44 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
     )
     .expect("projected imported interface identity should decode") else {
         panic!("projected imported interface must retain package ownership")
+    };
+    assert_eq!(
+        symbol.package,
+        PackageRefIr::PackageId {
+            package_id: "llm-api".to_string()
+        }
+    );
+    assert_eq!(symbol.symbol_path, "types.LlmClient");
+    assert_eq!(symbol.abi_expectation.as_deref(), Some("abi"));
+
+    let binding = crate::ExportPublicInstanceBinding {
+        public_path: "client".to_string(),
+        source_module: MODULE.to_string(),
+        source_symbol: "client".to_string(),
+        interfaces: vec![crate::ExportPublicInstanceInterfaceBinding {
+            source_module: "llmApi".to_string(),
+            source_symbol: "LlmClient".to_string(),
+        }],
+    };
+    let public_operations = crate::SourcePublicInstanceOperationFacts::build(
+        &consumer_sources,
+        std::iter::once(&binding),
+        &model,
+    )
+    .expect("artifact-backed public instance should expose provider-free operation facts");
+    let row = &public_operations.interfaces()[0];
+    assert_eq!(row.public_root(), "client");
+    assert_eq!(row.slots().len(), 1);
+    assert_eq!(row.slots()[0].operation_stable_key(), "client.complete");
+    assert_eq!(
+        row.slots()[0].method_abi_id(),
+        skiff_artifact_identity::canonical_interface_method_abi_id(row.interface(), "complete")
+    );
+    let TypeRefIr::PackageSymbol { symbol } =
+        serde_json::from_str::<TypeRefIr>(&row.interface().interface_abi_id)
+            .expect("public operation interface identity should decode")
+    else {
+        panic!("public operation interface must retain package ownership")
     };
     assert_eq!(
         symbol.package,

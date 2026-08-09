@@ -117,7 +117,6 @@ fn public_view_fails_when_its_canonical_executable_fact_is_missing() {
         model.export_bindings(),
         model.type_resolution(),
         &executable_signatures,
-        model.interface_signatures(),
     )
     .expect_err("public view cannot reconstruct a missing executable fact");
     assert!(error.contains("has no exact source executable signature fact"));

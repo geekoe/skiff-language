@@ -52,6 +52,12 @@ pub(super) fn validate_conformance(
     validate_exact_interface(conformance.interface(), &binders)
 }
 
+pub(super) fn validate_closed_interface(
+    interface: &InterfaceInstantiationRef,
+) -> Result<(), Error> {
+    validate_exact_interface(interface, &BTreeSet::new())
+}
+
 fn validate_exact_interface(
     interface: &InterfaceInstantiationRef,
     binders: &BTreeSet<&str>,
