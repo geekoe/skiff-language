@@ -4,9 +4,10 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, FileIrRef, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
+    BoundaryCallableProjection, CallableSemanticFacts, FileIrRef, PackageActorImplementation,
+    PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
     PackageSchemaTypeRecordRef, ServiceCallRef,
 };
 
@@ -107,6 +108,8 @@ pub struct PackageArtifactBuildIdentityProjection {
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,
     callable_links: BTreeMap<PackageCallableId, CallableLinkIdentityProjection>,
+    actor_implementations: Vec<PackageActorImplementation>,
+    local_interface_conformances: Vec<PackageLocalInterfaceConformance>,
     package_requirements: Value,
     contract_requirements: Value,
     service_requirements: Value,

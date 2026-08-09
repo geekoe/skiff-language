@@ -5,11 +5,12 @@ use serde_json::json;
 use skiff_artifact_model::{
     ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, CallIr, CallTargetIr,
     ContractOperationId, DbDeclarationIr, DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr,
-    DbIndexIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody, ExprIr, ExprRefIr,
-    FieldPathIr, FileIrPackageCallValidationError, FileIrUnit, LiteralIr, NominalTypeRefBaseIr,
-    PackageCallableId, PackageCallableRef, PackageRefIr, ServiceCallRef, ServiceCallRefIndex,
-    ServiceProtocolIdentity, SourceMapSource, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
-    ACTOR_RUNTIME_ABI_VERSION_V1,
+    DbIndexIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody, ExecutableIr,
+    ExecutableKind, ExprIr, ExprRefIr, FieldPathIr, FileIrPackageCallValidationError, FileIrUnit,
+    InOutArgIr, InOutPathSegmentIr, LiteralIr, NominalTypeRefBaseIr, PackageCallableId,
+    PackageCallableRef, PackageRefIr, ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+    SlotIr, SlotKind, SlotLayout, SourceMapSource, SyntheticInstructionSiteReason, TypeDeclIr,
+    TypeDescriptorIr, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 
 #[test]
@@ -56,7 +57,7 @@ fn file_ir_identity_validation_rejects_stale_identity() {
 #[test]
 fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomputed() {
     for (field, stale) in [
-        ("schemaVersion", "skiff-file-ir-v7"),
+        ("schemaVersion", "skiff-file-ir-v12"),
         ("irFormatVersion", "skiff-file-ir-format-v5"),
         ("opcodeTableVersion", "skiff-opcode-table-v0"),
     ] {
@@ -91,7 +92,8 @@ fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomput
 fn file_ir_identity_validation_rejects_stale_prefix_with_current_preimage() {
     let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
     let current = file_ir_identity(&unit).expect("current identity");
-    unit.file_ir_identity = current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v9:sha256", 1);
+    unit.file_ir_identity =
+        current.replacen(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v12:sha256", 1);
 
     assert!(matches!(
         validate_file_ir_identity(&unit),
@@ -462,7 +464,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v12:sha256:f2ef68ed36f6ff037ebf29dfba2a19beb75b027bbb09b4a7c2d7f17ef28c6545"
+        "skiff-file-ir-v13:sha256:f3722698625ed641639c0f311e95b07ceab08a770b8409861c9aa2207e1e263f"
     );
 
     let mut changed_ref = base.clone();
@@ -525,6 +527,56 @@ fn package_call_target_and_ref_fields_participate_in_file_ir_identity() {
         baseline,
         "owner-qualified callable identities must not collapse on the shared display suffix"
     );
+}
+
+#[test]
+fn v13_writable_call_facts_participate_in_file_ir_identity() {
+    let base = inout_file_ir_fixture();
+    let baseline = file_ir_identity(&base).unwrap();
+
+    let mut self_type = base.clone();
+    self_type.executables[0].self_type = Some(TypeRefIr::builtin("string"));
+
+    let mut writable = base.clone();
+    writable.executables[0].slots.slots[0].writable_local = false;
+
+    let mut receiver = base.clone();
+    let ExprIr::Call { call } = &mut receiver.executables[0].body.expressions[3] else {
+        panic!("fixture call expression")
+    };
+    call.concrete_receiver = Some(TypeRefIr::builtin("string"));
+
+    let mut parameter = base.clone();
+    let ExprIr::Call { call } = &mut parameter.executables[0].body.expressions[3] else {
+        panic!("fixture call expression")
+    };
+    call.inout_args[0].parameter_ordinal = 1;
+
+    let mut index = base.clone();
+    let ExprIr::Index {
+        index: index_expression,
+        ..
+    } = &mut index.executables[0].body.expressions[2]
+    else {
+        panic!("fixture index expression")
+    };
+    *index_expression = ExprRefIr { expression: 0 };
+
+    let mut selector = base;
+    let ExprIr::Call { call } = &mut selector.executables[0].body.expressions[3] else {
+        panic!("fixture call expression")
+    };
+    let InOutPathSegmentIr::Index {
+        selector: index_selector,
+    } = &mut call.inout_args[0].path[0]
+    else {
+        panic!("fixture index selector")
+    };
+    *index_selector = ExprRefIr { expression: 0 };
+
+    for changed in [self_type, writable, receiver, parameter, index, selector] {
+        assert_ne!(file_ir_identity(&changed).unwrap(), baseline);
+    }
 }
 
 #[test]
@@ -609,6 +661,7 @@ fn service_call_file_ir_fixture() -> FileIrUnit {
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index: ServiceCallRefIndex::new(index),
                         },
+                        concrete_receiver: None,
                         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },
@@ -647,6 +700,7 @@ fn package_call_file_ir_fixture() -> FileIrUnit {
                         package_ref,
                         package_callable_id,
                     },
+                    concrete_receiver: None,
                     site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                         reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                     },
@@ -657,6 +711,81 @@ fn package_call_file_ir_fixture() -> FileIrUnit {
                 },
             }],
         },
+        source_span: None,
+    });
+    unit
+}
+
+fn inout_file_ir_fixture() -> FileIrUnit {
+    let mut unit = FileIrUnit::empty("inout.main", "source-ast-hash");
+    unit.executables.push(ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "mutate".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "values".to_string(),
+                kind: SlotKind::Local,
+                writable_local: true,
+                ty: Some(TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![TypeRefIr::builtin("string")],
+                }),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: vec![
+                ExprIr::LoadSlot { slot: 0 },
+                ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(0),
+                    },
+                },
+                ExprIr::Index {
+                    object: ExprRefIr { expression: 0 },
+                    index: ExprRefIr { expression: 1 },
+                },
+                ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::LocalExecutable {
+                            executable_index: 0,
+                        },
+                        concrete_receiver: None,
+                        site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                            reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                        },
+                        args: Vec::new(),
+                        inout_args: vec![InOutArgIr {
+                            parameter_ordinal: 0,
+                            root_slot: 0,
+                            path: vec![InOutPathSegmentIr::Index {
+                                selector: ExprRefIr { expression: 1 },
+                            }],
+                        }],
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+            ],
+        },
+        expression_types: vec![
+            TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::builtin("string")],
+            },
+            TypeRefIr::builtin("number"),
+            TypeRefIr::builtin("string"),
+            TypeRefIr::builtin("void"),
+        ],
+        statement_spans: Vec::new(),
         source_span: None,
     });
     unit

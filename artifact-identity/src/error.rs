@@ -28,7 +28,7 @@ pub enum ArtifactIdentityError {
     #[error("failed to serialize service protocol identity payload: {0}")]
     SerializeServiceProtocolIdentity(serde_json::Error),
     #[error(
-        "service protocol identity {identity} must use skiff-service-protocol-v5:sha256:<64 lowercase hex>"
+        "service protocol identity {identity} must use skiff-service-protocol-v6:sha256:<64 lowercase hex>"
     )]
     InvalidServiceProtocolIdentity { identity: String },
     #[error("service contract is invalid: {message}")]
@@ -82,7 +82,7 @@ pub enum ArtifactIdentityError {
     #[error("bytecode artifact declared identity {declared} but content identity is {computed}")]
     BytecodeIdentityMismatch { declared: String, computed: String },
     #[error(
-        "bytecode identity {identity} must use skiff-bytecode-image-v1:sha256:<64 lowercase hex>"
+        "bytecode identity {identity} must use skiff-bytecode-image-v2:sha256:<64 lowercase hex>"
     )]
     InvalidBytecodeIdentity { identity: String },
     #[error("File IR {field} must be {expected}, got {actual}")]

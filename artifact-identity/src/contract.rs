@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, ContractOperationId, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
-    PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
+    BoundaryStreamContract, ContractOperationId, ContractPublicInstance, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor,
+    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
     PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract, ServiceContractRef,
     ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
@@ -48,15 +48,17 @@ struct ContractOperationIdentityInput<'a> {
     stable_operation_key: &'a str,
 }
 
-/// The protocol preimage contains only operations and their exact reachable
-/// package type requirements. Package indexes and descriptors are deliberately
-/// absent, so unrelated package schema entries cannot perturb this identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The protocol preimage contains public-instance dispatch, operations and
+/// their exact reachable package type requirements. Package indexes and
+/// descriptors are deliberately absent, so unrelated package schema entries
+/// cannot perturb this identity.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceProtocolIdentityProjection {
     schema: &'static str,
     service_id: String,
     operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor>,
+    public_instances: BTreeMap<String, ContractPublicInstance>,
     package_type_requirements: Vec<PackageTypeRequirement>,
 }
 
@@ -191,6 +193,7 @@ pub fn service_protocol_identity_projection(
         schema: SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
         service_id: contract.service_id.clone(),
         operations: contract.operations.clone(),
+        public_instances: contract.public_instances.clone(),
         package_type_requirements: contract.package_type_requirements.clone(),
     })
 }
@@ -260,6 +263,7 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
     }
     validate_non_empty("serviceId", &contract.service_id)?;
     validate_non_empty("contractVersion", &contract.contract_version)?;
+    validate_public_instances(contract)?;
     if contract.operations.is_empty() && !contract.package_type_requirements.is_empty() {
         return invalid_contract(
             "zero-operation service contracts cannot contain packageTypeRequirements",
@@ -333,6 +337,36 @@ fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
             return invalid_contract(format!(
                 "diagnostic text references unknown package schema type {type_id}"
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_public_instances(contract: &ServiceContract) -> Result<()> {
+    for (instance_path, instance) in &contract.public_instances {
+        validate_non_empty("public instance path", instance_path)?;
+        let mut previous: Option<Vec<u8>> = None;
+        for interface in &instance.interfaces {
+            let key = skiff_canonical_json::canonical_json_bytes(&interface.interface)
+                .map_err(ArtifactIdentityError::SerializeServiceProtocolIdentity)?;
+            if previous.as_ref().is_some_and(|previous| previous >= &key) {
+                return invalid_contract(
+                    "public instance interfaces must be strictly ordered and unique by exact interface instantiation",
+                );
+            }
+            previous = Some(key);
+            for method in &interface.methods {
+                validate_non_empty("public instance methodAbiId", &method.method_abi_id)?;
+                if !contract
+                    .operations
+                    .contains_key(&method.contract_operation_id)
+                {
+                    return invalid_contract(format!(
+                        "public instance {instance_path} method {} references unknown operation {}",
+                        method.method_abi_id, method.contract_operation_id
+                    ));
+                }
+            }
         }
     }
     Ok(())

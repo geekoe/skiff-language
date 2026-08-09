@@ -3,8 +3,9 @@ use skiff_artifact_model::{
     BoundaryEffectGuarantee, BoundaryFeatureUnavailableReason, BoundaryOperationContract,
     BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractTypeDescriptor, PackageSchemaIndexEntry, PackageSchemaTypeRef,
-    PackageTypeRequirement,
+    ContractDiagnosticText, ContractPublicInstance, ContractPublicInstanceInterface,
+    ContractPublicInstanceMethod, ContractTypeDescriptor, InterfaceInstantiationRef,
+    PackageSchemaIndexEntry, PackageSchemaTypeRef, PackageTypeRequirement,
 };
 
 use super::*;
@@ -132,6 +133,24 @@ fn service_protocol_mutation_matrix_covers_open_operation_surface() {
     };
     mutations.push(callback);
 
+    let mut public_instance = base.clone();
+    public_instance.public_instances.insert(
+        "worker".to_string(),
+        ContractPublicInstance {
+            interfaces: vec![ContractPublicInstanceInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: "interface:worker".to_string(),
+                    canonical_type_args: Vec::new(),
+                },
+                methods: vec![ContractPublicInstanceMethod {
+                    method_abi_id: "method:worker:get".to_string(),
+                    contract_operation_id: operation_id.clone(),
+                }],
+            }],
+        },
+    );
+    mutations.push(public_instance);
+
     for changed in mutations {
         assert_ne!(service_protocol_identity(&changed).unwrap(), baseline);
         assert_eq!(
@@ -140,6 +159,34 @@ fn service_protocol_mutation_matrix_covers_open_operation_surface() {
             "ContractOperationId excludes mutable operation surface"
         );
     }
+}
+
+#[test]
+fn service_protocol_rejects_noncanonical_public_instance_interfaces() {
+    let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
+    let mut contract = service_contract(type_id);
+    let operation_id = contract.operations.keys().next().unwrap().clone();
+    let interface = ContractPublicInstanceInterface {
+        interface: InterfaceInstantiationRef {
+            interface_abi_id: "interface:worker".to_string(),
+            canonical_type_args: Vec::new(),
+        },
+        methods: vec![ContractPublicInstanceMethod {
+            method_abi_id: "method:worker:get".to_string(),
+            contract_operation_id: operation_id,
+        }],
+    };
+    contract.public_instances.insert(
+        "worker".to_string(),
+        ContractPublicInstance {
+            interfaces: vec![interface.clone(), interface],
+        },
+    );
+
+    assert!(matches!(
+        service_protocol_identity(&contract),
+        Err(ArtifactIdentityError::InvalidServiceContract { .. })
+    ));
 }
 
 #[test]
@@ -278,6 +325,7 @@ fn zero_operation_service_contract_has_stable_identity() {
         contract_version: "1.0.0".to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::new(),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "example.empty".to_string(),
@@ -306,7 +354,7 @@ fn zero_operation_service_contract_has_stable_identity() {
 fn stale_service_contract_generation_and_identity_prefix_fail_closed() {
     let type_id = package_schema_type_id("example.pkg", "User", &descriptor("string")).unwrap();
     let mut stale_schema = service_contract(type_id.clone());
-    stale_schema.schema_version = "skiff-service-contract-v4".to_string();
+    stale_schema.schema_version = "skiff-service-contract-v5".to_string();
     assert!(matches!(
         service_protocol_identity(&stale_schema),
         Err(ArtifactIdentityError::InvalidServiceContract { .. })
@@ -317,7 +365,7 @@ fn stale_service_contract_generation_and_identity_prefix_fail_closed() {
     stale_identity.service_protocol_identity =
         ServiceProtocolIdentity::new(stale_identity.service_protocol_identity.as_str().replacen(
             SERVICE_PROTOCOL_IDENTITY_PREFIX,
-            "skiff-service-protocol-v4:sha256",
+            "skiff-service-protocol-v5:sha256",
             1,
         ));
     assert!(matches!(
@@ -413,6 +461,7 @@ fn service_contract(type_id: PackageSchemaTypeId) -> ServiceContract {
         contract_version: "1.0.0".to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, operation)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: vec![PackageTypeRequirement {
             package_id: "example.pkg".to_string(),
             required_type_ids: vec![type_id],

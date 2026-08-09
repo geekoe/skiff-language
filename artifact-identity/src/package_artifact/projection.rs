@@ -129,6 +129,8 @@ pub(super) fn build_projection_from_validated(
             .iter()
             .map(|(key, link)| (key.clone(), CallableLinkIdentityProjection::from_fact(link)))
             .collect(),
+        actor_implementations: artifact.actor_implementations.clone(),
+        local_interface_conformances: artifact.local_interface_conformances.clone(),
         package_requirements: crate::identity_labels::without_human_version_labels(
             &package_requirements,
             ArtifactIdentityError::SerializePackageArtifactBuildIdentity,

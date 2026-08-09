@@ -1,19 +1,20 @@
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorAbiInput, ActorCreateSignatureIr, ActorFieldEncodingIr, ActorFieldIr,
-    ActorMethodIdentity, ActorPublicMethodIr, BoundaryCallbackContract, BoundaryEffectGuarantee,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryParameter,
-    BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ConstExport, ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
-    NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageActorAbi,
+    ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
+    BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, ConstExport, ContractOperationId,
+    ContractRequirement, ContractTypeRef, ExecutableExport, ExecutableSignatureIr, FileIrRef,
+    FunctionTypeParamIr, InterfaceInstantiationRef, InterfaceMethodSignature, NominalTypeRefBaseIr,
+    OperationCallableKind, OperationTargetRef, PackageActorAbi, PackageActorImplementation,
     PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
-    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr,
-    PendingEffectCategory, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef,
-    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks,
+    PackageLocalInterfaceConformance, PackageRefIr, PackageRequirement, PackageSymbolRef,
+    PackageTypeRef, ParamIr, ParamModeIr, PendingEffectCategory, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -43,7 +44,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     validate_package_artifact_identities(&artifact).unwrap();
 
     let mut stale_schema = artifact.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v8".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v11".to_string();
     assert!(matches!(
         validate_package_artifact_identities(&stale_schema),
         Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -70,7 +71,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     stale_build.package_build_id =
         PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
             crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-            "skiff-package-build-v9:sha256",
+            "skiff-package-build-v10:sha256",
             1,
         ));
     assert!(matches!(
@@ -153,6 +154,108 @@ fn actor_metadata_tampering_changes_local_abi_and_build_identity() {
         package_artifact_build_identity(&tampered_method).unwrap(),
         base_build
     );
+}
+
+#[test]
+fn build_authority_rows_change_build_identity_but_not_local_abi() {
+    let base = fixture();
+    let base_build = package_artifact_build_identity(&base).unwrap();
+    let base_local = package_artifact_local_abi_identity(&base).unwrap();
+
+    let mut actor = base.clone();
+    actor.actor_implementations = vec![PackageActorImplementation {
+        actor: ServiceSymbolRef {
+            module_path: "actors".to_string(),
+            symbol: "Worker".to_string(),
+        },
+        actor_implementation_identity: ActorImplementationIdentity::new("actor-impl:worker"),
+        methods: BTreeMap::new(),
+        create: None,
+    }];
+    assert_ne!(package_artifact_build_identity(&actor).unwrap(), base_build);
+    assert_eq!(
+        package_artifact_local_abi_identity(&actor).unwrap(),
+        base_local
+    );
+    let actor_projection =
+        serde_json::to_value(package_artifact_build_identity_projection(&actor).unwrap()).unwrap();
+    assert_eq!(
+        actor_projection["actorImplementations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut conformance = base;
+    conformance.local_interface_conformances = vec![PackageLocalInterfaceConformance {
+        type_parameters: Vec::new(),
+        receiver: TypeRefIr::builtin("string"),
+        interface: InterfaceInstantiationRef {
+            interface_abi_id: "interface:worker".to_string(),
+            canonical_type_args: Vec::new(),
+        },
+        methods: Vec::new(),
+    }];
+    assert_ne!(
+        package_artifact_build_identity(&conformance).unwrap(),
+        base_build
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&conformance).unwrap(),
+        base_local
+    );
+    let conformance_projection =
+        serde_json::to_value(package_artifact_build_identity_projection(&conformance).unwrap())
+            .unwrap();
+    assert_eq!(
+        conformance_projection["localInterfaceConformances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let local_projection =
+        serde_json::to_value(package_artifact_local_abi_identity_projection(&conformance).unwrap())
+            .unwrap();
+    assert!(local_projection.get("actorImplementations").is_none());
+    assert!(local_projection.get("localInterfaceConformances").is_none());
+}
+
+#[test]
+fn build_authority_rows_must_be_canonical_before_identity() {
+    let actor_row = PackageActorImplementation {
+        actor: ServiceSymbolRef {
+            module_path: "actors".to_string(),
+            symbol: "Worker".to_string(),
+        },
+        actor_implementation_identity: ActorImplementationIdentity::new("actor-impl:worker"),
+        methods: BTreeMap::new(),
+        create: None,
+    };
+    let mut duplicate_actor = fixture();
+    duplicate_actor.actor_implementations = vec![actor_row.clone(), actor_row];
+    assert!(matches!(
+        package_artifact_build_identity(&duplicate_actor),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
+
+    let conformance_row = PackageLocalInterfaceConformance {
+        type_parameters: Vec::new(),
+        receiver: TypeRefIr::builtin("string"),
+        interface: InterfaceInstantiationRef {
+            interface_abi_id: "interface:worker".to_string(),
+            canonical_type_args: Vec::new(),
+        },
+        methods: Vec::new(),
+    };
+    let mut duplicate_conformance = fixture();
+    duplicate_conformance.local_interface_conformances =
+        vec![conformance_row.clone(), conformance_row];
+    assert!(matches!(
+        package_artifact_build_identity(&duplicate_conformance),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
 }
 
 #[test]
@@ -247,7 +350,7 @@ fn implementation_throw_facts_without_matching_boundary_projection_are_rejected(
 }
 
 #[test]
-fn package_artifact_build_v10_preimage_excludes_service_selection() {
+fn package_artifact_build_v11_preimage_excludes_service_selection() {
     let artifact = two_callable_fixture();
     let build =
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
@@ -261,7 +364,7 @@ fn package_artifact_build_v10_preimage_excludes_service_selection() {
         build["schema"],
         crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
     );
-    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v9");
+    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v10");
     assert!(build.get("serviceCallRoots").is_none());
     assert!(wire.get("serviceCallRoots").is_none());
     assert_eq!(build["serviceCallRefs"], serde_json::json!([]));
@@ -269,7 +372,7 @@ fn package_artifact_build_v10_preimage_excludes_service_selection() {
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v10:sha256:"));
+        .starts_with("skiff-package-build-v11:sha256:"));
 
     assert_eq!(
         local["schema"],
@@ -1342,6 +1445,8 @@ fn fixture() -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1357,7 +1462,7 @@ fn fixture() -> PackageArtifact {
 fn actor_fixture() -> PackageArtifact {
     let mut artifact = fixture();
     let file = FileIrRef::new(
-        "skiff-file-ir-v12:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        format!("{}:{}", crate::FILE_IR_IDENTITY_PREFIX, "b".repeat(64)),
         "thread_actor",
     );
     artifact.files.push(file.clone());
@@ -1464,7 +1569,7 @@ fn callable_fixture() -> PackageArtifact {
     let mut artifact = fixture();
     let callable_id = PackageCallableId::new("pkg-callable:example.identity:run");
     let file = FileIrRef::new(
-        "skiff-file-ir-v7:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        format!("{}:{}", crate::FILE_IR_IDENTITY_PREFIX, "a".repeat(64)),
         "api",
     );
     artifact.files.push(file.clone());
@@ -2174,7 +2279,7 @@ fn bytecode_identity_enters_build_preimage_but_not_local_abi() {
 fn malformed_bytecode_owner_identity_is_rejected_at_package_surface() {
     let mut malformed = fixture();
     malformed.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
-        bytecode_identity: "skiff-bytecode-image-v2:sha256:short".to_string(),
+        bytecode_identity: format!("{}:short", crate::BYTECODE_IDENTITY_PREFIX),
         artifact_path: None,
     });
     assert!(matches!(

@@ -338,8 +338,7 @@ fn websocket_connect_close_surface_normalizes_and_rejects_foreign_sources() {
     let GatewayProtocolSurface::WebSocketConnect(connect) = &mut wrong_phase.protocol else {
         panic!("expected websocketConnect")
     };
-    connect.close_external_sources =
-        vec![GatewayAdapterSource::WebSocketConnectRequest];
+    connect.close_external_sources = vec![GatewayAdapterSource::WebSocketConnectRequest];
     assert!(normalize_gateway_entry_protocol_surface(wrong_phase).is_err());
 }
 
@@ -518,7 +517,7 @@ fn websocket_json_rpc_identity_tracks_only_the_canonical_protocol_surface() {
         "status-entry",
         "pkg-callable:example.provider:status",
         "connectionFormal",
-        "skiff-package-build-v10",
+        "skiff-package-build-v11",
         "example.internal.Nominal",
     ] {
         assert!(

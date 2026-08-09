@@ -5,11 +5,12 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, BytecodeConstantRef, BytecodeImage, BytecodePoolEntry,
-    BytecodePools, BytecodeRelocation, BytecodeSpecialization, DebugBinding, DebugTable,
-    FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr, PackageCallableId,
-    RelocatableBytecodeFunction, StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeConstantRef, BytecodeFunctionOrigin,
+    BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
+    DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
+    PackageCallableId, PackageExecutableCoordinate, RelocatableBytecodeFunction,
+    StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -29,7 +30,19 @@ fn fixture() -> BytecodeArtifact {
         "module::main".to_string(),
         RelocatableBytecodeFunction {
             function_key: "module::main".to_string(),
+            origin: BytecodeFunctionOrigin::Executable {
+                executable: PackageExecutableCoordinate {
+                    file_ir_identity: format!(
+                        "{}:{}",
+                        crate::FILE_IR_IDENTITY_PREFIX,
+                        "a".repeat(64)
+                    ),
+                    module_path: "module".to_string(),
+                    executable_index: 0,
+                },
+            },
             type_parameters: Vec::new(),
+            self_type_ref: None,
             words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
             relocations: vec![BytecodeRelocation::LocalExecutableRef {
                 function_key: "module::main".to_string(),
@@ -38,10 +51,12 @@ fn fixture() -> BytecodeArtifact {
                     concrete_receiver: None,
                 },
             }],
+            call_loan_layouts: Vec::new(),
             frame_layout: FrameLayout {
                 slot_count: 1,
                 slot_type_refs: vec![0],
                 parameter_slots: Vec::new(),
+                writable_local_slots: Vec::new(),
                 result_count: 1,
                 result_type_refs: vec![1],
                 result_plans: vec![snapshot_share()],
@@ -66,7 +81,9 @@ fn fixture() -> BytecodeArtifact {
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: skiff_artifact_model::bytecode::opcodes::opcode_table_fingerprint(
         ),
-        bytecode_identity: "skiff-bytecode-image-v1:sha256:fixture".to_string(),
+        native_value_lifecycle_registry:
+            skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        bytecode_identity: format!("{BYTECODE_IDENTITY_PREFIX}:fixture"),
         image: BytecodeImage {
             functions,
             pools: BytecodePools {
@@ -132,23 +149,41 @@ fn identity_is_deterministic_and_excludes_the_identity_field() {
 }
 
 #[test]
-fn schema_isa_and_fingerprint_participate_in_the_preimage() {
+fn schema_isa_fingerprint_and_lifecycle_registry_participate_in_the_preimage() {
     let base = fixture();
     let base_hash = bytecode_identity_after_structural(&base).unwrap();
 
-    let mutations: [fn(&mut BytecodeArtifact); 3] = [
-        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v2".to_string(),
+    let mutations: [fn(&mut BytecodeArtifact); 6] = [
+        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v3".to_string(),
         |artifact: &mut BytecodeArtifact| {
-            artifact.isa_version = "skiff-bytecode-isa-v2".to_string()
+            artifact.isa_version = "skiff-bytecode-isa-v3".to_string()
         },
         |artifact: &mut BytecodeArtifact| {
             artifact.opcode_table_fingerprint = "0".repeat(64).to_string()
+        },
+        |artifact: &mut BytecodeArtifact| {
+            artifact
+                .native_value_lifecycle_registry
+                .registry_id
+                .push_str("-changed")
+        },
+        |artifact: &mut BytecodeArtifact| {
+            artifact
+                .native_value_lifecycle_registry
+                .version
+                .push_str("-changed")
+        },
+        |artifact: &mut BytecodeArtifact| {
+            artifact.native_value_lifecycle_registry.fingerprint = "0".repeat(64)
         },
     ];
     for (label, mutate) in [
         ("schemaVersion", mutations[0]),
         ("isaVersion", mutations[1]),
         ("opcodeTableFingerprint", mutations[2]),
+        ("nativeValueLifecycleRegistry.registryId", mutations[3]),
+        ("nativeValueLifecycleRegistry.version", mutations[4]),
+        ("nativeValueLifecycleRegistry.fingerprint", mutations[5]),
     ] {
         let mut mutated = base.clone();
         mutate(&mut mutated);
@@ -210,7 +245,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&slot_type_changed).unwrap(),
         base_identity,
-        "schema v3 frame slot types must participate in the identity"
+        "schema v4 frame slot types must participate in the identity"
     );
 
     let mut result_type_changed = base.clone();
@@ -224,7 +259,38 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&result_type_changed).unwrap(),
         base_identity,
-        "schema v3 frame result types must participate in the identity"
+        "schema v4 frame result types must participate in the identity"
+    );
+
+    let mut writable_locals_changed = base.clone();
+    writable_locals_changed
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .writable_local_slots = vec![0];
+    assert_ne!(
+        bytecode_identity(&writable_locals_changed).unwrap(),
+        base_identity,
+        "schema v4 writable-local frame facts must participate in the identity"
+    );
+
+    let mut origin_changed = base.clone();
+    let BytecodeFunctionOrigin::Executable { executable } = &mut origin_changed
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .origin
+    else {
+        unreachable!()
+    };
+    executable.executable_index = 1;
+    assert_ne!(
+        bytecode_identity(&origin_changed).unwrap(),
+        base_identity,
+        "schema v4 executable origins must participate in the identity"
     );
 
     let mut graph_changed = base.clone();
@@ -310,7 +376,7 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", leaf.to_uppercase()),
         format!("{BYTECODE_IDENTITY_PREFIX}:short"),
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", "z".repeat(64)),
-        format!("skiff-bytecode-image-v2:sha256:{leaf}"),
+        format!("skiff-bytecode-image-v1:sha256:{leaf}"),
         "unframed".to_string(),
     ] {
         assert!(matches!(

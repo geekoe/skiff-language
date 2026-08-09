@@ -849,7 +849,7 @@ fn deployment_identity_is_stable_under_reorder_and_rejects_stale_generation() {
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v10:sha256"
+        "skiff-package-build-v11:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
@@ -857,7 +857,7 @@ fn deployment_identity_is_stable_under_reorder_and_rejects_stale_generation() {
     );
     assert_eq!(
         SERVICE_PROTOCOL_IDENTITY_PREFIX,
-        "skiff-service-protocol-v5:sha256"
+        "skiff-service-protocol-v6:sha256"
     );
     assert!(
         GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "a".repeat(64)))

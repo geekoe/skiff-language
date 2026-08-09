@@ -146,7 +146,7 @@ fn bytecode_record_path_is_identity_addressed_under_the_package_build() {
     for identity in [
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", hash('A')),
         format!("{BYTECODE_IDENTITY_PREFIX}:short"),
-        format!("skiff-file-ir-v12:sha256:{}", hash('c')),
+        format!("{FILE_IR_IDENTITY_PREFIX}:{}", hash('c')),
     ] {
         let reference = BytecodeArtifactRef::new(identity);
         assert!(PackageBytecodeRecordPath::new(&package, &reference).is_err());

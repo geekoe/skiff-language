@@ -106,6 +106,7 @@ fn executable(symbol: &str, callee: Option<u32>) -> ExecutableIr {
                     .map(|executable_index| ExprIr::Call {
                         call: CallIr {
                             target: CallTargetIr::LocalExecutable { executable_index },
+                            concrete_receiver: None,
                             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
                             },

@@ -4,8 +4,9 @@
 //! Mirrors the `FileIrIdentityPayload` pattern (`file_ir.rs`): the preimage is
 //! a projection of the artifact that **excludes the `bytecode_identity` field
 //! itself** but covers everything else (schema marker, schema/ISA versions,
-//! opcode table fingerprint and the full image including the debug table,
-//! D10/D14). `BTreeMap`-backed maps keep the canonical JSON order stable.
+//! opcode table fingerprint, native lifecycle registry identity and the full
+//! image including the debug table, D10/D14). `BTreeMap`-backed maps keep the
+//! canonical JSON order stable.
 //!
 //! `structurally_validate` (C1–C8) runs before any identity computation:
 //! identity is only ever derived from structurally valid content, and
@@ -16,7 +17,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, StructurallyValidatedView,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, NativeValueLifecycleRegistryIdentity,
+    StructurallyValidatedView,
 };
 
 use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
@@ -36,6 +38,7 @@ struct BytecodeIdentityPayload<'a> {
     schema_version: &'a str,
     isa_version: &'a str,
     opcode_table_fingerprint: &'a str,
+    native_value_lifecycle_registry: &'a NativeValueLifecycleRegistryIdentity,
     image: &'a BytecodeImage,
 }
 
@@ -46,6 +49,7 @@ impl<'a> BytecodeIdentityPayload<'a> {
             schema_version: &artifact.schema_version,
             isa_version: &artifact.isa_version,
             opcode_table_fingerprint: &artifact.opcode_table_fingerprint,
+            native_value_lifecycle_registry: &artifact.native_value_lifecycle_registry,
             image: &artifact.image,
         }
     }
@@ -100,7 +104,7 @@ fn validated_bytecode_view(artifact: &BytecodeArtifact) -> Result<StructurallyVa
 }
 
 /// Validates that `identity` is a well-formed framed bytecode identity
-/// (`skiff-bytecode-image-v1:sha256:<64 lowercase hex>`). Used when a
+/// (`skiff-bytecode-image-v2:sha256:<64 lowercase hex>`). Used when a
 /// `PackageArtifact` carries a `BytecodeArtifactRef` (C9 linkage check at the
 /// package surface level, before the build projection is computed).
 pub fn validate_bytecode_identity_format(identity: &str) -> Result<()> {

@@ -8,14 +8,43 @@ mod semantic;
 
 #[test]
 fn current_identity_generations_are_atomic() {
-    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v12:sha256");
+    assert_eq!(
+        skiff_artifact_model::FILE_IR_SCHEMA_VERSION,
+        "skiff-file-ir-v13"
+    );
+    assert_eq!(
+        skiff_artifact_model::FILE_IR_FORMAT_VERSION,
+        "skiff-file-ir-format-v7"
+    );
+    assert_eq!(
+        skiff_artifact_model::FILE_IR_OPCODE_TABLE_VERSION,
+        "skiff-opcode-table-v2"
+    );
+    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v13:sha256");
+    assert_eq!(
+        BYTECODE_IDENTITY_SCHEMA_MARKER,
+        "skiff-bytecode-artifact-v2"
+    );
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v2:sha256");
+    assert_eq!(
+        skiff_artifact_model::BYTECODE_SCHEMA_VERSION,
+        "skiff-bytecode-v4"
+    );
+    assert_eq!(
+        skiff_artifact_model::BYTECODE_ISA_VERSION,
+        "skiff-bytecode-isa-v4"
+    );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v9"
+        "skiff-package-artifact-build-identity-v10"
+    );
+    assert_eq!(
+        skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        "skiff-package-artifact-v12"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v10:sha256"
+        "skiff-package-build-v11:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
@@ -51,11 +80,15 @@ fn current_identity_generations_are_atomic() {
     );
     assert_eq!(
         SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
-        "skiff-service-protocol-identity-v5"
+        "skiff-service-protocol-identity-v6"
+    );
+    assert_eq!(
+        skiff_artifact_model::SERVICE_CONTRACT_SCHEMA_VERSION,
+        "skiff-service-contract-v6"
     );
     assert_eq!(
         SERVICE_PROTOCOL_IDENTITY_PREFIX,
-        "skiff-service-protocol-v5:sha256"
+        "skiff-service-protocol-v6:sha256"
     );
     assert_eq!(
         DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
@@ -73,7 +106,7 @@ fn current_identity_generations_are_atomic() {
 }
 
 #[test]
-fn service_protocol_identity_hash_accepts_only_canonical_v5_identity() {
+fn service_protocol_identity_hash_accepts_only_canonical_v6_identity() {
     let hash = "a".repeat(64);
     let identity = format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{hash}");
     assert_eq!(
@@ -83,7 +116,7 @@ fn service_protocol_identity_hash_accepts_only_canonical_v5_identity() {
 
     for invalid in [
         format!("skiff-protocol-v1:sha256:{hash}"),
-        format!("skiff-service-protocol-v4:sha256:{hash}"),
+        format!("skiff-service-protocol-v5:sha256:{hash}"),
         SERVICE_PROTOCOL_IDENTITY_PREFIX.to_string(),
         format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "a".repeat(63)),
         format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "A".repeat(64)),

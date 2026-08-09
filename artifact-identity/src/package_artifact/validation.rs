@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
 use skiff_artifact_model::{
     BoundaryCallableProjection, ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature,
     NominalTypeRefBaseIr, OperationCallableKind, PackageActorAbi, PackageArtifact,
@@ -48,6 +49,7 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     }
     validate_unique_file_refs(&artifact.files)?;
     validate_unique_resources(&artifact.static_resources)?;
+    validate_build_authority_rows(artifact)?;
     validate_requirements(artifact)?;
     validate_callable_surfaces(artifact)?;
     validate_service_calls(artifact)?;
@@ -56,6 +58,51 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
             message: format!("boundary projections are invalid: {error}"),
         }
     })
+}
+
+fn validate_build_authority_rows(artifact: &PackageArtifact) -> Result<()> {
+    for adjacent in artifact.actor_implementations.windows(2) {
+        let left = &adjacent[0].actor;
+        let right = &adjacent[1].actor;
+        if (left.module_path.as_str(), left.symbol.as_str())
+            >= (right.module_path.as_str(), right.symbol.as_str())
+        {
+            return invalid_artifact(
+                "actorImplementations must be strictly ordered and unique by actor",
+            );
+        }
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LocalConformanceSortKey<'a> {
+        type_parameters: &'a [String],
+        receiver: &'a TypeRefIr,
+        interface: &'a skiff_artifact_model::InterfaceInstantiationRef,
+    }
+
+    let mut previous: Option<Vec<u8>> = None;
+    for row in &artifact.local_interface_conformances {
+        let key = skiff_canonical_json::canonical_json_bytes(&LocalConformanceSortKey {
+            type_parameters: &row.type_parameters,
+            receiver: &row.receiver,
+            interface: &row.interface,
+        })
+        .map_err(
+            |error| crate::ArtifactIdentityError::InvalidPackageArtifact {
+                message: format!(
+                    "failed to canonicalize local interface conformance sort key: {error}"
+                ),
+            },
+        )?;
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return invalid_artifact(
+                "localInterfaceConformances must be strictly ordered by template, receiver, and interface",
+            );
+        }
+        previous = Some(key);
+    }
+    Ok(())
 }
 
 /// C9 linkage check for the bytecode owner ref (§6.2): when a package carries
