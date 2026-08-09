@@ -506,6 +506,9 @@ impl SuspendContext<'_, '_> {
             Expr::Binary { left, right, .. } => {
                 self.expr_may_suspend(left) || self.expr_may_suspend(right)
             }
+            Expr::Index { object, index } => {
+                self.expr_may_suspend(object) || self.expr_may_suspend(index)
+            }
             Expr::Unary { expr, .. } | Expr::Generic { callee: expr, .. } => {
                 self.expr_may_suspend(expr)
             }
@@ -756,6 +759,7 @@ impl SuspendContext<'_, '_> {
             }
             Expr::Generic { callee, .. } => self.legacy_expr_type(callee),
             Expr::Binary { .. }
+            | Expr::Index { .. }
             | Expr::Unary { .. }
             | Expr::Ternary { .. }
             | Expr::Field { .. }

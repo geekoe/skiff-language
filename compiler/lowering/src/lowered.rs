@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
-    publication_local_refs::rewrite_publication_local_refs,
+    publication_local_refs::rewrite_publication_local_refs_with_mir_facts,
     source_file_lowering::{
-        compile_package_source_file_ir_unit, finalize_actor_identities, PackageSourceLoweringInput,
+        compile_package_source_file_ir_unit_with_mir_facts, finalize_actor_identities,
+        PackageSourceLoweringInput,
     },
     type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
     EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex,
@@ -81,6 +82,7 @@ impl LoweredPackage {
         let plan = model.plan();
         let parsed_sources = model.sources().parsed_sources();
         let mut file_ir_units = Vec::with_capacity(parsed_sources.len());
+        let mut mir_source_facts = crate::mir::MirSourceFacts::new();
         let mut sources = Vec::with_capacity(parsed_sources.len());
         let mut callable_return_types = BTreeMap::<String, CallableReturnType>::new();
         for parsed in parsed_sources {
@@ -103,30 +105,40 @@ impl LoweredPackage {
                         plan.diagnostics
                             .source_semantic_context_error(&source_path, error)
                     })?;
-                let unit = compile_package_source_file_ir_unit(PackageSourceLoweringInput {
-                    source: parsed.source_text(),
-                    role: file_ir_role_for_source_role(role),
-                    // pipeline 文档禁止 lowering 重算 name resolution:
-                    // package aliases 和 service aliases 必须从 name_resolution model 读,
-                    // 不得通过 model.dependencies 重新拿原始数据。
-                    package_aliases: model.name_resolution().package_aliases_map(),
-                    package_interface_methods: &package_interface_methods,
-                    resolved_call_targets: model.resolved_call_targets(),
-                    external_type_symbols: model.indexes().publication_type_symbols(),
-                    publication_db_metadata: model.indexes().publication_db_metadata_index(),
-                    semantic_context: &source_semantic_context,
-                    source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
-                    type_resolution: model.type_resolution(),
-                    expression_types: Some(model.expression_types()),
-                    execution_semantics: Some(model.execution_semantics()),
-                    callable_return_types: &callable_return_types,
-                    executable_signatures: model.executable_signatures(),
-                    interface_signatures: Some(model.interface_signatures()),
-                    service_calls: Some(&service_calls),
-                })
+                let (unit, source_facts) = compile_package_source_file_ir_unit_with_mir_facts(
+                    PackageSourceLoweringInput {
+                        source: parsed.source_text(),
+                        role: file_ir_role_for_source_role(role),
+                        // pipeline 文档禁止 lowering 重算 name resolution:
+                        // package aliases 和 service aliases 必须从 name_resolution model 读,
+                        // 不得通过 model.dependencies 重新拿原始数据。
+                        package_aliases: model.name_resolution().package_aliases_map(),
+                        package_interface_methods: &package_interface_methods,
+                        resolved_call_targets: model.resolved_call_targets(),
+                        external_type_symbols: model.indexes().publication_type_symbols(),
+                        publication_db_metadata: model.indexes().publication_db_metadata_index(),
+                        semantic_context: &source_semantic_context,
+                        source_alias_targets: model
+                            .resolutions()
+                            .alias_targets_for_module(module_path),
+                        type_resolution: model.type_resolution(),
+                        expression_types: Some(model.expression_types()),
+                        execution_semantics: Some(model.execution_semantics()),
+                        callable_return_types: &callable_return_types,
+                        executable_signatures: model.executable_signatures(),
+                        interface_signatures: Some(model.interface_signatures()),
+                        service_calls: Some(&service_calls),
+                    },
+                )
                 .map_err(|error| {
                     plan.diagnostics
                         .source_file_ir_unit_error(&source_path, error)
+                })?;
+                mir_source_facts.extend(source_facts).map_err(|message| {
+                    plan.diagnostics.source_file_ir_unit_error(
+                        &source_path,
+                        skiff_syntax::error::CompileError::Semantic(message),
+                    )
                 })?;
                 sources.push(compiled_package_source(parsed, role, &unit));
                 file_ir_units.push(unit);
@@ -140,12 +152,13 @@ impl LoweredPackage {
         let package_dependency_abi_expectations_by_package_id = model
             .type_resolution()
             .package_dependency_abi_expectations_by_package_id();
-        rewrite_publication_local_refs(
+        rewrite_publication_local_refs_with_mir_facts(
             &mut file_ir_units,
             Some(model.policy().package_id()),
             Some(model.type_resolution()),
             &package_dependency_abi_expectations,
             &package_dependency_abi_expectations_by_package_id,
+            &mut mir_source_facts,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("File IR type finalization failed: {error}"),
@@ -173,10 +186,12 @@ impl LoweredPackage {
         // Typed MIR/CFG post-pass: one MirUnit per FileIrUnit. Typed callable
         // identity and full source-owned effects are copied into MIR; pending
         // is derived from that summary (design §2.4), never from File IR.
-        let mir_units = crate::mir::builder::build_mir_units(
+        let mir_units = crate::mir::builder::build_mir_units_with_source_facts(
             model.policy().package_id(),
             &file_ir_units,
             model.callable_effects(),
+            model.resolved_call_targets(),
+            &mir_source_facts,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("MIR build failed: {error}"),

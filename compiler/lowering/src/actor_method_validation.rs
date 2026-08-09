@@ -351,6 +351,10 @@ impl CreateValidator<'_> {
                 self.check_reads(left, assigned)?;
                 self.check_reads(right, assigned)?;
             }
+            Expr::Index { object, index } => {
+                self.check_reads(object, assigned)?;
+                self.check_reads(index, assigned)?;
+            }
             Expr::Unary { expr, .. } => self.check_reads(expr, assigned)?,
             Expr::Ternary {
                 condition,
@@ -460,6 +464,10 @@ impl CreateValidator<'_> {
             Expr::Binary { left, right, .. } => {
                 self.check_self_calls(left)?;
                 self.check_self_calls(right)?;
+            }
+            Expr::Index { object, index } => {
+                self.check_self_calls(object)?;
+                self.check_self_calls(index)?;
             }
             Expr::Unary { expr, .. } => self.check_self_calls(expr)?,
             Expr::Ternary {
@@ -606,12 +614,13 @@ fn self_field(expr: &Expr) -> Option<&str> {
 /// Returns the root actor field name when `expr` is a field-access chain rooted
 /// at `self` (any depth), e.g. `self.items` or `self.items.first`.
 fn self_field_root(expr: &Expr) -> Option<&str> {
-    let Expr::Field { object, field } = expr else {
-        return None;
-    };
-    match object.as_ref() {
-        Expr::Identifier(name) if name == "self" => Some(field),
-        nested => self_field_root(nested),
+    match expr {
+        Expr::Field { object, field } => match object.as_ref() {
+            Expr::Identifier(name) if name == "self" => Some(field),
+            nested => self_field_root(nested),
+        },
+        Expr::Index { object, .. } => self_field_root(object),
+        _ => None,
     }
 }
 

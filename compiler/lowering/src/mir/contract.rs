@@ -2,12 +2,46 @@
 
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::{CallableEffectSummary, ExprRefIr, TypeRefIr};
+use skiff_artifact_model::{
+    CallableEffectSummary, ExprIr, ExprRefIr, PackageExecutableCoordinate, ReceiverCallAbi,
+    TypeRefIr,
+};
 use skiff_compiler_core::PackageCallableIdentityError;
 
-use super::{facts::call_writable_facts, MirConst, MirExpression, MirFunction, MirSlot, MirUnit};
+use super::{
+    abi::{direct_call_facts, is_direct_target},
+    facts::call_writable_facts,
+    MirConst, MirExpression, MirFunction, MirInOutPathSegment, MirIndexPolicy, MirParamMode,
+    MirReceiverFacts, MirSlot, MirSlotKind, MirStmtKind, MirUnit, MirWritablePathSegment,
+    MirWritablePlace,
+};
 
 impl MirUnit {
+    /// Resolves one exact path-free package executable coordinate. Both owner
+    /// components are checked before the executable-table index is used.
+    pub fn function_by_origin(
+        &self,
+        origin: &PackageExecutableCoordinate,
+    ) -> Result<&MirFunction, MirContractError> {
+        if origin.file_ir_identity != self.file_ir_identity
+            || origin.module_path != self.module_path
+        {
+            return Err(MirContractError::ExecutableOriginOwnerMismatch {
+                expected_file_ir_identity: self.file_ir_identity.clone(),
+                expected_module_path: self.module_path.clone(),
+                actual_file_ir_identity: origin.file_ir_identity.clone(),
+                actual_module_path: origin.module_path.clone(),
+            });
+        }
+        let function = self.function_by_executable_index(origin.executable_index)?;
+        if function.origin != *origin {
+            return Err(MirContractError::FunctionOriginMismatch {
+                function: function.symbol.clone(),
+            });
+        }
+        Ok(function)
+    }
+
     /// Resolves an exact executable-table index to its MIR function. MIR
     /// function order is declaration-name order, so consumers must not index
     /// `functions` directly with a File IR executable index.
@@ -44,6 +78,16 @@ impl MirUnit {
                 return Err(MirContractError::DuplicateExecutableFunction {
                     module_path: self.module_path.clone(),
                     executable_index: function.executable_index,
+                });
+            }
+            let expected = skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: self.file_ir_identity.clone(),
+                module_path: self.module_path.clone(),
+                executable_index: function.executable_index,
+            };
+            if function.origin != expected {
+                return Err(MirContractError::FunctionOriginMismatch {
+                    function: function.symbol.clone(),
                 });
             }
         }
@@ -147,6 +191,170 @@ impl MirFunction {
         Ok(())
     }
 
+    /// Resolves one source-owned bracket segment by its function-owned,
+    /// single-evaluation selector expression.
+    pub fn index_access(
+        &self,
+        selector: ExprRefIr,
+    ) -> Result<&super::MirIndexAccessFacts, MirContractError> {
+        let selector_expression = self.expression(selector)?;
+        let access = self
+            .index_accesses
+            .get(&selector.expression)
+            .ok_or_else(|| MirContractError::MissingIndexAccessFacts {
+                function: self.symbol.clone(),
+                selector: selector.expression,
+            })?;
+        if selector_expression.ty != access.selector_type {
+            return Err(MirContractError::InvalidIndexAccessFacts {
+                function: self.symbol.clone(),
+                selector: selector.expression,
+                message: "selector type disagrees with retained source fact".to_string(),
+            });
+        }
+        Ok(access)
+    }
+
+    /// Proves all-and-only coverage of source bracket segments without
+    /// deriving receiver kind or read/write policy from File IR shape.
+    pub fn validate_index_accesses(&self) -> Result<(), MirContractError> {
+        let mut used = BTreeSet::new();
+        for expression in &self.expressions {
+            if let ExprIr::Index { object, index } = &expression.expression {
+                let access = self.index_access(*index)?;
+                if self.expression(*object)?.ty != access.receiver_type {
+                    return Err(MirContractError::InvalidIndexAccessFacts {
+                        function: self.symbol.clone(),
+                        selector: index.expression,
+                        message: "receiver type disagrees with retained source fact".to_string(),
+                    });
+                }
+                if expression.ty != access.result_type {
+                    return Err(MirContractError::InvalidIndexAccessFacts {
+                        function: self.symbol.clone(),
+                        selector: index.expression,
+                        message: "result type disagrees with retained source fact".to_string(),
+                    });
+                }
+                if !matches!(
+                    access.policy,
+                    MirIndexPolicy::StrictRead | MirIndexPolicy::IntermediateMustExist
+                ) {
+                    return Err(MirContractError::InvalidIndexAccessFacts {
+                        function: self.symbol.clone(),
+                        selector: index.expression,
+                        message: "value expression has a write/loan-only index policy".to_string(),
+                    });
+                }
+                used.insert(index.expression);
+            }
+            if let Some(writable) = &expression.writable {
+                if let Some(place) = &writable.mutating_receiver {
+                    self.validate_place_index_accesses(place, false, &mut used)?;
+                }
+                for loan in &writable.inout_loans {
+                    for (segment_index, segment) in loan.path.iter().enumerate() {
+                        if let MirInOutPathSegment::Index {
+                            selector, access, ..
+                        } = segment
+                        {
+                            self.validate_embedded_index_access(*selector, access, &mut used)?;
+                            let expected = if segment_index + 1 == loan.path.len() {
+                                MirIndexPolicy::LoanMustExist
+                            } else {
+                                MirIndexPolicy::IntermediateMustExist
+                            };
+                            if access.policy != expected {
+                                return Err(MirContractError::InvalidIndexAccessFacts {
+                                    function: self.symbol.clone(),
+                                    selector: selector.expression,
+                                    message: format!(
+                                        "inout path requires {expected:?}, found {:?}",
+                                        access.policy
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for block in &self.blocks {
+            for statement in &block.statements {
+                if let MirStmtKind::Assign { place, .. } = &statement.kind {
+                    self.validate_place_index_accesses(place, true, &mut used)?;
+                }
+            }
+        }
+        if let Some(selector) = self
+            .index_accesses
+            .keys()
+            .find(|selector| !used.contains(selector))
+        {
+            return Err(MirContractError::UnusedIndexAccessFacts {
+                function: self.symbol.clone(),
+                selector: *selector,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_place_index_accesses(
+        &self,
+        place: &MirWritablePlace,
+        assignment: bool,
+        used: &mut BTreeSet<u32>,
+    ) -> Result<(), MirContractError> {
+        for (segment_index, segment) in place.path.iter().enumerate() {
+            if let MirWritablePathSegment::Index { index, access, .. } = segment {
+                self.validate_embedded_index_access(*index, access, used)?;
+                let policy_is_valid = if assignment {
+                    if segment_index + 1 == place.path.len() {
+                        matches!(
+                            access.policy,
+                            MirIndexPolicy::TerminalReplace | MirIndexPolicy::TerminalUpsert
+                        )
+                    } else {
+                        access.policy == MirIndexPolicy::IntermediateMustExist
+                    }
+                } else {
+                    matches!(
+                        access.policy,
+                        MirIndexPolicy::StrictRead | MirIndexPolicy::IntermediateMustExist
+                    )
+                };
+                if !policy_is_valid {
+                    return Err(MirContractError::InvalidIndexAccessFacts {
+                        function: self.symbol.clone(),
+                        selector: index.expression,
+                        message: format!(
+                            "writable path context rejects index policy {:?}",
+                            access.policy
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_embedded_index_access(
+        &self,
+        selector: ExprRefIr,
+        embedded: &super::MirIndexAccessFacts,
+        used: &mut BTreeSet<u32>,
+    ) -> Result<(), MirContractError> {
+        if self.index_access(selector)? != embedded {
+            return Err(MirContractError::InvalidIndexAccessFacts {
+                function: self.symbol.clone(),
+                selector: selector.expression,
+                message: "writable path copy disagrees with canonical function fact".to_string(),
+            });
+        }
+        used.insert(selector.expression);
+        Ok(())
+    }
+
     /// Resolves an exact block id. Block vector order and stored ids are one
     /// contract; consumers must not silently accept a mismatched id.
     pub fn block(&self, block: u32) -> Result<&super::MirBlock, MirContractError> {
@@ -176,12 +384,17 @@ impl MirFunction {
         expression_ref: ExprRefIr,
     ) -> Result<Option<&super::MirCallWritableFacts>, MirContractError> {
         let expression = self.expression(expression_ref)?;
-        let expected = call_writable_facts(expression.index, &self.expressions, &self.slots)
-            .map_err(|message| MirContractError::InvalidWritableFacts {
-                function: self.symbol.clone(),
-                expression: expression.index,
-                message,
-            })?;
+        let expected = call_writable_facts(
+            expression.index,
+            &self.expressions,
+            &self.slots,
+            &self.index_accesses,
+        )
+        .map_err(|message| MirContractError::InvalidWritableFacts {
+            function: self.symbol.clone(),
+            expression: expression.index,
+            message,
+        })?;
         if expression.writable != expected {
             return Err(MirContractError::WritableFactsMismatch {
                 function: self.symbol.clone(),
@@ -194,11 +407,136 @@ impl MirFunction {
     /// Validates all expression-owned writable facts.
     pub fn validate_writable_facts(&self) -> Result<(), MirContractError> {
         self.validate_expression_indices()?;
+        self.validate_index_accesses()?;
         for expression in &self.expressions {
             let reference = ExprRefIr {
                 expression: expression.index,
             };
             self.call_writable_facts(reference)?;
+            self.direct_call_facts(reference)?;
+        }
+        self.validate_receiver_facts()?;
+        self.writable_local_slots()?;
+        Ok(())
+    }
+
+    /// Returns checked dense direct-call ABI facts for a function-owned call.
+    pub fn direct_call_facts(
+        &self,
+        expression_ref: ExprRefIr,
+    ) -> Result<Option<&super::MirDirectCallFacts>, MirContractError> {
+        let expression = self.expression(expression_ref)?;
+        let expected = match &expression.expression {
+            ExprIr::Call { call } if is_direct_target(&call.target) => {
+                let stored = expression.direct_call.as_ref().ok_or_else(|| {
+                    MirContractError::MissingDirectCallFacts {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                    }
+                })?;
+                Some(
+                    direct_call_facts(call, &stored.parameter_modes, expression.writable.as_ref())
+                        .map_err(|message| MirContractError::InvalidDirectCallFacts {
+                            function: self.symbol.clone(),
+                            expression: expression.index,
+                            message,
+                        })?,
+                )
+            }
+            ExprIr::Call { call } if call.concrete_receiver.is_some() => {
+                return Err(MirContractError::InvalidDirectCallFacts {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "non-direct call carries concreteReceiver".to_string(),
+                });
+            }
+            _ => None,
+        };
+        if expression.direct_call != expected {
+            return Err(MirContractError::DirectCallFactsMismatch {
+                function: self.symbol.clone(),
+                expression: expression.index,
+            });
+        }
+        Ok(expression.direct_call.as_ref())
+    }
+
+    /// Revalidates the unified receiver carrier without inferring from a
+    /// function kind or parameter spelling at emission time.
+    pub fn validate_receiver_facts(&self) -> Result<(), MirContractError> {
+        let self_slots = self
+            .slots
+            .iter()
+            .filter(|slot| slot.kind == MirSlotKind::SelfValue)
+            .collect::<Vec<_>>();
+        let expected = match self.self_type.as_ref() {
+            None => {
+                if !self_slots.is_empty() {
+                    return Err(MirContractError::InvalidReceiverFacts {
+                        function: self.symbol.clone(),
+                        message: "selfType is null but a SelfValue slot exists".to_string(),
+                    });
+                }
+                None
+            }
+            Some(self_type) => {
+                let slot = self.slot(0)?;
+                if slot.ty.as_ref() != Some(self_type) {
+                    return Err(MirContractError::InvalidReceiverFacts {
+                        function: self.symbol.clone(),
+                        message: "receiver slot zero does not match selfType".to_string(),
+                    });
+                }
+                match slot.kind {
+                    MirSlotKind::SelfValue => {
+                        if self_slots.len() != 1 || self.params.iter().any(|param| param.slot == 0)
+                        {
+                            return Err(MirContractError::InvalidReceiverFacts {
+                                function: self.symbol.clone(),
+                                message: "implicit receiver is not the unique SelfValue slot zero"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    MirSlotKind::Param => {
+                        let param = self.params.first().ok_or_else(|| {
+                            MirContractError::InvalidReceiverFacts {
+                                function: self.symbol.clone(),
+                                message: "explicit receiver has no parameter zero".to_string(),
+                            }
+                        })?;
+                        if param.name != "self"
+                            || param.slot != 0
+                            || param.mode != MirParamMode::Value
+                            || &param.ty != self_type
+                            || !self_slots.is_empty()
+                        {
+                            return Err(MirContractError::InvalidReceiverFacts {
+                                function: self.symbol.clone(),
+                                message: "explicit receiver is not exact Value parameter zero"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    other => {
+                        return Err(MirContractError::InvalidReceiverFacts {
+                            function: self.symbol.clone(),
+                            message: format!("receiver slot zero has invalid kind {other:?}"),
+                        });
+                    }
+                }
+                Some(MirReceiverFacts {
+                    ty: self_type.clone(),
+                    slot: 0,
+                    parameter_ordinal: 0,
+                    call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+                })
+            }
+        };
+        if self.receiver != expected {
+            return Err(MirContractError::ReceiverFactsMismatch {
+                function: self.symbol.clone(),
+            });
         }
         Ok(())
     }
@@ -258,6 +596,26 @@ impl MirFunction {
         Ok(())
     }
 
+    /// Source-confirmed mutable local slots, in canonical slot order.
+    pub fn writable_local_slots(&self) -> Result<Vec<u32>, MirContractError> {
+        let mut writable = Vec::new();
+        for slot in &self.slots {
+            if !slot.writable_local {
+                continue;
+            }
+            if slot.kind != MirSlotKind::Local {
+                return Err(MirContractError::InvalidWritableLocalSlot {
+                    function: self.symbol.clone(),
+                    slot: slot.slot,
+                    kind: format!("{:?}", slot.kind),
+                });
+            }
+            self.slot_type(slot.slot)?;
+            writable.push(slot.slot);
+        }
+        Ok(writable)
+    }
+
     /// Conservative pending fact derived from the single owned effect
     /// summary. Unknown analysis can never grant a synchronous optimization.
     pub fn may_pending(&self) -> bool {
@@ -271,6 +629,17 @@ impl MirFunction {
 /// A fail-closed lookup/validation failure in an already-built MIR function.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MirContractError {
+    #[error(
+        "MIR executable origin owner ({actual_file_ir_identity}, {actual_module_path}) does not match unit owner ({expected_file_ir_identity}, {expected_module_path})"
+    )]
+    ExecutableOriginOwnerMismatch {
+        expected_file_ir_identity: String,
+        expected_module_path: String,
+        actual_file_ir_identity: String,
+        actual_module_path: String,
+    },
+    #[error("MIR function `{function}` origin disagrees with its owning unit coordinate")]
+    FunctionOriginMismatch { function: String },
     #[error("MIR unit `{module_path}` has no function for executable index {executable_index}")]
     MissingExecutableFunction {
         module_path: String,
@@ -324,6 +693,22 @@ pub enum MirContractError {
     #[error("MIR function `{function}` has more than u32::MAX expressions")]
     ExpressionIndexOverflow { function: String },
     #[error(
+        "MIR function `{function}` index selector {selector} has no exact source-owned access facts"
+    )]
+    MissingIndexAccessFacts { function: String, selector: u32 },
+    #[error(
+        "MIR function `{function}` index selector {selector} has invalid source-owned access facts: {message}"
+    )]
+    InvalidIndexAccessFacts {
+        function: String,
+        selector: u32,
+        message: String,
+    },
+    #[error(
+        "MIR function `{function}` retains unused source-owned index facts for selector {selector}"
+    )]
+    UnusedIndexAccessFacts { function: String, selector: u32 },
+    #[error(
         "MIR function `{function}` expression {expression} has invalid writable facts: {message}"
     )]
     InvalidWritableFacts {
@@ -335,6 +720,26 @@ pub enum MirContractError {
         "MIR function `{function}` expression {expression} writable facts disagree with its owned expression/slot facts"
     )]
     WritableFactsMismatch { function: String, expression: u32 },
+    #[error("MIR function `{function}` expression {expression} has no direct-call ABI facts")]
+    MissingDirectCallFacts { function: String, expression: u32 },
+    #[error(
+        "MIR function `{function}` expression {expression} has invalid direct-call facts: {message}"
+    )]
+    InvalidDirectCallFacts {
+        function: String,
+        expression: u32,
+        message: String,
+    },
+    #[error(
+        "MIR function `{function}` expression {expression} direct-call facts disagree with its owned call"
+    )]
+    DirectCallFactsMismatch { function: String, expression: u32 },
+    #[error("MIR function `{function}` has invalid receiver facts: {message}")]
+    InvalidReceiverFacts { function: String, message: String },
+    #[error(
+        "MIR function `{function}` receiver facts disagree with selfType/slot/parameter facts"
+    )]
+    ReceiverFactsMismatch { function: String },
     #[error("MIR function `{function}` has no slot {slot} (slot count {slot_count})")]
     MissingSlot {
         function: String,
@@ -356,6 +761,14 @@ pub enum MirContractError {
         function: String,
         slot: u32,
         name: String,
+    },
+    #[error(
+        "MIR function `{function}` marks slot {slot} ({kind}) writable, but only Local slots may be writable"
+    )]
+    InvalidWritableLocalSlot {
+        function: String,
+        slot: u32,
+        kind: String,
     },
     #[error(
         "MIR function `{function}` block at position {expected} stores non-canonical id {stored}"
@@ -384,6 +797,35 @@ pub enum MirContractError {
 /// A structured failure while converting File IR plus source facts into MIR.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MirBuildError {
+    #[error(
+        "MIR source facts for `{module_path}` executable {executable_index} have an invalid owner: {message}"
+    )]
+    InvalidSourceFactOwner {
+        module_path: String,
+        executable_index: u32,
+        message: String,
+    },
+    #[error("MIR unit `{module_path}` has no exact fileIrIdentity")]
+    MissingFileIrIdentity { module_path: String },
+    #[error(
+        "MIR units `{first_module}` and `{duplicate_module}` repeat fileIrIdentity `{file_ir_identity}`"
+    )]
+    DuplicateFileIrIdentity {
+        file_ir_identity: String,
+        first_module: String,
+        duplicate_module: String,
+    },
+    #[error("MIR input repeats module path `{module_path}`")]
+    DuplicateModulePath { module_path: String },
+    #[error("package callable `{package_callable_id}` has invalid exact ABI facts: {message}")]
+    InvalidPackageCallableAbi {
+        package_callable_id: skiff_artifact_model::PackageCallableId,
+        message: String,
+    },
+    #[error("package callable `{package_callable_id}` has conflicting exact ABI facts")]
+    ConflictingPackageCallableAbi {
+        package_callable_id: skiff_artifact_model::PackageCallableId,
+    },
     #[error(
         "MIR unit `{module_path}` has {declaration_count} executable declarations but {executable_count} executable bodies"
     )]
@@ -523,6 +965,27 @@ pub enum MirBuildError {
         module_path: String,
         symbol: String,
         expression: u32,
+        message: String,
+    },
+    #[error(
+        "MIR function `{symbol}` in `{module_path}` expression {expression} has invalid direct-call facts: {message}"
+    )]
+    InvalidDirectCallFacts {
+        module_path: String,
+        symbol: String,
+        expression: u32,
+        message: String,
+    },
+    #[error("MIR function `{symbol}` in `{module_path}` has invalid receiver facts: {message}")]
+    InvalidReceiverFacts {
+        module_path: String,
+        symbol: String,
+        message: String,
+    },
+    #[error("MIR actor `{actor}` in `{module_path}` is invalid: {message}")]
+    InvalidActorDeclaration {
+        module_path: String,
+        actor: String,
         message: String,
     },
     #[error(

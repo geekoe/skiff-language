@@ -74,6 +74,23 @@ pub(super) fn rebuild_external_refs_for_file_ir_unit(
         service_call_refs,
         ..ExternalRefTable::default()
     };
+    for declaration in &unit.actor_declarations {
+        collect_type_ref_external_refs(&declaration.abi.actor_id_type, &mut refs);
+        for field in &declaration.abi.fields {
+            collect_type_ref_external_refs(&field.ty, &mut refs);
+        }
+        if let Some(create) = &declaration.abi.create {
+            for parameter in &create.parameters {
+                collect_type_ref_external_refs(&parameter.ty, &mut refs);
+            }
+        }
+        for method in &declaration.abi.public_methods {
+            for parameter in &method.parameters {
+                collect_type_ref_external_refs(&parameter.ty, &mut refs);
+            }
+            collect_type_ref_external_refs(&method.return_type, &mut refs);
+        }
+    }
     for ty in &unit.type_table {
         collect_type_ref_external_refs_from_descriptor(&ty.descriptor, &mut refs);
     }
@@ -87,6 +104,14 @@ pub(super) fn rebuild_external_refs_for_file_ir_unit(
     for executable in &unit.executables {
         for param in &executable.params {
             collect_type_ref_external_refs(&param.ty, &mut refs);
+        }
+        for slot in &executable.slots.slots {
+            if let Some(ty) = &slot.ty {
+                collect_type_ref_external_refs(ty, &mut refs);
+            }
+        }
+        for ty in &executable.expression_types {
+            collect_type_ref_external_refs(ty, &mut refs);
         }
         collect_type_ref_external_refs(&executable.return_type, &mut refs);
         if let Some(self_type) = &executable.self_type {
@@ -243,6 +268,9 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         }
         ExprIr::Call { call } => {
             collect_call_target_external_refs(&call.target, refs);
+            if let Some(receiver) = &call.concrete_receiver {
+                collect_type_ref_external_refs(receiver, refs);
+            }
             for ty in call.type_args.values() {
                 collect_type_ref_external_refs(ty, refs);
             }
@@ -282,6 +310,7 @@ fn collect_expr_external_refs(expr: &ExprIr, refs: &mut ExternalRefTable) {
         | ExprIr::LoadSlot { .. }
         | ExprIr::LoadConst { .. }
         | ExprIr::Field { .. }
+        | ExprIr::Index { .. }
         | ExprIr::MapLiteral { .. }
         | ExprIr::ArrayLiteral { .. }
         | ExprIr::Unary { .. }

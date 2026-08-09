@@ -1,6 +1,6 @@
 //! MIR/CFG builder, liveness and `LoweredPackage` carriage tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use skiff_artifact_model::{
@@ -126,6 +126,14 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
     assert_eq!(lowered.mir_units().len(), 1);
     let unit: &MirUnit = &lowered.mir_units()[0];
     assert_eq!(unit.module_path, MODULE);
+    assert_eq!(
+        unit.file_ir_identity,
+        lowered.file_ir_units()[0].file_ir_identity
+    );
+    assert_eq!(
+        unit.actor_declarations,
+        lowered.file_ir_units()[0].actor_declarations
+    );
     assert_eq!(unit.functions.len(), 4);
     unit.validate_executable_indices()
         .expect("executable indices are dense and unique");
@@ -165,6 +173,10 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
         mirror.executable_index,
         lowered.file_ir_units()[0].declarations.executables["mirror"].executable_index
     );
+    assert_eq!(mirror.origin.file_ir_identity, unit.file_ir_identity);
+    assert_eq!(mirror.origin.module_path, unit.module_path);
+    assert_eq!(mirror.origin.executable_index, mirror.executable_index);
+    assert_eq!(unit.function_by_origin(&mirror.origin), Ok(mirror));
     let mirror_position = unit
         .functions
         .iter()
@@ -223,6 +235,7 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
     );
     assert_eq!(mirror.slots[0].name, "input");
     assert_eq!(mirror.slots[0].kind, MirSlotKind::Param);
+    assert!(!mirror.slots[0].writable_local);
     assert!(mirror.slots[0].ty.is_some());
     assert_eq!(mirror.slot_type(0), Ok(&mirror.params[0].ty));
 
@@ -331,6 +344,8 @@ fn mir_remains_self_contained_after_original_file_ir_is_dropped() {
     let expected_expression_type =
         executable.expression_types[service_expression_index as usize].clone();
     let expected_source_map = file_ir_units[0].source_map.clone();
+    let expected_file_ir_identity = file_ir_units[0].file_ir_identity.clone();
+    let expected_actor_declarations = file_ir_units[0].actor_declarations.clone();
     let expected_type_table = file_ir_units[0].type_table.clone();
     let expected_link_targets = file_ir_units[0].link_targets.clone();
 
@@ -341,6 +356,8 @@ fn mir_remains_self_contained_after_original_file_ir_is_dropped() {
     drop(model);
 
     let unit = &mir_units[0];
+    assert_eq!(unit.file_ir_identity, expected_file_ir_identity);
+    assert_eq!(unit.actor_declarations, expected_actor_declarations);
     assert_eq!(
         unit.external_refs.service_call_refs,
         vec![service_ref.clone()]
@@ -721,22 +738,30 @@ fn liveness_hand_computed_small_fixture() {
             expression: ExprIr::LoadConst { const_index: 0 },
             ty: TypeRefIr::builtin("number"),
             writable: None,
+            direct_call: None,
         },
         MirExpression {
             index: 1,
             expression: ExprIr::LoadSlot { slot: 0 },
             ty: TypeRefIr::builtin("number"),
             writable: None,
+            direct_call: None,
         },
         MirExpression {
             index: 2,
             expression: ExprIr::LoadSlot { slot: 1 },
             ty: TypeRefIr::builtin("number"),
             writable: None,
+            direct_call: None,
         },
     ];
     let mut function = MirFunction {
         executable_index: 0,
+        origin: skiff_artifact_model::PackageExecutableCoordinate {
+            file_ir_identity: "file:m".to_string(),
+            module_path: "m".to_string(),
+            executable_index: 0,
+        },
         symbol: "m.f".to_string(),
         kind: MirExecutableKind::Function,
         type_params: Vec::new(),
@@ -748,20 +773,24 @@ fn liveness_hand_computed_small_fixture() {
         }],
         return_type: TypeRefIr::builtin("number"),
         self_type: None,
+        receiver: None,
         slots: vec![
             crate::mir::MirSlot {
                 slot: 0,
                 name: "x".to_string(),
                 kind: MirSlotKind::Param,
+                writable_local: false,
                 ty: None,
             },
             crate::mir::MirSlot {
                 slot: 1,
                 name: "acc".to_string(),
                 kind: MirSlotKind::Local,
+                writable_local: true,
                 ty: None,
             },
         ],
+        index_accesses: BTreeMap::new(),
         expressions,
         blocks: vec![
             MirBlock {
@@ -897,7 +926,7 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
     };
     let unit = FileIrUnit {
         schema_version: "1".to_string(),
-        file_ir_identity: String::new(),
+        file_ir_identity: "file:m".to_string(),
         source_ast_hash: String::new(),
         module_path: "m".to_string(),
         ir_format_version: "1".to_string(),

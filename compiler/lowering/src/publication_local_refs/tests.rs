@@ -166,6 +166,7 @@ fn service_call_target_and_ref_survive_publication_local_rewrite() {
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index: ServiceCallRefIndex::new(0),
                         },
+                        concrete_receiver: None,
                         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },

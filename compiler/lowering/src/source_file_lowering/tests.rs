@@ -321,7 +321,7 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
             "#,
     );
-    assert_eq!(unit.schema_version, "skiff-file-ir-v12");
+    assert_eq!(unit.schema_version, "skiff-file-ir-v13");
     assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
     assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
@@ -2870,7 +2870,7 @@ fn typed_local_function_index_mismatch_fails_before_file_ir() {
 }
 
 #[test]
-fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
+fn typed_package_call_site_without_exact_signature_fails_closed() {
     let expression = package_call_expression();
     let expected_local_abi = PackageLocalAbiIdentity::new("local-abi:must-not-enter-call-site");
     let package_callable_id = PackageCallableId::new("callable:utils.format");
@@ -2886,42 +2886,11 @@ fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() 
         },
     )]));
     let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
-    let unit = lower_package_call(&package_aliases, &targets).unwrap();
-
-    let run = executable(&unit, "run");
-    assert!(
-        run.may_suspend,
-        "missing exact dependency signature must fail closed"
-    );
-    assert!(run.body.expressions.iter().any(|expression| matches!(
-        expression,
-        ExprIr::Call { call }
-            if matches!(
-                &call.target,
-                CallTargetIr::PackageCallable {
-                    package_ref: PackageRefIr::Dependency { dependency_ref },
-                    package_callable_id: target_callable_id,
-                } if dependency_ref == "utils" && target_callable_id == &package_callable_id
-            )
-    )));
-    assert_eq!(unit.external_refs.package_callables.len(), 1);
-    assert_eq!(
-        unit.external_refs.package_callables[0].package_callable_id,
-        package_callable_id
-    );
-    assert_eq!(
-        unit.external_refs.package_callables[0].package_ref,
-        PackageRefIr::Dependency {
-            dependency_ref: "utils".to_string(),
-        }
-    );
-    let wire = serde_json::to_string(&unit).unwrap();
-    assert!(wire.contains("packageCallableId"));
-    assert!(!wire.contains(expected_local_abi.as_str()));
-    assert!(!wire.contains("operationAbiId"));
-    assert!(unit
-        .file_ir_identity
-        .starts_with("skiff-file-ir-v12:sha256:"));
+    let error = lower_package_call(&package_aliases, &targets)
+        .expect_err("missing exact package signature must fail closed");
+    assert!(error
+        .to_string()
+        .contains("package-direct target `callable:utils.format` has no exact signature"));
 }
 
 #[test]

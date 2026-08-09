@@ -1,24 +1,23 @@
 //! Checked emitter facts that File IR already carries exactly.
 //!
-//! These DTOs never fill a source-model hole. In particular, an inout loan
-//! ordinal is not a callee parameter index, and no value-transfer policy is
-//! implied by a writable place.
+//! These DTOs never fill a source-model hole. Inout loans retain their exact
+//! callee parameter ordinal, and no value-transfer policy is implied by a
+//! writable place.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     validate_supported_receiver_builtin_op, AssignTargetIr, ExprIr, ExprRefIr, InOutPathSegmentIr,
     PatternIr, TypeRefIr,
 };
 
-use super::{MirExpression, MirSlot, MirSlotKind};
+use super::{MirExpression, MirIndexAccessFacts, MirSlot, MirSlotKind};
 
 /// Exact writable root retained by MIR.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MirWritableRoot {
-    /// Function-local slot. File IR does not retain whether a `Local` slot was
-    /// declared with `let` or `var`; source validation remains the owner of
-    /// that proof.
+    /// Function-local slot. [`super::MirSlot::writable_local`] is the retained
+    /// source proof when this root is loaned as inout.
     Slot { slot: u32 },
     /// Actor durable field root, including its exact static type.
     ActorSelfField {
@@ -28,7 +27,7 @@ pub enum MirWritableRoot {
 }
 
 /// One exact selector in a writable assignment/receiver path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MirWritablePathSegment {
     Field {
         name: String,
@@ -36,6 +35,8 @@ pub enum MirWritablePathSegment {
     /// Exact index operand owned by this function's expression table.
     Index {
         index: ExprRefIr,
+        index_type: TypeRefIr,
+        access: MirIndexAccessFacts,
     },
 }
 
@@ -46,17 +47,26 @@ pub struct MirWritablePlace {
     pub path: Vec<MirWritablePathSegment>,
 }
 
-/// One File IR inout loan in its stable call-local order.
-///
-/// `loan_ordinal` indexes the compact `CallIr.inout_args` stream; it is
-/// deliberately not named `parameter_index`. Recovering a mixed argument's
-/// parameter position requires the exact callee signature/mode table rather
-/// than guessing from this ordinal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One exact selector in an inout writable path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MirInOutPathSegment {
+    Field {
+        name: String,
+    },
+    Index {
+        selector: ExprRefIr,
+        selector_type: TypeRefIr,
+        access: MirIndexAccessFacts,
+    },
+}
+
+/// One File IR inout loan at its exact callee parameter coordinate.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MirInOutLoan {
-    pub loan_ordinal: u32,
+    pub parameter_ordinal: u32,
     pub root_slot: u32,
-    pub path: Vec<InOutPathSegmentIr>,
+    pub root_type: TypeRefIr,
+    pub path: Vec<MirInOutPathSegment>,
 }
 
 /// Writable facts owned by one call expression.
@@ -65,7 +75,7 @@ pub struct MirCallWritableFacts {
     /// Present only for an exactly-known receiver builtin whose registry fact
     /// says it mutates its receiver.
     pub mutating_receiver: Option<MirWritablePlace>,
-    /// Exact compact File IR loan order. See [`MirInOutLoan::loan_ordinal`].
+    /// Exact loans sorted by callee parameter ordinal.
     pub inout_loans: Vec<MirInOutLoan>,
 }
 
@@ -105,6 +115,7 @@ pub(super) fn assignment_place(
     target: &AssignTargetIr,
     expressions: &[MirExpression],
     slots: &[MirSlot],
+    index_accesses: &BTreeMap<u32, MirIndexAccessFacts>,
 ) -> Result<MirWritablePlace, String> {
     match target {
         AssignTargetIr::Slot { slot } => {
@@ -122,18 +133,21 @@ pub(super) fn assignment_place(
             path: Vec::new(),
         }),
         AssignTargetIr::Field { object, field } => {
-            let mut place = expression_place(*object, expressions, slots)?;
+            let mut place = expression_place(*object, expressions, slots, index_accesses)?;
             place.path.push(MirWritablePathSegment::Field {
                 name: field.clone(),
             });
             Ok(place)
         }
         AssignTargetIr::Index { object, index } => {
-            expression_at(*index, expressions)?;
-            let mut place = expression_place(*object, expressions, slots)?;
-            place
-                .path
-                .push(MirWritablePathSegment::Index { index: *index });
+            let index_type = expression_at(*index, expressions)?.ty.clone();
+            let access = index_access(*index, expressions, index_accesses)?.clone();
+            let mut place = expression_place(*object, expressions, slots, index_accesses)?;
+            place.path.push(MirWritablePathSegment::Index {
+                index: *index,
+                index_type,
+                access,
+            });
             Ok(place)
         }
     }
@@ -143,6 +157,7 @@ pub(super) fn call_writable_facts(
     expression_index: u32,
     expressions: &[MirExpression],
     slots: &[MirSlot],
+    index_accesses: &BTreeMap<u32, MirIndexAccessFacts>,
 ) -> Result<Option<MirCallWritableFacts>, String> {
     let expression = expression_at(
         ExprRefIr {
@@ -162,7 +177,12 @@ pub(super) fn call_writable_facts(
                 let receiver = call.args.first().copied().ok_or_else(|| {
                     "mutating receiver builtin has no receiver argument".to_string()
                 })?;
-                Some(expression_place(receiver, expressions, slots)?)
+                Some(expression_place(
+                    receiver,
+                    expressions,
+                    slots,
+                    index_accesses,
+                )?)
             } else {
                 None
             }
@@ -184,42 +204,66 @@ pub(super) fn call_writable_facts(
         );
     }
 
-    let mut inout_loans = Vec::with_capacity(call.inout_args.len());
-    for (loan_ordinal, loan) in call.inout_args.iter().enumerate() {
-        let loan_ordinal = u32::try_from(loan_ordinal)
-            .map_err(|_| "inout loan ordinal exceeds u32::MAX".to_string())?;
+    let mut inout_loans = Vec::<MirInOutLoan>::with_capacity(call.inout_args.len());
+    for loan in &call.inout_args {
         let root = validate_root_slot(loan.root_slot, slots)?;
-        if root.kind != MirSlotKind::Local {
+        if root.kind != MirSlotKind::Local || !root.writable_local {
             return Err(format!(
-                "inout loan {loan_ordinal} root slot {} has kind {:?}, expected Local",
-                loan.root_slot, root.kind
+                "inout loan for parameter {} root slot {} is not a source-confirmed writable local",
+                loan.parameter_ordinal, loan.root_slot
             ));
         }
-        if loan
+        let root_type = root.ty.clone().ok_or_else(|| {
+            format!(
+                "inout loan for parameter {} root slot {} has no exact type",
+                loan.parameter_ordinal, loan.root_slot
+            )
+        })?;
+        let path = loan
             .path
             .iter()
-            .any(|segment| matches!(segment, InOutPathSegmentIr::Index))
+            .map(|segment| match segment {
+                InOutPathSegmentIr::Field { name } => {
+                    Ok(MirInOutPathSegment::Field { name: name.clone() })
+                }
+                InOutPathSegmentIr::Index { selector } => {
+                    let selector_type = expression_at(*selector, expressions)?.ty.clone();
+                    let access = index_access(*selector, expressions, index_accesses)?.clone();
+                    Ok(MirInOutPathSegment::Index {
+                        selector: *selector,
+                        selector_type,
+                        access,
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let candidate = MirInOutLoan {
+            parameter_ordinal: loan.parameter_ordinal,
+            root_slot: loan.root_slot,
+            root_type,
+            path,
+        };
+        if inout_loans
+            .iter()
+            .any(|existing| existing.parameter_ordinal == candidate.parameter_ordinal)
         {
             return Err(format!(
-                "inout loan {loan_ordinal} contains an index selector, but File IR does not retain its index operand"
+                "inout call repeats callee parameter ordinal {}",
+                candidate.parameter_ordinal
             ));
         }
-        let candidate = MirInOutLoan {
-            loan_ordinal,
-            root_slot: loan.root_slot,
-            path: loan.path.clone(),
-        };
         if inout_loans
             .iter()
             .any(|existing| inout_loans_overlap(existing, &candidate))
         {
             return Err(format!(
-                "inout loan {loan_ordinal} overlaps an earlier loan for root slot {}",
-                loan.root_slot
+                "inout loan for parameter {} overlaps an earlier loan for root slot {}",
+                loan.parameter_ordinal, loan.root_slot
             ));
         }
         inout_loans.push(candidate);
     }
+    inout_loans.sort_by_key(|loan| loan.parameter_ordinal);
 
     if mutating_receiver.is_none() && inout_loans.is_empty() {
         Ok(None)
@@ -360,14 +404,22 @@ fn expression_place(
     reference: ExprRefIr,
     expressions: &[MirExpression],
     slots: &[MirSlot],
+    index_accesses: &BTreeMap<u32, MirIndexAccessFacts>,
 ) -> Result<MirWritablePlace, String> {
-    expression_place_inner(reference, expressions, slots, &mut BTreeSet::new())
+    expression_place_inner(
+        reference,
+        expressions,
+        slots,
+        index_accesses,
+        &mut BTreeSet::new(),
+    )
 }
 
 fn expression_place_inner(
     reference: ExprRefIr,
     expressions: &[MirExpression],
     slots: &[MirSlot],
+    index_accesses: &BTreeMap<u32, MirIndexAccessFacts>,
     seen: &mut BTreeSet<u32>,
 ) -> Result<MirWritablePlace, String> {
     if !seen.insert(reference.expression) {
@@ -393,9 +445,22 @@ fn expression_place_inner(
             path: Vec::new(),
         },
         ExprIr::Field { object, field } => {
-            let mut place = expression_place_inner(*object, expressions, slots, seen)?;
+            let mut place =
+                expression_place_inner(*object, expressions, slots, index_accesses, seen)?;
             place.path.push(MirWritablePathSegment::Field {
                 name: field.clone(),
+            });
+            place
+        }
+        ExprIr::Index { object, index } => {
+            let index_type = expression_at(*index, expressions)?.ty.clone();
+            let access = index_access(*index, expressions, index_accesses)?.clone();
+            let mut place =
+                expression_place_inner(*object, expressions, slots, index_accesses, seen)?;
+            place.path.push(MirWritablePathSegment::Index {
+                index: *index,
+                index_type,
+                access,
             });
             place
         }
@@ -408,6 +473,27 @@ fn expression_place_inner(
     };
     seen.remove(&reference.expression);
     Ok(place)
+}
+
+fn index_access<'a>(
+    selector: ExprRefIr,
+    expressions: &[MirExpression],
+    index_accesses: &'a BTreeMap<u32, MirIndexAccessFacts>,
+) -> Result<&'a MirIndexAccessFacts, String> {
+    let selector_type = &expression_at(selector, expressions)?.ty;
+    let access = index_accesses.get(&selector.expression).ok_or_else(|| {
+        format!(
+            "index selector {} has no exact source fact",
+            selector.expression
+        )
+    })?;
+    if &access.selector_type != selector_type {
+        return Err(format!(
+            "index selector {} type {selector_type:?} disagrees with source fact {:?}",
+            selector.expression, access.selector_type
+        ));
+    }
+    Ok(access)
 }
 
 fn expression_at(
@@ -477,6 +563,74 @@ fn inout_loans_overlap(left: &MirInOutLoan, right: &MirInOutLoan) -> bool {
         && (path_prefix(&left.path, &right.path) || path_prefix(&right.path, &left.path))
 }
 
-fn path_prefix(left: &[InOutPathSegmentIr], right: &[InOutPathSegmentIr]) -> bool {
-    left.len() <= right.len() && left.iter().zip(right).all(|(left, right)| left == right)
+fn path_prefix(left: &[MirInOutPathSegment], right: &[MirInOutPathSegment]) -> bool {
+    left.len() <= right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| match (left, right) {
+                (
+                    MirInOutPathSegment::Field { name: left },
+                    MirInOutPathSegment::Field { name: right },
+                ) => left == right,
+                // Independently evaluated dynamic selectors can alias even when
+                // their ExprRef indices differ. No source fact proves inequality,
+                // so overlap validation must stay conservative.
+                (MirInOutPathSegment::Index { .. }, MirInOutPathSegment::Index { .. }) => true,
+                _ => false,
+            })
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{ExprRefIr, SourcePosition, SourceSpanRef, TypeRefIr};
+
+    use super::{path_prefix, MirInOutPathSegment};
+    use crate::mir::{MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind};
+
+    fn index(selector: u32) -> MirInOutPathSegment {
+        let selector_type = TypeRefIr::builtin("number");
+        MirInOutPathSegment::Index {
+            selector: ExprRefIr {
+                expression: selector,
+            },
+            selector_type: selector_type.clone(),
+            access: MirIndexAccessFacts {
+                receiver_kind: MirIndexReceiverKind::Array,
+                receiver_type: TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![TypeRefIr::builtin("number")],
+                },
+                selector_type,
+                result_type: TypeRefIr::builtin("number"),
+                policy: MirIndexPolicy::LoanMustExist,
+                source_span: SourceSpanRef {
+                    source_id: 0,
+                    start: SourcePosition {
+                        line: 1,
+                        column: 1,
+                        offset: Some(0),
+                    },
+                    end: SourcePosition {
+                        line: 1,
+                        column: 2,
+                        offset: Some(1),
+                    },
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn independently_evaluated_index_selectors_may_overlap() {
+        assert!(path_prefix(&[index(1)], &[index(2)]));
+        assert!(!path_prefix(
+            &[MirInOutPathSegment::Field {
+                name: "left".to_string(),
+            }],
+            &[MirInOutPathSegment::Field {
+                name: "right".to_string(),
+            }],
+        ));
+    }
 }

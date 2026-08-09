@@ -1195,6 +1195,7 @@ impl<'a> FunctionLowerer<'a> {
                     target: CallTargetIr::Builtin {
                         op: "db.transaction".to_string(),
                     },
+                    concrete_receiver: None,
                     site: InstructionSourceSite::Synthetic {
                         reason: SyntheticInstructionSiteReason::CompilerDesugaring,
                     },

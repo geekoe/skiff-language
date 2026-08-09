@@ -1,4 +1,7 @@
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use crate::file_ir::{
     AssignTargetIr, BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr,
@@ -13,6 +16,7 @@ use skiff_artifact_model::{
 use skiff_compiler_source::TypeResolutionModel;
 
 use super::external_refs::rebuild_external_refs_for_file_ir_unit;
+use super::mir::MirSourceFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PublicationTypeRefLocation {
@@ -94,6 +98,42 @@ pub(super) fn rewrite_publication_local_refs(
     package_dependency_abi_expectations: &BTreeMap<String, String>,
     package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    rewrite_publication_local_refs_inner(
+        units,
+        current_package_id,
+        type_resolution,
+        package_dependency_abi_expectations,
+        package_dependency_abi_expectations_by_package_id,
+        None,
+    )
+}
+
+pub(super) fn rewrite_publication_local_refs_with_mir_facts(
+    units: &mut [FileIrUnit],
+    current_package_id: Option<&str>,
+    type_resolution: Option<&TypeResolutionModel>,
+    package_dependency_abi_expectations: &BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
+    mir_source_facts: &mut MirSourceFacts,
+) -> Result<(), String> {
+    rewrite_publication_local_refs_inner(
+        units,
+        current_package_id,
+        type_resolution,
+        package_dependency_abi_expectations,
+        package_dependency_abi_expectations_by_package_id,
+        Some(mir_source_facts),
+    )
+}
+
+fn rewrite_publication_local_refs_inner(
+    units: &mut [FileIrUnit],
+    current_package_id: Option<&str>,
+    type_resolution: Option<&TypeResolutionModel>,
+    package_dependency_abi_expectations: &BTreeMap<String, String>,
+    package_dependency_abi_expectations_by_package_id: &BTreeMap<String, String>,
+    mir_source_facts: Option<&mut MirSourceFacts>,
+) -> Result<(), String> {
     let index = PublicationLocalRefIndex::build(
         units,
         current_package_id,
@@ -101,18 +141,63 @@ pub(super) fn rewrite_publication_local_refs(
         package_dependency_abi_expectations,
         package_dependency_abi_expectations_by_package_id,
     );
-    for unit in units {
+    let unit_modules = units
+        .iter()
+        .map(|unit| unit.module_path.clone())
+        .collect::<BTreeSet<_>>();
+    for unit in units.iter_mut() {
         let module_path = unit.module_path.clone();
-        rewrite_unit(&index, &module_path, unit);
+        rewrite_unit(&index, &module_path, unit)?;
         if let Some(error) = index.alias_expansion_error.borrow_mut().take() {
             return Err(error);
         }
         rebuild_external_refs_for_file_ir_unit(unit).map_err(|error| error.to_string())?;
     }
+    if let Some(mir_source_facts) = mir_source_facts {
+        for ((module_path, _), accesses) in mir_source_facts.index_accesses_mut() {
+            if !unit_modules.contains(module_path) {
+                return Err(format!(
+                    "MIR source facts have no File IR owner module `{module_path}`"
+                ));
+            }
+            for access in accesses.values_mut() {
+                rewrite_type_ref(&index, module_path, &mut access.receiver_type);
+                rewrite_type_ref(&index, module_path, &mut access.selector_type);
+                rewrite_type_ref(&index, module_path, &mut access.result_type);
+            }
+        }
+        if let Some(error) = index.alias_expansion_error.borrow_mut().take() {
+            return Err(error);
+        }
+    }
     Ok(())
 }
 
-fn rewrite_unit(index: &PublicationLocalRefIndex, module_path: &str, unit: &mut FileIrUnit) {
+fn rewrite_unit(
+    index: &PublicationLocalRefIndex,
+    module_path: &str,
+    unit: &mut FileIrUnit,
+) -> Result<(), String> {
+    for declaration in &mut unit.actor_declarations {
+        rewrite_type_ref(index, module_path, &mut declaration.abi.actor_id_type);
+        for field in &mut declaration.abi.fields {
+            rewrite_type_ref(index, module_path, &mut field.ty);
+        }
+        if let Some(create) = &mut declaration.abi.create {
+            for parameter in &mut create.parameters {
+                rewrite_type_ref(index, module_path, &mut parameter.ty);
+            }
+        }
+        for method in &mut declaration.abi.public_methods {
+            for parameter in &mut method.parameters {
+                rewrite_type_ref(index, module_path, &mut parameter.ty);
+            }
+            rewrite_type_ref(index, module_path, &mut method.return_type);
+        }
+        declaration.actor_abi_identity =
+            skiff_artifact_identity::actor_abi_identity(&declaration.abi)
+                .map_err(|error| error.to_string())?;
+    }
     for ty in &mut unit.type_table {
         rewrite_type_descriptor(index, module_path, &mut ty.descriptor);
         for implemented in &mut ty.implements {
@@ -142,12 +227,21 @@ fn rewrite_unit(index: &PublicationLocalRefIndex, module_path: &str, unit: &mut 
         for param in &mut executable.params {
             rewrite_type_ref(index, module_path, &mut param.ty);
         }
+        for slot in &mut executable.slots.slots {
+            if let Some(ty) = &mut slot.ty {
+                rewrite_type_ref(index, module_path, ty);
+            }
+        }
+        for ty in &mut executable.expression_types {
+            rewrite_type_ref(index, module_path, ty);
+        }
         rewrite_type_ref(index, module_path, &mut executable.return_type);
         if let Some(self_type) = &mut executable.self_type {
             rewrite_type_ref(index, module_path, self_type);
         }
         rewrite_body(index, module_path, &mut executable.body);
     }
+    Ok(())
 }
 
 fn rewrite_interface_decl(
@@ -302,6 +396,9 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         }
         ExprIr::Call { call } => {
             rewrite_call_target(index, module_path, &mut call.target);
+            if let Some(receiver) = &mut call.concrete_receiver {
+                rewrite_type_ref(index, module_path, receiver);
+            }
             if !is_actor_registry_native_call(call) {
                 for ty in call.type_args.values_mut() {
                     rewrite_type_ref(index, module_path, ty);
@@ -337,6 +434,7 @@ fn rewrite_expr(index: &PublicationLocalRefIndex, module_path: &str, expr: &mut 
         | ExprIr::LoadConst { .. }
         | ExprIr::LoadPackageConst { .. }
         | ExprIr::Field { .. }
+        | ExprIr::Index { .. }
         | ExprIr::MapLiteral { .. }
         | ExprIr::ArrayLiteral { .. }
         | ExprIr::Unary { .. }

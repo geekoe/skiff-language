@@ -297,6 +297,10 @@ fn expression_use_def(
         ExprIr::Field { object, .. } => {
             visit(object.expression, uses, defs, function, seen)?;
         }
+        ExprIr::Index { object, index } => {
+            visit(object.expression, uses, defs, function, seen)?;
+            visit(index.expression, uses, defs, function, seen)?;
+        }
         ExprIr::Construct { fields, .. } => {
             for value in fields.values() {
                 visit(value.expression, uses, defs, function, seen)?;
@@ -329,6 +333,11 @@ fn expression_use_def(
             for argument in &call.inout_args {
                 uses.insert(argument.root_slot);
                 defs.insert(argument.root_slot);
+                for segment in &argument.path {
+                    if let skiff_artifact_model::InOutPathSegmentIr::Index { selector } = segment {
+                        visit(selector.expression, uses, defs, function, seen)?;
+                    }
+                }
             }
         }
         ExprIr::Throw { value, .. } => {

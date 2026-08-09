@@ -12,7 +12,8 @@ use skiff_compiler_source::{
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
     PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
-    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
+    SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceSymbolKey,
+    TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{
@@ -29,10 +30,11 @@ use crate::file_ir::{
     ExprRefIr, FunctionTypeParamIr, InOutArgIr, InOutPathSegmentIr, InstructionSourceSite,
     InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
     InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr,
-    PackageSymbolRef, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind,
-    SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
+    PackageSymbolRef, ParamModeIr, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr,
+    SlotKind, SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
     TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
+use crate::mir::MirIndexAccessFacts;
 
 use super::{
     callable_return_types::CallableReturnType,
@@ -48,6 +50,7 @@ use super::{
     },
 };
 
+mod call_abi;
 mod execution;
 mod object_literal;
 
@@ -115,6 +118,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
     pub(super) expected_return_type: Option<TypeRefIr>,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &'a SourceExecutableSignatureFacts,
     service_calls: &'a LoweredServiceCalls,
     pub(super) next_expression_index: u32,
     pub(super) bindings: BTreeMap<String, Binding>,
@@ -125,6 +129,9 @@ pub(super) struct FunctionLowerer<'a> {
     /// Static type of every `body.expressions` entry, in index order. Written
     /// in lockstep with `push_expr` (Phase 2 design §2.2).
     pub(super) expression_types_ir: Vec<TypeRefIr>,
+    /// Source-owned bracket facts keyed by the exact selector expression
+    /// emitted into this function's expression table.
+    pub(super) index_accesses: BTreeMap<u32, MirIndexAccessFacts>,
     /// Source span of every `body.statements` entry, in index order. Written
     /// in lockstep with `push_stmt`; `None` for compiler-generated statements.
     pub(super) statement_spans: Vec<Option<SourceSpanRef>>,
@@ -140,9 +147,18 @@ pub(super) type LocalTypeFieldIndex = BTreeMap<u32, BTreeMap<String, TypeRefIr>>
 pub(super) struct LoweredExecutableSignature {
     pub(super) type_params: Vec<String>,
     pub(super) params: Vec<FunctionTypeParamIr>,
+    pub(super) param_modes: Vec<ParamModeIr>,
     pub(super) return_type: TypeRefIr,
     pub(super) self_type: Option<TypeRefIr>,
+    pub(super) receiver: LoweredExecutableReceiver,
     pub(super) may_suspend: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LoweredExecutableReceiver {
+    None,
+    Implicit,
+    ExplicitParameter,
 }
 
 impl<'a> FunctionLowerer<'a> {
@@ -170,6 +186,7 @@ impl<'a> FunctionLowerer<'a> {
         local_type_fields: &'a LocalTypeFieldIndex,
         actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
         executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+        exact_executable_signatures: &'a SourceExecutableSignatureFacts,
         service_calls: &'a LoweredServiceCalls,
     ) -> Self {
         Self {
@@ -197,6 +214,7 @@ impl<'a> FunctionLowerer<'a> {
             actor_self_fields,
             expected_return_type: None,
             executable_signatures,
+            exact_executable_signatures,
             service_calls,
             next_expression_index: 0,
             bindings: BTreeMap::new(),
@@ -205,6 +223,7 @@ impl<'a> FunctionLowerer<'a> {
             slots: Vec::new(),
             body: ExecutableBody::default(),
             expression_types_ir: Vec::new(),
+            index_accesses: BTreeMap::new(),
             statement_spans: Vec::new(),
             next_block_id: 0,
             db_transaction_depth: 0,
@@ -252,6 +271,7 @@ impl<'a> FunctionLowerer<'a> {
             index: slot,
             name: name.to_string(),
             kind,
+            writable_local: false,
             ty: None,
         });
         current_scope.insert(name.to_string());
@@ -540,6 +560,7 @@ impl<'a> FunctionLowerer<'a> {
                     readonly,
                     type_text,
                 )?;
+                self.slots[slot as usize].writable_local = matches!(kind, LetKind::Var);
                 self.set_slot_type(slot, value_ty);
                 StmtIr::Let { slot, value }
             }
@@ -1060,8 +1081,33 @@ impl<'a> FunctionLowerer<'a> {
                     field: field.clone(),
                 })
             }
+            Expr::Index { object, index } => {
+                let expression_key = self.next_expression_key();
+                if let Some(name) = self.readonly_assignment_base_identifier(object) {
+                    return Err(CompileError::Semantic(format!(
+                        "cannot assign through index of readonly binding `{name}` in File IR unit function"
+                    )));
+                }
+                if let Some(name) = self.immutable_assignment_base_identifier(object) {
+                    return Err(CompileError::Semantic(format!(
+                        "cannot assign through index of immutable binding `{name}` in File IR unit function"
+                    )));
+                }
+                let object_ref = self.lower_expr(object)?;
+                let selector_ref = self.lower_expr(index)?;
+                self.retain_index_access(
+                    expression_key.as_ref(),
+                    object,
+                    Some(object_ref),
+                    selector_ref,
+                )?;
+                Ok(AssignTargetIr::Index {
+                    object: object_ref,
+                    index: selector_ref,
+                })
+            }
             _ => Err(unsupported(
-                "only slot and field assignment targets are supported by the File IR unit emitter",
+                "only slot, field, and index assignment targets are supported by the File IR unit emitter",
             )),
         }
     }
@@ -1077,7 +1123,9 @@ impl<'a> FunctionLowerer<'a> {
             {
                 Some(name.as_str())
             }
-            Expr::Field { object, .. } => self.readonly_assignment_base_identifier(object),
+            Expr::Field { object, .. } | Expr::Index { object, .. } => {
+                self.readonly_assignment_base_identifier(object)
+            }
             _ => None,
         }
     }
@@ -1096,7 +1144,9 @@ impl<'a> FunctionLowerer<'a> {
             {
                 Some(name.as_str())
             }
-            Expr::Field { object, .. } => self.immutable_assignment_base_identifier(object),
+            Expr::Field { object, .. } | Expr::Index { object, .. } => {
+                self.immutable_assignment_base_identifier(object)
+            }
             _ => None,
         }
     }
@@ -1109,8 +1159,11 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
         let mut chain = object;
-        while let Expr::Field { object, .. } = chain {
-            chain = object;
+        loop {
+            match chain {
+                Expr::Field { object, .. } | Expr::Index { object, .. } => chain = object,
+                _ => break,
+            }
         }
         let Expr::Identifier(name) = chain else {
             return Ok(());
@@ -1149,6 +1202,91 @@ impl<'a> FunctionLowerer<'a> {
                 self.next_expression_index,
             )
         })
+    }
+
+    fn retain_index_access(
+        &mut self,
+        key: Option<&ExpressionKey>,
+        object: &Expr,
+        object_ref: Option<ExprRefIr>,
+        selector_ref: ExprRefIr,
+    ) -> Result<()> {
+        let key = key.ok_or_else(|| {
+            CompileError::Semantic(
+                "index lowering requires a source expression identity".to_string(),
+            )
+        })?;
+        let fact = self
+            .expression_types
+            .and_then(|types| types.index_segment(key))
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "index expression has no exact source-owned segment fact for {key:?}"
+                ))
+            })?;
+        let object_preorder = key.preorder_index().checked_add(1).ok_or_else(|| {
+            CompileError::Semantic("index object preorder coordinate overflow".to_string())
+        })?;
+        let selector_preorder = object_preorder
+            .checked_add(expr_preorder_node_count(object))
+            .ok_or_else(|| {
+                CompileError::Semantic("index selector preorder coordinate overflow".to_string())
+            })?;
+        let expected_object =
+            ExpressionKey::new(key.module_path(), key.owner().clone(), object_preorder);
+        let expected_selector =
+            ExpressionKey::new(key.module_path(), key.owner().clone(), selector_preorder);
+        if fact.object_expression != expected_object
+            || fact.selector_expression != expected_selector
+        {
+            return Err(CompileError::Semantic(format!(
+                "index segment fact for {key:?} does not preserve object-before-selector preorder"
+            )));
+        }
+        let selector_type = self
+            .expression_types_ir
+            .get(selector_ref.expression as usize)
+            .ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "index selector references missing lowered expression {}",
+                    selector_ref.expression
+                ))
+            })?;
+        if selector_type != &fact.selector_type {
+            return Err(CompileError::Semantic(format!(
+                "index selector type disagrees with exact source fact for {key:?}"
+            )));
+        }
+        if let Some(object_ref) = object_ref {
+            let object_type = self
+                .expression_types_ir
+                .get(object_ref.expression as usize)
+                .ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "index object references missing lowered expression {}",
+                        object_ref.expression
+                    ))
+                })?;
+            if object_type != &fact.receiver_type {
+                return Err(CompileError::Semantic(format!(
+                    "index receiver type disagrees with exact source fact for {key:?}"
+                )));
+            }
+        }
+        if self
+            .index_accesses
+            .insert(
+                selector_ref.expression,
+                MirIndexAccessFacts::from_source(fact),
+            )
+            .is_some()
+        {
+            return Err(CompileError::Semantic(format!(
+                "more than one index segment owns selector expression {}",
+                selector_ref.expression
+            )));
+        }
+        Ok(())
     }
 
     fn type_resolution_context(&self) -> TypeResolutionContext<'_> {
@@ -1563,6 +1701,20 @@ impl<'a> FunctionLowerer<'a> {
                     }
                 }
             }
+            Expr::Index { object, index } => {
+                let object_ref = self.lower_expr(object)?;
+                let selector_ref = self.lower_expr(index)?;
+                self.retain_index_access(
+                    expression_key.as_ref(),
+                    object,
+                    Some(object_ref),
+                    selector_ref,
+                )?;
+                ExprIr::Index {
+                    object: object_ref,
+                    index: selector_ref,
+                }
+            }
             Expr::Call { callee, args } => {
                 if let Some(payload) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?
@@ -1640,6 +1792,19 @@ impl<'a> FunctionLowerer<'a> {
             Expr::DbLeaseRead(read) => self.lower_db_lease_read(read)?,
         };
         let expression_ty = self.typed_expression_type(expression_key.as_ref(), &lowered)?;
+        if let ExprIr::Index { index, .. } = &lowered {
+            let facts = self.index_accesses.get(&index.expression).ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "index expression selector {} has no retained source fact",
+                    index.expression
+                ))
+            })?;
+            if facts.result_type != expression_ty {
+                return Err(CompileError::Semantic(
+                    "index result type disagrees with exact source segment fact".to_string(),
+                ));
+            }
+        }
         Ok(self.push_expr(lowered, expression_ty))
     }
 
@@ -1660,6 +1825,11 @@ impl<'a> FunctionLowerer<'a> {
                     return Ok(ty.ir.clone());
                 }
             }
+        }
+        if matches!(lowered, ExprIr::Index { .. }) {
+            return Err(CompileError::Semantic(
+                "index expression has no exact source-owned result type fact".to_string(),
+            ));
         }
         Ok(self
             .file_ir_expression_type(lowered)
@@ -1782,6 +1952,7 @@ impl<'a> FunctionLowerer<'a> {
         };
         let mut lowered_args = Vec::new();
         let mut receiver_type_arguments = Vec::new();
+        let mut concrete_receiver = None;
         let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
             self.consume_static_callee_expression_keys(callee)?;
             target
@@ -1793,19 +1964,21 @@ impl<'a> FunctionLowerer<'a> {
                 service_call_ref_index,
             }
         } else if let Expr::Field { object, field } = callee {
-            if let Some((target, type_arguments)) =
+            if let Some((target, type_arguments, receiver_ty)) =
                 self.resolved_package_receiver_call_target(expression_key, object, field)?
             {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 receiver_type_arguments = type_arguments;
+                concrete_receiver = Some(receiver_ty);
                 target
-            } else if let Some((target, type_arguments)) =
+            } else if let Some((target, type_arguments, receiver_ty)) =
                 self.resolved_local_impl_receiver_call_target(expression_key, object, field)?
             {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 receiver_type_arguments = type_arguments;
+                concrete_receiver = Some(receiver_ty);
                 target
             } else if let Some(target) = self.actor_method_call_target(expression_key)? {
                 self.next_expression_key();
@@ -1856,42 +2029,37 @@ impl<'a> FunctionLowerer<'a> {
             )?,
             _ => BTreeMap::new(),
         };
-        for arg in args {
+        let receiver_offset = u32::from(concrete_receiver.is_some());
+        let mut inout_args = Vec::new();
+        for (source_ordinal, arg) in args.iter().enumerate() {
+            let source_ordinal = u32::try_from(source_ordinal).map_err(|_| {
+                CompileError::Semantic(
+                    "call argument count exceeds the File IR u32 parameter coordinate space"
+                        .to_string(),
+                )
+            })?;
+            let parameter_ordinal =
+                source_ordinal.checked_add(receiver_offset).ok_or_else(|| {
+                    CompileError::Semantic(
+                        "call parameter ordinal exceeds the File IR u32 coordinate space"
+                            .to_string(),
+                    )
+                })?;
             match arg {
                 CallArg::Value(expr) => lowered_args.push(self.lower_expr(expr)?),
-                // An `inout <place>` argument carries no by-value payload: it
-                // lowers into `CallIr.inout_args` (root slot + selector path)
-                // only, and the place chain's expression keys are consumed
-                // there to keep preorder fact alignment (design §2.2).
-                CallArg::InOutPlace { .. } => {}
+                // Lower in source parameter order. Index selectors are pushed
+                // exactly once while visiting their source position; they are
+                // never replayed in a compact-loan post-pass.
+                CallArg::InOutPlace { expr } => {
+                    inout_args.push(self.lower_inout_arg(expr, parameter_ordinal)?)
+                }
             }
         }
-        let inout_args = match args
-            .iter()
-            .filter_map(|arg| match arg {
-                CallArg::InOutPlace { expr } => Some(self.lower_inout_arg(expr, &target)),
-                CallArg::Value(_) => None,
-            })
-            .collect::<Result<Vec<_>>>()?
-        {
-            inout if !inout.is_empty() => {
-                if !matches!(
-                    target,
-                    CallTargetIr::LocalExecutable { .. }
-                        | CallTargetIr::PublicationExecutable { .. }
-                        | CallTargetIr::PackageCallable { .. }
-                ) {
-                    return Err(CompileError::Semantic(format!(
-                        "inout arguments are only valid on exact local/package-direct call targets in File IR unit function"
-                    )));
-                }
-                inout
-            }
-            _ => Vec::new(),
-        };
+        self.validate_direct_call_modes(expression_key, &target, concrete_receiver.as_ref(), args)?;
         Ok(ExprIr::Call {
             call: CallIr {
                 target,
+                concrete_receiver,
                 site: self.source_instruction_site(expression_key, "call")?,
                 args: lowered_args,
                 inout_args,
@@ -1907,47 +2075,65 @@ impl<'a> FunctionLowerer<'a> {
     /// emitted for the position — the representation exists for the emitter).
     /// Each node of the place chain consumes its preorder expression key so
     /// every later fact lookup stays aligned with the AST walk.
-    fn lower_inout_arg(&mut self, expr: &Expr, _target: &CallTargetIr) -> Result<InOutArgIr> {
-        let mut chain = expr;
+    fn lower_inout_arg(&mut self, expr: &Expr, parameter_ordinal: u32) -> Result<InOutArgIr> {
         let mut path = Vec::new();
-        loop {
-            match chain {
-                Expr::Generic { callee, .. } => {
-                    self.consume_expression_key();
-                    chain = callee;
-                }
-                Expr::Field { object, field } => {
-                    self.consume_expression_key();
-                    path.push(InOutPathSegmentIr::Field {
-                        name: field.clone(),
-                    });
-                    chain = object;
-                }
-                Expr::Identifier(name) => {
-                    self.consume_expression_key();
-                    let binding = self.bindings.get(name).ok_or_else(|| {
-                        CompileError::Semantic(format!(
-                            "inout argument root `{name}` is not a local binding in File IR unit function"
-                        ))
-                    })?;
-                    if !binding.mutable {
-                        return Err(CompileError::Semantic(format!(
-                            "inout argument root `{name}` is not a mutable var binding in File IR unit function"
-                        )));
-                    }
-                    path.reverse();
-                    return Ok(InOutArgIr {
-                        root_slot: binding.slot,
-                        path,
-                    });
-                }
-                _ => {
-                    return Err(CompileError::Semantic(
-                        "inout argument must be an exact local place in File IR unit function"
-                            .to_string(),
-                    ))
-                }
+        let root_slot = self.lower_inout_place(expr, &mut path)?;
+        Ok(InOutArgIr {
+            parameter_ordinal,
+            root_slot,
+            path,
+        })
+    }
+
+    fn lower_inout_place(
+        &mut self,
+        expr: &Expr,
+        path: &mut Vec<InOutPathSegmentIr>,
+    ) -> Result<u32> {
+        match expr {
+            Expr::Generic { callee, .. } => {
+                self.consume_expression_key();
+                self.lower_inout_place(callee, path)
             }
+            Expr::Field { object, field } => {
+                self.consume_expression_key();
+                let root_slot = self.lower_inout_place(object, path)?;
+                path.push(InOutPathSegmentIr::Field {
+                    name: field.clone(),
+                });
+                Ok(root_slot)
+            }
+            Expr::Index { object, index } => {
+                let expression_key = self.next_expression_key();
+                let root_slot = self.lower_inout_place(object, path)?;
+                let selector = self.lower_expr(index)?;
+                self.retain_index_access(expression_key.as_ref(), object, None, selector)?;
+                path.push(InOutPathSegmentIr::Index { selector });
+                Ok(root_slot)
+            }
+            Expr::Identifier(name) => {
+                self.consume_expression_key();
+                let binding = self.bindings.get(name).ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "inout argument root `{name}` is not a local binding in File IR unit function"
+                    ))
+                })?;
+                let slot = self.slots.get(binding.slot as usize).ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "inout argument root `{name}` references missing slot {}",
+                        binding.slot
+                    ))
+                })?;
+                if !slot.writable_local {
+                    return Err(CompileError::Semantic(format!(
+                        "inout argument root `{name}` is not a source-confirmed mutable local `var`"
+                    )));
+                }
+                Ok(binding.slot)
+            }
+            _ => Err(CompileError::Semantic(
+                "inout argument must be an exact local place in File IR unit function".to_string(),
+            )),
         }
     }
 
@@ -2048,7 +2234,7 @@ impl<'a> FunctionLowerer<'a> {
         expression_key: Option<&ExpressionKey>,
         object: &Expr,
         method_name: &str,
-    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>, TypeRefIr)>> {
         let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
             return Ok(None);
         };
@@ -2109,6 +2295,7 @@ impl<'a> FunctionLowerer<'a> {
                 package_callable_id: package_callable_id.clone(),
             },
             receiver.receiver_type_arguments,
+            receiver_ty,
         )))
     }
 
@@ -2117,7 +2304,7 @@ impl<'a> FunctionLowerer<'a> {
         expression_key: Option<&ExpressionKey>,
         object: &Expr,
         method_name: &str,
-    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>)>> {
+    ) -> Result<Option<(CallTargetIr, Vec<TypeRefIr>, TypeRefIr)>> {
         let Some((_, receiver_ty)) = self.receiver_type_for_call_object(object)? else {
             return Ok(None);
         };
@@ -2172,7 +2359,7 @@ impl<'a> FunctionLowerer<'a> {
             *executable_index,
             "local receiver",
         )?;
-        Ok(Some((target, receiver_type_arguments.clone())))
+        Ok(Some((target, receiver_type_arguments.clone(), receiver_ty)))
     }
 
     fn exact_impl_self_edge_receiver(
@@ -3148,6 +3335,9 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
         Expr::Binary { left, right, .. } => {
             1 + expr_preorder_node_count(left) + expr_preorder_node_count(right)
         }
+        Expr::Index { object, index } => {
+            1 + expr_preorder_node_count(object) + expr_preorder_node_count(index)
+        }
         Expr::Ternary {
             condition,
             then_expr,
@@ -3346,23 +3536,25 @@ fn interface_method_slot_signature_params(
     signature: &LoweredExecutableSignature,
     concrete_type: &TypeRefIr,
 ) -> Vec<FunctionTypeParamIr> {
-    if signature.self_type.is_some() {
-        let mut params = Vec::with_capacity(signature.params.len() + 1);
-        params.push(FunctionTypeParamIr {
-            name: "self".to_string(),
-            ty: concrete_type.clone(),
-        });
-        params.extend(signature.params.clone());
-        return params;
-    }
-
-    let mut params = signature.params.clone();
-    if let Some(first) = params.first_mut() {
-        if first.name == "self" {
-            first.ty = concrete_type.clone();
+    match signature.receiver {
+        LoweredExecutableReceiver::Implicit => {
+            let mut params = Vec::with_capacity(signature.params.len() + 1);
+            params.push(FunctionTypeParamIr {
+                name: "self".to_string(),
+                ty: concrete_type.clone(),
+            });
+            params.extend(signature.params.clone());
+            params
         }
+        LoweredExecutableReceiver::ExplicitParameter => {
+            let mut params = signature.params.clone();
+            if let Some(first) = params.first_mut() {
+                first.ty = concrete_type.clone();
+            }
+            params
+        }
+        LoweredExecutableReceiver::None => signature.params.clone(),
     }
-    params
 }
 
 fn lower_literal(literal: &Literal) -> Result<LiteralIr> {

@@ -1,6 +1,6 @@
 use skiff_compiler_lowering::{
     Bounds, ConstEvaluator, ConstEvaluatorError, FrozenConstantBundle, FrozenConstantLookupError,
-    FrozenConstantShape,
+    FrozenConstantShape, FrozenConstantShapeField,
 };
 
 #[test]
@@ -13,6 +13,7 @@ fn constant_bundle_contract_is_reachable_from_the_crate_root() {
     assert_public_type::<FrozenConstantBundle>();
     assert_public_type::<FrozenConstantLookupError>();
     assert_public_type::<FrozenConstantShape>();
+    assert_public_type::<FrozenConstantShapeField>();
 
     let _: fn(
         &ConstEvaluator,

@@ -267,6 +267,7 @@ impl<'a> FunctionLowerer<'a> {
             Expr::Literal(Literal::Bool(_)) => Some("bool".to_string()),
             Expr::Literal(Literal::Null) => Some("null".to_string()),
             Expr::Binary { .. }
+            | Expr::Index { .. }
             | Expr::Unary { .. }
             | Expr::Ternary { .. }
             | Expr::ObjectLiteral { .. }

@@ -42,11 +42,14 @@
 //!   recoverable correspondence between `MirStmt`s and the File IR statement
 //!   stream (`statement_index` is the index into `ExecutableBody.statements`).
 //! - Assignment targets and exactly-known mutating receiver calls carry a
-//!   checked [`MirWritablePlace`]. Inout loans retain their File IR compact
-//!   ordinal/root/path, but that ordinal is not a parameter position; mixed
-//!   parameter positions require the exact callee mode table. File IR index
-//!   loan segments omit their operand, so an emitter must reject those until
-//!   an upstream fact supplies it.
+//!   checked [`MirWritablePlace`]. Direct calls own a dense exact-parameter
+//!   [`MirDirectCallFacts`] table; inout loans retain callee parameter
+//!   ordinals, full paths, and typed function-owned index selectors.
+//! - Every bracket segment owns one [`MirIndexAccessFacts`] keyed by its
+//!   single-evaluation selector expression. Receiver kind, receiver/result
+//!   types, read/write/loan policy, and source span come from the source
+//!   model; MIR validates all-and-only coverage and never guesses them from a
+//!   `TypeRefIr` or CFG shape.
 //! - Timeout/concurrent statements retain their continuation/join block and a
 //!   concurrent plan retains its plan-level [`InstructionSourceSite`]. File IR
 //!   block labels referenced by inline `ValueBlock`/DB/concurrent expressions
@@ -82,17 +85,21 @@
 //! File layout and API are owned by the WP4 worker (see
 //! `doc/implementation/bytecode-vm/design/phase-2-compiler-emission.md` §2.4).
 
+mod abi;
 mod contract;
 mod facts;
+mod index;
 
 pub mod builder;
 pub mod liveness;
 
+pub use abi::{MirCallArgument, MirDirectCallFacts, MirReceiverFacts};
 pub use contract::{MirBuildError, MirContractError};
 pub use facts::{
     MirCallWritableFacts, MirForInBinding, MirForInFacts, MirForInItemKind, MirInOutLoan,
-    MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+    MirInOutPathSegment, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
 };
+pub use index::{MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirSourceFacts};
 
 #[cfg(test)]
 mod tests;
@@ -100,9 +107,9 @@ mod tests;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    AssignTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, ExternalRefTable, FileLinkTargets,
-    InstructionSourceSite, PackageCallableId, PatternIr, SourceMapDto, SourceSpanRef, TypeDeclIr,
-    TypeRefIr,
+    ActorDeclarationIr, AssignTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, ExternalRefTable,
+    FileLinkTargets, InstructionSourceSite, PackageCallableId, PackageExecutableCoordinate,
+    PatternIr, SourceMapDto, SourceSpanRef, TypeDeclIr, TypeRefIr,
 };
 
 /// One `FileIrUnit`'s self-contained typed CFG. Pure in-memory; never
@@ -116,7 +123,11 @@ use skiff_artifact_model::{
 /// must not reopen the source `FileIrUnit` for any of these facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirUnit {
+    pub file_ir_identity: String,
     pub module_path: String,
+    /// Complete File IR actor authority retained for checked joins with the
+    /// PackageArtifact manifest. MIR does not synthesize actor rows.
+    pub actor_declarations: Vec<ActorDeclarationIr>,
     pub external_refs: ExternalRefTable,
     pub source_map: SourceMapDto,
     pub type_table: Vec<TypeDeclIr>,
@@ -133,13 +144,19 @@ pub struct MirFunction {
     /// Exact index in the owning File IR executable table. Local/publication
     /// call targets retain this index and resolve it through `MirUnit`.
     pub executable_index: u32,
+    pub origin: PackageExecutableCoordinate,
     pub symbol: String,
     pub kind: MirExecutableKind,
     pub type_params: Vec<String>,
     pub params: Vec<MirParam>,
     pub return_type: TypeRefIr,
     pub self_type: Option<TypeRefIr>,
+    pub receiver: Option<MirReceiverFacts>,
     pub slots: Vec<MirSlot>,
+    /// Exact source bracket facts keyed by the function-owned selector
+    /// expression index. Every bracket access in expressions/places/loans is
+    /// covered exactly once.
+    pub index_accesses: BTreeMap<u32, MirIndexAccessFacts>,
     /// Function-owned expression DAG. Every entry's `index` is exactly its
     /// position and its `ty` is the source-owned type at that index.
     pub expressions: Vec<MirExpression>,
@@ -163,6 +180,8 @@ pub struct MirExpression {
     /// Checked root/path and loan facts for mutating/inout calls. This remains
     /// `None` for calls without either write channel and for non-call nodes.
     pub writable: Option<MirCallWritableFacts>,
+    /// Dense exact ABI facts for Local/Publication/Package direct calls.
+    pub direct_call: Option<MirDirectCallFacts>,
 }
 
 /// Emitter-facing metadata for one compile-time-evaluated local constant.
@@ -201,6 +220,7 @@ pub struct MirSlot {
     pub slot: u32,
     pub name: String,
     pub kind: MirSlotKind,
+    pub writable_local: bool,
     pub ty: Option<TypeRefIr>,
 }
 

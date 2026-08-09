@@ -122,6 +122,7 @@ fn service_call(index: u32) -> ExprIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(index),
                 },
+                concrete_receiver: None,
                 site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                     reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },

@@ -38,6 +38,7 @@ use super::{
     external_refs::{
         rebuild_external_refs_for_file_ir_unit, required_receiver_builtin_capability_version,
     },
+    mir::MirSourceFacts,
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_map_source, source_ast_hash},
     suspend_analysis::suspend_index_for_source,
@@ -107,9 +108,15 @@ impl<'a> SourceFileLoweringContext<'a> {
 pub(crate) fn compile_package_source_file_ir_unit(
     input: PackageSourceLoweringInput<'_, '_, '_>,
 ) -> Result<FileIrUnit> {
+    compile_package_source_file_ir_unit_with_mir_facts(input).map(|(unit, _)| unit)
+}
+
+pub(crate) fn compile_package_source_file_ir_unit_with_mir_facts(
+    input: PackageSourceLoweringInput<'_, '_, '_>,
+) -> Result<(FileIrUnit, MirSourceFacts)> {
     validate_file_ir_unit_role(input.role)?;
     let source_ast_hash = source_ast_hash(input.source)?;
-    let unit = lower_source_file_ir_unit(
+    lower_source_file_ir_unit(
         input.semantic_context,
         source_ast_hash,
         input.package_aliases,
@@ -125,8 +132,7 @@ pub(crate) fn compile_package_source_file_ir_unit(
         input.executable_signatures,
         input.interface_signatures,
         input.service_calls,
-    )?;
-    Ok(unit)
+    )
 }
 
 fn compile_parsed_source_file_ir_unit_with_lowering_context(
@@ -389,7 +395,7 @@ fn lower_source_file_ir_unit(
     exact_executable_signatures: &SourceExecutableSignatureFacts,
     exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
     service_calls: Option<&LoweredServiceCalls>,
-) -> Result<FileIrUnit> {
+) -> Result<(FileIrUnit, MirSourceFacts)> {
     let source = semantic_context.source;
     let ast = source.ast;
     let source_path = source.source_path.as_ref().to_string();
@@ -420,6 +426,7 @@ fn lower_source_file_ir_unit(
         exact_executable_signatures,
     )?;
     let mut unit = FileIrUnit::empty(module_path.to_string(), source_ast_hash.clone());
+    let mut mir_source_facts = MirSourceFacts::new();
     push_source_map_source(&mut unit, source_path, module_path, source_ast_hash);
 
     let mut next_span_id = 0u64;
@@ -486,6 +493,7 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        exact_executable_signatures,
         service_calls,
         &mut unit,
         &mut next_span_id,
@@ -513,7 +521,9 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        exact_executable_signatures,
         service_calls,
+        &mut mir_source_facts,
         &mut unit,
         &mut next_span_id,
     )?;
@@ -525,7 +535,7 @@ fn lower_source_file_ir_unit(
     rebuild_external_refs_for_file_ir_unit(&mut unit).map_err(|error| {
         CompileError::Semantic(format!("invalid service call File IR: {error}"))
     })?;
-    Ok(unit)
+    Ok((unit, mir_source_facts))
 }
 
 pub(super) fn finalize_actor_identities(units: &mut [FileIrUnit]) -> Result<()> {

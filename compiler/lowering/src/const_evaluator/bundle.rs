@@ -16,14 +16,15 @@ use super::ConstEvaluatorError;
 /// Index ownership is exact:
 ///
 /// - graph child indices are local to that graph's `nodes` vector;
-/// - `FrozenConstantNode::TypeRef::type_ref` indexes [`Self::types`];
+/// - `FrozenConstantNode::Representation::type_ref` indexes [`Self::types`];
 /// - `FrozenConstantNode::Record::shape_index` indexes [`Self::shapes`];
-/// - every [`FrozenConstantShape`] field type indexes [`Self::types`].
+/// - every [`FrozenConstantShape`] owner and field type indexes
+///   [`Self::types`].
 ///
 /// Graphs are keyed and iterated by ascending constant symbol. Types are
 /// deduplicated and ordered by their canonical JSON encoding. Shapes are
-/// deduplicated after type relocation and ordered lexicographically by
-/// `[field_count, field_type_indices...]`.
+/// deduplicated only when owner type, ordered field names, and field types are
+/// all equal, then ordered lexicographically by those complete facts.
 ///
 /// When an emitter combines graphs from this bundle into one artifact graph,
 /// it must append graphs in symbol order and checked-add the current node
@@ -56,25 +57,19 @@ impl FrozenConstantBundle {
         types.sort_by_key(type_pool_key);
         ensure_u32_len(&module_path, "types", types.len())?;
 
-        let mut shape_field_types = Vec::<Vec<u32>>::new();
+        let mut shapes = Vec::<FrozenConstantShape>::new();
         for (symbol, constant) in &evaluated {
             let type_map = local_type_map(&module_path, symbol, &constant.types, &types)?;
             for shape in &constant.shapes {
                 let relocated = relocate_shape(&module_path, symbol, shape, &type_map)?;
-                ensure_u32_len(&module_path, "shape fields", relocated.len())?;
-                if !shape_field_types.contains(&relocated) {
-                    shape_field_types.push(relocated);
+                ensure_u32_len(&module_path, "shape fields", relocated.fields.len())?;
+                if !shapes.contains(&relocated) {
+                    shapes.push(relocated);
                 }
             }
         }
-        shape_field_types.sort_by_key(|field_types| shape_pool_key(field_types));
-        ensure_u32_len(&module_path, "shapes", shape_field_types.len())?;
-        let shapes = shape_field_types
-            .iter()
-            .map(|field_types| FrozenConstantShape {
-                field_types: field_types.clone(),
-            })
-            .collect::<Vec<_>>();
+        shapes.sort();
+        ensure_u32_len(&module_path, "shapes", shapes.len())?;
 
         let mut graphs = BTreeMap::new();
         for (symbol, constant) in evaluated {
@@ -87,7 +82,7 @@ impl FrozenConstantBundle {
             let shape_map = local_shape_keys
                 .iter()
                 .map(|shape| {
-                    shape_field_types
+                    shapes
                         .iter()
                         .position(|candidate| candidate == shape)
                         .ok_or_else(|| ConstEvaluatorError::BundleContract {
@@ -177,7 +172,8 @@ impl FrozenConstantBundle {
         &self.types
     }
 
-    /// Resolves a `TypeRef` node or shape-field index against this bundle.
+    /// Resolves a representation node or shape owner/field index against this
+    /// bundle.
     pub fn type_ref(&self, type_ref: u32) -> Result<&TypeRefIr, FrozenConstantLookupError> {
         self.types
             .get(type_ref as usize)
@@ -207,44 +203,78 @@ impl FrozenConstantBundle {
         })
     }
 
+    /// Resolves a shape's exact nominal/structural owner type.
+    pub fn shape_type(&self, shape_index: u32) -> Result<&TypeRefIr, FrozenConstantLookupError> {
+        self.type_ref(self.shape(shape_index)?.type_ref)
+    }
+
+    /// Resolves one ordered field declaration in a bundle-owned shape.
+    pub fn shape_field(
+        &self,
+        shape_index: u32,
+        field_ordinal: u32,
+    ) -> Result<&FrozenConstantShapeField, FrozenConstantLookupError> {
+        let shape = self.shape(shape_index)?;
+        shape.fields.get(field_ordinal as usize).ok_or_else(|| {
+            FrozenConstantLookupError::MissingShapeField {
+                module_path: self.module_path.clone(),
+                shape_index,
+                field_ordinal,
+                field_count: shape.field_count(),
+            }
+        })
+    }
+
     /// Resolves one shape field all the way to its bundle-owned type fact.
     pub fn shape_field_type(
         &self,
         shape_index: u32,
         field_ordinal: u32,
     ) -> Result<&TypeRefIr, FrozenConstantLookupError> {
-        let shape = self.shape(shape_index)?;
-        let type_ref = shape
-            .field_types
-            .get(field_ordinal as usize)
-            .copied()
-            .ok_or_else(|| FrozenConstantLookupError::MissingShapeField {
-                module_path: self.module_path.clone(),
-                shape_index,
-                field_ordinal,
-                field_count: shape.field_count(),
-            })?;
-        self.type_ref(type_ref)
+        self.type_ref(self.shape_field(shape_index, field_ordinal)?.type_ref)
     }
 }
 
-/// One canonical dense-record shape. Field types are indices into the owning
-/// [`FrozenConstantBundle::types`] pool.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One canonical dense-record shape. Owner and field types are indices into
+/// the owning [`FrozenConstantBundle::types`] pool. Transfer/drop plans are
+/// deliberately not invented here; the emitter must join its separate
+/// source-owned transfer-plan input by this exact nominal shape.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrozenConstantShape {
-    field_types: Vec<u32>,
+    type_ref: u32,
+    fields: Vec<FrozenConstantShapeField>,
 }
 
 impl FrozenConstantShape {
-    /// Exact number of fields in this shape.
-    pub fn field_count(&self) -> u32 {
-        u32::try_from(self.field_types.len())
-            .expect("bundle construction checked shape field count")
+    /// Exact nominal or structural owner type in the bundle pool.
+    pub fn type_ref(&self) -> u32 {
+        self.type_ref
     }
 
-    /// Bundle-owned type indices in record field ordinal order.
-    pub fn field_types(&self) -> &[u32] {
-        &self.field_types
+    /// Exact number of fields in this shape.
+    pub fn field_count(&self) -> u32 {
+        u32::try_from(self.fields.len()).expect("bundle construction checked shape field count")
+    }
+
+    /// Strict field-name order and bundle-owned type indices.
+    pub fn fields(&self) -> &[FrozenConstantShapeField] {
+        &self.fields
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FrozenConstantShapeField {
+    name: String,
+    type_ref: u32,
+}
+
+impl FrozenConstantShapeField {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn type_ref(&self) -> u32 {
+        self.type_ref
     }
 }
 
@@ -296,7 +326,13 @@ pub enum FrozenConstantLookupError {
 pub(super) struct EvaluatedConstant {
     pub graph: FrozenConstantGraph,
     pub types: Vec<TypeRefIr>,
-    pub shapes: Vec<Vec<u32>>,
+    pub shapes: Vec<EvaluatedConstantShape>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EvaluatedConstantShape {
+    pub type_ref: u32,
+    pub fields: Vec<(String, u32)>,
 }
 
 fn ensure_u32_len(
@@ -345,24 +381,44 @@ fn local_type_map(
 fn relocate_shape(
     module_path: &str,
     symbol: &str,
-    shape: &[u32],
+    shape: &EvaluatedConstantShape,
     type_map: &[u32],
-) -> Result<Vec<u32>, ConstEvaluatorError> {
-    shape
+) -> Result<FrozenConstantShape, ConstEvaluatorError> {
+    if shape
+        .fields
+        .windows(2)
+        .any(|pair| pair[0].0.as_bytes() >= pair[1].0.as_bytes())
+    {
+        return Err(ConstEvaluatorError::BundleContract {
+            module_path: module_path.to_string(),
+            symbol: symbol.to_string(),
+            message: "shape field names are not strictly ascending".to_string(),
+        });
+    }
+    let relocate_type = |type_ref: u32| {
+        type_map.get(type_ref as usize).copied().ok_or_else(|| {
+            ConstEvaluatorError::BundleContract {
+                module_path: module_path.to_string(),
+                symbol: symbol.to_string(),
+                message: format!(
+                    "shape type index {type_ref} is out of bounds for local type count {}",
+                    type_map.len()
+                ),
+            }
+        })
+    };
+    let type_ref = relocate_type(shape.type_ref)?;
+    let fields = shape
+        .fields
         .iter()
-        .map(|type_ref| {
-            type_map.get(*type_ref as usize).copied().ok_or_else(|| {
-                ConstEvaluatorError::BundleContract {
-                    module_path: module_path.to_string(),
-                    symbol: symbol.to_string(),
-                    message: format!(
-                        "shape type index {type_ref} is out of bounds for local type count {}",
-                        type_map.len()
-                    ),
-                }
+        .map(|(name, type_ref)| {
+            Ok(FrozenConstantShapeField {
+                name: name.clone(),
+                type_ref: relocate_type(*type_ref)?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, ConstEvaluatorError>>()?;
+    Ok(FrozenConstantShape { type_ref, fields })
 }
 
 fn relocate_graph(
@@ -400,7 +456,7 @@ fn relocate_graph(
             }
         }
         match &mut node {
-            FrozenConstantNode::TypeRef { type_ref } => {
+            FrozenConstantNode::Representation { type_ref, .. } => {
                 let local_type_ref = *type_ref;
                 *type_ref = type_map.get(local_type_ref as usize).copied().ok_or_else(|| {
                     ConstEvaluatorError::BundleContract {
@@ -429,7 +485,7 @@ fn relocate_graph(
             }
             FrozenConstantNode::Literal { .. }
             | FrozenConstantNode::Array { .. }
-            | FrozenConstantNode::Behavior { .. } => {}
+            | FrozenConstantNode::Implementation { .. } => {}
         }
         nodes.push(node);
     }
@@ -438,14 +494,4 @@ fn relocate_graph(
 
 fn type_pool_key(ty: &TypeRefIr) -> String {
     serde_json::to_string(ty).expect("TypeRefIr serializes without failure")
-}
-
-fn shape_pool_key(field_types: &[u32]) -> Vec<u32> {
-    let mut key = Vec::with_capacity(field_types.len() + 1);
-    key.push(
-        u32::try_from(field_types.len())
-            .expect("shape field count is checked before canonical sorting"),
-    );
-    key.extend_from_slice(field_types);
-    key
 }

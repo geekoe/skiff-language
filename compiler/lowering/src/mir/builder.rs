@@ -5,22 +5,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     AssignTargetIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr, DbBodyIr,
-    DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr, FileIrUnit, SourceSpanRef,
-    StmtIr,
+    DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr, FileIrUnit,
+    PackageExecutableCoordinate, ParamModeIr, SourceSpanRef, StmtIr,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
-use skiff_compiler_source::{SourceCallableEffectFacts, SourceSymbolKey};
+use skiff_compiler_source::{ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey};
 
 use super::{
+    abi::{direct_call_facts, is_direct_target},
     facts::{
         assignment_place, call_writable_facts, for_in_facts, validate_assert_types,
         validate_pattern,
     },
     liveness::compute_liveness,
     MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
-    MirExpression, MirFunction, MirLiveness, MirMatchArmIr, MirParam, MirParamMode, MirRegion,
-    MirSlot, MirSlotKind, MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
+    MirExpression, MirFunction, MirIndexAccessFacts, MirLiveness, MirMatchArmIr, MirParam,
+    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirSourceFacts, MirStatementEntry, MirStmt,
+    MirStmtKind, MirUnit,
 };
+
+mod actor_authority;
+mod call_contract;
+
+use actor_authority::validate_actor_declarations;
+use call_contract::{build_receiver_facts, direct_call_parameter_modes, MirPackageCatalog};
 
 /// Per-callable effect facts resolved from the source model. The MIR never
 /// infers effects from File IR (design §2.4 stop condition).
@@ -33,9 +41,74 @@ pub fn build_mir_units(
     units: &[FileIrUnit],
     effects: &SourceCallableEffectFacts,
 ) -> Result<Vec<MirUnit>, MirBuildError> {
+    build_mir_units_with_call_facts(
+        package_id,
+        units,
+        effects,
+        &ResolvedCallTargetFacts::empty(),
+    )
+}
+
+/// Production entry retaining exact dependency call signatures as MIR ABI
+/// facts. The three-argument helper remains a test seam for packages without
+/// package-direct calls and fails closed if such a call is encountered.
+pub fn build_mir_units_with_call_facts(
+    package_id: &str,
+    units: &[FileIrUnit],
+    effects: &SourceCallableEffectFacts,
+    resolved_call_targets: &ResolvedCallTargetFacts,
+) -> Result<Vec<MirUnit>, MirBuildError> {
+    build_mir_units_with_source_facts(
+        package_id,
+        units,
+        effects,
+        resolved_call_targets,
+        &MirSourceFacts::new(),
+    )
+}
+
+/// Production builder retaining all lowering-owned source facts that File IR
+/// cannot represent without losing their exact owner or policy.
+pub fn build_mir_units_with_source_facts(
+    package_id: &str,
+    units: &[FileIrUnit],
+    effects: &SourceCallableEffectFacts,
+    resolved_call_targets: &ResolvedCallTargetFacts,
+    source_facts: &MirSourceFacts,
+) -> Result<Vec<MirUnit>, MirBuildError> {
+    for ((module_path, executable_index), _) in source_facts.owners() {
+        let Some(unit) = units.iter().find(|unit| &unit.module_path == module_path) else {
+            return Err(MirBuildError::InvalidSourceFactOwner {
+                module_path: module_path.clone(),
+                executable_index: *executable_index,
+                message: "owner module is absent from the MIR build input".to_string(),
+            });
+        };
+        let declared = unit
+            .declarations
+            .executables
+            .values()
+            .any(|declaration| declaration.executable_index == *executable_index);
+        if !declared || unit.executables.get(*executable_index as usize).is_none() {
+            return Err(MirBuildError::InvalidSourceFactOwner {
+                module_path: module_path.clone(),
+                executable_index: *executable_index,
+                message: "owner executable is absent from the File IR unit".to_string(),
+            });
+        }
+    }
+    let catalog = MirPackageCatalog::build(units, resolved_call_targets)?;
     units
         .iter()
-        .map(|unit| build_mir_unit_with_effect_map(package_id, unit, effects.operations()))
+        .map(|unit| {
+            build_mir_unit_with_catalog(
+                package_id,
+                unit,
+                effects.operations(),
+                &catalog,
+                source_facts,
+            )
+        })
         .collect()
 }
 
@@ -44,6 +117,27 @@ pub(crate) fn build_mir_unit_with_effect_map(
     package_id: &str,
     unit: &FileIrUnit,
     per_callable: &CallableEffectMap,
+) -> Result<MirUnit, MirBuildError> {
+    let catalog = MirPackageCatalog::build(unit_slice(unit), &ResolvedCallTargetFacts::empty())?;
+    build_mir_unit_with_catalog(
+        package_id,
+        unit,
+        per_callable,
+        &catalog,
+        &MirSourceFacts::new(),
+    )
+}
+
+fn unit_slice(unit: &FileIrUnit) -> &[FileIrUnit] {
+    std::slice::from_ref(unit)
+}
+
+fn build_mir_unit_with_catalog(
+    package_id: &str,
+    unit: &FileIrUnit,
+    per_callable: &CallableEffectMap,
+    catalog: &MirPackageCatalog<'_>,
+    source_facts: &MirSourceFacts,
 ) -> Result<MirUnit, MirBuildError> {
     if u32::try_from(unit.executables.len()).is_err() {
         return Err(MirBuildError::ExecutableIndexOverflow {
@@ -102,11 +196,16 @@ pub(crate) fn build_mir_unit_with_effect_map(
             declaration.executable_index,
             executable,
             per_callable,
+            catalog,
+            source_facts,
         )?);
     }
+    validate_actor_declarations(unit)?;
     let constants = clone_constant_facts(unit)?;
     let mir = MirUnit {
+        file_ir_identity: unit.file_ir_identity.clone(),
         module_path: unit.module_path.clone(),
+        actor_declarations: unit.actor_declarations.clone(),
         external_refs: unit.external_refs.clone(),
         source_map: unit.source_map.clone(),
         type_table: unit.type_table.clone(),
@@ -145,6 +244,8 @@ fn build_mir_function(
     executable_index: u32,
     executable: &ExecutableIr,
     per_callable: &CallableEffectMap,
+    catalog: &MirPackageCatalog<'_>,
+    source_facts: &MirSourceFacts,
 ) -> Result<MirFunction, MirBuildError> {
     if executable.statement_spans.len() != executable.body.statements.len() {
         return Err(MirBuildError::StatementSpanCountMismatch {
@@ -184,10 +285,7 @@ fn build_mir_function(
             name: param.name.clone(),
             slot: param.slot,
             ty: param.ty.clone(),
-            mode: match param.mode {
-                skiff_artifact_model::ParamModeIr::Value => MirParamMode::Value,
-                skiff_artifact_model::ParamModeIr::InOut => MirParamMode::InOut,
-            },
+            mode: mir_param_mode(param.mode),
         })
         .collect::<Vec<_>>();
     let slots = executable
@@ -204,11 +302,17 @@ fn build_mir_function(
                 skiff_artifact_model::SlotKind::Temp => MirSlotKind::Temp,
                 skiff_artifact_model::SlotKind::Pattern => MirSlotKind::Pattern,
             },
+            writable_local: slot.writable_local,
             ty: slot.ty.clone(),
         })
         .collect::<Vec<_>>();
-    let mut expressions = clone_typed_expressions(unit, executable, &slots)?;
-    let mut cfg = FunctionCfg::new(unit, executable, &expressions, &slots);
+    let receiver = build_receiver_facts(unit, executable, &params, &slots)?;
+    let index_accesses = source_facts
+        .index_accesses(&unit.module_path, executable_index)
+        .cloned()
+        .unwrap_or_default();
+    let expressions = clone_typed_expressions(unit, executable, &slots, &index_accesses, catalog)?;
+    let mut cfg = FunctionCfg::new(unit, executable, &expressions, &slots, &index_accesses);
     cfg.build_blocks()
         .map_err(|message| MirBuildError::InvalidControlFlow {
             module_path: unit.module_path.clone(),
@@ -218,13 +322,20 @@ fn build_mir_function(
     let (blocks, regions, statements) = cfg.finish();
     let mut function = MirFunction {
         executable_index,
+        origin: PackageExecutableCoordinate {
+            file_ir_identity: unit.file_ir_identity.clone(),
+            module_path: unit.module_path.clone(),
+            executable_index,
+        },
         symbol: executable.symbol.clone(),
         kind,
         type_params: executable.type_params.clone(),
         params,
         return_type: executable.return_type.clone(),
         self_type: executable.self_type.clone(),
+        receiver,
         slots,
+        index_accesses,
         expressions,
         blocks,
         regions,
@@ -249,10 +360,19 @@ fn build_mir_function(
     Ok(function)
 }
 
+fn mir_param_mode(mode: ParamModeIr) -> MirParamMode {
+    match mode {
+        ParamModeIr::Value => MirParamMode::Value,
+        ParamModeIr::InOut => MirParamMode::InOut,
+    }
+}
+
 fn clone_typed_expressions(
     unit: &FileIrUnit,
     executable: &ExecutableIr,
     slots: &[MirSlot],
+    index_accesses: &BTreeMap<u32, MirIndexAccessFacts>,
+    catalog: &MirPackageCatalog<'_>,
 ) -> Result<Vec<MirExpression>, MirBuildError> {
     let expression_count = executable.body.expressions.len();
     let expression_type_count = executable.expression_types.len();
@@ -282,24 +402,63 @@ fn clone_typed_expressions(
                 expression,
                 ty,
                 writable: None,
+                direct_call: None,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let writable = expressions
         .iter()
         .map(|expression| {
-            call_writable_facts(expression.index, &expressions, slots).map_err(|message| {
-                MirBuildError::InvalidWritableFacts {
+            call_writable_facts(expression.index, &expressions, slots, index_accesses).map_err(
+                |message| MirBuildError::InvalidWritableFacts {
+                    module_path: unit.module_path.clone(),
+                    symbol: executable.symbol.clone(),
+                    expression: expression.index,
+                    message,
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (expression, writable) in expressions.iter_mut().zip(writable) {
+        expression.writable = writable;
+    }
+    let direct_calls = expressions
+        .iter()
+        .map(|expression| {
+            let ExprIr::Call { call } = &expression.expression else {
+                return Ok(None);
+            };
+            if !is_direct_target(&call.target) {
+                if call.concrete_receiver.is_some() {
+                    return Err(MirBuildError::InvalidDirectCallFacts {
+                        module_path: unit.module_path.clone(),
+                        symbol: executable.symbol.clone(),
+                        expression: expression.index,
+                        message: "non-direct call carries concreteReceiver".to_string(),
+                    });
+                }
+                return Ok(None);
+            }
+            let modes = direct_call_parameter_modes(unit, call, catalog).map_err(|message| {
+                MirBuildError::InvalidDirectCallFacts {
                     module_path: unit.module_path.clone(),
                     symbol: executable.symbol.clone(),
                     expression: expression.index,
                     message,
                 }
-            })
+            })?;
+            direct_call_facts(call, &modes, expression.writable.as_ref())
+                .map(Some)
+                .map_err(|message| MirBuildError::InvalidDirectCallFacts {
+                    module_path: unit.module_path.clone(),
+                    symbol: executable.symbol.clone(),
+                    expression: expression.index,
+                    message,
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    for (expression, writable) in expressions.iter_mut().zip(writable) {
-        expression.writable = writable;
+    for (expression, direct_call) in expressions.iter_mut().zip(direct_calls) {
+        expression.direct_call = direct_call;
     }
     Ok(expressions)
 }
@@ -410,6 +569,7 @@ struct FunctionCfg<'a> {
     executable: &'a ExecutableIr,
     expressions: &'a [MirExpression],
     slots: &'a [MirSlot],
+    index_accesses: &'a BTreeMap<u32, MirIndexAccessFacts>,
     blocks: Vec<MirBlock>,
     /// File IR block label -> MirBlock ids of its fragments, in order.
     blocks_by_label: BTreeMap<String, Vec<u32>>,
@@ -434,12 +594,14 @@ impl<'a> FunctionCfg<'a> {
         executable: &'a ExecutableIr,
         expressions: &'a [MirExpression],
         slots: &'a [MirSlot],
+        index_accesses: &'a BTreeMap<u32, MirIndexAccessFacts>,
     ) -> Self {
         Self {
             unit,
             executable,
             expressions,
             slots,
+            index_accesses,
             blocks: Vec::new(),
             blocks_by_label: BTreeMap::new(),
             continuations: BTreeMap::new(),
@@ -703,11 +865,12 @@ impl<'a> FunctionCfg<'a> {
             StmtIr::Let { slot, value } => MirStmtKind::Let { slot, value },
             StmtIr::Assign { target, value } => {
                 let place =
-                    assignment_place(&target, self.expressions, self.slots).map_err(|message| {
-                        format!(
+                    assignment_place(&target, self.expressions, self.slots, self.index_accesses)
+                        .map_err(|message| {
+                            format!(
                             "statement {statement_index} has invalid assignment place: {message}"
                         )
-                    })?;
+                        })?;
                 MirStmtKind::Assign {
                     target,
                     place,
@@ -1290,6 +1453,10 @@ impl<'a> FunctionCfg<'a> {
             | ExprIr::ActorSelfField { .. }
             | ExprIr::Rethrow { .. } => {}
             ExprIr::Field { object, .. } => visit(self, object.expression)?,
+            ExprIr::Index { object, index } => {
+                visit(self, object.expression)?;
+                visit(self, index.expression)?;
+            }
             ExprIr::Construct { fields, .. } => {
                 for value in fields.values() {
                     visit(self, value.expression)?;
@@ -1315,6 +1482,15 @@ impl<'a> FunctionCfg<'a> {
             ExprIr::Call { call } => {
                 for argument in call.args {
                     visit(self, argument.expression)?;
+                }
+                for argument in call.inout_args {
+                    for segment in argument.path {
+                        if let skiff_artifact_model::InOutPathSegmentIr::Index { selector } =
+                            segment
+                        {
+                            visit(self, selector.expression)?;
+                        }
+                    }
                 }
             }
             ExprIr::Throw { value, .. } => visit(self, value.expression)?,

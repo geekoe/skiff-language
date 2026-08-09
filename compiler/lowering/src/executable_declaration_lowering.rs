@@ -27,8 +27,9 @@ use super::{
     executable_type_projection::execution_type_ref,
     function_lowering::{
         native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, LocalTypeFieldIndex,
-        LoweredExecutableSignature,
+        LoweredExecutableReceiver, LoweredExecutableSignature,
     },
+    mir::{MirIndexAccessFacts, MirSourceFacts},
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_span, source_span_ref, symbol},
     type_lowering::{
@@ -82,6 +83,7 @@ pub(super) fn lower_const_declarations(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
@@ -136,6 +138,7 @@ pub(super) fn lower_const_declarations(
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            exact_executable_signatures,
             service_calls,
         )?;
         unit.constants.push(ConstIr {
@@ -189,6 +192,7 @@ fn lower_const_initializer_body(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableBody> {
     let mut lowerer = FunctionLowerer::new(
@@ -215,6 +219,7 @@ fn lower_const_initializer_body(
         local_type_fields,
         None,
         executable_signatures,
+        exact_executable_signatures,
         service_calls,
     );
     let value = lowerer.lower_expr_with_expected(&constant.value, Some(expected_type))?;
@@ -297,7 +302,7 @@ fn insert_executable_signature(
         ))
     })?;
     if signatures
-        .insert(index, project_executable_signature(exact))
+        .insert(index, project_executable_signature(exact)?)
         .is_some()
     {
         return Err(CompileError::Semantic(format!(
@@ -307,7 +312,22 @@ fn insert_executable_signature(
     Ok(())
 }
 
-fn project_executable_signature(exact: &SourceExecutableSignature) -> LoweredExecutableSignature {
+fn project_executable_signature(
+    exact: &SourceExecutableSignature,
+) -> Result<LoweredExecutableSignature> {
+    if exact.inout.len() != exact.parameters.len()
+        || exact
+            .parameters
+            .iter()
+            .zip(&exact.inout)
+            .any(|(parameter, inout)| {
+                *inout != (parameter.mode == skiff_artifact_model::ParamModeIr::InOut)
+            })
+    {
+        return Err(CompileError::Semantic(
+            "exact executable parameter modes disagree with the source inout vector".to_string(),
+        ));
+    }
     let params = exact
         .parameters
         .iter()
@@ -315,18 +335,51 @@ fn project_executable_signature(exact: &SourceExecutableSignature) -> LoweredExe
             name: param.name.clone(),
             ty: execution_type_ref(&param.ty),
         })
-        .collect();
-    let self_type = match &exact.receiver {
-        SourceExecutableReceiver::None | SourceExecutableReceiver::ExplicitParameter { .. } => None,
-        SourceExecutableReceiver::Implicit { ty } => Some(execution_type_ref(ty)),
+        .collect::<Vec<_>>();
+    let param_modes = exact
+        .parameters
+        .iter()
+        .map(|parameter| parameter.mode)
+        .collect::<Vec<_>>();
+    let (self_type, receiver) = match &exact.receiver {
+        SourceExecutableReceiver::None => (None, LoweredExecutableReceiver::None),
+        SourceExecutableReceiver::Implicit { ty } => (
+            Some(execution_type_ref(ty)),
+            LoweredExecutableReceiver::Implicit,
+        ),
+        SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 } => {
+            let receiver = exact.parameters.first().ok_or_else(|| {
+                CompileError::Semantic(
+                    "explicit receiver points to a missing source parameter".to_string(),
+                )
+            })?;
+            if receiver.name != "self" || receiver.mode != skiff_artifact_model::ParamModeIr::Value
+            {
+                return Err(CompileError::Semantic(
+                    "explicit receiver parameter zero must be named `self` and have Value mode"
+                        .to_string(),
+                ));
+            }
+            (
+                Some(execution_type_ref(&receiver.ty)),
+                LoweredExecutableReceiver::ExplicitParameter,
+            )
+        }
+        SourceExecutableReceiver::ExplicitParameter { parameter_index } => {
+            return Err(CompileError::Semantic(format!(
+                "explicit receiver must be source parameter 0, found {parameter_index}"
+            )));
+        }
     };
-    LoweredExecutableSignature {
+    Ok(LoweredExecutableSignature {
         type_params: exact.type_params.clone(),
         params,
+        param_modes,
         return_type: execution_type_ref(&exact.return_type),
         self_type,
+        receiver,
         may_suspend: exact.may_suspend,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -353,7 +406,9 @@ pub(super) fn lower_executables(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
+    mir_source_facts: &mut MirSourceFacts,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -407,7 +462,9 @@ pub(super) fn lower_executables(
             local_type_fields,
             None,
             executable_signatures,
+            exact_executable_signatures,
             service_calls,
+            mir_source_facts,
             unit,
             next_span_id,
         )?;
@@ -472,7 +529,9 @@ pub(super) fn lower_executables(
                 local_type_fields,
                 actor_fields.get(&implementation.target),
                 executable_signatures,
+                exact_executable_signatures,
                 service_calls,
+                mir_source_facts,
                 unit,
                 next_span_id,
             )?;
@@ -552,11 +611,13 @@ fn push_executable(
     local_type_fields: &LocalTypeFieldIndex,
     actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
+    mir_source_facts: &mut MirSourceFacts,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
-    let executable = lower_function_with_params(
+    let (executable, index_accesses) = lower_function_with_params(
         function,
         kind,
         executable_symbol.clone(),
@@ -585,8 +646,12 @@ fn push_executable(
         local_type_fields,
         actor_self_fields,
         executable_signatures,
+        exact_executable_signatures,
         service_calls,
     )?;
+    mir_source_facts
+        .insert_executable(module_path, current_index, index_accesses)
+        .map_err(CompileError::Semantic)?;
     let source_span = source_span_ref(function.span);
 
     unit.declarations.executables.insert(
@@ -639,8 +704,9 @@ fn lower_function_with_params(
     local_type_fields: &LocalTypeFieldIndex,
     actor_self_fields: Option<&BTreeMap<String, TypeRefIr>>,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
-) -> Result<ExecutableIr> {
+) -> Result<(ExecutableIr, BTreeMap<u32, MirIndexAccessFacts>)> {
     validate_bare_return_statements(function, &executable_symbol)?;
     let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
         CompileError::Semantic(format!(
@@ -687,6 +753,7 @@ fn lower_function_with_params(
         local_type_fields,
         actor_self_fields,
         executable_signatures,
+        exact_executable_signatures,
         service_calls,
     );
     lowerer.expected_return_type = Some(exact_signature.return_type.clone());
@@ -698,7 +765,12 @@ fn lower_function_with_params(
         )));
     }
     let self_type = exact_signature.self_type.clone();
-    if let Some(self_type) = &self_type {
+    if exact_signature.receiver == LoweredExecutableReceiver::Implicit {
+        let self_type = self_type.as_ref().ok_or_else(|| {
+            CompileError::Semantic(format!(
+                "implicit receiver for `{executable_symbol}` has no exact self type"
+            ))
+        })?;
         let self_type_text = function.implicit_self.as_ref().map(|ty| ty.name.clone());
         let self_slot = lowerer.declare_slot_with_type(
             "self",
@@ -711,7 +783,12 @@ fn lower_function_with_params(
     }
 
     let mut params = Vec::new();
-    for (param, source_param) in exact_signature.params.iter().zip(params_source) {
+    for ((param, mode), source_param) in exact_signature
+        .params
+        .iter()
+        .zip(&exact_signature.param_modes)
+        .zip(params_source)
+    {
         if param.name != source_param.name {
             return Err(CompileError::Semantic(format!(
                 "exact signature parameter `{}` does not match executable body parameter `{}` in `{executable_symbol}`",
@@ -724,7 +801,17 @@ fn lower_function_with_params(
         // writable root while the loan is valid (design §3.1): the body may
         // assign through the root and its exact paths, so the binding is
         // declared mutable.
-        let inout = source_param.mode == skiff_syntax::ast::ParamMode::InOut;
+        let source_mode = match source_param.mode {
+            skiff_syntax::ast::ParamMode::Value => skiff_artifact_model::ParamModeIr::Value,
+            skiff_syntax::ast::ParamMode::InOut => skiff_artifact_model::ParamModeIr::InOut,
+        };
+        if source_mode != *mode {
+            return Err(CompileError::Semantic(format!(
+                "exact signature mode for parameter `{}` does not match its source declaration in `{executable_symbol}`",
+                param.name
+            )));
+        }
+        let inout = *mode == skiff_artifact_model::ParamModeIr::InOut;
         let slot = lowerer.declare_slot_with_type(
             &param.name,
             SlotKind::Param,
@@ -737,12 +824,41 @@ fn lower_function_with_params(
             name: param.name.clone(),
             slot,
             ty: param.ty.clone(),
-            mode: if inout {
-                skiff_artifact_model::ParamModeIr::InOut
-            } else {
-                skiff_artifact_model::ParamModeIr::Value
-            },
+            mode: *mode,
         });
+    }
+    match exact_signature.receiver {
+        LoweredExecutableReceiver::None => {}
+        LoweredExecutableReceiver::Implicit => {
+            let receiver_slot = lowerer.slots.first().ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "implicit receiver for `{executable_symbol}` has no slot zero"
+                ))
+            })?;
+            if receiver_slot.kind != SlotKind::SelfValue
+                || receiver_slot.ty.as_ref() != self_type.as_ref()
+            {
+                return Err(CompileError::Semantic(format!(
+                    "implicit receiver for `{executable_symbol}` is not exact SelfValue slot zero"
+                )));
+            }
+        }
+        LoweredExecutableReceiver::ExplicitParameter => {
+            let receiver = params.first().ok_or_else(|| {
+                CompileError::Semantic(format!(
+                    "explicit receiver for `{executable_symbol}` has no parameter zero"
+                ))
+            })?;
+            if receiver.name != "self"
+                || receiver.slot != 0
+                || receiver.mode != skiff_artifact_model::ParamModeIr::Value
+                || Some(&receiver.ty) != self_type.as_ref()
+            {
+                return Err(CompileError::Semantic(format!(
+                    "explicit receiver for `{executable_symbol}` must be Value parameter zero with the exact self type"
+                )));
+            }
+        }
     }
 
     let mut entry = BlockIr {
@@ -780,6 +896,7 @@ fn lower_function_with_params(
                     target: CallTargetIr::Native {
                         target: native_target_from_symbol(&executable_symbol),
                     },
+                    concrete_receiver: None,
                     site: InstructionSourceSite::Synthetic {
                         reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
                     },
@@ -802,25 +919,29 @@ fn lower_function_with_params(
     }
     lowerer.body.blocks.push(entry);
     lowerer.validate_execution_plans_consumed()?;
+    let index_accesses = std::mem::take(&mut lowerer.index_accesses);
     let slots = SlotLayout {
         frame_size: lowerer.slots.len() as u32,
         slots: lowerer.slots,
     };
 
-    Ok(ExecutableIr {
-        kind,
-        symbol: executable_symbol,
-        type_params: exact_signature.type_params.clone(),
-        params,
-        return_type: exact_signature.return_type.clone(),
-        self_type,
-        slots,
-        may_suspend: exact_signature.may_suspend,
-        body: lowerer.body,
-        expression_types: lowerer.expression_types_ir,
-        statement_spans: lowerer.statement_spans,
-        source_span: Some(source_span_ref(function.span)),
-    })
+    Ok((
+        ExecutableIr {
+            kind,
+            symbol: executable_symbol,
+            type_params: exact_signature.type_params.clone(),
+            params,
+            return_type: exact_signature.return_type.clone(),
+            self_type,
+            slots,
+            may_suspend: exact_signature.may_suspend,
+            body: lowerer.body,
+            expression_types: lowerer.expression_types_ir,
+            statement_spans: lowerer.statement_spans,
+            source_span: Some(source_span_ref(function.span)),
+        },
+        index_accesses,
+    ))
 }
 
 fn validate_bare_return_statements(function: &FunctionDecl, executable_symbol: &str) -> Result<()> {

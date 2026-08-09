@@ -29,15 +29,13 @@
 //! | `Literal` | `Literal` node |
 //! | `ArrayLiteral` | `Array` node (children = item nodes) |
 //! | `Construct` (plain record) | `Record` node (`shape_index` + field value children) |
-//! | `Construct` (impl instance) | `Behavior` nodes (one per impl method) + `Record` node |
-//! | `RepresentationWrap` | `TypeRef` node (nominal type) + the wrapped value node |
+//! | `Construct` (impl instance) | `Record` child + relational `Implementation` root |
+//! | `RepresentationWrap` | relational `Representation { type_ref, value }` root |
 //! | `Field` | folds to the selected record child node |
 //! | `Unary` / `Binary` | folds to a freshly evaluated `Literal` node |
 //!
-//! `ExprIr` has no `Index` variant (array element reads lower to calls in
-//! this File IR generation), so the design-doc `Index` slot has no input to
-//! fold; array access in const initializers is therefore rejected as a call
-//! (see below).
+//! `ExprIr::Index` is rejected until the evaluator has an exact frozen
+//! container/index rule; it is never interpreted from adjacency or shape.
 //!
 //! # Unsupported expressions (compile errors)
 //!
@@ -66,40 +64,42 @@
 //! - **Root**: the graph's root is the const value and is *the last node*
 //!   (`nodes[nodes.len() - 1]`). The evaluator guarantees this by appending a
 //!   value-identical duplicate when an expression folds to an earlier node
-//!   (e.g. `Field` selection or a wrapped value). Duplicates are allowed by
-//!   the format; the emitter may dedup.
+//!   (e.g. `Field` selection). Relational wrappers themselves are roots.
+//!   Duplicates are allowed by the format; the emitter may dedup.
 //! - **Node order**: nodes are pushed in evaluation order (expression DAG
 //!   topological order: children strictly before parents), so the format's
 //!   `child index < parent index` acyclicity encoding holds by construction.
 //! - **Determinism**: expression indices are evaluated in ascending order;
-//!   `BTreeMap`/`BTreeSet` iteration is used for name-ordered data; no
+//!   `BTreeMap` iteration is used for name-ordered data; no
 //!   `HashMap` iteration order is consulted anywhere. The same input
 //!   `FileIrUnit` produces byte-identical graphs on repeated evaluation
 //!   (asserted by tests).
 //!
 //! # Pool index contract (WP5 → WP6 seam)
 //!
-//! `FrozenConstantNode::TypeRef { type_ref }` and `Record { shape_index }`
-//! reference the owning [`FrozenConstantBundle`]'s types/shapes pools. The
+//! `FrozenConstantNode::Representation { type_ref, .. }` and
+//! `Record { shape_index }` reference the owning
+//! [`FrozenConstantBundle`]'s types/shapes pools. The
 //! graph alone is intentionally insufficient: an emitter must consume the
 //! bundle and use its checked lookups; it must never rebuild a pool from graph
 //! nodes or reopen File IR. Both pools are one canonical function of *all*
 //! graphs in the unit:
 //!
 //! - **Types pool**: the distinct `TypeRefIr` values referenced by any graph
-//!   (`TypeRef` nodes and `Record` shape field types), ordered by ascending
+//!   (representation nodes and complete record shapes), ordered by ascending
 //!   canonical JSON text (`serde_json::to_string`; `TypeRefIr` contains only
 //!   `BTreeMap`/`Vec`/scalar fields, so the encoding is deterministic and
 //!   injective).
-//! - **Shapes pool**: the distinct shapes `(field_count, field_types)`
-//!   referenced by any `Record` node, ordered by ascending
-//!   `[field_count, canonical type indices...]` (lexicographic).
+//! - **Shapes pool**: distinct complete shapes `(owner type, ordered field
+//!   names, field types)` referenced by `Record` nodes, ordered
+//!   lexicographically after type relocation. Equal layouts with different
+//!   nominal owners remain distinct.
 //! - **Shape field order**: the record's declared field order, sorted by
 //!   field name (the same order as `Construct.fields` and
 //!   `TypeRefIr::Record.fields`). Field *types* are taken from the
-//!   constructed type's declared record descriptor; field *names* are not
-//!   part of `ShapeDeclaration`; [`FrozenConstantShape`] carries the exact
-//!   ordered type indices, so the emitter performs no source lookup.
+//!   constructed type's declared record descriptor. [`FrozenConstantShape`]
+//!   carries the owner, names, and ordered type indices. Transfer/drop plans
+//!   remain a separate source-owned emitter input and are never defaulted.
 //!
 //! Graph child indices remain local to each graph. Cross-graph merge order is
 //! ascending const symbol; an emitter appends graphs in that order and
@@ -113,15 +113,15 @@
 //!
 //! An impl instance is a `Construct` whose type has `ImplMethod`
 //! executables (`self_type` == the construct's type ref). Each such impl
-//! method becomes one `Behavior { function_key }` node with
+//! method becomes one `FrozenBehaviorBinding { function_key }` owned by the
+//! record's relational `Implementation` node, with
 //! `function_key = "{module_path}::{declaration_name}"` where
 //! `declaration_name` is `"Type.method"` (the key of
 //! `FileDeclarations.executables`, matching the image function keys built by
 //! the emitter per §2.6). Behaviors are emitted in sorted declaration-name
-//! order and deduplicated per graph (identical types constructed twice share
-//! behavior nodes). These nodes are the linker's frozen-const behavior
-//! roots; the association with the constructed record is established by the
-//! const's declared type at load/link time. Impl methods that are `native`
+//! order. The explicit edge is the sole record/behavior association; node
+//! adjacency and a const's declared type are not implicit relations. Impl
+//! methods that are `native`
 //! produce no File IR executable and therefore no behavior node (documented
 //! limitation; no such const exists in the migrated closures).
 //!
@@ -144,17 +144,19 @@
 //! The evaluator, bundle, checked lookup error, bounds and structured build
 //! error are re-exported through `lib.rs` as the Wave 6 emitter surface.
 use skiff_artifact_model::{
-    bytecode::dto::{FrozenConstantGraph, FrozenConstantNode},
+    bytecode::dto::{FrozenBehaviorBinding, FrozenConstantGraph, FrozenConstantNode},
     executable::{BinaryOpIr, ExecutableKind, ExprIr, ExprRefIr, StmtIr, UnaryOpIr},
     file_ir::{ConstIr, FileIrUnit},
     types::{LiteralIr, TypeDescriptorIr, TypeRefIr},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 mod bundle;
 
-pub use bundle::{FrozenConstantBundle, FrozenConstantLookupError, FrozenConstantShape};
+pub use bundle::{
+    FrozenConstantBundle, FrozenConstantLookupError, FrozenConstantShape, FrozenConstantShapeField,
+};
 
 use bundle::EvaluatedConstant;
 
@@ -269,11 +271,9 @@ struct Evaluator<'a> {
     /// Provisional types pool (first-seen order); canonicalized by the unit
     /// bundle after every graph has evaluated.
     types: Vec<TypeRefIr>,
-    /// Provisional shapes pool (first-seen order, deduplicated by field
-    /// types); canonicalized by the unit bundle.
-    shapes: Vec<Vec<u32>>,
-    /// Deduplicated behavior function keys.
-    behaviors: BTreeSet<String>,
+    /// Provisional full nominal shapes (first-seen order); canonicalized by
+    /// the unit bundle without dropping owner type or field names.
+    shapes: Vec<bundle::EvaluatedConstantShape>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -290,7 +290,6 @@ impl<'a> Evaluator<'a> {
             expr_fields: vec![None; constant.body.expressions.len()],
             types: Vec::new(),
             shapes: Vec::new(),
-            behaviors: BTreeSet::new(),
         }
     }
 
@@ -401,17 +400,17 @@ impl<'a> Evaluator<'a> {
             }
             ExprIr::RepresentationWrap { value, type_ref } => {
                 let type_ref_index = self.intern_type(type_ref.clone());
-                self.push_node(
-                    FrozenConstantNode::TypeRef {
-                        type_ref: type_ref_index,
-                    },
-                    1,
-                )?;
                 let child = self.child_node(value.expression, index)?;
                 // Field selection through a wrap reads the wrapped record.
                 self.expr_fields[index as usize] =
                     self.expr_fields[value.expression as usize].clone();
-                child
+                self.push_node(
+                    FrozenConstantNode::Representation {
+                        type_ref: type_ref_index,
+                        value: child,
+                    },
+                    self.depths[child as usize] + 1,
+                )?
             }
             ExprIr::Field { object, field } => {
                 let object_node = self.child_node(object.expression, index)?;
@@ -432,14 +431,21 @@ impl<'a> Evaluator<'a> {
                         ),
                     )
                 })?;
-                let FrozenConstantNode::Record { children, .. } = &self.nodes[object_node as usize]
-                else {
-                    return Err(self.type_error(
+                let children = self.record_children(object_node).ok_or_else(|| {
+                    self.type_error(
                         index,
                         format!("field access `{field}` requires a record operand"),
-                    ));
-                };
+                    )
+                })?;
                 children[position]
+            }
+            ExprIr::Index { .. } => {
+                return Err(self.unsupported(
+                    index,
+                    "Index",
+                    "const index expressions require an exact frozen container/index relation"
+                        .to_string(),
+                ));
             }
             ExprIr::Unary { op, value } => {
                 let child = self.child_node(value.expression, index)?;
@@ -586,11 +592,12 @@ impl<'a> Evaluator<'a> {
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<u32, ConstEvaluatorError> {
         let declared = self.record_fields(index, type_ref)?;
-        let mut shape_types = Vec::with_capacity(declared.len());
-        for (_, ty) in &declared {
-            shape_types.push(self.intern_type(ty.clone()));
-        }
-        let shape_index = self.intern_shape(&shape_types);
+        let shape_type = self.intern_type(type_ref.clone());
+        let shape_fields = declared
+            .iter()
+            .map(|(name, ty)| (name.clone(), self.intern_type(ty.clone())))
+            .collect::<Vec<_>>();
+        let shape_index = self.intern_shape(shape_type, &shape_fields);
         let mut depth = 1u32;
         let mut children = Vec::with_capacity(declared.len());
         for (name, _) in &declared {
@@ -604,9 +611,6 @@ impl<'a> Evaluator<'a> {
             depth = depth.max(self.depths[child as usize] + 1);
             children.push(child);
         }
-        // Behavior nodes precede the record so the record (the expression
-        // result) stays the last pushed node.
-        self.push_behaviors(type_ref)?;
         let record = self.push_node(
             FrozenConstantNode::Record {
                 shape_index,
@@ -616,7 +620,15 @@ impl<'a> Evaluator<'a> {
         )?;
         self.expr_fields[index as usize] =
             Some(declared.into_iter().map(|(name, _)| name).collect());
-        Ok(record)
+        let behaviors = self.behavior_bindings(type_ref);
+        if behaviors.is_empty() {
+            Ok(record)
+        } else {
+            self.push_node(
+                FrozenConstantNode::Implementation { record, behaviors },
+                self.depths[record as usize] + 1,
+            )
+        }
     }
 
     /// Resolves the constructed record's declared fields in ordinal order
@@ -674,9 +686,10 @@ impl<'a> Evaluator<'a> {
             .collect())
     }
 
-    /// Emits one `Behavior` node per impl method whose `self_type` is exactly
-    /// `type_ref`, in sorted declaration-name order, deduplicated per graph.
-    fn push_behaviors(&mut self, type_ref: &TypeRefIr) -> Result<(), ConstEvaluatorError> {
+    /// Returns exact impl bindings in declaration-name order. The enclosing
+    /// `Implementation` node owns their relation to one record.
+    fn behavior_bindings(&self, type_ref: &TypeRefIr) -> Vec<FrozenBehaviorBinding> {
+        let mut bindings = Vec::new();
         for (declaration_name, declaration) in &self.unit.declarations.executables {
             let Some(executable) = self
                 .unit
@@ -692,11 +705,9 @@ impl<'a> Evaluator<'a> {
                 continue;
             }
             let function_key = format!("{}::{}", self.unit.module_path, declaration_name);
-            if self.behaviors.insert(function_key.clone()) {
-                self.push_node(FrozenConstantNode::Behavior { function_key }, 1)?;
-            }
+            bindings.push(FrozenBehaviorBinding { function_key });
         }
-        Ok(())
+        bindings
     }
 
     /// Resolves a child expression reference. The expression DAG is
@@ -742,16 +753,26 @@ impl<'a> Evaluator<'a> {
         (self.types.len() - 1) as u32
     }
 
-    fn intern_shape(&mut self, field_types: &[u32]) -> u32 {
-        if let Some(position) = self
-            .shapes
-            .iter()
-            .position(|existing| existing.as_slice() == field_types)
-        {
+    fn intern_shape(&mut self, type_ref: u32, fields: &[(String, u32)]) -> u32 {
+        if let Some(position) = self.shapes.iter().position(|existing| {
+            existing.type_ref == type_ref && existing.fields.as_slice() == fields
+        }) {
             return position as u32;
         }
-        self.shapes.push(field_types.to_vec());
+        self.shapes.push(bundle::EvaluatedConstantShape {
+            type_ref,
+            fields: fields.to_vec(),
+        });
         (self.shapes.len() - 1) as u32
+    }
+
+    fn record_children(&self, node: u32) -> Option<&[u32]> {
+        match self.nodes.get(node as usize)? {
+            FrozenConstantNode::Record { children, .. } => Some(children),
+            FrozenConstantNode::Representation { value, .. } => self.record_children(*value),
+            FrozenConstantNode::Implementation { record, .. } => self.record_children(*record),
+            FrozenConstantNode::Literal { .. } | FrozenConstantNode::Array { .. } => None,
+        }
     }
 
     fn push_node(
@@ -1319,12 +1340,15 @@ mod tests {
         assert_eq!(
             graph.nodes,
             vec![
-                FrozenConstantNode::Behavior {
-                    function_key: "internal.t::Handler.receive".to_string(),
-                },
                 FrozenConstantNode::Record {
                     shape_index: 0,
                     children: Vec::new(),
+                },
+                FrozenConstantNode::Implementation {
+                    record: 0,
+                    behaviors: vec![FrozenBehaviorBinding {
+                        function_key: "internal.t::Handler.receive".to_string(),
+                    }],
                 },
             ]
         );
@@ -1362,15 +1386,20 @@ mod tests {
         assert_eq!(
             graph.nodes,
             vec![
-                FrozenConstantNode::Behavior {
-                    function_key: "internal.t::Handler.aaa".to_string(),
-                },
-                FrozenConstantNode::Behavior {
-                    function_key: "internal.t::Handler.zzz".to_string(),
-                },
                 FrozenConstantNode::Record {
                     shape_index: 0,
                     children: Vec::new(),
+                },
+                FrozenConstantNode::Implementation {
+                    record: 0,
+                    behaviors: vec![
+                        FrozenBehaviorBinding {
+                            function_key: "internal.t::Handler.aaa".to_string(),
+                        },
+                        FrozenBehaviorBinding {
+                            function_key: "internal.t::Handler.zzz".to_string(),
+                        },
+                    ],
                 },
             ]
         );
@@ -1380,8 +1409,7 @@ mod tests {
     fn shape_canonical_pool_order() {
         // One const with two constructs of different record types:
         // type A { a: string, b: integer } and type B { x: string }.
-        // Canonical types pool: [integer, string].
-        // Canonical shapes: B (1 field, [string]) before A (2 fields).
+        // Canonical shapes retain nominal owner, field names, and types.
         let type_table = vec![
             record_type_declaration(
                 "A",
@@ -1426,14 +1454,14 @@ mod tests {
                     literal: number(1.0)
                 },
                 FrozenConstantNode::Record {
-                    shape_index: 1,
+                    shape_index: 0,
                     children: vec![0, 1],
                 },
                 FrozenConstantNode::Literal {
                     literal: string("y")
                 },
                 FrozenConstantNode::Record {
-                    shape_index: 0,
+                    shape_index: 1,
                     children: vec![3],
                 },
                 FrozenConstantNode::Array {
@@ -1441,6 +1469,40 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn equal_record_layouts_keep_distinct_nominal_shape_owners() {
+        let type_table = vec![
+            record_type_declaration("A", &[("x", TypeRefIr::builtin("string"))]),
+            record_type_declaration("B", &[("x", TypeRefIr::builtin("string"))]),
+        ];
+        let unit = unit_with(Vec::new(), type_table, Vec::new(), BTreeMap::new());
+        let constant = const_ir(
+            "both",
+            vec![
+                literal_expr(string("a")),
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::LocalType { type_index: 0 },
+                    fields: BTreeMap::from([("x".to_string(), expr_ref(0))]),
+                },
+                literal_expr(string("b")),
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::LocalType { type_index: 1 },
+                    fields: BTreeMap::from([("x".to_string(), expr_ref(2))]),
+                },
+                ExprIr::ArrayLiteral {
+                    items: vec![expr_ref(1), expr_ref(3)],
+                },
+            ],
+        );
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_const(&unit, &constant)
+            .expect("equal-layout nominal records evaluate");
+        assert_eq!(bundle.shapes().len(), 2);
+        assert_ne!(bundle.shapes()[0].type_ref(), bundle.shapes()[1].type_ref());
+        assert_eq!(bundle.shapes()[0].fields()[0].name(), "x");
+        assert_eq!(bundle.shapes()[1].fields()[0].name(), "x");
     }
 
     #[test]
@@ -1527,7 +1589,7 @@ mod tests {
         }));
         assert_eq!(
             bundle.types().len(),
-            3,
+            5,
             "shared string type is deduplicated"
         );
         let integer_index = bundle
@@ -1548,30 +1610,49 @@ mod tests {
             .position(|ty| ty == &TypeRefIr::builtin("string"))
             .and_then(|index| u32::try_from(index).ok())
             .expect("string type index");
+        let a_index = bundle
+            .types()
+            .iter()
+            .position(|ty| ty == &TypeRefIr::LocalType { type_index: 0 })
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("A type index");
+        let b_index = bundle
+            .types()
+            .iter()
+            .position(|ty| ty == &TypeRefIr::LocalType { type_index: 1 })
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("B type index");
         assert_eq!(bundle.shapes().len(), 2);
-        assert_eq!(bundle.shapes()[0].field_count(), 1);
-        assert_eq!(bundle.shapes()[0].field_types(), &[string_index]);
-        assert_eq!(bundle.shapes()[1].field_count(), 2);
+        assert_eq!(bundle.shapes()[0].type_ref(), a_index);
+        assert_eq!(bundle.shapes()[0].field_count(), 2);
         assert_eq!(
-            bundle.shapes()[1].field_types(),
-            &[string_index, integer_index]
+            bundle.shapes()[0]
+                .fields()
+                .iter()
+                .map(FrozenConstantShapeField::type_ref)
+                .collect::<Vec<_>>(),
+            vec![string_index, integer_index]
         );
+        assert_eq!(bundle.shapes()[1].type_ref(), b_index);
+        assert_eq!(bundle.shapes()[1].field_count(), 1);
+        assert_eq!(bundle.shapes()[1].fields()[0].name(), "x");
+        assert_eq!(bundle.shapes()[1].fields()[0].type_ref(), string_index);
         assert_eq!(
             bundle
-                .shape_field_type(1, 0)
+                .shape_field_type(0, 0)
                 .expect("shape field type resolves"),
             &TypeRefIr::builtin("string")
         );
         assert_eq!(
             bundle
-                .shape_field_type(1, 1)
+                .shape_field_type(0, 1)
                 .expect("shape field type resolves"),
             &TypeRefIr::builtin("integer")
         );
         assert!(matches!(
-            bundle.shape_field_type(0, 1),
+            bundle.shape_field_type(1, 1),
             Err(FrozenConstantLookupError::MissingShapeField {
-                shape_index: 0,
+                shape_index: 1,
                 field_ordinal: 1,
                 ..
             })
@@ -1583,14 +1664,15 @@ mod tests {
             bundle
                 .node("internal.t.alpha", alpha_root)
                 .expect("alpha root node"),
-            FrozenConstantNode::Record { shape_index: 1, .. }
+            FrozenConstantNode::Record { shape_index: 0, .. }
         ));
-        let FrozenConstantNode::TypeRef { type_ref } = bundle
+        let FrozenConstantNode::Representation { type_ref, value } = bundle
             .node("internal.t.middle", 1)
-            .expect("middle type-ref node")
+            .expect("middle representation node")
         else {
-            panic!("expected middle type-ref node")
+            panic!("expected middle representation node")
         };
+        assert_eq!(*value, 0);
         assert_eq!(*type_ref, secret_index);
         assert_eq!(
             bundle
@@ -1604,7 +1686,7 @@ mod tests {
             bundle
                 .node("internal.t.zeta", zeta_root)
                 .expect("zeta root node"),
-            FrozenConstantNode::Record { shape_index: 0, .. }
+            FrozenConstantNode::Record { shape_index: 1, .. }
         ));
     }
 
@@ -1644,7 +1726,15 @@ mod tests {
             "internal.t.bad".to_string(),
             EvaluatedConstant {
                 graph: FrozenConstantGraph {
-                    nodes: vec![FrozenConstantNode::TypeRef { type_ref: 1 }],
+                    nodes: vec![
+                        FrozenConstantNode::Literal {
+                            literal: string("value"),
+                        },
+                        FrozenConstantNode::Representation {
+                            type_ref: 1,
+                            value: 0,
+                        },
+                    ],
                 },
                 types: vec![TypeRefIr::builtin("string")],
                 shapes: Vec::new(),
@@ -1662,6 +1752,34 @@ mod tests {
             } if module_path == MODULE
                 && symbol == "internal.t.bad"
                 && message.contains("type index 1 is out of bounds")
+        ));
+    }
+
+    #[test]
+    fn bundle_builder_rejects_unowned_shape_owner_type() {
+        let evaluated = BTreeMap::from([(
+            "internal.t.badShape".to_string(),
+            EvaluatedConstant {
+                graph: FrozenConstantGraph {
+                    nodes: vec![FrozenConstantNode::Record {
+                        shape_index: 0,
+                        children: Vec::new(),
+                    }],
+                },
+                types: vec![TypeRefIr::builtin("string")],
+                shapes: vec![bundle::EvaluatedConstantShape {
+                    type_ref: 1,
+                    fields: Vec::new(),
+                }],
+            },
+        )]);
+
+        let error = FrozenConstantBundle::from_evaluated(MODULE.to_string(), evaluated)
+            .expect_err("shape owner type must resolve in the bundle pool");
+        assert!(matches!(
+            error,
+            ConstEvaluatorError::BundleContract { message, .. }
+                if message.contains("shape type index 1 is out of bounds")
         ));
     }
 
@@ -1985,23 +2103,23 @@ mod tests {
             .evaluate_const(&unit, &constant)
             .expect("wrap evaluates");
         let graph = bundle.graph("internal.t.wrapped").expect("wrapped graph");
-        // The wrap result is the value node; per the root convention (last
-        // node = result) a value-identical duplicate is appended as the root.
+        // The relational wrapper itself is the root.
         assert_eq!(
             graph.nodes,
             vec![
                 FrozenConstantNode::Literal {
                     literal: string("x")
                 },
-                FrozenConstantNode::TypeRef { type_ref: 0 },
-                FrozenConstantNode::Literal {
-                    literal: string("x")
+                FrozenConstantNode::Representation {
+                    type_ref: 0,
+                    value: 0,
                 },
             ]
         );
-        let FrozenConstantNode::TypeRef { type_ref } = &graph.nodes[1] else {
-            panic!("expected type-ref sidecar node")
+        let FrozenConstantNode::Representation { type_ref, value } = &graph.nodes[1] else {
+            panic!("expected representation root")
         };
+        assert_eq!(*value, 0);
         assert_eq!(
             bundle
                 .type_ref(*type_ref)
@@ -2020,6 +2138,7 @@ mod tests {
                     target: CallTargetIr::LocalExecutable {
                         executable_index: 0,
                     },
+                    concrete_receiver: None,
                     site: InstructionSourceSite::Synthetic {
                         reason: SyntheticInstructionSiteReason::CompilerDesugaring,
                     },
