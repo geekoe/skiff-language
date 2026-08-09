@@ -222,16 +222,24 @@ fn validate_root_function_bounds(
         )?;
     }
     for (position, entry) in parts.gateway_entries.iter().enumerate() {
-        check_root_function(
+        let gateway_entry_index = position_index(
             CandidateTable::GatewayEntries,
-            position_index(
-                CandidateTable::GatewayEntries,
-                position,
-                parts.gateway_entries.len(),
-            )?,
-            entry.function().get(),
-            parts.functions.len(),
+            position,
+            parts.gateway_entries.len(),
         )?;
+        for callable in entry.callables() {
+            if callable.function().get() as usize >= parts.functions.len() {
+                return Err(
+                    LinkedBytecodeCandidateError::GatewayCallableFunctionOutOfBounds {
+                        gateway_entry_index,
+                        gateway_entry_key: entry.gateway_entry_key().clone(),
+                        role: callable.role(),
+                        function_index: callable.function().get(),
+                        function_len: parts.functions.len(),
+                    },
+                );
+            }
+        }
     }
     for (position, target) in parts.exact_local_targets.iter().enumerate() {
         check_root_function(

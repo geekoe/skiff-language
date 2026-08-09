@@ -29,16 +29,17 @@ pub use index::{
 };
 pub use instruction::LinkedInstruction;
 pub use signature::{LinkedCallableSignature, LinkedCallableSignatureError};
-pub use specialization::SpecializationKey;
+pub use specialization::{ArtifactFunctionKey, ArtifactFunctionKeyParseError, SpecializationKey};
 pub use tables::{
     LinkedCatchMatcher, LinkedExceptionRegion, LinkedResumeSite, LinkedSourceMapEntry,
     LinkedStatementEntry, LinkedSwitchTable,
 };
 pub use targets::{
     LinkedActorMethodTarget, LinkedCallbackCapture, LinkedConstantEntry, LinkedConstantValue,
-    LinkedExactLocalTarget, LinkedGatewayEntry, LinkedHostEffectAdapterTarget,
-    LinkedInterfaceMethod, LinkedInterfaceTable, LinkedOperationEntry,
-    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedExactLocalTarget, LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedGatewayEntry,
+    LinkedGatewayEntryError, LinkedHostEffectAdapterTarget, LinkedInterfaceMethod,
+    LinkedInterfaceTable, LinkedOperationEntry, LinkedServiceOperationTarget, LinkedShapeEntry,
+    LinkedSyntheticCallbackTarget, LinkedTypeEntry,
 };
 
 #[cfg(test)]

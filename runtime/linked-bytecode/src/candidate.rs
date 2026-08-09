@@ -8,10 +8,10 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    LinkedActorMethodTarget, LinkedConstantEntry, LinkedExactLocalTarget, LinkedGatewayEntry,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedOperationEntry, LinkedResumeSite,
-    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
-    SpecializationKey,
+    LinkedActorMethodTarget, LinkedConstantEntry, LinkedExactLocalTarget,
+    LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceTable, LinkedOperationEntry, LinkedResumeSite, LinkedServiceOperationTarget,
+    LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry, SpecializationKey,
 };
 
 /// The linker's sole public raw aggregate builder. Every component row keeps
@@ -217,6 +217,13 @@ pub enum LinkedBytecodeCandidateError {
         function_index: u32,
         function_len: usize,
     },
+    GatewayCallableFunctionOutOfBounds {
+        gateway_entry_index: u32,
+        gateway_entry_key: GatewayEntryKey,
+        role: LinkedGatewayCallableRole,
+        function_index: u32,
+        function_len: usize,
+    },
 }
 
 impl fmt::Display for LinkedBytecodeCandidateError {
@@ -293,6 +300,16 @@ impl fmt::Display for LinkedBytecodeCandidateError {
                 formatter,
                 "{} row {source_index} references function index {function_index}, but the function table has {function_len} rows",
                 source_table.name()
+            ),
+            Self::GatewayCallableFunctionOutOfBounds {
+                gateway_entry_index,
+                gateway_entry_key,
+                role,
+                function_index,
+                function_len,
+            } => write!(
+                formatter,
+                "gateway entry row {gateway_entry_index} ({gateway_entry_key}) role {role:?} references function index {function_index}, but the function table has {function_len} rows"
             ),
         }
     }
