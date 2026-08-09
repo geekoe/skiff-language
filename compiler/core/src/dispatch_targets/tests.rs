@@ -278,6 +278,7 @@ fn service_file_ir(return_type: &str) -> FileIrUnit {
                             target: CallTargetIr::LocalExecutable {
                                 executable_index: 1,
                             },
+                            concrete_receiver: None,
                             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                             },
