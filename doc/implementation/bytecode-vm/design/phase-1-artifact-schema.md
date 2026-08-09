@@ -5,6 +5,11 @@
 2026-08-10 bracket/index amendment：public contract 已冻结；本文的 initial opcode table 尚不足以
 表达嵌套 indexed atomic store/loan，OpcodeContract/schema/runtime implementation pending。
 
+2026-08-10 schema v5 authority amendment：当前 persisted header 必填并精确钉住 opcode contract、native
+lifecycle registry、value lifecycle policy、host effect registry 与 intrinsic registry；ISA 保持 v4，
+bytecode identity generation 为 v3。此 amendment 只更新 artifact/admission/handoff 契约，不表示 Phase 2–7
+实现或阶段验收已完成。
+
 本文是 Phase 1（`phases/phase-1-artifact-schema.md`）的详细设计。它把权威架构契约
 `doc/architecture/bytecode-vm.md` 与 requirement ledger 中 Phase 1 部分（R-003、R-009、R-017、
 R-018、R-019、R-020、R-022、R-023/Phase 1 部分、R-078/1、R-079、R-080/Phase 1 部分、R-081、
@@ -22,6 +27,9 @@ R-220/Phase 1 部分）落成可实现的精确 schema、decoder、validator、i
 
 - 单一 opcode descriptor table：numeric opcode、operand words、允许的 relocation kind、
   operand-stack 签名与 ISA/schema version 由同一 owner 生成或消费（R-017、R-022、R-079）。
+- v5 required header pins：opcode contract fingerprint、native lifecycle registry identity、value lifecycle
+  policy identity、host effect registry identity 与 intrinsic registry identity 都由各自 canonical owner
+  产生，并在 structural admission 前 exact-match；它们不是可选 evidence metadata。
 - Relocatable function/template、constant graph、type/shape、frame、exception、resume、
   statement/source、callback capture 与 relocation DTO（R-019、R-020、R-080/1、R-220/1 的
   ValueTransferPlan schema 声明部分）。
@@ -147,7 +155,7 @@ monomorphization、semantic verifier、runtime 执行、decoded micro-op；不�
 | 0x22 | `call_service` | `serviceOp: Reloc`, `argCount: Immediate`, `resumeRef: Pool`（resumeDescriptors） | `[Value(Declared(argCount))] -> []` | 潜在等待点（§5）；resume 见 §2.3 注 |
 | 0x23 | `call_actor` | `actorMethod: Reloc`, `argCount: Immediate`, `resumeRef: Pool` | `[Value(Declared(argCount))] -> []` | |
 | 0x24 | `call_interface` | `interfaceReq: Reloc`, `methodSlot: Immediate`, `argCount: Immediate` | `[Value(Fixed(1)), Value(Declared(argCount))] -> []` | receiver 在最底；三 carrier 语义 §12.1；`arity` 属 operand（§12.1） |
-| 0x25 | `return` | — | `[Value(FunctionResultCount)] -> []` | 结果数 = `frameLayout.result_count`（v1: 0 或 1） |
+| 0x25 | `return` | — | `[Value(FunctionResultCount)] -> []` | 结果数 = `frameLayout.result_count`（ISA v4: 0 或 1） |
 | 0x30 | `interface_box_local` | `interfaceReq: Reloc` | `[Value(Fixed(1))] -> [Value(Fixed(1))]` | Local carrier（§12.1） |
 | 0x31 | `interface_box_remote` | `serviceOp: Reloc`, `interfaceReq: Reloc` | `[] -> [Value(Fixed(1))]` | RemoteService carrier；serviceOp 提供 dependencySlot + publicInstance 坐标 |
 | 0x32 | `make_callback` | `synthetic: Reloc`, `captureCount: Immediate` | `[Value(Declared(captureCount))] -> [Value(Fixed(1))]` | 创建 CallbackClosureRef（§12.2） |
@@ -175,7 +183,7 @@ monomorphization、semantic verifier、runtime 执行、decoded micro-op；不�
 | 0x80 | `invoke_host` | `effectRef: Reloc`, `argCount: Immediate`, `resumeRef: Pool` | `[Value(Declared(argCount))] -> [Value(Fixed(1))]` | 只有可信 host adapter 可 Pending（§11.1）；adapter identity 语义属 3B |
 
 > **resume 设计注**：§4.2 要求“每个 pending-capable site 有唯一 resume descriptor”；§4.1 的
-> jump/switch/handler/**resume** target 检查属于 pre-link。因此 schema v1 把 `resumeRef: Pool` 作为
+> jump/switch/handler/**resume** target 检查属于 pre-link。因此当前 schema 把 `resumeRef: Pool` 作为
 > pending-capable opcode（`call_service`/`call_actor`/`stream_next`/`emit_stream`/`invoke_host`）的显式
 > operand，指向 artifact 级 `resumeDescriptors` pool（`ResumeDescriptor` DTO 见 §5.1）。resume
 > descriptor 的语义正确性（唯一性、result/error shape、stack height）仍由 3B verifier 证明；pre-link 只
@@ -227,7 +235,7 @@ opcode，也不把未落地工作标为 complete。
 | `invoke_host` | `HostEffectRef` |
 | 其余所有指令 | 无 relocation operand（`allowed = []`） |
 
-`TypeRef`/`ShapeRef`/`FrozenConstantRef` 三个 kind 在 v1 中主要作为 **pool entry** 出现
+`TypeRef`/`ShapeRef`/`FrozenConstantRef` 三个 kind 在 initial table 中主要作为 **pool entry** 出现
 （`const`→FrozenConstantRef、`new_record`/`get_dense_field`/`set_writable_path`→ShapeRef、
 `throw`/`representation_wrap`/`new_array_builder`/`new_map_builder`→TypeRef），也保留为函数级
 relocation kind（§3.4 完整清单），未来指令可引用（决策 D11）。
@@ -295,8 +303,10 @@ pub fn opcode_table_fingerprint() -> String;  // sha256(canonical json of table 
 | 常量 | 当前值 | 用途 |
 | --- | --- | --- |
 | `BYTECODE_MAGIC` | `"skiff-bytecode"` | 首层 magic 字符串，DTO 头字段 |
-| `BYTECODE_SCHEMA_VERSION` | `"skiff-bytecode-v2"` | schema 版本：DTO 形状/字段/表布局 |
-| `BYTECODE_ISA_VERSION` | `"skiff-bytecode-isa-v1"` | ISA 版本：opcode 语义 + operand 布局 + stack 签名 |
+| `BYTECODE_SCHEMA_VERSION` | `"skiff-bytecode-v5"` | schema 版本：DTO 形状/字段/表布局与 required authority pins |
+| `BYTECODE_ISA_VERSION` | `"skiff-bytecode-isa-v4"` | ISA 版本：opcode 语义 + operand 布局 + stack 签名 |
+| `BYTECODE_IDENTITY_SCHEMA_MARKER` | `"skiff-bytecode-artifact-v3"` | canonical identity preimage generation marker |
+| `BYTECODE_IDENTITY_PREFIX` | `"skiff-bytecode-image-v3:sha256"` | framed bytecode identity generation |
 
 升级规则：
 
@@ -309,13 +319,21 @@ pub fn opcode_table_fingerprint() -> String;  // sha256(canonical json of table 
 4. 版本参与 identity preimage（§6.1），因此 schema/ISA 变化必然产生新 bytecode identity 与新
    PackageArtifact build identity；旧 store record 是 immutable 孤儿记录，从不改写（§6.3）。
 5. `opcode_table_fingerprint` 与 ISA version 双保险：即使版本字符串被误写，指纹不一致同样拒绝。
+6. v5 的五个 required pin 必须作为一个整体保留并 exact-match：
+   `opcodeTableFingerprint`、`nativeValueLifecycleRegistry`、`valueLifecyclePolicy`、
+   `hostEffectRegistry`、`intrinsicRegistry`。只比较 registry id/version、只验证被当前 CFG 引用的 entry，
+   或在 linker/verifier 中改读 ambient authority 都不满足 admission。
 
-2026-08-10 的 v2 schema contract 在不改变 ISA 的前提下，为 `FrameLayout` 增加必填
+2026-08-10 的 v2 schema contract 曾在不改变当时 ISA 的前提下，为 `FrameLayout` 增加必填
 `slotTypeRefs`（长度必须等于 `slotCount`）与 `resultTypeRefs`（长度必须等于 `resultCount`）；每项均为
 `BytecodePools.types` 中 `TypeRef` entry 的已校验索引。同时，`effectSummaryRef` 的 Rust DTO 类型收紧为
 `PackageCallableId`（透明 wire string）。缺字段、长度不一致、越界或非 type entry 一律在 structural
-validation 阶段 fail closed。因为这改变 DTO 形状，schema 从 v1 升到 v2；opcode 编号、operand 与 stack
-语义未变，所以 ISA 仍为 v1。语言尚未发布，不保留 v1 reader。
+validation 阶段 fail closed。
+
+当前 v5 amendment 在 v4 header 已有的 opcode contract 与 native lifecycle registry pin 之外，新增
+value lifecycle policy、host effect registry 与 intrinsic registry 三个 pin。它改变 DTO、structural
+admission 和 identity preimage，但不改变 v4 opcode/operand/stack semantics，所以 schema 升到 v5 而 ISA
+保持 v4；identity preimage 扩展后 generation 升到 v3。语言尚未发布，不保留旧 schema 或 identity reader。
 
 ---
 
@@ -367,7 +385,8 @@ artifact-identity/src/bytecode.rs        BytecodeIdentityPayload、bytecode_iden
                                          ValidatedBytecodeArtifact（opaque token，镜像 ValidatedPackageArtifact 模式）
 artifact-identity/src/ecosystem_paths.rs + PackageBytecodeRecordPath
 artifact-identity/src/package_artifact.rs build identity projection 增加 bytecode 字段（§6.2）
-artifact-identity/src/constants.rs       + BYTECODE_IDENTITY_PREFIX（"skiff-bytecode-image-v1:sha256"）
+artifact-identity/src/constants.rs       + BYTECODE_IDENTITY_SCHEMA_MARKER（"skiff-bytecode-artifact-v3"）
+                                         + BYTECODE_IDENTITY_PREFIX（"skiff-bytecode-image-v3:sha256"）
 ```
 
 依赖方向遵守 R-106：`artifact-identity` 只消费 `artifact-model` typed DTO，不反向依赖；
@@ -475,7 +494,7 @@ pub enum BytecodeDecodeError {
 
 | # | 检查 | 落成规则 | 数据结构/位置 |
 | --- | --- | --- | --- |
-| C1 | magic/schema/ISA version 与 canonical opcode table 已知 | `magic == BYTECODE_MAGIC`；`schema_version == BYTECODE_SCHEMA_VERSION`；`isa_version == BYTECODE_ISA_VERSION`；`opcode_table_fingerprint == opcode_table_fingerprint()`（编译期内置表投影 sha256）；header word 高位为 0 | `validate.rs::validate_header` |
+| C1 | magic/schema/ISA version 与五个 required authority pin 已知 | `magic == BYTECODE_MAGIC`；`schema_version == BYTECODE_SCHEMA_VERSION`；`isa_version == BYTECODE_ISA_VERSION`；`opcode_table_fingerprint == opcode_table_fingerprint()`；`native_value_lifecycle_registry == native_value_lifecycle_registry_identity()`；`value_lifecycle_policy == value_lifecycle_policy_identity()`；`host_effect_registry == host_effect_registry_identity()`；`intrinsic_registry == intrinsic_registry_identity()`；header word 高位为 0。所有比较都是完整 identity/fingerprint exact equality | `validate.rs::validate_header` |
 | C2 | artifact/function/word/table/string/constant graph/nesting/单对象大小在配置上限内 | 逐项对照 §4.2 上限常量表；先检查总体字节数，再按结构逐级检查 | `validate.rs`（`limits` 常量） |
 | C3 | 所有 count/offset arithmetic 无溢出 | 全部索引/长度运算走 `checked_add`/`checked_mul`/`checked_sub`；溢出即 `ArithmeticOverflow` | `decode.rs` + `validate.rs` |
 | C4 | instruction word 边界完整，opcode operand 数正确 | 每函数执行 bounded decode（§4.1）；任何 `UnknownOpcode`/`TruncatedInstruction` 即失败 | `decode.rs` |
@@ -489,6 +508,11 @@ C1–C8 在 `artifact-model::bytecode::validate`，输出 `StructurallyValidated
 字段私有、构造只能经 `structurally_validate` 成功路径，防“caller 自造已校验标记”，镜像
 `ValidatedPackageArtifact` 模式）。C9 在 `artifact-identity`，消费 C1–C8 结果并产出最终
 `ValidatedBytecodeArtifact`。
+
+C1 必须在“当前 artifact 是否实际引用该 authority”之前执行。否则同一份 wordcode 可以先以一套 lifecycle/
+host/intrinsic 语义取得 identity 或通过 handoff，再在另一套 ambient registry 下解释；reachability、link closure
+或后续 quickening 的变化还会让原本“未使用”的 entry 变成可执行目标。v5 因此拒绝 partial pin、id/version-only
+match 与按需验证，validated view 也必须保留完整 pin，供后续 handoff/hydration/candidate/verifier 逐层交叉核对。
 
 ### 5.2 十类 corruption 证明映射（阶段页 §4.2）
 
@@ -514,6 +538,10 @@ impl StructurallyValidatedView {
     pub fn functions(&self) -> &[ValidatedFunction];   // 含 decoded instructions + header_pcs
     pub fn pools(&self) -> &BytecodePools;
     pub fn frozen_constant_graph(&self) -> &FrozenConstantGraph;
+    pub fn native_value_lifecycle_registry(&self) -> &NativeValueLifecycleRegistryIdentity;
+    pub fn value_lifecycle_policy(&self) -> &ValueLifecyclePolicyIdentity;
+    pub fn host_effect_registry(&self) -> &HostEffectRegistryIdentity;
+    pub fn intrinsic_registry(&self) -> &IntrinsicRegistryIdentity;
 }
 
 // artifact-identity/src/bytecode.rs
@@ -542,10 +570,14 @@ impl ValidatedBytecodeArtifact {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BytecodeIdentityPayload<'a> {
-    schema: &'static str,            // "skiff-bytecode-artifact-v1"（schema marker）
-    schema_version: &'a str,         // "skiff-bytecode-v2"
-    isa_version: &'a str,            // "skiff-bytecode-isa-v1"
+    schema: &'static str,            // "skiff-bytecode-artifact-v3"（identity generation marker）
+    schema_version: &'a str,         // "skiff-bytecode-v5"
+    isa_version: &'a str,            // "skiff-bytecode-isa-v4"
     opcode_table_fingerprint: &'a str,
+    native_value_lifecycle_registry: &'a NativeValueLifecycleRegistryIdentity,
+    value_lifecycle_policy: &'a ValueLifecyclePolicyIdentity,
+    host_effect_registry: &'a HostEffectRegistryIdentity,
+    intrinsic_registry: &'a IntrinsicRegistryIdentity,
     image: &'a BytecodeImage,        // functions + pools + frozen_constant_graph + debug_table
 }
 ```
@@ -554,9 +586,10 @@ struct BytecodeIdentityPayload<'a> {
   固定；`BTreeMap` 保证 map 顺序规范）。**不包含** `bytecode_identity` 字段自身（自指），其余内容
   全部参与（含 debug table——决策 D14：identity 覆盖全部内容，不引入“可忽略字段”子集）。
 - `bytecode_identity = framed_identity(BYTECODE_IDENTITY_PREFIX, sha256_hex(bytes))`，前缀
-  `"skiff-bytecode-image-v1:sha256"`。
-- schema/ISA version 与 opcode table fingerprint 都进入 preimage ⇒ schema 变化必然改变 bytecode
-  identity（阶段页 §4.2 验收）。
+  `"skiff-bytecode-image-v3:sha256"`。
+- schema/ISA version、opcode contract 与四个 registry/policy authority identity 都进入 preimage ⇒ schema
+  或任一 semantic authority pin 变化必然改变 bytecode identity（阶段页 §4.2 验收）。这正是 generation
+  v3 相对旧 generation 的原子边界；reader 不得用 v3 prefix 重算一个遗漏 authority pin 的旧 preimage。
 - 确定性：相同 typed 输入 ⇒ 相同 canonical JSON ⇒ 相同 identity；map/insertion/build 并发顺序由
   `BTreeMap` 消除（阶段页 §4.2 验收“map/insertion/build 并发顺序不改变 canonical identity”）。
 
@@ -591,7 +624,7 @@ records/package-artifacts/<packageId>/<version>/<buildHash>/bytecode/<bytecodeHa
 ```
 
   `PackageBytecodeRecordPath::new(package_ref, bytecode_ref)`：`bytecodeHash` 从
-  `bytecode_identity` 的 `"skiff-bytecode-image-v1:sha256:"` 前缀后截取；`validate_declared_path`
+  `bytecode_identity` 的 `"skiff-bytecode-image-v3:sha256:"` 前缀后截取；`validate_declared_path`
   校验 `BytecodeArtifactRef.artifact_path` 精确等于 canonical 路径（与 FileIrRef 一致）。
 
 - 存取（`deployment/src/storage/records.rs`）：
@@ -685,9 +718,10 @@ deployment/src/storage/records.rs tests
 
 ---
 
-## 9. 决策记录（主 agent 已确认，2026-08-09）
+## 9. 决策记录（主 agent 已确认，2026-08-09；D17 后续修订）
 
-D1–D19 全部按本文取值确认采纳，无变更。
+D1–D19 的 initial 取值已确认；D17 的版本值随后由 current v5 authority amendment 原子替代，表中记录
+当前值。该修订不改变 D17 的原则，也不表示后续执行阶段已验收。
 
 | # | 决策点 | 本文取值 | 影响面 |
 | --- | --- | --- | --- |
@@ -695,7 +729,7 @@ D1–D19 全部按本文取值确认采纳，无变更。
 | D2 | 变参指令带显式计数 Immediate | `call_local`/`tail_call_local`/`call_service`/`call_actor`/`call_interface`/`invoke_callback`/`new_record`/`invoke_host` 带 `argCount`/`captureCount`/`fieldCount`；`return` 用 `FunctionResultCount` | §2.3 布局 |
 | D3 | pre-link 不做跨引用 arity 匹配 | arity 精确匹配（`argCount == callee 参数数` 等）归 3B（§4.2 “arity 精确匹配”）；pre-link 只查 `<= MAX_ARITY` 与 `<= maxOperandDepth` | C5 / 3B |
 | D4 | branch 编码 | i32 word delta，基准 = 指令 header；`targetPc = headerPc + 1 + operandWords + delta`；表内 target（switch/handler）用函数内绝对 pc | §2.3 / C6 |
-| D5 | pool 与 relocation 双命名空间 | `Pool` 指 artifact 级六类 pool；`Reloc` 指函数级 `relocations`；TypeRef/ShapeRef/FrozenConstantRef 在 v1 主要作 pool entry kind，同时保留为 relocation kind | §2.3 / §5.1 |
+| D5 | pool 与 relocation 双命名空间 | `Pool` 指 artifact 级分类 pool；`Reloc` 指函数级 `relocations`；TypeRef/ShapeRef/FrozenConstantRef 在 initial table 主要作 pool entry kind，同时保留为 relocation kind | §2.3 / §5.1 |
 | D6 | resume descriptor 成为显式 operand | pending-capable 五指令带 `resumeRef: Pool`；`ResumeDescriptor { resultTypeRef, expectedStackHeight, resultPlan }` | §2.3 / R-024 预留 |
 | D7 | 上限数值 | §4.2 常量表（如 1M words/函数、100k 函数、256 MiB、65536 slots、64 深度） | C2 / limits |
 | D8 | 数值表示 | wordcode 嵌入 canonical JSON DTO（`words: [u32]`），artifact 记录仍是 canonical JSON（与 FileIr 同族），不做独立二进制容器 | §6 / store |
@@ -707,7 +741,7 @@ D1–D19 全部按本文取值确认采纳，无变更。
 | D14 | `tail_call_local` 允许的 relocation | 允许 `LocalExecutableRef` 与 `PackageCallableRef`（“exact-local kind”含 package-direct）；eligibility 证明归 3B | §2.3 |
 | D15 | `interface_box_remote` 布局 | `[serviceOp: Reloc, interfaceReq: Reloc]`，stack `[] -> [boxed]`（无参数入栈） | §2.3 |
 | D16 | `ValueTransferPlan` + typed frame 形态 | `{ kind: SnapshotShare|MoveOnly|AffineResource|ExplicitCloneLease }`，挂在 frame 参数/结果/slot 与 capture/容器类型声明上；v2 frame 另以必填 `slotTypeRefs`/`resultTypeRefs` 对齐 types pool；drop/transfer 细节归 6B | §2.6 / §5.1 / R-220 |
-| D17 | identity 前缀与版本字符串 | `"skiff-bytecode-image-v1:sha256"` / `"skiff-bytecode-v2"` / `"skiff-bytecode-isa-v1"` / magic `"skiff-bytecode"` | §2.6 / §6.1 |
+| D17 | identity 前缀与版本字符串（经 v5 authority amendment 更新） | `"skiff-bytecode-image-v3:sha256"` / marker `"skiff-bytecode-artifact-v3"` / schema `"skiff-bytecode-v5"` / ISA `"skiff-bytecode-isa-v4"` / magic `"skiff-bytecode"` | §2.6 / §6.1 |
 | D18 | build projection 的 bytecode 字段序列化 | `skip_serializing_if = "Option::is_none"`：无 bytecode 的既有包 build identity 不变 | §6.2 |
 | D19 | store 写入顺序 | bytecode record 先于引用它的 package record 写入；实现时核对现有 file-ir 顺序保持同一约定 | §6.3 |
 

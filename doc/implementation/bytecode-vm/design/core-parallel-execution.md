@@ -163,6 +163,10 @@ signature is not evidence that its semantic implementation or phase acceptance i
 
 - Public, self-contained MIR owns expression DAG/type, resolved target/type arguments, liveness, region,
   effect/value-transfer and source facts. Emitter does not reopen File IR to infer them.
+- The emitter owns the complete `skiff-bytecode-v5` header and accepts no caller override. Its required pins are
+  the opcode contract, native lifecycle registry, value lifecycle policy, host effect registry and intrinsic
+  registry; ISA remains `skiff-bytecode-isa-v4`, and identity uses generation v3. The admitted handoff receipt
+  retains the four registry/policy identities as one authority-pin group plus the opcode fingerprint.
 - `ConstEvaluator`, bounds and structured error are public.
 - The validated bytecode view retains `typeParameters`, `effectSummaryRef` and debug table facts.
 - The canonical opcode table exposes one semantic `Opcode` enum; downstream code never matches copied numeric

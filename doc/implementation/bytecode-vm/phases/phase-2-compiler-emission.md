@@ -15,6 +15,8 @@
 3. Typed MIR/CFG拥有slot types、blocks/edges、exception regions、liveness/value-transfer、source/statement entry与
    synthetic callback body。
 4. Deterministic emitter生成wordcode、relocations、generic templates、frame/max-stack metadata和constant graph。
+   Emitter不接收caller-supplied header override；它从canonical owner精确写入v5的opcode contract、native
+   lifecycle registry、value lifecycle policy、host effect registry与intrinsic registry pins。
 5. Bounded deterministic const evaluator把top-level const变成frozen constant graph；新artifact不再把const保存为
    request-time executable body。
 6. 至少一个真实Package以及完整Agine build closure能输出新artifact并通过Phase 1 structural validator。
@@ -42,13 +44,17 @@ git diff --check
 ### 4.2 阶段专属证明
 
 - 同一source facts重复编译产生相同wordcode/tables/identity；source traversal/map insertion顺序不影响输出。
+- emission handoff保留完整v5 authority pins，任一pin mutation都在C1–C9 admission失败；identity使用
+  `skiff-bytecode-image-v3:sha256`且ISA仍为`skiff-bytecode-isa-v4`，不得把pin mismatch变成disabled/legacy lane。
 - direct/mutual/generic/self calls保留exact symbolic target和canonical type arguments。
 - tail position只发射显式`tail_call_local`候选；参数evaluation顺序和source site完整。
 - `NoPending`、move-only/affine、use-after-move、非法`InOut`和callback escape负例在source/emission边界拒绝。
 - Const cycle、effectful/nondeterministic operation、resource/capability、超出step/depth/size limit均在编译期拒绝；
   相同const输入产生相同frozen graph和identity。
-- 真实Agine closure的manifest列出每个bytecode artifact identity、ISA、function/word/relocation数量并全部
-  structural-valid。
+- 真实Agine closure的self-describing manifest从admitted artifact/receipt列出每个bytecode artifact的identity、
+  schema、ISA、opcode fingerprint、native lifecycle registry/value lifecycle policy/host effect registry/
+  intrinsic registry四个完整authority identity，以及function/word/relocation数量，并全部structural-valid；
+  不得只记录matched布尔值或依赖读取时的ambient registry回查。
 - 旧evaluator不能作为`var`/value semantics/const/`InOut`变更的正确性oracle；这些使用reference-derived
   golden tests。
 

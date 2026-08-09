@@ -17,6 +17,12 @@
 4. Canonical identity/preimage与store path升级；相同输入确定地产生相同bytes/identity。
 5. Malformed/corruption corpus和fuzz/property入口。
 
+当前schema revision为`skiff-bytecode-v5`：header必填并exact pin opcode contract、native lifecycle registry、
+value lifecycle policy、host effect registry与intrinsic registry。该header-only authority扩展不改变
+opcode/operand/stack semantics，所以ISA保持`skiff-bytecode-isa-v4`；完整pins进入generation v3 identity
+preimage（`skiff-bytecode-artifact-v3` / `skiff-bytecode-image-v3:sha256`）。这是Phase 1 artifact contract，
+不构成Phase 2–7实现完成证据。
+
 ## 3. 非目标
 
 - 不执行bytecode，不实现CFG语义验证。
@@ -48,6 +54,8 @@ source range、cyclic/oversized constant graph、count/offset溢出、identity/c
 - encoder与validator消费同一schema owner，但corruption tests不由emitter生成；
 - map/insertion/build并发顺序不改变canonical identity；
 - schema变化必然改变对应artifact/package/deployment build identity，而不无意改变Package Local ABI。
+- 五个required header pin中任一缺失或变化均在structural admission失败，并改变generation v3 bytecode
+  identity；不得只比较registry id/version或忽略当前image未引用的authority。
 
 ### 4.3 强制 Live
 

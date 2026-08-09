@@ -158,8 +158,23 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 ### 2.6 Emitter（WP6 产出）
 
 - `compiler/emission/src/bytecode/` 新模块（emission 新增对 lowering 的依赖，无环），入口：
-  `pub fn emit_bytecode_artifact(units: &[MirUnit], const_graphs: &BTreeMap<String, FrozenConstantGraph>,
-  opcode_fingerprint: &str) -> Result<BytecodeArtifact, BytecodeEmissionError>`。
+  `pub fn emit_bytecode_artifact(units: &[MirUnit], constants: &[FrozenConstantBundle],
+  transfer_plans: &BytecodeValueTransferPlans) -> Result<BytecodeArtifact, BytecodeEmissionError>`。
+- Phase 2 不接受 caller-supplied header 或 fingerprint。Emitter 必须从 compile-time canonical owners 直接写入
+  v5 header：`opcode_table_fingerprint()`、`native_value_lifecycle_registry_identity()`、
+  `value_lifecycle_policy_identity()`、`host_effect_registry_identity()` 与
+  `intrinsic_registry_identity()`；schema 固定为 `skiff-bytecode-v5`，ISA 固定为
+  `skiff-bytecode-isa-v4`。任一 pin 无法取得或 admission 不精确匹配都使 enabled emission 失败，不能降级为
+  disabled/legacy lane。
+- `assign_bytecode_identity` 使用 generation v3（marker `skiff-bytecode-artifact-v3`，prefix
+  `skiff-bytecode-image-v3:sha256`）并把全部五个 pin 纳入 preimage。Phase 2 handoff receipt 必须把四个
+  registry/policy identity 成组保留在 authority-pins value 中，同时单独保留 opcode fingerprint；不能只留下
+  schema/ISA/bytecode identity 后让 publication 或 Runtime 从 ambient tables 重建语义。
+- exact pin 是 Phase 2 handoff 的必要条件：value lifecycle policy 决定 owner normalization 与递归
+  transfer/drop classification；host-effect/intrinsic registry 决定 target binding、metadata/context、ABI 与
+  instantiated signature。同一 target 名或相同 registry id/version 在 fingerprint 不同的 authority 下可能有
+  不同 executable meaning，因而不能以 name lookup、id/version-only match 或“当前未引用该 entry”替代完整
+  equality。
 - 每 unit → 一个 `BytecodeArtifact`（D11：每 package 一个 image，本阶段按 unit 发射、driver 合并为一个 image
   或每 unit 一个 artifact 由 driver 决定——**契约：driver 把 unit 函数 map 进同一 `BytecodeImage.functions`
   （function_key = `"{module_path}::{symbol}"`），pools 按 image 去重**）。
@@ -207,12 +222,20 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 - 错误模型：`BytecodeEmissionError`（structured enum），任一错误使该 package 的 bytecode 产出失败
   （fail closed，不写部分记录）。
 
+上述 header/handoff 接口落地只冻结 Phase 2 的输入输出边界；在真实函数 emission、closure manifest 与本阶段
+全部 gate 完成前，Phase 2 状态仍按 phase page 记为 planned，不因 v5 pin 接线而升级。
+
 ### 2.7 迁移 lane（WP6/CLI）
 
 - `PackageCompileInput.emit_bytecode: bool`（默认 false）；CLI `skiff package build|publish --emit-bytecode`；
   新子命令 `skiff-compiler bytecode-verify <artifact-root> [--manifest <path>]`：walk store 中全部
-  bytecode records，逐条 `ValidatedBytecodeArtifact::admit`（C1–C9），失败即退出码非 0，输出 manifest
-  （identity/ISA/function/word/relocation 计数）。
+  bytecode records，逐条 `ValidatedBytecodeArtifact::admit`（C1–C9），失败即退出码非 0。输出的
+  self-describing manifest 中，每个 package entry 必须从 admitted artifact/receipt 直接记录
+  `bytecodeIdentity`、`schemaVersion`、
+  `isaVersion`、`opcodeTableFingerprint`，以及四个完整 authority identity：
+  `nativeValueLifecycleRegistry`、`valueLifecyclePolicy`、`hostEffectRegistry`、`intrinsicRegistry`；随后记录
+  function/word/relocation 计数。Manifest 不得只写 authority 名称、布尔“matched”结果，或要求消费者再从
+  当前 process registry 回查，因而单独保存的 evidence 在 authority 更新后仍能说明当时 admit 的精确语义。
 - emit_bytecode=true 时：pipeline 在 publish 前发射 → `assign_bytecode_identity` →
   `write_package_bytecode`（bytecode record 先于 package record）→ `PackageArtifact.bytecode = Some(ref)`。
 - 默认 false 保证 legacy lane（stable release pointer / dev watch）不发布新 schema（阶段页 §3 迁移约束）。
@@ -286,8 +309,9 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 | const evaluator | 相同输入相同 graph+identity；cycle/超 step/超深度/超 size 拒绝；literal/impl-instance 求值 golden |
 | 结构性 | 全部产出过 `structurally_validate`（C1–C8）+ `ValidatedBytecodeArtifact::admit`（C1–C9） |
 | 真实 closure | 隔离 artifact root 上 `skiff package publish --emit-bytecode` 编译完整 Agine closure，
-  `bytecode-verify --manifest` 输出 manifest（三仓 commit、compiler SHA、每 package identity/ISA/function/
-  word/relocation 计数），全部 structural-valid |
+  `bytecode-verify --manifest` 输出 manifest（三仓 commit、compiler SHA；每 package 的 identity、schema、ISA、
+  opcode fingerprint、native lifecycle registry/value lifecycle policy/host effect registry/intrinsic registry
+  四个完整 authority identity，以及 function/word/relocation 计数），全部 structural-valid |
 | golden 非 oracle | var/let/const/InOut 行为用 reference-derived golden（fixture 直接断言），不引用旧 evaluator 输出 |
 
 Focused gate（同一候选）：`verify --only compiler`、`--only skiff-tests`、`--only foundation`、

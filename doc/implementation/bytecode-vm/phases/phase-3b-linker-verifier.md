@@ -15,11 +15,20 @@
    resume、tail eligibility、move/share/drop、callback capture与budget checkpoint。
 4. Constant graph初始化/冻结计划和atomic image publication；失败时不可观察partial image。
 5. Per-build successful/failed load concurrency与cache evidence。
+6. v5 authority continuity：hydration与candidate完整保留opcode contract、native lifecycle registry、value lifecycle
+   policy、host effect registry与intrinsic registry pins；verifier逐项对照同一个admitted artifact view与当前
+   compile-time authority，不接受caller补写或ambient重建。
 
 ## 3. 独立性约束
 
 Verifier可以消费canonical opcode schema和linked types，但不得相信emitter/linker声明的stack depth、effect、target、
 exception或resource summary。正向artifact由compiler产生；负向corruption corpus必须独立变异raw/validated input。
+
+Header exact pin 与逐-row semantic validation 是两道都必须通过的门禁。C1 先拒绝任何registry/policy fingerprint
+mismatch；随后 linker/verifier 对每个 `HostEffectRef` / `IntrinsicRef` 在该精确registry下验证target、binding、
+metadata/required context、ABI与instantiated signature，并用精确value lifecycle policy重算相关transfer facts。
+只按symbol查找、只比较registry id/version、或“签名看起来兼容”都允许artifact在A authority下取得identity却在B
+authority下执行，因此必须fail closed。candidate携带的pin只是待交叉核对的provenance，不是proof。
 
 ## 4. 验收
 
@@ -45,6 +54,8 @@ git diff --check
 - 同一validated input在不同map/insertion/concurrency顺序下产生相同linked overlay和image identity；
 - 同buildId并发load只发布一个完整image；失败waiter观察同一attempt failure且cache无partial state；
 - source/statement tables覆盖call、throw、effect、DB、timeout和generated failure sites。
+- opcode/native/policy/host/intrinsic任一header pin mutation均在link/verify前拒绝；host或intrinsic row的target、
+  metadata、ABI、instantiated signature与其精确pinned registry不一致也必须独立拒绝。
 
 ### 4.3 阶段专属 Live
 

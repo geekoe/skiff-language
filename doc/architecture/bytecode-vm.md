@@ -153,6 +153,29 @@ ISA（Instruction Set Architecture）是持久化 bytecode 的语义契约，包
 ISA 不包括 runtime 内存地址、decoded Rust enum 大小、dispatch optimization、superinstruction 或 JIT machine
 code。
 
+当前持久化 envelope 是 bytecode schema `skiff-bytecode-v5`、ISA
+`skiff-bytecode-isa-v4` 与 bytecode identity generation v3（schema marker
+`skiff-bytecode-artifact-v3`，identity prefix `skiff-bytecode-image-v3:sha256`）。v5 header 除
+magic/schema/ISA/declared identity 外，必须携带并精确钉住以下五个 semantic authority：
+
+- opcode contract：`opcodeTableFingerprint`，覆盖 numeric/semantic opcode identity、operand role、stack
+  effect 与允许的 relocation kind；
+- native lifecycle registry：`nativeValueLifecycleRegistry` 的 exact registry id、version 与 fingerprint；
+- value lifecycle policy：`valueLifecyclePolicy` 的 exact version 与 fingerprint；
+- host effect registry：`hostEffectRegistry` 的 exact registry id、version 与 fingerprint；
+- intrinsic registry：`intrinsicRegistry` 的 exact registry id、version 与 fingerprint。
+
+这些字段是必填 pin，不是可选的 provenance note。Structural admission 必须把每个 pin 与当前 reader 的
+compile-time authority 做 exact equality；缺失、未知或任何 identity/fingerprint mismatch 都在 link 前拒绝，
+即使当前 image 恰好没有引用对应 registry entry 也不能忽略。Validated view、compiler handoff、hydration、
+linked candidate 与 verifier 必须成组保留这些 pin，后续层不得从 ambient registry 重建、替换或只比较
+display id/version。
+
+v5 只扩展 persisted header、admission 与 identity preimage，没有改变 opcode number、operand layout、stack
+effect 或 instruction semantics，因此 ISA 保持 v4；identity preimage 则新增完整 authority pins，所以 bytecode
+identity 必须升级到 generation v3。同一 wordcode 若带不同 authority pin 不是同一个 executable artifact，
+并必须产生不同 bytecode identity 与上层 build identity。
+
 ### 3.2 Wordcode
 
 Artifact bytecode 使用 wordcode：
@@ -376,7 +399,8 @@ statement profiling、safepoint 或 source attribution；内部含无界循环�
 
 Bounded decoder 和 structural validator 在 linker 读取任何 artifact-controlled index 前执行。至少验证：
 
-- magic/schema/ISA version 与 canonical opcode table 已知；
+- magic/schema/ISA version 已知，且 opcode contract、native lifecycle registry、value lifecycle policy、host
+  effect registry 与 intrinsic registry 五个 required header pin 都与 reader 的 compile-time authority 精确一致；
 - artifact、function、word、table、string、constant graph、nesting depth 和单对象大小在配置上限内，所有
   count/offset arithmetic 无溢出；
 - instruction word 边界完整，opcode operand 数正确；
@@ -400,6 +424,9 @@ Link 后 verifier 至少证明：
 - linked function、slot、type/shape、exception/callback/value-transfer plan中没有残留`TypeParam`，每个concrete
   specialization key唯一且所有call edge指向对应exact specialization；
 - dynamic interface method slot、Local/Remote/Callback 三条 carrier path 共享同一 canonical signature；
+- 每个 `HostEffectRef` 与 `IntrinsicRef` 都只能在 header 精确钉住的 registry 下解析，并精确匹配 target、
+  binding/metadata 与 instantiated signature；symbol/name 相同或 registry id/version 相同不能替代 fingerprint
+  equality；
 - exception region 正确嵌套，handler stack height、catch slot、matcher 与 cleanup depth 合法；
 - 每个 pending-capable site 有唯一 resume descriptor，resume result/error shape 正确；
 - declared `NoPending` callable 不可到达 pending-capable instruction；
