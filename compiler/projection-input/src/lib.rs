@@ -12,9 +12,14 @@ use skiff_artifact_model::{
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
 mod callable_effects;
+mod local_interface_conformances;
 mod package_callable_signatures;
 
 pub use callable_effects::{ProjectionCallableEffectFacts, ProjectionExecutableKey};
+pub use local_interface_conformances::{
+    ProjectionLocalInterfaceConformance, ProjectionLocalInterfaceConformanceError,
+    ProjectionLocalInterfaceConformanceFacts, ProjectionLocalInterfaceConformanceFactsError,
+};
 pub use package_callable_signatures::{
     canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -451,6 +456,7 @@ pub struct ProjectionSourceFacts {
     abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     callable_effects: ProjectionCallableEffectFacts,
     callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
+    local_interface_conformances: ProjectionLocalInterfaceConformanceFacts,
 }
 
 #[derive(Debug, Clone)]
@@ -461,6 +467,7 @@ pub struct ProjectionSourceFactsParts {
     pub abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     pub callable_effects: ProjectionCallableEffectFacts,
     pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
+    pub local_interface_conformances: ProjectionLocalInterfaceConformanceFacts,
 }
 
 impl ProjectionSourceFacts {
@@ -472,6 +479,7 @@ impl ProjectionSourceFacts {
             abi_ids: parts.abi_ids,
             callable_effects: parts.callable_effects,
             callable_semantic_facts: parts.callable_semantic_facts,
+            local_interface_conformances: parts.local_interface_conformances,
         }
     }
 
@@ -499,6 +507,10 @@ impl ProjectionSourceFacts {
         &self,
     ) -> &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts> {
         &self.callable_semantic_facts
+    }
+
+    pub fn local_interface_conformances(&self) -> &ProjectionLocalInterfaceConformanceFacts {
+        &self.local_interface_conformances
     }
 }
 
