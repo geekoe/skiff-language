@@ -33,7 +33,7 @@ pub(super) fn validate_unique_keys(
     }
 
     let mut exact_local_keys = BTreeSet::new();
-    let mut previous_exact_local = None;
+    let mut previous_exact_local: Option<&crate::SpecializationKey> = None;
     for target in &parts.exact_local_targets {
         if !exact_local_keys.insert(target.key().clone()) {
             return Err(LinkedBytecodeCandidateError::DuplicateExactLocalTarget {
