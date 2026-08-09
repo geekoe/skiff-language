@@ -832,10 +832,10 @@ pub enum LinkedStmtIr {
         value: ExprRefIr,
     },
     TestEffectRegister {
-        target: LinkedCallTarget,
+        target: Box<LinkedCallTarget>,
         expect: Option<LinkedTestEffectExpectedIr>,
         step_expect: Option<LinkedTestEffectExpectedIr>,
-        outcome: LinkedTestEffectOutcomeIr,
+        outcome: Box<LinkedTestEffectOutcomeIr>,
     },
     Expr {
         value: ExprRefIr,

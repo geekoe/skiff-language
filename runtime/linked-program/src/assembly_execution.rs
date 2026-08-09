@@ -246,7 +246,7 @@ impl AssemblyExecutionImage {
             })?;
         let addr = shared
             .executable_addr(target)
-            .map_err(AssemblyExecutionImageError::SharedImage)?;
+            .map_err(|error| AssemblyExecutionImageError::SharedImage(Box::new(error)))?;
         self.executable_at(&addr)
     }
 
@@ -373,7 +373,7 @@ impl AssemblyExecutionImage {
         let call = self
             .shared_packages
             .resolve_package_direct_call(caller_package_build_id, package_ref, package_callable_id)
-            .map_err(AssemblyExecutionImageError::SharedImage)?;
+            .map_err(|error| AssemblyExecutionImageError::SharedImage(Box::new(error)))?;
         self.executable_at(call.executable_addr())?;
         if let Some(receiver) = call.receiver_const() {
             self.const_at(receiver)?;
@@ -393,7 +393,7 @@ impl AssemblyExecutionImage {
                 caller_file_ir_identity,
                 service_call_ref_index,
             )
-            .map_err(AssemblyExecutionImageError::SharedImage)
+            .map_err(|error| AssemblyExecutionImageError::SharedImage(Box::new(error)))
     }
 }
 
@@ -501,7 +501,7 @@ fn validate_db_target(
 ) -> AssemblyExecutionResult<()> {
     shared
         .validate_db_object_target_id(&target.target_id)
-        .map_err(AssemblyExecutionImageError::SharedImage)?;
+        .map_err(|error| AssemblyExecutionImageError::SharedImage(Box::new(error)))?;
 
     let target_build_id = &target.target_id.package_artifact_ref.package_build_id;
     let target_slot = code_slot_by_build.get(target_build_id).ok_or_else(|| {
@@ -558,8 +558,8 @@ fn validate_db_target(
             owner_file_ir_identity: owner_file_ir_identity.to_string(),
             expression_index,
             type_name: target.type_name.clone(),
-            expected,
-            actual: actual.clone(),
+            expected: Box::new(expected),
+            actual: Box::new(actual.clone()),
         });
     }
     Ok(())
@@ -980,7 +980,7 @@ pub type AssemblyExecutionResult<T> = Result<T, AssemblyExecutionImageError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssemblyExecutionImageError {
-    SharedImage(SharedPackageImageError),
+    SharedImage(Box<SharedPackageImageError>),
     CodeSlotCountMismatch {
         expected: usize,
         actual: usize,
@@ -1136,8 +1136,8 @@ pub enum AssemblyExecutionImageError {
         owner_file_ir_identity: String,
         expression_index: usize,
         type_name: String,
-        expected: TypeAddr,
-        actual: TypeAddr,
+        expected: Box<TypeAddr>,
+        actual: Box<TypeAddr>,
     },
 }
 

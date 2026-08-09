@@ -14,12 +14,9 @@ use crate::{
 };
 
 const PACKAGE_ID: &str = "example.db-model";
-const PACKAGE_BUILD: &str =
-    "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const FORGED_PACKAGE_BUILD: &str =
-    "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const PACKAGE_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const PACKAGE_BUILD: &str = "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FORGED_PACKAGE_BUILD: &str = "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PACKAGE_LOCAL_ABI: &str = "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FILE_ID: &str =
     "skiff-file-ir-v13:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const SOURCE_HASH: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -139,9 +136,12 @@ fn execution_admission_rejects_valid_hash_package_mismatch() {
 
     assert!(matches!(
         error,
-        AssemblyExecutionImageError::SharedImage(
-            SharedPackageImageError::PackageBuildNotLoaded { build_id }
-        ) if build_id == artifact::PackageBuildId::new(FORGED_PACKAGE_BUILD)
+        AssemblyExecutionImageError::SharedImage(error)
+            if matches!(
+                error.as_ref(),
+                SharedPackageImageError::PackageBuildNotLoaded { build_id }
+                    if build_id == &artifact::PackageBuildId::new(FORGED_PACKAGE_BUILD)
+            )
     ));
 }
 
@@ -159,9 +159,11 @@ fn execution_admission_checks_every_db_expression_carrier() {
 
         assert!(matches!(
             admit(vec![carrier(carrier_kind, target)], Vec::new()),
-            Err(AssemblyExecutionImageError::SharedImage(
-                SharedPackageImageError::PackageBuildNotLoaded { .. }
-            ))
+            Err(AssemblyExecutionImageError::SharedImage(error))
+                if matches!(
+                    error.as_ref(),
+                    SharedPackageImageError::PackageBuildNotLoaded { .. }
+                )
         ));
     }
 }
@@ -174,9 +176,11 @@ fn execution_admission_checks_db_targets_in_constant_bodies() {
 
     assert!(matches!(
         admit(Vec::new(), vec![carrier(DbCarrier::Operation, target)]),
-        Err(AssemblyExecutionImageError::SharedImage(
-            SharedPackageImageError::PackageBuildNotLoaded { .. }
-        ))
+        Err(AssemblyExecutionImageError::SharedImage(error))
+            if matches!(
+                error.as_ref(),
+                SharedPackageImageError::PackageBuildNotLoaded { .. }
+            )
     ));
 }
 
@@ -187,9 +191,11 @@ fn execution_admission_rejects_valid_hash_file_mismatch() {
 
     assert!(matches!(
         admit(vec![carrier(DbCarrier::Query, target)], Vec::new()),
-        Err(AssemblyExecutionImageError::SharedImage(
-            SharedPackageImageError::DbTargetFileRefOutsideArtifact { .. }
-        ))
+        Err(AssemblyExecutionImageError::SharedImage(error))
+            if matches!(
+                error.as_ref(),
+                SharedPackageImageError::DbTargetFileRefOutsideArtifact { .. }
+            )
     ));
 }
 
@@ -199,9 +205,11 @@ fn execution_admission_rejects_type_without_db_attachment() {
 
     assert!(matches!(
         admit(vec![carrier(DbCarrier::LeaseRead, target)], Vec::new()),
-        Err(AssemblyExecutionImageError::SharedImage(
-            SharedPackageImageError::MissingDbTargetAttachment { type_index: 1, .. }
-        ))
+        Err(AssemblyExecutionImageError::SharedImage(error))
+            if matches!(
+                error.as_ref(),
+                SharedPackageImageError::MissingDbTargetAttachment { type_index: 1, .. }
+            )
     ));
 }
 
@@ -255,10 +263,10 @@ fn execution_admission_rejects_address_that_disagrees_with_target_id() {
     assert!(matches!(
         admit(vec![carrier(DbCarrier::Operation, target)], Vec::new()),
         Err(AssemblyExecutionImageError::DbTargetAddressMismatch {
-            expected: TypeAddr { type_index: 0, .. },
-            actual: TypeAddr { type_index: 1, .. },
+            expected,
+            actual,
             ..
-        })
+        }) if expected.type_index == 0 && actual.type_index == 1
     ));
 }
 

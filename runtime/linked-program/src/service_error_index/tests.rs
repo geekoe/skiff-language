@@ -129,11 +129,11 @@ fn named_union_branches_keep_exact_context_on_one_execution_address() {
                 ServiceErrorExecutionContext::NamedUnionBranch {
                     union_addr: union_addr.clone(),
                     branch_index,
-                    branch: LinkedNamedUnionBranch::Literal {
+                    branch: Box::new(LinkedNamedUnionBranch::Literal {
                         value: LiteralIr::String {
                             value: value.to_string(),
                         },
-                    },
+                    }),
                     representation_owner: None,
                 },
             )

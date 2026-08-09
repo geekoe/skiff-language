@@ -82,7 +82,7 @@ pub enum ServiceErrorExecutionContext {
     NamedUnionBranch {
         union_addr: TypeAddr,
         branch_index: usize,
-        branch: LinkedNamedUnionBranch,
+        branch: Box<LinkedNamedUnionBranch>,
         representation_owner: Option<TypeAddr>,
     },
 }
@@ -201,8 +201,8 @@ impl ServiceErrorTypeIndex {
                     return Err(
                         ServiceErrorTypeIndexError::ExecutionAddressIdentityConflict {
                             addr,
-                            first: existing,
-                            second: identity,
+                            first: Box::new(existing),
+                            second: Box::new(identity),
                         },
                     );
                 }
@@ -301,8 +301,8 @@ pub enum ServiceErrorTypeIndexError {
     },
     ExecutionAddressIdentityConflict {
         addr: TypeAddr,
-        first: ServiceErrorPublicIdentity,
-        second: ServiceErrorPublicIdentity,
+        first: Box<ServiceErrorPublicIdentity>,
+        second: Box<ServiceErrorPublicIdentity>,
     },
     TypeRecordConflict {
         type_id: PackageSchemaTypeId,

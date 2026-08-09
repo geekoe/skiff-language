@@ -412,8 +412,8 @@ impl SharedPackageLinkedImage {
         if dependency.artifact_ref() != dependency_ref {
             return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
                 key,
-                linked: dependency_ref.clone(),
-                loaded: dependency.artifact_ref().clone(),
+                linked: Box::new(dependency_ref.clone()),
+                loaded: Box::new(dependency.artifact_ref().clone()),
             });
         }
         let fact = dependency
@@ -485,8 +485,8 @@ impl SharedPackageLinkedImage {
         if dependency.artifact_ref() != &binding.package {
             return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
                 key,
-                linked: binding.package.clone(),
-                loaded: dependency.artifact_ref().clone(),
+                linked: Box::new(binding.package.clone()),
+                loaded: Box::new(dependency.artifact_ref().clone()),
             });
         }
         if symbol
@@ -557,16 +557,16 @@ impl SharedPackageLinkedImage {
             self.required_code_by_build(&target.package_artifact_ref.package_build_id)?;
         if dependency.artifact_ref() != &target.package_artifact_ref {
             return Err(SharedPackageImageError::DbTargetPackageRefMismatch {
-                expected: target.package_artifact_ref.clone(),
-                loaded: dependency.artifact_ref().clone(),
+                expected: Box::new(target.package_artifact_ref.clone()),
+                loaded: Box::new(dependency.artifact_ref().clone()),
             });
         }
         let file_ref = unique_semantic_artifact_file_ref(dependency, &target.file_ir_ref)?;
         if file_ref != &target.file_ir_ref {
             return Err(SharedPackageImageError::DbTargetFileRefMismatch {
                 dependency_package_build_id: dependency.package_build_id().clone(),
-                expected: file_ref.clone(),
-                actual: target.file_ir_ref.clone(),
+                expected: Box::new(file_ref.clone()),
+                actual: Box::new(target.file_ir_ref.clone()),
             });
         }
         let file = dependency.file(&file_ref.file_ir_identity).ok_or_else(|| {
@@ -685,8 +685,8 @@ impl SharedPackageLinkedImage {
             if dependency.artifact_ref() != &binding.package {
                 return Err(SharedPackageImageError::PackageLinkTargetRefMismatch {
                     key: key.clone(),
-                    linked: binding.package.clone(),
-                    loaded: dependency.artifact_ref().clone(),
+                    linked: Box::new(binding.package.clone()),
+                    loaded: Box::new(dependency.artifact_ref().clone()),
                 });
             }
         }
@@ -784,8 +784,8 @@ impl SharedPackageCode {
         if !semantic_file_ref_matches_loaded(&target.file_ref, file) {
             return Err(SharedPackageImageError::ExecutableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
-                expected: expected_file_ref.clone(),
-                actual: target.file_ref.clone(),
+                expected: Box::new(expected_file_ref.clone()),
+                actual: Box::new(target.file_ref.clone()),
             });
         }
         let executable = target.executable_index as usize;
@@ -926,8 +926,8 @@ impl SharedPackageCode {
             return Err(SharedPackageImageError::CallableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
                 package_callable_id: callable_id.clone(),
-                expected: expected_file_ref.clone(),
-                actual: target.file_ref.clone(),
+                expected: Box::new(expected_file_ref.clone()),
+                actual: Box::new(target.file_ref.clone()),
             });
         }
         if target.executable_index as usize >= file.executables.len() {
@@ -957,8 +957,8 @@ fn validate_artifact_ref(
     };
     if &actual != expected {
         return Err(SharedPackageImageError::HydratedArtifactRefMismatch {
-            expected: expected.clone(),
-            actual,
+            expected: Box::new(expected.clone()),
+            actual: Box::new(actual),
         });
     }
     Ok(())
@@ -1084,7 +1084,7 @@ fn validate_file_ref(
     if !semantic_file_ref_matches_loaded(expected, file) {
         return Err(SharedPackageImageError::HydratedFileRefMismatch {
             package_build_id: package.package_build_id.clone(),
-            expected: expected.clone(),
+            expected: Box::new(expected.clone()),
             loaded_module_path: file.module_path.clone(),
             loaded_source_ast_hash: file.source_ast_hash.clone(),
         });
@@ -1220,7 +1220,7 @@ fn validate_requirement_binding(
                 key,
                 expected_package_id: requirement.package_id.clone(),
                 expected_version: requirement.exact_version.clone(),
-                linked: dependency.clone(),
+                linked: Box::new(dependency.clone()),
             },
         );
     }
@@ -1315,8 +1315,8 @@ pub enum SharedPackageImageError {
         build_id: PackageBuildId,
     },
     HydratedArtifactRefMismatch {
-        expected: PackageArtifactRef,
-        actual: PackageArtifactRef,
+        expected: Box<PackageArtifactRef>,
+        actual: Box<PackageArtifactRef>,
     },
     DuplicateHydratedFile {
         package_build_id: PackageBuildId,
@@ -1336,7 +1336,7 @@ pub enum SharedPackageImageError {
     },
     HydratedFileRefMismatch {
         package_build_id: PackageBuildId,
-        expected: FileIrRef,
+        expected: Box<FileIrRef>,
         loaded_module_path: String,
         loaded_source_ast_hash: String,
     },
@@ -1383,7 +1383,7 @@ pub enum SharedPackageImageError {
         key: PackageRequirementKey,
         expected_package_id: String,
         expected_version: String,
-        linked: PackageArtifactRef,
+        linked: Box<PackageArtifactRef>,
     },
     PackageRequirementLocalAbiMismatch {
         key: PackageRequirementKey,
@@ -1397,8 +1397,8 @@ pub enum SharedPackageImageError {
     },
     PackageLinkTargetRefMismatch {
         key: PackageRequirementKey,
-        linked: PackageArtifactRef,
-        loaded: PackageArtifactRef,
+        linked: Box<PackageArtifactRef>,
+        loaded: Box<PackageArtifactRef>,
     },
     PackageDirectCallRequiresDependencyAlias {
         caller_package_build_id: PackageBuildId,
@@ -1435,8 +1435,8 @@ pub enum SharedPackageImageError {
         symbol_path: String,
     },
     DbTargetPackageRefMismatch {
-        expected: PackageArtifactRef,
-        loaded: PackageArtifactRef,
+        expected: Box<PackageArtifactRef>,
+        loaded: Box<PackageArtifactRef>,
     },
     DbTargetFileRefOutsideArtifact {
         dependency_package_build_id: PackageBuildId,
@@ -1448,8 +1448,8 @@ pub enum SharedPackageImageError {
     },
     DbTargetFileRefMismatch {
         dependency_package_build_id: PackageBuildId,
-        expected: FileIrRef,
-        actual: FileIrRef,
+        expected: Box<FileIrRef>,
+        actual: Box<FileIrRef>,
     },
     DbTargetFileNotLoaded {
         dependency_package_build_id: PackageBuildId,
@@ -1521,9 +1521,9 @@ pub enum SharedPackageImageError {
         package_build_id: PackageBuildId,
         package_callable_id: PackageCallableId,
         first_public_path: String,
-        first_receiver: ConstAddr,
+        first_receiver: Box<ConstAddr>,
         conflicting_public_path: String,
-        conflicting_receiver: ConstAddr,
+        conflicting_receiver: Box<ConstAddr>,
     },
     PublicInstanceReceiverFileNotLoaded {
         package_build_id: PackageBuildId,
@@ -1531,8 +1531,8 @@ pub enum SharedPackageImageError {
     },
     PublicInstanceReceiverFileRefMismatch {
         package_build_id: PackageBuildId,
-        expected: FileIrRef,
-        actual: FileIrRef,
+        expected: Box<FileIrRef>,
+        actual: Box<FileIrRef>,
     },
     PublicInstanceReceiverConstOutOfBounds {
         package_build_id: PackageBuildId,
@@ -1558,8 +1558,8 @@ pub enum SharedPackageImageError {
     CallableTargetFileRefMismatch {
         package_build_id: PackageBuildId,
         package_callable_id: PackageCallableId,
-        expected: FileIrRef,
-        actual: FileIrRef,
+        expected: Box<FileIrRef>,
+        actual: Box<FileIrRef>,
     },
     CallableTargetExecutableOutOfBounds {
         package_build_id: PackageBuildId,
@@ -1574,8 +1574,8 @@ pub enum SharedPackageImageError {
     },
     ExecutableTargetFileRefMismatch {
         package_build_id: PackageBuildId,
-        expected: FileIrRef,
-        actual: FileIrRef,
+        expected: Box<FileIrRef>,
+        actual: Box<FileIrRef>,
     },
     ExecutableTargetOutOfBounds {
         package_build_id: PackageBuildId,

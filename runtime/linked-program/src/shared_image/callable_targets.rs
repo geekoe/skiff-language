@@ -70,9 +70,9 @@ pub(super) fn link_callable_targets(
                             package_build_id: code.package_build_id().clone(),
                             package_callable_id: callable_id.clone(),
                             first_public_path: first_path.clone(),
-                            first_receiver: first_receiver.clone(),
+                            first_receiver: Box::new(first_receiver.clone()),
                             conflicting_public_path: public_path.clone(),
-                            conflicting_receiver: receiver,
+                            conflicting_receiver: Box::new(receiver),
                         },
                     );
                 }
@@ -128,8 +128,8 @@ fn const_addr(
         return Err(
             SharedPackageImageError::PublicInstanceReceiverFileRefMismatch {
                 package_build_id: code.package_build_id().clone(),
-                expected: expected_file_ref.clone(),
-                actual: receiver.file.clone(),
+                expected: Box::new(expected_file_ref.clone()),
+                actual: Box::new(receiver.file.clone()),
             },
         );
     }
