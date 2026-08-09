@@ -1086,6 +1086,7 @@ fn service_contract(
                 contract: operation_contract,
             },
         )]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: display_name.to_string(),
@@ -1230,6 +1231,8 @@ fn implementation_package(
                 },
             },
         )]),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements,
         service_requirements,

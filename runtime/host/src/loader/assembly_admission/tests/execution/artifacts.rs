@@ -703,6 +703,7 @@ fn service_contract(
                 contract: operation_contract,
             },
         )]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: if schema_records.is_empty() {
             Vec::new()
         } else {
@@ -2029,6 +2030,8 @@ fn implementation_package(
                 },
             },
         )]),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements,
         contract_requirements,
         service_requirements,

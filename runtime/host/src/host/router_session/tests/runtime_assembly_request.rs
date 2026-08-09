@@ -58,7 +58,7 @@ async fn host_direct_task_executes_exact_route_and_cleans_supervision() {
     assert!(submit
         .build_id
         .as_deref()
-        .is_some_and(|build| build.starts_with("skiff-package-build-v10:sha256:")));
+        .is_some_and(|build| build.starts_with("skiff-package-build-v11:sha256:")));
     assert_eq!(submit.target_kind, "function");
     assert!(!payload.is_empty());
 
