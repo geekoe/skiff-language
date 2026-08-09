@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod corpus;
 mod limits;
+mod property;
 mod roundtrip;
 mod schema_snapshot;
 

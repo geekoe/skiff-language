@@ -265,3 +265,85 @@ fn decoded_headers_are_strictly_ascending() {
         previous = Some(pc);
     }
 }
+
+/// encode → decode → encode is idempotent: decoding the assembled wordcode
+/// and re-assembling the decoded instructions reproduces the exact words, and
+/// canonical artifact bytes survive a JSON parse → re-assemble cycle
+/// byte-for-byte (阶段页 §4.2 验收).
+#[test]
+fn encode_decode_encode_is_idempotent() {
+    // Function level: assemble → decode → re-assemble.
+    let decoded = BoundedDecoder::new()
+        .decode_function(&main_function_words())
+        .expect("canonical wordcode decodes");
+    let re_encoded: Vec<EncodedInstruction> = decoded
+        .instructions
+        .iter()
+        .map(|instruction| {
+            EncodedInstruction::new(
+                instruction.descriptor.opcode,
+                instruction.operand_words.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        assemble_function(&re_encoded).expect("re-assemble must succeed"),
+        main_function_words()
+    );
+
+    // Artifact level: canonical bytes → JSON → assemble again → same bytes.
+    let bytes = assemble_artifact(&canonical_artifact()).expect("canonical bytes");
+    let parsed: BytecodeArtifact = serde_json::from_slice(&bytes).expect("parse canonical bytes");
+    assert_eq!(
+        assemble_artifact(&parsed).expect("re-assemble must succeed"),
+        bytes
+    );
+}
+
+/// A multi-instruction function made of every zero-operand opcode
+/// round-trips through assemble → decode → re-assemble with identical words.
+#[test]
+fn zero_operand_instruction_mix_round_trips() {
+    let instructions: Vec<EncodedInstruction> =
+        [0x05, 0x14, 0x25, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x71]
+            .iter()
+            .map(|&opcode| EncodedInstruction::new(opcode, vec![]))
+            .collect();
+    let words = assemble_function(&instructions).expect("assemble");
+    let decoded = BoundedDecoder::new()
+        .decode_function(&words)
+        .expect("decode must succeed");
+    assert_eq!(decoded.instructions.len(), instructions.len());
+    let re_encoded: Vec<EncodedInstruction> = decoded
+        .instructions
+        .iter()
+        .map(|instruction| {
+            EncodedInstruction::new(
+                instruction.descriptor.opcode,
+                instruction.operand_words.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        assemble_function(&re_encoded).expect("re-assemble must succeed"),
+        words
+    );
+}
+
+/// Identity determinism: the canonical bytecode identity preimage
+/// (`BytecodeIdentityPayload` → framed sha256, §6.1) is computed by
+/// artifact-identity (C9), not by artifact-model; the artifact-identity
+/// bytecode module is a separate task and does not exist in this crate, so
+/// the "same fixture ⇒ same identity, any field mutation ⇒ different
+/// identity" assertion is **skipped** here. The property that identity is a
+/// pure function of — canonical bytes — is pinned by the byte-for-byte
+/// determinism tests above (`identical_inputs_produce_identical_bytes`,
+/// `canonical_bytes_are_insertion_order_insensitive`,
+/// `encode_decode_encode_is_idempotent`).
+#[test]
+fn identity_determinism_is_deferred_to_artifact_identity() {
+    // Skipped by design: identity computation lives in artifact-identity.
+    // When it lands, add: build twice ⇒ equal identity; mutate any preimage
+    // field (schema/ISA version and opcode fingerprint are part of the
+    // preimage, §6.1) ⇒ different identity.
+}
