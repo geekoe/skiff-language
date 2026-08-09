@@ -177,13 +177,13 @@ mod tests {
             interface PublicApi<T> {
               function submit(
                 self: Self,
-                input: T,
-                nested: Array<T?>?
-              ) -> T
-              function status(self: Self) -> string
+                input: payments.User,
+                nested: Array<payments.User?>?
+              ) -> payments.User
+              function status(self: Self) -> T
             }
             interface Marker {}
-            type Handler implements PublicApi<payments.User>, Marker {}
+            type Handler implements PublicApi<string>, Marker {}
             impl Handler {
               function status() -> string { return "ready" }
               function submit(
@@ -279,6 +279,13 @@ mod tests {
                 .len(),
             1
         );
+        assert!(matches!(
+            generic_source_interface
+                .interface()
+                .canonical_type_args
+                .as_slice(),
+            [TypeRefIr::Builtin { name, args }] if name == "string" && args.is_empty()
+        ));
         assert!(contract_operation_facts
             .interfaces()
             .iter()

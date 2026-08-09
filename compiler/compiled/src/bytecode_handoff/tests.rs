@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
-    assign_bytecode_identity, BYTECODE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX,
+    assign_bytecode_identity, BYTECODE_IDENTITY_PREFIX, BYTECODE_IDENTITY_SCHEMA_MARKER,
+    FILE_IR_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     descriptor_for_opcode, BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin,
@@ -58,6 +59,9 @@ fn canonical_artifact() -> BytecodeArtifact {
         opcode_table_fingerprint: skiff_artifact_model::opcode_table_fingerprint(),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: "identity-is-assigned-after-structural-validation".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::from([(function_key, function)]),
@@ -76,6 +80,7 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
     let artifact = canonical_artifact();
     let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
     let handoff = BytecodeCompilationHandoff::try_new(artifact.clone(), reference.clone()).unwrap();
+    let authorities = handoff.receipt().authorities();
 
     assert_eq!(handoff.artifact(), &artifact);
     assert_eq!(handoff.reference(), &reference);
@@ -91,8 +96,20 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
         artifact.opcode_table_fingerprint
     );
     assert_eq!(
-        handoff.receipt().native_value_lifecycle_registry(),
-        skiff_artifact_model::native_value_lifecycle_registry_identity()
+        authorities.native_value_lifecycle_registry(),
+        &artifact.native_value_lifecycle_registry
+    );
+    assert_eq!(
+        authorities.value_lifecycle_policy(),
+        &artifact.value_lifecycle_policy
+    );
+    assert_eq!(
+        authorities.host_effect_registry(),
+        &artifact.host_effect_registry
+    );
+    assert_eq!(
+        authorities.intrinsic_registry(),
+        &artifact.intrinsic_registry
     );
     assert_eq!(handoff.receipt().function_count(), 1);
     assert_eq!(handoff.receipt().word_count(), 1);
@@ -108,11 +125,20 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
 }
 
 #[test]
-fn fixture_carries_every_required_v4_manifest_field() {
+fn fixture_carries_every_required_v5_manifest_field() {
     let artifact = canonical_artifact();
     let wire = serde_json::to_value(&artifact).unwrap();
     let function = &wire["image"]["functions"]["module::main"];
 
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v3:sha256");
+    assert_eq!(
+        BYTECODE_IDENTITY_SCHEMA_MARKER,
+        "skiff-bytecode-artifact-v3"
+    );
+    assert!(artifact
+        .bytecode_identity
+        .starts_with("skiff-bytecode-image-v3:sha256:"));
     assert_eq!(wire["magic"], BYTECODE_MAGIC);
     assert_eq!(wire["schemaVersion"], BYTECODE_SCHEMA_VERSION);
     assert_eq!(wire["isaVersion"], BYTECODE_ISA_VERSION);
@@ -124,6 +150,18 @@ fn fixture_carries_every_required_v4_manifest_field() {
         wire["nativeValueLifecycleRegistry"],
         serde_json::to_value(skiff_artifact_model::native_value_lifecycle_registry_identity())
             .unwrap()
+    );
+    assert_eq!(
+        wire["valueLifecyclePolicy"],
+        serde_json::to_value(skiff_artifact_model::value_lifecycle_policy_identity()).unwrap()
+    );
+    assert_eq!(
+        wire["hostEffectRegistry"],
+        serde_json::to_value(skiff_artifact_model::host_effect_registry_identity()).unwrap()
+    );
+    assert_eq!(
+        wire["intrinsicRegistry"],
+        serde_json::to_value(skiff_artifact_model::intrinsic_registry_identity()).unwrap()
     );
     assert_eq!(wire["image"]["constantRoots"], serde_json::json!({}));
     assert_eq!(
@@ -146,16 +184,63 @@ fn fixture_carries_every_required_v4_manifest_field() {
 }
 
 #[test]
-fn lifecycle_registry_drift_is_rejected_before_handoff() {
-    let mut artifact = canonical_artifact();
-    artifact
-        .native_value_lifecycle_registry
-        .fingerprint
-        .push_str(":corrupt");
-    let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
+fn semantic_authority_drift_is_rejected_before_handoff() {
+    type AuthorityMutation = (&'static str, fn(&mut BytecodeArtifact));
 
+    let mutations: [AuthorityMutation; 4] = [
+        ("native value lifecycle registry", |artifact| {
+            artifact
+                .native_value_lifecycle_registry
+                .fingerprint
+                .push_str(":corrupt");
+        }),
+        ("value lifecycle policy", |artifact| {
+            artifact
+                .value_lifecycle_policy
+                .fingerprint
+                .push_str(":corrupt");
+        }),
+        ("host-effect registry", |artifact| {
+            artifact
+                .host_effect_registry
+                .fingerprint
+                .push_str(":corrupt");
+        }),
+        ("intrinsic registry", |artifact| {
+            artifact.intrinsic_registry.fingerprint.push_str(":corrupt");
+        }),
+    ];
+
+    for (authority, mutate) in mutations {
+        let mut artifact = canonical_artifact();
+        mutate(&mut artifact);
+        let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
+
+        assert!(
+            matches!(
+                BytecodeCompilationHandoff::try_new(artifact, reference),
+                Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
+            ),
+            "{authority} drift must fail closed"
+        );
+    }
+}
+
+#[test]
+fn legacy_schema_and_identity_generations_are_rejected_before_handoff() {
+    let mut stale_schema = canonical_artifact();
+    stale_schema.schema_version = "skiff-bytecode-v4".to_string();
+    let reference = BytecodeArtifactRef::new(stale_schema.bytecode_identity.clone());
     assert!(matches!(
-        BytecodeCompilationHandoff::try_new(artifact, reference),
+        BytecodeCompilationHandoff::try_new(stale_schema, reference),
+        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
+    ));
+
+    let mut stale_identity = canonical_artifact();
+    stale_identity.bytecode_identity = format!("skiff-bytecode-image-v2:sha256:{}", "0".repeat(64));
+    let reference = BytecodeArtifactRef::new(stale_identity.bytecode_identity.clone());
+    assert!(matches!(
+        BytecodeCompilationHandoff::try_new(stale_identity, reference),
         Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
     ));
 }

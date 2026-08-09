@@ -16,7 +16,8 @@
 
 use skiff_artifact_identity::{validate_bytecode_identity, ArtifactIdentityError};
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, NativeValueLifecycleRegistryIdentity,
+    BytecodeArtifact, BytecodeArtifactRef, HostEffectRegistryIdentity, IntrinsicRegistryIdentity,
+    NativeValueLifecycleRegistryIdentity, ValueLifecyclePolicyIdentity,
 };
 use thiserror::Error;
 
@@ -43,10 +44,25 @@ pub struct BytecodeCompilationReceipt {
     schema_version: String,
     isa_version: String,
     opcode_table_fingerprint: String,
-    native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,
+    authorities: BytecodeCompilationAuthorityPins,
     function_count: u64,
     word_count: u64,
     relocation_count: u64,
+}
+
+/// Exact semantic authorities retained from an admitted bytecode image.
+///
+/// The four pins stay grouped so a receipt consumer cannot select the native
+/// lifecycle registry while overlooking the classifier, host-effect, or
+/// intrinsic authority introduced by bytecode schema v5. Construction is
+/// private: production values can only be derived from the artifact admitted
+/// by [`BytecodeCompilationHandoff::try_new`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytecodeCompilationAuthorityPins {
+    native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,
+    value_lifecycle_policy: ValueLifecyclePolicyIdentity,
+    host_effect_registry: HostEffectRegistryIdentity,
+    intrinsic_registry: IntrinsicRegistryIdentity,
 }
 
 /// Failure to admit the exact emission output at the compiled-package seam.
@@ -159,7 +175,7 @@ impl BytecodeCompilationReceipt {
             schema_version: artifact.schema_version.clone(),
             isa_version: artifact.isa_version.clone(),
             opcode_table_fingerprint: artifact.opcode_table_fingerprint.clone(),
-            native_value_lifecycle_registry: artifact.native_value_lifecycle_registry.clone(),
+            authorities: BytecodeCompilationAuthorityPins::from_artifact(artifact),
             function_count: artifact.image.functions.len() as u64,
             word_count,
             relocation_count,
@@ -182,9 +198,9 @@ impl BytecodeCompilationReceipt {
         &self.opcode_table_fingerprint
     }
 
-    /// Exact native value lifecycle registry admitted with this v4 image.
-    pub fn native_value_lifecycle_registry(&self) -> &NativeValueLifecycleRegistryIdentity {
-        &self.native_value_lifecycle_registry
+    /// All exact semantic authorities admitted with this v5 image.
+    pub const fn authorities(&self) -> &BytecodeCompilationAuthorityPins {
+        &self.authorities
     }
 
     pub fn function_count(&self) -> u64 {
@@ -197,6 +213,33 @@ impl BytecodeCompilationReceipt {
 
     pub fn relocation_count(&self) -> u64 {
         self.relocation_count
+    }
+}
+
+impl BytecodeCompilationAuthorityPins {
+    fn from_artifact(artifact: &BytecodeArtifact) -> Self {
+        Self {
+            native_value_lifecycle_registry: artifact.native_value_lifecycle_registry.clone(),
+            value_lifecycle_policy: artifact.value_lifecycle_policy.clone(),
+            host_effect_registry: artifact.host_effect_registry.clone(),
+            intrinsic_registry: artifact.intrinsic_registry.clone(),
+        }
+    }
+
+    pub const fn native_value_lifecycle_registry(&self) -> &NativeValueLifecycleRegistryIdentity {
+        &self.native_value_lifecycle_registry
+    }
+
+    pub const fn value_lifecycle_policy(&self) -> &ValueLifecyclePolicyIdentity {
+        &self.value_lifecycle_policy
+    }
+
+    pub const fn host_effect_registry(&self) -> &HostEffectRegistryIdentity {
+        &self.host_effect_registry
+    }
+
+    pub const fn intrinsic_registry(&self) -> &IntrinsicRegistryIdentity {
+        &self.intrinsic_registry
     }
 }
 

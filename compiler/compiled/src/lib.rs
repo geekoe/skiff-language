@@ -11,8 +11,8 @@ pub mod projection_input;
 pub mod service_contract;
 
 pub use bytecode_handoff::{
-    BytecodeCompilationHandoff, BytecodeCompilationHandoffError, BytecodeCompilationOutcome,
-    BytecodeCompilationReceipt,
+    BytecodeCompilationAuthorityPins, BytecodeCompilationHandoff, BytecodeCompilationHandoffError,
+    BytecodeCompilationOutcome, BytecodeCompilationReceipt,
 };
 pub use package_callable_signatures::ProjectionInputBuildError;
 
