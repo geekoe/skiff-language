@@ -1,17 +1,44 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use skiff_artifact_model::TypeDescriptorIr;
+use skiff_artifact_model::{
+    NativeValueAdapterRole, NativeValueEmbedding, NativeValueLifecycleLookupError,
+    TypeDescriptorIr, TypeRefIr, ValueTransferPlanKind,
+};
 use thiserror::Error;
 
-/// The four source semantic value-transfer states from bytecode VM design
-/// section 6.5. `InOut` intentionally does not appear here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceValueTransferKind {
-    SnapshotShare,
-    MoveOnly,
-    AffineResource,
-    ExplicitCloneLease,
+/// Exact owner and generic binders for one source value-lifecycle request.
+///
+/// An empty `relocatable_type_parameters` slice requests a concrete plan.
+/// A type parameter may enter [`skiff_artifact_model::ValueTransferPlan::FromType`]
+/// only when it appears in this exact binder set.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceValueTransferPlanInput<'a> {
+    pub module_path: &'a str,
+    pub ty: &'a TypeRefIr,
+    pub relocatable_type_parameters: &'a [String],
+}
+
+impl<'a> SourceValueTransferPlanInput<'a> {
+    pub const fn concrete(module_path: &'a str, ty: &'a TypeRefIr) -> Self {
+        Self {
+            module_path,
+            ty,
+            relocatable_type_parameters: &[],
+        }
+    }
+
+    pub const fn relocatable(
+        module_path: &'a str,
+        ty: &'a TypeRefIr,
+        type_parameters: &'a [String],
+    ) -> Self {
+        Self {
+            module_path,
+            ty,
+            relocatable_type_parameters: type_parameters,
+        }
+    }
 }
 
 /// Exact identity of a Package nominal owner.
@@ -116,47 +143,11 @@ pub struct SourceValueTransferNominalFact {
     pub semantics: SourceValueTransferNominalSemantics,
 }
 
-/// Native identity whose transfer behavior must be supplied explicitly.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SourceValueTransferNativeTypeId {
-    CompilerBuiltin { canonical_name: String },
-    Nominal(SourceValueTransferNominalId),
-}
-
-impl fmt::Display for SourceValueTransferNativeTypeId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CompilerBuiltin { canonical_name } => {
-                write!(formatter, "builtin:{canonical_name}")
-            }
-            Self::Nominal(nominal) => write!(formatter, "nominal:{nominal}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceValueTransferNativeCategory {
-    Opaque,
-    Capability,
-    Error,
-}
-
-impl fmt::Display for SourceValueTransferNativeCategory {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = match self {
-            Self::Opaque => "opaque",
-            Self::Capability => "capability",
-            Self::Error => "error",
-        };
-        formatter.write_str(text)
-    }
-}
-
-/// Recursive position at which a structural snapshot proof failed.
+/// Recursive position at which an ordinary aggregate proof failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceValueTransferPosition {
-    BuiltinArgument {
-        builtin: String,
+    NativeArgument {
+        constructor: String,
         index: usize,
     },
     AnonymousRecordField {
@@ -166,6 +157,9 @@ pub enum SourceValueTransferPosition {
         index: usize,
     },
     NullableInner,
+    AnyInterfaceTypeArgument {
+        index: usize,
+    },
     NominalTypeArgument {
         nominal: SourceValueTransferNominalId,
         index: usize,
@@ -189,8 +183,8 @@ pub enum SourceValueTransferPosition {
 impl fmt::Display for SourceValueTransferPosition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BuiltinArgument { builtin, index } => {
-                write!(formatter, "{builtin} type argument {index}")
+            Self::NativeArgument { constructor, index } => {
+                write!(formatter, "native `{constructor}` type argument {index}")
             }
             Self::AnonymousRecordField { field } => {
                 write!(formatter, "anonymous record field `{field}`")
@@ -199,6 +193,9 @@ impl fmt::Display for SourceValueTransferPosition {
                 write!(formatter, "anonymous union item {index}")
             }
             Self::NullableInner => formatter.write_str("nullable inner type"),
+            Self::AnyInterfaceTypeArgument { index } => {
+                write!(formatter, "any-interface type argument {index}")
+            }
             Self::NominalTypeArgument { nominal, index } => {
                 write!(formatter, "type argument {index} of {nominal}")
             }
@@ -218,14 +215,14 @@ impl fmt::Display for SourceValueTransferPosition {
     }
 }
 
-/// Stable, structured failures from source value-transfer classification.
+/// Stable, structured failures from source value-lifecycle derivation.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SourceValueTransferError {
-    #[error(
-        "value-transfer classification requires a module owner for local type index {type_index}"
-    )]
+    #[error("value-transfer planning requires a module owner for local type index {type_index}")]
     MissingLocalTypeOwner { type_index: u32 },
-    #[error("value-transfer classification does not recognize builtin `{name}`")]
+    #[error("publication type index {type_index} has no module owner")]
+    MissingPublicationTypeOwner { type_index: u32 },
+    #[error("value-transfer planning does not recognize builtin `{name}`")]
     UnknownBuiltin { name: String },
     #[error("builtin `{builtin}` expects {expected} type arguments, found {actual}")]
     BuiltinArityMismatch {
@@ -233,9 +230,11 @@ pub enum SourceValueTransferError {
         expected: usize,
         actual: usize,
     },
-    #[error("value-transfer classification cannot retain unresolved type parameter `{name}`")]
+    #[error("relocatable value-transfer binder `{name}` is empty or duplicated")]
+    InvalidRelocatableTypeParameter { name: String },
+    #[error("value-transfer planning cannot retain undeclared type parameter `{name}`")]
     UnresolvedTypeParameter { name: String },
-    #[error("function/callback values require callback capability facts and have no ordinary value-transfer plan")]
+    #[error("function/callback values have no ordinary value-transfer plan")]
     CallbackTypeUnsupported,
     #[error("database object `{module_path}.{symbol}` has no ordinary value-transfer plan")]
     DatabaseObjectUnsupported { module_path: String, symbol: String },
@@ -243,6 +242,19 @@ pub enum SourceValueTransferError {
     PackageSchemaUnsupported {
         nominal: SourceValueTransferNominalId,
     },
+    #[error("package dependency `{dependency_ref}` must be resolved to an exact package id")]
+    UnresolvedPackageDependency { dependency_ref: String },
+    #[error("package symbol `{package_id}/{symbol_path}` has no exact ABI expectation")]
+    MissingPackageSymbolAbi {
+        package_id: String,
+        symbol_path: String,
+    },
+    #[error("package symbol has an empty `{field}` field")]
+    InvalidPackageSymbol { field: &'static str },
+    #[error("service symbol has an empty `{field}` field")]
+    InvalidServiceSymbol { field: &'static str },
+    #[error("any-interface type has no exact interface ABI identity")]
+    MissingInterfaceAbiIdentity,
     #[error("exact nominal facts are missing for `{nominal}`")]
     MissingNominalFacts {
         nominal: SourceValueTransferNominalId,
@@ -252,15 +264,6 @@ pub enum SourceValueTransferError {
         nominal: SourceValueTransferNominalId,
         expected: usize,
         actual: usize,
-    },
-    #[error(
-        "type argument {index} of `{nominal}` contains a local type owned by `{argument_module}`, but the nominal descriptor is owned by `{declaration_module}`; the exact resolver must externalize it"
-    )]
-    CrossModuleLocalTypeArgument {
-        nominal: SourceValueTransferNominalId,
-        index: usize,
-        argument_module: String,
-        declaration_module: String,
     },
     #[error("nominal `{nominal}` has an empty or duplicate type parameter `{parameter}`")]
     InvalidNominalTypeParameter {
@@ -283,19 +286,37 @@ pub enum SourceValueTransferError {
     InterfaceNominalUnsupported {
         nominal: SourceValueTransferNominalId,
     },
-    #[error("native {category} `{native_type}` has no explicit source value-transfer semantics")]
-    MissingNativeSemantics {
-        native_type: SourceValueTransferNativeTypeId,
-        category: SourceValueTransferNativeCategory,
+    #[error("native nominal `{nominal}` has no exact entry in the pinned lifecycle registry")]
+    NativeNominalNotRegistered {
+        nominal: SourceValueTransferNominalId,
     },
     #[error("union `{owner}` has no branches")]
     EmptyUnion { owner: String },
+    #[error("pinned native lifecycle lookup failed for `{ty:?}`: {source}")]
+    NativeLifecycleLookup {
+        ty: TypeRefIr,
+        #[source]
+        source: NativeValueLifecycleLookupError,
+    },
+    #[error(
+        "native lifecycle adapter `{binding_key}` is not authoritative for role {expected_role:?} ABI {expected_abi_version}"
+    )]
+    NativeLifecycleAdapterMismatch {
+        binding_key: String,
+        expected_role: NativeValueAdapterRole,
+        expected_abi_version: u32,
+    },
     #[error("{position} must be SnapshotShare, found {found:?}")]
     StructuralPositionNotSnapshotShare {
         position: SourceValueTransferPosition,
-        found: SourceValueTransferKind,
+        found: ValueTransferPlanKind,
     },
-    #[error("value-transfer classification failed at {position}: {source}")]
+    #[error("{position} requires Ordinary embedding, found {found:?}")]
+    StructuralPositionNotOrdinary {
+        position: SourceValueTransferPosition,
+        found: NativeValueEmbedding,
+    },
+    #[error("value-transfer planning failed at {position}: {source}")]
     AtStructuralPosition {
         position: SourceValueTransferPosition,
         #[source]
@@ -303,13 +324,11 @@ pub enum SourceValueTransferError {
     },
 }
 
-/// Exact nominal and native facts consumed by the fallible classifier.
+/// Exact nominal facts consumed by the fallible source classifier.
 ///
-/// This registry is intentionally inert: callers populate it from their exact
-/// resolver. An absent native entry is not a default and always produces
-/// [`SourceValueTransferError::MissingNativeSemantics`].
+/// Native lifecycle facts deliberately do not live here. They come only from
+/// artifact-model's pinned native lifecycle registry.
 #[derive(Debug, Clone, Default)]
 pub struct SourceValueTransferFacts {
     pub(super) nominals: BTreeMap<SourceValueTransferNominalId, SourceValueTransferNominalFact>,
-    pub(super) native_semantics: BTreeMap<SourceValueTransferNativeTypeId, SourceValueTransferKind>,
 }

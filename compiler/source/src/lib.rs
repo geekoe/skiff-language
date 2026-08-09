@@ -121,11 +121,10 @@ pub use type_resolution_model::{
 };
 pub use type_symbol_index::{publication_type_symbols, PublicationTypeSymbolIndex};
 pub use value_transfer::{
-    classify_source_value_transfer, SourceValueTransferError, SourceValueTransferFacts,
-    SourceValueTransferKind, SourceValueTransferNativeCategory, SourceValueTransferNativeTypeId,
+    source_value_transfer_plan, SourceValueTransferError, SourceValueTransferFacts,
     SourceValueTransferNominalFact, SourceValueTransferNominalId,
     SourceValueTransferNominalSemantics, SourceValueTransferPackageRef,
-    SourceValueTransferPosition,
+    SourceValueTransferPlanInput, SourceValueTransferPosition,
 };
 
 pub fn validate_source_execution_semantics(
