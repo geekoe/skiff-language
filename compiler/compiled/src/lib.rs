@@ -8,6 +8,7 @@ use skiff_compiler_source::{
 pub mod bytecode_handoff;
 mod package_callable_signatures;
 pub mod projection_input;
+pub mod service_contract;
 
 pub use bytecode_handoff::{
     BytecodeCompilationHandoff, BytecodeCompilationHandoffError, BytecodeCompilationOutcome,

@@ -9,10 +9,14 @@ use skiff_artifact_model::{
     PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaTypeRecord, PackageTypeRef,
     PackageTypeRequirement, TypeRefIr,
 };
-use skiff_compiler_compiled::{projection_input::build_projection_input, CompiledPackage};
+use skiff_compiler_compiled::{
+    projection_input::build_projection_input,
+    service_contract::build_public_instance_operation_facts, CompiledPackage,
+};
 use skiff_compiler_contract::{
-    compile_service_contract_definition, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
+    compile_service_contract_definition, project_service_api,
+    project_service_api_with_public_instance_operations, ContractDefinitionError,
+    ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
 use skiff_compiler_input::{
     CompilerPlatformSources, PublicationApiPublicInstanceEntry, ResolvedContractDependency,
@@ -170,16 +174,16 @@ mod tests {
             r#"
             type Local { value: string }
             function localHelper(value: Local) -> Local { return value }
-            interface PublicApi {
+            interface PublicApi<T> {
               function submit(
                 self: Self,
-                input: payments.User,
-                nested: Array<payments.User?>?
-              ) -> payments.User
+                input: T,
+                nested: Array<T?>?
+              ) -> T
               function status(self: Self) -> string
             }
             interface Marker {}
-            type Handler implements PublicApi, Marker {}
+            type Handler implements PublicApi<payments.User>, Marker {}
             impl Handler {
               function status() -> string { return "ready" }
               function submit(
@@ -207,7 +211,7 @@ mod tests {
             vec![PublicationApiPublicInstanceEntry::for_source(
                 "handler",
                 "root.api.handler",
-                ["root.api.PublicApi"],
+                ["root.api.PublicApi", "root.api.Marker"],
             )
             .unwrap()],
             None,
@@ -230,6 +234,58 @@ mod tests {
         .unwrap();
         let lowered = skiff_compiler_lowering::lower(&model).unwrap();
         let compiled = CompiledPackage::new(model, lowered);
+        let source_operation_facts = compiled.compile_model().public_instance_operations();
+        let contract_operation_facts =
+            build_public_instance_operation_facts(compiled.compile_model()).unwrap();
+        assert_eq!(
+            contract_operation_facts.interfaces().len(),
+            source_operation_facts.len()
+        );
+        for source_interface in source_operation_facts {
+            let contract_interface = contract_operation_facts
+                .interfaces()
+                .iter()
+                .find(|contract_interface| {
+                    contract_interface.public_root() == source_interface.public_root()
+                        && contract_interface.interface() == source_interface.interface()
+                })
+                .expect("every exact source interface row must cross the contract handoff");
+            assert_eq!(
+                contract_interface
+                    .slots()
+                    .iter()
+                    .map(|slot| (slot.method_abi_id(), slot.operation_stable_key()))
+                    .collect::<Vec<_>>(),
+                source_interface
+                    .slots()
+                    .iter()
+                    .map(|slot| (slot.method_abi_id(), slot.operation_stable_key()))
+                    .collect::<Vec<_>>(),
+                "method ABI ids and stable keys must retain source declaration slot order"
+            );
+        }
+        assert!(contract_operation_facts
+            .interfaces()
+            .iter()
+            .any(|interface| interface.slots().is_empty()));
+        let generic_source_interface = source_operation_facts
+            .iter()
+            .find(|interface| !interface.slots().is_empty())
+            .expect("generic PublicApi operation row");
+        assert_eq!(
+            generic_source_interface
+                .interface()
+                .canonical_type_args
+                .len(),
+            1
+        );
+        assert!(contract_operation_facts
+            .interfaces()
+            .iter()
+            .any(|interface| {
+                interface.interface() == generic_source_interface.interface()
+                    && interface.public_root() == generic_source_interface.public_root()
+            }));
         let execution = compiled
             .file_ir_units()
             .iter()
@@ -328,6 +384,72 @@ mod tests {
             .local_interface_conformances
             .iter()
             .any(|row| row.methods.len() == 2));
+        let service_calls = vec!["handler".to_string()];
+        let ContractDefinitionError::MissingPublicInstanceContractFacts { public_instances } =
+            project_service_api(
+                "example.com/public-instance-service",
+                &service_calls,
+                &projected.artifact,
+                &projected.resolved_package_schema_type_records,
+            )
+            .expect_err("selected public instances must not use the facts-free projection path")
+        else {
+            panic!("missing exact public-instance facts must fail closed")
+        };
+        assert_eq!(public_instances, ["handler"]);
+        let service_api = project_service_api_with_public_instance_operations(
+            "example.com/public-instance-service",
+            &service_calls,
+            &projected.artifact,
+            &projected.resolved_package_schema_type_records,
+            &contract_operation_facts,
+        )
+        .expect("source-owned public-instance facts must drive service projection");
+        assert_eq!(
+            service_api
+                .available
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["handler.status", "handler.submit"]
+        );
+        let contract_instance = &service_api.contract.public_instances["handler"];
+        assert_eq!(contract_instance.interfaces.len(), 2);
+        assert!(contract_instance
+            .interfaces
+            .iter()
+            .any(|interface| interface.methods.is_empty()));
+        let projected_generic_interface = contract_instance
+            .interfaces
+            .iter()
+            .find(|interface| interface.interface == *generic_source_interface.interface())
+            .expect("exact generic source interface must reach the service contract");
+        assert_eq!(
+            projected_generic_interface
+                .methods
+                .iter()
+                .map(|method| method.method_abi_id.as_str())
+                .collect::<Vec<_>>(),
+            generic_source_interface
+                .slots()
+                .iter()
+                .map(|slot| slot.method_abi_id())
+                .collect::<Vec<_>>()
+        );
+        let operation_paths = &service_api.contract.diagnostic_text.operations;
+        assert_eq!(
+            projected_generic_interface
+                .methods
+                .iter()
+                .map(|method| operation_paths[&method.contract_operation_id].as_str())
+                .collect::<Vec<_>>(),
+            generic_source_interface
+                .slots()
+                .iter()
+                .map(|slot| slot.operation_stable_key())
+                .collect::<Vec<_>>(),
+            "service contract methods must retain source declaration slot order"
+        );
         let PackageLocalAbiSymbol::Callable { signature, .. } =
             &projected.artifact.package_local_abi.public_symbols["handler.submit"]
         else {
