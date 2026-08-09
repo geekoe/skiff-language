@@ -15,7 +15,9 @@
 //! be hidden by a partial write or an implicit disabled/legacy fallback.
 
 use skiff_artifact_identity::{validate_bytecode_identity, ArtifactIdentityError};
-use skiff_artifact_model::{BytecodeArtifact, BytecodeArtifactRef};
+use skiff_artifact_model::{
+    BytecodeArtifact, BytecodeArtifactRef, NativeValueLifecycleRegistryIdentity,
+};
 use thiserror::Error;
 
 /// An admitted emission result ready for fail-closed publication planning.
@@ -41,6 +43,7 @@ pub struct BytecodeCompilationReceipt {
     schema_version: String,
     isa_version: String,
     opcode_table_fingerprint: String,
+    native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,
     function_count: u64,
     word_count: u64,
     relocation_count: u64,
@@ -156,6 +159,7 @@ impl BytecodeCompilationReceipt {
             schema_version: artifact.schema_version.clone(),
             isa_version: artifact.isa_version.clone(),
             opcode_table_fingerprint: artifact.opcode_table_fingerprint.clone(),
+            native_value_lifecycle_registry: artifact.native_value_lifecycle_registry.clone(),
             function_count: artifact.image.functions.len() as u64,
             word_count,
             relocation_count,
@@ -176,6 +180,11 @@ impl BytecodeCompilationReceipt {
 
     pub fn opcode_table_fingerprint(&self) -> &str {
         &self.opcode_table_fingerprint
+    }
+
+    /// Exact native value lifecycle registry admitted with this v4 image.
+    pub fn native_value_lifecycle_registry(&self) -> &NativeValueLifecycleRegistryIdentity {
+        &self.native_value_lifecycle_registry
     }
 
     pub fn function_count(&self) -> u64 {

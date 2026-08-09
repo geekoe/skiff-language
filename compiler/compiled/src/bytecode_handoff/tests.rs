@@ -1,39 +1,54 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::{assign_bytecode_identity, BYTECODE_IDENTITY_PREFIX};
+use skiff_artifact_identity::{
+    assign_bytecode_identity, BYTECODE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX,
+};
 use skiff_artifact_model::{
-    descriptor_for_opcode, BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, BytecodePools,
-    BytecodeRelocation, FrameLayout, FrozenConstantGraph, Opcode, PackageCallableId,
-    RelocatableBytecodeFunction, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    descriptor_for_opcode, BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin,
+    BytecodeImage, BytecodePools, FrameLayout, FrozenConstantGraph, Opcode, PackageCallableId,
+    PackageExecutableCoordinate, RelocatableBytecodeFunction, StatementChargeKind, StatementEntry,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
 
 fn canonical_artifact() -> BytecodeArtifact {
     let function_key = "module::main".to_string();
-    let call_local = u32::from(descriptor_for_opcode(Opcode::CallLocal).opcode);
     let return_ = u32::from(descriptor_for_opcode(Opcode::Return).opcode);
     let function = RelocatableBytecodeFunction {
         function_key: function_key.clone(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: PackageExecutableCoordinate {
+                file_ir_identity: format!("{FILE_IR_IDENTITY_PREFIX}:{}", "a".repeat(64)),
+                module_path: "module".to_string(),
+                executable_index: 0,
+            },
+        },
         type_parameters: Vec::new(),
-        words: vec![call_local, 0, 0, return_],
-        relocations: vec![BytecodeRelocation::LocalExecutableRef {
-            function_key: function_key.clone(),
-        }],
+        self_type_ref: None,
+        words: vec![return_],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
             slot_count: 0,
             slot_type_refs: Vec::new(),
             parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
             slot_plans: Vec::new(),
         },
-        max_operand_depth: 1,
+        max_operand_depth: 0,
         effect_summary_ref: PackageCallableId::new("operation:module:main"),
         exception_regions: Vec::new(),
+        active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: Vec::new(),
+        statement_entries: vec![StatementEntry {
+            pc: 0,
+            statement_id: "statement:module:main:entry".to_string(),
+            charge_kind: StatementChargeKind::FunctionEntry,
+        }],
         source_map: Vec::new(),
     };
     let mut artifact = BytecodeArtifact {
@@ -41,10 +56,13 @@ fn canonical_artifact() -> BytecodeArtifact {
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: skiff_artifact_model::opcode_table_fingerprint(),
+        native_value_lifecycle_registry:
+            skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
         bytecode_identity: "identity-is-assigned-after-structural-validation".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::from([(function_key, function)]),
             pools: BytecodePools::default(),
+            constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: None,
         },
@@ -72,9 +90,13 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
         handoff.receipt().opcode_table_fingerprint(),
         artifact.opcode_table_fingerprint
     );
+    assert_eq!(
+        handoff.receipt().native_value_lifecycle_registry(),
+        skiff_artifact_model::native_value_lifecycle_registry_identity()
+    );
     assert_eq!(handoff.receipt().function_count(), 1);
-    assert_eq!(handoff.receipt().word_count(), 4);
-    assert_eq!(handoff.receipt().relocation_count(), 1);
+    assert_eq!(handoff.receipt().word_count(), 1);
+    assert_eq!(handoff.receipt().relocation_count(), 0);
 
     let (actual_artifact, actual_reference, actual_receipt) = handoff.into_parts();
     assert_eq!(actual_artifact, artifact);
@@ -83,6 +105,59 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
         actual_receipt.bytecode_identity(),
         artifact.bytecode_identity
     );
+}
+
+#[test]
+fn fixture_carries_every_required_v4_manifest_field() {
+    let artifact = canonical_artifact();
+    let wire = serde_json::to_value(&artifact).unwrap();
+    let function = &wire["image"]["functions"]["module::main"];
+
+    assert_eq!(wire["magic"], BYTECODE_MAGIC);
+    assert_eq!(wire["schemaVersion"], BYTECODE_SCHEMA_VERSION);
+    assert_eq!(wire["isaVersion"], BYTECODE_ISA_VERSION);
+    assert_eq!(
+        wire["opcodeTableFingerprint"],
+        artifact.opcode_table_fingerprint
+    );
+    assert_eq!(
+        wire["nativeValueLifecycleRegistry"],
+        serde_json::to_value(skiff_artifact_model::native_value_lifecycle_registry_identity())
+            .unwrap()
+    );
+    assert_eq!(wire["image"]["constantRoots"], serde_json::json!({}));
+    assert_eq!(
+        function["origin"],
+        serde_json::json!({
+            "kind": "executable",
+            "executable": {
+                "fileIrIdentity": format!("{FILE_IR_IDENTITY_PREFIX}:{}", "a".repeat(64)),
+                "modulePath": "module",
+                "executableIndex": 0,
+            },
+        })
+    );
+    assert_eq!(function["selfTypeRef"], serde_json::Value::Null);
+    assert_eq!(function["callLoanLayouts"], serde_json::json!([]));
+    assert_eq!(
+        function["frameLayout"]["writableLocalSlots"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn lifecycle_registry_drift_is_rejected_before_handoff() {
+    let mut artifact = canonical_artifact();
+    artifact
+        .native_value_lifecycle_registry
+        .fingerprint
+        .push_str(":corrupt");
+    let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
+
+    assert!(matches!(
+        BytecodeCompilationHandoff::try_new(artifact, reference),
+        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
+    ));
 }
 
 #[test]
