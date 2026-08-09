@@ -81,7 +81,7 @@ function sequentialValue() -> string {
         // skiff-file-ir-v11 -> v12 schema bump (hash input includes schema_version).
         assert_eq!(
             file.file_ir_identity,
-            "skiff-file-ir-v12:sha256:ca9867e7990ac3a381e1cd2ec39c2d47f66e20329d67c2b730a784b8ae0f0ba6"
+            "skiff-file-ir-v12:sha256:1b1033d7178afad2e2412da529c186ec7dc5ba7f772eb01babab569b524134bd"
         );
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
@@ -167,7 +167,7 @@ function sequentialValue() -> string {
         for (fixture_name, body) in [
             (
                 "concurrent-statement",
-                "function run() -> void {\n  concurrent { const value = 1 }\n}\n",
+                "function run() -> void {\n  concurrent { let value = 1 }\n}\n",
             ),
             (
                 "concurrent-value",
@@ -175,7 +175,7 @@ function sequentialValue() -> string {
             ),
             (
                 "serial",
-                "function run() -> void {\n  serial { const value = 1 }\n}\n",
+                "function run() -> void {\n  serial { let value = 1 }\n}\n",
             ),
         ] {
             let fixture = TestDir::new("skiff-compiler", fixture_name);
@@ -228,7 +228,7 @@ function sequentialValue() -> string {
         );
         timed.write(
         "main.skiff",
-        "function run(value: number) -> number {\n  timeout(20ms) {\n    const ignored = value\n  }\n  return value\n}\n",
+        "function run(value: number) -> number {\n  timeout(20ms) {\n    let ignored = value\n  }\n  return value\n}\n",
     );
 
         let plain =

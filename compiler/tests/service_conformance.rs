@@ -930,7 +930,8 @@ function run() -> string {
             r#"type Box { value: string }
 
 function mutate(input: Box) -> void {
-  input.value = "helper-mutated"
+  var copy = input
+  copy.value = "helper-mutated"
 }
 "#,
         );
