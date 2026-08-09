@@ -119,6 +119,7 @@ impl ProjectionFixture {
                                     stable_schema_key: "payload".to_string(),
                                     package_schema_type_id: payload_id.clone(),
                                 },
+                                mode: ParamModeIr::Value,
                             }],
                             return_type: PackageTypeRef::PackageSchema {
                                 package_id: package_id.to_string(),
