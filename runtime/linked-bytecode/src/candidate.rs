@@ -208,13 +208,11 @@ impl fmt::Display for LinkedBytecodeCandidateError {
             ),
             Self::DuplicateFunctionKey { key } => write!(
                 formatter,
-                "function specialization {:?} appears more than once",
-                key
+                "function specialization {key:?} appears more than once"
             ),
             Self::DuplicateExactLocalTarget { key } => write!(
                 formatter,
-                "exact local specialization {:?} appears more than once",
-                key
+                "exact local specialization {key:?} appears more than once"
             ),
             Self::DuplicateServiceOperation {
                 service_requirement_key,
@@ -234,8 +232,7 @@ impl fmt::Display for LinkedBytecodeCandidateError {
             ),
             Self::DuplicateInterfaceTable { interface_identity } => write!(
                 formatter,
-                "interface table {:?} appears more than once",
-                interface_identity
+                "interface table {interface_identity:?} appears more than once"
             ),
             Self::RootFunctionOutOfBounds {
                 source_table,
