@@ -282,6 +282,7 @@ fn service_file_ir(return_type: &str) -> FileIrUnit {
                                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                             },
                             args: Vec::new(),
+                            inout_args: Vec::new(),
                             type_args: BTreeMap::new(),
                             metadata: BTreeMap::from([(
                                 TASK_SUBMIT_METADATA_KEY.to_string(),
@@ -294,6 +295,8 @@ fn service_file_ir(return_type: &str) -> FileIrUnit {
                     }],
                     ..ExecutableBody::default()
                 },
+                expression_types: Vec::new(),
+                statement_spans: Vec::new(),
                 source_span: None,
             },
             ExecutableIr {
@@ -309,6 +312,8 @@ fn service_file_ir(return_type: &str) -> FileIrUnit {
                 slots: SlotLayout::default(),
                 may_suspend: false,
                 body: ExecutableBody::default(),
+                expression_types: Vec::new(),
+                statement_spans: Vec::new(),
                 source_span: None,
             },
         ];
