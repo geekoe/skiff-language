@@ -2078,6 +2078,7 @@ fn package_signature_from_operation(
             .map(|parameter| PackageCallableParameter {
                 name: parameter.name.clone(),
                 ty: package_type_from_contract(&parameter.ty, callback_ref),
+                mode: ParamModeIr::Value,
             })
             .collect(),
         return_type: match &operation.stream {
