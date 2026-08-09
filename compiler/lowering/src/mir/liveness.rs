@@ -148,7 +148,7 @@ fn statement_use_def(
             defs.insert(*slot);
             visit(value.expression, uses, defs, function)?;
         }
-        MirStmtKind::Assign { target, value } => {
+        MirStmtKind::Assign { target, value, .. } => {
             visit(value.expression, uses, defs, function)?;
             match target {
                 AssignTargetIr::Slot { slot } => {
@@ -207,14 +207,20 @@ fn statement_use_def(
         }
         MirStmtKind::If { condition, .. } => visit(condition.expression, uses, defs, function)?,
         MirStmtKind::ForIn {
-            item_slot,
-            value_slot,
-            iterable,
-            ..
+            facts, iterable, ..
         } => {
-            defs.insert(*item_slot);
-            if let Some(value_slot) = value_slot {
-                defs.insert(*value_slot);
+            match &facts.binding {
+                super::MirForInBinding::Item { slot, .. } => {
+                    defs.insert(*slot);
+                }
+                super::MirForInBinding::MapEntry {
+                    key_slot,
+                    value_slot,
+                    ..
+                } => {
+                    defs.insert(*key_slot);
+                    defs.insert(*value_slot);
+                }
             }
             visit(iterable.expression, uses, defs, function)?;
         }

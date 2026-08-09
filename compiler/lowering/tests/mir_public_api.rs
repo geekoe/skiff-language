@@ -1,6 +1,8 @@
 use skiff_compiler_lowering::mir::{
-    builder::build_mir_units, liveness::compute_liveness, MirBuildError, MirConst,
-    MirContractError, MirExpression, MirFunction, MirLiveness, MirUnit,
+    builder::build_mir_units, liveness::compute_liveness, MirBuildError, MirCallWritableFacts,
+    MirConst, MirContractError, MirExpression, MirForInBinding, MirForInFacts, MirForInItemKind,
+    MirFunction, MirInOutLoan, MirLiveness, MirUnit, MirWritablePathSegment, MirWritablePlace,
+    MirWritableRoot,
 };
 
 #[test]
@@ -11,6 +13,14 @@ fn mir_contract_is_reachable_from_the_crate_root() {
     assert_public_type::<MirFunction>();
     assert_public_type::<MirConst>();
     assert_public_type::<MirExpression>();
+    assert_public_type::<MirWritablePlace>();
+    assert_public_type::<MirWritableRoot>();
+    assert_public_type::<MirWritablePathSegment>();
+    assert_public_type::<MirCallWritableFacts>();
+    assert_public_type::<MirInOutLoan>();
+    assert_public_type::<MirForInFacts>();
+    assert_public_type::<MirForInBinding>();
+    assert_public_type::<MirForInItemKind>();
     assert_public_type::<MirBuildError>();
     assert_public_type::<MirContractError>();
 

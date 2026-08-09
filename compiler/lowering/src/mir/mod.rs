@@ -41,6 +41,27 @@
 //!   in the order produced by flattening `blocks` in block-id order, giving a
 //!   recoverable correspondence between `MirStmt`s and the File IR statement
 //!   stream (`statement_index` is the index into `ExecutableBody.statements`).
+//! - Assignment targets and exactly-known mutating receiver calls carry a
+//!   checked [`MirWritablePlace`]. Inout loans retain their File IR compact
+//!   ordinal/root/path, but that ordinal is not a parameter position; mixed
+//!   parameter positions require the exact callee mode table. File IR index
+//!   loan segments omit their operand, so an emitter must reject those until
+//!   an upstream fact supplies it.
+//! - Timeout/concurrent statements retain their continuation/join block and a
+//!   concurrent plan retains its plan-level [`InstructionSourceSite`]. File IR
+//!   block labels referenced by inline `ValueBlock`/DB/concurrent expressions
+//!   do not identify an exact instruction-level return point, so MIR does not
+//!   expose those as an exact continuation fact. No per-region cleanup or
+//!   pending fact exists upstream, so MIR does not invent one.
+//! - Recursive `PatternIr::Record` trees and binding slots are validated
+//!   exactly. Source nominal-pattern fields are not present in File IR
+//!   (`PatternIr::Type` retains only the nominal type), so no nested nominal
+//!   pattern fact is claimed here.
+//! - Every File IR `statement_spans` entry and every explicit
+//!   `InstructionSourceSite` (including its finite synthetic reason) is
+//!   retained. File IR has no all-expression site table: ordinary expression
+//!   source/synthetic origins and assert-specific origins therefore remain an
+//!   upstream contract gap rather than an inferred MIR value.
 //!
 //! # Callable identity conventions
 //!
@@ -62,11 +83,16 @@
 //! `doc/implementation/bytecode-vm/design/phase-2-compiler-emission.md` §2.4).
 
 mod contract;
+mod facts;
 
 pub mod builder;
 pub mod liveness;
 
 pub use contract::{MirBuildError, MirContractError};
+pub use facts::{
+    MirCallWritableFacts, MirForInBinding, MirForInFacts, MirForInItemKind, MirInOutLoan,
+    MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+};
 
 #[cfg(test)]
 mod tests;
@@ -134,6 +160,9 @@ pub struct MirExpression {
     pub index: u32,
     pub expression: ExprIr,
     pub ty: TypeRefIr,
+    /// Checked root/path and loan facts for mutating/inout calls. This remains
+    /// `None` for calls without either write channel and for non-call nodes.
+    pub writable: Option<MirCallWritableFacts>,
 }
 
 /// Emitter-facing metadata for one compile-time-evaluated local constant.
@@ -213,6 +242,9 @@ pub enum MirStmtKind {
     },
     Assign {
         target: AssignTargetIr,
+        /// Exact root/path projection of `target`, checked against this
+        /// function's owned expressions and slots during MIR construction.
+        place: MirWritablePlace,
         value: ExprRefIr,
     },
     Assert {
@@ -255,11 +287,10 @@ pub enum MirStmtKind {
         else_block: Option<u32>,
     },
     ForIn {
-        item_slot: u32,
-        item_type: Option<TypeRefIr>,
-        value_slot: Option<u32>,
         iterable: ExprRefIr,
+        facts: MirForInFacts,
         body: u32,
+        continuation: u32,
     },
     While {
         condition: ExprRefIr,
@@ -272,6 +303,7 @@ pub enum MirStmtKind {
     Timeout {
         duration_ms: u64,
         body: u32,
+        continuation: u32,
         site: InstructionSourceSite,
     },
     Concurrent {
@@ -291,6 +323,11 @@ pub struct MirMatchArmIr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirConcurrentPlanIr {
     pub lanes: Vec<MirConcurrentLaneIr>,
+    /// Exact plan-level source or finite synthetic origin. File IR already
+    /// owns this fact; MIR must not drop it while resolving lane block ids.
+    pub site: InstructionSourceSite,
+    /// Exact continuation reached when statement lanes join.
+    pub join_block: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

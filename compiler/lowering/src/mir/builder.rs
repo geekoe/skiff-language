@@ -12,10 +12,14 @@ use skiff_compiler_core::{implementation_package_callable_id, ImplementationCall
 use skiff_compiler_source::{SourceCallableEffectFacts, SourceSymbolKey};
 
 use super::{
-    liveness::compute_liveness, MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr,
-    MirConst, MirExecutableKind, MirExpression, MirFunction, MirLiveness, MirMatchArmIr, MirParam,
-    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirStatementEntry, MirStmt, MirStmtKind,
-    MirUnit,
+    facts::{
+        assignment_place, call_writable_facts, for_in_facts, validate_assert_types,
+        validate_pattern,
+    },
+    liveness::compute_liveness,
+    MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
+    MirExpression, MirFunction, MirLiveness, MirMatchArmIr, MirParam, MirParamMode, MirRegion,
+    MirSlot, MirSlotKind, MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
 };
 
 /// Per-callable effect facts resolved from the source model. The MIR never
@@ -142,6 +146,14 @@ fn build_mir_function(
     executable: &ExecutableIr,
     per_callable: &CallableEffectMap,
 ) -> Result<MirFunction, MirBuildError> {
+    if executable.statement_spans.len() != executable.body.statements.len() {
+        return Err(MirBuildError::StatementSpanCountMismatch {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            statement_count: executable.body.statements.len(),
+            statement_span_count: executable.statement_spans.len(),
+        });
+    }
     let effect_summary = callable_effect_facts(&unit.module_path, declaration_name, per_callable)?;
     let (kind, identity_kind) = match executable.kind {
         skiff_artifact_model::ExecutableKind::Function => (
@@ -165,8 +177,38 @@ fn build_mir_function(
         symbol: executable.symbol.clone(),
         source,
     })?;
-    let expressions = clone_typed_expressions(unit, executable)?;
-    let mut cfg = FunctionCfg::new(unit, executable);
+    let params = executable
+        .params
+        .iter()
+        .map(|param| MirParam {
+            name: param.name.clone(),
+            slot: param.slot,
+            ty: param.ty.clone(),
+            mode: match param.mode {
+                skiff_artifact_model::ParamModeIr::Value => MirParamMode::Value,
+                skiff_artifact_model::ParamModeIr::InOut => MirParamMode::InOut,
+            },
+        })
+        .collect::<Vec<_>>();
+    let slots = executable
+        .slots
+        .slots
+        .iter()
+        .map(|slot| MirSlot {
+            slot: slot.index,
+            name: slot.name.clone(),
+            kind: match slot.kind {
+                skiff_artifact_model::SlotKind::Param => MirSlotKind::Param,
+                skiff_artifact_model::SlotKind::SelfValue => MirSlotKind::SelfValue,
+                skiff_artifact_model::SlotKind::Local => MirSlotKind::Local,
+                skiff_artifact_model::SlotKind::Temp => MirSlotKind::Temp,
+                skiff_artifact_model::SlotKind::Pattern => MirSlotKind::Pattern,
+            },
+            ty: slot.ty.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut expressions = clone_typed_expressions(unit, executable, &slots)?;
+    let mut cfg = FunctionCfg::new(unit, executable, &expressions, &slots);
     cfg.build_blocks()
         .map_err(|message| MirBuildError::InvalidControlFlow {
             module_path: unit.module_path.clone(),
@@ -179,38 +221,10 @@ fn build_mir_function(
         symbol: executable.symbol.clone(),
         kind,
         type_params: executable.type_params.clone(),
-        params: executable
-            .params
-            .iter()
-            .map(|param| MirParam {
-                name: param.name.clone(),
-                slot: param.slot,
-                ty: param.ty.clone(),
-                mode: match param.mode {
-                    skiff_artifact_model::ParamModeIr::Value => MirParamMode::Value,
-                    skiff_artifact_model::ParamModeIr::InOut => MirParamMode::InOut,
-                },
-            })
-            .collect(),
+        params,
         return_type: executable.return_type.clone(),
         self_type: executable.self_type.clone(),
-        slots: executable
-            .slots
-            .slots
-            .iter()
-            .map(|slot| MirSlot {
-                slot: slot.index,
-                name: slot.name.clone(),
-                kind: match slot.kind {
-                    skiff_artifact_model::SlotKind::Param => MirSlotKind::Param,
-                    skiff_artifact_model::SlotKind::SelfValue => MirSlotKind::SelfValue,
-                    skiff_artifact_model::SlotKind::Local => MirSlotKind::Local,
-                    skiff_artifact_model::SlotKind::Temp => MirSlotKind::Temp,
-                    skiff_artifact_model::SlotKind::Pattern => MirSlotKind::Pattern,
-                },
-                ty: slot.ty.clone(),
-            })
-            .collect(),
+        slots,
         expressions,
         blocks,
         regions,
@@ -220,6 +234,13 @@ fn build_mir_function(
         effect_summary,
         source_span: executable.source_span.clone(),
     };
+    function.validate_writable_facts().map_err(|source| {
+        MirBuildError::InvalidFunctionContract {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            source,
+        }
+    })?;
     function.liveness = compute_liveness(&function).map_err(|source| MirBuildError::Liveness {
         module_path: unit.module_path.clone(),
         symbol: executable.symbol.clone(),
@@ -231,6 +252,7 @@ fn build_mir_function(
 fn clone_typed_expressions(
     unit: &FileIrUnit,
     executable: &ExecutableIr,
+    slots: &[MirSlot],
 ) -> Result<Vec<MirExpression>, MirBuildError> {
     let expression_count = executable.body.expressions.len();
     let expression_type_count = executable.expression_types.len();
@@ -242,7 +264,7 @@ fn clone_typed_expressions(
             expression_type_count,
         });
     }
-    executable
+    let mut expressions = executable
         .body
         .expressions
         .iter()
@@ -259,9 +281,27 @@ fn clone_typed_expressions(
                 index,
                 expression,
                 ty,
+                writable: None,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let writable = expressions
+        .iter()
+        .map(|expression| {
+            call_writable_facts(expression.index, &expressions, slots).map_err(|message| {
+                MirBuildError::InvalidWritableFacts {
+                    module_path: unit.module_path.clone(),
+                    symbol: executable.symbol.clone(),
+                    expression: expression.index,
+                    message,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (expression, writable) in expressions.iter_mut().zip(writable) {
+        expression.writable = writable;
+    }
+    Ok(expressions)
 }
 
 fn clone_constant_facts(unit: &FileIrUnit) -> Result<Vec<MirConst>, MirBuildError> {
@@ -368,6 +408,8 @@ fn clone_constant_facts(unit: &FileIrUnit) -> Result<Vec<MirConst>, MirBuildErro
 struct FunctionCfg<'a> {
     unit: &'a FileIrUnit,
     executable: &'a ExecutableIr,
+    expressions: &'a [MirExpression],
+    slots: &'a [MirSlot],
     blocks: Vec<MirBlock>,
     /// File IR block label -> MirBlock ids of its fragments, in order.
     blocks_by_label: BTreeMap<String, Vec<u32>>,
@@ -387,10 +429,17 @@ struct FunctionCfg<'a> {
 }
 
 impl<'a> FunctionCfg<'a> {
-    fn new(unit: &'a FileIrUnit, executable: &'a ExecutableIr) -> Self {
+    fn new(
+        unit: &'a FileIrUnit,
+        executable: &'a ExecutableIr,
+        expressions: &'a [MirExpression],
+        slots: &'a [MirSlot],
+    ) -> Self {
         Self {
             unit,
             executable,
+            expressions,
+            slots,
             blocks: Vec::new(),
             blocks_by_label: BTreeMap::new(),
             continuations: BTreeMap::new(),
@@ -630,7 +679,11 @@ impl<'a> FunctionCfg<'a> {
                         Ok(MirStmt {
                             statement_index,
                             span,
-                            kind: self.convert_statement(stmt, branch_continuation)?,
+                            kind: self.convert_statement(
+                                statement_index,
+                                stmt,
+                                branch_continuation,
+                            )?,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -642,13 +695,31 @@ impl<'a> FunctionCfg<'a> {
 
     fn convert_statement(
         &self,
+        statement_index: u32,
         stmt: StmtIr,
         branch_continuation: Option<u32>,
     ) -> Result<MirStmtKind, String> {
         let kind = match stmt {
             StmtIr::Let { slot, value } => MirStmtKind::Let { slot, value },
-            StmtIr::Assign { target, value } => MirStmtKind::Assign { target, value },
-            StmtIr::Assert { condition, message } => MirStmtKind::Assert { condition, message },
+            StmtIr::Assign { target, value } => {
+                let place =
+                    assignment_place(&target, self.expressions, self.slots).map_err(|message| {
+                        format!(
+                            "statement {statement_index} has invalid assignment place: {message}"
+                        )
+                    })?;
+                MirStmtKind::Assign {
+                    target,
+                    place,
+                    value,
+                }
+            }
+            StmtIr::Assert { condition, message } => {
+                validate_assert_types(condition, message, self.expressions).map_err(|message| {
+                    format!("statement {statement_index} has invalid assert facts: {message}")
+                })?;
+                MirStmtKind::Assert { condition, message }
+            }
             StmtIr::Dispatch { call } => MirStmtKind::Dispatch { call },
             StmtIr::Emit { operation, value } => MirStmtKind::Emit { operation, value },
             StmtIr::Expr { value } => MirStmtKind::Expr { value },
@@ -702,16 +773,36 @@ impl<'a> FunctionCfg<'a> {
                 value_slot,
                 iterable,
                 body,
-            } => MirStmtKind::ForIn {
-                item_slot,
-                item_type,
-                value_slot,
-                iterable,
-                body: self.first_fragment_of(&body)?,
-            },
+            } => {
+                let continuation = branch_continuation.ok_or_else(|| {
+                    format!("for statement {statement_index} has no continuation block")
+                })?;
+                let facts = for_in_facts(
+                    item_slot,
+                    item_type.as_ref(),
+                    value_slot,
+                    iterable,
+                    self.expressions,
+                    self.slots,
+                )
+                .map_err(|message| {
+                    format!("statement {statement_index} has invalid for facts: {message}")
+                })?;
+                MirStmtKind::ForIn {
+                    iterable,
+                    facts,
+                    body: self.first_fragment_of(&body)?,
+                    continuation,
+                }
+            }
             StmtIr::Match { value, arms } => {
                 let mut mir_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
+                    validate_pattern(&arm.pattern, self.slots).map_err(|message| {
+                        format!(
+                            "statement {statement_index} has invalid recursive pattern facts: {message}"
+                        )
+                    })?;
                     mir_arms.push(MirMatchArmIr {
                         pattern: arm.pattern,
                         body: self.first_fragment_of(&arm.body)?,
@@ -726,14 +817,30 @@ impl<'a> FunctionCfg<'a> {
                 duration_ms,
                 body,
                 site,
-            } => MirStmtKind::Timeout {
-                duration_ms,
-                body: self.first_fragment_of(&body)?,
-                site,
-            },
-            StmtIr::Concurrent { plan } => MirStmtKind::Concurrent {
-                plan: self.convert_concurrent_plan(plan)?,
-            },
+            } => {
+                if duration_ms == 0 {
+                    return Err(format!(
+                        "timeout statement {statement_index} has zero duration"
+                    ));
+                }
+                let continuation = branch_continuation.ok_or_else(|| {
+                    format!("timeout statement {statement_index} has no continuation block")
+                })?;
+                MirStmtKind::Timeout {
+                    duration_ms,
+                    body: self.first_fragment_of(&body)?,
+                    continuation,
+                    site,
+                }
+            }
+            StmtIr::Concurrent { plan } => {
+                let join_block = branch_continuation.ok_or_else(|| {
+                    format!("concurrent statement {statement_index} has no join block")
+                })?;
+                MirStmtKind::Concurrent {
+                    plan: self.convert_concurrent_plan(plan, join_block)?,
+                }
+            }
             StmtIr::Break => MirStmtKind::Break,
             StmtIr::Continue => MirStmtKind::Continue,
         };
@@ -743,9 +850,48 @@ impl<'a> FunctionCfg<'a> {
     fn convert_concurrent_plan(
         &self,
         plan: ConcurrentPlanIr,
+        join_block: u32,
     ) -> Result<MirConcurrentPlanIr, String> {
-        let mut lanes = Vec::with_capacity(plan.lanes.len());
-        for lane in plan.lanes {
+        if self
+            .blocks
+            .get(join_block as usize)
+            .is_none_or(|block| block.id != join_block)
+        {
+            return Err(format!(
+                "concurrent plan references missing join block {join_block}"
+            ));
+        }
+        let ConcurrentPlanIr {
+            lanes: source_lanes,
+            site,
+        } = plan;
+        if source_lanes.is_empty() {
+            return Err("statement concurrent plan has no lanes".to_string());
+        }
+        let mut lanes = Vec::with_capacity(source_lanes.len());
+        for (expected_order, lane) in source_lanes.into_iter().enumerate() {
+            let expected_order = u32::try_from(expected_order)
+                .map_err(|_| "concurrent lane count exceeds u32::MAX".to_string())?;
+            if lane.source_order() != expected_order {
+                return Err(format!(
+                    "concurrent lane at position {expected_order} stores source_order {}",
+                    lane.source_order()
+                ));
+            }
+            if lane
+                .dependencies()
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+                || lane
+                    .dependencies()
+                    .iter()
+                    .any(|dependency| *dependency >= expected_order)
+            {
+                return Err(format!(
+                    "concurrent lane {expected_order} has non-canonical dependencies {:?}",
+                    lane.dependencies()
+                ));
+            }
             lanes.push(match lane {
                 ConcurrentLaneIr::Statement {
                     source_order,
@@ -769,20 +915,18 @@ impl<'a> FunctionCfg<'a> {
                     body: self.first_fragment_of(&body)?,
                     site,
                 },
-                ConcurrentLaneIr::Tail {
-                    source_order,
-                    dependencies,
-                    tail,
-                    site,
-                } => MirConcurrentLaneIr::Tail {
-                    source_order,
-                    dependencies,
-                    tail,
-                    site,
-                },
+                ConcurrentLaneIr::Tail { .. } => {
+                    return Err(format!(
+                        "statement concurrent lane {expected_order} cannot be a value tail"
+                    ));
+                }
             });
         }
-        Ok(MirConcurrentPlanIr { lanes })
+        Ok(MirConcurrentPlanIr {
+            lanes,
+            site,
+            join_block,
+        })
     }
 
     fn first_fragment_of(&self, label: &str) -> Result<u32, String> {
@@ -839,11 +983,14 @@ impl<'a> FunctionCfg<'a> {
                         successors.extend(else_block);
                         successors
                     }
-                    Some(MirStmtKind::While { body, .. } | MirStmtKind::ForIn { body, .. }) => {
+                    Some(MirStmtKind::While { body, .. }) => {
                         // The loop-exit edge: the eagerly created continuation
                         // fragment right after this branch statement.
                         vec![*body, fragments[index + 1]]
                     }
+                    Some(MirStmtKind::ForIn {
+                        body, continuation, ..
+                    }) => vec![*body, *continuation],
                     Some(MirStmtKind::Match { arms, .. }) => {
                         let mut successors = arms.iter().map(|arm| arm.body).collect::<Vec<u32>>();
                         // The no-match edge: the statement continuation.

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{CallableEffectSummary, ExprRefIr, TypeRefIr};
 use skiff_compiler_core::PackageCallableIdentityError;
 
-use super::{MirConst, MirExpression, MirFunction, MirSlot, MirUnit};
+use super::{facts::call_writable_facts, MirConst, MirExpression, MirFunction, MirSlot, MirUnit};
 
 impl MirUnit {
     /// Resolves an exact executable-table index to its MIR function. MIR
@@ -147,6 +147,62 @@ impl MirFunction {
         Ok(())
     }
 
+    /// Resolves an exact block id. Block vector order and stored ids are one
+    /// contract; consumers must not silently accept a mismatched id.
+    pub fn block(&self, block: u32) -> Result<&super::MirBlock, MirContractError> {
+        let entry =
+            self.blocks
+                .get(block as usize)
+                .ok_or_else(|| MirContractError::MissingBlock {
+                    function: self.symbol.clone(),
+                    block,
+                    block_count: self.blocks.len(),
+                })?;
+        if entry.id != block {
+            return Err(MirContractError::BlockIndexMismatch {
+                function: self.symbol.clone(),
+                expected: block,
+                stored: entry.id,
+            });
+        }
+        Ok(entry)
+    }
+
+    /// Returns checked mutating receiver/inout facts for one expression.
+    /// The expected fact is recomputed solely from this function's owned MIR
+    /// expressions and slots, never from File IR.
+    pub fn call_writable_facts(
+        &self,
+        expression_ref: ExprRefIr,
+    ) -> Result<Option<&super::MirCallWritableFacts>, MirContractError> {
+        let expression = self.expression(expression_ref)?;
+        let expected = call_writable_facts(expression.index, &self.expressions, &self.slots)
+            .map_err(|message| MirContractError::InvalidWritableFacts {
+                function: self.symbol.clone(),
+                expression: expression.index,
+                message,
+            })?;
+        if expression.writable != expected {
+            return Err(MirContractError::WritableFactsMismatch {
+                function: self.symbol.clone(),
+                expression: expression.index,
+            });
+        }
+        Ok(expression.writable.as_ref())
+    }
+
+    /// Validates all expression-owned writable facts.
+    pub fn validate_writable_facts(&self) -> Result<(), MirContractError> {
+        self.validate_expression_indices()?;
+        for expression in &self.expressions {
+            let reference = ExprRefIr {
+                expression: expression.index,
+            };
+            self.call_writable_facts(reference)?;
+        }
+        Ok(())
+    }
+
     /// Resolves a slot by its function-local index. Slot vector order is part
     /// of the MIR contract and is checked rather than inferred.
     pub fn slot(&self, slot: u32) -> Result<&MirSlot, MirContractError> {
@@ -267,6 +323,18 @@ pub enum MirContractError {
     },
     #[error("MIR function `{function}` has more than u32::MAX expressions")]
     ExpressionIndexOverflow { function: String },
+    #[error(
+        "MIR function `{function}` expression {expression} has invalid writable facts: {message}"
+    )]
+    InvalidWritableFacts {
+        function: String,
+        expression: u32,
+        message: String,
+    },
+    #[error(
+        "MIR function `{function}` expression {expression} writable facts disagree with its owned expression/slot facts"
+    )]
+    WritableFactsMismatch { function: String, expression: u32 },
     #[error("MIR function `{function}` has no slot {slot} (slot count {slot_count})")]
     MissingSlot {
         function: String,
@@ -299,6 +367,12 @@ pub enum MirContractError {
     },
     #[error("MIR function `{function}` has more than u32::MAX blocks")]
     BlockIndexOverflow { function: String },
+    #[error("MIR function `{function}` has no block {block} (block count {block_count})")]
+    MissingBlock {
+        function: String,
+        block: u32,
+        block_count: usize,
+    },
     #[error("MIR function `{function}` block {block} references missing successor {successor}")]
     MissingSuccessorBlock {
         function: String,
@@ -431,8 +505,26 @@ pub enum MirBuildError {
         expression_count: usize,
         expression_type_count: usize,
     },
+    #[error(
+        "MIR function `{symbol}` in `{module_path}` has {statement_count} statements but {statement_span_count} statement span entries"
+    )]
+    StatementSpanCountMismatch {
+        module_path: String,
+        symbol: String,
+        statement_count: usize,
+        statement_span_count: usize,
+    },
     #[error("MIR function `{symbol}` in `{module_path}` has more than u32::MAX expressions")]
     ExpressionIndexOverflow { module_path: String, symbol: String },
+    #[error(
+        "MIR function `{symbol}` in `{module_path}` expression {expression} has invalid writable facts: {message}"
+    )]
+    InvalidWritableFacts {
+        module_path: String,
+        symbol: String,
+        expression: u32,
+        message: String,
+    },
     #[error(
         "failed to construct package callable identity for MIR function `{symbol}` in `{module_path}` (package `{package_id}`): {source}"
     )]
@@ -451,6 +543,13 @@ pub enum MirBuildError {
     },
     #[error("invalid MIR liveness input for `{symbol}` in `{module_path}`: {source}")]
     Liveness {
+        module_path: String,
+        symbol: String,
+        #[source]
+        source: MirContractError,
+    },
+    #[error("invalid owned MIR function contract for `{symbol}` in `{module_path}`: {source}")]
+    InvalidFunctionContract {
         module_path: String,
         symbol: String,
         #[source]

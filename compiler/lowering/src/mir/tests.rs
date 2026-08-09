@@ -20,9 +20,12 @@ use crate::lower;
 use crate::mir::builder::build_mir_units;
 use crate::mir::liveness::compute_liveness;
 use crate::mir::{
-    MirBlock, MirBuildError, MirContractError, MirExecutableKind, MirExpression, MirFunction,
-    MirLiveness, MirParamMode, MirSlotKind, MirStmtKind, MirUnit,
+    MirBlock, MirBuildError, MirContractError, MirExecutableKind, MirExpression, MirForInBinding,
+    MirForInItemKind, MirFunction, MirLiveness, MirParamMode, MirSlotKind, MirStmtKind, MirUnit,
+    MirWritablePlace, MirWritableRoot,
 };
+
+mod semantic_facts;
 
 fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::PackageSourceModel {
     let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -574,12 +577,43 @@ fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
                 .is_some_and(|stmt| matches!(stmt.kind, MirStmtKind::ForIn { .. }))
         })
         .expect("for-in block");
-    let for_in_body = mirror
-        .blocks
-        .iter()
-        .find(|block| block.label.starts_with("for_body"))
-        .expect("for body block");
-    assert!(for_in_block.successors.contains(&for_in_body.id));
+    let MirStmtKind::ForIn {
+        facts,
+        body,
+        continuation,
+        ..
+    } = &for_in_block
+        .statements
+        .last()
+        .expect("for-in statement")
+        .kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        facts.iterable_type,
+        TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        }
+    );
+    assert!(matches!(
+        &facts.binding,
+        MirForInBinding::Item {
+            ty,
+            kind: MirForInItemKind::ArrayItem,
+            ..
+        } if ty == &TypeRefIr::builtin("number")
+    ));
+    let mut expected_for_successors = vec![*body, *continuation];
+    expected_for_successors.sort_unstable();
+    assert_eq!(for_in_block.successors, expected_for_successors);
+    assert!(mirror
+        .block(*body)
+        .expect("for body block")
+        .label
+        .starts_with("for_body"));
+    mirror.block(*continuation).expect("for continuation block");
 
     // Match: arm bodies plus the no-match exit edge; the arm's completion
     // falls through to the next statement.
@@ -615,7 +649,10 @@ fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
         })
         .expect("timeout block");
     let MirStmtKind::Timeout {
-        body, duration_ms, ..
+        body,
+        continuation,
+        duration_ms,
+        ..
     } = &timeout_block.statements[0].kind
     else {
         unreachable!()
@@ -631,9 +668,12 @@ fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
         .find(|block| block.label.starts_with("timeout_body"))
         .expect("timeout body block");
     assert!(
-        !timeout_body.successors.is_empty(),
-        "timeout body must continue into the loop tail"
+        timeout_body.successors.contains(continuation),
+        "timeout body must complete into the exact loop-tail continuation"
     );
+    mirror
+        .block(*continuation)
+        .expect("timeout continuation block");
 
     // Catch expression produced exactly one exception region.
     let catchy_model = build_model(MODULE, MIR_FIXTURE);
@@ -680,16 +720,19 @@ fn liveness_hand_computed_small_fixture() {
             index: 0,
             expression: ExprIr::LoadConst { const_index: 0 },
             ty: TypeRefIr::builtin("number"),
+            writable: None,
         },
         MirExpression {
             index: 1,
             expression: ExprIr::LoadSlot { slot: 0 },
             ty: TypeRefIr::builtin("number"),
+            writable: None,
         },
         MirExpression {
             index: 2,
             expression: ExprIr::LoadSlot { slot: 1 },
             ty: TypeRefIr::builtin("number"),
+            writable: None,
         },
     ];
     let mut function = MirFunction {
@@ -742,6 +785,10 @@ fn liveness_hand_computed_small_fixture() {
                     span: None,
                     kind: MirStmtKind::Assign {
                         target: skiff_artifact_model::AssignTargetIr::Slot { slot: 1 },
+                        place: MirWritablePlace {
+                            root: MirWritableRoot::Slot { slot: 1 },
+                            path: Vec::new(),
+                        },
                         value: ExprRefIr { expression: 1 },
                     },
                 }],
@@ -807,11 +854,11 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
         blocks: vec![
             BlockIr {
                 label: "concurrent_lane$0".to_string(),
-                statements: vec![StmtRefIr { statement: 1 }],
+                statements: Vec::new(),
             },
             BlockIr {
                 label: "entry".to_string(),
-                statements: vec![StmtRefIr { statement: 0 }],
+                statements: vec![StmtRefIr { statement: 0 }, StmtRefIr { statement: 1 }],
             },
         ],
         statements: vec![
@@ -913,10 +960,15 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
     let MirStmtKind::Concurrent { plan } = &entry.statements[0].kind else {
         panic!("expected concurrent statement")
     };
+    let expected_site = InstructionSourceSite::Synthetic {
+        reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+    };
+    assert_eq!(plan.site, expected_site);
     assert_eq!(plan.lanes.len(), 1);
-    let crate::mir::MirConcurrentLaneIr::Statement { body, .. } = &plan.lanes[0] else {
+    let crate::mir::MirConcurrentLaneIr::Statement { body, site, .. } = &plan.lanes[0] else {
         panic!("expected statement lane")
     };
+    assert_eq!(site, &expected_site);
     let lane_id = *body;
     assert!(function.blocks.iter().any(|block| block.id == lane_id));
     assert_eq!(entry.successors, vec![lane_id]);
@@ -928,10 +980,35 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
         .iter()
         .find(|block| block.id == lane_id)
         .expect("lane block");
+    assert!(lane_block.statements.is_empty());
+    assert_eq!(lane_block.successors, vec![plan.join_block]);
+    let join_block = function
+        .block(plan.join_block)
+        .expect("checked concurrent join block");
     assert!(matches!(
-        lane_block.statements.last().map(|stmt| &stmt.kind),
+        join_block.statements.last().map(|stmt| &stmt.kind),
         Some(MirStmtKind::Return { .. })
     ));
-    assert!(lane_block.successors.is_empty());
+    assert!(join_block.successors.is_empty());
     assert_eq!(function.statements.len(), 2);
+
+    let mut malformed = unit.clone();
+    let StmtIr::Concurrent { plan } = &mut malformed.executables[0].body.statements[0] else {
+        unreachable!()
+    };
+    let ConcurrentLaneIr::Statement { source_order, .. } = &mut plan.lanes[0] else {
+        unreachable!()
+    };
+    *source_order = 1;
+    let error = crate::mir::builder::build_mir_unit_with_effect_map(
+        "example.com/concurrent-fixture",
+        &malformed,
+        &per_callable,
+    )
+    .expect_err("non-canonical concurrent order must fail closed");
+    assert!(matches!(
+        error,
+        MirBuildError::InvalidControlFlow { ref message, .. }
+            if message.contains("stores source_order 1")
+    ));
 }
