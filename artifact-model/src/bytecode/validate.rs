@@ -2545,15 +2545,13 @@ fn validate_exception_regions(
                     ));
                 }
                 previous_matcher_type = Some(*type_ref);
-            } else {
-                if !catch_all_only {
-                    return Err(table_error(
-                        key,
-                        format!(
-                            "exceptionRegions[{index}].catchMatchers must be either ascending TypeRef entries or a single CatchAll"
-                        ),
-                    ));
-                }
+            } else if !catch_all_only {
+                return Err(table_error(
+                    key,
+                    format!(
+                        "exceptionRegions[{index}].catchMatchers must be either ascending TypeRef entries or a single CatchAll"
+                    ),
+                ));
             }
         }
         previous_region = Some((region.start_pc, region.end_pc));
