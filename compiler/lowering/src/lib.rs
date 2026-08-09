@@ -1,5 +1,6 @@
 mod actor_method_validation;
 pub mod callable_return_types;
+mod const_evaluator;
 mod db_lowering;
 mod declaration_lowering;
 pub mod entrypoint_abi;
@@ -11,6 +12,7 @@ pub mod file_ir;
 mod function_lowering;
 mod interface_declaration_lowering;
 pub mod lowered;
+mod mir;
 mod publication_local_refs;
 mod service_call_error;
 mod service_call_lowering;
