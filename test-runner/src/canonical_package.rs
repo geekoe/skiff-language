@@ -8,8 +8,8 @@ use skiff_artifact_model::{
     ContractRequirement, PackageArtifact, PackageLocalAbiIdentity, ServiceAuthoringKind,
 };
 use skiff_compiler::{
-    compile_package, compile_service_package, CompilerPlatformSources, PackageCompileError,
-    PackageCompileInput, PackageContractCompileDependency, PackageSourceInput,
+    compile_package, compile_service_package, CompilerPlatformSources, PackageBytecodeLane,
+    PackageCompileError, PackageCompileInput, PackageContractCompileDependency, PackageSourceInput,
     PublishedPackageArtifact, ServiceApiProjection, ServicePackageCompileError,
 };
 use skiff_compiler_input::{
@@ -175,6 +175,7 @@ pub(crate) fn compile_package_artifact_with_context(
         package,
         context.package_aliases,
         &package_id,
+        false,
     )
     .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
     .with_available_canonical_packages(context.available_packages);
@@ -184,7 +185,11 @@ pub(crate) fn compile_package_artifact_with_context(
     if context.test_service {
         input = input.for_test_service();
     }
-    compile_package(input)
+    compile_package(input)?
+        .into_disabled_package()
+        .map_err(|_| PackageCompileError::BytecodeProjection {
+            message: "test runner package compilation unexpectedly enabled bytecode".to_string(),
+        })
 }
 
 fn compile_test_service_artifact_with_context(
@@ -199,6 +204,7 @@ fn compile_test_service_artifact_with_context(
         package,
         context.package_aliases,
         &package_id,
+        false,
     )
     .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
     .with_available_canonical_packages(context.available_packages)
@@ -323,6 +329,13 @@ fn compile_package_project_after_platform_context_guard(
                 &test_service.service_root,
                 context,
             )?;
+            if !matches!(&compiled.bytecode, PackageBytecodeLane::Disabled) {
+                return Err(PackageCompileError::BytecodeProjection {
+                    message: "test runner test-service compilation unexpectedly enabled bytecode"
+                        .to_string(),
+                }
+                .into());
+            }
             (compiled.package, Some(compiled.service_api))
         }
         None => (
