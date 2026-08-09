@@ -1,6 +1,5 @@
 use std::{num::NonZeroU64, sync::Arc};
 
-use skiff_artifact_model::ValueTransferPlanKind;
 use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
@@ -13,44 +12,25 @@ use skiff_runtime_model::{
     vm_value::ValueSlot,
 };
 
-use crate::{VmBudgetError, VmError, VmVerifiedInvariant};
+use crate::{VmBudgetError, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
 /// Values whose image-local handles remain pinned to the exact verified image
 /// that created them.
 ///
-/// Construction is crate-private: downstream code cannot attach a `ConstRef`
-/// from one image to another image pin. Consumers may inspect or atomically
-/// take the pin, values and concrete transfer plans together.
+/// There is intentionally no constructor yet: downstream code cannot attach a
+/// raw `ValueSlot` to an unrelated image pin, and the VM does not produce a
+/// successful value batch until the complete linked lifecycle-plan contract
+/// is available. Consumers of a future VM-produced batch may inspect it while
+/// this type keeps its exact image allocation alive.
 #[must_use = "owned VM values retain roots and an exact verified-image pin"]
 pub struct VmOwnedValues {
     image: Arc<VerifiedLinkedBytecodeImage>,
     values: Box<[ValueSlot]>,
-    plans: Box<[ValueTransferPlanKind]>,
 }
 
 impl VmOwnedValues {
-    pub(crate) fn new(
-        image: Arc<VerifiedLinkedBytecodeImage>,
-        values: Box<[ValueSlot]>,
-        plans: Box<[ValueTransferPlanKind]>,
-    ) -> Result<Self, VmError> {
-        if values.len() != plans.len() {
-            return Err(VmError::VerifiedEntryInvariant {
-                invariant: VmVerifiedInvariant::ResultTransferPlan,
-            });
-        }
-        for plan in plans.iter().copied() {
-            require_concrete_transfer_plan(plan)?;
-        }
-        Ok(Self {
-            image,
-            values,
-            plans,
-        })
-    }
-
     pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
         &self.image
     }
@@ -63,28 +43,12 @@ impl VmOwnedValues {
         &self.values
     }
 
-    pub fn plans(&self) -> &[ValueTransferPlanKind] {
-        &self.plans
-    }
-
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
-    }
-
-    /// Scheduler-TCB seam: the returned image pin must remain live for as long
-    /// as any returned value can still contain an image-local `ConstRef`.
-    pub fn into_parts(
-        self,
-    ) -> (
-        Arc<VerifiedLinkedBytecodeImage>,
-        Box<[ValueSlot]>,
-        Box<[ValueTransferPlanKind]>,
-    ) {
-        (self.image, self.values, self.plans)
     }
 }
 
@@ -109,7 +73,7 @@ pub struct VmResumeToken {
     resume_instruction: InstructionIndex,
     resume_site: ResumeSiteIndex,
     expected_stack_height: u32,
-    result_plans: Box<[ValueTransferPlanKind]>,
+    expected_result_count: u32,
     authority: VmResumeAuthority,
 }
 
@@ -126,13 +90,10 @@ impl VmResumeToken {
         resume_instruction: InstructionIndex,
         resume_site: ResumeSiteIndex,
         expected_stack_height: u32,
-        result_plans: Box<[ValueTransferPlanKind]>,
+        expected_result_count: u32,
         authority: VmResumeAuthority,
-    ) -> Result<Self, VmError> {
-        for plan in result_plans.iter().copied() {
-            require_concrete_transfer_plan(plan)?;
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             image,
             sequence,
             function,
@@ -140,9 +101,9 @@ impl VmResumeToken {
             resume_instruction,
             resume_site,
             expected_stack_height,
-            result_plans,
+            expected_result_count,
             authority,
-        })
+        }
     }
 
     pub const fn sequence(&self) -> u64 {
@@ -173,8 +134,8 @@ impl VmResumeToken {
         self.expected_stack_height
     }
 
-    pub fn result_plans(&self) -> &[ValueTransferPlanKind] {
-        &self.result_plans
+    pub const fn expected_result_count(&self) -> u32 {
+        self.expected_result_count
     }
 
     pub const fn kind(&self) -> VmResumeKind {
@@ -183,6 +144,16 @@ impl VmResumeToken {
             VmResumeAuthority::Adapter(_) => VmResumeKind::Adapter,
             VmResumeAuthority::StreamChild(_) => VmResumeKind::StreamChild,
             VmResumeAuthority::StreamItem => VmResumeKind::StreamItem,
+        }
+    }
+
+    /// Consumes this unforgeable continuation capability after the scheduler
+    /// has established the completion cell and root escrow identified by
+    /// `ticket`. The target/control authority remains sealed inside the token.
+    pub fn into_pending(self, ticket: PendingTicket) -> PendingOperation {
+        PendingOperation {
+            ticket,
+            resume: self,
         }
     }
 }
@@ -436,11 +407,6 @@ pub struct PendingOperation {
 }
 
 impl PendingOperation {
-    #[allow(dead_code)]
-    pub(crate) fn new(ticket: PendingTicket, resume: VmResumeToken) -> Self {
-        Self { ticket, resume }
-    }
-
     pub const fn ticket(&self) -> PendingTicket {
         self.ticket
     }
@@ -575,24 +541,11 @@ fn visit_values(values: &[ValueSlot], visitor: &mut dyn VmRootVisitor) -> Result
     Ok(())
 }
 
-fn require_concrete_transfer_plan(plan: ValueTransferPlanKind) -> Result<(), VmError> {
-    #[allow(unreachable_patterns)]
-    match plan {
-        ValueTransferPlanKind::SnapshotShare
-        | ValueTransferPlanKind::MoveOnly
-        | ValueTransferPlanKind::AffineResource
-        | ValueTransferPlanKind::ExplicitCloneLease => Ok(()),
-        _ => Err(VmError::VerifiedEntryInvariant {
-            invariant: VmVerifiedInvariant::NonConcreteValueTransferPlan,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
 
-    use super::{PendingTicket, VmControl, VmOwnedValues, VmResumeToken};
+    use super::{PendingOperation, PendingTicket, VmControl, VmOwnedValues, VmResumeToken};
 
     #[test]
     fn continuation_and_ticket_remain_compact_value_envelopes() {
@@ -605,5 +558,13 @@ mod tests {
     fn scheduler_envelopes_have_bounded_inline_layouts() {
         assert!(size_of::<VmOwnedValues>() <= 48);
         assert!(size_of::<VmControl>() <= 192);
+    }
+
+    #[test]
+    fn pending_handoff_consumes_only_unforgeable_resume_authority() {
+        let into_pending: fn(VmResumeToken, PendingTicket) -> PendingOperation =
+            VmResumeToken::into_pending;
+
+        let _ = into_pending;
     }
 }

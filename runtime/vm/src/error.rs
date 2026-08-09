@@ -1,7 +1,7 @@
 use std::{fmt, num::NonZeroU32};
 
-use skiff_artifact_model::{Opcode, ValueTransferPlanKind};
-use skiff_runtime_linked_bytecode::{FrameSlotIndex, FunctionIndex, InstructionIndex};
+use skiff_artifact_model::Opcode;
+use skiff_runtime_linked_bytecode::{FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex};
 use skiff_runtime_model::{vm_heap::VmHeapError, vm_value::ValueKind};
 
 use crate::{fiber::VmFiberState, VmBudgetError};
@@ -10,6 +10,7 @@ use crate::{fiber::VmFiberState, VmBudgetError};
 pub enum VmEntryArgumentRejection {
     InvalidMetadata,
     ImageScopedConstant,
+    HeapTypeProofUnavailable,
     ActorState,
     AffineResource,
     CallbackClosure,
@@ -23,12 +24,10 @@ pub enum VmVerifiedInvariant {
     ParameterSlotCount,
     DuplicateParameterSlot,
     FrameSlotPlanCount,
-    ParameterType,
     ParameterTransferPlan,
+    ParameterType,
     ResultType,
     ResultTransferPlan,
-    NonConcreteValueTransferPlan,
-    MissingLiveValueTransferPlan,
     ExternalInOutParameter,
     FrameLayoutOverflow,
 }
@@ -52,6 +51,11 @@ pub enum VmError {
         kind: Option<ValueKind>,
         reason: VmEntryArgumentRejection,
     },
+    EntryArgumentTypeMismatch {
+        ordinal: usize,
+        expected: TypeIndex,
+        actual: Option<ValueKind>,
+    },
     VerifiedEntryInvariant {
         invariant: VmVerifiedInvariant,
     },
@@ -71,6 +75,10 @@ pub enum VmError {
     },
     DiscardRequiresTerminal {
         state: VmFiberState,
+    },
+    TerminalRootLifecycleUnavailable {
+        index: usize,
+        kind: Option<ValueKind>,
     },
     ResumeNotExpected,
     ResumeTokenMismatch,
@@ -94,6 +102,11 @@ pub enum VmError {
         instruction: InstructionIndex,
         opcode: Opcode,
     },
+    FullValueLifecyclePlanUnavailable {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        opcode: Opcode,
+    },
     SlotOutOfBounds {
         function: FunctionIndex,
         slot: FrameSlotIndex,
@@ -103,11 +116,6 @@ pub enum VmError {
     },
     LiveDestination {
         location: VmValueLocation,
-    },
-    ValueTransferPlanMismatch {
-        location: VmValueLocation,
-        expected: ValueTransferPlanKind,
-        actual: ValueTransferPlanKind,
     },
     OperandStackUnderflow {
         function: FunctionIndex,
@@ -157,6 +165,15 @@ impl fmt::Display for VmError {
                 formatter,
                 "VM entry argument {ordinal} with kind {kind:?} was rejected: {reason:?}"
             ),
+            Self::EntryArgumentTypeMismatch {
+                ordinal,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "VM entry argument {ordinal} with kind {actual:?} does not exactly match verified type {}",
+                expected.get()
+            ),
             Self::VerifiedEntryInvariant { invariant } => {
                 write!(formatter, "verified VM entry invariant failed: {invariant:?}")
             }
@@ -180,6 +197,10 @@ impl fmt::Display for VmError {
             Self::DiscardRequiresTerminal { state } => write!(
                 formatter,
                 "VM roots can only be discarded after terminal state (state {state:?})"
+            ),
+            Self::TerminalRootLifecycleUnavailable { index, kind } => write!(
+                formatter,
+                "VM terminal root {index} with kind {kind:?} cannot be discarded without its full lifecycle plan"
             ),
             Self::ResumeNotExpected => formatter.write_str("VM fiber has no pending resume"),
             Self::ResumeTokenMismatch => {
@@ -220,6 +241,16 @@ impl fmt::Display for VmError {
                 function.get(),
                 instruction.get()
             ),
+            Self::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} ({opcode:?}) requires a full linked value lifecycle plan",
+                function.get(),
+                instruction.get()
+            ),
             Self::SlotOutOfBounds { function, slot } => write!(
                 formatter,
                 "VM function {} has no frame slot {}",
@@ -232,14 +263,6 @@ impl fmt::Display for VmError {
             Self::LiveDestination { location } => write!(
                 formatter,
                 "VM instruction requires a dead destination at {location:?}"
-            ),
-            Self::ValueTransferPlanMismatch {
-                location,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "VM value at {location:?} has transfer plan {actual:?}; expected {expected:?}"
             ),
             Self::OperandStackUnderflow {
                 function,
