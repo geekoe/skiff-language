@@ -434,6 +434,8 @@ fn implementation_package(
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     for (alias, dependency) in package_dependencies {
@@ -461,6 +463,9 @@ fn implementation_package(
                 metadata: BTreeMap::new(),
             },
         });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("bool"));
         assert_eq!(dependency.package_version, "1.0.0");
     }
     for (_, service, slot) in service_dependencies {
@@ -486,6 +491,9 @@ fn implementation_package(
                 metadata: BTreeMap::new(),
             },
         });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("bool"));
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("File IR identity");
     let callable_id = callable_id(package_id);
@@ -654,6 +662,7 @@ fn contract(service_id: &str) -> ServiceContract {
         contract_version: contract_version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, descriptor)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
@@ -772,6 +781,8 @@ fn base_package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements,
         contract_requirements,
         service_requirements,
