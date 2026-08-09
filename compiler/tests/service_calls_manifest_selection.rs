@@ -282,17 +282,17 @@ mod tests {
         let direct_left = project_selection(
             &left_project.package.artifact,
             &left_project.package.resolved_package_schema_type_records,
-            &["worker", "selected"],
+            &["packageOnly", "selected"],
         )
         .unwrap();
         let direct_right = project_selection(
             &left_project.package.artifact,
             &left_project.package.resolved_package_schema_type_records,
-            &["selected", "worker"],
+            &["selected", "packageOnly"],
         )
         .unwrap();
         assert_eq!(direct_left, direct_right);
-        assert_eq!(direct_left.service_calls, ["selected", "worker"]);
+        assert_eq!(direct_left.service_calls, ["packageOnly", "selected"]);
     }
 
     #[test]
@@ -304,10 +304,11 @@ mod tests {
 
         assert!(matches!(
             project_selection(package, records, &["worker.run"]),
-            Err(ContractDefinitionError::PublicInstanceMethodSelection {
+            Err(ContractDefinitionError::PublicInstanceMethodAlias {
                 path,
-                public_instance,
-            }) if path == "worker.run" && public_instance == "worker"
+                method_paths,
+                ..
+            }) if path == "worker.run" && method_paths.is_empty()
         ));
         assert!(matches!(
             project_selection(package, records, &["unknown"]),
@@ -341,7 +342,7 @@ mod tests {
                 path,
                 method_paths,
                 ..
-            }) if path == "runAlias" && method_paths == ["worker.run"]
+            }) if path == "runAlias" && method_paths.is_empty()
         ));
 
         let mut duplicate_callable = package.clone();
