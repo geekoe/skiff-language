@@ -10,7 +10,8 @@ impl HostHttpBarrierObserver {
     routeTag: string,
     hostConnectionGenerationHash: string
   ) -> void {
-    self.observed.push(routeTag.concat(":").concat(hostConnectionGenerationHash))
+    var working = self
+    working.observed.push(routeTag.concat(":").concat(hostConnectionGenerationHash))
   }
 }
 

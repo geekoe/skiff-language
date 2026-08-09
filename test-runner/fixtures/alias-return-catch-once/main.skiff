@@ -43,7 +43,8 @@ function copied(value: bytes) -> bytes {
 }
 
 function appendOnce(state: Array<string>, fail: bool) -> string {
-  state.push("effect")
+  var working = state
+  working.push("effect")
   if fail {
     throw std.service.ProtocolError {
       target: "alias-catch-fixture",
