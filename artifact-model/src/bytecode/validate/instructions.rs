@@ -7,7 +7,7 @@ use crate::bytecode::opcodes::{
     TrapFailureKind,
 };
 
-use super::{descriptor_mismatch, StructuralValidationError};
+use super::{descriptor_mismatch, limit_error, StructuralValidationError};
 
 /// C5: operand indices in bounds, pool/table category fixed by position,
 /// count-class immediates bounded, relocation kind compatible with the
@@ -107,6 +107,7 @@ pub(super) fn validate_operands(
                         TableCategory::ExceptionRegions => function.exception_regions.len(),
                         TableCategory::SwitchTables => function.switch_tables.len(),
                         TableCategory::ActiveRegions => function.active_regions.len(),
+                        TableCategory::CallLoanLayouts => function.call_loan_layouts.len(),
                     };
                     if word as usize >= table_len {
                         return Err(StructuralValidationError::Operand {
@@ -242,6 +243,61 @@ fn validate_instruction_contract(
         message,
     };
     match descriptor.kind {
+        Opcode::CallLocalInOut => {
+            let input_count = descriptor
+                .operand_word(OperandRole::InputCount, &instruction.operand_words)
+                .ok_or_else(|| {
+                    descriptor_mismatch(key, instruction.pc, "InputCount".to_string())
+                })?;
+            let layout_index = descriptor
+                .operand_word(OperandRole::CallLoanLayout, &instruction.operand_words)
+                .ok_or_else(|| {
+                    descriptor_mismatch(key, instruction.pc, "CallLoanLayout".to_string())
+                })?;
+            let Some(layout) = function.call_loan_layouts.get(layout_index as usize) else {
+                return Err(descriptor_mismatch(
+                    key,
+                    instruction.pc,
+                    "CallLoanLayout table row".to_string(),
+                ));
+            };
+            let mut selector_count = 0_u64;
+            for loan in &layout.loans {
+                let Some(BytecodePoolEntry::WritablePath(path)) =
+                    pools.writable_paths.get(loan.writable_path_ref as usize)
+                else {
+                    return Err(descriptor_mismatch(
+                        key,
+                        instruction.pc,
+                        "CallLoanLayout writable path".to_string(),
+                    ));
+                };
+                selector_count = selector_count
+                    .checked_add(u64::from(path.selector_count()))
+                    .ok_or_else(|| StructuralValidationError::Arithmetic {
+                        context: format!(
+                            "functions[{key}] pc {} call loan selector count",
+                            instruction.pc
+                        ),
+                    })?;
+            }
+            if selector_count > limits::MAX_ARITY {
+                return Err(limit_error(
+                    "MAX_ARITY",
+                    limits::MAX_ARITY,
+                    selector_count,
+                    &format!(
+                        "functions[{key}] pc {} call loan selector count",
+                        instruction.pc
+                    ),
+                ));
+            }
+            if u64::from(input_count) < selector_count {
+                return Err(operand_error(format!(
+                    "InputCount {input_count} is smaller than call loan selector count {selector_count}"
+                )));
+            }
+        }
         Opcode::NewRecord => {
             let shape_index = descriptor
                 .operand_word(OperandRole::ShapeRef, &instruction.operand_words)

@@ -8,18 +8,19 @@ pub use abi_identity::{
     DescriptorHash, ExternalDeclarationAnchor, PublishedDeclarationId, SchemaRevision, StdSymbolId,
     TypeNameability,
 };
-pub use service_db::AssemblyActivationServiceDb;
 pub use actor_declaration::{
     ActorAbiIdentity, ActorAbiInput, ActorCreateImplementationIr, ActorCreateSignatureIr,
     ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, ActorImplementationIdentity,
     ActorMethodIdentity, ActorPublicMethodIr, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
+pub use service_db::AssemblyActivationServiceDb;
 mod activation_lexical;
 pub mod boundary;
 pub mod builtin_receiver_ops;
 pub mod bytecode;
 pub mod compile_identity;
-pub mod compile_requirements;pub mod config;
+pub mod compile_requirements;
+pub mod config;
 pub mod contract_types;
 pub mod deployment;
 pub mod ecosystem_authoring;
@@ -116,9 +117,8 @@ pub use ecosystem_authoring::{
     HttpGatewayDocumentAuthoring, HttpGatewayEntryAuthoring, RuntimeConfigSourceAuthoring,
     ServiceAuthoringKind, ServiceManifestAuthoring, WebSocketConnectAuthoring,
     WebSocketConnectionCloseAuthoring, WebSocketGatewayDocumentAuthoring,
-    WebSocketJsonRpcMethodAuthoring,
-    DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
-    DEPENDENCY_ALIAS_RESERVED_VECTORS,
+    WebSocketJsonRpcMethodAuthoring, DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS,
+    DEPENDENCY_ALIAS_POSITIVE_VECTORS, DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
@@ -163,8 +163,9 @@ pub use native_value_lifecycle::{
     NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
 };
 pub use package_artifact::{
-    PackageActorAbi, PackageArtifact, PackageCallableLinkFact, PackageCallableParameter,
-    PackageCallableSignature, PackageLocalAbi, PackageLocalAbiSymbol,
+    PackageActorAbi, PackageActorCreateBinding, PackageActorImplementation, PackageArtifact,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature, PackageLocalAbi,
+    PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
 };
 pub use package_unit::{
     ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,
@@ -191,7 +192,9 @@ pub use recoverable::{
     RecoverableTrustBoundary, RecoverableTypeIdentityFact, RecoverableTypeIdentityRef,
     RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
 };
-pub use refs::{BytecodeArtifactRef, FileIrRef, SourcePosition, SourceSpanRef};
+pub use refs::{
+    BytecodeArtifactRef, FileIrRef, PackageExecutableCoordinate, SourcePosition, SourceSpanRef,
+};
 pub use resources::PublicationResourceRef;
 pub use runtime_assembly::{
     ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
@@ -209,7 +212,10 @@ pub use schema::{
     SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
-pub use service_contract::{ContractDiagnosticText, ServiceContract};
+pub use service_contract::{
+    ContractDiagnosticText, ContractPublicInstance, ContractPublicInstanceInterface,
+    ContractPublicInstanceMethod, ServiceContract,
+};
 pub use service_unit::{
     ActorMetadataIr, ActorMethodMetadataIr, DbMetadataIndexIr, DbMetadataIr, GatewayConfig,
     GatewayRoute, OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding,

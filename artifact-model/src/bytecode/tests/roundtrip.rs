@@ -130,9 +130,11 @@ fn canonical_bytes_are_insertion_order_insensitive() {
     let mut first = BTreeMap::new();
     first.insert("module::main".to_string(), main_function());
     first.insert("module::helper".to_string(), helper_function());
+    first.insert("module::main$callback0".to_string(), callback_function());
     let mut second = BTreeMap::new();
     second.insert("module::helper".to_string(), helper_function());
     second.insert("module::main".to_string(), main_function());
+    second.insert("module::main$callback0".to_string(), callback_function());
 
     let bytes_of = |functions: BTreeMap<String, RelocatableBytecodeFunction>| {
         let mut artifact = canonical_artifact();
@@ -198,17 +200,17 @@ fn branch_target_decode_is_overflow_safe() {
     assert_eq!(decode_branch_target(u32::MAX, 3, 0x7FFF_FFFF), None);
 }
 
-/// The table is ascending, complete (62 rows) and lookup-consistent.
+/// The table is ascending, complete (63 rows) and lookup-consistent.
 #[test]
 fn opcode_table_is_complete_sorted_and_lookup_consistent() {
     let expected: Vec<u8> = vec![
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50,
-        0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x60, 0x61, 0x70,
-        0x71, 0x72, 0x73, 0x80, 0x81, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
-        0x9A, 0x9B,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43,
+        0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x60, 0x61,
+        0x70, 0x71, 0x72, 0x73, 0x80, 0x81, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+        0x99, 0x9A, 0x9B,
     ];
-    assert_eq!(OPCODE_TABLE.len(), 62);
+    assert_eq!(OPCODE_TABLE.len(), 63);
     assert_eq!(
         OPCODE_TABLE
             .iter()
@@ -223,7 +225,7 @@ fn opcode_table_is_complete_sorted_and_lookup_consistent() {
         );
     }
     for forbidden in [
-        0x09, 0x0F, 0x16, 0x1F, 0x26, 0x34, 0x44, 0x5D, 0x62, 0x74, 0x82, 0x8F, 0x9C, 0xFF,
+        0x09, 0x0F, 0x16, 0x1F, 0x27, 0x34, 0x44, 0x5D, 0x62, 0x74, 0x82, 0x8F, 0x9C, 0xFF,
     ] {
         assert_eq!(
             opcode_for(forbidden),
@@ -263,8 +265,8 @@ fn opcode_numeric_and_semantic_descriptors_are_one_to_one() {
         assert_eq!(descriptor_for_opcode(descriptor.kind), descriptor);
     }
 
-    assert_eq!(encoded.len(), 62);
-    assert_eq!(semantic.len(), 62);
+    assert_eq!(encoded.len(), 63);
+    assert_eq!(semantic.len(), 63);
     assert_eq!(opcode_kind(0xFF), None);
 }
 
@@ -342,6 +344,7 @@ fn transfer_and_call_result_stack_contracts_are_explicit() {
 
     for kind in [
         Opcode::CallLocal,
+        Opcode::CallLocalInOut,
         Opcode::CallService,
         Opcode::CallActor,
         Opcode::CallInterface,
@@ -361,6 +364,25 @@ fn transfer_and_call_result_stack_contracts_are_explicit() {
     let tail_call = descriptor_for_opcode(Opcode::TailCallLocal);
     assert_eq!(tail_call.operand_position(OperandRole::ResultCount), None);
     assert!(tail_call.stack_out.is_empty());
+
+    let inout = descriptor_for_opcode(Opcode::CallLocalInOut);
+    assert_eq!(inout.opcode, 0x26);
+    assert_eq!(
+        inout.operand_roles,
+        &[
+            OperandRole::LocalTarget,
+            OperandRole::InputCount,
+            OperandRole::ResultCount,
+            OperandRole::CallLoanLayout,
+        ]
+    );
+    assert_eq!(inout.operand_position(OperandRole::InputCount), Some(1));
+    assert_eq!(inout.operand_position(OperandRole::ResultCount), Some(2));
+    assert_eq!(inout.operand_position(OperandRole::CallLoanLayout), Some(3));
+    assert_eq!(
+        inout.stack_in[0].arity,
+        Arity::Declared(OperandRole::InputCount)
+    );
 }
 
 /// Typed scalar operations have fixed stack effects. Eager logical And/Or
@@ -400,7 +422,7 @@ fn typed_scalar_opcode_stack_contracts_are_fixed() {
 fn opcode_table_fingerprint_with_operand_roles_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "b7a38d341715a27c87bab011d2cbfdc87d14cb4d87d00d3d925d3c8dace6a405"
+        "67249899464de5c40ca8c9efd02f46bd7365b801e0195dab2a94ba0053e62b4a"
     );
 }
 
@@ -446,10 +468,26 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         "skiff-bytecode-image-v1:sha256:fixture"
     );
     assert_eq!(view.opcode_table_fingerprint(), opcode_table_fingerprint());
-    assert_eq!(view.constant_roots()["const:implementation"], 2);
+    assert_eq!(
+        view.native_value_lifecycle_registry(),
+        crate::native_value_lifecycle_registry_identity()
+    );
+    assert_eq!(view.constant_roots()["module.implementation"], 2);
     assert_eq!(view.resume_sites().len(), 1);
     assert_eq!(view.resume_sites()[0].site_pc, 20);
     assert_eq!(validated.relocations, main_function().relocations);
+    assert_eq!(
+        validated.call_loan_layouts,
+        main_function().call_loan_layouts
+    );
+    assert_eq!(validated.frame_layout.writable_local_slots, vec![1]);
+    assert_eq!(
+        validated.origin,
+        crate::bytecode::dto::BytecodeFunctionOrigin::Executable {
+            executable: executable_coordinate(0)
+        }
+    );
+    assert_eq!(validated.self_type_ref, None);
 
     let mut without_debug = canonical_artifact();
     without_debug.image.debug_table = None;

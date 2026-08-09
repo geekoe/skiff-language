@@ -37,7 +37,7 @@ pub mod limits {
     /// fieldOrdinal/methodSlot/...). Call result counts use the tighter
     /// `MAX_RESULTS_PER_CALL` bound.
     pub const MAX_ARITY: u64 = 256;
-    /// Results produced by one non-tail call in ISA v3.
+    /// Results produced by one non-tail call in ISA v4.
     pub const MAX_RESULTS_PER_CALL: u64 = 1;
     /// Constant graph / type pool nesting depth.
     pub const MAX_NESTING_DEPTH: u64 = 64;
@@ -60,8 +60,8 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v3";
-pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v3";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v4";
+pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v4";
 
 /// Root bytecode artifact record (D11: one image per package).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,9 +70,13 @@ pub struct BytecodeArtifact {
     pub magic: String,
     pub schema_version: String,
     pub isa_version: String,
-    /// `opcodes::opcode_table_fingerprint()` of the reader's table; validated
-    /// against the compile-time built-in (C1).
+    /// Hash of the reader's complete canonical opcode contract (numeric and
+    /// semantic identity, operand roles, stack effects and relocation kinds).
+    /// Validated against the compile-time built-in (C1).
     pub opcode_table_fingerprint: String,
+    /// Exact native lifecycle table identity used to interpret transfer
+    /// plans. Required even when the table has no adapter entries.
+    pub native_value_lifecycle_registry: crate::NativeValueLifecycleRegistryIdentity,
     /// Declared identity. Filled by artifact-identity (C9); validation of the
     /// declared value against the recomputed identity is a later task.
     pub bytecode_identity: String,
@@ -217,18 +221,65 @@ pub enum BytecodeConstantRef {
     PackageSymbol { symbol: crate::PackageSymbolRef },
 }
 
+/// Build-independent origin of one relocatable function. Synthetic callbacks
+/// are anchored to the exact ordinary executable and a producer-owned site
+/// ordinal; neither variant carries paths or a package build id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BytecodeFunctionOrigin {
+    Executable {
+        executable: crate::PackageExecutableCoordinate,
+    },
+    SyntheticCallback {
+        owner: crate::PackageExecutableCoordinate,
+        site_ordinal: u32,
+    },
+}
+
+impl BytecodeFunctionOrigin {
+    /// Owning ordinary executable coordinate for either an ordinary body or
+    /// one of its synthetic callback sites.
+    pub const fn owner_executable(&self) -> &crate::PackageExecutableCoordinate {
+        match self {
+            Self::Executable { executable } => executable,
+            Self::SyntheticCallback { owner, .. } => owner,
+        }
+    }
+
+    /// Exact coordinate only when this function is itself ordinary.
+    pub const fn ordinary_executable(&self) -> Option<&crate::PackageExecutableCoordinate> {
+        match self {
+            Self::Executable { executable } => Some(executable),
+            Self::SyntheticCallback { .. } => None,
+        }
+    }
+}
+
 /// Relocatable template function (§3.2). `function_key` duplicates the image
 /// map key and must match it (validated).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RelocatableBytecodeFunction {
     pub function_key: String,
+    pub origin: BytecodeFunctionOrigin,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_parameters: Vec<String>,
+    /// Exact receiver/Self type-pool reference. The field itself is required
+    /// and serializes as `null` for non-receiver functions.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub self_type_ref: Option<u32>,
     /// Wordcode body; `pc` is a word offset into this array.
     pub words: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relocations: Vec<BytecodeRelocation>,
+    /// Function-local inout loan layouts. Required on the wire even when
+    /// empty; instructions select a row through `CallLoanLayout`.
+    pub call_loan_layouts: Vec<CallLoanLayout>,
     pub frame_layout: FrameLayout,
     pub max_operand_depth: u32,
     /// Reference to the callable's effect summary (owned by the effect facts
@@ -255,6 +306,9 @@ pub struct FrameLayout {
     pub slot_type_refs: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameter_slots: Vec<ParameterSlotDecl>,
+    /// Strictly increasing caller-owned writable locals. Incoming parameter
+    /// slots (including Self and inout parameters) are never writable roots.
+    pub writable_local_slots: Vec<u32>,
     pub result_count: u32,
     /// One `BytecodePools::types` index per result slot, in result order.
     pub result_type_refs: Vec<u32>,
@@ -264,6 +318,24 @@ pub struct FrameLayout {
     /// One plan per frame slot, indexed by slot (schema declaration).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_plans: Vec<ValueTransferPlan>,
+}
+
+/// One non-empty, function-local set of loans consumed by a
+/// `call_local_inout` instruction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallLoanLayout {
+    pub loans: Vec<CallLoanBinding>,
+}
+
+/// Mapping from a callee inout parameter ordinal to an exact caller-owned
+/// writable root and artifact-level writable-path declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallLoanBinding {
+    pub parameter_ordinal: u32,
+    pub root_slot: u32,
+    pub writable_path_ref: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -398,7 +470,7 @@ pub struct HostEffectSignature {
     pub parameter_types: Vec<TypeRefIr>,
     pub parameter_modes: Vec<crate::ParamModeIr>,
     pub parameter_plans: Vec<ValueTransferPlan>,
-    /// v3 supports zero or one result, but uses vectors so arity remains
+    /// v4 supports zero or one result, but uses vectors so arity remains
     /// explicit and exactly matches the opcode `resultCount`.
     pub result_types: Vec<TypeRefIr>,
     pub result_plans: Vec<ValueTransferPlan>,
@@ -770,7 +842,7 @@ pub struct ResumeDescriptor {
     /// Operand stack height immediately before resumed results are pushed.
     pub expected_stack_height_before_result: u32,
     /// Type refs and plans in result order; both lengths equal site result
-    /// arity and v3 permits only zero or one.
+    /// arity and v4 permits only zero or one.
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,
     pub error_mode: ResumeErrorMode,

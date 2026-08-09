@@ -24,6 +24,7 @@ fn throw_and_call_round_trip_required_source_sites() {
         target: CallTargetIr::LocalExecutable {
             executable_index: 2,
         },
+        concrete_receiver: None,
         site: InstructionSourceSite::Synthetic {
             reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
         },
@@ -39,6 +40,7 @@ fn throw_and_call_round_trip_required_source_sites() {
     ] {
         assert!(expected.get("site").is_some());
     }
+    assert!(serde_json::to_value(&call).unwrap()["concreteReceiver"].is_null());
     assert_eq!(
         serde_json::from_value::<StmtIr>(serde_json::to_value(&statement).unwrap()).unwrap(),
         statement
@@ -47,6 +49,69 @@ fn throw_and_call_round_trip_required_source_sites() {
         serde_json::from_value::<CallIr>(serde_json::to_value(&call).unwrap()).unwrap(),
         call
     );
+}
+
+#[test]
+fn inout_call_coordinates_and_index_selectors_are_required() {
+    let call = CallIr {
+        target: CallTargetIr::LocalExecutable {
+            executable_index: 4,
+        },
+        concrete_receiver: Some(TypeRefIr::builtin("Worker")),
+        site: source_site(),
+        args: vec![ExprRefIr { expression: 1 }],
+        inout_args: vec![InOutArgIr {
+            parameter_ordinal: 2,
+            root_slot: 3,
+            path: vec![
+                InOutPathSegmentIr::Field {
+                    name: "items".to_string(),
+                },
+                InOutPathSegmentIr::Index {
+                    selector: ExprRefIr { expression: 9 },
+                },
+            ],
+        }],
+        type_args: BTreeMap::new(),
+        metadata: BTreeMap::new(),
+    };
+    let wire = serde_json::to_value(&call).unwrap();
+    assert_eq!(wire["concreteReceiver"]["name"], "Worker");
+    assert_eq!(wire["inoutArgs"][0]["parameterOrdinal"], 2);
+    assert_eq!(wire["inoutArgs"][0]["path"][1]["kind"], "index");
+    assert_eq!(wire["inoutArgs"][0]["path"][1]["selector"]["expression"], 9);
+    assert_eq!(
+        serde_json::from_value::<CallIr>(wire.clone()).unwrap(),
+        call
+    );
+
+    let mut missing_receiver_field = wire.clone();
+    missing_receiver_field
+        .as_object_mut()
+        .unwrap()
+        .remove("concreteReceiver");
+    assert!(serde_json::from_value::<CallIr>(missing_receiver_field).is_err());
+
+    let mut missing_ordinal = wire.clone();
+    missing_ordinal["inoutArgs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("parameterOrdinal");
+    assert!(serde_json::from_value::<CallIr>(missing_ordinal).is_err());
+
+    let mut missing_selector = wire;
+    missing_selector["inoutArgs"][0]["path"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("selector");
+    assert!(serde_json::from_value::<CallIr>(missing_selector).is_err());
+
+    let mut invalid_external_receiver = serde_json::to_value(&call).unwrap();
+    invalid_external_receiver["target"] = serde_json::json!({
+        "kind": "serviceCall",
+        "serviceCallRefIndex": 0
+    });
+    assert!(serde_json::from_value::<CallIr>(invalid_external_receiver).is_err());
 }
 
 #[test]
@@ -155,17 +220,50 @@ fn representation_wrap_has_one_required_wire_shape() {
 }
 
 #[test]
-fn slot_ty_and_executable_type_facts_are_incremental_file_ir_fields() {
-    // Empty fields are skipped on the wire so legacy File IR stays
-    // byte-identical when lowering has no facts to record.
+fn index_expression_preserves_both_required_child_references() {
+    let expression = ExprIr::Index {
+        object: ExprRefIr { expression: 2 },
+        index: ExprRefIr { expression: 5 },
+    };
+    let wire = serde_json::json!({
+        "kind": "index",
+        "object": { "expression": 2 },
+        "index": { "expression": 5 }
+    });
+    assert_eq!(serde_json::to_value(&expression).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ExprIr>(wire.clone()).unwrap(),
+        expression
+    );
+
+    for field in ["object", "index"] {
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<ExprIr>(missing).is_err());
+    }
+    let mut unknown = wire;
+    unknown["containerSemantics"] = serde_json::json!("guessed");
+    assert!(serde_json::from_value::<ExprIr>(unknown).is_err());
+}
+
+#[test]
+fn slot_writability_is_required_while_optional_type_facts_remain_incremental() {
     let slot = SlotIr {
         index: 0,
         name: "x".to_string(),
         kind: SlotKind::Local,
+        writable_local: true,
         ty: None,
     };
     let slot_wire = serde_json::to_value(&slot).unwrap();
+    assert_eq!(slot_wire["writableLocal"], true);
     assert_eq!(slot_wire.get("ty"), None);
+    let immutable_wire = serde_json::to_value(SlotIr {
+        writable_local: false,
+        ..slot.clone()
+    })
+    .unwrap();
+    assert_eq!(immutable_wire["writableLocal"], false);
     let executable = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: "root.mod.f".to_string(),
@@ -184,22 +282,38 @@ fn slot_ty_and_executable_type_facts_are_incremental_file_ir_fields() {
         source_span: None,
     };
     let wire = serde_json::to_value(&executable).unwrap();
+    assert!(wire["selfType"].is_null());
     assert_eq!(wire.get("expressionTypes"), None);
     assert_eq!(wire.get("statementSpans"), None);
 
-    // Legacy JSON without the new fields decodes with empty defaults.
-    let mut legacy = wire.clone();
-    legacy.as_object_mut().unwrap().insert(
+    let mut missing_writability = wire.clone();
+    missing_writability.as_object_mut().unwrap().insert(
         "slots".to_string(),
         serde_json::json!({
             "slots": [{ "index": 0, "name": "x", "kind": "local" }],
             "frameSize": 1
         }),
     );
-    let decoded = serde_json::from_value::<ExecutableIr>(legacy).unwrap();
-    assert_eq!(decoded.expression_types, Vec::<TypeRefIr>::new());
-    assert_eq!(decoded.statement_spans, Vec::<Option<SourceSpanRef>>::new());
-    assert_eq!(decoded.slots.slots[0].ty, None);
+    assert!(serde_json::from_value::<ExecutableIr>(missing_writability).is_err());
+
+    let mut missing_self = wire.clone();
+    missing_self.as_object_mut().unwrap().remove("selfType");
+    assert!(serde_json::from_value::<ExecutableIr>(missing_self).is_err());
+
+    for kind in [
+        SlotKind::Param,
+        SlotKind::SelfValue,
+        SlotKind::Temp,
+        SlotKind::Pattern,
+    ] {
+        let invalid = serde_json::json!({
+            "index": 0,
+            "name": "slot",
+            "kind": serde_json::to_value(kind).unwrap(),
+            "writableLocal": true
+        });
+        assert!(serde_json::from_value::<SlotIr>(invalid).is_err());
+    }
 
     // Non-empty facts serialize and round-trip in index-aligned order.
     let typed = ExecutableIr {
@@ -222,6 +336,25 @@ fn slot_ty_and_executable_type_facts_are_incremental_file_ir_fields() {
             { "kind": "builtin", "name": "string" }
         ]))
     );
+
+    let signature = ExecutableSignatureIr {
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        may_suspend: false,
+    };
+    let signature_wire = serde_json::to_value(&signature).unwrap();
+    assert!(signature_wire["selfType"].is_null());
+    assert_eq!(
+        serde_json::from_value::<ExecutableSignatureIr>(signature_wire.clone()).unwrap(),
+        signature
+    );
+    let mut missing_signature_self = signature_wire;
+    missing_signature_self
+        .as_object_mut()
+        .unwrap()
+        .remove("selfType");
+    assert!(serde_json::from_value::<ExecutableSignatureIr>(missing_signature_self).is_err());
     assert_eq!(
         serde_json::from_value::<ExecutableIr>(typed_wire).unwrap(),
         typed

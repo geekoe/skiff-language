@@ -13,6 +13,14 @@ fn builtin(name: &str, args: Vec<TypeRefIr>) -> TypeRefIr {
 fn built_in_identity_and_entries_are_deterministic() {
     let registry = native_value_lifecycle_registry();
     assert_eq!(
+        NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
+        "skiff-native-value-lifecycle-v2"
+    );
+    assert_eq!(
+        NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT,
+        "f3822f537091ee8f3faf444043016d881c1274b1ca48f211a62b5f7dfe345b81"
+    );
+    assert_eq!(
         registry.identity().registry_id,
         NATIVE_VALUE_LIFECYCLE_REGISTRY_ID
     );
@@ -24,7 +32,7 @@ fn built_in_identity_and_entries_are_deterministic() {
         registry.identity().fingerprint,
         NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 6);
+    assert_eq!(registry.entries().len(), 12);
 
     let reversed = NativeValueLifecycleRegistry::new(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
@@ -42,7 +50,7 @@ fn built_in_identity_and_entries_are_deterministic() {
 }
 
 #[test]
-fn initial_registry_contains_only_audited_scalars_and_stream() {
+fn initial_registry_contains_audited_scalars_snapshots_and_stream() {
     for name in ["null", "bool", "number", "integer", "Date"] {
         assert_eq!(
             native_value_lifecycle_registry().lookup(&builtin(name, Vec::new())),
@@ -54,9 +62,37 @@ fn initial_registry_contains_only_audited_scalars_and_stream() {
             })
         );
     }
+    for name in ["string", "bytes", "Json", "JsonObject"] {
+        assert_eq!(
+            native_value_lifecycle_registry().lookup(&builtin(name, Vec::new())),
+            Ok(NativeValueLifecycleResolution {
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease
+                },
+                embedding: NativeValueEmbedding::Ordinary,
+            })
+        );
+    }
+    for ty in [
+        builtin("Array", vec![builtin("string", Vec::new())]),
+        builtin(
+            "Map",
+            vec![builtin("string", Vec::new()), builtin("Json", Vec::new())],
+        ),
+    ] {
+        assert_eq!(
+            native_value_lifecycle_registry().lookup(&ty),
+            Ok(NativeValueLifecycleResolution {
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease
+                },
+                embedding: NativeValueEmbedding::Ordinary,
+            })
+        );
+    }
     assert_eq!(
         native_value_lifecycle_registry()
-            .lookup(&builtin("Stream", vec![builtin("number", Vec::new())])),
+            .lookup(&builtin("Stream", vec![builtin("string", Vec::new())])),
         Ok(NativeValueLifecycleResolution {
             lifecycle: NativeValueLifecycleConcrete::AffineResource {
                 drop: NativeResourceDropPlan::ResourceTableRelease
@@ -65,7 +101,7 @@ fn initial_registry_contains_only_audited_scalars_and_stream() {
         })
     );
     assert!(matches!(
-        native_value_lifecycle_registry().lookup(&builtin("string", Vec::new())),
+        native_value_lifecycle_registry().lookup(&builtin("uuid", Vec::new())),
         Err(NativeValueLifecycleLookupError::Missing { .. })
     ));
 }
@@ -82,7 +118,7 @@ fn lookup_reports_arity_and_argument_policy_failures() {
     ));
     assert!(matches!(
         native_value_lifecycle_registry()
-            .lookup(&builtin("Stream", vec![builtin("string", Vec::new())])),
+            .lookup(&builtin("Stream", vec![builtin("uuid", Vec::new())])),
         Err(NativeValueLifecycleLookupError::Argument { index: 0, .. })
     ));
     assert!(matches!(
@@ -95,6 +131,28 @@ fn lookup_reports_arity_and_argument_policy_failures() {
             actual: NativeValueLifecycleKind::AffineResource,
             ..
         })
+    ));
+    assert!(matches!(
+        native_value_lifecycle_registry().lookup(&builtin(
+            "Array",
+            vec![builtin("Stream", vec![builtin("number", Vec::new())])]
+        )),
+        Err(NativeValueLifecycleLookupError::ArgumentPolicyMismatch {
+            index: 0,
+            actual: NativeValueLifecycleKind::AffineResource,
+            ..
+        })
+    ));
+    assert!(matches!(
+        native_value_lifecycle_registry().lookup(&builtin(
+            "Map",
+            vec![builtin("string", Vec::new())]
+        )),
+        Err(NativeValueLifecycleLookupError::ArityMismatch {
+            expected,
+            actual: 1,
+            ..
+        }) if expected == vec![2]
     ));
 }
 

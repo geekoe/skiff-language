@@ -716,6 +716,7 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
     assert_eq!(value["declarations"]["interfaces"], json!({}));
     assert_eq!(value["sourceMap"]["format"], "skiff-file-ir-source-map-v1");
     assert_eq!(value["executables"][0]["kind"], "function");
+    assert!(value["executables"][0]["selfType"].is_null());
 
     let decoded: FileIrUnit = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(decoded, unit);
@@ -726,7 +727,7 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v12");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v13");
     assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);

@@ -636,6 +636,7 @@ fn opcode_requires_source(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::CallLocal
+            | Opcode::CallLocalInOut
             | Opcode::TailCallLocal
             | Opcode::CallService
             | Opcode::CallActor

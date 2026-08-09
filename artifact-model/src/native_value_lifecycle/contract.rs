@@ -77,6 +77,8 @@ pub struct NativeValueLifecycleAdapter {
 )]
 pub enum NativeValueDropPlan {
     Trivial,
+    /// Release one logical snapshot root. Child edges remain owned by the
+    /// tracing GC; this action never performs element-by-element drops.
     SnapshotRelease,
     NativeAdapter {
         adapter: NativeValueLifecycleAdapter,

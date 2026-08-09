@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     actor_declaration::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity},
@@ -30,7 +30,10 @@ pub struct ExecutableSignatureIr {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamIr>,
     pub return_type: TypeRefIr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Required-nullable receiver fact. `Some` covers both implicit Self and
+    /// an explicit leading `self`; the receiver is always Value parameter
+    /// ordinal zero with this exact type.
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub self_type: Option<TypeRefIr>,
     pub may_suspend: bool,
 }
@@ -76,7 +79,10 @@ pub struct ExecutableIr {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamIr>,
     pub return_type: TypeRefIr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Required-nullable receiver fact. `Some` covers both implicit Self and
+    /// an explicit leading `self`; the receiver is always Value parameter
+    /// ordinal zero with this exact type.
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub self_type: Option<TypeRefIr>,
     pub slots: SlotLayout,
     pub may_suspend: bool,
@@ -109,16 +115,47 @@ pub struct SlotLayout {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, try_from = "SlotIrWire")]
 pub struct SlotIr {
     pub index: u32,
     pub name: String,
     pub kind: SlotKind,
+    /// Producer-owned mutability fact. True only for a source `var` local;
+    /// parameters, Self, temps, patterns, and immutable locals are false.
+    pub writable_local: bool,
     /// Static type of the slot written by lowering. Skipped when unknown
     /// (synthetic temps, pattern bindings) so legacy File IR stays
     /// byte-identical where no type fact exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ty: Option<TypeRefIr>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SlotIrWire {
+    index: u32,
+    name: String,
+    kind: SlotKind,
+    writable_local: bool,
+    #[serde(default)]
+    ty: Option<TypeRefIr>,
+}
+
+impl TryFrom<SlotIrWire> for SlotIr {
+    type Error = String;
+
+    fn try_from(wire: SlotIrWire) -> Result<Self, Self::Error> {
+        if wire.writable_local && wire.kind != SlotKind::Local {
+            return Err("writableLocal may only be true for a source local slot".to_string());
+        }
+        Ok(Self {
+            index: wire.index,
+            name: wire.name,
+            kind: wire.kind,
+            writable_local: wire.writable_local,
+            ty: wire.ty,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +459,10 @@ pub enum ExprIr {
     Field {
         object: ExprRefIr,
         field: String,
+    },
+    Index {
+        object: ExprRefIr,
+        index: ExprRefIr,
     },
     Construct {
         type_ref: TypeRefIr,
@@ -807,9 +848,12 @@ pub enum BinaryOpIr {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, try_from = "CallIrWire")]
 pub struct CallIr {
     pub target: CallTargetIr,
+    /// Exact instantiated Self type for receiver-bound direct targets. The
+    /// field is required and serializes as `null` for all other calls.
+    pub concrete_receiver: Option<TypeRefIr>,
     pub site: InstructionSourceSite,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ExprRefIr>,
@@ -824,11 +868,67 @@ pub struct CallIr {
     pub metadata: BTreeMap<String, MetadataValue>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CallIrWire {
+    target: CallTargetIr,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    concrete_receiver: Option<TypeRefIr>,
+    site: InstructionSourceSite,
+    #[serde(default)]
+    args: Vec<ExprRefIr>,
+    #[serde(default)]
+    inout_args: Vec<InOutArgIr>,
+    #[serde(default)]
+    type_args: BTreeMap<String, TypeRefIr>,
+    #[serde(default)]
+    metadata: BTreeMap<String, MetadataValue>,
+}
+
+impl TryFrom<CallIrWire> for CallIr {
+    type Error = String;
+
+    fn try_from(wire: CallIrWire) -> Result<Self, Self::Error> {
+        if wire.concrete_receiver.is_some()
+            && !matches!(
+                &wire.target,
+                CallTargetIr::LocalExecutable { .. }
+                    | CallTargetIr::PublicationExecutable { .. }
+                    | CallTargetIr::PackageCallable { .. }
+            )
+        {
+            return Err(
+                "concreteReceiver is only valid for a direct executable/package call".to_string(),
+            );
+        }
+        Ok(Self {
+            target: wire.target,
+            concrete_receiver: wire.concrete_receiver,
+            site: wire.site,
+            args: wire.args,
+            inout_args: wire.inout_args,
+            type_args: wire.type_args,
+            metadata: wire.metadata,
+        })
+    }
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 /// One `inout <place>` argument: the caller writable root slot and the exact
 /// selector path into it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InOutArgIr {
+    /// Callee parameter ordinal. `CallIr.args` remains the compact value
+    /// stream, so this coordinate cannot be inferred from vector position.
+    pub parameter_ordinal: u32,
     pub root_slot: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path: Vec<InOutPathSegmentIr>,
@@ -843,7 +943,7 @@ pub struct InOutArgIr {
 )]
 pub enum InOutPathSegmentIr {
     Field { name: String },
-    Index,
+    Index { selector: ExprRefIr },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1002,6 +1102,9 @@ fn visit_expression_type_refs<E>(
             visit_box_source_type_refs(source, visitor)?;
         }
         ExprIr::Call { call } => {
+            if let Some(receiver) = &call.concrete_receiver {
+                visit_type_ref(receiver, visitor)?;
+            }
             for argument in call.type_args.values() {
                 visit_type_ref(argument, visitor)?;
             }
@@ -1035,6 +1138,7 @@ fn visit_expression_type_refs<E>(
         | ExprIr::LoadConst { .. }
         | ExprIr::LoadPackageConst { .. }
         | ExprIr::Field { .. }
+        | ExprIr::Index { .. }
         | ExprIr::MapLiteral { .. }
         | ExprIr::ArrayLiteral { .. }
         | ExprIr::Unary { .. }

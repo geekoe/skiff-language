@@ -9,7 +9,7 @@
 //! opcodes ← dto ← encode/decode ← validate
 //! ```
 //!
-//! - `opcodes`: the unique `OPCODE_TABLE` descriptor table (42 instructions),
+//! - `opcodes`: the unique `OPCODE_TABLE` descriptor table (63 instructions),
 //!   operand/stack/relocation vocabulary and the table fingerprint.
 //! - `dto`: the artifact wire schema (`BytecodeArtifact` and friends) plus the
 //!   trusted compile-time `limits` constants.

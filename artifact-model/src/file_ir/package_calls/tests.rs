@@ -214,6 +214,7 @@ fn package_call(package_ref: PackageRefIr, package_callable_id: PackageCallableI
                 package_ref,
                 package_callable_id,
             },
+            concrete_receiver: None,
             site: InstructionSourceSite::Synthetic {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },

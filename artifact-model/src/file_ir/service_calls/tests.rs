@@ -107,6 +107,7 @@ fn push_service_call(unit: &mut FileIrUnit, index: u32) {
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: ServiceCallRefIndex::new(index),
             },
+            concrete_receiver: None,
             site: InstructionSourceSite::Synthetic {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },

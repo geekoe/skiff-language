@@ -11,11 +11,15 @@
 mod constants;
 mod control_flow;
 mod instructions;
+mod loans;
+mod origins;
 mod plans;
 
 use self::constants::{validate_constant_graph, validate_constant_graph_limits};
 use self::control_flow::{validate_resume_sites, validate_tables, validate_targets};
 use self::instructions::validate_operands;
+use self::loans::validate_writable_locals_and_loans;
+use self::origins::validate_function_origins;
 use self::plans::{validate_adapter_key, validate_transfer_plan};
 
 use std::collections::BTreeSet;
@@ -144,10 +148,13 @@ impl std::error::Error for StructuralValidationError {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedFunction {
     pub function_key: String,
+    pub origin: crate::bytecode::dto::BytecodeFunctionOrigin,
     pub type_parameters: Vec<String>,
+    pub self_type_ref: Option<u32>,
     pub frame_layout: crate::bytecode::dto::FrameLayout,
     pub words: Vec<u32>,
     pub relocations: Vec<crate::bytecode::dto::BytecodeRelocation>,
+    pub call_loan_layouts: Vec<crate::bytecode::dto::CallLoanLayout>,
     pub exception_regions: Vec<ExceptionRegion>,
     pub active_regions: Vec<crate::bytecode::dto::ActiveRegion>,
     pub switch_tables: Vec<SwitchTable>,
@@ -189,6 +196,7 @@ pub struct ValidatedResumeSite {
 ///     schema_version: String::new(),
 ///     isa_version: String::new(),
 ///     opcode_table_fingerprint: String::new(),
+///     native_value_lifecycle_registry: todo!(),
 ///     resume_sites: Vec::new(),
 /// };
 /// ```
@@ -203,6 +211,7 @@ pub struct StructurallyValidatedView {
     schema_version: String,
     isa_version: String,
     opcode_table_fingerprint: String,
+    native_value_lifecycle_registry: crate::NativeValueLifecycleRegistryIdentity,
     resume_sites: Vec<ValidatedResumeSite>,
 }
 
@@ -243,6 +252,10 @@ impl StructurallyValidatedView {
         &self.opcode_table_fingerprint
     }
 
+    pub fn native_value_lifecycle_registry(&self) -> &crate::NativeValueLifecycleRegistryIdentity {
+        &self.native_value_lifecycle_registry
+    }
+
     pub fn resume_sites(&self) -> &[ValidatedResumeSite] {
         &self.resume_sites
     }
@@ -254,6 +267,7 @@ pub fn structurally_validate(
 ) -> Result<StructurallyValidatedView, StructuralValidationError> {
     validate_header(artifact)?;
     validate_artifact_limits(artifact)?;
+    validate_function_origins(artifact)?;
 
     let decoder = BoundedDecoder::new();
     let mut functions = Vec::with_capacity(artifact.image.functions.len());
@@ -274,6 +288,7 @@ pub fn structurally_validate(
         schema_version: artifact.schema_version.clone(),
         isa_version: artifact.isa_version.clone(),
         opcode_table_fingerprint: artifact.opcode_table_fingerprint.clone(),
+        native_value_lifecycle_registry: artifact.native_value_lifecycle_registry.clone(),
         resume_sites,
     })
 }
@@ -303,6 +318,15 @@ fn validate_header(artifact: &BytecodeArtifact) -> Result<(), StructuralValidati
         return Err(header_error(format!(
             "opcodeTableFingerprint {:?} does not match the compile-time built-in table {:?}",
             artifact.opcode_table_fingerprint, expected_fingerprint
+        )));
+    }
+    if &artifact.native_value_lifecycle_registry
+        != crate::native_value_lifecycle_registry_identity()
+    {
+        return Err(header_error(format!(
+            "nativeValueLifecycleRegistry {:?} does not match the compile-time built-in registry {:?}",
+            artifact.native_value_lifecycle_registry,
+            crate::native_value_lifecycle_registry_identity()
         )));
     }
     Ok(())
@@ -566,10 +590,12 @@ fn validate_pool_entry_references(
         }
     }
 
+    let mut named_pool_rows = BTreeSet::new();
     for (symbol_path, pool_index) in &artifact.image.constant_roots {
-        if symbol_path.is_empty() {
+        if !is_canonical_constant_root(symbol_path) {
             return Err(header_error(
-                "image.constantRoots keys must not be empty".to_string(),
+                "image.constantRoots keys must be canonical module-qualified source symbols"
+                    .to_string(),
             ));
         }
         let Some(BytecodePoolEntry::ConstantRef {
@@ -581,6 +607,11 @@ fn validate_pool_entry_references(
                 "image.constantRoots[{symbol_path:?}] index {pool_index} must select a local ConstantRef row"
             )));
         };
+        if !named_pool_rows.insert(*pool_index) {
+            return Err(header_error(format!(
+                "image.constantRoots[{symbol_path:?}] aliases constants pool row {pool_index}; each implementation constant coordinate must own one row"
+            )));
+        }
     }
 
     for (index, entry) in pools.writable_paths.iter().enumerate() {
@@ -1051,10 +1082,13 @@ fn validate_function(
 
     output.push(ValidatedFunction {
         function_key: function.function_key.clone(),
+        origin: function.origin.clone(),
         type_parameters: function.type_parameters.clone(),
+        self_type_ref: function.self_type_ref,
         frame_layout: function.frame_layout.clone(),
         words: function.words.clone(),
         relocations: function.relocations.clone(),
+        call_loan_layouts: function.call_loan_layouts.clone(),
         exception_regions: function.exception_regions.clone(),
         active_regions: function.active_regions.clone(),
         switch_tables: function.switch_tables.clone(),
@@ -1097,6 +1131,7 @@ fn validate_function_limits(
         ("switchTables", function.switch_tables.len() as u64),
         ("statementEntries", function.statement_entries.len() as u64),
         ("sourceMap", function.source_map.len() as u64),
+        ("callLoanLayouts", function.call_loan_layouts.len() as u64),
     ] {
         if count > limits::MAX_TABLE_ENTRIES {
             return Err(limit_error(
@@ -1267,6 +1302,7 @@ fn validate_function_limits(
             ));
         }
     }
+    validate_writable_locals_and_loans(key, function, pools)?;
     if function.max_operand_depth as u64 > limits::MAX_OPERAND_DEPTH {
         return Err(limit_error(
             "MAX_OPERAND_DEPTH",
@@ -1725,6 +1761,18 @@ fn type_ref_nesting_depth(ty: &TypeRefIr) -> u32 {
         }
     }
     max_depth
+}
+
+fn is_canonical_constant_root(symbol: &str) -> bool {
+    let Some((module_path, declaration)) = symbol.rsplit_once('.') else {
+        return false;
+    };
+    !module_path.is_empty()
+        && !declaration.is_empty()
+        && symbol
+            .split('.')
+            .all(|segment| !segment.is_empty() && !segment.chars().any(char::is_whitespace))
+        && !symbol.chars().any(char::is_control)
 }
 
 fn header_error(message: String) -> StructuralValidationError {

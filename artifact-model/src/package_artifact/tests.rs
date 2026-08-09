@@ -132,7 +132,7 @@ fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
 #[test]
 fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     let value = json!({
-        "schemaVersion": "skiff-package-artifact-v11",
+        "schemaVersion": "skiff-package-artifact-v12",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
@@ -146,6 +146,8 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "actorImplementations": [],
+        "localInterfaceConformances": [],
         "packageRequirements": [],
         "contractRequirements": [],
         "serviceRequirements": [],
@@ -214,9 +216,170 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
         .remove("serviceCallRefs");
     assert!(serde_json::from_value::<PackageArtifact>(missing_service_call_refs).is_err());
 
+    for field in ["actorImplementations", "localInterfaceConformances"] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<PackageArtifact>(missing).is_err(),
+            "missing {field} must fail closed"
+        );
+    }
+
     let decoded = serde_json::from_value::<PackageArtifact>(value.clone()).unwrap();
     let encoded = serde_json::to_value(decoded).unwrap();
     assert_eq!(encoded, value);
     assert!(encoded.get("serviceCallRoots").is_none());
     assert_eq!(encoded["serviceCallRefs"], json!([]));
+}
+
+#[test]
+fn package_build_authority_rows_are_required_strict_and_canonical() {
+    let actor = json!({ "modulePath": "module", "symbol": "Worker" });
+    let actor_row = json!({
+        "actor": actor,
+        "actorImplementationIdentity": "actor-impl:worker",
+        "methods": {
+            "actor-method:read": "pkg-callable:worker.read"
+        },
+        "create": null
+    });
+    let conformance = json!({
+        "typeParameters": [],
+        "receiver": { "kind": "builtin", "name": "string" },
+        "interface": {
+            "interfaceAbiId": "interface:reader"
+        },
+        "methods": ["pkg-callable:worker.read"]
+    });
+
+    let decoded_actor: PackageActorImplementation =
+        serde_json::from_value(actor_row.clone()).expect("explicit null create is required-valid");
+    assert!(decoded_actor.create.is_none());
+    assert_eq!(serde_json::to_value(decoded_actor).unwrap(), actor_row);
+    let decoded_conformance: PackageLocalInterfaceConformance =
+        serde_json::from_value(conformance.clone()).expect("exact conformance row");
+    assert_eq!(
+        serde_json::to_value(decoded_conformance).unwrap(),
+        conformance
+    );
+
+    let mut missing_create = actor_row.clone();
+    missing_create.as_object_mut().unwrap().remove("create");
+    assert!(serde_json::from_value::<PackageActorImplementation>(missing_create).is_err());
+
+    for (mut invalid, field) in [
+        (actor_row.clone(), "providerBuildId"),
+        (conformance.clone(), "functionKey"),
+    ] {
+        invalid[field] = json!("forbidden");
+        assert!(
+            if field == "providerBuildId" {
+                serde_json::from_value::<PackageActorImplementation>(invalid).is_err()
+            } else {
+                serde_json::from_value::<PackageLocalInterfaceConformance>(invalid).is_err()
+            },
+            "{field} must not enter build-owned authority rows"
+        );
+    }
+}
+
+#[test]
+fn package_build_authority_vectors_reject_duplicate_or_noncanonical_rows() {
+    let base_actor = |module_path: &str, symbol: &str, identity: &str| {
+        json!({
+            "actor": { "modulePath": module_path, "symbol": symbol },
+            "actorImplementationIdentity": identity,
+            "methods": {},
+            "create": null
+        })
+    };
+    for rows in [
+        vec![
+            base_actor("z", "Worker", "impl:z"),
+            base_actor("a", "Worker", "impl:a"),
+        ],
+        vec![
+            base_actor("module", "Worker", "impl:first"),
+            base_actor("module", "Worker", "impl:second"),
+        ],
+    ] {
+        let wire = serde_json::to_value(rows).unwrap();
+        let wrapper = json!({
+            "schemaVersion": "skiff-package-artifact-v12",
+            "packageId": "example.pkg",
+            "packageVersion": "1.0.0",
+            "packageBuildId": "build",
+            "files": [],
+            "staticResources": [],
+            "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
+            "packageSchemaIndex": {
+                "packageId": "example.pkg",
+                "packageSchemaIndexIdentity": "index"
+            },
+            "packageSchemaTypeRecords": {},
+            "implementationLinks": {},
+            "callableLinks": {},
+            "actorImplementations": wire,
+            "localInterfaceConformances": [],
+            "packageRequirements": [],
+            "contractRequirements": [],
+            "serviceRequirements": [],
+            "runtimeRequirements": { "config": [] },
+            "callableSemanticFacts": {},
+            "boundaryProjections": {},
+            "serviceCallRefs": []
+        });
+        assert!(serde_json::from_value::<PackageArtifact>(wrapper).is_err());
+    }
+}
+
+#[test]
+fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
+    let conformance = |interface_abi_id: &str| {
+        json!({
+            "typeParameters": [],
+            "receiver": { "kind": "builtin", "name": "string" },
+            "interface": { "interfaceAbiId": interface_abi_id },
+            "methods": []
+        })
+    };
+    let base = json!({
+        "schemaVersion": "skiff-package-artifact-v12",
+        "packageId": "example.pkg",
+        "packageVersion": "1.0.0",
+        "packageBuildId": "build",
+        "files": [],
+        "staticResources": [],
+        "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
+        "packageSchemaIndex": {
+            "packageId": "example.pkg",
+            "packageSchemaIndexIdentity": "index"
+        },
+        "packageSchemaTypeRecords": {},
+        "implementationLinks": {},
+        "callableLinks": {},
+        "actorImplementations": [],
+        "localInterfaceConformances": [],
+        "packageRequirements": [],
+        "contractRequirements": [],
+        "serviceRequirements": [],
+        "runtimeRequirements": { "config": [] },
+        "callableSemanticFacts": {},
+        "boundaryProjections": {},
+        "serviceCallRefs": []
+    });
+    for rows in [
+        vec![conformance("interface:z"), conformance("interface:a")],
+        vec![conformance("interface:a"), conformance("interface:a")],
+    ] {
+        let mut wire = base.clone();
+        wire["localInterfaceConformances"] = json!(rows);
+        assert!(serde_json::from_value::<PackageArtifact>(wire).is_err());
+    }
+
+    let mut canonical = base;
+    canonical["localInterfaceConformances"] =
+        json!([conformance("interface:a"), conformance("interface:z")]);
+    let decoded: PackageArtifact = serde_json::from_value(canonical.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
 }

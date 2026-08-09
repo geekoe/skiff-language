@@ -22,6 +22,17 @@ impl FileIrRef {
     }
 }
 
+/// Path-free package executable address shared by bytecode origins and
+/// package-owned implementation manifests. It deliberately excludes build,
+/// source hash, and artifact-path facts.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageExecutableCoordinate {
+    pub file_ir_identity: String,
+    pub module_path: String,
+    pub executable_index: u32,
+}
+
 /// Lightweight package-artifact reference to a canonical bytecode record.
 /// The bytecode artifact itself lives in the same package build record family
 /// and is content-addressed by `bytecode_identity` (C9 identity/content

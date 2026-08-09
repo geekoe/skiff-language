@@ -142,16 +142,26 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
         .collect();
     let mut functions = BTreeMap::new();
     functions.insert(
-        "f".to_string(),
+        "module::f".to_string(),
         RelocatableBytecodeFunction {
-            function_key: "f".to_string(),
+            function_key: "module::f".to_string(),
+            origin: crate::bytecode::dto::BytecodeFunctionOrigin::Executable {
+                executable: crate::PackageExecutableCoordinate {
+                    file_ir_identity: "file-ir:module".to_string(),
+                    module_path: "module".to_string(),
+                    executable_index: 0,
+                },
+            },
             type_parameters: Vec::new(),
+            self_type_ref: None,
             words,
             relocations: Vec::new(),
+            call_loan_layouts: Vec::new(),
             frame_layout: FrameLayout {
                 slot_count: 0,
                 slot_type_refs: Vec::new(),
                 parameter_slots: Vec::new(),
+                writable_local_slots: Vec::new(),
                 result_count: 0,
                 result_type_refs: Vec::new(),
                 result_plans: Vec::new(),
@@ -171,6 +181,7 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
+        native_value_lifecycle_registry: crate::native_value_lifecycle_registry_identity().clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions,

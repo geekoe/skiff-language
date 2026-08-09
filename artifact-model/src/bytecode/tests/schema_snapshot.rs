@@ -1,15 +1,17 @@
-//! Frozen v3 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v4 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v3 seam that downstream
+/// Compact golden projection: it freezes every v4 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
-const GOLDEN_V3_SHAPE: &str = r#"{
-  "artifact":["bytecodeIdentity","image","isaVersion","magic","opcodeTableFingerprint","schemaVersion"],
+const GOLDEN_V4_SHAPE: &str = r#"{
+  "artifact":["bytecodeIdentity","image","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","schemaVersion"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
-  "function":["activeRegions","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","relocations","sourceMap","statementEntries","switchTables","words"],
-  "frame":["parameterSlots","resultCount","resultPlans","resultTypeRefs","slotCount","slotPlans","slotTypeRefs"],
+  "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
+  "frame":["parameterSlots","resultCount","resultPlans","resultTypeRefs","slotCount","slotPlans","slotTypeRefs","writableLocalSlots"],
+  "callLoanLayout":["loans"],
+  "callLoanBinding":["parameterOrdinal","rootSlot","writablePathRef"],
   "localRelocation":["functionKey","kind","specialization"],
   "specialization":["concreteReceiver","typeArguments"],
   "constantEntry":["kind","plan","reference","typeRef"],
@@ -28,7 +30,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v3_wire_shape_snapshot() {
+fn canonical_fixture_matches_v4_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -36,16 +38,37 @@ fn canonical_fixture_matches_v3_wire_shape_snapshot() {
         "image": sorted_keys(&value["image"]),
         "function": sorted_keys(main),
         "frame": sorted_keys(&main["frameLayout"]),
+        "callLoanLayout": sorted_keys(&main["callLoanLayouts"][0]),
+        "callLoanBinding": sorted_keys(&main["callLoanLayouts"][0]["loans"][0]),
         "localRelocation": sorted_keys(&main["relocations"][0]),
         "specialization": sorted_keys(&main["relocations"][0]["specialization"]),
         "constantEntry": sorted_keys(&value["image"]["pools"]["constants"][0]),
         "resume": sorted_keys(&value["image"]["pools"]["resume"][0]),
     });
-    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V3_SHAPE).expect("golden JSON");
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V4_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v3");
-    assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v3");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v4");
+    assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v4");
+    assert_eq!(
+        value["nativeValueLifecycleRegistry"]["fingerprint"],
+        crate::NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT
+    );
+    assert_eq!(main["origin"]["kind"], "executable");
+    assert!(main["selfTypeRef"].is_null());
+    assert_eq!(
+        main["frameLayout"]["writableLocalSlots"],
+        serde_json::json!([1])
+    );
+    assert_eq!(main["callLoanLayouts"][0]["loans"][0]["rootSlot"], 1);
+    assert_eq!(
+        value["image"]["functions"]["module::helper"]["callLoanLayouts"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        value["image"]["functions"]["module::helper"]["frameLayout"]["writableLocalSlots"],
+        serde_json::json!([])
+    );
     assert_eq!(
         main["relocations"][0]["specialization"]["typeArguments"][0]["kind"],
         "builtin"
@@ -59,7 +82,7 @@ fn canonical_fixture_matches_v3_wire_shape_snapshot() {
         main["relocations"][2]["serviceCall"]["contractOperationId"],
         "operation:svc:call"
     );
-    assert_eq!(value["image"]["constantRoots"]["const:implementation"], 2);
+    assert_eq!(value["image"]["constantRoots"]["module.implementation"], 2);
     assert_eq!(
         value["image"]["pools"]["constants"][0]["reference"]["kind"],
         "localNode"
@@ -102,11 +125,17 @@ fn schema_rejects_unknown_fields() {
 #[test]
 fn schema_rejects_missing_required_header_image_and_frame_fields() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
+    let decoded: BytecodeArtifact =
+        serde_json::from_value(value.clone()).expect("explicit null selfTypeRef remains valid");
+    assert!(decoded.image.functions["module::main"]
+        .self_type_ref
+        .is_none());
     for field in [
         "magic",
         "schemaVersion",
         "isaVersion",
         "opcodeTableFingerprint",
+        "nativeValueLifecycleRegistry",
         "bytecodeIdentity",
         "image",
     ] {
@@ -125,7 +154,7 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
         .remove("constantRoots");
     assert!(serde_json::from_value::<BytecodeArtifact>(missing_roots).is_err());
 
-    for field in ["slotTypeRefs", "resultTypeRefs"] {
+    for field in ["slotTypeRefs", "writableLocalSlots", "resultTypeRefs"] {
         let mut missing = value.clone();
         missing["image"]["functions"]["module::main"]["frameLayout"]
             .as_object_mut()
@@ -133,6 +162,18 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
             .remove(field);
         let error = serde_json::from_value::<BytecodeArtifact>(missing)
             .expect_err("typed frame field must be required")
+            .to_string();
+        assert!(error.contains("missing field"), "{field}: {error}");
+    }
+
+    for field in ["origin", "selfTypeRef", "callLoanLayouts"] {
+        let mut missing = value.clone();
+        missing["image"]["functions"]["module::main"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let error = serde_json::from_value::<BytecodeArtifact>(missing)
+            .expect_err("function manifest field must be required")
             .to_string();
         assert!(error.contains("missing field"), "{field}: {error}");
     }
@@ -170,6 +211,32 @@ fn schema_requires_specialization_and_its_positional_payload() {
 }
 
 #[test]
+fn schema_requires_complete_call_loan_rows() {
+    let layout = CallLoanLayout {
+        loans: vec![CallLoanBinding {
+            parameter_ordinal: 1,
+            root_slot: 2,
+            writable_path_ref: 3,
+        }],
+    };
+    let value = serde_json::to_value(&layout).unwrap();
+    let mut missing_loans = value.clone();
+    missing_loans.as_object_mut().unwrap().remove("loans");
+    assert!(serde_json::from_value::<CallLoanLayout>(missing_loans).is_err());
+
+    for field in ["parameterOrdinal", "rootSlot", "writablePathRef"] {
+        let mut missing = value.clone();
+        missing["loans"][0].as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<CallLoanLayout>(missing).is_err());
+    }
+
+    assert_eq!(
+        serde_json::from_value::<CallLoanLayout>(value).unwrap(),
+        layout
+    );
+}
+
+#[test]
 fn schema_rejects_unknown_tagged_enum_variants() {
     let mut relocation = serde_json::to_value(BytecodeRelocation::LocalExecutableRef {
         function_key: "module::helper".to_string(),
@@ -191,8 +258,8 @@ fn schema_rejects_unknown_tagged_enum_variants() {
 }
 
 #[test]
-fn version_constants_are_stable_at_v3() {
+fn version_constants_freeze_schema_v4_and_isa_v4() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v3");
-    assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v3");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v4");
+    assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
 }

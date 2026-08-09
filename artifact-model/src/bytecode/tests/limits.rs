@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use crate::bytecode::dto::{
-    limits, BytecodeArtifact, BytecodeConstantRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
-    BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
+    limits, BytecodeArtifact, BytecodeConstantRef, BytecodeFunctionOrigin, BytecodeImage,
+    BytecodePoolEntry, BytecodePools, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
     FrozenConstantNode, RelocatableBytecodeFunction, StatementChargeKind, StatementEntry,
     SwitchCase, SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
@@ -37,6 +37,7 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
+        native_value_lifecycle_registry: crate::native_value_lifecycle_registry_identity().clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions,
@@ -55,15 +56,26 @@ fn checkpoint_function(
     instruction_count: usize,
     slot_count: u32,
 ) -> RelocatableBytecodeFunction {
+    let module_path = key.split_once("::").map_or("module", |(module, _)| module);
     RelocatableBytecodeFunction {
         function_key: key.to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: crate::PackageExecutableCoordinate {
+                file_ir_identity: format!("file-ir:{module_path}"),
+                module_path: module_path.to_string(),
+                executable_index: 0,
+            },
+        },
         type_parameters: Vec::new(),
+        self_type_ref: None,
         words: vec![0x14; instruction_count],
         relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
             slot_count,
             slot_type_refs: vec![0; slot_count as usize],
             parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
@@ -92,10 +104,10 @@ fn single_function_artifact(
 ) -> (BytecodeArtifact, String) {
     let mut functions = BTreeMap::new();
     functions.insert(
-        "f".to_string(),
-        checkpoint_function("f", instruction_count, slot_count),
+        "module::f".to_string(),
+        checkpoint_function("module::f", instruction_count, slot_count),
     );
-    (minimal_artifact(functions), "f".to_string())
+    (minimal_artifact(functions), "module::f".to_string())
 }
 
 /// The §4.2 constants are pinned to the approved design values.
@@ -145,7 +157,7 @@ fn max_arity_boundary() {
     assert!(error.to_string().contains("MAX_ARITY"), "{error}");
 }
 
-/// ISA v3 accepts only zero or one result from a non-tail call before the
+/// ISA v4 accepts only zero or one result from a non-tail call before the
 /// semantic verifier cross-checks the linked callee signature.
 #[test]
 fn max_results_per_call_boundary() {
@@ -193,7 +205,7 @@ fn max_operand_depth_boundary() {
     at_limit
         .image
         .functions
-        .get_mut("f")
+        .get_mut("module::f")
         .unwrap()
         .max_operand_depth = 65_536;
     assert_validates(&at_limit);
@@ -202,7 +214,7 @@ fn max_operand_depth_boundary() {
     above
         .image
         .functions
-        .get_mut("f")
+        .get_mut("module::f")
         .unwrap()
         .max_operand_depth = 65_537;
     let error = assert_rejected(&above);
@@ -217,14 +229,18 @@ fn max_type_parameters_boundary() {
     at_limit
         .image
         .functions
-        .get_mut("f")
+        .get_mut("module::f")
         .unwrap()
         .type_parameters = (0..64).map(|index| format!("T{index}")).collect();
     assert_validates(&at_limit);
 
     let (mut above, _) = single_function_artifact(1, 0);
-    above.image.functions.get_mut("f").unwrap().type_parameters =
-        (0..65).map(|index| format!("T{index}")).collect();
+    above
+        .image
+        .functions
+        .get_mut("module::f")
+        .unwrap()
+        .type_parameters = (0..65).map(|index| format!("T{index}")).collect();
     let error = assert_rejected(&above);
     assert!(matches!(error, StructuralValidationError::Limits { .. }));
     assert!(error.to_string().contains("MAX_TYPE_PARAMETERS"), "{error}");
@@ -302,7 +318,12 @@ fn max_switch_table_targets_boundary() {
         artifact.image.pools.types = (0..target_count.max(1))
             .map(|_| BytecodePoolEntry::TypeRef { ty: string_type() })
             .collect();
-        artifact.image.functions.get_mut("f").unwrap().switch_tables = vec![SwitchTable {
+        artifact
+            .image
+            .functions
+            .get_mut("module::f")
+            .unwrap()
+            .switch_tables = vec![SwitchTable {
             cases: (0..target_count as u32)
                 .map(|index| SwitchCase {
                     tag_type_ref: index,
@@ -345,16 +366,13 @@ fn max_words_per_function_boundary() {
 fn max_relocations_per_function_boundary() {
     let with_relocations = |count: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(1, 0);
-        artifact.image.functions.get_mut("f").unwrap().relocations = (0..count)
-            .map(
-                |index| crate::bytecode::dto::BytecodeRelocation::LocalExecutableRef {
-                    function_key: format!("f{index}"),
-                    specialization: BytecodeSpecialization {
-                        type_arguments: Vec::new(),
-                        concrete_receiver: None,
-                    },
-                },
-            )
+        artifact
+            .image
+            .functions
+            .get_mut("module::f")
+            .unwrap()
+            .relocations = (0..count)
+            .map(|_| crate::bytecode::dto::BytecodeRelocation::TypeRef { ty: string_type() })
             .collect();
         artifact
     };
@@ -376,10 +394,13 @@ fn max_functions_boundary() {
     let with_functions = |count: usize| -> BytecodeArtifact {
         let mut functions = BTreeMap::new();
         for index in 0..count {
-            functions.insert(
-                format!("f{index}"),
-                checkpoint_function(&format!("f{index}"), 1, 0),
-            );
+            let key = format!("module::f{index}");
+            let mut function = checkpoint_function(&key, 1, 0);
+            let BytecodeFunctionOrigin::Executable { executable } = &mut function.origin else {
+                unreachable!();
+            };
+            executable.executable_index = index as u32;
+            functions.insert(key, function);
         }
         minimal_artifact(functions)
     };
@@ -550,10 +571,10 @@ fn max_constant_graph_nodes_boundary() {
 fn max_table_entries_is_defense_in_depth() {
     // 1_000_001 table entries cannot exist without 1_000_001 instruction
     // headers, which trips MAX_WORDS_PER_FUNCTION first.
-    let mut function = checkpoint_function("f", 1, 0);
+    let mut function = checkpoint_function("module::f", 1, 0);
     function.words = vec![0x14; 1_000_001];
     let mut functions = BTreeMap::new();
-    functions.insert("f".to_string(), function);
+    functions.insert("module::f".to_string(), function);
     let error = assert_rejected(&minimal_artifact(functions));
     assert!(matches!(error, StructuralValidationError::Limits { .. }));
     assert!(

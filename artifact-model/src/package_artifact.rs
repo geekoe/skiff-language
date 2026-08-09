@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 use crate::{
-    actor_declaration::{ActorAbiIdentity, ActorAbiInput},
+    actor_declaration::{
+        ActorAbiIdentity, ActorAbiInput, ActorImplementationIdentity, ActorMethodIdentity,
+    },
     boundary::{BoundaryCallableProjection, CallableSemanticFacts},
     compile_identity::{
         PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageSchemaTypeId,
@@ -16,8 +18,10 @@ use crate::{
     executable::ParamModeIr,
     executable_target::OperationTargetRef,
     package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
+    publication_abi::InterfaceInstantiationRef,
     refs::{BytecodeArtifactRef, FileIrRef},
     resources::PublicationResourceRef,
+    symbols::ServiceSymbolRef,
     types::{TypeDescriptorIr, TypeRefIr},
 };
 
@@ -112,6 +116,102 @@ pub struct PackageCallableLinkFact {
     pub target: OperationTargetRef,
 }
 
+/// Exact actor create implementation selected by the owning package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageActorCreateBinding {
+    pub method_identity: ActorMethodIdentity,
+    pub package_callable_id: PackageCallableId,
+}
+
+/// Build-owned actor implementation authority. ABI shape is joined through
+/// `PackageActorAbi`; callable targets are joined through `callable_links`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageActorImplementation {
+    pub actor: ServiceSymbolRef,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub methods: BTreeMap<ActorMethodIdentity, PackageCallableId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub create: Option<PackageActorCreateBinding>,
+}
+
+/// Exact package-local conformance table. Method vector index is the
+/// interface method slot; rows carry no executable or build identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageLocalInterfaceConformance {
+    pub type_parameters: Vec<String>,
+    pub receiver: TypeRefIr,
+    pub interface: InterfaceInstantiationRef,
+    pub methods: Vec<PackageCallableId>,
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+fn deserialize_canonical_actor_implementations<'de, D>(
+    deserializer: D,
+) -> Result<Vec<PackageActorImplementation>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let rows = Vec::<PackageActorImplementation>::deserialize(deserializer)?;
+    for adjacent in rows.windows(2) {
+        let left = &adjacent[0];
+        let right = &adjacent[1];
+        let left_key = (left.actor.module_path.as_str(), left.actor.symbol.as_str());
+        let right_key = (
+            right.actor.module_path.as_str(),
+            right.actor.symbol.as_str(),
+        );
+        if left_key >= right_key {
+            return Err(D::Error::custom(
+                "actorImplementations must be strictly ordered and unique by actor",
+            ));
+        }
+    }
+    Ok(rows)
+}
+
+fn deserialize_canonical_local_interface_conformances<'de, D>(
+    deserializer: D,
+) -> Result<Vec<PackageLocalInterfaceConformance>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SortKey<'a> {
+        type_parameters: &'a [String],
+        receiver: &'a TypeRefIr,
+        interface: &'a InterfaceInstantiationRef,
+    }
+
+    let rows = Vec::<PackageLocalInterfaceConformance>::deserialize(deserializer)?;
+    let mut previous: Option<Vec<u8>> = None;
+    for row in &rows {
+        let key = skiff_canonical_json::canonical_json_bytes(&SortKey {
+            type_parameters: &row.type_parameters,
+            receiver: &row.receiver,
+            interface: &row.interface,
+        })
+        .map_err(D::Error::custom)?;
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return Err(D::Error::custom(
+                "localInterfaceConformances must be strictly ordered by template, receiver, and interface",
+            ));
+        }
+        previous = Some(key);
+    }
+    Ok(rows)
+}
+
 /// Canonical user-code artifact. No publication or service aggregate is
 /// embedded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +233,10 @@ pub struct PackageArtifact {
     pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     pub implementation_links: PackageImplementationLinks,
     pub callable_links: BTreeMap<PackageCallableId, PackageCallableLinkFact>,
+    #[serde(deserialize_with = "deserialize_canonical_actor_implementations")]
+    pub actor_implementations: Vec<PackageActorImplementation>,
+    #[serde(deserialize_with = "deserialize_canonical_local_interface_conformances")]
+    pub local_interface_conformances: Vec<PackageLocalInterfaceConformance>,
     pub package_requirements: Vec<PackageRequirement>,
     pub contract_requirements: Vec<ContractRequirement>,
     pub service_requirements: Vec<ServiceRequirement>,

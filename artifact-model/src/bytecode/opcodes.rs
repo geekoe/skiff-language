@@ -63,6 +63,7 @@ pub enum OperandRole {
     HostTarget,
     IntrinsicTarget,
     ArgCount,
+    InputCount,
     ResultCount,
     SelectorCount,
     FailureKind,
@@ -79,6 +80,7 @@ pub enum OperandRole {
     WritablePathRef,
     CaptureLayoutRef,
     ResumeRef,
+    CallLoanLayout,
 }
 
 impl OperandRole {
@@ -87,7 +89,9 @@ impl OperandRole {
         match self {
             Self::SourceSlot | Self::DestinationSlot | Self::Slot => OperandKind::Slot,
             Self::BranchTarget => OperandKind::Branch,
-            Self::SwitchTable | Self::Region | Self::ActiveRegion => OperandKind::Table,
+            Self::SwitchTable | Self::Region | Self::ActiveRegion | Self::CallLoanLayout => {
+                OperandKind::Table
+            }
             Self::LocalTarget
             | Self::ServiceTarget
             | Self::ActorTarget
@@ -96,6 +100,7 @@ impl OperandRole {
             | Self::HostTarget
             | Self::IntrinsicTarget => OperandKind::Reloc,
             Self::ArgCount
+            | Self::InputCount
             | Self::ResultCount
             | Self::SelectorCount
             | Self::FailureKind
@@ -136,6 +141,7 @@ impl OperandRole {
             Self::SwitchTable => Some(TableCategory::SwitchTables),
             Self::Region => Some(TableCategory::ExceptionRegions),
             Self::ActiveRegion => Some(TableCategory::ActiveRegions),
+            Self::CallLoanLayout => Some(TableCategory::CallLoanLayouts),
             _ => None,
         }
     }
@@ -244,6 +250,7 @@ pub enum Opcode {
     BudgetCheckpoint,
     Trap,
     CallLocal,
+    CallLocalInOut,
     TailCallLocal,
     CallService,
     CallActor,
@@ -383,7 +390,7 @@ impl PoolCategory {
         }
     }
 
-    /// The only pool entry kind this category admits in v3.
+    /// The only pool entry kind this category admits in ISA v4.
     pub const fn expected_entry_kind(self) -> PoolEntryKind {
         match self {
             Self::Constants => PoolEntryKind::ConstantRef,
@@ -416,6 +423,7 @@ pub enum TableCategory {
     ExceptionRegions,
     ActiveRegions,
     SwitchTables,
+    CallLoanLayouts,
 }
 
 impl TableCategory {
@@ -424,6 +432,7 @@ impl TableCategory {
             Self::ExceptionRegions => "exceptionRegions",
             Self::ActiveRegions => "activeRegions",
             Self::SwitchTables => "switchTables",
+            Self::CallLoanLayouts => "callLoanLayouts",
         }
     }
 }
@@ -454,7 +463,7 @@ pub const fn table_operand_category(opcode: u8, position: usize) -> Option<Table
     descriptor.operand_roles[position].table_category()
 }
 
-/// The 62-instruction opcode table (§2.3), in ascending opcode order.
+/// The 63-instruction opcode table (§2.3), in ascending opcode order.
 pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     // Value/slot (0x00–0x0F)
     descriptor(
@@ -714,6 +723,29 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[result_count_effect()],
         &[],
         &[],
+    ),
+    descriptor(
+        Opcode::CallLocalInOut,
+        0x26,
+        "call_local_inout",
+        &[
+            OperandKind::Reloc,
+            OperandKind::Immediate,
+            OperandKind::Immediate,
+            OperandKind::Table,
+        ],
+        &[
+            OperandRole::LocalTarget,
+            OperandRole::InputCount,
+            OperandRole::ResultCount,
+            OperandRole::CallLoanLayout,
+        ],
+        &[declared_effect(OperandRole::InputCount)],
+        &[declared_effect(OperandRole::ResultCount)],
+        &[
+            RelocationKind::LocalExecutableRef,
+            RelocationKind::PackageCallableRef,
+        ],
     ),
     // Callback/interface (0x30–0x3F)
     descriptor(
@@ -1180,7 +1212,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
 ];
 
-// This eight-field helper mirrors the 62-entry const table row schema;
+// This eight-field helper mirrors the 63-entry const table row schema;
 // wrapping a row in another struct would make the table harder to audit.
 #[allow(clippy::too_many_arguments)]
 const fn descriptor(

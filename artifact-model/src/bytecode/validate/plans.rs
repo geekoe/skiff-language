@@ -1,6 +1,7 @@
 use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{BytecodePools, ResourceDropPlan, ValueDropPlan, ValueTransferPlan};
 use crate::bytecode::opcodes::PoolCategory;
+use crate::NativeValueAdapterRole;
 
 use super::{
     entry_is_kind, header_error, index_out_of_bounds, limit_error, type_ref_nesting_depth,
@@ -34,8 +35,9 @@ pub(super) fn validate_transfer_plan(
         }
     }
     if let ValueTransferPlan::ExplicitCloneLease { clone_adapter, .. } = plan {
-        validate_adapter_key(
+        validate_lifecycle_adapter_key(
             &clone_adapter.binding_key,
+            NativeValueAdapterRole::CloneLease,
             &format!("{location}.cloneAdapter"),
         )?;
     }
@@ -53,9 +55,11 @@ fn validate_value_drop_plan(
         ValueDropPlan::RecursiveShape { shape_ref } => {
             validate_recursive_shape_ref(*shape_ref, pools, enclosing_shape_index, location)
         }
-        ValueDropPlan::NativeAdapter { adapter } => {
-            validate_adapter_key(&adapter.binding_key, &format!("{location}.drop.adapter"))
-        }
+        ValueDropPlan::NativeAdapter { adapter } => validate_lifecycle_adapter_key(
+            &adapter.binding_key,
+            NativeValueAdapterRole::ValueDrop,
+            &format!("{location}.drop.adapter"),
+        ),
     }
 }
 
@@ -70,9 +74,11 @@ fn validate_resource_drop_plan(
         ResourceDropPlan::RecursiveShape { shape_ref } => {
             validate_recursive_shape_ref(*shape_ref, pools, enclosing_shape_index, location)
         }
-        ResourceDropPlan::NativeAdapter { adapter } => {
-            validate_adapter_key(&adapter.binding_key, &format!("{location}.drop.adapter"))
-        }
+        ResourceDropPlan::NativeAdapter { adapter } => validate_lifecycle_adapter_key(
+            &adapter.binding_key,
+            NativeValueAdapterRole::ResourceDrop,
+            &format!("{location}.drop.adapter"),
+        ),
     }
 }
 
@@ -105,6 +111,26 @@ pub(super) fn validate_adapter_key(
     if binding_key.is_empty() {
         return Err(header_error(format!(
             "{location}.bindingKey must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_adapter_key(
+    binding_key: &str,
+    expected_role: NativeValueAdapterRole,
+    location: &str,
+) -> Result<(), StructuralValidationError> {
+    validate_adapter_key(binding_key, location)?;
+    let Some(adapter) = crate::native_value_lifecycle_registry().adapter(binding_key) else {
+        return Err(header_error(format!(
+            "{location}.bindingKey {binding_key:?} is absent from the pinned native lifecycle registry"
+        )));
+    };
+    if adapter.role != expected_role {
+        return Err(header_error(format!(
+            "{location}.bindingKey {binding_key:?} has role {:?}, expected {expected_role:?}",
+            adapter.role
         )));
     }
     Ok(())

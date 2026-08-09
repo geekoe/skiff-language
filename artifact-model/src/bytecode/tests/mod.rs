@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod corpus;
 mod limits;
+mod manifests;
 mod property;
 mod roundtrip;
 mod schema_snapshot;
@@ -12,15 +13,16 @@ mod schema_snapshot;
 use std::collections::BTreeMap;
 
 use crate::bytecode::dto::{
-    ActiveRegion, ActiveRegionKind, BytecodeArtifact, BytecodeConstantRef, BytecodeImage,
-    BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
-    CallbackCaptureDecl, CallbackCaptureLayout, CatchMatcher, DebugBinding, DebugTable,
-    ExceptionRegion, FrameLayout, FrozenBehaviorBinding, FrozenConstantGraph, FrozenConstantNode,
-    HostEffectReference, HostEffectSignature, ParameterSlotDecl, RelocatableBytecodeFunction,
-    ResourceDropPlan, ResumeDescriptor, ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration,
-    SourceMapEntry, StatementChargeKind, StatementEntry, SwitchCase, SwitchTable, ValueDropPlan,
-    ValueTransferPlan, ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ActiveRegion, ActiveRegionKind, BytecodeArtifact, BytecodeConstantRef, BytecodeFunctionOrigin,
+    BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
+    CallLoanBinding, CallLoanLayout, CallbackCaptureDecl, CallbackCaptureLayout, CatchMatcher,
+    DebugBinding, DebugTable, ExceptionRegion, FrameLayout, FrozenBehaviorBinding,
+    FrozenConstantGraph, FrozenConstantNode, HostEffectReference, HostEffectSignature,
+    ParameterSlotDecl, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
+    ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration, SourceMapEntry, StatementChargeKind,
+    StatementEntry, SwitchCase, SwitchTable, ValueDropPlan, ValueTransferPlan,
+    ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
 use crate::types::TypeRefIr;
@@ -59,6 +61,14 @@ pub(crate) fn string_type() -> TypeRefIr {
 
 pub(crate) fn number_type() -> TypeRefIr {
     TypeRefIr::builtin("number")
+}
+
+pub(crate) fn executable_coordinate(executable_index: u32) -> crate::PackageExecutableCoordinate {
+    crate::PackageExecutableCoordinate {
+        file_ir_identity: "file-ir:module".to_string(),
+        module_path: "module".to_string(),
+        executable_index,
+    }
 }
 
 /// Hand-written wordcode for `module::main` (not encoder-produced). Layout:
@@ -115,7 +125,11 @@ pub(crate) fn main_function_words() -> Vec<u32> {
 pub(crate) fn main_function() -> RelocatableBytecodeFunction {
     RelocatableBytecodeFunction {
         function_key: "module::main".to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: executable_coordinate(0),
+        },
         type_parameters: Vec::new(),
+        self_type_ref: None,
         words: main_function_words(),
         relocations: vec![
             BytecodeRelocation::LocalExecutableRef {
@@ -140,7 +154,17 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
                     ),
                 },
             },
+            BytecodeRelocation::SyntheticCallbackRef {
+                function_key: "module::main$callback0".to_string(),
+            },
         ],
+        call_loan_layouts: vec![CallLoanLayout {
+            loans: vec![CallLoanBinding {
+                parameter_ordinal: 0,
+                root_slot: 1,
+                writable_path_ref: 0,
+            }],
+        }],
         frame_layout: FrameLayout {
             slot_count: 4,
             slot_type_refs: vec![0, 0, 1, 1],
@@ -149,6 +173,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
                 mode: crate::ParamModeIr::Value,
                 plan: snapshot_share(),
             }],
+            writable_local_slots: vec![1],
             result_count: 1,
             result_type_refs: vec![1],
             result_plans: vec![snapshot_share()],
@@ -241,13 +266,19 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
 pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
     RelocatableBytecodeFunction {
         function_key: "module::helper".to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: executable_coordinate(1),
+        },
         type_parameters: vec!["T".to_string()],
+        self_type_ref: None,
         words: vec![0x14, 0x25],
         relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
             slot_count: 2,
             slot_type_refs: vec![0, 1],
             parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
@@ -261,6 +292,42 @@ pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
         statement_entries: vec![StatementEntry {
             pc: 0,
             statement_id: "s:helper:entry".to_string(),
+            charge_kind: StatementChargeKind::FunctionEntry,
+        }],
+        source_map: Vec::new(),
+    }
+}
+
+pub(crate) fn callback_function() -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: "module::main$callback0".to_string(),
+        origin: BytecodeFunctionOrigin::SyntheticCallback {
+            owner: executable_coordinate(0),
+            site_ordinal: 0,
+        },
+        type_parameters: Vec::new(),
+        self_type_ref: None,
+        words: vec![0x14, 0x25],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
+        frame_layout: FrameLayout {
+            slot_count: 2,
+            slot_type_refs: vec![0, 1],
+            parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            slot_plans: vec![snapshot_share(), plan(ValueTransferPlanKind::MoveOnly)],
+        },
+        max_operand_depth: 2,
+        effect_summary_ref: crate::PackageCallableId::new("operation:module:main$callback0"),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: vec![StatementEntry {
+            pc: 0,
+            statement_id: "s:callback:entry".to_string(),
             charge_kind: StatementChargeKind::FunctionEntry,
         }],
         source_map: Vec::new(),
@@ -334,7 +401,7 @@ pub(crate) fn canonical_pools() -> BytecodePools {
         })],
         callback_capture: vec![BytecodePoolEntry::CallbackCaptureLayout(
             CallbackCaptureLayout {
-                function_key: "module::helper".to_string(),
+                function_key: "module::main$callback0".to_string(),
                 captures: vec![
                     CallbackCaptureDecl {
                         target_slot: 0,
@@ -412,19 +479,21 @@ pub(crate) fn canonical_artifact() -> BytecodeArtifact {
     let mut functions = BTreeMap::new();
     functions.insert("module::main".to_string(), main_function());
     functions.insert("module::helper".to_string(), helper_function());
+    functions.insert("module::main$callback0".to_string(), callback_function());
     BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
+        native_value_lifecycle_registry: crate::native_value_lifecycle_registry_identity().clone(),
         bytecode_identity: "skiff-bytecode-image-v1:sha256:fixture".to_string(),
         image: BytecodeImage {
             functions,
             pools: canonical_pools(),
             constant_roots: BTreeMap::from([
-                ("const:array".to_string(), 0),
-                ("const:implementation".to_string(), 2),
-                ("const:representation".to_string(), 1),
+                ("module.array".to_string(), 0),
+                ("module.implementation".to_string(), 2),
+                ("module.representation".to_string(), 1),
             ]),
             frozen_constant_graph: canonical_constant_graph(),
             debug_table: Some(canonical_debug_table()),

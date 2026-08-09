@@ -8,9 +8,9 @@ use crate::{PackageRefIr, TypeRefIr};
 use super::contract::*;
 
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_ID: &str = "skiff-native-value-lifecycle";
-pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v1";
+pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v2";
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT: &str =
-    "4210f98d95be4eedefbe0f54520a27242d51de7b591b307fc5faa54dd6c0eda7";
+    "f3822f537091ee8f3faf444043016d881c1274b1ca48f211a62b5f7dfe345b81";
 pub const MAX_NATIVE_VALUE_LIFECYCLE_ARGUMENTS: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -451,10 +451,40 @@ fn initial_entries() -> Vec<NativeValueLifecycleEntry> {
     let scalar = || NativeValueLifecycleTemplate::SnapshotShare {
         drop: NativeValueDropPlan::Trivial,
     };
+    let snapshot_root = || NativeValueLifecycleTemplate::SnapshotShare {
+        drop: NativeValueDropPlan::SnapshotRelease,
+    };
     let mut entries = ["null", "bool", "number", "integer", "Date"]
         .into_iter()
         .map(|name| builtin_entry(name, Vec::new(), scalar(), NativeValueEmbedding::Ordinary))
         .collect::<Vec<_>>();
+    entries.extend(
+        ["string", "bytes", "Json", "JsonObject"]
+            .into_iter()
+            .map(|name| {
+                builtin_entry(
+                    name,
+                    Vec::new(),
+                    snapshot_root(),
+                    NativeValueEmbedding::Ordinary,
+                )
+            }),
+    );
+    entries.push(builtin_entry(
+        "Array",
+        vec![NativeValueArgumentPolicy::RequireSnapshotShare],
+        snapshot_root(),
+        NativeValueEmbedding::Ordinary,
+    ));
+    entries.push(builtin_entry(
+        "Map",
+        vec![
+            NativeValueArgumentPolicy::RequireSnapshotShare,
+            NativeValueArgumentPolicy::RequireSnapshotShare,
+        ],
+        snapshot_root(),
+        NativeValueEmbedding::Ordinary,
+    ));
     entries.push(builtin_entry(
         "Stream",
         vec![NativeValueArgumentPolicy::RequireSnapshotShare],
