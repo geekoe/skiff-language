@@ -23,12 +23,12 @@ fn current_identity_generations_are_atomic() {
     assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v13:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
-        "skiff-bytecode-artifact-v2"
+        "skiff-bytecode-artifact-v3"
     );
-    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v2:sha256");
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v3:sha256");
     assert_eq!(
         skiff_artifact_model::BYTECODE_SCHEMA_VERSION,
-        "skiff-bytecode-v4"
+        "skiff-bytecode-v5"
     );
     assert_eq!(
         skiff_artifact_model::BYTECODE_ISA_VERSION,

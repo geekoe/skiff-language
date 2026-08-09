@@ -15,6 +15,8 @@ use skiff_artifact_model::{
 
 use super::*;
 
+type BytecodeMutation = (&'static str, fn(&mut BytecodeArtifact));
+
 fn snapshot_share() -> ValueTransferPlan {
     ValueTransferPlan::SnapshotShare {
         drop: ValueDropPlan::Trivial,
@@ -89,6 +91,9 @@ fn fixture() -> BytecodeArtifact {
         ),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: format!("{BYTECODE_IDENTITY_PREFIX}:fixture"),
         image: BytecodeImage {
             functions,
@@ -155,42 +160,64 @@ fn identity_is_deterministic_and_excludes_the_identity_field() {
 }
 
 #[test]
-fn schema_isa_fingerprint_and_lifecycle_registry_participate_in_the_preimage() {
+fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
     let base = fixture();
     let base_hash = bytecode_identity_after_structural(&base).unwrap();
 
-    let mutations: [fn(&mut BytecodeArtifact); 6] = [
-        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v3".to_string(),
-        |artifact: &mut BytecodeArtifact| {
-            artifact.isa_version = "skiff-bytecode-isa-v3".to_string()
-        },
-        |artifact: &mut BytecodeArtifact| {
-            artifact.opcode_table_fingerprint = "0".repeat(64).to_string()
-        },
-        |artifact: &mut BytecodeArtifact| {
+    let mutations: [BytecodeMutation; 14] = [
+        ("schemaVersion", |artifact| {
+            artifact.schema_version = "skiff-bytecode-v4".to_string();
+        }),
+        ("isaVersion", |artifact| {
+            artifact.isa_version = "skiff-bytecode-isa-v3".to_string();
+        }),
+        ("opcodeTableFingerprint", |artifact| {
+            artifact.opcode_table_fingerprint = "0".repeat(64);
+        }),
+        ("nativeValueLifecycleRegistry.registryId", |artifact| {
             artifact
                 .native_value_lifecycle_registry
                 .registry_id
-                .push_str("-changed")
-        },
-        |artifact: &mut BytecodeArtifact| {
+                .push_str("-changed");
+        }),
+        ("nativeValueLifecycleRegistry.version", |artifact| {
             artifact
                 .native_value_lifecycle_registry
                 .version
-                .push_str("-changed")
-        },
-        |artifact: &mut BytecodeArtifact| {
-            artifact.native_value_lifecycle_registry.fingerprint = "0".repeat(64)
-        },
+                .push_str("-changed");
+        }),
+        ("nativeValueLifecycleRegistry.fingerprint", |artifact| {
+            artifact.native_value_lifecycle_registry.fingerprint = "0".repeat(64);
+        }),
+        ("valueLifecyclePolicy.version", |artifact| {
+            artifact.value_lifecycle_policy.version.push_str("-changed");
+        }),
+        ("valueLifecyclePolicy.fingerprint", |artifact| {
+            artifact.value_lifecycle_policy.fingerprint = "0".repeat(64);
+        }),
+        ("hostEffectRegistry.registryId", |artifact| {
+            artifact
+                .host_effect_registry
+                .registry_id
+                .push_str("-changed");
+        }),
+        ("hostEffectRegistry.version", |artifact| {
+            artifact.host_effect_registry.version.push_str("-changed");
+        }),
+        ("hostEffectRegistry.fingerprint", |artifact| {
+            artifact.host_effect_registry.fingerprint = "0".repeat(64);
+        }),
+        ("intrinsicRegistry.registryId", |artifact| {
+            artifact.intrinsic_registry.registry_id.push_str("-changed");
+        }),
+        ("intrinsicRegistry.version", |artifact| {
+            artifact.intrinsic_registry.version.push_str("-changed");
+        }),
+        ("intrinsicRegistry.fingerprint", |artifact| {
+            artifact.intrinsic_registry.fingerprint = "0".repeat(64);
+        }),
     ];
-    for (label, mutate) in [
-        ("schemaVersion", mutations[0]),
-        ("isaVersion", mutations[1]),
-        ("opcodeTableFingerprint", mutations[2]),
-        ("nativeValueLifecycleRegistry.registryId", mutations[3]),
-        ("nativeValueLifecycleRegistry.version", mutations[4]),
-        ("nativeValueLifecycleRegistry.fingerprint", mutations[5]),
-    ] {
+    for (label, mutate) in mutations {
         let mut mutated = base.clone();
         mutate(&mut mutated);
         let mutated_hash = bytecode_identity_after_structural(&mutated).unwrap();
@@ -382,7 +409,7 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", leaf.to_uppercase()),
         format!("{BYTECODE_IDENTITY_PREFIX}:short"),
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", "z".repeat(64)),
-        format!("skiff-bytecode-image-v1:sha256:{leaf}"),
+        format!("skiff-bytecode-image-v2:sha256:{leaf}"),
         "unframed".to_string(),
     ] {
         assert!(matches!(
