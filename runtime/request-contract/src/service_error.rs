@@ -349,6 +349,10 @@ pub struct InternalErrorPayload {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the Error suffix preserves the canonical wire kind values and mirrors the validated public envelope variants"
+)]
 enum ServiceErrorEnvelopeWire {
     PublicTypedError {
         package_id: String,

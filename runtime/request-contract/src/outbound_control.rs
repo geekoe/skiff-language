@@ -11,6 +11,10 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing a request would change this public control-message API and add allocation solely to satisfy a size heuristic"
+)]
 pub enum OutboundControlMessage {
     ActorGetOrCreate {
         request: ActorGetOrCreateControlRequest,
