@@ -11,8 +11,12 @@
 //! errors; the emitter never invents `SnapshotShare`, omits unsupported code,
 //! or returns a partial artifact.
 
+mod constants;
+mod emitter;
 mod error;
+mod inputs;
 mod plans;
 
+pub use emitter::emit_bytecode_artifact;
 pub use error::BytecodeEmissionError;
 pub use plans::{BytecodeValueTransferPlans, FunctionValueTransferPlans};

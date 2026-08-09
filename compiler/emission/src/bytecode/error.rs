@@ -1,5 +1,5 @@
 use skiff_artifact_model::{bytecode::EncodeError, StructuralValidationError};
-use skiff_compiler_lowering::mir::MirContractError;
+use skiff_compiler_lowering::{mir::MirContractError, FrozenConstantLookupError};
 use thiserror::Error;
 
 /// A fail-closed bytecode emission failure.
@@ -37,6 +37,73 @@ pub enum BytecodeEmissionError {
 
     #[error("bytecode emitter received an empty frozen graph for constant `{symbol}`")]
     EmptyConstantGraph { symbol: String },
+
+    #[error(
+        "bytecode emitter function symbol `{symbol}` is not an exact member of module `{module_path}`"
+    )]
+    InvalidFunctionSymbol { module_path: String, symbol: String },
+
+    #[error(
+        "bytecode emitter parameter `{parameter}` in function `{function_key}` declares slot {slot} with a type different from the slot type"
+    )]
+    ParameterSlotTypeMismatch {
+        function_key: String,
+        parameter: String,
+        slot: u32,
+    },
+
+    #[error(
+        "bytecode emitter function `{function_key}` binds more than one parameter to slot {slot}"
+    )]
+    DuplicateParameterSlot { function_key: String, slot: u32 },
+
+    #[error(
+        "bytecode emitter function `{function_key}` has a stale or incomplete MIR liveness table"
+    )]
+    LivenessMismatch { function_key: String },
+
+    #[error(
+        "bytecode emitter function `{function_key}` statement side table diverges at flattened statement {position}"
+    )]
+    StatementTableMismatch {
+        function_key: String,
+        position: usize,
+    },
+
+    #[error(
+        "bytecode emitter type at {location} references missing local type {type_index} in module `{module_path}` (type count {type_count})"
+    )]
+    MissingLocalType {
+        module_path: String,
+        location: String,
+        type_index: u32,
+        type_count: usize,
+    },
+
+    #[error("bytecode emitter constant graph `{symbol}` is invalid: {message}")]
+    InvalidConstantGraph { symbol: String, message: String },
+
+    #[error(
+        "bytecode emitter constant graph `{symbol}` record node {node_index} has {child_count} children but shape {shape_index} declares {field_count} fields"
+    )]
+    ConstantShapeArityMismatch {
+        symbol: String,
+        node_index: u32,
+        shape_index: u32,
+        child_count: usize,
+        field_count: u32,
+    },
+
+    #[error(
+        "bytecode emitter constant graph `{symbol}` references unknown behavior function `{function_key}`"
+    )]
+    UnknownBehaviorFunction {
+        symbol: String,
+        function_key: String,
+    },
+
+    #[error("bytecode emitter canonical serialization failed at {context}: {message}")]
+    CanonicalSerialization { context: String, message: String },
 
     #[error("bytecode emitter has no explicit value-transfer plans for function `{function_key}`")]
     MissingValueTransferPlans { function_key: String },
@@ -94,6 +161,9 @@ pub enum BytecodeEmissionError {
 
     #[error("bytecode emitter MIR contract failed: {0}")]
     MirContract(#[from] MirContractError),
+
+    #[error("bytecode emitter frozen-constant lookup failed: {0}")]
+    FrozenConstantLookup(#[from] FrozenConstantLookupError),
 
     #[error("bytecode instruction encoding failed: {0}")]
     Encoding(#[from] EncodeError),
