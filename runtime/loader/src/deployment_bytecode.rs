@@ -6,9 +6,9 @@ use std::{
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BytecodeArtifactRef, ContractOperationId, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceRequirementKey,
+    BytecodeArtifactRef, ContractOperationId, PackageArtifact, PackageArtifactRef, PackageBinding,
+    PackageBuildId, PackageRequirement, PackageRequirementKey, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceRequirementKey,
 };
 
 use crate::runtime_assembly::RuntimeAssemblyContentResolver;
@@ -29,6 +29,7 @@ pub trait DeploymentBytecodeContentResolver: RuntimeAssemblyContentResolver {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentBytecodeReference {
     ServiceDeployment(ServiceDeploymentRef),
+    ServiceContract(ServiceContractRef),
     Package(PackageArtifactRef),
     PackageBytecode {
         package: PackageArtifactRef,
@@ -39,6 +40,14 @@ pub enum DeploymentBytecodeReference {
 /// Fail-closed categories produced while hydrating exact deployment bytecode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentBytecodeHydrationError {
+    ContentResolution {
+        reference: DeploymentBytecodeReference,
+        message: String,
+    },
+    InvalidContent {
+        reference: DeploymentBytecodeReference,
+        message: String,
+    },
     MissingBytecode {
         package: PackageArtifactRef,
     },
@@ -51,6 +60,25 @@ pub enum DeploymentBytecodeHydrationError {
         first: PackageArtifactRef,
         duplicate: PackageArtifactRef,
     },
+    DuplicatePackageBinding {
+        key: PackageRequirementKey,
+    },
+    MissingPackageBinding {
+        key: PackageRequirementKey,
+    },
+    UnexpectedPackageBinding {
+        key: PackageRequirementKey,
+    },
+    PackageRequirementMismatch {
+        key: PackageRequirementKey,
+        requirement: PackageRequirement,
+        selected: PackageArtifactRef,
+    },
+    ConflictingPackageOwner {
+        package_id: String,
+        first_build_id: PackageBuildId,
+        second_build_id: PackageBuildId,
+    },
     DuplicateServiceSlot {
         key: ServiceRequirementKey,
     },
@@ -59,11 +87,27 @@ pub enum DeploymentBytecodeHydrationError {
         expected: Option<ServiceContractRef>,
         actual: Option<ServiceContractRef>,
     },
+    MissingOperation {
+        key: ServiceRequirementKey,
+        contract: ServiceContractRef,
+        operation: ContractOperationId,
+    },
+    OperationCoverageMismatch {
+        contract: ServiceContractRef,
+        expected: BTreeSet<ContractOperationId>,
+        actual: BTreeSet<ContractOperationId>,
+    },
 }
 
 impl fmt::Display for DeploymentBytecodeHydrationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ContentResolution { reference, message } => {
+                write!(formatter, "failed to resolve {reference:?}: {message}")
+            }
+            Self::InvalidContent { reference, message } => {
+                write!(formatter, "invalid content for {reference:?}: {message}")
+            }
             Self::MissingBytecode { package } => write!(
                 formatter,
                 "package {} has no bytecode artifact reference",
@@ -81,6 +125,31 @@ impl fmt::Display for DeploymentBytecodeHydrationError {
                 formatter,
                 "package build {package_build_id} is hydrated more than once: {first:?} and {duplicate:?}"
             ),
+            Self::DuplicatePackageBinding { key } => {
+                write!(formatter, "package binding {key:?} is repeated")
+            }
+            Self::MissingPackageBinding { key } => {
+                write!(formatter, "package requirement {key:?} has no exact binding")
+            }
+            Self::UnexpectedPackageBinding { key } => {
+                write!(formatter, "package binding {key:?} is outside the consumer closure")
+            }
+            Self::PackageRequirementMismatch {
+                key,
+                requirement,
+                selected,
+            } => write!(
+                formatter,
+                "package binding {key:?} selects {selected:?}, which mismatches {requirement:?}"
+            ),
+            Self::ConflictingPackageOwner {
+                package_id,
+                first_build_id,
+                second_build_id,
+            } => write!(
+                formatter,
+                "consumer closure resolves package {package_id} to builds {first_build_id} and {second_build_id}"
+            ),
             Self::DuplicateServiceSlot { key } => {
                 write!(formatter, "service dependency slot {key:?} is repeated")
             }
@@ -91,6 +160,22 @@ impl fmt::Display for DeploymentBytecodeHydrationError {
             } => write!(
                 formatter,
                 "consumer contract mismatch at service slot {key:?}: expected {expected:?}, actual {actual:?}"
+            ),
+            Self::MissingOperation {
+                key,
+                contract,
+                operation,
+            } => write!(
+                formatter,
+                "service dependency {key:?} references missing operation {operation} in {contract:?}"
+            ),
+            Self::OperationCoverageMismatch {
+                contract,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "deployment operation coverage for {contract:?} is {actual:?}, expected {expected:?}"
             ),
         }
     }
@@ -107,7 +192,6 @@ pub struct HydratedBytecodePackage {
 }
 
 impl HydratedBytecodePackage {
-    #[allow(dead_code)]
     pub(crate) fn checked(
         reference: PackageArtifactRef,
         artifact: Arc<PackageArtifact>,
@@ -169,7 +253,6 @@ pub struct HydratedServiceDependency {
 }
 
 impl HydratedServiceDependency {
-    #[allow(dead_code)]
     pub(crate) fn new(
         key: ServiceRequirementKey,
         contract: ServiceContractRef,
@@ -206,7 +289,6 @@ pub struct HydratedDeploymentBytecode {
 }
 
 impl HydratedDeploymentBytecode {
-    #[allow(dead_code)]
     pub(crate) fn checked(
         reference: ServiceDeploymentRef,
         deployment: Arc<ServiceDeployment>,
@@ -258,10 +340,7 @@ impl HydratedDeploymentBytecode {
     }
 }
 
-/// Resolver handle for the future deployment bytecode load algorithm.
-///
-/// The interface deliberately exposes no `load` or public parts constructor
-/// until exact closure hydration is implemented.
+/// Exact consumer deployment bytecode loader.
 pub struct DeploymentBytecodeLoader<'a, R: ?Sized> {
     resolver: &'a R,
 }
@@ -277,6 +356,346 @@ where
     pub fn resolver(&self) -> &'a R {
         self.resolver
     }
+
+    /// Hydrates one exact consumer deployment without resolving provider
+    /// deployments or release pointers.
+    pub fn load(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> Result<HydratedDeploymentBytecode, DeploymentBytecodeHydrationError> {
+        let deployment = self
+            .resolver
+            .resolve_deployment(reference)
+            .map_err(
+                |error| DeploymentBytecodeHydrationError::ContentResolution {
+                    reference: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
+                    message: error.to_string(),
+                },
+            )?;
+        let actual_reference = exact_deployment_reference(&deployment);
+        if reference != &actual_reference {
+            return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
+                expected: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
+                actual: DeploymentBytecodeReference::ServiceDeployment(actual_reference),
+            });
+        }
+        validate_deployment_binding_uniqueness(&deployment)?;
+        skiff_artifact_identity::validate_service_deployment_ref(reference, &deployment).map_err(
+            |error| DeploymentBytecodeHydrationError::InvalidContent {
+                reference: DeploymentBytecodeReference::ServiceDeployment(reference.clone()),
+                message: error.to_string(),
+            },
+        )?;
+
+        let own_contract = self.resolve_contract(None, &deployment.contract)?;
+        validate_deployment_operation_coverage(&deployment, &own_contract)?;
+        let packages = self.load_package_closure(&deployment)?;
+        let mut contract_store = BTreeMap::from([(deployment.contract.clone(), own_contract)]);
+        let service_dependencies =
+            self.load_service_dependencies(&deployment, &packages, &mut contract_store)?;
+
+        HydratedDeploymentBytecode::checked(
+            reference.clone(),
+            deployment,
+            contract_store,
+            service_dependencies,
+            packages,
+        )
+    }
+
+    fn load_package_closure(
+        &self,
+        deployment: &ServiceDeployment,
+    ) -> Result<Vec<HydratedBytecodePackage>, DeploymentBytecodeHydrationError> {
+        let bindings = deployment
+            .package_bindings
+            .iter()
+            .map(|binding| (binding.key.clone(), binding.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut used_bindings = BTreeSet::new();
+        let mut hydrated_by_build = BTreeMap::<PackageBuildId, PackageArtifactRef>::new();
+        let mut builds_by_package_id = BTreeMap::<String, PackageBuildId>::new();
+        let mut pending = vec![deployment.implementation.clone()];
+        let mut packages = Vec::new();
+
+        while let Some(package_reference) = pending.pop() {
+            match hydrated_by_build.entry(package_reference.package_build_id.clone()) {
+                Entry::Occupied(entry) if entry.get() != &package_reference => {
+                    return Err(DeploymentBytecodeHydrationError::DuplicatePackage {
+                        package_build_id: package_reference.package_build_id.clone(),
+                        first: entry.get().clone(),
+                        duplicate: package_reference,
+                    });
+                }
+                Entry::Occupied(_) => continue,
+                Entry::Vacant(entry) => {
+                    entry.insert(package_reference.clone());
+                }
+            }
+            if let Some(first_build_id) = builds_by_package_id.insert(
+                package_reference.package_id.clone(),
+                package_reference.package_build_id.clone(),
+            ) {
+                if first_build_id != package_reference.package_build_id {
+                    return Err(DeploymentBytecodeHydrationError::ConflictingPackageOwner {
+                        package_id: package_reference.package_id,
+                        first_build_id,
+                        second_build_id: package_reference.package_build_id,
+                    });
+                }
+            }
+
+            let artifact = self.resolve_package(&package_reference)?;
+            validate_package_service_slot_uniqueness(&package_reference, &artifact)?;
+            let requirements = artifact.package_requirements.clone();
+            let bytecode_reference = artifact.bytecode.clone().ok_or_else(|| {
+                DeploymentBytecodeHydrationError::MissingBytecode {
+                    package: package_reference.clone(),
+                }
+            })?;
+            let bytecode = self
+                .resolver
+                .resolve_package_bytecode(&package_reference, &bytecode_reference)
+                .map_err(
+                    |error| DeploymentBytecodeHydrationError::ContentResolution {
+                        reference: DeploymentBytecodeReference::PackageBytecode {
+                            package: package_reference.clone(),
+                            bytecode: bytecode_reference,
+                        },
+                        message: error.to_string(),
+                    },
+                )?;
+            let hydrated =
+                HydratedBytecodePackage::checked(package_reference.clone(), artifact, bytecode)?;
+
+            for requirement in requirements {
+                let key = PackageRequirementKey {
+                    caller_package_build_id: package_reference.package_build_id.clone(),
+                    package_requirement_alias: requirement.alias.clone(),
+                };
+                let binding = bindings.get(&key).ok_or_else(|| {
+                    DeploymentBytecodeHydrationError::MissingPackageBinding { key: key.clone() }
+                })?;
+                validate_package_requirement(&key, &requirement, binding)?;
+                used_bindings.insert(key);
+                pending.push(binding.package.clone());
+            }
+            packages.push(hydrated);
+        }
+
+        if let Some(key) = bindings.keys().find(|key| !used_bindings.contains(*key)) {
+            return Err(DeploymentBytecodeHydrationError::UnexpectedPackageBinding {
+                key: key.clone(),
+            });
+        }
+        Ok(packages)
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> Result<Arc<PackageArtifact>, DeploymentBytecodeHydrationError> {
+        let artifact = self.resolver.resolve_package(reference).map_err(|error| {
+            DeploymentBytecodeHydrationError::ContentResolution {
+                reference: DeploymentBytecodeReference::Package(reference.clone()),
+                message: error.to_string(),
+            }
+        })?;
+        let actual_reference = exact_package_reference(&artifact);
+        if reference != &actual_reference {
+            return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
+                expected: DeploymentBytecodeReference::Package(reference.clone()),
+                actual: DeploymentBytecodeReference::Package(actual_reference),
+            });
+        }
+        skiff_artifact_identity::validate_package_artifact_identities(&artifact).map_err(
+            |error| DeploymentBytecodeHydrationError::InvalidContent {
+                reference: DeploymentBytecodeReference::Package(reference.clone()),
+                message: error.to_string(),
+            },
+        )?;
+        Ok(artifact)
+    }
+
+    fn load_service_dependencies(
+        &self,
+        deployment: &ServiceDeployment,
+        packages: &[HydratedBytecodePackage],
+        contracts: &mut BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
+    ) -> Result<Vec<HydratedServiceDependency>, DeploymentBytecodeHydrationError> {
+        let selectors = deployment
+            .service_selectors
+            .iter()
+            .map(|selector| (selector.key.clone(), selector.contract.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut dependencies = Vec::new();
+        for package in packages {
+            for requirement in &package.artifact.service_requirements {
+                let key = ServiceRequirementKey {
+                    caller_package_build_id: package.reference.package_build_id.clone(),
+                    service_requirement_slot: requirement.service_binding_slot,
+                };
+                let expected_contract = ServiceContractRef {
+                    service_id: requirement.contract_requirement.service_id.clone(),
+                    contract_version: requirement.contract_requirement.contract_version.clone(),
+                    service_protocol_identity: requirement
+                        .contract_requirement
+                        .expected_protocol_identity
+                        .clone(),
+                };
+                let selected_contract = selectors.get(&key).ok_or_else(|| {
+                    DeploymentBytecodeHydrationError::ContractMismatch {
+                        key: Some(key.clone()),
+                        expected: Some(expected_contract.clone()),
+                        actual: None,
+                    }
+                })?;
+                if selected_contract != &expected_contract {
+                    return Err(DeploymentBytecodeHydrationError::ContractMismatch {
+                        key: Some(key),
+                        expected: Some(expected_contract),
+                        actual: Some(selected_contract.clone()),
+                    });
+                }
+                let contract = if let Some(contract) = contracts.get(selected_contract) {
+                    Arc::clone(contract)
+                } else {
+                    let contract = self.resolve_contract(Some(&key), selected_contract)?;
+                    contracts.insert(selected_contract.clone(), Arc::clone(&contract));
+                    contract
+                };
+                for operation in &requirement.used_operations {
+                    if !contract.operations.contains_key(operation) {
+                        return Err(DeploymentBytecodeHydrationError::MissingOperation {
+                            key: key.clone(),
+                            contract: selected_contract.clone(),
+                            operation: operation.clone(),
+                        });
+                    }
+                }
+                dependencies.push(HydratedServiceDependency::new(
+                    key,
+                    selected_contract.clone(),
+                    requirement.used_operations.clone(),
+                ));
+            }
+        }
+        Ok(dependencies)
+    }
+
+    fn resolve_contract(
+        &self,
+        key: Option<&ServiceRequirementKey>,
+        reference: &ServiceContractRef,
+    ) -> Result<Arc<ServiceContract>, DeploymentBytecodeHydrationError> {
+        let contract = self.resolver.resolve_contract(reference).map_err(|error| {
+            DeploymentBytecodeHydrationError::ContentResolution {
+                reference: DeploymentBytecodeReference::ServiceContract(reference.clone()),
+                message: error.to_string(),
+            }
+        })?;
+        let actual_reference = exact_contract_reference(&contract);
+        if reference != &actual_reference {
+            return Err(DeploymentBytecodeHydrationError::ContractMismatch {
+                key: key.cloned(),
+                expected: Some(reference.clone()),
+                actual: Some(actual_reference),
+            });
+        }
+        skiff_artifact_identity::validate_service_contract_identities(&contract).map_err(
+            |error| DeploymentBytecodeHydrationError::InvalidContent {
+                reference: DeploymentBytecodeReference::ServiceContract(reference.clone()),
+                message: error.to_string(),
+            },
+        )?;
+        Ok(contract)
+    }
+}
+
+fn validate_deployment_binding_uniqueness(
+    deployment: &ServiceDeployment,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    let mut package_bindings = BTreeSet::new();
+    for binding in &deployment.package_bindings {
+        if !package_bindings.insert(binding.key.clone()) {
+            return Err(DeploymentBytecodeHydrationError::DuplicatePackageBinding {
+                key: binding.key.clone(),
+            });
+        }
+    }
+    let mut service_slots = BTreeSet::new();
+    for selector in &deployment.service_selectors {
+        if !service_slots.insert(selector.key.clone()) {
+            return Err(DeploymentBytecodeHydrationError::DuplicateServiceSlot {
+                key: selector.key.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_deployment_operation_coverage(
+    deployment: &ServiceDeployment,
+    contract: &ServiceContract,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    let expected = contract.operations.keys().cloned().collect::<BTreeSet<_>>();
+    let actual = deployment
+        .operation_bindings
+        .iter()
+        .map(|binding| binding.contract_operation_id.clone())
+        .collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(
+            DeploymentBytecodeHydrationError::OperationCoverageMismatch {
+                contract: deployment.contract.clone(),
+                expected,
+                actual,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_package_service_slot_uniqueness(
+    reference: &PackageArtifactRef,
+    artifact: &PackageArtifact,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    let mut slots = BTreeSet::new();
+    for requirement in &artifact.service_requirements {
+        if !slots.insert(requirement.service_binding_slot) {
+            return Err(DeploymentBytecodeHydrationError::DuplicateServiceSlot {
+                key: ServiceRequirementKey {
+                    caller_package_build_id: reference.package_build_id.clone(),
+                    service_requirement_slot: requirement.service_binding_slot,
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_requirement(
+    key: &PackageRequirementKey,
+    requirement: &PackageRequirement,
+    binding: &PackageBinding,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    if binding.package.package_id != requirement.package_id
+        || binding.package.package_version != requirement.exact_version
+        || binding.package.package_local_abi_identity != requirement.expected_local_abi
+        || requirement
+            .expected_package_build
+            .as_ref()
+            .is_some_and(|expected| expected != &binding.package.package_build_id)
+    {
+        return Err(
+            DeploymentBytecodeHydrationError::PackageRequirementMismatch {
+                key: key.clone(),
+                requirement: requirement.clone(),
+                selected: binding.package.clone(),
+            },
+        );
+    }
+    Ok(())
 }
 
 fn exact_package_reference(artifact: &PackageArtifact) -> PackageArtifactRef {

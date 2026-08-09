@@ -374,3 +374,5 @@ fn deployment_checked_constructor_rejects_contract_mismatch() {
         }) if mismatch_key == key && expected == expected_contract && actual == actual_contract
     ));
 }
+
+mod load;
