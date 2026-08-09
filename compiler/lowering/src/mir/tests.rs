@@ -338,7 +338,10 @@ fn mir_remains_self_contained_after_original_file_ir_is_dropped() {
     drop(model);
 
     let unit = &mir_units[0];
-    assert_eq!(unit.external_refs.service_call_refs, vec![service_ref]);
+    assert_eq!(
+        unit.external_refs.service_call_refs,
+        vec![service_ref.clone()]
+    );
     assert_eq!(unit.source_map, expected_source_map);
     assert_eq!(unit.type_table, expected_type_table);
     assert_eq!(unit.link_targets, expected_link_targets);
