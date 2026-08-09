@@ -271,6 +271,8 @@ impl Fixture {
             slots: SlotLayout::default(),
             may_suspend: false,
             body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
         skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();

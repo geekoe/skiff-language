@@ -280,13 +280,13 @@ fn deployment_checked_constructor_rejects_duplicate_package_and_service_slot() {
     let package_again = hydrated_package("example.package", "build:package", &bytecode);
     let package_reference = package.reference().clone();
     let own_contract = contract_reference("example.consumer");
-    let deployment = deployment(package_reference, own_contract.clone(), Vec::new());
-    let reference = deployment_reference(&deployment);
+    let deployment_record = deployment(package_reference, own_contract.clone(), Vec::new());
+    let reference = deployment_reference(&deployment_record);
     let contracts = BTreeMap::from([(own_contract.clone(), contract(&own_contract))]);
     assert!(matches!(
         HydratedDeploymentBytecode::checked(
             reference,
-            deployment,
+            deployment_record,
             contracts,
             Vec::new(),
             vec![package, package_again],
