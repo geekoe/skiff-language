@@ -1046,14 +1046,16 @@ impl<'a> OwnerChecker<'a> {
                     if !projection_failed {
                         if let Some(actual) = &actual {
                             self.check_value_assignable_to_expected(
-                                Some(annotation),
                                 value,
                                 &value_key,
                                 actual,
                                 &expected,
-                                projected_expected.as_ref(),
-                                &format!("local binding {name} annotation"),
-                                self.expression_span(&value_key),
+                                ValueAssignmentContext {
+                                    annotation: Some(annotation),
+                                    exact_expected: projected_expected.as_ref(),
+                                    diagnostic_context: &format!("local binding {name} annotation"),
+                                    fallback_span: self.expression_span(&value_key),
+                                },
                             );
                         }
                     }
@@ -1094,18 +1096,20 @@ impl<'a> OwnerChecker<'a> {
         if self_field_assignment || place_contains_index(target) {
             if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
                 self.check_value_assignable_to_expected(
-                    None,
                     value,
                     &value_key,
                     actual,
                     expected,
-                    None,
-                    if self_field_assignment {
-                        "self field assignment"
-                    } else {
-                        "indexed assignment"
+                    ValueAssignmentContext {
+                        annotation: None,
+                        exact_expected: None,
+                        diagnostic_context: if self_field_assignment {
+                            "self field assignment"
+                        } else {
+                            "indexed assignment"
+                        },
+                        fallback_span: self.expression_span(&value_key),
                     },
-                    self.expression_span(&value_key),
                 );
             }
         }
@@ -1272,14 +1276,16 @@ impl<'a> OwnerChecker<'a> {
         self.record_stream_emit_target(&value_key, expected.clone());
         if let Some(actual) = actual {
             self.check_value_assignable_to_expected(
-                None,
                 value,
                 &value_key,
                 &actual,
                 &expected,
-                None,
-                "emit chunk",
-                self.expression_span(&value_key),
+                ValueAssignmentContext {
+                    annotation: None,
+                    exact_expected: None,
+                    diagnostic_context: "emit chunk",
+                    fallback_span: self.expression_span(&value_key),
+                },
             );
         }
         false
@@ -1480,14 +1486,16 @@ impl<'a> OwnerChecker<'a> {
             return;
         };
         self.check_value_assignable_to_expected(
-            Some(&annotation),
             value,
             &value_key,
             &actual,
             &expected,
-            None,
-            "return",
-            self.expression_span(&value_key),
+            ValueAssignmentContext {
+                annotation: Some(&annotation),
+                exact_expected: None,
+                diagnostic_context: "return",
+                fallback_span: self.expression_span(&value_key),
+            },
         );
     }
 

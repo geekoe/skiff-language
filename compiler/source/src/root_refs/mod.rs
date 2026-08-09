@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::shared::lexer::{lex, Token, TokenKind};
+use skiff_syntax::lexer::{lex, Token, TokenKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct ModuleExports {

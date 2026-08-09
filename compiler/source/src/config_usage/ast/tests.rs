@@ -70,8 +70,10 @@ function values() -> void {
     let mut violations = Vec::new();
 
     collect_config_uses_in_block(
-        "fixture.test.skiff",
-        "fixture.test.skiff",
+        ConfigSourcePaths {
+            diagnostic: "fixture.test.skiff",
+            source: "fixture.test.skiff",
+        },
         &block,
         Some(&spans),
         &BTreeMap::new(),
