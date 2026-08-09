@@ -2661,6 +2661,7 @@ name = "skiff-runtime-deployment-image"
 version = "0.1.0"
 dependencies = [
  "skiff-artifact-model",
+ "tokio",
 ]
 
 [[package]]
@@ -2740,6 +2741,13 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "skiff-runtime-linked-bytecode"
+version = "0.1.0"
+dependencies = [
+ "skiff-artifact-model",
 ]
 
 [[package]]

@@ -43,6 +43,7 @@ const rustImplementationSubjects = [
       rustPackage('runtime/deployment-image', 'skiff-runtime-deployment-image'),
       rustPackage('runtime/eval', 'skiff-runtime-eval'),
       rustPackage('runtime/host', 'skiff-runtime-host'),
+      rustPackage('runtime/linked-bytecode', 'skiff-runtime-linked-bytecode'),
       rustPackage('runtime/linked-type-plan', 'skiff-runtime-linked-type-plan'),
       rustPackage('runtime/linked-program', 'skiff-runtime-linked-program'),
       rustPackage('runtime/linker', 'skiff-runtime-linker'),

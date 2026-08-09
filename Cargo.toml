@@ -29,6 +29,7 @@ members = [
   "runtime/deployment-image",
   "runtime/eval",
   "runtime/host",
+  "runtime/linked-bytecode",
   "runtime/linked-type-plan",
   "runtime/linked-program",
   "runtime/linker",
