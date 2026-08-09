@@ -2633,6 +2633,8 @@ dependencies = [
 name = "skiff-runtime-bytecode-verifier"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
