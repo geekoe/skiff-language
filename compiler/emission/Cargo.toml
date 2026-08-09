@@ -11,6 +11,7 @@ workspace = true
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-compiler-core = { path = "../core" }
+skiff-compiler-lowering = { path = "../lowering" }
 skiff-compiler-projection = { path = "../projection" }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"
