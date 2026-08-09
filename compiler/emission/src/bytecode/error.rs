@@ -210,28 +210,4 @@ impl BytecodeEmissionError {
             location: String::new(),
         }
     }
-
-    pub(crate) fn unsupported_statement(
-        function_key: impl Into<String>,
-        statement: u32,
-        construct: &'static str,
-    ) -> Self {
-        Self::UnsupportedConstruct {
-            function_key: function_key.into(),
-            construct,
-            location: format!(" at statement {statement}"),
-        }
-    }
-
-    pub(crate) fn unsupported_expression(
-        function_key: impl Into<String>,
-        expression: u32,
-        construct: &'static str,
-    ) -> Self {
-        Self::UnsupportedConstruct {
-            function_key: function_key.into(),
-            construct,
-            location: format!(" at expression {expression}"),
-        }
-    }
 }
