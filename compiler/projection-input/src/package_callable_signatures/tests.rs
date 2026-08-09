@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     PackageCallableParameter, PackageCallableSignature, PackageSchemaTypeId, PackageTypeRef,
-    TypeRefIr,
+    ParamModeIr, TypeRefIr,
 };
 
 use super::*;
@@ -82,6 +82,7 @@ fn projection_input_preserves_exact_nested_package_schema_signature() {
                     arguments: vec![contract.clone()],
                 }),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: contract,
         may_suspend: true,
