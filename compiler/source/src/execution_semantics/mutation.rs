@@ -48,27 +48,43 @@ impl OwnerAnalyzer<'_> {
         scope: &Scope,
         context: ValidationContext,
     ) {
-        if !context.in_lane {
-            return;
-        }
         let Some(place) = place_from_expr(target) else {
-            self.diagnostic("concurrent mutation target has opaque root provenance");
+            self.diagnostic("assignment target is not an exact writable place");
             return;
         };
         let root_name = match &place.root {
             WritableRoot::InOutParam(_) => {
-                self.diagnostic(
-                    "concurrent lane writes through an outer inout loan; inout-derived writes are forbidden",
-                );
+                if context.in_lane {
+                    self.diagnostic(
+                        "concurrent lane writes through an outer inout loan; inout-derived writes are forbidden",
+                    );
+                    return;
+                }
                 return;
             }
             WritableRoot::ActorSelfField(_) => {
-                self.diagnostic("concurrent lane writes an actor self field");
+                if context.in_lane {
+                    self.diagnostic("concurrent lane writes an actor self field");
+                }
                 return;
             }
             WritableRoot::VarBinding(name) => name,
         };
         let entry = scope.get(root_name).copied();
+        if !context.in_lane {
+            match entry.map(|entry| entry.kind) {
+                Some(BindingKind::Var | BindingKind::InOutParam) => return,
+                Some(BindingKind::Immutable | BindingKind::SelfValue) => {
+                    self.diagnostic(format!(
+                        "assignment target derives from immutable binding `{root_name}`"
+                    ));
+                }
+                None => self.diagnostic(format!(
+                    "assignment target `{root_name}` has no writable local root"
+                )),
+            }
+            return;
+        }
         match entry.map(|entry| (entry.root, entry.kind)) {
             Some((BindingRoot::LaneLocalFresh, BindingKind::Var)) => {}
             Some((BindingRoot::Scalar, _)) => {
@@ -214,10 +230,12 @@ impl OwnerAnalyzer<'_> {
         let Some(root) = place_from_expr(target).map(|place| place.root_name().to_string()) else {
             return;
         };
-        if scope.get(&root) != Some(&BindingEntry {
-            root: BindingRoot::LaneLocalFresh,
-            kind: BindingKind::Var,
-        }) {
+        if scope.get(&root)
+            != Some(&BindingEntry {
+                root: BindingRoot::LaneLocalFresh,
+                kind: BindingKind::Var,
+            })
+        {
             return;
         }
         if payloads
@@ -294,6 +312,7 @@ fn definitely_lane_local_fresh(expression: &Expr, scope: &Scope) -> bool {
         | Expr::Generic { .. }
         | Expr::InterfaceBox { .. }
         | Expr::Field { .. }
+        | Expr::Index { .. }
         | Expr::Throw { .. }
         | Expr::Rethrow { .. }
         | Expr::Catch { .. }
@@ -345,6 +364,7 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
         | Expr::Call { .. }
         | Expr::Generic { .. }
         | Expr::Field { .. }
+        | Expr::Index { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
         | Expr::Patch { .. }
@@ -545,11 +565,13 @@ mod tests {
         analyzer.validate_mutation_target(targets[2], &scope, context);
         analyzer.validate_mutation_target(targets[3], &scope, context);
         drop(analyzer);
-        assert_eq!(diagnostics.len(), 3, "unexpected diagnostics: {diagnostics:?}");
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.contains("outer mutable root")),
+            diagnostics.iter().any(|d| d.contains("outer mutable root")),
             "outer var write must be rejected: {diagnostics:?}"
         );
         assert!(
@@ -557,9 +579,7 @@ mod tests {
             "inout-derived write must be rejected: {diagnostics:?}"
         );
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.contains("immutable binding")),
+            diagnostics.iter().any(|d| d.contains("immutable binding")),
             "immutable write must be rejected: {diagnostics:?}"
         );
     }
@@ -659,10 +679,7 @@ mod tests {
             .iter()
             .map(|call| {
                 let key = expression_keys[&expr_address(call)].clone();
-                (
-                    key,
-                    ResolvedCallTarget::ReceiverBuiltin { op: push_op },
-                )
+                (key, ResolvedCallTarget::ReceiverBuiltin { op: push_op })
             })
             .collect::<BTreeMap<_, _>>();
         let expression_sources = ExpressionSourceMap::default();
@@ -690,11 +707,13 @@ mod tests {
             analyzer.validate_mutating_call(call, &mut scope.clone(), context);
         }
         drop(analyzer);
-        assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {diagnostics:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.contains("outer mutable root")),
+            diagnostics.iter().any(|d| d.contains("outer mutable root")),
             "outer-var receiver mutation must be rejected: {diagnostics:?}"
         );
     }

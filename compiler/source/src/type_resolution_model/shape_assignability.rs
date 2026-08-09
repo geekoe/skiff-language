@@ -1618,7 +1618,7 @@ impl TypeResolutionModel {
         }
     }
 
-    fn transparent_alias_ir(
+    pub(crate) fn transparent_alias_ir(
         &self,
         ty: &TypeRefIr,
         context: &TypeResolutionContext<'_>,

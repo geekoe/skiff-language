@@ -148,16 +148,11 @@ fn inout_param_indices(
                 .params
                 .iter()
                 .enumerate()
-                .filter(|(_, parameter)| {
-                    parameter.mode == crate::shared::ast::ParamMode::InOut
-                })
+                .filter(|(_, parameter)| parameter.mode == crate::shared::ast::ParamMode::InOut)
                 .map(|(index, parameter)| (index, parameter.name.clone()))
                 .collect::<BTreeMap<_, _>>();
             if !positions.is_empty() {
-                indices.insert(
-                    SourceSymbolKey::new(module_path, &function.name),
-                    positions,
-                );
+                indices.insert(SourceSymbolKey::new(module_path, &function.name), positions);
             }
         }
         for implementation in &parsed.ast().impls {
@@ -166,9 +161,7 @@ fn inout_param_indices(
                     .params
                     .iter()
                     .enumerate()
-                    .filter(|(_, parameter)| {
-                        parameter.mode == crate::shared::ast::ParamMode::InOut
-                    })
+                    .filter(|(_, parameter)| parameter.mode == crate::shared::ast::ParamMode::InOut)
                     .map(|(index, parameter)| (index, parameter.name.clone()))
                     .collect::<BTreeMap<_, _>>();
                 if !positions.is_empty() {
@@ -318,6 +311,11 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
             }
             crate::shared::ast::Expr::Field { object, .. } => {
                 self.visit_expr(object);
+                return;
+            }
+            crate::shared::ast::Expr::Index { object, index } => {
+                self.visit_expr(object);
+                self.visit_expr(index);
                 return;
             }
             crate::shared::ast::Expr::Record { fields, .. } => {

@@ -18,7 +18,17 @@ use crate::shared::ast::Expr;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Selector {
     Field(String),
-    Index,
+    Index(IndexSelector),
+}
+
+/// Stable selector identity used only for static overlap proofs. Any selector
+/// that is not a direct literal remains `Dynamic` and overlaps every other
+/// index at the same path position.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IndexSelector {
+    StringLiteral(String),
+    NumberLiteral(u64),
+    Dynamic,
 }
 
 /// The writable root of a place.
@@ -70,7 +80,61 @@ fn same_root(left: &WritableRoot, right: &WritableRoot) -> bool {
 }
 
 fn path_prefix(left: &[Selector], right: &[Selector]) -> bool {
-    left.len() <= right.len() && left.iter().zip(right.iter()).all(|(a, b)| a == b)
+    left.len() <= right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| selectors_may_overlap(left, right))
+}
+
+fn selectors_may_overlap(left: &Selector, right: &Selector) -> bool {
+    match (left, right) {
+        (Selector::Field(left), Selector::Field(right)) => left == right,
+        (Selector::Index(IndexSelector::Dynamic), Selector::Index(_))
+        | (Selector::Index(_), Selector::Index(IndexSelector::Dynamic)) => true,
+        (Selector::Index(left), Selector::Index(right)) => left == right,
+        (Selector::Field(_), Selector::Index(_)) | (Selector::Index(_), Selector::Field(_)) => {
+            false
+        }
+    }
+}
+
+fn index_selector(expr: &Expr) -> IndexSelector {
+    match expr {
+        Expr::Literal(crate::shared::ast::Literal::String(value)) => {
+            IndexSelector::StringLiteral(value.clone())
+        }
+        Expr::Literal(crate::shared::ast::Literal::Number(value)) => {
+            IndexSelector::NumberLiteral(value.to_bits())
+        }
+        Expr::Literal(crate::shared::ast::Literal::Bool(_))
+        | Expr::Literal(crate::shared::ast::Literal::Null)
+        | Expr::Identifier(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::Generic { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Field { .. }
+        | Expr::Index { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => IndexSelector::Dynamic,
+    }
 }
 
 /// Computes the exact name/member/index place for an expression.
@@ -94,11 +158,45 @@ pub fn place_from_expr(expr: &Expr) -> Option<WritablePlace> {
                 let object = place_from_expr(object)?;
                 let mut path = object.path;
                 path.push(Selector::Field(field.clone()));
-                Some(WritablePlace { root: object.root, path })
+                Some(WritablePlace {
+                    root: object.root,
+                    path,
+                })
             }
         }
+        Expr::Index { object, index } => {
+            let object = place_from_expr(object)?;
+            let mut path = object.path;
+            path.push(Selector::Index(index_selector(index)));
+            Some(WritablePlace {
+                root: object.root,
+                path,
+            })
+        }
         Expr::Generic { callee, .. } => place_from_expr(callee),
-        _ => None,
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => None,
     }
 }
 
@@ -112,8 +210,34 @@ pub fn selectors_from_expr(expr: &Expr) -> Option<Vec<Selector>> {
             selectors.push(Selector::Field(field.clone()));
             Some(selectors)
         }
+        Expr::Index { object, index } => {
+            let mut selectors = selectors_from_expr(object)?;
+            selectors.push(Selector::Index(index_selector(index)));
+            Some(selectors)
+        }
         Expr::Generic { callee, .. } => selectors_from_expr(callee),
-        _ => None,
+        Expr::Literal(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => None,
     }
 }
 
@@ -129,6 +253,13 @@ mod tests {
         Expr::Field {
             object: Box::new(object),
             field: name.to_string(),
+        }
+    }
+
+    fn index(object: Expr, selector: Expr) -> Expr {
+        Expr::Index {
+            object: Box::new(object),
+            index: Box::new(selector),
         }
     }
 
@@ -152,13 +283,37 @@ mod tests {
     #[test]
     fn self_field_is_an_actor_root() {
         let place = place_from_expr(&field(field(ident("self"), "buffer"), "head")).unwrap();
-        assert_eq!(place.root, WritableRoot::ActorSelfField("buffer".to_string()));
+        assert_eq!(
+            place.root,
+            WritableRoot::ActorSelfField("buffer".to_string())
+        );
         assert_eq!(place.path, vec![Selector::Field("head".to_string())]);
     }
 
     #[test]
     fn non_places_are_rejected() {
         assert!(place_from_expr(&ident("self")).is_none());
-        assert!(place_from_expr(&Expr::Literal(crate::shared::ast::Literal::Number(1.0))).is_none());
+        assert!(
+            place_from_expr(&Expr::Literal(crate::shared::ast::Literal::Number(1.0))).is_none()
+        );
+    }
+
+    #[test]
+    fn literal_indexes_are_exact_and_dynamic_indexes_overlap_conservatively() {
+        let zero = place_from_expr(&index(
+            ident("items"),
+            Expr::Literal(crate::shared::ast::Literal::Number(0.0)),
+        ))
+        .unwrap();
+        let one = place_from_expr(&index(
+            ident("items"),
+            Expr::Literal(crate::shared::ast::Literal::Number(1.0)),
+        ))
+        .unwrap();
+        let dynamic = place_from_expr(&index(ident("items"), ident("position"))).unwrap();
+
+        assert!(!zero.overlaps(&one));
+        assert!(zero.overlaps(&dynamic));
+        assert!(dynamic.overlaps(&one));
     }
 }

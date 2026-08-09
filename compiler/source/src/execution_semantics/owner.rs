@@ -149,10 +149,7 @@ impl<'a> OwnerAnalyzer<'a> {
             }
             Stmt::Assert { condition, .. } => self.validate_expr(condition, scope, context),
             Stmt::Let {
-                kind,
-                name,
-                value,
-                ..
+                kind, name, value, ..
             } => {
                 self.validate_expr(value, scope, context);
                 scope.insert(
@@ -249,19 +246,15 @@ impl<'a> OwnerAnalyzer<'a> {
                     let mut nested = scope.clone();
                     let mut bindings = BTreeSet::new();
                     pattern_bindings(&arm.pattern, &mut bindings);
-                    nested.extend(
-                        bindings
-                            .into_iter()
-                            .map(|name| {
-                                (
-                                    name,
-                                    BindingEntry {
-                                        root: BindingRoot::LaneLocalOpaque,
-                                        kind: BindingKind::Immutable,
-                                    },
-                                )
-                            }),
-                    );
+                    nested.extend(bindings.into_iter().map(|name| {
+                        (
+                            name,
+                            BindingEntry {
+                                root: BindingRoot::LaneLocalOpaque,
+                                kind: BindingKind::Immutable,
+                            },
+                        )
+                    }));
                     self.validate_block(&arm.body, &mut nested, context);
                 }
             }
@@ -334,6 +327,10 @@ impl<'a> OwnerAnalyzer<'a> {
             }
             Expr::InterfaceBox { value, .. } => self.validate_expr(value, scope, context),
             Expr::Field { object, .. } => self.validate_expr(object, scope, context),
+            Expr::Index { object, index } => {
+                self.validate_expr(object, scope, context);
+                self.validate_expr(index, scope, context);
+            }
             Expr::Record { fields, .. } => {
                 for (_, value) in fields {
                     self.validate_expr(value, scope, context);

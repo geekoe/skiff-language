@@ -127,6 +127,24 @@ pub(super) fn collect_package_expr_std_type_violations(
                 violations,
             );
         }
+        Expr::Index { object, index } => {
+            collect_package_expr_std_type_violations(
+                path,
+                object,
+                imported_std_roots,
+                dependency_roots,
+                package_type_names,
+                violations,
+            );
+            collect_package_expr_std_type_violations(
+                path,
+                index,
+                imported_std_roots,
+                dependency_roots,
+                package_type_names,
+                violations,
+            );
+        }
         Expr::Call { callee, args } => {
             collect_package_expr_std_type_violations(
                 path,

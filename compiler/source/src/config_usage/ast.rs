@@ -164,10 +164,7 @@ fn collect_config_uses_in_block(
                 }
             }
             Stmt::Let {
-                kind,
-                name,
-                value,
-                ..
+                kind, name, value, ..
             } => {
                 collect_config_uses_in_expr(
                     diagnostic_path,
@@ -531,6 +528,28 @@ fn collect_config_uses_in_expr(
                 source_path,
                 object,
                 child_span(expr_spans, 0),
+                const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+        }
+        Expr::Index { object, index } => {
+            collect_config_uses_in_expr(
+                diagnostic_path,
+                source_path,
+                object,
+                child_span(expr_spans, 0),
+                const_strings,
+                uses,
+                presence_uses,
+                violations,
+            );
+            collect_config_uses_in_expr(
+                diagnostic_path,
+                source_path,
+                index,
+                child_span(expr_spans, 1),
                 const_strings,
                 uses,
                 presence_uses,
@@ -1169,6 +1188,7 @@ fn push_removed_config_get_violation(diagnostic_path: &str, violations: &mut Vec
 fn expression_root_is_values(expr: &Expr) -> bool {
     match expr {
         Expr::Field { object, .. } => expression_has_values_root(object),
+        Expr::Index { object, .. } => expression_has_values_root(object),
         Expr::Generic { callee, .. } => expression_root_is_values(callee),
         _ => false,
     }
@@ -1178,6 +1198,7 @@ fn expression_has_values_root(expr: &Expr) -> bool {
     match expr {
         Expr::Identifier(name) => name == "values",
         Expr::Field { object, .. } => expression_has_values_root(object),
+        Expr::Index { object, .. } => expression_has_values_root(object),
         Expr::Generic { callee, .. } => expression_has_values_root(callee),
         _ => false,
     }

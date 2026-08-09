@@ -95,7 +95,8 @@ pub use expression_type_model::{
     ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact, ExpressionTypeModel,
     ExpressionTypeModelBuildError, MaterializedConstructorField, MaterializedObjectField,
     MissingConstructorField, ObjectFieldValueSource, ObjectMaterializationKind,
-    RepresentationConstructorValidation, TargetTypedObjectMaterialization, UnknownConstructorField,
+    RepresentationConstructorValidation, SourceIndexPolicy, SourceIndexReceiverKind,
+    SourceIndexSegmentFact, TargetTypedObjectMaterialization, UnknownConstructorField,
 };
 pub use foreign_db_targets::{foreign_package_db_metadata_index, ForeignPackageDbDependency};
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};

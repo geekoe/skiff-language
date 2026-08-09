@@ -120,6 +120,193 @@ fn boxing_source(body: &str) -> String {
 }
 
 #[test]
+fn bracket_typing_publishes_exact_strict_collection_facts() {
+    let model = expression_type_result(
+        r#"
+              type Key = string
+              alias Strings = Array<string>
+
+              function arrayRead(values: Strings, position: integer) -> string {
+                return values[position]
+              }
+
+              function mapRead(values: Map<Key, integer>, key: Key) -> integer {
+                return values[key]
+              }
+
+              function jsonRead(value: JsonObject, key: string) -> Json {
+                return value[key]
+              }
+            "#,
+    )
+    .expect("the three exact bracket receiver forms should type-check");
+
+    let facts = model.index_segments().values().collect::<Vec<_>>();
+    assert_eq!(facts.len(), 3);
+    assert!(facts
+        .iter()
+        .all(|fact| fact.policy == SourceIndexPolicy::StrictRead));
+    let array = facts
+        .iter()
+        .find(|fact| fact.receiver_kind == SourceIndexReceiverKind::Array)
+        .expect("Array fact should exist");
+    let json = facts
+        .iter()
+        .find(|fact| fact.receiver_kind == SourceIndexReceiverKind::JsonObject)
+        .expect("JsonObject fact should exist");
+    assert!(facts
+        .iter()
+        .any(|fact| fact.receiver_kind == SourceIndexReceiverKind::Map));
+    assert_eq!(array.selector_type, TypeRefIr::builtin("integer"));
+    assert_eq!(array.result_type, TypeRefIr::builtin("string"));
+    assert_eq!(json.selector_type, TypeRefIr::builtin("string"));
+    assert_eq!(json.result_type, TypeRefIr::builtin("Json"));
+    for fact in facts {
+        assert!(
+            fact.object_expression.preorder_index() < fact.selector_expression.preorder_index()
+        );
+        assert!(fact.source_span.start.offset < fact.source_span.end.offset);
+    }
+}
+
+#[test]
+fn indexed_places_publish_intermediate_assignment_and_loan_policies_in_source_order() {
+    let model = expression_type_result(
+        r#"
+              function touch(inout value: integer) -> void {}
+
+              function run(
+                source: Array<integer>,
+                nestedSource: Array<Map<string, integer>>,
+                mapSource: Map<string, integer>,
+                position: integer,
+                key: string,
+              ) -> void {
+                var items = source
+                items[position] = 1
+                var nested = nestedSource
+                nested[position][key] = 2
+                var values = mapSource
+                touch(inout values[key])
+              }
+            "#,
+    )
+    .expect("indexed assignment and inout paths should type-check");
+
+    let policies = model
+        .index_segments()
+        .values()
+        .map(|fact| fact.policy)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        policies,
+        vec![
+            SourceIndexPolicy::TerminalReplace,
+            SourceIndexPolicy::IntermediateMustExist,
+            SourceIndexPolicy::TerminalUpsert,
+            SourceIndexPolicy::LoanMustExist,
+        ]
+    );
+
+    let (segment_key, segment) = model
+        .index_segments()
+        .iter()
+        .find(|(_, fact)| fact.policy == SourceIndexPolicy::TerminalReplace)
+        .expect("array assignment segment should exist");
+    assert_eq!(
+        segment.object_expression.preorder_index(),
+        segment_key.preorder_index() + 1
+    );
+    assert_eq!(
+        segment.selector_expression.preorder_index(),
+        segment_key.preorder_index() + 2
+    );
+    let rhs_key = ExpressionKey::new(
+        segment_key.module_path(),
+        segment_key.owner().clone(),
+        segment.selector_expression.preorder_index() + 1,
+    );
+    assert_eq!(
+        model
+            .fact(&rhs_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::builtin("integer"))
+    );
+}
+
+#[test]
+fn bracket_typing_rejects_non_exact_selectors_and_unsupported_receivers() {
+    for (label, source, expected) in [
+        (
+            "array number selector",
+            r#"function bad(values: Array<string>, key: number) -> string { return values[key] }"#,
+            "expected integer, found number",
+        ),
+        (
+            "nominal map key is not rewrapped",
+            r#"
+              type Key = string
+              function bad(values: Map<Key, integer>) -> integer { return values["raw"] }
+            "#,
+            "bracket selector type mismatch",
+        ),
+        (
+            "string receiver",
+            r#"function bad(value: string) -> string { return value[0] }"#,
+            "does not support bracket access",
+        ),
+        (
+            "record receiver",
+            r#"
+              type Row { value: string }
+              function bad(value: Row) -> string { return value[0] }
+            "#,
+            "does not support bracket access",
+        ),
+        (
+            "unsnarrowed Json receiver",
+            r#"function bad(value: Json, key: string) -> Json { return value[key] }"#,
+            "does not support bracket access",
+        ),
+        (
+            "nullable receiver",
+            r#"function bad(value: Array<string>?, key: integer) -> string { return value[key] }"#,
+            "does not support bracket access",
+        ),
+        (
+            "ambiguous union receiver",
+            r#"
+              function bad(value: Array<string> | Map<string, string>, key: string) -> string {
+                return value[key]
+              }
+            "#,
+            "does not support bracket access",
+        ),
+        (
+            "nominal representation receiver",
+            r#"
+              type Wrapped = Array<string>
+              function bad(value: Wrapped, key: integer) -> string { return value[key] }
+            "#,
+            "does not support bracket access",
+        ),
+    ] {
+        let error = expression_type_result(source)
+            .expect_err("invalid bracket expression must fail closed");
+        assert!(
+            error.message().contains(expected),
+            "{label} produced an unexpected diagnostic: {}",
+            error.message()
+        );
+        assert!(
+            error.model().index_segments().is_empty(),
+            "{label} must not publish a valid index fact"
+        );
+    }
+}
+
+#[test]
 fn nullable_union_alias_record_field_matches_nullable_parameter() {
     expression_type_result(
         r#"

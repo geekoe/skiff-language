@@ -363,6 +363,10 @@ impl StreamEmitTypeChecker<'_> {
             Expr::Field { object, .. } => {
                 self.check_expr(object);
             }
+            Expr::Index { object, index } => {
+                self.check_expr(object);
+                self.check_expr(index);
+            }
             Expr::Record { fields, .. } => {
                 for (_, value) in fields {
                     self.check_expr(value);

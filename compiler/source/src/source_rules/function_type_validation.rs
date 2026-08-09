@@ -183,6 +183,10 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
         Expr::Field { object, .. } => {
             collect_expr_function_type_violations(path, object, violations)
         }
+        Expr::Index { object, index } => {
+            collect_expr_function_type_violations(path, object, violations);
+            collect_expr_function_type_violations(path, index, violations);
+        }
         Expr::Record { fields, .. } => {
             for (_, value) in fields {
                 collect_expr_function_type_violations(path, value, violations);

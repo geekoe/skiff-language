@@ -99,10 +99,7 @@ pub(super) fn compute_emit_coverage<'a>(
                 .entry(target.clone())
                 .or_default()
                 .insert(caller.clone());
-            callees_of
-                .entry(caller.clone())
-                .or_default()
-                .insert(target);
+            callees_of.entry(caller.clone()).or_default().insert(target);
         }
     }
 
@@ -216,16 +213,14 @@ fn collect_call_targets_in_stmt(
         | Stmt::Emit(value)
         | Stmt::Expr(value)
         | Stmt::Throw { value }
-        | Stmt::Rethrow { exception: value } => {
-            collect_call_targets_in_expr(value, known, targets)
-        }
+        | Stmt::Rethrow { exception: value } => collect_call_targets_in_expr(value, known, targets),
         Stmt::Assign { target, value } => {
             collect_call_targets_in_expr(target, known, targets);
             collect_call_targets_in_expr(value, known, targets);
         }
-        Stmt::Timeout { body, .. }
-        | Stmt::Concurrent { body }
-        | Stmt::Serial { body } => collect_call_targets_in_block(body, known, targets),
+        Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
+            collect_call_targets_in_block(body, known, targets)
+        }
         Stmt::If {
             condition,
             then_block,
@@ -252,9 +247,7 @@ fn collect_call_targets_in_stmt(
             }
         }
         Stmt::DbTransaction { body } => collect_call_targets_in_block(body, known, targets),
-        Stmt::Assert { condition, .. } => {
-            collect_call_targets_in_expr(condition, known, targets)
-        }
+        Stmt::Assert { condition, .. } => collect_call_targets_in_expr(condition, known, targets),
         Stmt::Return(value) => {
             if let Some(value) = value {
                 collect_call_targets_in_expr(value, known, targets);
@@ -290,6 +283,10 @@ fn collect_call_targets_in_expr(
         }
         Expr::Field { object, .. } => {
             collect_call_targets_in_expr(object, known, targets);
+        }
+        Expr::Index { object, index } => {
+            collect_call_targets_in_expr(object, known, targets);
+            collect_call_targets_in_expr(index, known, targets);
         }
         Expr::Record { fields, .. } => {
             for (_, value) in fields {

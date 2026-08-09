@@ -233,6 +233,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Expr::Generic { .. }
                 | Expr::InterfaceBox { .. }
                 | Expr::Field { .. }
+                | Expr::Index { .. }
                 | Expr::Record { .. }
                 | Expr::ObjectLiteral { .. }
                 | Expr::Patch { .. }

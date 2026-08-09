@@ -48,8 +48,8 @@ impl OwnerAnalyzer<'_> {
             return;
         }
         let target = self.resolved_target(call).cloned();
-        let callee_path = crate::shared::ast_utils::expr_path(callee)
-            .unwrap_or_else(|| "<callee>".to_string());
+        let callee_path =
+            crate::shared::ast_utils::expr_path(callee).unwrap_or_else(|| "<callee>".to_string());
         let (declared_inout, may_pending) = match target.as_ref() {
             Some(ResolvedCallTarget::LocalFunction {
                 source_callable, ..
@@ -62,11 +62,7 @@ impl OwnerAnalyzer<'_> {
                     .get(source_callable)
                     .cloned()
                     .unwrap_or_default();
-                let may_pending = match self
-                    .callable_effects
-                    .operations()
-                    .get(source_callable)
-                {
+                let may_pending = match self.callable_effects.operations().get(source_callable) {
                     Some(skiff_artifact_model::CallableEffectSummary::Analyzed { effects }) => {
                         effects.may_pending
                     }
@@ -209,18 +205,12 @@ impl OwnerAnalyzer<'_> {
         if let Some(selectors) = selectors_from_expr(expr) {
             let root_name = expr_root_name(expr);
             if let Some(root_name) = root_name {
+                let read = WritablePlace {
+                    root: WritableRoot::VarBinding(root_name.to_string()),
+                    path: selectors,
+                };
                 for loan in loans {
-                    let (loan_root, loan_path) = match &loan.root {
-                        WritableRoot::VarBinding(name) => (name.as_str(), &loan.path),
-                        WritableRoot::ActorSelfField(_) | WritableRoot::InOutParam(_) => continue,
-                    };
-                    if root_name == loan_root
-                        && loan_path.len() <= selectors.len()
-                        && loan_path
-                            .iter()
-                            .zip(selectors.iter())
-                            .all(|(left, right)| left == right)
-                    {
+                    if loan.overlaps(&read) {
                         *found = Some("reads or writes the loaned place");
                         return;
                     }
@@ -233,6 +223,12 @@ impl OwnerAnalyzer<'_> {
             | Expr::DependencySourceAddress(_)
             | Expr::Field { .. }
             | Expr::Generic { .. } => {}
+            Expr::Index { index, .. } => {
+                // The object is already represented by the complete place
+                // comparison above. The selector is an independently
+                // evaluated expression and may itself use another loan.
+                self.walk_expr_for_loans(index, loans, found);
+            }
             Expr::Binary { left, right, .. } => {
                 self.walk_expr_for_loans(left, loans, found);
                 self.walk_expr_for_loans(right, loans, found);
@@ -278,8 +274,12 @@ impl OwnerAnalyzer<'_> {
             Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
                 self.walk_expr_for_loans(&value.tail, loans, found);
             }
-            Expr::Timeout { value, .. } | Expr::Throw { value } | Expr::Rethrow { exception: value }
-            | Expr::Catch { try_expr: value, .. } => {
+            Expr::Timeout { value, .. }
+            | Expr::Throw { value }
+            | Expr::Rethrow { exception: value }
+            | Expr::Catch {
+                try_expr: value, ..
+            } => {
                 self.walk_expr_for_loans(value, loans, found);
             }
             Expr::DbOperation(_)
@@ -295,9 +295,30 @@ impl OwnerAnalyzer<'_> {
 fn expr_root_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Identifier(name) => Some(name),
-        Expr::Field { object, .. } | Expr::Generic { callee: object, .. } => {
-            expr_root_name(object)
-        }
-        _ => None,
+        Expr::Field { object, .. }
+        | Expr::Index { object, .. }
+        | Expr::Generic { callee: object, .. } => expr_root_name(object),
+        Expr::Literal(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => None,
     }
 }

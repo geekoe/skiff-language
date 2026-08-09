@@ -183,6 +183,10 @@ impl OwnerCollector<'_> {
             Expr::Field { object, .. } => {
                 self.visit_expr(object, next_expr_child(&mut children, "field object")?)?
             }
+            Expr::Index { object, index } => {
+                self.visit_expr(object, next_expr_child(&mut children, "index object")?)?;
+                self.visit_expr(index, next_expr_child(&mut children, "index selector")?)?;
+            }
             Expr::Record { fields, .. } => {
                 if spans.record_fields.len() != fields.len() {
                     return Err(self.error(format!(
@@ -736,6 +740,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Generic { .. } => "generic",
         Expr::InterfaceBox { .. } => "interface box",
         Expr::Field { .. } => "field",
+        Expr::Index { .. } => "index",
         Expr::Record { .. } => "record",
         Expr::ObjectLiteral { .. } => "object literal",
         Expr::Patch { .. } => "patch",

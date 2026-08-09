@@ -38,6 +38,7 @@ mod contract_call_typing;
 mod db_projection;
 mod db_typing;
 mod expression_assignability;
+mod indexing;
 mod materialization;
 mod narrowing;
 mod object_materialization;
@@ -62,10 +63,46 @@ use object_materialization::{
 #[derive(Clone, Debug, Default)]
 pub struct ExpressionTypeModel {
     facts: BTreeMap<ExpressionKey, ExpressionTypeFact>,
+    index_segments: BTreeMap<ExpressionKey, SourceIndexSegmentFact>,
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
     object_materializations: BTreeMap<ExpressionKey, TargetTypedObjectMaterialization>,
+}
+
+/// Compiler-known collection kind selected for one source bracket segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceIndexReceiverKind {
+    Array,
+    Map,
+    JsonObject,
+}
+
+/// Exact failure/store policy of one source bracket segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceIndexPolicy {
+    StrictRead,
+    IntermediateMustExist,
+    TerminalReplace,
+    TerminalUpsert,
+    LoanMustExist,
+}
+
+/// Symbolic, source-owned typing fact for one `object[selector]` segment.
+///
+/// The expression keys preserve the required receiver-before-selector order;
+/// every key is owner-relative and therefore does not contain a pool-local
+/// artifact index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceIndexSegmentFact {
+    pub receiver_kind: SourceIndexReceiverKind,
+    pub receiver_type: TypeRefIr,
+    pub selector_type: TypeRefIr,
+    pub result_type: TypeRefIr,
+    pub policy: SourceIndexPolicy,
+    pub object_expression: ExpressionKey,
+    pub selector_expression: ExpressionKey,
+    pub source_span: SourceSpan,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +266,14 @@ struct TypeNarrowing {
     paths: BTreeMap<String, ResolvedTypeRef>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexExpressionContext {
+    TerminalRead,
+    Intermediate,
+    AssignmentTerminal,
+    LoanTerminal,
+}
+
 impl TypeNarrowing {
     fn combined(mut self, other: TypeNarrowing) -> Self {
         self.env.extend(other.env);
@@ -270,6 +315,7 @@ struct OwnerChecker<'a> {
 #[derive(Default)]
 struct CheckOutputs {
     facts: BTreeMap<ExpressionKey, ExpressionTypeFact>,
+    index_segments: BTreeMap<ExpressionKey, SourceIndexSegmentFact>,
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
@@ -313,6 +359,7 @@ impl ExpressionTypeModel {
 
         let CheckOutputs {
             facts,
+            index_segments,
             constructor_validations,
             representation_constructor_validations,
             object_materialization,
@@ -320,6 +367,7 @@ impl ExpressionTypeModel {
         } = outputs;
         let model = Self {
             facts,
+            index_segments,
             constructor_validations,
             representation_constructor_validations,
             object_materializations: object_materialization.facts,
@@ -333,6 +381,14 @@ impl ExpressionTypeModel {
 
     pub fn fact(&self, key: &ExpressionKey) -> Option<&ExpressionTypeFact> {
         self.facts.get(key)
+    }
+
+    pub fn index_segment(&self, key: &ExpressionKey) -> Option<&SourceIndexSegmentFact> {
+        self.index_segments.get(key)
+    }
+
+    pub fn index_segments(&self) -> &BTreeMap<ExpressionKey, SourceIndexSegmentFact> {
+        &self.index_segments
     }
 
     pub fn constructor_validation(&self, key: &ExpressionKey) -> Option<&ConstructorValidation> {
@@ -1005,14 +1061,20 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn check_assign_stmt(&mut self, target: &Expr, value: &Expr) -> bool {
-        let expected = self.check_expr(target);
+        let expected = self.check_expr_with_index_context(
+            target,
+            true,
+            None,
+            IndexExpressionContext::AssignmentTerminal,
+        );
         let value_key = self.peek_key();
         let actual = self.check_expr(value);
-        if matches!(
+        let self_field_assignment = matches!(
             target,
             Expr::Field { object, .. }
                 if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
-        ) {
+        );
+        if self_field_assignment || place_contains_index(target) {
             if let (Some(actual), Some(expected)) = (actual.as_ref(), expected.as_ref()) {
                 self.check_value_assignable_to_expected(
                     None,
@@ -1021,7 +1083,11 @@ impl<'a> OwnerChecker<'a> {
                     actual,
                     expected,
                     None,
-                    "self field assignment",
+                    if self_field_assignment {
+                        "self field assignment"
+                    } else {
+                        "indexed assignment"
+                    },
                     self.expression_span(&value_key),
                 );
             }
@@ -1422,6 +1488,21 @@ impl<'a> OwnerChecker<'a> {
         diagnose_unknown_field: bool,
         db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
     ) -> Option<ResolvedTypeRef> {
+        self.check_expr_with_index_context(
+            expr,
+            diagnose_unknown_field,
+            db_predicate_fields,
+            IndexExpressionContext::TerminalRead,
+        )
+    }
+
+    fn check_expr_with_index_context(
+        &mut self,
+        expr: &Expr,
+        diagnose_unknown_field: bool,
+        db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
+        index_context: IndexExpressionContext,
+    ) -> Option<ResolvedTypeRef> {
         let key = self.next_key();
         let refined_ty = expr_path(expr).and_then(|path| self.path_refinements.get(&path).cloned());
         let package_constant = expr_path(expr).and_then(|path| {
@@ -1455,18 +1536,24 @@ impl<'a> OwnerChecker<'a> {
                     else_expr,
                 } => self.check_ternary_expr(&key, condition, then_expr, else_expr),
                 Expr::Call { callee, args } => self.check_call_expr(&key, callee, args),
-                Expr::Generic { callee, .. } => {
-                    if diagnose_unknown_field {
-                        self.check_expr(callee)
-                    } else {
-                        self.check_callee_expr(callee)
-                    }
-                }
+                Expr::Generic { callee, .. } => self.check_expr_with_index_context(
+                    callee,
+                    diagnose_unknown_field,
+                    None,
+                    IndexExpressionContext::Intermediate,
+                ),
                 Expr::InterfaceBox { value, interface } => {
                     self.check_interface_box_expr(&key, value, interface)
                 }
-                Expr::Field { object, field } => {
-                    self.check_field_expr(&key, object, field, diagnose_unknown_field)
+                Expr::Field { object, field } => self.check_field_expr(
+                    &key,
+                    object,
+                    field,
+                    diagnose_unknown_field,
+                    index_context,
+                ),
+                Expr::Index { object, index } => {
+                    self.check_index_expr(&key, object, index, index_context)
                 }
                 Expr::Record {
                     type_name,
@@ -1648,7 +1735,16 @@ impl<'a> OwnerChecker<'a> {
             .iter()
             .map(|arg| {
                 let key = self.peek_key();
-                (key, self.check_expr(arg.expr()))
+                let ty = match arg {
+                    CallArg::Value(expr) => self.check_expr(expr),
+                    CallArg::InOutPlace { expr } => self.check_expr_with_index_context(
+                        expr,
+                        true,
+                        None,
+                        IndexExpressionContext::LoanTerminal,
+                    ),
+                };
+                (key, ty)
             })
             .collect::<Vec<_>>();
         let result = self.call_type(&key, callee, args, &arg_types);
@@ -1743,13 +1839,15 @@ impl<'a> OwnerChecker<'a> {
         object: &Expr,
         field: &str,
         diagnose_unknown_field: bool,
+        _index_context: IndexExpressionContext,
     ) -> Option<ResolvedTypeRef> {
         let object_key = self.peek_key();
-        let object_ty = if diagnose_unknown_field {
-            self.check_expr(object)
-        } else {
-            self.check_callee_expr(object)
-        };
+        let object_ty = self.check_expr_with_index_context(
+            object,
+            diagnose_unknown_field,
+            None,
+            IndexExpressionContext::Intermediate,
+        );
         object_ty.and_then(|object_ty| {
             let field_ty = if matches!(object, Expr::Identifier(name) if name == "self")
                 && self
@@ -1802,6 +1900,81 @@ impl<'a> OwnerChecker<'a> {
             }
             field_ty
         })
+    }
+
+    fn check_index_expr(
+        &mut self,
+        key: &ExpressionKey,
+        object: &Expr,
+        index: &Expr,
+        context: IndexExpressionContext,
+    ) -> Option<ResolvedTypeRef> {
+        let object_key = self.peek_key();
+        let object_ty = self.check_expr_with_index_context(
+            object,
+            true,
+            None,
+            IndexExpressionContext::Intermediate,
+        );
+        let selector_key = self.peek_key();
+        let selector_ty = self.check_expr(index);
+        let object_ty = object_ty?;
+        let exact = match indexing::exact_index_receiver(
+            self.type_resolution,
+            &object_ty,
+            &self.type_context,
+        ) {
+            Ok(exact) => exact,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: invalid bracket receiver at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(key)
+                ));
+                return None;
+            }
+        };
+        let selector_ty = selector_ty?;
+        if !indexing::selector_has_exact_type(
+            self.type_resolution,
+            &selector_ty,
+            &exact.selector_type,
+            &self.type_context,
+        ) {
+            self.outputs.diagnostics.push(format!(
+                "{}: bracket selector type mismatch at {}: expected {}, found {}",
+                self.module_path,
+                self.expression_span_label(&selector_key),
+                debug_text(&exact.selector_type),
+                selector_ty
+            ));
+            return None;
+        }
+        let policy = match context {
+            IndexExpressionContext::TerminalRead => SourceIndexPolicy::StrictRead,
+            IndexExpressionContext::Intermediate => SourceIndexPolicy::IntermediateMustExist,
+            IndexExpressionContext::AssignmentTerminal => match exact.kind {
+                SourceIndexReceiverKind::Array => SourceIndexPolicy::TerminalReplace,
+                SourceIndexReceiverKind::Map | SourceIndexReceiverKind::JsonObject => {
+                    SourceIndexPolicy::TerminalUpsert
+                }
+            },
+            IndexExpressionContext::LoanTerminal => SourceIndexPolicy::LoanMustExist,
+        };
+        self.outputs.index_segments.insert(
+            key.clone(),
+            SourceIndexSegmentFact {
+                receiver_kind: exact.kind,
+                receiver_type: exact.receiver_type,
+                selector_type: exact.selector_type,
+                result_type: exact.result_type.clone(),
+                policy,
+                object_expression: object_key,
+                selector_expression: selector_key,
+                source_span: self.expression_span(key),
+            },
+        );
+        Some(resolved_type_from_ir(&exact.result_type))
     }
 
     fn check_patch_expr(
@@ -1985,6 +2158,7 @@ impl<'a> OwnerChecker<'a> {
                 self.next_key();
                 self.consume_static_package_value_descendants(object);
             }
+            Expr::Index { .. } => {}
             Expr::Generic { callee, .. } => {
                 self.next_key();
                 self.consume_static_package_value_descendants(callee);
@@ -2425,6 +2599,38 @@ fn expr_obviously_non_null(expr: &Expr) -> bool {
                     && !matches!(right.as_ref(), Expr::Literal(Literal::Null))
         }
         _ => false,
+    }
+}
+
+fn place_contains_index(expr: &Expr) -> bool {
+    match expr {
+        Expr::Index { .. } => true,
+        Expr::Field { object, .. } | Expr::Generic { callee: object, .. } => {
+            place_contains_index(object)
+        }
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => false,
     }
 }
 

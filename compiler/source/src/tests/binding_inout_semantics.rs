@@ -561,6 +561,20 @@ fn overlapping_inout_arguments_are_rejected() {
                 }
             "#,
         ),
+        (
+            "dynamic index overlap",
+            r#"
+                function pair(inout left: integer, inout right: integer) -> void {
+                  left = left + right
+                }
+
+                function run(source: Array<integer>, first: integer, second: integer) -> integer {
+                  var values = source
+                  pair(inout values[first], inout values[second])
+                  return values[0]
+                }
+            "#,
+        ),
     ] {
         let error = build_error(source);
         assert!(
@@ -568,6 +582,41 @@ fn overlapping_inout_arguments_are_rejected() {
             "{label} produced unexpected diagnostic:\n{error}"
         );
     }
+}
+
+#[test]
+fn statically_distinct_indexed_inout_places_do_not_overlap() {
+    build_ok(
+        r#"
+            function pair(inout left: integer, inout right: integer) -> void {
+              left = left + 1
+              right = right + 1
+            }
+
+            function run(source: Array<integer>) -> integer {
+              var values = source
+              pair(inout values[0], inout values[1])
+              return values[0]
+            }
+        "#,
+    );
+}
+
+#[test]
+fn indexed_assignment_requires_a_writable_root() {
+    let error = build_error(
+        r#"
+            function run(source: Array<integer>) -> integer {
+              let values = source
+              values[0] = 1
+              return values[0]
+            }
+        "#,
+    );
+    assert!(
+        error.contains("assignment target derives from immutable binding `values`"),
+        "indexed let-root assignment produced an unexpected diagnostic:\n{error}"
+    );
 }
 
 #[test]

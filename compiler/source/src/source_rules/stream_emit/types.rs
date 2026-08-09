@@ -51,6 +51,10 @@ pub(super) fn collect_emit_expression_call_violations(
         Expr::Field { object, .. } => {
             collect_emit_expression_call_violations(path, object, violations);
         }
+        Expr::Index { object, index } => {
+            collect_emit_expression_call_violations(path, object, violations);
+            collect_emit_expression_call_violations(path, index, violations);
+        }
         Expr::Record { fields, .. } => {
             for (_, value) in fields {
                 collect_emit_expression_call_violations(path, value, violations);
@@ -327,6 +331,7 @@ pub(super) fn infer_expr_type(
         | Expr::Unary { .. }
         | Expr::Ternary { .. }
         | Expr::Field { .. }
+        | Expr::Index { .. }
         | Expr::ObjectLiteral { .. }
         | Expr::Patch { .. }
         | Expr::Throw { .. }

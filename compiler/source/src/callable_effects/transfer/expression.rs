@@ -39,10 +39,7 @@ impl Evaluator<'_, '_> {
             }
             Expr::DependencySourceAddress(_) => {
                 self.state.effects.invokes_unknown_target = true;
-                record_pending_category(
-                    &mut self.state.effects,
-                    PendingEffectCategory::Unknown,
-                );
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::Unknown);
                 self.state
                     .mark_unknown(CallableProvenanceUnknownReason::UnknownCallTarget);
                 AbstractValue::unknown(true)
@@ -110,10 +107,7 @@ impl Evaluator<'_, '_> {
                 }
                 let captured = self.values_in_range(start, self.next_index);
                 self.state.record_escape(&captured, EscapeLane::Dispatch);
-                record_pending_category(
-                    &mut self.state.effects,
-                    PendingEffectCategory::Unknown,
-                );
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::Unknown);
                 AbstractValue::unknown(true)
             }
             Expr::Generic { callee, .. } => self.eval_expr(callee, env),
@@ -149,6 +143,16 @@ impl Evaluator<'_, '_> {
                     }
                     value
                 }
+            }
+            Expr::Index { object, index } => {
+                let value = self.eval_expr(object, env);
+                let _selector = self.eval_expr(index, env);
+                self.project_value(
+                    &value,
+                    &ValueProjectionPath::container_element(),
+                    reference,
+                    true,
+                )
             }
             Expr::Record { fields, .. } => {
                 let mut value = AbstractValue::default();
@@ -371,14 +375,62 @@ impl Evaluator<'_, '_> {
 fn is_static_field_projection(expression: &Expr) -> bool {
     match expression {
         Expr::Field { object, .. } => is_static_projection_root(object),
-        _ => false,
+        Expr::Index { object, .. } => is_static_projection_root(object),
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::Generic { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => false,
     }
 }
 
 fn is_static_projection_root(expression: &Expr) -> bool {
     match expression {
         Expr::Identifier(_) => true,
-        Expr::Field { object, .. } => is_static_projection_root(object),
-        _ => false,
+        Expr::Field { object, .. } | Expr::Index { object, .. } => {
+            is_static_projection_root(object)
+        }
+        Expr::Literal(_)
+        | Expr::DependencySourceAddress(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Ternary { .. }
+        | Expr::Call { .. }
+        | Expr::Generic { .. }
+        | Expr::InterfaceBox { .. }
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::Patch { .. }
+        | Expr::ValueBlock(_)
+        | Expr::ConcurrentValue(_)
+        | Expr::Timeout { .. }
+        | Expr::Throw { .. }
+        | Expr::Rethrow { .. }
+        | Expr::Catch { .. }
+        | Expr::DbOperation(_)
+        | Expr::DbQuery(_)
+        | Expr::DbTransaction(_)
+        | Expr::DbLeaseClaim(_)
+        | Expr::DbLeaseRead(_)
+        | Expr::Dispatch { .. } => false,
     }
 }
