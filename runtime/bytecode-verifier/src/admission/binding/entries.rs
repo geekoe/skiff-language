@@ -270,7 +270,7 @@ fn prove_actor_row(
         let Some(target) = target else {
             return Err(semantic_violation(
                 VerificationLocation::Image,
-                format!("actor method {method} has no exact linked target"),
+                format!("actor method {method:?} has no exact linked target"),
             ));
         };
         if target.actor_abi_identity() != &actor_abi.actor_abi_identity {

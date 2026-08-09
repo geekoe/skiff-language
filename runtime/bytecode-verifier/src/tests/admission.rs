@@ -84,7 +84,7 @@ fn exact_hydration() -> HydratedDeploymentBytecode {
         },
     };
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
-    let reference = skiff_artifact_identity::service_deployment_ref(&deployment).unwrap();
+    let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
     let resolver = ExactResolver {
         deployment: Arc::new(deployment),
         contract: Arc::new(contract),
