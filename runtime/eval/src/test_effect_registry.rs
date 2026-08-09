@@ -8,6 +8,7 @@ use skiff_artifact_model::{
     ContractOperationId, InstructionSourceSite, PackageBuildId, PackageCallableId,
     ServiceProtocolIdentity,
 };
+use skiff_runtime_capability_context::RuntimeExceptionLogReason;
 use skiff_runtime_model::{
     request_heap::{deep_clone_runtime_value_carrier_between_heaps, RequestHeap},
     runtime_value::RuntimeValueCarrier,
@@ -18,6 +19,7 @@ use skiff_runtime_model::{
 use crate::{
     capabilities::StreamRuntime,
     error::{Result, RuntimeError, UserException},
+    exceptions::runtime_exception_log_metadata,
     program_execution::ProgramExecutionContext,
     runtime_ops::{
         runtime_carrier_from_wire_required_plan, runtime_from_wire_internal_handle_required_plan,
@@ -240,13 +242,24 @@ impl RuntimeTestEffectRegistry {
                                 .to_string(),
                         ));
                     };
+                    let identity = payload.catch_identity().cloned().ok_or_else(|| {
+                        RuntimeError::InvalidArtifact(
+                            "package test effect throw payload is missing its catch identity"
+                                .to_string(),
+                        )
+                    })?;
+                    let metadata = runtime_exception_log_metadata(
+                        &identity,
+                        RuntimeExceptionLogReason::Throw,
+                        None,
+                    );
                     materialize_local_test_throw(
                         payload,
                         &throw.setup_heap,
                         heap,
                         site.clone(),
                         context.exception_stack_for_site(site.clone()),
-                        context.next_exception_correlation()?,
+                        context.next_exception_correlation(metadata)?,
                     )
                 }
                 RegisteredTestEffectFailure::FixedService(_) => Err(RuntimeError::InvalidArtifact(

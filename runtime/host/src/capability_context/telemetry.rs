@@ -3,7 +3,8 @@
 use serde_json::{Map, Value};
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_capability_context::{
-    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
+    RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind, RuntimeExceptionLog,
+    RuntimeExceptionLogReason,
 };
 use skiff_runtime_model::service_error::ExceptionStackFrame;
 
@@ -17,9 +18,9 @@ use skiff_runtime_transport::protocol::{
 };
 
 /// The only constructor for business log events (`level` + `message`, no
-/// `name`). `std.log.*` is a business-code surface; platform code emits
-/// through `PlatformEvent` instead, so platform events never carry a
-/// log level or message and can never be mistaken for business logs.
+/// `name`). It is reached by `std.log.*` and by the Runtime-owned exception
+/// fallback; every other platform event uses `PlatformEvent` and cannot be
+/// mistaken for a business log.
 fn business_log_event(
     level: TelemetryLevel,
     message: impl Into<String>,
@@ -49,6 +50,39 @@ impl TelemetryCapabilityContext {
             )));
         }
         self.emit_log_args(target, args)
+    }
+
+    /// Emits one payload-free Runtime exception record through the same
+    /// business-log constructor and request-bound telemetry path used by
+    /// `std.log.error`.
+    pub(crate) fn emit_runtime_exception_log(&self, log: &RuntimeExceptionLog) -> bool {
+        let Some(request) = self.request.as_ref() else {
+            return false;
+        };
+        let mut attrs = Map::from_iter([
+            (
+                "exceptionIdentity".to_string(),
+                Value::String(log.metadata.identity.clone()),
+            ),
+            (
+                "exceptionIdentityHash".to_string(),
+                Value::String(log.metadata.identity_hash.clone()),
+            ),
+            (
+                "reason".to_string(),
+                Value::String(runtime_exception_log_reason(log.metadata.reason).to_string()),
+            ),
+        ]);
+        if let Some(callable) = log.metadata.callable.as_ref() {
+            attrs.insert("callable".to_string(), Value::String(callable.clone()));
+        }
+
+        let mut event =
+            business_log_event(TelemetryLevel::Error, "Skiff exception raised", Some(attrs));
+        self.apply_request_context(&mut event);
+        event.trace_id = Some(log.correlation.trace_id.clone());
+        event.error_id = Some(log.correlation.error_id.clone());
+        request.emit(event)
     }
 
     /// Projects the eval-owned typed diagnostic into the host's restricted lane.
@@ -170,6 +204,15 @@ fn restricted_cause_kind(kind: RestrictedServiceDiagnosticCauseKind) -> &'static
         RestrictedServiceDiagnosticCauseKind::PublicTypedError => "publicTypedError",
         RestrictedServiceDiagnosticCauseKind::InternalError => "internalError",
         RestrictedServiceDiagnosticCauseKind::PlatformError => "platformError",
+    }
+}
+
+fn runtime_exception_log_reason(reason: RuntimeExceptionLogReason) -> &'static str {
+    match reason {
+        RuntimeExceptionLogReason::Throw => "throw",
+        RuntimeExceptionLogReason::RuntimeProjection => "runtimeProjection",
+        RuntimeExceptionLogReason::Timeout => "timeout",
+        RuntimeExceptionLogReason::Internal => "internal",
     }
 }
 

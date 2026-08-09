@@ -18,7 +18,8 @@ use skiff_runtime_boundary::{
 };
 use skiff_runtime_capability_context::{
     RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
-    RestrictedServiceDiagnosticOwner, TelemetryCapabilityContext,
+    RestrictedServiceDiagnosticOwner, RuntimeExceptionLogMetadata, RuntimeExceptionLogReason,
+    TelemetryCapabilityContext,
 };
 use skiff_runtime_linked_program::{
     AssemblyExecutionImage, ExecutableAddr, FileAddr, PackageCodeSlotIndex,
@@ -41,7 +42,8 @@ use crate::{
         decode_opaque_service_error, diagnostic_source_frames, Result, RuntimeError, UserException,
     },
     exceptions::{
-        exact_named_union_branch_index, materialize_service_error_local_value,
+        exact_named_union_branch_index, internal_exception_log_metadata,
+        materialize_service_error_local_value, runtime_exception_log_metadata,
         user_exception_for_catch,
     },
     runtime_ops::{runtime_from_wire, runtime_to_wire},
@@ -105,7 +107,7 @@ impl CanonicalServiceErrorChannel {
         actual_error: &RuntimeError,
         context: ServiceErrorExportContext<'_>,
         diagnostic_context: RestrictedServiceDiagnosticExportContext<'_>,
-        next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
+        next_correlation: impl FnOnce(RuntimeExceptionLogMetadata) -> Result<ErrorCorrelation>,
     ) -> Result<OpaqueServiceError> {
         let provider_service_id = context.provider_service_id.to_string();
         let operation_id = context.operation_id.to_string();
@@ -170,7 +172,7 @@ impl CanonicalServiceErrorChannel {
     pub(crate) fn export_provider_failure(
         actual_error: &RuntimeError,
         context: ServiceErrorExportContext<'_>,
-        next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
+        next_correlation: impl FnOnce(RuntimeExceptionLogMetadata) -> Result<ErrorCorrelation>,
     ) -> Result<OpaqueServiceError> {
         if actual_error.is_cancellation_terminal() {
             return Err(RuntimeError::Cancelled);
@@ -192,13 +194,22 @@ impl CanonicalServiceErrorChannel {
         if let RuntimeError::InvalidArtifact(message) = actual_error {
             return Err(RuntimeError::InvalidArtifact(message.clone()));
         }
+        let callable = Some(format!(
+            "{};{}",
+            context.provider_service_id, context.operation_id
+        ));
 
         if let Some((identity, payload)) = actual_error.ordinary_catch_projection() {
-            if let Some(identity) = platform_identity(&identity) {
-                let correlation = next_correlation()?;
-                return match encode_platform_payload(identity, &payload) {
+            if let Some(platform_identity) = platform_identity(&identity) {
+                let metadata = runtime_exception_log_metadata(
+                    &identity,
+                    RuntimeExceptionLogReason::RuntimeProjection,
+                    callable.clone(),
+                );
+                let correlation = next_correlation(metadata)?;
+                return match encode_platform_payload(platform_identity, &payload) {
                     Ok(encoded_payload) => fixed_error(ServiceErrorEnvelope::PlatformError {
-                        builtin_error_identity: identity,
+                        builtin_error_identity: platform_identity,
                         encoded_payload,
                         trace_id: correlation.trace_id,
                         error_id: correlation.error_id,
@@ -208,7 +219,7 @@ impl CanonicalServiceErrorChannel {
             }
         }
 
-        fixed_internal(next_correlation()?)
+        fixed_internal(next_correlation(internal_exception_log_metadata(callable))?)
     }
 
     /// Imports one strict fixed failure into a fresh caller-local exception.

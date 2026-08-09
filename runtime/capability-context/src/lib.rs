@@ -115,8 +115,9 @@ pub use stream_cleanup::{
 };
 pub use telemetry::{
     RestrictedServiceDiagnostic, RestrictedServiceDiagnosticCauseKind,
-    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, TelemetryCapabilityApi,
-    TelemetryCapabilityContext,
+    RestrictedServiceDiagnosticOwner, RestrictedServiceDiagnosticSink, RuntimeExceptionLog,
+    RuntimeExceptionLogMetadata, RuntimeExceptionLogReason, RuntimeExceptionLogSink,
+    TelemetryCapabilityApi, TelemetryCapabilityContext,
 };
 pub use time::TimeCapabilityContext;
 pub use websocket::{

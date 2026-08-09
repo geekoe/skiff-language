@@ -24,6 +24,15 @@ impl RestrictedServiceDiagnosticSink for RecordingSink {
     }
 }
 
+struct RecordingExceptionLogSink(Arc<Mutex<Vec<RuntimeExceptionLog>>>);
+
+impl RuntimeExceptionLogSink for RecordingExceptionLogSink {
+    fn submit(&self, log: &RuntimeExceptionLog) -> CapabilityResult<()> {
+        self.0.lock().unwrap().push(log.clone());
+        Ok(())
+    }
+}
+
 struct FailingSink;
 
 impl RestrictedServiceDiagnosticSink for FailingSink {
@@ -54,6 +63,36 @@ fn diagnostic() -> RestrictedServiceDiagnostic {
         stack: vec![ExceptionStackFrame::Local { site: source }],
         cause_kind: RestrictedServiceDiagnosticCauseKind::InternalError,
     }
+}
+
+fn exception_log() -> RuntimeExceptionLog {
+    RuntimeExceptionLog {
+        correlation: ErrorCorrelation {
+            trace_id: "trace:exception".to_string(),
+            error_id: "trace:exception:local-error:1".to_string(),
+        },
+        metadata: RuntimeExceptionLogMetadata {
+            identity: "std.json.DecodeError".to_string(),
+            identity_hash: "sha256:test".to_string(),
+            reason: RuntimeExceptionLogReason::Throw,
+            callable: Some("svc.main;run".to_string()),
+        },
+    }
+}
+
+#[test]
+fn runtime_exception_log_sink_is_clone_safe_and_not_emit_native() {
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let context = TelemetryCapabilityContext::new(TestTelemetry)
+        .with_runtime_exception_log_sink(RecordingExceptionLogSink(Arc::clone(&records)));
+
+    context
+        .clone()
+        .submit_runtime_exception_log(&exception_log())
+        .unwrap();
+
+    assert_eq!(*records.lock().unwrap(), vec![exception_log()]);
+    assert!(context.emit_native("log", &[]).is_err());
 }
 
 #[test]

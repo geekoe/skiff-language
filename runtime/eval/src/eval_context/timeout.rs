@@ -116,15 +116,18 @@ impl EvalContext<'_> {
             )
         })?;
         let value = runtime_from_wire(&details, self.heap.heap_mut())?;
-        let value = RuntimeValueCarrier::identified(
-            value,
-            PlatformBuiltinErrorIdentity::Timeout.catch_identity(),
+        let identity = PlatformBuiltinErrorIdentity::Timeout.catch_identity();
+        let metadata = runtime_exception_log_metadata(
+            &identity,
+            RuntimeExceptionLogReason::Timeout,
+            Some(self.function_name.to_string()),
         );
+        let value = RuntimeValueCarrier::identified(value, identity);
         let exception = RequestException::local(
             value,
             site.clone(),
             self.context.exception_stack_for_site(site.clone()),
-            self.context.next_exception_correlation()?,
+            self.context.next_exception_correlation(metadata)?,
         )
         .map_err(RuntimeError::InvalidArtifact)?;
         Err(RuntimeError::UserException(UserException::new(exception)))

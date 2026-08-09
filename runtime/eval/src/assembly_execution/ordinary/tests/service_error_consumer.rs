@@ -881,7 +881,7 @@ fn fixed_public_error_for_mutation(fixture: &ServiceErrorConsumerFixture) -> Opa
             provider_service_id: SERVICE_ID,
             operation_id: fixture.operation_id().as_str(),
         },
-        || panic!("local cause already has correlation"),
+        |_| panic!("local cause already has correlation"),
     )
     .unwrap_or_else(|error| panic!("mutation fixture export at {provider_addr} failed: {error}"))
 }

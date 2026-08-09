@@ -37,7 +37,8 @@ use super::{
     env::{Env, Flow},
     exceptions::{
         catch_err, catch_identity_matches, catch_ok, request_exception_for_catch,
-        request_exception_for_resource_error, user_exception_for_catch,
+        request_exception_for_resource_error, runtime_exception_log_metadata,
+        user_exception_for_catch,
     },
     flow_completion::FlowCompletionPolicy,
     native_capability::{
@@ -75,6 +76,7 @@ use crate::error::{materialize_request_heap_owned_runtime_error, RuntimeError, U
 use promoted_runtime::dispatch::NativeDispatch;
 use skiff_artifact_model::{InstructionSourceSite, SyntheticInstructionSiteReason};
 use skiff_runtime_boundary::stream::is_stream_value;
+use skiff_runtime_capability_context::RuntimeExceptionLogReason;
 use skiff_runtime_capability_context::StreamInternalItem;
 use skiff_runtime_native as promoted_runtime;
 use skiff_runtime_native_contract::{native_target_binding_key, native_target_name};
@@ -136,7 +138,7 @@ pub(crate) fn promote_call_site_error<T>(
         addr,
         site.clone(),
         context.exception_stack_for_site(site.clone()),
-        || context.next_exception_correlation(),
+        |metadata| context.next_exception_correlation(metadata),
         heap,
     )? {
         return Err(RuntimeError::UserException(UserException::new(exception)));
@@ -144,12 +146,17 @@ pub(crate) fn promote_call_site_error<T>(
     let Some((identity, payload)) = error.ordinary_catch_projection() else {
         return Err(error);
     };
+    let metadata = runtime_exception_log_metadata(
+        &identity,
+        RuntimeExceptionLogReason::RuntimeProjection,
+        Some(addr.to_string()),
+    );
     let exception = request_exception_for_catch(
         &error,
         std::slice::from_ref(&identity),
         site.clone(),
         context.exception_stack_for_site(site.clone()),
-        context.next_exception_correlation()?,
+        context.next_exception_correlation(metadata)?,
         heap,
     )?
     .ok_or_else(|| {
@@ -287,13 +294,24 @@ impl<'a> EvalContext<'a> {
         };
         let provider_error = match throw.failure {
             RegisteredTestEffectFailure::LocalPayload(payload) => {
+                let identity = payload.catch_identity().cloned().ok_or_else(|| {
+                    RuntimeError::InvalidArtifact(
+                        "service test effect throw payload is missing its catch identity"
+                            .to_string(),
+                    )
+                })?;
+                let metadata = runtime_exception_log_metadata(
+                    &identity,
+                    RuntimeExceptionLogReason::Throw,
+                    Some(self.function_name.to_string()),
+                );
                 let provider_exception = RequestException::local(
                     payload,
                     provider_source.clone(),
                     vec![ExceptionStackFrame::Local {
                         site: provider_source.clone(),
                     }],
-                    self.context.next_exception_correlation()?,
+                    self.context.next_exception_correlation(metadata)?,
                 )
                 .map_err(RuntimeError::InvalidArtifact)?;
                 RuntimeError::UserException(UserException::new(provider_exception))
@@ -343,7 +361,7 @@ impl<'a> EvalContext<'a> {
                 fallback_source: &provider_source,
                 fallback_stack: &fallback_stack,
             },
-            || self.context.next_exception_correlation(),
+            |metadata| self.context.next_exception_correlation(metadata),
         )?;
 
         let caller_stack = self.context.exception_stack_for_site(call.site.clone());
@@ -2168,11 +2186,16 @@ impl<'a> EvalContext<'a> {
                     .to_string(),
             ));
         }
+        let metadata = runtime_exception_log_metadata(
+            actual_identity,
+            RuntimeExceptionLogReason::Throw,
+            Some(self.function_name.to_string()),
+        );
         let exception = RequestException::local(
             payload,
             site.clone(),
             self.context.exception_stack_for_site(site.clone()),
-            self.context.next_exception_correlation()?,
+            self.context.next_exception_correlation(metadata)?,
         )
         .map_err(RuntimeError::InvalidArtifact)?;
         Err(RuntimeError::UserException(UserException::new(exception)))

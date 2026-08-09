@@ -1686,6 +1686,88 @@ pub(crate) fn catch_throw_with_type_addrs_executable(
     }
 }
 
+pub(crate) fn local_error_throw_for_telemetry_executable(caught: bool) -> LinkedExecutable {
+    let evaluated = if caught { 3 } else { 2 };
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: None,
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![SlotIr {
+                index: 0,
+                name: "$catch0".to_string(),
+                kind: "temp".to_string(),
+            }],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 },
+                        { "statement": 1 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "expr",
+                    "value": { "expression": evaluated }
+                },
+                {
+                    "kind": "return",
+                    "value": { "expression": 4 }
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "literal",
+                    "value": {
+                        "kind": "string",
+                        "value": "private-exception-payload-secret"
+                    }
+                },
+                {
+                    "kind": "construct",
+                    "typeRef": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(service_type_addr(0)).unwrap()
+                    },
+                    "fields": {
+                        "message": { "expression": 0 }
+                    }
+                },
+                {
+                    "kind": "throw",
+                    "site": test_instruction_site(),
+                    "value": { "expression": 1 },
+                    "payloadType": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(service_type_addr(0)).unwrap()
+                    }
+                },
+                {
+                    "kind": "catch",
+                    "tryExpression": { "expression": 2 },
+                    "catchSlot": 0,
+                    "catchType": {
+                        "kind": "address",
+                        "addr": serde_json::to_value(service_type_addr(0)).unwrap()
+                    },
+                    "body": { "expression": 5 }
+                },
+                { "kind": "literal", "value": { "kind": "string", "value": "ok" } },
+                { "kind": "loadSlot", "slot": 0 }
+            ]
+        })),
+    }
+}
+
 pub(crate) fn assert_executable(condition: bool) -> LinkedExecutable {
     LinkedExecutable {
         kind: ExecutableKind::Function,

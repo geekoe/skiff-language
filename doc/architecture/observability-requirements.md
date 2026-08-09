@@ -165,6 +165,9 @@ activation id 或 socket generation 只在相应 owner / socket 事件中作 sco
 - 日志级别 debug / info / warn / error；结构化 attrs；
 - 自动附加 request / trace / service / exact deployment `buildId` / `runtimeId` /
   `runtimeSessionId` 上下文；
+- Runtime 在新异常 `errorId` 的唯一分配边界自动记录一次 error 日志；被 `catch` 的异常仍记录，
+  未捕获、传播、rethrow 和跨 service import 不重复记录。该日志只允许类型 identity / hash、有限
+  reason、可选 callable 和 correlation，禁止携带异常 payload 或任意 message；
 - 默认限长、脱敏；禁止记录完整 prompt、secret、原始外部 payload；
 - 平台自身日志（router / runtime）与 service 日志同协议、同查询入口。
 

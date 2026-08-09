@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     time::Duration,
 };
 
@@ -74,6 +74,121 @@ use crate::{
     type_descriptor::{PlanContext, RuntimeTypePlanLinkedExt},
 };
 use skiff_runtime_native::dispatch::NativeDispatch;
+use skiff_runtime_transport::protocol::{TelemetryEvent, TelemetryLevel};
+
+#[derive(Clone, Debug)]
+struct CapturingExceptionTelemetry {
+    events: Arc<Mutex<Vec<TelemetryEvent>>>,
+}
+
+impl crate::telemetry::TelemetryEmitter for CapturingExceptionTelemetry {
+    fn emit(&self, event: TelemetryEvent) -> bool {
+        self.events.lock().unwrap().push(event);
+        true
+    }
+}
+
+fn test_invocation_with_exception_telemetry(
+    target: &str,
+) -> (ProgramTestInvocation, Arc<Mutex<Vec<TelemetryEvent>>>) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut telemetry =
+        crate::telemetry::RequestTelemetryContext::new(CapturingExceptionTelemetry {
+            events: Arc::clone(&events),
+        });
+    telemetry.service_id = Some("svc".to_string());
+    telemetry.revision_id = Some("v1".to_string());
+    telemetry.build_id = Some("build:program".to_string());
+    telemetry.runtime_id = Some("runtime-program".to_string());
+    telemetry.request_id = Some("request-program".to_string());
+    telemetry.trace_id = Some("trace-program".to_string());
+    telemetry.target = Some(target.to_string());
+    let mut frame = test_invocation(target);
+    frame.telemetry = Some(telemetry);
+    (frame, events)
+}
+
+fn automatic_exception_logs(events: &[TelemetryEvent]) -> Vec<&TelemetryEvent> {
+    events
+        .iter()
+        .filter(|event| event.level == Some(TelemetryLevel::Error) && event.name.is_none())
+        .collect()
+}
+
+fn assert_single_automatic_exception_log(events: &[TelemetryEvent]) {
+    let logs = automatic_exception_logs(events);
+    assert_eq!(logs.len(), 1, "one log per newly-created exception");
+    let event = logs[0];
+    assert_eq!(event.level, Some(TelemetryLevel::Error));
+    assert_eq!(event.message.as_deref(), Some("Skiff exception raised"));
+    assert_eq!(event.request_id.as_deref(), Some("request-program"));
+    assert_eq!(event.trace_id.as_deref(), Some("trace-program"));
+    assert_eq!(event.target.as_deref(), Some("svc.main.run"));
+    assert_eq!(
+        event.error_id.as_deref(),
+        Some("trace-program:local-error:1")
+    );
+    let attrs = event.attrs.as_ref().expect("exception log attrs");
+    assert_eq!(attrs["reason"], "throw");
+    assert_eq!(attrs["callable"], "svc.main;run");
+    assert_eq!(
+        attrs["exceptionIdentity"],
+        "local:service:file[0]:type[0]:typeArguments[0]"
+    );
+    assert!(attrs["exceptionIdentityHash"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("sha256:")));
+    assert!(!serde_json::to_string(event)
+        .unwrap()
+        .contains("private-exception-payload-secret"));
+}
+
+#[tokio::test]
+async fn caught_exception_still_emits_one_automatic_error_log() {
+    let program = Arc::new(program_with_executables_and_local_error_type(
+        vec![local_error_throw_for_telemetry_executable(true)],
+        "PrivateError",
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let (frame, events) = test_invocation_with_exception_telemetry("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("matching catch should handle the exception");
+
+    assert_eq!(value, json!("ok"));
+    assert_single_automatic_exception_log(&events.lock().unwrap());
+}
+
+#[tokio::test]
+async fn uncaught_exception_does_not_duplicate_automatic_error_log() {
+    let program = Arc::new(program_with_executables_and_local_error_type(
+        vec![local_error_throw_for_telemetry_executable(false)],
+        "PrivateError",
+    ));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let (frame, events) = test_invocation_with_exception_telemetry("svc.main.run");
+
+    execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("uncaught throw should leave the route");
+
+    assert_single_automatic_exception_log(&events.lock().unwrap());
+}
+
+#[tokio::test]
+async fn normal_execution_emits_no_automatic_error_log() {
+    let program = Arc::new(program_with_executable(assert_executable(true)));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let (frame, events) = test_invocation_with_exception_telemetry("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("normal route should succeed");
+
+    assert_eq!(value, json!("ok"));
+    assert!(automatic_exception_logs(&events.lock().unwrap()).is_empty());
+}
 
 #[tokio::test]
 async fn runtime_program_executes_route_by_executable_addr() {

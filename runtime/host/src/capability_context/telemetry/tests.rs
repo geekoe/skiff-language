@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
-use skiff_runtime_transport::protocol::{
-    TelemetryEvent, TelemetryLevel, TelemetrySource,
+use skiff_runtime_capability_context::{
+    RuntimeExceptionLog, RuntimeExceptionLogMetadata, RuntimeExceptionLogReason,
 };
+use skiff_runtime_model::service_error::ErrorCorrelation;
+use skiff_runtime_transport::protocol::{TelemetryEvent, TelemetryLevel, TelemetrySource};
 
 use super::TelemetryCapabilityContext;
 use crate::telemetry::{RequestTelemetryContext, TelemetryEmitter};
@@ -63,6 +65,48 @@ fn telemetry_native_emit_accepts_legacy_log_args() {
     assert_eq!(events[0].service_id.as_deref(), Some("svc"));
     assert_eq!(events[0].request_id.as_deref(), Some("req"));
     assert_eq!(events[0].target.as_deref(), Some("svc.main.run"));
+}
+
+#[test]
+fn runtime_exception_uses_error_business_log_shape_and_request_context() {
+    let (context, events) = telemetry_context();
+    let accepted = context.emit_runtime_exception_log(&RuntimeExceptionLog {
+        correlation: ErrorCorrelation {
+            trace_id: "trace-exception".to_string(),
+            error_id: "trace-exception:local-error:1".to_string(),
+        },
+        metadata: RuntimeExceptionLogMetadata {
+            identity: "local:service:file[0]:type[0]:typeArguments[0]".to_string(),
+            identity_hash: "sha256:identity".to_string(),
+            reason: RuntimeExceptionLogReason::Throw,
+            callable: Some("svc.main;run".to_string()),
+        },
+    });
+
+    assert!(accepted);
+    let events = events
+        .lock()
+        .expect("telemetry events lock should not be poisoned");
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.level, Some(TelemetryLevel::Error));
+    assert_eq!(event.name, None);
+    assert_eq!(event.message.as_deref(), Some("Skiff exception raised"));
+    assert_eq!(event.trace_id.as_deref(), Some("trace-exception"));
+    assert_eq!(
+        event.error_id.as_deref(),
+        Some("trace-exception:local-error:1")
+    );
+    assert_eq!(event.request_id.as_deref(), Some("req"));
+    assert_eq!(event.target.as_deref(), Some("svc.main.run"));
+    let attrs = event.attrs.as_ref().expect("exception attrs");
+    assert_eq!(attrs["reason"], "throw");
+    assert_eq!(attrs["callable"], "svc.main;run");
+    assert_eq!(
+        attrs["exceptionIdentity"],
+        "local:service:file[0]:type[0]:typeArguments[0]"
+    );
+    assert!(event.error.is_none());
 }
 
 #[test]

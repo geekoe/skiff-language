@@ -186,6 +186,7 @@ pub(crate) struct ProgramTestInvocation {
         Option<tokio::sync::mpsc::UnboundedSender<crate::host::RouterWriterMessage>>,
     pub(crate) outbound_requests: Arc<crate::host::OutboundRequestRegistry>,
     pub(crate) actor_factory: eval_capability_adapter::TestActorCapabilityFactory,
+    pub(crate) telemetry: Option<crate::telemetry::RequestTelemetryContext>,
 }
 
 impl ProgramTestInvocation {
@@ -232,7 +233,7 @@ impl ProgramTestInvocation {
     }
 
     fn telemetry_context(&self) -> Option<crate::telemetry::RequestTelemetryContext> {
-        None
+        self.telemetry.clone()
     }
 }
 
@@ -298,6 +299,7 @@ pub(crate) fn test_invocation(target: &str) -> ProgramTestInvocation {
         router_sender: None,
         outbound_requests: Arc::new(crate::host::OutboundRequestRegistry::default()),
         actor_factory: eval_capability_adapter::TestActorCapabilityFactory::default(),
+        telemetry: None,
     }
 }
 

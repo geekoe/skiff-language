@@ -295,7 +295,7 @@ async fn service_error_channel_contract_operation_restores_after_an_unlinked_mid
             provider_service_id: "service:opaque-middle",
             operation_id: "operation:forward",
         },
-        || panic!("an imported opaque cause cannot allocate a new correlation"),
+        |_| panic!("an imported opaque cause cannot allocate a new correlation"),
     )
     .expect("unlinked middle hop forwards the original carrier");
     assert_eq!(forwarded.encoded_bytes(), original.encoded_bytes());

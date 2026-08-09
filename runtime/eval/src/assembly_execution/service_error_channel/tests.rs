@@ -64,7 +64,7 @@ fn cancellation_export_is_terminal_and_produces_no_service_envelope() {
     let terminal = CanonicalServiceErrorChannel::export_provider_failure(
         &RuntimeError::Cancelled,
         fixture.export_context(&projection, &heap, PROVIDER, Some(CALLER)),
-        || panic!("cancellation must not allocate an error correlation"),
+        |_| panic!("cancellation must not allocate an error correlation"),
     )
     .expect_err("cancellation must not produce a service envelope");
 
@@ -203,7 +203,7 @@ fn record_linked_unlinked_and_three_hop_forward_preserve_exact_bytes() {
     let fixed = CanonicalServiceErrorChannel::export_provider_failure(
         &actual,
         fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
-        || {
+        |_| {
             correlation_calls.set(correlation_calls.get() + 1);
             Ok(correlation("unexpected"))
         },
@@ -252,7 +252,7 @@ fn record_linked_unlinked_and_three_hop_forward_preserve_exact_bytes() {
     let forwarded = CanonicalServiceErrorChannel::export_provider_failure(
         &RuntimeError::UserException(imported.clone()),
         fixture.export_context(&projection, &caller_heap, CALLER, Some(RELAY)),
-        || panic!("imported cause must forward before correlation allocation"),
+        |_| panic!("imported cause must forward before correlation allocation"),
     )
     .expect("second-hop raw forward");
     assert_eq!(forwarded.encoded_bytes(), fixed.encoded_bytes());
@@ -264,7 +264,7 @@ fn record_linked_unlinked_and_three_hop_forward_preserve_exact_bytes() {
     let third = CanonicalServiceErrorChannel::export_provider_failure(
         &RuntimeError::UserException(relay_imported),
         fixture.export_context(&projection, &relay_heap, RELAY, None),
-        || panic!("third hop must not allocate a cause"),
+        |_| panic!("third hop must not allocate a cause"),
     )
     .expect("third-hop raw forward");
     assert_eq!(third.encoded_bytes(), fixed.encoded_bytes());
@@ -311,7 +311,7 @@ fn dependency_representation_and_named_union_use_exact_owner_and_selection() {
     let fixed_dependency = CanonicalServiceErrorChannel::export_provider_failure(
         &dependency,
         fixture.export_context(&projection, &dependency_heap, PROVIDER, Some(CALLER)),
-        || panic!("local dependency cause already has correlation"),
+        |_| panic!("local dependency cause already has correlation"),
     )
     .expect("dependency-owned export");
     assert!(matches!(
@@ -330,7 +330,7 @@ fn dependency_representation_and_named_union_use_exact_owner_and_selection() {
     let fixed_representation = CanonicalServiceErrorChannel::export_provider_failure(
         &representation,
         fixture.export_context(&projection, &representation_heap, PROVIDER, Some(CALLER)),
-        || panic!("local representation cause already has correlation"),
+        |_| panic!("local representation cause already has correlation"),
     )
     .expect("representation Root export");
     let mut caller_heap = RequestHeap::default();
@@ -367,7 +367,7 @@ fn dependency_representation_and_named_union_use_exact_owner_and_selection() {
     let fixed_union = CanonicalServiceErrorChannel::export_provider_failure(
         &union,
         fixture.export_context(&projection, &union_heap, PROVIDER, Some(CALLER)),
-        || panic!("local union cause already has correlation"),
+        |_| panic!("local union cause already has correlation"),
     )
     .expect("exact union branch export");
     let ServiceErrorEnvelope::PublicTypedError {
@@ -404,7 +404,7 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let fixed_private = CanonicalServiceErrorChannel::export_provider_failure(
         &private,
         fixture.export_context(&projection, &private_heap, PROVIDER, Some(CALLER)),
-        || panic!("local private cause already has correlation"),
+        |_| panic!("local private cause already has correlation"),
     )
     .expect("private becomes Internal");
     assert_internal(&fixed_private, "trace-private", "trace-private:error");
@@ -430,7 +430,7 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let fixed_generic = CanonicalServiceErrorChannel::export_provider_failure(
         &generic,
         fixture.export_context(&projection, &private_heap, PROVIDER, Some(CALLER)),
-        || panic!("local generic cause already has correlation"),
+        |_| panic!("local generic cause already has correlation"),
     )
     .expect("nonclosed generic becomes Internal");
     assert_internal(&fixed_generic, "trace-generic", "trace-generic:error");
@@ -453,7 +453,7 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let error = CanonicalServiceErrorChannel::export_provider_failure(
         &forged_arity,
         fixture.export_context(&projection, &private_heap, PROVIDER, Some(CALLER)),
-        || panic!("invalid artifact must not allocate a second cause"),
+        |_| panic!("invalid artifact must not allocate a second cause"),
     )
     .expect_err("arguments applied to a nongeneric declaration are invalid artifact");
     assert!(matches!(error, RuntimeError::InvalidArtifact(_)));
@@ -467,7 +467,7 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let fixed_mismatch = CanonicalServiceErrorChannel::export_provider_failure(
         &mismatched,
         fixture.export_context(&projection, &mismatched_heap, PROVIDER, Some(CALLER)),
-        || panic!("local encoding failure retains its cause"),
+        |_| panic!("local encoding failure retains its cause"),
     )
     .expect("actual-value encoding failure becomes Internal");
     assert_internal(&fixed_mismatch, "trace-encode", "trace-encode:error");
@@ -479,7 +479,14 @@ fn private_generic_encode_failure_and_runtime_fault_create_one_sanitized_interna
     let fixed_fault = CanonicalServiceErrorChannel::export_provider_failure(
         &runtime_fault,
         fixture.export_context(&projection, &private_heap, PROVIDER, Some(CALLER)),
-        || {
+        |metadata| {
+            assert_eq!(metadata.reason, RuntimeExceptionLogReason::Internal);
+            assert_eq!(metadata.identity, "skiff.runtime.InternalError");
+            assert!(metadata.identity_hash.starts_with("sha256:"));
+            assert_eq!(
+                metadata.callable.as_deref(),
+                Some("svc.provider;errors.throw")
+            );
             calls.set(calls.get() + 1);
             Ok(correlation("runtime"))
         },
@@ -535,7 +542,7 @@ fn restricted_service_diagnostic_private_sink_failure_preserves_fixed_bytes_and_
     let baseline = CanonicalServiceErrorChannel::export_provider_failure(
         &private,
         fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
-        || panic!("local private failure retains its original correlation"),
+        |_| panic!("local private failure retains its original correlation"),
     )
     .expect("baseline private export");
     let source = call_site();
@@ -556,7 +563,7 @@ fn restricted_service_diagnostic_private_sink_failure_preserves_fixed_bytes_and_
             fallback_source: &source,
             fallback_stack: &fallback_stack,
         },
-        || panic!("local private failure retains its original correlation"),
+        |_| panic!("local private failure retains its original correlation"),
     )
     .expect("restricted private export");
     assert_eq!(fixed.encoded_bytes(), baseline.encoded_bytes());
@@ -587,7 +594,7 @@ fn restricted_service_diagnostic_private_sink_failure_preserves_fixed_bytes_and_
                 fallback_source: &source,
                 fallback_stack: &fallback_stack,
             },
-            || panic!("local private failure retains its original correlation"),
+            |_| panic!("local private failure retains its original correlation"),
         )
         .expect("sink failure cannot replace the service error");
     assert_eq!(
@@ -643,7 +650,7 @@ fn restricted_service_diagnostic_platform_uses_typed_source_and_final_correlatio
             fallback_source: &fallback_source,
             fallback_stack: &fallback_stack,
         },
-        || Ok(correlation("platform-restricted")),
+        |_| Ok(correlation("platform-restricted")),
     )
     .expect("platform failure should be fixed and diagnosed");
 
@@ -700,7 +707,7 @@ fn exact_local_and_imported_internal_materialize_once_and_forward_raw() {
     let fixed = CanonicalServiceErrorChannel::export_provider_failure(
         &local,
         fixture.export_context(&projection, &provider_heap, PROVIDER, Some(CALLER)),
-        || panic!("local InternalError already has correlation"),
+        |_| panic!("local InternalError already has correlation"),
     )
     .expect("exact local InternalError uses fixed Internal branch");
     assert_internal(&fixed, "trace-local-internal", "trace-local-internal:error");
@@ -731,7 +738,7 @@ fn exact_local_and_imported_internal_materialize_once_and_forward_raw() {
     let forwarded = CanonicalServiceErrorChannel::export_provider_failure(
         &RuntimeError::UserException(imported),
         fixture.export_context(&projection, &caller_heap, CALLER, Some(RELAY)),
-        || panic!("imported Internal must not allocate a second cause"),
+        |_| panic!("imported Internal must not allocate a second cause"),
     )
     .expect("imported Internal raw forward");
     assert_eq!(forwarded.encoded_bytes(), fixed.encoded_bytes());
@@ -741,7 +748,7 @@ fn exact_local_and_imported_internal_materialize_once_and_forward_raw() {
     let forwarded_carrier = CanonicalServiceErrorChannel::export_provider_failure(
         &fixed_carrier,
         fixture.export_context(&projection, &caller_heap, CALLER, Some(RELAY)),
-        || panic!("fixed RuntimeError carrier must not allocate a second cause"),
+        |_| panic!("fixed RuntimeError carrier must not allocate a second cause"),
     )
     .expect("fixed RuntimeError carrier raw forward");
     assert_eq!(forwarded_carrier.encoded_bytes(), fixed.encoded_bytes());
@@ -757,7 +764,21 @@ fn platform_round_trip_is_exact_and_resource_is_never_platform() {
             message: "denied".to_string(),
         },
         fixture.export_context(&projection, &heap, PROVIDER, Some(CALLER)),
-        || Ok(correlation("platform")),
+        |metadata| {
+            assert_eq!(
+                metadata.reason,
+                RuntimeExceptionLogReason::RuntimeProjection
+            );
+            assert_eq!(
+                metadata.identity,
+                PlatformBuiltinErrorIdentity::File.symbol()
+            );
+            assert_eq!(
+                metadata.callable.as_deref(),
+                Some("svc.provider;errors.throw")
+            );
+            Ok(correlation("platform"))
+        },
     )
     .expect("FileError platform export");
     assert!(matches!(
@@ -782,7 +803,7 @@ fn platform_round_trip_is_exact_and_resource_is_never_platform() {
             message: "private".to_string(),
         },
         fixture.export_context(&projection, &heap, PROVIDER, Some(CALLER)),
-        || Ok(correlation("resource-runtime")),
+        |_| Ok(correlation("resource-runtime")),
     )
     .expect("generic resource runtime error sanitizes");
     assert!(matches!(
@@ -807,7 +828,7 @@ fn platform_round_trip_is_exact_and_resource_is_never_platform() {
     let fixed_resource = CanonicalServiceErrorChannel::export_provider_failure(
         &resource_local,
         fixture.export_context(&projection, &resource_heap, PROVIDER, Some(CALLER)),
-        || panic!("local public resource cause already has correlation"),
+        |_| panic!("local public resource cause already has correlation"),
     )
     .expect("ResourceError is ordinary Package public error");
     assert!(matches!(
@@ -836,7 +857,7 @@ fn identity_ordinal_and_payload_mutations_fail_closed_while_unknown_owner_stays_
     let fixed = CanonicalServiceErrorChannel::export_provider_failure(
         &local_error(value, local_identity(provider_addr), "mutation"),
         fixture.export_context(&projection, &heap, PROVIDER, Some(CALLER)),
-        || panic!("local cause already has correlation"),
+        |_| panic!("local cause already has correlation"),
     )
     .expect("public fixture");
     let ServiceErrorEnvelope::PublicTypedError {
@@ -983,7 +1004,7 @@ fn identity_ordinal_and_payload_mutations_fail_closed_while_unknown_owner_stays_
     let fixed_union = CanonicalServiceErrorChannel::export_provider_failure(
         &union,
         fixture.export_context(&projection, &union_heap, PROVIDER, Some(CALLER)),
-        || panic!("local union cause already has correlation"),
+        |_| panic!("local union cause already has correlation"),
     )
     .expect("union fixture");
     let ServiceErrorEnvelope::PublicTypedError {

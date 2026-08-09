@@ -53,8 +53,9 @@ router / gateway 是自身运行事件源，也负责转发或下发 telemetry �
 - 事件字段固定，业务代码不能扩展字段（协议拒绝未知字段）。
 - 事件 schema 见共享协议 fixture（`../architecture/fixtures/observability-minimal.json`），生产端（router / runtime）测试与消费端仓库复用。
 - **事件形态由两个生产端接口约束，互不混淆**：
-  - 业务日志：`std.log.*`（`level` + `message`，无 `name`）。唯一构造入口是 runtime 的
-    `std.telemetry.emit` 原生桥接（`business_log_event`），平台 Rust 代码不可达。
+  - 业务日志：`std.log.*`（`level` + `message`，无 `name`），以及 Runtime 的统一异常兜底。
+    二者共用 runtime 内唯一的 `business_log_event` 构造入口；普通平台 Rust 事件不可达，只有
+    payload-free 的 Runtime exception DTO 可以进入该兜底。
   - 平台事件：router 控制面 / runtime host 等平台代码统一走 `PlatformEvent` 接口
     （`name`，可带 `attrs` / `error` / `durationMs`），**不得携带 `level` / `message`**。
   - 底层共用同一 `TelemetryEvent` 管线，但消费端按形态分流：`level` + `message` 存在即业务日志
@@ -89,6 +90,12 @@ runtime error 可以携带当前service的完整诊断帧。帧应引用当前 d
 私有错误字段；caller只能得到当前request的新异常栈和一帧包含service/operation/errorId等安全字段的
 remote-boundary诊断。
 
+每个新异常在 Runtime 首次分配 `errorId` 的同一边界自动产生一条 `error` 业务日志，因此异常即使随后被
+Skiff `catch` 捕获仍可观察。`catch`、普通传播、`rethrow`、跨 service import 和 Host terminal 不再次记录；
+它们保留原 correlation，从而不会因跨层传播重复。兜底日志使用固定 message，并只携带安全类型 identity、
+identity hash、有限 reason 分类、可选 callable，以及自动附加的 trace / request / target 上下文。它不接受
+异常 heap value、任意 payload、用户编写的 message/reason、源码或开放 attrs；telemetry 失败也不改变执行结果。
+
 本文不复制 fixture schema。共享协议 fixture 留在 `../architecture/fixtures/observability-minimal.json`，由 router、runtime 测试与消费端仓库复用。
 
 ## File Sink（默认落点）
@@ -119,10 +126,11 @@ remote-boundary诊断。
 
 语义：
 
-- `std.log.*` 是 runtime telemetry intrinsic，也是业务日志（`level` + `message`）的唯一入口。
+- `std.log.*` 是业务代码唯一可调用的 runtime telemetry intrinsic；Runtime 异常兜底是不可由业务代码调用的
+  内部入口。
 - 它产生 best-effort 日志事件（`message` / `level` 形态由消费端识别，不声明 topic）。
-- `level` / `message` 是 `std.log` 专属字段：平台事件不得携带（见「Event Model」），平台代码
-  没有构造业务日志的接口。
+- `level` / `message` 只属于业务日志形态：平台事件不得携带（见「Event Model」）。除封闭的异常兜底 DTO
+  外，平台代码没有构造业务日志的接口。
 - runtime 自动补充 request frame、trace、span、service、exact deployment `buildId`、`runtimeId`、
   `runtimeSessionId` 和 target context。
 - attrs 应是可脱敏、可限长的结构化数据。

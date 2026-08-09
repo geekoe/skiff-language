@@ -1,7 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
+use sha2::{Digest, Sha256};
+
 use super::*;
-use crate::error::{instantiated_type_argument_identity, unwrap_diagnostic_source_context};
+use crate::{
+    capabilities::{RuntimeExceptionLogMetadata, RuntimeExceptionLogReason},
+    error::{instantiated_type_argument_identity, unwrap_diagnostic_source_context},
+};
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_linked_program::{
     FileAddr, LinkedFileUnit, LinkedNamedUnionBranch, LinkedNominalTypeRefBase,
@@ -24,6 +29,105 @@ pub fn user_exception_for_catch(error: &RuntimeError) -> Option<&UserException> 
     match unwrap_diagnostic_source_context(error) {
         RuntimeError::UserException(exception) => Some(exception),
         _ => None,
+    }
+}
+
+/// Builds the closed, payload-free identity projection used by automatic
+/// exception logs. The readable label omits literal/discriminator values and
+/// generic argument contents; the hash fingerprints that same safe label and
+/// therefore cannot expose values omitted by the projection.
+pub(crate) fn runtime_exception_log_metadata(
+    identity: &CatchIdentity,
+    reason: RuntimeExceptionLogReason,
+    callable: Option<String>,
+) -> RuntimeExceptionLogMetadata {
+    let identity = safe_catch_identity_label(identity);
+    RuntimeExceptionLogMetadata {
+        identity_hash: safe_identity_hash(&identity),
+        identity,
+        reason,
+        callable,
+    }
+}
+
+pub(crate) fn internal_exception_log_metadata(
+    callable: Option<String>,
+) -> RuntimeExceptionLogMetadata {
+    const IDENTITY: &str = "skiff.runtime.InternalError";
+    RuntimeExceptionLogMetadata {
+        identity: IDENTITY.to_string(),
+        identity_hash: safe_identity_hash(IDENTITY),
+        reason: RuntimeExceptionLogReason::Internal,
+        callable,
+    }
+}
+
+fn safe_identity_hash(identity: &str) -> String {
+    format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(identity.as_bytes()))
+    )
+}
+
+fn safe_catch_identity_label(identity: &CatchIdentity) -> String {
+    match identity {
+        CatchIdentity::Nominal(identity) => safe_nominal_identity_label(identity),
+        CatchIdentity::NamedUnionBranch { union, branch } => format!(
+            "{}#{}",
+            safe_named_union_owner_label(union),
+            safe_named_union_branch_label(branch)
+        ),
+    }
+}
+
+fn safe_nominal_identity_label(identity: &NominalTypeIdentity) -> String {
+    match identity {
+        NominalTypeIdentity::PlatformBuiltin(identity) => identity.symbol().to_string(),
+        NominalTypeIdentity::PackageSchema(identity) => format!(
+            "package:{}:{}:{}",
+            identity.package_id,
+            identity.stable_schema_key,
+            identity.package_schema_type_id.as_str()
+        ),
+        NominalTypeIdentity::LocalExecution(identity) => format!(
+            "local:{}:typeArguments[{}]",
+            identity.addr,
+            identity.type_arguments.len()
+        ),
+    }
+}
+
+fn safe_named_union_owner_label(identity: &NamedUnionOwnerIdentity) -> String {
+    match identity {
+        NamedUnionOwnerIdentity::PackageSchema(identity) => format!(
+            "package:{}:{}:{}",
+            identity.package_id,
+            identity.stable_schema_key,
+            identity.package_schema_type_id.as_str()
+        ),
+        NamedUnionOwnerIdentity::LocalExecution(identity) => format!(
+            "local:{}:typeArguments[{}]",
+            identity.addr,
+            identity.type_arguments.len()
+        ),
+    }
+}
+
+fn safe_named_union_branch_label(identity: &NamedUnionBranchIdentity) -> String {
+    match identity {
+        NamedUnionBranchIdentity::ConcreteNominal { identity } => {
+            format!("nominal:{}", safe_nominal_identity_label(identity))
+        }
+        NamedUnionBranchIdentity::SyntheticDiscriminator { .. } => {
+            "syntheticDiscriminator".to_string()
+        }
+        NamedUnionBranchIdentity::Literal { value } => match value {
+            LiteralIdentity::Null => "literal:null",
+            LiteralIdentity::Bool(_) => "literal:bool",
+            LiteralIdentity::Number(_) => "literal:number",
+            LiteralIdentity::String(_) => "literal:string",
+        }
+        .to_string(),
     }
 }
 
@@ -66,7 +170,7 @@ pub(crate) fn request_exception_for_resource_error(
     current_addr: &skiff_runtime_linked_program::ExecutableAddr,
     source: InstructionSourceSite,
     stack: Vec<ExceptionStackFrame>,
-    next_correlation: impl FnOnce() -> Result<ErrorCorrelation>,
+    next_correlation: impl FnOnce(RuntimeExceptionLogMetadata) -> Result<ErrorCorrelation>,
     heap: &mut RequestHeap,
 ) -> Result<Option<RequestException>> {
     const STD_PACKAGE_ID: &str = "skiff.run/std";
@@ -145,7 +249,12 @@ pub(crate) fn request_exception_for_resource_error(
                 .to_string(),
         ));
     }
-    RequestException::local(carrier, source, stack, next_correlation()?)
+    let metadata = runtime_exception_log_metadata(
+        &expected_identity,
+        RuntimeExceptionLogReason::RuntimeProjection,
+        Some(current_addr.to_string()),
+    );
+    RequestException::local(carrier, source, stack, next_correlation(metadata)?)
         .map(Some)
         .map_err(RuntimeError::InvalidArtifact)
 }

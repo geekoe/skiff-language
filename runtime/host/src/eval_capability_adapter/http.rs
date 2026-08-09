@@ -110,3 +110,19 @@ impl capability_contract::RestrictedServiceDiagnosticSink for RuntimeTelemetryCa
         }
     }
 }
+
+impl capability_contract::RuntimeExceptionLogSink for RuntimeTelemetryCapabilityContext {
+    fn submit(
+        &self,
+        log: &capability_contract::RuntimeExceptionLog,
+    ) -> capability_contract::CapabilityResult<()> {
+        if self.0.emit_runtime_exception_log(log) {
+            Ok(())
+        } else {
+            Err(capability_contract::CapabilityError::provider_unavailable(
+                "runtime-exception-log",
+                "request telemetry emitter did not accept the exception log",
+            ))
+        }
+    }
+}

@@ -28,9 +28,9 @@ use super::{
         EffectDispatchContext, ExecutionControl, FileCapabilityContext, FileCapabilitySource,
         FileSourceStreamContext, HttpClientCapabilityContext, OwnedActorCapabilityContext,
         OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedRequestCapabilityContext,
-        OwnedWebsocketCapabilityContext, RequestCapabilityContext, StreamRuntime,
-        StreamRuntimeOwner, TelemetryCapabilityContext, TestEffectDoubleContext,
-        TimeCapabilityContext, WebsocketCapabilityContext,
+        OwnedWebsocketCapabilityContext, RequestCapabilityContext, RuntimeExceptionLog,
+        RuntimeExceptionLogMetadata, StreamRuntime, StreamRuntimeOwner, TelemetryCapabilityContext,
+        TestEffectDoubleContext, TimeCapabilityContext, WebsocketCapabilityContext,
     },
     error::attach_source_frame,
     eval_context::{promote_call_site_error, EvalContext},
@@ -516,7 +516,14 @@ impl<'a> ProgramExecutionContext<'a> {
         stack
     }
 
-    pub(crate) fn next_exception_correlation(&self) -> Result<ErrorCorrelation> {
+    /// Allocates the one correlation owned by a newly-created exception and
+    /// submits its automatic log at the same boundary. Propagation, catch,
+    /// rethrow, and service import retain the correlation and never re-enter
+    /// this function, which makes emission at-most-once per exception.
+    pub(crate) fn next_exception_correlation(
+        &self,
+        metadata: RuntimeExceptionLogMetadata,
+    ) -> Result<ErrorCorrelation> {
         let trace_id = self.exception_trace_id.clone().ok_or_else(|| {
             RuntimeError::InvalidArtifact(
                 "request-local exception requires a non-empty request trace id".to_string(),
@@ -531,10 +538,17 @@ impl<'a> ProgramExecutionContext<'a> {
                     "request-local exception error-id sequence overflowed".to_string(),
                 )
             })?;
-        Ok(ErrorCorrelation {
+        let correlation = ErrorCorrelation {
             error_id: format!("{trace_id}:local-error:{sequence}"),
             trace_id,
-        })
+        };
+        let _ = self
+            .telemetry_context()
+            .submit_runtime_exception_log(&RuntimeExceptionLog {
+                correlation: correlation.clone(),
+                metadata,
+            });
+        Ok(correlation)
     }
 
     pub(crate) fn actor_execution_frame(

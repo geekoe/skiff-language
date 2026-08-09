@@ -758,7 +758,7 @@ fn export_provider_failure(
             fallback_source: &fallback_source,
             fallback_stack: &fallback_stack,
         },
-        || provider_context.next_exception_correlation(),
+        |metadata| provider_context.next_exception_correlation(metadata),
     )
 }
 
