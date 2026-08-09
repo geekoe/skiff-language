@@ -178,6 +178,7 @@ fn fixture() -> (ServiceContract, ResolvedPackageSchema) {
         contract_version: "1.0.0".to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, operation)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: vec![PackageTypeRequirement {
             package_id: package_id.to_string(),
             required_type_ids: vec![type_id],
