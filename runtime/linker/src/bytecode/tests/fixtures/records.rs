@@ -137,7 +137,7 @@ pub(super) fn package_reference(package: &PackageArtifact) -> PackageArtifactRef
     }
 }
 
-fn operation_contract(has_parameter: bool) -> BoundaryOperationContract {
+pub(super) fn operation_contract(has_parameter: bool) -> BoundaryOperationContract {
     BoundaryOperationContract {
         parameters: has_parameter
             .then(|| BoundaryParameter {

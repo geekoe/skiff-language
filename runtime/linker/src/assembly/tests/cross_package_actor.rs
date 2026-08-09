@@ -12,18 +12,18 @@ use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentOperationBinding, DeploymentRevision, ExecutableBody,
     ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, ExprIr, ExprRefIr,
     FileIrRef, FileIrUnit, InstructionSourceSite, LiteralIr, NativeTarget, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableParameter, PackageCallableRef,
-    PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
-    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, ParamIr, ParamModeIr, PublicationResourceRef, RuntimeAssembly,
-    ServiceBindingTemplate, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceSymbolRef, SlotLayout,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
-    TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    OperationTargetRef, PackageActorImplementation, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableParameter, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageTypeRef, ParamIr, ParamModeIr,
+    PublicationResourceRef, RuntimeAssembly, ServiceBindingTemplate, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ServiceSymbolRef, SlotLayout, SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr,
+    TypeDescriptorIr, TypeExport, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_program::{FileAddr, LinkedCallTarget, LinkedExprIr, UnitAddr};
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
@@ -343,6 +343,25 @@ fn provider_package_with_actor(
                 },
             },
         )]),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: abi
+            .is_some()
+            .then(|| PackageActorImplementation {
+                actor: ServiceSymbolRef {
+                    module_path: ACTOR_MODULE.to_string(),
+                    symbol: ACTOR_SYMBOL.to_string(),
+                },
+                actor_implementation_identity: actor_implementation_identity.clone(),
+                methods: BTreeMap::from([(
+                    ActorMethodIdentity::new(METHOD_IDENTITY),
+                    read_callable.clone(),
+                )]),
+                create: None,
+            })
+            .into_iter()
+            .collect(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -508,6 +527,10 @@ fn consumer_package(file: &FileIrUnit, provider: &PackageArtifact) -> PackageArt
                 },
             },
         )]),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: vec![PackageRequirement {
             alias: "subjectImpl".to_string(),
             package_id: PROVIDER_ID.to_string(),
@@ -649,6 +672,7 @@ fn fixture_inputs(
         contract_version: contract_version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id.clone(), descriptor)]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "Actor consumer".to_string(),

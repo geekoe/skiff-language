@@ -15,11 +15,14 @@ use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
 };
 
-pub(super) use artifact::{bytecode_artifact, HELPER_FUNCTION, ROOT_FUNCTION};
+use artifact::bytecode_artifact;
 
-pub(super) const ROOT_CALLABLE: &str = "callable:fixture:root";
-pub(super) const HELPER_CALLABLE: &str = "callable:fixture:helper";
-pub(super) const ENTRY_ALIAS: &str = "callable:fixture:public-root";
+pub(super) const ROOT_CALLABLE: &str = "pkg-callable:example.bytecode-link:top-level:fixture.root";
+pub(super) const HELPER_CALLABLE: &str =
+    "pkg-callable:example.bytecode-link:top-level:fixture.helper";
+pub(super) const ENTRY_ALIAS: &str = "pkg-callable:example.bytecode-link:fixture.public_root";
+pub(super) const ROOT_FUNCTION: &str = "fixture::root";
+pub(super) const HELPER_FUNCTION: &str = "fixture::helper";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RootProgram {

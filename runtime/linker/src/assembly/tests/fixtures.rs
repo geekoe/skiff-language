@@ -27,7 +27,7 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding, RuntimeAssembly,
+    PackageTypeRef, ParamModeIr, PublicationResourceRef, ResolvedServiceBinding, RuntimeAssembly,
     ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
     ServiceSelectorBinding, SlotLayout, SyntheticInstructionSiteReason, TypeDeclIr,
@@ -86,6 +86,7 @@ impl CycleFixture {
                     contract: operation_contract.clone(),
                 },
             )]),
+            public_instances: BTreeMap::new(),
             package_type_requirements: Vec::new(),
             diagnostic_text: ContractDiagnosticText {
                 service: "Cycle".to_string(),
@@ -419,6 +420,36 @@ impl CycleFixture {
                 },
             });
         shared_file.executables[0].expression_types = vec![TypeRefIr::builtin("bool"); 4];
+        for symbol in ["gateway_handler", "gateway_pre", "gateway_guard"] {
+            shared_file.executables.push(ExecutableIr {
+                kind: ExecutableKind::Function,
+                symbol: symbol.to_string(),
+                type_params: Vec::new(),
+                params: vec![skiff_artifact_model::ParamIr {
+                    name: "body".to_string(),
+                    slot: 0,
+                    ty: TypeRefIr::builtin("string"),
+                    mode: ParamModeIr::Value,
+                }],
+                return_type: TypeRefIr::builtin("string"),
+                self_type: None,
+                slots: SlotLayout {
+                    slots: vec![skiff_artifact_model::SlotIr {
+                        index: 0,
+                        name: "body".to_string(),
+                        kind: skiff_artifact_model::SlotKind::Param,
+                        writable_local: false,
+                        ty: Some(TypeRefIr::builtin("string")),
+                    }],
+                    frame_size: 1,
+                },
+                may_suspend: false,
+                body: ExecutableBody::default(),
+                expression_types: Vec::new(),
+                statement_spans: Vec::new(),
+                source_span: None,
+            });
+        }
         skiff_artifact_identity::assign_file_ir_identity(&mut shared_file).unwrap();
         let contract_requirement = ContractRequirement {
             alias: "cycle".to_string(),
@@ -461,7 +492,19 @@ impl CycleFixture {
             ("shared.main.gateway_pre", &gateway_pre),
             ("shared.main.gateway_guard", &gateway_guard),
         ] {
-            add_private_gateway_callable(&mut shared, path, callable);
+            let symbol = path
+                .rsplit('.')
+                .next()
+                .expect("gateway callable path has a declaration");
+            let executable_index = u32::try_from(
+                shared_file
+                    .executables
+                    .iter()
+                    .position(|executable| executable.symbol == symbol)
+                    .expect("gateway callable has an exact File IR executable"),
+            )
+            .expect("gateway fixture executable count fits u32");
+            add_private_gateway_callable(&mut shared, path, callable, executable_index);
         }
         skiff_artifact_identity::assign_package_artifact_identities(&mut shared).unwrap();
         let shared_ref = package_ref(&shared);
@@ -1196,6 +1239,10 @@ fn package(
                 },
             },
         )]),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1232,6 +1279,7 @@ fn add_private_gateway_callable(
     package: &mut PackageArtifact,
     source_path: &str,
     callable_id: &PackageCallableId,
+    executable_index: u32,
 ) {
     let signature = PackageCallableSignature {
         type_params: Vec::new(),
@@ -1264,6 +1312,7 @@ fn add_private_gateway_callable(
         })
         .unwrap();
     let mut target = package.callable_links[&public_callable].target.clone();
+    target.executable_index = executable_index;
     target.callable_abi_id = callable_id.to_string();
     target.callable_kind = OperationCallableKind::InternalFunction;
     package.callable_links.insert(

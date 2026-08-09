@@ -12,11 +12,11 @@ use skiff_artifact_model::{
     BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
-use super::{no_effects, RootProgram, HELPER_CALLABLE, ROOT_CALLABLE};
+use super::{
+    no_effects, RootProgram, HELPER_CALLABLE, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
+};
 
 const MODULE: &str = "fixture";
-pub(super) const ROOT_FUNCTION: &str = "fixture::root";
-pub(super) const HELPER_FUNCTION: &str = "fixture::helper";
 
 pub(super) fn admitted_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact> {
     let mut artifact = bytecode_artifact(program);
@@ -151,7 +151,7 @@ fn root_body(
             vec![0x06, 0, 0x24, 0, 0, 0, 0, 0, 0x25],
             vec![BytecodeRelocation::InterfaceRequirementRef {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {
-                    interface_abi_id: "interface:fixture:Reader".to_string(),
+                    interface_abi_id: interface_identity(),
                     canonical_type_args: Vec::new(),
                 },
             }],
@@ -202,6 +202,16 @@ fn root_body(
         ),
         RootProgram::FromType => (vec![0x25], Vec::new(), None, Vec::new()),
     }
+}
+
+fn interface_identity() -> String {
+    let identity = TypeRefIr::ServiceSymbol {
+        symbol: skiff_artifact_model::ServiceSymbolRef {
+            module_path: MODULE.to_string(),
+            symbol: "Reader".to_string(),
+        },
+    };
+    String::from_utf8(skiff_canonical_json::canonical_json_bytes(&identity).unwrap()).unwrap()
 }
 
 fn pools(program: RootProgram) -> BytecodePools {

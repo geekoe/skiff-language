@@ -2,14 +2,15 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    FileIrRef, OperationCallableKind, OperationTargetRef, PackageArtifact, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
+    BoundaryCallableProjection, BoundaryImplementationRequirements, ExecutableExport,
+    ExecutableSignatureIr, FileIrRef, OperationCallableKind, OperationTargetRef, PackageArtifact,
+    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
     TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
-use super::{analyzed_facts, RootProgram, HELPER_CALLABLE, ROOT_CALLABLE};
+use super::{analyzed_facts, no_effects, RootProgram, HELPER_CALLABLE, ROOT_CALLABLE};
 
 pub(super) fn package(
     bytecode: &ValidatedBytecodeArtifact,
@@ -53,6 +54,7 @@ pub(super) fn package(
         (root_callable, analyzed_facts()),
         (helper_callable, analyzed_facts()),
     ]);
+    let mut boundary_projections = BTreeMap::new();
     if let Some(alias) = entry_alias {
         callable_links.insert(
             alias.clone(),
@@ -62,7 +64,23 @@ pub(super) fn package(
             "fixture.public_root".to_string(),
             callable_symbol(alias.clone(), root_signature),
         );
-        callable_semantic_facts.insert(alias.clone(), analyzed_facts());
+        let facts = analyzed_facts();
+        boundary_projections.insert(
+            alias.clone(),
+            BoundaryCallableProjection::Available {
+                operation_contract: super::records::operation_contract(
+                    program.root_has_parameter(),
+                ),
+                implementation_requirements: BoundaryImplementationRequirements {
+                    config: Vec::new(),
+                    state: Vec::new(),
+                    native_capabilities: Vec::new(),
+                    complete_may_effects: no_effects(),
+                    provenance: facts.provenance.clone(),
+                },
+            },
+        );
+        callable_semantic_facts.insert(alias.clone(), facts);
     }
 
     let mut artifact = PackageArtifact {
@@ -83,8 +101,27 @@ pub(super) fn package(
             package_schema_index_identity: PackageSchemaIndexIdentity::new("unassigned"),
         },
         package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
+        implementation_links: PackageImplementationLinks {
+            functions: entry_alias
+                .is_some()
+                .then(|| {
+                    (
+                        "fixture.root".to_string(),
+                        ExecutableExport {
+                            file: file_ref(),
+                            executable_index: 0,
+                            symbol: "fixture.root".to_string(),
+                            signature: executable_signature(program.root_has_parameter()),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
+            ..PackageImplementationLinks::default()
+        },
         callable_links,
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -92,7 +129,7 @@ pub(super) fn package(
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts,
-        boundary_projections: BTreeMap::new(),
+        boundary_projections,
         service_call_refs: Vec::new(),
     };
     artifact.package_schema_index.package_schema_index_identity =
@@ -151,6 +188,23 @@ fn callable_signature(has_parameter: bool) -> PackageCallableSignature {
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),
         },
+        may_suspend: false,
+    }
+}
+
+fn executable_signature(has_parameter: bool) -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: has_parameter
+            .then(|| skiff_artifact_model::ParamIr {
+                name: "carrier".to_string(),
+                slot: 0,
+                ty: TypeRefIr::builtin("string"),
+                mode: skiff_artifact_model::ParamModeIr::Value,
+            })
+            .into_iter()
+            .collect(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
         may_suspend: false,
     }
 }

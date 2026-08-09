@@ -71,7 +71,7 @@ fn apply_stack_inputs(
         ));
     }
     let consumed = state.stack.split_off(state.stack.len() - total);
-    let mut offset = 0;
+    let mut offset = 0usize;
     let mut inputs = Vec::with_capacity(groups.len());
     for (group, arity) in groups.iter().zip(arities) {
         let end = offset.checked_add(arity).ok_or_else(|| {

@@ -321,9 +321,9 @@ fn representation_and_named_union_branch_context_are_retained() {
         union_links[1].context(),
         ServiceErrorExecutionContext::NamedUnionBranch {
             branch_index: 1,
-            branch: LinkedNamedUnionBranch::Literal { .. },
+            branch,
             ..
-        }
+        } if matches!(branch.as_ref(), LinkedNamedUnionBranch::Literal { .. })
     ));
 
     let representation_addr = TypeAddr {
@@ -748,6 +748,10 @@ fn package(
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
