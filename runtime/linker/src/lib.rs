@@ -1,5 +1,6 @@
 mod assembly;
 mod assembly_execution;
+pub mod bytecode;
 mod linker;
 pub mod program;
 pub mod resolver;
@@ -8,6 +9,10 @@ pub use assembly::{
     link_runtime_assembly, AssemblyLinkedCandidate, AssemblyServiceCallError,
     LinkedActivationTemplate, LinkedContractOperation, LinkedGatewayCallable, LinkedGatewayEntry,
     LinkedServiceBindingTemplate,
+};
+pub use bytecode::{
+    link_deployment, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
+    BytecodeLinkObligation, LinkLimits,
 };
 pub use program::{
     anonymous_type_decl, config_and_effect_metadata_shape, publication_id_for_type_addr,
