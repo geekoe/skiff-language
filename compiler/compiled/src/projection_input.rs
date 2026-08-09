@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    CallableSemanticFacts, CallableTargetFact, ExecutableKind, FileIrUnit, FunctionTypeParamIr,
+    CallableSemanticFacts, CallableTargetFact, FileIrUnit, FunctionTypeParamIr,
     InterfaceInstantiationRef, LiteralIr, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
@@ -34,6 +34,8 @@ use skiff_compiler_source::{
 
 use crate::{package_callable_signatures, CompiledPackage, ProjectionInputBuildError};
 
+mod local_interface_conformances;
+
 pub fn build_projection_input(
     compiled: &CompiledPackage,
 ) -> Result<ProjectionInput, ProjectionInputBuildError> {
@@ -57,6 +59,10 @@ pub fn build_projection_input(
         abi_ids: abi_declaration_ids(model, compiled.file_ir_units()),
         callable_effects: callable_effect_facts(model, compiled.file_ir_units()),
         callable_semantic_facts: callable_semantic_facts(model, compiled.file_ir_units()),
+        local_interface_conformances: local_interface_conformances::build(
+            model,
+            compiled.file_ir_units(),
+        )?,
     });
     let lowering = ProjectionLoweringFacts::new(
         entrypoint_abi_index_from_file_ir_units(compiled.file_ir_units()),

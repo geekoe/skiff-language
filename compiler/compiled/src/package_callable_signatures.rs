@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{FileIrUnit, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr};
+use skiff_artifact_model::{
+    ExecutableKind, FileIrUnit, NominalTypeRefBaseIr, ServiceSymbolRef, TypeRefIr,
+};
 use skiff_compiler_projection_input::{
     canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
+    ProjectionLocalInterfaceConformanceError, ProjectionLocalInterfaceConformanceFactsError,
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
-use skiff_compiler_source::{PackageSourceModel, SourceInterfaceConformanceKey, SourceSymbolKey};
+use skiff_compiler_source::{
+    PackageSourceModel, SourceInterfaceConformanceKey, SourceLocalInterfaceConformanceFactsError,
+    SourceSymbolKey,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -53,6 +59,64 @@ pub enum ProjectionInputBuildError {
         public_path: String,
         module_path: String,
         source_symbol: String,
+    },
+    #[error("source local interface conformance facts are invalid: {0}")]
+    SourceLocalInterfaceConformances(#[from] SourceLocalInterfaceConformanceFactsError),
+    #[error("projected local interface conformance is invalid: {0}")]
+    LocalInterfaceConformance(#[from] ProjectionLocalInterfaceConformanceError),
+    #[error("projected local interface conformance table is invalid: {0}")]
+    LocalInterfaceConformanceFacts(#[from] ProjectionLocalInterfaceConformanceFactsError),
+    #[error("local interface conformance executable lookup has duplicate File IR module `{module_path}`")]
+    DuplicateLocalInterfaceFileIrModule { module_path: String },
+    #[error(
+        "local interface conformance slot {slot} implementation {implementation_module}.{implementation_symbol} targets missing File IR module `{implementation_module}`"
+    )]
+    MissingLocalInterfaceImplementationModule {
+        slot: usize,
+        implementation_module: String,
+        implementation_symbol: String,
+    },
+    #[error(
+        "local interface conformance slot {slot} implementation {implementation_module}.{implementation_symbol} has no File IR executable declaration"
+    )]
+    MissingLocalInterfaceImplementationDeclaration {
+        slot: usize,
+        implementation_module: String,
+        implementation_symbol: String,
+    },
+    #[error(
+        "local interface conformance implementation {module_path}.{source_symbol} declaration symbol `{actual_symbol}` does not match `{expected_symbol}`"
+    )]
+    LocalInterfaceImplementationDeclarationSymbolMismatch {
+        module_path: String,
+        source_symbol: String,
+        expected_symbol: String,
+        actual_symbol: String,
+    },
+    #[error(
+        "local interface conformance implementation {module_path}.{source_symbol} points to missing File IR executable index {executable_index}"
+    )]
+    MissingLocalInterfaceImplementationExecutable {
+        module_path: String,
+        source_symbol: String,
+        executable_index: u32,
+    },
+    #[error(
+        "local interface conformance implementation {module_path}.{source_symbol} declaration symbol `{declaration_symbol}` does not match executable symbol `{executable_symbol}`"
+    )]
+    LocalInterfaceImplementationExecutableSymbolMismatch {
+        module_path: String,
+        source_symbol: String,
+        declaration_symbol: String,
+        executable_symbol: String,
+    },
+    #[error(
+        "local interface conformance implementation {module_path}.{source_symbol} targets {actual_kind:?}, not an impl method"
+    )]
+    LocalInterfaceImplementationKindMismatch {
+        module_path: String,
+        source_symbol: String,
+        actual_kind: ExecutableKind,
     },
     #[error(transparent)]
     DuplicateSignature(#[from] DuplicateProjectionPackageCallableSignature),

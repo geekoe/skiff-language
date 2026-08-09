@@ -176,9 +176,12 @@ mod tests {
                 input: payments.User,
                 nested: Array<payments.User?>?
               ) -> payments.User
+              function status(self: Self) -> string
             }
-            type Handler implements PublicApi {}
+            interface Marker {}
+            type Handler implements PublicApi, Marker {}
             impl Handler {
+              function status() -> string { return "ready" }
               function submit(
                 input: payments.User,
                 nested: Array<payments.User?>?
@@ -240,7 +243,63 @@ mod tests {
             .expect("implementation input parameter");
         assert_payments_user_file_ir_type(&input_param.ty);
         assert_payments_user_file_ir_type(&execution.return_type);
+        let api_unit = compiled
+            .file_ir_units()
+            .iter()
+            .find(|unit| unit.module_path == "api")
+            .expect("api File IR unit");
+        let submit_index = api_unit.declarations.executables["Handler.submit"].executable_index;
+        let status_index = api_unit.declarations.executables["Handler.status"].executable_index;
+        assert!(
+            status_index < submit_index,
+            "impl declaration order must differ from interface slot order in this fixture"
+        );
         let projection = build_projection_input(&compiled).unwrap();
+        let conformance_facts = projection.view().source().local_interface_conformances();
+        assert_eq!(conformance_facts.len(), 2);
+        let public_api = conformance_facts
+            .conformances()
+            .iter()
+            .find(|row| {
+                serde_json::from_str::<TypeRefIr>(&row.interface().interface_abi_id).is_ok_and(
+                    |identity| {
+                        matches!(
+                            identity,
+                            TypeRefIr::ServiceSymbol { symbol }
+                                if symbol.module_path == "api" && symbol.symbol == "PublicApi"
+                        )
+                    },
+                )
+            })
+            .expect("PublicApi conformance projection fact");
+        assert_eq!(public_api.receiver().module_path(), "api");
+        assert_eq!(public_api.receiver().symbol(), "Handler");
+        assert!(public_api.type_parameters().is_empty());
+        assert_eq!(
+            public_api
+                .implementation_executables()
+                .iter()
+                .map(|executable| executable.executable_index())
+                .collect::<Vec<_>>(),
+            vec![submit_index, status_index],
+            "implementation coordinates must retain interface declaration slot order"
+        );
+        let marker = conformance_facts
+            .conformances()
+            .iter()
+            .find(|row| {
+                serde_json::from_str::<TypeRefIr>(&row.interface().interface_abi_id).is_ok_and(
+                    |identity| {
+                        matches!(
+                            identity,
+                            TypeRefIr::ServiceSymbol { symbol }
+                                if symbol.module_path == "api" && symbol.symbol == "Marker"
+                        )
+                    },
+                )
+            })
+            .expect("marker conformance projection fact");
+        assert!(marker.implementation_executables().is_empty());
         let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
             package_id: "example.com/public-instance",
             package_version: "1.0.0",
@@ -258,6 +317,17 @@ mod tests {
             service_call_refs: Vec::new(),
         })
         .unwrap();
+        assert_eq!(projected.artifact.local_interface_conformances.len(), 2);
+        assert!(projected
+            .artifact
+            .local_interface_conformances
+            .iter()
+            .any(|row| row.methods.is_empty()));
+        assert!(projected
+            .artifact
+            .local_interface_conformances
+            .iter()
+            .any(|row| row.methods.len() == 2));
         let PackageLocalAbiSymbol::Callable { signature, .. } =
             &projected.artifact.package_local_abi.public_symbols["handler.submit"]
         else {
