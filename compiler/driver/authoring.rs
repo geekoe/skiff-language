@@ -124,10 +124,10 @@ fn build_package_after_platform_context_guard(
     if !service_root {
         reject_top_level_aliases_outside_test_service(root, manifest)?;
     }
-    let dependencies = read_package_dependencies(store, &manifest)?;
-    let contracts = read_contract_dependencies(store, &manifest)?;
-    let aliases = package_aliases(&manifest, &dependencies);
-    let package = read_package_source_input(root, &manifest)?;
+    let dependencies = read_package_dependencies(store, manifest)?;
+    let contracts = read_contract_dependencies(store, manifest)?;
+    let aliases = package_aliases(manifest, &dependencies);
+    let package = read_package_source_input(root, manifest)?;
     let package_id = manifest.id.to_string();
     let mut available = dependencies.clone();
     read_contract_provider_packages(store, &contracts, &mut available)?;

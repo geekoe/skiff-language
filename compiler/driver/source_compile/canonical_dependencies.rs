@@ -408,8 +408,7 @@ fn package_callable_analysis_from_symbols(
                 .cloned()
                 .ok_or_else(|| {
                     validation_error(format!(
-                        "package dependency {} callable {} has no semantic facts",
-                        dependency_label, callable_id
+                        "package dependency {dependency_label} callable {callable_id} has no semantic facts"
                     ))
                 })
                 .map(|semantic_facts| {

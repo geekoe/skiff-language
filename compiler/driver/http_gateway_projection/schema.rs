@@ -757,9 +757,8 @@ impl<'a> ExactTypeClassifier<'a> {
         let fields = fields.collect::<Result<BTreeMap<_, _>, _>>()?;
         let required = fields
             .iter()
-            .filter_map(|(name, schema)| {
-                (!matches!(schema, GatewayExternalSchema::Nullable { .. })).then(|| name.clone())
-            })
+            .filter(|(_, schema)| !matches!(schema, GatewayExternalSchema::Nullable { .. }))
+            .map(|(name, _)| name.clone())
             .collect();
         Ok(GatewayExternalSchema::Record { fields, required })
     }

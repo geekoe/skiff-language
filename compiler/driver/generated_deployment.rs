@@ -159,14 +159,14 @@ pub fn generate_service_deployment_with_validated_packages(
     }
     let contract_schema_records =
         contract_package_schema_records(&input, input.package_schema_records)?;
-    Ok(project_service_deployment_with_validated_packages(
+    project_service_deployment_with_validated_packages(
         typed,
         &input.service_api.contract,
         &artifacts,
         &contract_schema_records,
         &validated_artifacts,
     )
-    .map_err(projection_error)?)
+    .map_err(projection_error)
 }
 
 fn validate_exact_package_admissions(

@@ -160,7 +160,7 @@ fn project_connection_entry(
             args,
         },
         close_handler,
-        close_adapter_plan: authoring.close.is_some().then(|| GatewayAdapterPlan {
+        close_adapter_plan: authoring.close.is_some().then_some(GatewayAdapterPlan {
             kind: GatewayAdapterKind::WebSocketConnectionClosed,
             args: close_args,
         }),
