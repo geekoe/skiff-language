@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryValueLifetime, BoundaryValueOwner, ContractTypeRef,
-    ValueEscapeLane,
+    PendingEffectCategory, ValueEscapeLane, ValueProvenance,
 };
 
 use super::*;

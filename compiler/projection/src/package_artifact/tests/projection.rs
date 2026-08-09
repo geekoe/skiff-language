@@ -487,6 +487,10 @@ fn caller_projection_path_changes_build_identity_but_not_local_abi() {
         .values_mut()
         .next()
         .expect("fixture callable facts");
+    let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
+        panic!("fixture effects must be analyzed")
+    };
+    effects.requires_same_heap_identity = true;
     facts.provenance = CallableProvenanceSummary::Analyzed {
         return_origins: vec![state_origin.clone()],
         direct_return_origins: vec![state_origin],
