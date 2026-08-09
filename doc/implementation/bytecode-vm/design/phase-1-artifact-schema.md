@@ -1,6 +1,6 @@
 # Phase 1 设计：bytecode artifact schema and structural validator
 
-状态：planned（设计稿，未实现）；依赖 Phase 0 complete
+状态：approved（主 agent 已确认 D1–D19 全部决策，未实现）；依赖 Phase 0 complete
 
 本文是 Phase 1（`phases/phase-1-artifact-schema.md`）的详细设计。它把权威架构契约
 `doc/architecture/bytecode-vm.md` 与 requirement ledger 中 Phase 1 部分（R-003、R-009、R-017、
@@ -641,7 +641,9 @@ deployment/src/storage/records.rs tests
 
 ---
 
-## 9. 待主 agent 决策清单
+## 9. 决策记录（主 agent 已确认，2026-08-09）
+
+D1–D19 全部按本文取值确认采纳，无变更。
 
 | # | 决策点 | 本文取值 | 影响面 |
 | --- | --- | --- | --- |
