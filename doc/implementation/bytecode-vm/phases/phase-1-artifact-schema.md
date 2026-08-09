@@ -1,6 +1,6 @@
 # Phase 1: artifact schema and structural validator
 
-状态：planned；依赖Phase 0 complete
+状态：candidate-pass（result: [](../results/phase-1.md)）；依赖Phase 0 complete
 
 ## 1. 目标
 
