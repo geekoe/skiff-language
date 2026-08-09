@@ -30,24 +30,36 @@ use crate::{
 };
 
 use super::fixtures::{
-    build_id, function, function_with_key, lifecycle_registry_pin, minimal_parts, package,
-    signature, snapshot_plan, snapshot_release_plan, specialization_for, type_origin,
+    authority_pins, build_id, function, function_with_key, minimal_parts, package, signature,
+    snapshot_plan, snapshot_release_plan, specialization_for, type_origin,
 };
 
 #[test]
-fn package_provenance_retains_v4_header_identity_and_registry_pin() {
+fn package_provenance_retains_v5_header_identity_and_authority_pins() {
     let package = package(0, build_id());
 
     assert_eq!(package.package_build_id(), &build_id());
-    assert_eq!(package.schema_version(), "skiff-bytecode-v4");
+    assert_eq!(package.schema_version(), "skiff-bytecode-v5");
     assert_eq!(package.isa_version(), "skiff-bytecode-isa-v4");
     assert_eq!(
         package.declared_bytecode_identity(),
         package.artifact_ref().bytecode_identity.as_str()
     );
     assert_eq!(
-        package.lifecycle_registry().registry_id.as_str(),
-        "skiff-native-value-lifecycle"
+        package.authorities().native_value_lifecycle_registry(),
+        skiff_artifact_model::native_value_lifecycle_registry_identity()
+    );
+    assert_eq!(
+        package.authorities().value_lifecycle_policy(),
+        skiff_artifact_model::value_lifecycle_policy_identity()
+    );
+    assert_eq!(
+        package.authorities().host_effect_registry(),
+        skiff_artifact_model::host_effect_registry_identity()
+    );
+    assert_eq!(
+        package.authorities().intrinsic_registry(),
+        skiff_artifact_model::intrinsic_registry_identity()
     );
 }
 
@@ -59,10 +71,10 @@ fn package_provenance_rejects_header_reference_identity_mismatch() {
         BytecodeArtifactRef::new("bytecode:referenced"),
         "bytecode:declared",
         "skiff-bytecode",
-        "skiff-bytecode-v4",
+        "skiff-bytecode-v5",
         "skiff-bytecode-isa-v4",
-        "opcode-table-fingerprint-v4",
-        lifecycle_registry_pin(),
+        "opcode-table-fingerprint:fixture",
+        authority_pins(),
     )
     .expect_err("reference and declared header identities must agree");
 
@@ -90,10 +102,10 @@ fn package_provenance_rejects_artifact_locator_paths() {
         artifact_ref,
         "bytecode:fixture",
         "skiff-bytecode",
-        "skiff-bytecode-v4",
+        "skiff-bytecode-v5",
         "skiff-bytecode-isa-v4",
-        "opcode-table-fingerprint-v4",
-        lifecycle_registry_pin(),
+        "opcode-table-fingerprint:fixture",
+        authority_pins(),
     )
     .expect_err("linked candidate provenance must remain path-free");
 
@@ -902,7 +914,7 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
 
     assert_eq!(
         candidate.packages()[0].schema_version(),
-        "skiff-bytecode-v4"
+        "skiff-bytecode-v5"
     );
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.operation_entries().len(), 1);

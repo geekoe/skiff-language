@@ -1,20 +1,21 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint, BytecodeArtifactRef,
-    CallableEffectSummary, CallableMayEffects, GatewayAdapterKind, GatewayAdapterPlan,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, NativeValueLifecycleRegistryIdentity, Opcode, PackageBuildId,
-    PackageCallableId, ParamModeIr, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, GATEWAY_ENTRY_IDENTITY_PREFIX,
+    host_effect_registry_identity, intrinsic_registry_identity,
+    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
+    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary,
+    CallableMayEffects, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
+    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayHttpProtocolSurface, GatewayProtocolSurface, Opcode,
+    PackageBuildId, PackageCallableId, ParamModeIr, TypeRefIr, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use crate::{
     ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FrameSlotIndex, FunctionIndex,
-    LinkedArtifactPoolOrigin, LinkedBytecodeCandidateParts, LinkedCallableEffectDeclaration,
-    LinkedCallableSignature, LinkedFrameLayout, LinkedFunction, LinkedFunctionTables,
-    LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedInstruction,
+    LinkedArtifactPoolOrigin, LinkedBytecodeAuthorityPins, LinkedBytecodeCandidateParts,
+    LinkedCallableEffectDeclaration, LinkedCallableSignature, LinkedFrameLayout, LinkedFunction,
+    LinkedFunctionTables, LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedInstruction,
     LinkedNativeCallableSignature, LinkedPackageBytecodeProvenance, LinkedParameterSlot,
     LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue,
     LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, SpecializationKey, TypeIndex,
@@ -157,8 +158,14 @@ pub(super) fn function_with_key(index: u32, key: SpecializationKey, name: &str) 
     )
 }
 
-pub(super) fn lifecycle_registry_pin() -> NativeValueLifecycleRegistryIdentity {
-    native_value_lifecycle_registry_identity().clone()
+pub(super) fn authority_pins() -> LinkedBytecodeAuthorityPins {
+    LinkedBytecodeAuthorityPins::new(
+        native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy_identity().clone(),
+        host_effect_registry_identity().clone(),
+        intrinsic_registry_identity().clone(),
+    )
+    .expect("compile-time authority identities are canonical")
 }
 
 pub(super) fn package(
@@ -175,7 +182,7 @@ pub(super) fn package(
         BYTECODE_SCHEMA_VERSION,
         BYTECODE_ISA_VERSION,
         opcode_table_fingerprint(),
-        lifecycle_registry_pin(),
+        authority_pins(),
     )
     .expect("fixture package provenance has a coherent exact header")
 }

@@ -3,23 +3,24 @@ mod validation;
 use std::fmt;
 
 use skiff_artifact_model::{
-    BytecodeArtifactRef, ContractOperationId, GatewayEntryKey,
-    NativeValueLifecycleRegistryIdentity, PackageBuildId, ServiceRequirementKey,
+    BytecodeArtifactRef, ContractOperationId, GatewayEntryKey, PackageBuildId,
+    ServiceRequirementKey,
 };
 
 use crate::{
-    LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedCallbackCaptureLayout,
-    LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget, LinkedFrozenConstantNode,
-    LinkedGatewayEntry, LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedIntrinsicTarget,
-    LinkedOperationEntry, LinkedResumeSite, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry, SpecializationKey,
+    LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedBytecodeAuthorityPins,
+    LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget,
+    LinkedFrozenConstantNode, LinkedGatewayEntry, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceTable, LinkedIntrinsicTarget, LinkedOperationEntry, LinkedResumeSite,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedWritablePathEntry, SpecializationKey,
 };
 
 use crate::BytecodePackageIndex;
 
 /// Exact package bytecode/header provenance retained beside all linked rows.
 /// The schema string is intentionally data: current production input is the
-/// lifecycle-pinned `skiff-bytecode-v4`, and unknown values fail hydration.
+/// authority-pinned `skiff-bytecode-v5`, and unknown values fail hydration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedPackageBytecodeProvenance {
     index: BytecodePackageIndex,
@@ -30,7 +31,7 @@ pub struct LinkedPackageBytecodeProvenance {
     schema_version: Box<str>,
     isa_version: Box<str>,
     opcode_table_fingerprint: Box<str>,
-    lifecycle_registry: NativeValueLifecycleRegistryIdentity,
+    authorities: LinkedBytecodeAuthorityPins,
 }
 
 impl LinkedPackageBytecodeProvenance {
@@ -44,9 +45,8 @@ impl LinkedPackageBytecodeProvenance {
         schema_version: impl Into<String>,
         isa_version: impl Into<String>,
         opcode_table_fingerprint: impl Into<String>,
-        lifecycle_registry: NativeValueLifecycleRegistryIdentity,
+        authorities: LinkedBytecodeAuthorityPins,
     ) -> Result<Self, LinkedPackageBytecodeProvenanceError> {
-        validate_lifecycle_registry_identity(&lifecycle_registry)?;
         let declared_bytecode_identity = validate_header_text(
             declared_bytecode_identity.into(),
             LinkedBytecodeHeaderField::BytecodeIdentity,
@@ -85,7 +85,7 @@ impl LinkedPackageBytecodeProvenance {
             schema_version,
             isa_version,
             opcode_table_fingerprint,
-            lifecycle_registry,
+            authorities,
         })
     }
 
@@ -121,62 +121,9 @@ impl LinkedPackageBytecodeProvenance {
         &self.opcode_table_fingerprint
     }
 
-    pub const fn lifecycle_registry(&self) -> &NativeValueLifecycleRegistryIdentity {
-        &self.lifecycle_registry
+    pub const fn authorities(&self) -> &LinkedBytecodeAuthorityPins {
+        &self.authorities
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkedLifecycleRegistryField {
-    RegistryId,
-    Version,
-    Fingerprint,
-}
-
-impl LinkedLifecycleRegistryField {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::RegistryId => "lifecycle registry id",
-            Self::Version => "lifecycle registry version",
-            Self::Fingerprint => "lifecycle registry fingerprint",
-        }
-    }
-}
-
-fn validate_lifecycle_registry_identity(
-    identity: &NativeValueLifecycleRegistryIdentity,
-) -> Result<(), LinkedPackageBytecodeProvenanceError> {
-    for (field, value) in [
-        (
-            LinkedLifecycleRegistryField::RegistryId,
-            &identity.registry_id,
-        ),
-        (LinkedLifecycleRegistryField::Version, &identity.version),
-        (
-            LinkedLifecycleRegistryField::Fingerprint,
-            &identity.fingerprint,
-        ),
-    ] {
-        if value.is_empty() {
-            return Err(
-                LinkedPackageBytecodeProvenanceError::EmptyLifecycleRegistryField { field },
-            );
-        }
-        if let Some((character_index, _)) = value
-            .chars()
-            .enumerate()
-            .find(|(_, character)| character.is_whitespace() || character.is_control())
-        {
-            return Err(
-                LinkedPackageBytecodeProvenanceError::InvalidLifecycleRegistryField {
-                    field,
-                    value: value.clone(),
-                    character_index,
-                },
-            );
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,14 +184,6 @@ pub enum LinkedPackageBytecodeProvenanceError {
         value: String,
         character_index: usize,
     },
-    EmptyLifecycleRegistryField {
-        field: LinkedLifecycleRegistryField,
-    },
-    InvalidLifecycleRegistryField {
-        field: LinkedLifecycleRegistryField,
-        value: String,
-        character_index: usize,
-    },
 }
 
 impl fmt::Display for LinkedPackageBytecodeProvenanceError {
@@ -275,18 +214,6 @@ impl fmt::Display for LinkedPackageBytecodeProvenanceError {
             } => write!(
                 formatter,
                 "bytecode {} {value:?} contains whitespace or a control character at character index {character_index}",
-                field.name()
-            ),
-            Self::EmptyLifecycleRegistryField { field } => {
-                write!(formatter, "{} must not be empty", field.name())
-            }
-            Self::InvalidLifecycleRegistryField {
-                field,
-                value,
-                character_index,
-            } => write!(
-                formatter,
-                "{} {value:?} contains whitespace or a control character at character index {character_index}",
                 field.name()
             ),
         }

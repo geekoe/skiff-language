@@ -94,7 +94,7 @@ impl LinkedFunctionTables {
 ///
 /// [`SpecializationKey`] carries the exact package build and artifact function
 /// key. Candidate validation requires that build to have exactly one package
-/// bytecode provenance row, so the verifier can return to the v4 validated
+/// bytecode provenance row, so the verifier can return to the validated
 /// function (including its function origin and `self_type_ref`) without a
 /// duplicate FileIR-origin or address field here.
 #[derive(Debug, Clone, PartialEq, Eq)]

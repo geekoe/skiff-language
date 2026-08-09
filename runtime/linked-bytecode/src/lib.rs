@@ -6,6 +6,7 @@
 //! possession of a candidate never implies semantic verification or VM
 //! executability.
 
+mod authority;
 mod candidate;
 mod frame;
 mod function;
@@ -19,11 +20,14 @@ mod stack_map;
 mod tables;
 mod targets;
 
+pub use authority::{
+    LinkedBytecodeAuthority, LinkedBytecodeAuthorityField, LinkedBytecodeAuthorityPins,
+    LinkedBytecodeAuthorityPinsError,
+};
 pub use candidate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedBytecodeHeaderField,
-    LinkedLifecycleRegistryField, LinkedPackageBytecodeProvenance,
-    LinkedPackageBytecodeProvenanceError,
+    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
 };
 pub use frame::{LinkedFrameLayout, LinkedFrameLayoutError, LinkedParameterSlot};
 pub use function::{LinkedCallableEffectDeclaration, LinkedFunction, LinkedFunctionTables};
