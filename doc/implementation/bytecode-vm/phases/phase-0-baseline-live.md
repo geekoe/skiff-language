@@ -1,6 +1,6 @@
 # Phase 0: baseline ledger and trustworthy Live foundation
 
-状态：planned
+状态：complete（result: [`../results/phase-0.md`](../results/phase-0.md)；两项 deferred 证据由 Phase 1 首轮 evidence epoch 补齐）
 
 ## 1. 目标
 
