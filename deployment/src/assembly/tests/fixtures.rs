@@ -132,6 +132,7 @@ pub fn package(
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),

@@ -1,8 +1,8 @@
 use super::*;
-use crate::ASSEMBLY_IDENTITY_PREFIX;
+use crate::{ASSEMBLY_IDENTITY_PREFIX, BYTECODE_IDENTITY_PREFIX};
 use skiff_artifact_model::{
-    AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
-    PackageLocalAbiIdentity, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    AssemblyIdentity, BytecodeArtifactRef, DeploymentArtifactIdentity, DeploymentRevision,
+    PackageBuildId, PackageLocalAbiIdentity, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
     PackageSchemaTypeId, PackageSchemaTypeRecordRef, ServiceProtocolIdentity,
 };
 
@@ -98,6 +98,59 @@ fn package_schema_records_have_independent_content_addressed_paths() {
             hash('b')
         )
     );
+}
+
+#[test]
+fn bytecode_record_path_is_identity_addressed_under_the_package_build() {
+    let package = PackageArtifactRef {
+        package_id: "example.com/echo".to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new(format!(
+            "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{}",
+            hash('a')
+        )),
+        package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+            "{PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX}:{}",
+            hash('b')
+        )),
+    };
+    let bytecode = BytecodeArtifactRef::new(format!("{BYTECODE_IDENTITY_PREFIX}:{}", hash('c')));
+    let canonical = format!(
+        "records/package-artifacts/example~dcom~secho/1.0.0/{}/bytecode/{}.json",
+        hash('a'),
+        hash('c')
+    );
+    assert_eq!(
+        PackageBytecodeRecordPath::new(&package, &bytecode)
+            .unwrap()
+            .as_str(),
+        canonical
+    );
+
+    // The declared artifact path must equal the canonical record path.
+    let mut declared = bytecode.clone();
+    declared.artifact_path = Some(canonical.clone());
+    assert!(PackageBytecodeRecordPath::new(&package, &declared).is_ok());
+    let mut wrong_path = declared.clone();
+    wrong_path.artifact_path = Some(format!(
+        "records/package-artifacts/example~dcom~secho/1.0.0/{}/bytecode/{}.json",
+        hash('a'),
+        hash('d')
+    ));
+    assert!(matches!(
+        PackageBytecodeRecordPath::new(&package, &wrong_path),
+        Err(ArtifactIdentityError::NonCanonicalArtifactPath { .. })
+    ));
+
+    // Identity domain and hash shape are enforced before any path is built.
+    for identity in [
+        format!("{BYTECODE_IDENTITY_PREFIX}:{}", hash('A')),
+        format!("{BYTECODE_IDENTITY_PREFIX}:short"),
+        format!("skiff-file-ir-v12:sha256:{}", hash('c')),
+    ] {
+        let reference = BytecodeArtifactRef::new(identity);
+        assert!(PackageBytecodeRecordPath::new(&package, &reference).is_err());
+    }
 }
 
 #[test]

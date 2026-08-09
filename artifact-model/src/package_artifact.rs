@@ -15,7 +15,7 @@ use crate::{
     contract_types::{PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PackageTypeRef},
     executable_target::OperationTargetRef,
     package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
-    refs::FileIrRef,
+    refs::{BytecodeArtifactRef, FileIrRef},
     resources::PublicationResourceRef,
     types::{TypeDescriptorIr, TypeRefIr},
 };
@@ -116,6 +116,11 @@ pub struct PackageArtifact {
     pub package_build_id: PackageBuildId,
     pub files: Vec<FileIrRef>,
     pub static_resources: Vec<PublicationResourceRef>,
+    /// Bytecode image record reference (D11: one image per package; `None`
+    /// during the migration period before a package gains bytecode). The
+    /// identity enters the build preimage only when present (D18).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytecode: Option<BytecodeArtifactRef>,
     pub package_local_abi: PackageLocalAbi,
     pub package_schema_index: PackageSchemaIndexRef,
     pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,

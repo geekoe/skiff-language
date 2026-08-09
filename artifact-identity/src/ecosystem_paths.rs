@@ -1,14 +1,15 @@
 use skiff_artifact_model::{
-    runtime_assembly_identity_hash, FileIrRef, PackageArtifactRef, PackageSchemaIndexRef,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef,
+    runtime_assembly_identity_hash, BytecodeArtifactRef, FileIrRef, PackageArtifactRef,
+    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef,
+    ServiceContractRef, ServiceDeploymentRef,
 };
 
 use crate::{
-    ArtifactIdentityError, ArtifactRelativePath, Result, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-    FILE_IR_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
-    PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    ArtifactIdentityError, ArtifactRelativePath, Result, BYTECODE_IDENTITY_PREFIX,
+    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+    SERVICE_PROTOCOL_IDENTITY_PREFIX,
 };
 
 macro_rules! typed_path {
@@ -41,6 +42,7 @@ typed_path!(ServiceContractRecordPath);
 typed_path!(ServiceDeploymentRecordPath);
 typed_path!(RuntimeAssemblyRecordPath);
 typed_path!(PackageFileIrRecordPath);
+typed_path!(PackageBytecodeRecordPath);
 typed_path!(PackageResourceRecordPath);
 typed_path!(PackageArtifactPointerPath);
 typed_path!(ServiceContractPointerPath);
@@ -112,6 +114,28 @@ impl PackageFileIrRecordPath {
             .expect("package record path suffix is fixed");
         let canonical = format!("{path}file-ir/{file_hash}.json");
         validate_declared_path(file.artifact_path.as_deref(), &canonical, "FileIrRef")?;
+        relative(canonical).map(Self)
+    }
+}
+
+impl PackageBytecodeRecordPath {
+    pub fn new(package: &PackageArtifactRef, bytecode: &BytecodeArtifactRef) -> Result<Self> {
+        let package_path = PackageArtifactRecordPath::new(package)?;
+        let bytecode_hash = identity_hash(
+            &bytecode.bytecode_identity,
+            BYTECODE_IDENTITY_PREFIX,
+            "bytecodeIdentity",
+        )?;
+        let path = package_path
+            .as_str()
+            .strip_suffix("package.json")
+            .expect("package record path suffix is fixed");
+        let canonical = format!("{path}bytecode/{bytecode_hash}.json");
+        validate_declared_path(
+            bytecode.artifact_path.as_deref(),
+            &canonical,
+            "BytecodeArtifactRef",
+        )?;
         relative(canonical).map(Self)
     }
 }

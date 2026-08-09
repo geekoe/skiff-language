@@ -14,7 +14,7 @@ use super::{
     implementation_links::{
         OperationTargetIdentityProjection, PackageImplementationLinksIdentityProjection,
     },
-    CallableLinkIdentityProjection, FileIrOwnerIdentityProjection,
+    BytecodeOwnerIdentityProjection, CallableLinkIdentityProjection, FileIrOwnerIdentityProjection,
     PackageArtifactBuildIdentityProjection, PackageArtifactLocalAbiIdentityProjection,
     ResourceIdentityProjection,
 };
@@ -116,6 +116,10 @@ pub(super) fn build_projection_from_validated(
         package_schema_index: artifact.package_schema_index.clone(),
         package_schema_type_records: artifact.package_schema_type_records.clone(),
         files,
+        bytecode: artifact
+            .bytecode
+            .as_ref()
+            .map(BytecodeOwnerIdentityProjection::from_ref),
         static_resources,
         implementation_links: PackageImplementationLinksIdentityProjection::from_links(
             &artifact.implementation_links,

@@ -10,18 +10,20 @@ use crate::projection::actor_routing::{
 use serde_json::Value;
 use skiff_artifact_identity::{
     package_schema_type_id, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    validate_file_ir_identity, validate_package_artifact_identities, validate_package_schema_index,
-    validate_package_schema_records, validate_runtime_assembly_identity,
-    validate_service_contract_identities, validate_service_deployment_ref, ArtifactRelativePath,
-    PackageArtifactRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
+    validate_bytecode_identity, validate_file_ir_identity, validate_package_artifact_identities,
+    validate_package_schema_index, validate_package_schema_records,
+    validate_runtime_assembly_identity, validate_service_contract_identities,
+    validate_service_deployment_ref, ArtifactRelativePath, PackageArtifactRecordPath,
+    PackageBytecodeRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
     PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, RuntimeAssemblyRecordPath,
-    ServiceContractRecordPath, ServiceDeploymentRecordPath,
+    ServiceContractRecordPath, ServiceDeploymentRecordPath, ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
-    package_schema_descriptor_refs, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
-    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    package_schema_descriptor_refs, BytecodeArtifact, BytecodeArtifactRef, FileIrRef, FileIrUnit,
+    PackageArtifact, PackageArtifactRef, PackageSchemaIndex, PackageSchemaIndexRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
 use super::{
@@ -66,8 +68,7 @@ impl CanonicalArtifactStore {
         let value = strict_value(&host_path, &bytes)?;
         raw_package_ref(&host_path, &value, reference)?;
         Ok(Arc::new(typed_from_value::<PackageArtifact>(
-            &host_path,
-            value,
+            &host_path, value,
         )?))
     }
 
@@ -455,6 +456,55 @@ impl CanonicalArtifactStore {
         Ok(Arc::new(file))
     }
 
+    /// Writes one immutable bytecode record under the package build directory.
+    ///
+    /// Runs C1–C9 (structural validation + identity recomputation) before any
+    /// bytes are written. The caller must write this record **before** the
+    /// `PackageArtifact` record that references it (D19, same order as file-ir
+    /// records): readers must never observe a package record pointing at a
+    /// missing bytecode record.
+    pub fn write_package_bytecode(
+        &self,
+        package: &PackageArtifactRef,
+        artifact: &BytecodeArtifact,
+    ) -> StorageResult<PathBuf> {
+        validate_bytecode_identity(artifact)?;
+        let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
+        let path = PackageBytecodeRecordPath::new(package, &reference)?;
+        self.write_immutable(path.as_relative_path(), &canonical_bytes(artifact)?)
+    }
+
+    /// Reads and validates one bytecode record: bytes → strict JSON → typed →
+    /// C1–C8 → C9 (declared identity == recomputed identity, reference leaf ==
+    /// store path hash, declared artifact path canonical). Any failure fails
+    /// closed; the returned token is the only linker-consumable form.
+    pub fn read_package_bytecode(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &BytecodeArtifactRef,
+    ) -> StorageResult<Arc<ValidatedBytecodeArtifact>> {
+        let path = PackageBytecodeRecordPath::new(package, reference)?;
+        let bytes = self.read_bytes(path.as_relative_path())?;
+        let host_path = self.root().join(path.as_relative_path().as_path());
+        let value = strict_value(&host_path, &bytes)?;
+        raw_string(
+            &host_path,
+            &value,
+            &["bytecodeIdentity"],
+            &reference.bytecode_identity,
+        )?;
+        let artifact = typed_from_value::<BytecodeArtifact>(&host_path, value)?;
+        if artifact.bytecode_identity != reference.bytecode_identity {
+            return invalid(
+                &host_path,
+                "typed BytecodeArtifact does not match exact reference",
+            );
+        }
+        ensure_canonical(&host_path, &bytes, &artifact)?;
+        let validated = ValidatedBytecodeArtifact::admit(artifact)?;
+        Ok(Arc::new(validated))
+    }
+
     pub fn write_static_resource(
         &self,
         package: &PackageArtifactRef,
@@ -790,6 +840,7 @@ mod package_schema_tests {
             package_build_id: PackageBuildId::new("unassigned"),
             files: Vec::new(),
             static_resources: Vec::new(),
+            bytecode: None,
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
                 public_symbols: BTreeMap::new(),

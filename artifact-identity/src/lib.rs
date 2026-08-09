@@ -1,6 +1,7 @@
 mod actor;
 mod artifact_coordinates;
 mod artifact_path;
+mod bytecode;
 mod constants;
 mod contract;
 mod deployment;
@@ -17,14 +18,18 @@ mod semantic;
 pub use actor::{actor_abi_identity, actor_implementation_identity, actor_method_identity};
 pub use artifact_coordinates::publication_storage_segment;
 pub use artifact_path::ArtifactRelativePath;
+pub use bytecode::{
+    assign_bytecode_identity, bytecode_identity, validate_bytecode_identity,
+    validate_bytecode_identity_format, ValidatedBytecodeArtifact,
+};
 pub use constants::{
     ACTOR_ABI_IDENTITY_PREFIX, ACTOR_ABI_IDENTITY_SCHEMA_MARKER,
     ACTOR_IMPLEMENTATION_IDENTITY_PREFIX, ACTOR_IMPLEMENTATION_IDENTITY_SCHEMA_MARKER,
     ACTOR_METHOD_IDENTITY_PREFIX, ACTOR_METHOD_IDENTITY_SCHEMA_MARKER, ASSEMBLY_IDENTITY_PREFIX,
-    ASSEMBLY_IDENTITY_SCHEMA_MARKER, CONTRACT_OPERATION_IDENTITY_PREFIX,
-    CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
-    DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX,
-    GATEWAY_ENTRY_IDENTITY_PREFIX, GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
+    ASSEMBLY_IDENTITY_SCHEMA_MARKER, BYTECODE_IDENTITY_PREFIX, BYTECODE_IDENTITY_SCHEMA_MARKER,
+    CONTRACT_OPERATION_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
+    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
+    FILE_IR_IDENTITY_PREFIX, GATEWAY_ENTRY_IDENTITY_PREFIX, GATEWAY_ENTRY_IDENTITY_SCHEMA_MARKER,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
     PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
     PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX, PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER,
@@ -48,9 +53,9 @@ pub use deployment::{
     DeploymentArtifactIdentityProjection,
 };
 pub use ecosystem_paths::{
-    PackageArtifactPointerPath, PackageArtifactRecordPath, PackageFileIrRecordPath,
-    PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
-    ReleasePointerPath, RuntimeAssemblyPointerPath,
+    PackageArtifactPointerPath, PackageArtifactRecordPath, PackageBytecodeRecordPath,
+    PackageFileIrRecordPath, PackageResourceRecordPath, PackageSchemaIndexRecordPath,
+    PackageSchemaTypeRecordPath, ReleasePointerPath, RuntimeAssemblyPointerPath,
     RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
     ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };

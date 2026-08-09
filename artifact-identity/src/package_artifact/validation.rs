@@ -58,6 +58,24 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     })
 }
 
+/// C9 linkage check for the bytecode owner ref (§6.2): when a package carries
+/// a bytecode record ref, its declared identity must be a well-formed framed
+/// bytecode identity. The full content-level C9 (recompute against the
+/// `BytecodeArtifact`) runs in `crate::bytecode::validate_bytecode_identity`
+/// and in the deployment store, where the actual image is available.
+pub(super) fn validate_bytecode_linkage(artifact: &PackageArtifact) -> Result<()> {
+    if let Some(bytecode) = &artifact.bytecode {
+        if let Err(error) =
+            crate::bytecode::validate_bytecode_identity_format(&bytecode.bytecode_identity)
+        {
+            return invalid_artifact(format!(
+                "bytecode owner ref has an invalid identity: {error}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_unique_file_refs(files: &[FileIrRef]) -> Result<()> {
     let mut seen = BTreeSet::new();
     for file in files {

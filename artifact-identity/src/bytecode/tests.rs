@@ -1,0 +1,262 @@
+//! Bytecode identity tests: determinism, mutation matrix (every preimage
+//! field participates), C1–C8 gating, C9 mismatch rejection and
+//! `ValidatedBytecodeArtifact` admission.
+
+use std::collections::BTreeMap;
+
+use skiff_artifact_model::{
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    BytecodeRelocation, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
+    FrozenConstantNode, LiteralIr, RelocatableBytecodeFunction, TypeRefIr, ValueTransferPlan,
+    ValueTransferPlanKind, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+};
+
+use super::*;
+
+fn plan(kind: ValueTransferPlanKind) -> ValueTransferPlan {
+    ValueTransferPlan { kind }
+}
+
+fn snapshot_share() -> ValueTransferPlan {
+    plan(ValueTransferPlanKind::SnapshotShare)
+}
+
+/// Hand-built structurally valid artifact (passes C1–C8). Not encoder or
+/// emitter produced; `bytecode_identity` starts as a placeholder so tests can
+/// prove the preimage excludes the identity field itself.
+fn fixture() -> BytecodeArtifact {
+    let mut functions = BTreeMap::new();
+    functions.insert(
+        "module::main".to_string(),
+        RelocatableBytecodeFunction {
+            function_key: "module::main".to_string(),
+            type_parameters: Vec::new(),
+            words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
+            relocations: vec![BytecodeRelocation::LocalExecutableRef {
+                function_key: "module::main".to_string(),
+            }],
+            frame_layout: FrameLayout {
+                slot_count: 1,
+                parameter_slots: Vec::new(),
+                result_count: 0,
+                result_plans: Vec::new(),
+                slot_plans: vec![snapshot_share()],
+            },
+            max_operand_depth: 2,
+            effect_summary_ref: "operation:module:main".to_string(),
+            exception_regions: Vec::new(),
+            switch_tables: Vec::new(),
+            statement_entries: Vec::new(),
+            source_map: Vec::new(),
+        },
+    );
+    BytecodeArtifact {
+        magic: BYTECODE_MAGIC.to_string(),
+        schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
+        isa_version: BYTECODE_ISA_VERSION.to_string(),
+        opcode_table_fingerprint: skiff_artifact_model::bytecode::opcodes::opcode_table_fingerprint(
+        ),
+        bytecode_identity: "skiff-bytecode-image-v1:sha256:fixture".to_string(),
+        image: BytecodeImage {
+            functions,
+            pools: BytecodePools {
+                constants: vec![BytecodePoolEntry::FrozenConstantRef { node_index: 0 }],
+                types: vec![BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                }],
+                shapes: Vec::new(),
+                effects: Vec::new(),
+                resume: Vec::new(),
+                callback_capture: Vec::new(),
+            },
+            frozen_constant_graph: FrozenConstantGraph {
+                nodes: vec![FrozenConstantNode::Literal {
+                    literal: LiteralIr::Number {
+                        value: serde_json::Number::from(42),
+                    },
+                }],
+            },
+            debug_table: Some(DebugTable {
+                bindings: vec![DebugBinding {
+                    function_key: "module::main".to_string(),
+                    pc: 0,
+                    name: "x".to_string(),
+                    slot: 0,
+                }],
+            }),
+        },
+    }
+}
+
+#[test]
+fn identity_is_deterministic_and_excludes_the_identity_field() {
+    let mut first = fixture();
+    let mut second = fixture();
+    let computed_first = bytecode_identity(&first).unwrap();
+    let computed_second = bytecode_identity(&second).unwrap();
+    assert_eq!(computed_first, computed_second);
+    assert!(
+        computed_first.starts_with(&format!("{BYTECODE_IDENTITY_PREFIX}:")),
+        "identity must use the canonical prefix"
+    );
+
+    // Assigning the identity must be idempotent and the preimage must not
+    // include the declared identity field itself (self-reference).
+    assign_bytecode_identity(&mut first).unwrap();
+    assign_bytecode_identity(&mut second).unwrap();
+    assert_eq!(first.bytecode_identity, computed_first);
+    assert_eq!(bytecode_identity(&first).unwrap(), computed_first);
+    assert_eq!(bytecode_identity(&second).unwrap(), computed_first);
+    assert_eq!(first.bytecode_identity, second.bytecode_identity);
+}
+
+#[test]
+fn schema_isa_and_fingerprint_participate_in_the_preimage() {
+    let base = fixture();
+    let base_hash = bytecode_identity_after_structural(&base).unwrap();
+
+    let mutations: [fn(&mut BytecodeArtifact); 3] = [
+        |artifact: &mut BytecodeArtifact| artifact.schema_version = "skiff-bytecode-v2".to_string(),
+        |artifact: &mut BytecodeArtifact| {
+            artifact.isa_version = "skiff-bytecode-isa-v2".to_string()
+        },
+        |artifact: &mut BytecodeArtifact| {
+            artifact.opcode_table_fingerprint = "0".repeat(64).to_string()
+        },
+    ];
+    for (label, mutate) in [
+        ("schemaVersion", mutations[0]),
+        ("isaVersion", mutations[1]),
+        ("opcodeTableFingerprint", mutations[2]),
+    ] {
+        let mut mutated = base.clone();
+        mutate(&mut mutated);
+        let mutated_hash = bytecode_identity_after_structural(&mutated).unwrap();
+        assert_ne!(
+            mutated_hash, base_hash,
+            "{label} mutation must change the bytecode identity"
+        );
+        // C1 rejects these mutations before any identity work when going
+        // through the public gated entry.
+        assert!(matches!(
+            bytecode_identity(&mutated),
+            Err(ArtifactIdentityError::InvalidBytecodeStructural(
+                skiff_artifact_model::bytecode::validate::StructuralValidationError::Header { .. }
+            ))
+        ));
+    }
+
+    let mut bad_magic = base;
+    bad_magic.magic = "skiff-bytecode-old".to_string();
+    assert!(matches!(
+        bytecode_identity(&bad_magic),
+        Err(ArtifactIdentityError::InvalidBytecodeStructural(
+            skiff_artifact_model::bytecode::validate::StructuralValidationError::Header { .. }
+        ))
+    ));
+}
+
+#[test]
+fn every_image_mutation_changes_the_identity() {
+    let base = fixture();
+    let base_identity = bytecode_identity(&base).unwrap();
+
+    let mut word_changed = base.clone();
+    // jump_if_true target 6 -> target 4 (delta -2): stays on a header, so the
+    // mutated artifact still passes C1–C8 while the preimage changes.
+    word_changed
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .words[5] = 0xFFFF_FFFE;
+    assert_ne!(bytecode_identity(&word_changed).unwrap(), base_identity);
+
+    let mut pool_changed = base.clone();
+    pool_changed.image.pools.types[0] = BytecodePoolEntry::TypeRef {
+        ty: TypeRefIr::builtin("number"),
+    };
+    assert_ne!(bytecode_identity(&pool_changed).unwrap(), base_identity);
+
+    let mut graph_changed = base.clone();
+    graph_changed.image.frozen_constant_graph.nodes[0] = FrozenConstantNode::Literal {
+        literal: LiteralIr::Number {
+            value: serde_json::Number::from(43),
+        },
+    };
+    assert_ne!(bytecode_identity(&graph_changed).unwrap(), base_identity);
+
+    let mut debug_changed = base.clone();
+    debug_changed.image.debug_table.as_mut().unwrap().bindings[0].name = "renamed".to_string();
+    assert_ne!(
+        bytecode_identity(&debug_changed).unwrap(),
+        base_identity,
+        "debug table must participate in the identity (D14)"
+    );
+
+    let mut key_changed = base.clone();
+    let main = key_changed.image.functions.remove("module::main").unwrap();
+    key_changed
+        .image
+        .functions
+        .insert("module::renamed".to_string(), main);
+    key_changed
+        .image
+        .functions
+        .get_mut("module::renamed")
+        .unwrap()
+        .function_key = "module::renamed".to_string();
+    key_changed.image.debug_table.as_mut().unwrap().bindings[0].function_key =
+        "module::renamed".to_string();
+    assert_ne!(bytecode_identity(&key_changed).unwrap(), base_identity);
+}
+
+#[test]
+fn declared_identity_mismatch_is_rejected_by_validate_and_admit() {
+    let mut valid = fixture();
+    assign_bytecode_identity(&mut valid).unwrap();
+
+    let mut mismatched = valid.clone();
+    mismatched.bytecode_identity = format!("{BYTECODE_IDENTITY_PREFIX}:{}", "0".repeat(64));
+    assert!(matches!(
+        validate_bytecode_identity(&mismatched),
+        Err(ArtifactIdentityError::BytecodeIdentityMismatch { .. })
+    ));
+    assert!(ValidatedBytecodeArtifact::admit(mismatched).is_err());
+
+    assert!(validate_bytecode_identity(&valid).is_ok());
+    let admitted = ValidatedBytecodeArtifact::admit(valid.clone()).unwrap();
+    assert_eq!(admitted.artifact(), &valid);
+    assert_eq!(admitted.view().functions().len(), 1);
+    assert_eq!(
+        admitted.reference(),
+        &BytecodeArtifactRef::new(valid.bytecode_identity.clone())
+    );
+    assert_eq!(
+        admitted.artifact().bytecode_identity,
+        valid.bytecode_identity
+    );
+}
+
+#[test]
+fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
+    let valid = fixture();
+    let identity = bytecode_identity(&valid).unwrap();
+    validate_bytecode_identity_format(&identity).unwrap();
+
+    let leaf = identity
+        .strip_prefix(&format!("{BYTECODE_IDENTITY_PREFIX}:"))
+        .unwrap();
+    for invalid in [
+        format!("{BYTECODE_IDENTITY_PREFIX}:{}", leaf.to_uppercase()),
+        format!("{BYTECODE_IDENTITY_PREFIX}:short"),
+        format!("{BYTECODE_IDENTITY_PREFIX}:{}", "z".repeat(64)),
+        format!("skiff-bytecode-image-v2:sha256:{leaf}"),
+        "unframed".to_string(),
+    ] {
+        assert!(matches!(
+            validate_bytecode_identity_format(&invalid),
+            Err(ArtifactIdentityError::InvalidBytecodeIdentity { .. })
+        ));
+    }
+}

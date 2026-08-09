@@ -7,20 +7,25 @@ use std::{
 
 use serde_json::json;
 use skiff_artifact_identity::{
-    assign_file_ir_identity, assign_package_artifact_identities,
+    assign_bytecode_identity, assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, assign_service_deployment_identity, contract_operation_id,
     package_artifact_ref, package_schema_index_identity, runtime_assembly_ref,
-    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath, ReleasePointerPath,
+    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
+    PackageBytecodeRecordPath, ReleasePointerPath, BYTECODE_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit,
-    PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    ServiceContract, ServiceProtocolIdentity,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    BytecodeRelocation, ContractDiagnosticText, DebugBinding, DebugTable,
+    DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit, FrameLayout,
+    FrozenConstantGraph, FrozenConstantNode, LiteralIr, PackageArtifact, PackageBuildId,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, TypeRefIr,
+    ValueTransferPlan, ValueTransferPlanKind, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -66,6 +71,7 @@ fn package_fixture() -> PackageArtifact {
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -737,3 +743,162 @@ fn file_and_resource_records_validate_exact_identity_path_and_content() {
     );
 }
 
+/// Hand-built structurally valid bytecode artifact (passes C1–C8). Not
+/// encoder/emitter produced; `bytecode_identity` starts as a placeholder and
+/// must be assigned before use.
+fn bytecode_fixture() -> BytecodeArtifact {
+    let mut functions = BTreeMap::new();
+    functions.insert(
+        "module::main".to_string(),
+        RelocatableBytecodeFunction {
+            function_key: "module::main".to_string(),
+            type_parameters: Vec::new(),
+            words: vec![0x00, 0, 0x03, 0, 0x11, 0, 0x20, 0, 0, 0x25],
+            relocations: vec![BytecodeRelocation::LocalExecutableRef {
+                function_key: "module::main".to_string(),
+            }],
+            frame_layout: FrameLayout {
+                slot_count: 1,
+                parameter_slots: Vec::new(),
+                result_count: 0,
+                result_plans: Vec::new(),
+                slot_plans: vec![ValueTransferPlan {
+                    kind: ValueTransferPlanKind::SnapshotShare,
+                }],
+            },
+            max_operand_depth: 2,
+            effect_summary_ref: "operation:module:main".to_string(),
+            exception_regions: Vec::new(),
+            switch_tables: Vec::new(),
+            statement_entries: Vec::new(),
+            source_map: Vec::new(),
+        },
+    );
+    BytecodeArtifact {
+        magic: BYTECODE_MAGIC.to_string(),
+        schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
+        isa_version: BYTECODE_ISA_VERSION.to_string(),
+        opcode_table_fingerprint: skiff_artifact_model::bytecode::opcodes::opcode_table_fingerprint(
+        ),
+        bytecode_identity: "skiff-bytecode-image-v1:sha256:fixture".to_string(),
+        image: BytecodeImage {
+            functions,
+            pools: BytecodePools {
+                constants: vec![BytecodePoolEntry::FrozenConstantRef { node_index: 0 }],
+                types: vec![BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                }],
+                shapes: Vec::new(),
+                effects: Vec::new(),
+                resume: Vec::new(),
+                callback_capture: Vec::new(),
+            },
+            frozen_constant_graph: FrozenConstantGraph {
+                nodes: vec![FrozenConstantNode::Literal {
+                    literal: LiteralIr::Number {
+                        value: serde_json::Number::from(42),
+                    },
+                }],
+            },
+            debug_table: Some(DebugTable {
+                bindings: vec![DebugBinding {
+                    function_key: "module::main".to_string(),
+                    pc: 0,
+                    name: "x".to_string(),
+                    slot: 0,
+                }],
+            }),
+        },
+    }
+}
+
+fn bytecode_identity_leaf(character: char) -> String {
+    format!(
+        "{BYTECODE_IDENTITY_PREFIX}:{}",
+        std::iter::repeat_n(character, 64).collect::<String>()
+    )
+}
+
+#[test]
+fn bytecode_record_write_read_and_fail_closed_paths() {
+    let (_temp, store) = test_store();
+    let mut package = package_fixture();
+    let mut bytecode = bytecode_fixture();
+    assign_bytecode_identity(&mut bytecode).unwrap();
+    let reference = BytecodeArtifactRef::new(bytecode.bytecode_identity.clone());
+    package.bytecode = Some(reference.clone());
+    assign_package_artifact_identities(&mut package).unwrap();
+    let package_ref = package_artifact_ref(&package).unwrap();
+
+    // D19: the bytecode record is written before the referencing package
+    // record (same order as file-ir records), so readers never observe a
+    // package record pointing at a missing bytecode record.
+    let written = store
+        .write_package_bytecode(&package_ref, &bytecode)
+        .unwrap();
+    let canonical = PackageBytecodeRecordPath::new(&package_ref, &reference).unwrap();
+    assert_eq!(
+        written,
+        store.root().join(canonical.as_relative_path().as_path())
+    );
+    store.write_package_artifact(&package).unwrap();
+
+    let validated = store
+        .read_package_bytecode(&package_ref, &reference)
+        .unwrap();
+    assert_eq!(validated.artifact(), &bytecode);
+    assert_eq!(validated.reference(), &reference);
+    assert_eq!(validated.view().functions().len(), 1);
+
+    // The declared artifact path must exactly equal the canonical record path
+    // (validate_declared_path, mirroring FileIrRef).
+    let mut declared = reference.clone();
+    declared.artifact_path = Some(canonical.as_str().to_string());
+    assert!(store.read_package_bytecode(&package_ref, &declared).is_ok());
+    let mut wrong_path = declared.clone();
+    wrong_path.artifact_path = Some(format!(
+        "records/package-artifacts/example~dcom~checkpoint/1.0.0/{}/bytecode/{}.json",
+        package_ref.package_build_id,
+        "0".repeat(64)
+    ));
+    assert!(store
+        .read_package_bytecode(&package_ref, &wrong_path)
+        .is_err());
+
+    // Missing record fails closed.
+    let missing = BytecodeArtifactRef::new(bytecode_identity_leaf('0'));
+    assert!(store.read_package_bytecode(&package_ref, &missing).is_err());
+
+    // Identity mismatch fails closed: tampering the stored record makes the
+    // read fail (raw identity check + C9 admission).
+    let record_path = store.root().join(canonical.as_relative_path().as_path());
+    let tampered = String::from_utf8(fs::read(&record_path).unwrap())
+        .unwrap()
+        .replace(&bytecode.bytecode_identity, &bytecode_identity_leaf('f'));
+    fs::write(&record_path, tampered).unwrap();
+    assert!(store
+        .read_package_bytecode(&package_ref, &reference)
+        .is_err());
+
+    // Writes never touch an existing immutable record (content-addressed).
+    let mut changed = bytecode.clone();
+    changed
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .words[5] = 0xFFFF_FFFE;
+    assign_bytecode_identity(&mut changed).unwrap();
+    assert_ne!(changed.bytecode_identity, bytecode.bytecode_identity);
+    let changed_ref = BytecodeArtifactRef::new(changed.bytecode_identity.clone());
+    store
+        .write_package_bytecode(&package_ref, &changed)
+        .unwrap();
+    assert_eq!(
+        store
+            .read_package_bytecode(&package_ref, &changed_ref)
+            .unwrap()
+            .artifact(),
+        &changed
+    );
+}
