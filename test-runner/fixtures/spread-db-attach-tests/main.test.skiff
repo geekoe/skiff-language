@@ -70,8 +70,8 @@ test "query read orders by index declared on spread copied fields" {
     order sequence asc
   }
   assert rows.length() == 2
-  let first = ""
-  let second = ""
+  var first = ""
+  var second = ""
   for row in rows {
     if row.sequence == 1 {
       first = row.ownerId

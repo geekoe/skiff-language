@@ -11,14 +11,14 @@ function liveFileChunks(marker: string) -> Stream<bytes> {
 }
 
 function liveFileDoubleBytes(value: bytes) -> bytes {
-  let parts = Array.empty<bytes>()
+  var parts = Array.empty<bytes>()
   parts.push(value)
   parts.push(value)
   return bytes.concat(parts)
 }
 
 function liveFileOneMiBChunk() -> bytes {
-  let chunk = bytes.fromUtf8("0123456789abcdef")
+  var chunk = bytes.fromUtf8("0123456789abcdef")
   chunk = liveFileDoubleBytes(chunk)
   chunk = liveFileDoubleBytes(chunk)
   chunk = liveFileDoubleBytes(chunk)

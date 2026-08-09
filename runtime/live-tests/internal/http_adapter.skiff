@@ -12,7 +12,7 @@ type RuntimeLiveJsonOutput {
 }
 
 function textResponse(status: integer, body: string) -> std.http.HttpResponse {
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   return std.http.HttpResponse {
     status: status,
@@ -49,9 +49,9 @@ function typedJsonEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function binaryEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "application/octet-stream" })
-  let parts = Array.empty<bytes>()
+  var parts = Array.empty<bytes>()
   parts.push(bytes.fromUtf8("runtime-live-binary:"))
   parts.push(request.body)
   return std.http.HttpResponse {
@@ -70,7 +70,7 @@ function guardedPost(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function streamEcho(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   emit(std.http.streamStart(200, headers))
   emit(std.http.streamChunk(bytes.fromUtf8("runtime-live-stream:")))
